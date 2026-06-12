@@ -88,6 +88,7 @@ pub async fn add_project(
     };
 
     state::save_projects(&app, &state.projects.read().unwrap())?;
+    crate::watcher::register(&app, &project);
     Ok(project)
 }
 
@@ -108,5 +109,6 @@ pub fn remove_project(
             ));
         }
     }
+    crate::watcher::unregister(&app, &id);
     state::save_projects(&app, &state.projects.read().unwrap())
 }

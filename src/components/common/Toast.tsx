@@ -1,4 +1,4 @@
-import { CircleAlert, Info, X } from "lucide-react";
+import { CheckCircle2, CircleAlert, Info, X } from "lucide-react";
 
 import { useUi } from "../../stores/ui";
 
@@ -17,6 +17,8 @@ export function Toasts() {
         >
           {t.kind === "error" ? (
             <CircleAlert size={15} className="mt-0.5 shrink-0 text-danger" />
+          ) : t.kind === "success" ? (
+            <CheckCircle2 size={15} className="mt-0.5 shrink-0 text-ok" />
           ) : (
             <Info size={15} className="mt-0.5 shrink-0 text-accent" />
           )}

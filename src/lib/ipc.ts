@@ -67,6 +67,8 @@ export type ErrorCode =
   | "NOT_FOUND"
   | "TIMEOUT"
   | "GIT_ERROR"
+  | "OP_IN_PROGRESS"
+  | "AUTH_FAILED"
   | "IO";
 
 export interface IpcError {
@@ -129,6 +131,33 @@ async function call<T>(
   }
 }
 
+/// 변경 커맨드 전용: 자동 재시도 금지 (§10 — 중복 실행 위험).
+/// 타임아웃은 응답 유실 시 UI가 영원히 멈추는 것만 막는다 — 실제 결과는 상태 재조회가 진실.
+async function callMutating<T>(
+  cmd: string,
+  args: Record<string, unknown>,
+  timeoutMs = 180_000,
+): Promise<T> {
+  try {
+    return await Promise.race([
+      invoke<T>(cmd, args),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new IpcTimeoutError(cmd)), timeoutMs),
+      ),
+    ]);
+  } catch (e) {
+    if (e instanceof IpcTimeoutError) {
+      const err: IpcError = {
+        code: "TIMEOUT",
+        message: `${cmd} 응답을 받지 못했습니다 — 실제 결과는 새로고침된 상태로 확인하세요`,
+        stderr: null,
+      };
+      throw err;
+    }
+    throw e;
+  }
+}
+
 export const ipc = {
   checkGit: () => call<GitCheck>("check_git"),
   listProjects: () => call<Project[]>("list_projects"),
@@ -142,4 +171,18 @@ export const ipc = {
       projectId,
       target: { mode: "worktree", path },
     }),
+
+  // ---- 변경 커맨드 (재시도 없음) ----
+  stageFiles: (projectId: string, paths: string[]) =>
+    callMutating<void>("stage_files", { projectId, paths }),
+  unstageFiles: (projectId: string, paths: string[]) =>
+    callMutating<void>("unstage_files", { projectId, paths }),
+  discardFiles: (projectId: string, tracked: string[], untracked: string[]) =>
+    callMutating<void>("discard_files", { projectId, tracked, untracked }),
+  commit: (projectId: string, message: string, amend: boolean) =>
+    callMutating<void>("commit", { projectId, message, amend }),
+  push: (projectId: string, setUpstream: boolean) =>
+    callMutating<void>("push", { projectId, setUpstream }),
+  pull: (projectId: string) => callMutating<void>("pull", { projectId }),
+  fetch: (projectId: string) => callMutating<void>("fetch", { projectId }),
 };

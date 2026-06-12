@@ -28,4 +28,8 @@ tokio = { version = "1.52.3", features = ["process", "time", "macros"] }
 uuid = { version = "1.23.3", features = ["v4"] }
 chrono = "0.4.45"
 futures = "0.3.32"
+notify-debouncer-full = "0.7.0"
+
+[dev-dependencies]
+tempfile = "3.27.0"
 

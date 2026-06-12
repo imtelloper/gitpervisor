@@ -312,7 +312,7 @@ interface Settings {
 | `get_file_diff` | `id, target: DiffTarget` | `FileDiff` | 내용 출처: `show HEAD:p` / `show :p` / `show SHA:p` / 워크트리 fs 읽기 |
 | `stage_files` | `id, paths[]` | – | `add --` |
 | `unstage_files` | `id, paths[]` | – | `restore --staged --` |
-| `discard_files` | `id, paths[]` | – | tracked: `restore --worktree --source=HEAD --` / untracked: 파일 삭제. **프론트에서 확인 다이얼로그 필수** |
+| `discard_files` | `id, tracked[], untracked[]` | – | tracked: `restore --worktree --`(인덱스 소스 — staged 보존, autocrlf 안전) / untracked: `clean -fd --`. **프론트에서 확인 다이얼로그 필수**. ⚠ `--source=HEAD`+`--worktree` 단독 조합은 autocrlf=true에서 영구 modified 잔류 (M2 실측) |
 | `commit` | `id, { message, amend }` | – | `commit -m` (멀티라인은 `-m` 분할 아닌 `-F -` stdin) |
 | `push` | `id` | – | upstream 없으면 `push -u origin HEAD`. stderr `--progress`를 이벤트로 스트리밍 |
 | `pull` / `fetch` | `id` | – | 동일하게 진행 스트리밍 |
@@ -447,6 +447,8 @@ sequenceDiagram
 | 같은 경로 중복 추가 | 정규화(canonicalize) 후 비교, 거부 |
 | **WebView2 동시 invoke 응답 유실** (M1에서 실측) | 페이지 로드 직후 동시 다발 invoke의 응답 일부가 JS에 영원히 도달하지 않음 (Rust 커맨드는 정상 완료). 대응: ① 상태 조회를 `get_statuses` 배치 커맨드로 통합 ② 프론트 IPC 래퍼에 타임아웃(8s, 배치 20s)+재시도(3회, 읽기 전용 한정)+동시성 제한(3). **M2 주의**: commit/push 등 변경 커맨드엔 자동 재시도 금지, watcher 이벤트(emit)도 유실 가능성을 전제로 "신호"로만 취급 (다음 refetch로 자가치유) |
 | **tao 이벤트 루프 메인스레드 펌프 금지** (M1에서 크래시 실측) | `run_on_main_thread` 주기 호출이 창 드래그(모달 move/size 루프)와 충돌, `flush_paint_messages` 단언 패닉으로 앱 크래시 (tao 0.35). IPC 지연 대응으로 시도하지 말 것 — 배치 커맨드가 정답 |
+| **react-query v5 포커스 리페치 무동작** (M2 실측) | v5 focusManager 기본은 `visibilitychange`만 감지 — 항상 visible인 데스크톱 창에서는 절대 발화하지 않는다. `focusManager.setEventListener`로 window focus/blur에 연결해 해결 (`lib/events.ts`) |
+| **discard에 `--source=HEAD` + `--worktree` 단독 사용 금지** (M2 실측) | autocrlf=true에서 복원된 파일이 영구 modified로 잔류. `git restore --worktree --`(인덱스 소스)는 stat 캐시가 갱신되어 안전하고, staged 변경 보존 의미론도 올바르다 |
 
 ---
 
@@ -517,6 +519,8 @@ gitpervisor/
 | **M4 — 폴리시** | 설정 화면, 자동 fetch(옵트인), 단축키, 탐색기/터미널 열기, 빈 상태·로딩 다듬기 | 일상 사용 마찰 제로 |
 
 각 마일스톤은 독립 배포 가능 상태로 종료 (부분 기능 금지 — 시작한 화면은 그 단계에서 완성).
+
+> 진행 상태: **M1 완료** (2026-06-12) · **M2 완료** (2026-06-12) · M3/M4 예정
 
 ### 비범위 (v1에서 의도적으로 제외 — YAGNI)
 

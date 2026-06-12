@@ -3,6 +3,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 
 import App from "./App";
+import { attachRepoEvents } from "./lib/events";
 import "./styles.css";
 
 const queryClient = new QueryClient({
@@ -13,6 +14,9 @@ const queryClient = new QueryClient({
     },
   },
 });
+
+// watcher·작업 이벤트 구독 (모듈 스코프 — StrictMode 이중 마운트와 무관하게 1회)
+attachRepoEvents(queryClient);
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

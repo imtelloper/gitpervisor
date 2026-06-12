@@ -2,8 +2,7 @@ mod commands;
 mod error;
 mod git;
 mod state;
-
-use std::sync::RwLock;
+mod watcher;
 
 use tauri::Manager;
 
@@ -16,9 +15,11 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .setup(|app| {
             let projects = state::load_projects(app.handle());
-            app.manage(AppState {
-                projects: RwLock::new(projects),
-            });
+            app.manage(AppState::new(projects.clone()));
+            // 등록된 모든 레포에 파일 감시 시작 (F7: 외부 수정 자동 반영)
+            for project in &projects {
+                watcher::register(app.handle(), project);
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -28,6 +29,13 @@ pub fn run() {
             commands::remove_project,
             commands::get_statuses,
             commands::get_file_diff,
+            commands::stage_files,
+            commands::unstage_files,
+            commands::discard_files,
+            commands::commit,
+            commands::push,
+            commands::pull,
+            commands::fetch,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

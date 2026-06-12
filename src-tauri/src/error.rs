@@ -9,6 +9,8 @@ pub enum ErrorCode {
     NotFound,
     Timeout,
     GitError,
+    OpInProgress,
+    AuthFailed,
     Io,
 }
 
@@ -27,6 +29,14 @@ impl IpcError {
             code,
             message: message.into(),
             stderr: None,
+        }
+    }
+
+    pub fn git(message: impl Into<String>, stderr: impl Into<String>) -> Self {
+        Self {
+            code: ErrorCode::GitError,
+            message: message.into(),
+            stderr: Some(stderr.into()),
         }
     }
 }

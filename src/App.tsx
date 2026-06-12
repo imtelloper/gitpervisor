@@ -2,6 +2,7 @@ import { FolderGit2, MousePointerClick } from "lucide-react";
 import { lazy, Suspense, useEffect } from "react";
 
 import { ChangesPanel } from "./components/changes/ChangesPanel";
+import { ConfirmHost } from "./components/common/ConfirmDialog";
 import { EmptyState } from "./components/common/EmptyState";
 import { Toasts } from "./components/common/Toast";
 import { GitGate } from "./components/GitGate";
@@ -77,6 +78,7 @@ export default function App() {
         <StatusBar project={selected} />
       </div>
       <Toasts />
+      <ConfirmHost />
     </GitGate>
   );
 }

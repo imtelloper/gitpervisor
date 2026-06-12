@@ -2,18 +2,29 @@ import { create } from "zustand";
 
 export interface Toast {
   id: number;
-  kind: "error" | "info";
+  kind: "error" | "info" | "success";
   message: string;
+}
+
+export interface ConfirmRequest {
+  title: string;
+  message: string;
+  confirmLabel?: string;
+  danger?: boolean;
+  onConfirm: () => void;
 }
 
 interface UiState {
   selectedProjectId: string | null;
   selectedFilePath: string | null;
   toasts: Toast[];
+  confirm: ConfirmRequest | null;
   selectProject: (id: string | null) => void;
   selectFile: (path: string | null) => void;
   pushToast: (kind: Toast["kind"], message: string) => void;
   dismissToast: (id: number) => void;
+  askConfirm: (req: ConfirmRequest) => void;
+  closeConfirm: () => void;
 }
 
 let toastSeq = 0;
@@ -22,6 +33,7 @@ export const useUi = create<UiState>((set) => ({
   selectedProjectId: null,
   selectedFilePath: null,
   toasts: [],
+  confirm: null,
   selectProject: (id) => set({ selectedProjectId: id, selectedFilePath: null }),
   selectFile: (path) => set({ selectedFilePath: path }),
   pushToast: (kind, message) => {
@@ -31,4 +43,6 @@ export const useUi = create<UiState>((set) => ({
   },
   dismissToast: (id) =>
     set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
+  askConfirm: (req) => set({ confirm: req }),
+  closeConfirm: () => set({ confirm: null }),
 }));
