@@ -1,0 +1,60 @@
+@import "tailwindcss";
+
+@theme {
+  /* 디자인 토큰 — designs/main-screen-v2.pen 의 Darcula 계열 팔레트 */
+  --color-base: #1e1f22;
+  --color-panel: #2b2d30;
+  --color-raised: #393b40;
+  --color-selection: #2e436e;
+  --color-edge: #393b40;
+  --color-accent: #3574f0;
+  --color-accent-hover: #4682f4;
+
+  --color-fg: #dfe1e5;
+  --color-fg-muted: #9da0a8;
+  --color-fg-dim: #6f737a;
+
+  /* 사이드바 상태 점 */
+  --color-ok: #57965c;
+  --color-warn: #d6ae58;
+  --color-danger: #db5c5c;
+
+  /* 파일 변경 종류 (JetBrains 컨벤션: 수정=파랑, 추가=초록, 삭제=회색, untracked=빨강) */
+  --color-mod: #56a8f5;
+  --color-add: #62b543;
+  --color-del: #868a91;
+  --color-untrk: #db5c5c;
+
+  --font-sans: "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo", system-ui,
+    sans-serif;
+  --font-mono: "Cascadia Code", Consolas, "D2Coding", ui-monospace, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-base font-sans text-[13px] text-fg antialiased;
+  overflow: hidden;
+  user-select: none;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: #44464b;
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
