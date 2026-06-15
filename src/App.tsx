@@ -6,11 +6,13 @@ import { ConfirmHost } from "./components/common/ConfirmDialog";
 import { EmptyState } from "./components/common/EmptyState";
 import { Toasts } from "./components/common/Toast";
 import { GitGate } from "./components/GitGate";
+import { KeyboardShortcuts } from "./components/KeyboardShortcuts";
 import { LogPanel } from "./components/log/LogPanel";
+import { SettingsDialog } from "./components/settings/SettingsDialog";
 import { ProjectList } from "./components/sidebar/ProjectList";
 import { StatusBar } from "./components/StatusBar";
 import { Toolbar } from "./components/toolbar/Toolbar";
-import { useProjects } from "./queries";
+import { useAutoFetch, useProjects } from "./queries";
 import { useUi } from "./stores/ui";
 
 // Monaco 번들은 무겁다 — 파일을 처음 열 때만 로드한다
@@ -21,6 +23,8 @@ export default function App() {
   const selectedProjectId = useUi((s) => s.selectedProjectId);
   const selectedDiff = useUi((s) => s.selectedDiff);
   const selectProject = useUi((s) => s.selectProject);
+
+  useAutoFetch(); // 옵트인 자동 fetch (기본 OFF)
 
   const selected = projects?.find((p) => p.id === selectedProjectId) ?? null;
 
@@ -66,6 +70,7 @@ export default function App() {
                   </section>
                 </div>
                 <LogPanel projectId={selected.id} />
+                <KeyboardShortcuts projectId={selected.id} />
               </>
             ) : (
               <EmptyState
@@ -81,6 +86,7 @@ export default function App() {
       </div>
       <Toasts />
       <ConfirmHost />
+      <SettingsDialog />
     </GitGate>
   );
 }

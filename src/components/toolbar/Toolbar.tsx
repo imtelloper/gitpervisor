@@ -6,11 +6,13 @@ import {
   GitBranch,
   RefreshCcw,
   RefreshCw,
+  Settings as SettingsIcon,
 } from "lucide-react";
 
 import type { Project, RepoOpState } from "../../lib/ipc";
 import { usePushFlow, useRefreshAll, useStatus, useSyncOp } from "../../queries";
 import { useOps } from "../../stores/ops";
+import { useUi } from "../../stores/ui";
 
 const OP_LABEL: Partial<Record<RepoOpState, string>> = {
   merging: "MERGE 진행 중",
@@ -114,11 +116,19 @@ export function Toolbar({ project }: { project: Project }) {
       </button>
 
       <button
-        title="모든 프로젝트 상태 새로고침"
+        title="모든 프로젝트 상태 새로고침 (F5)"
         onClick={refreshAll}
         className="rounded p-1.5 text-fg-muted hover:bg-raised hover:text-fg"
       >
         <RefreshCw size={15} className={isFetching ? "animate-spin" : ""} />
+      </button>
+
+      <button
+        title="설정"
+        onClick={() => useUi.getState().setSettingsOpen(true)}
+        className="rounded p-1.5 text-fg-muted hover:bg-raised hover:text-fg"
+      >
+        <SettingsIcon size={15} />
       </button>
     </header>
   );

@@ -169,3 +169,28 @@ pub struct CommitDetail {
     pub commit: Commit,
     pub files: Vec<CommitFile>,
 }
+
+// ---- M4: 설정 ----
+// 테마(dark/light)는 후속 작업으로 보류 — 현재는 다크 단일 (반쪽 토글을 만들지 않는다).
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Settings {
+    /// null/빈 문자열 = PATH 자동 탐색
+    pub git_path: Option<String>,
+    /// 0 = 자동 fetch 끔
+    pub auto_fetch_minutes: u32,
+    pub diff_font_size: u32,
+    pub confirm_discard: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            git_path: None,
+            auto_fetch_minutes: 0,
+            diff_font_size: 13,
+            confirm_discard: true,
+        }
+    }
+}

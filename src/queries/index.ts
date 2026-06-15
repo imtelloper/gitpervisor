@@ -38,6 +38,7 @@ export const keys = {
   branches: (projectId: string) => ["branches", projectId] as const,
   commitDetail: (projectId: string, sha: string) =>
     ["commit-detail", projectId, sha] as const,
+  settings: ["settings"] as const,
 };
 
 export function useGitCheck() {
@@ -185,6 +186,51 @@ export function useCommitDetail(projectId: string | null, sha: string | null) {
     enabled: !!projectId && !!sha,
     staleTime: Infinity,
   });
+}
+
+// ---- M4: 설정 ----
+
+export function useSettings() {
+  return useQuery({
+    queryKey: keys.settings,
+    queryFn: ipc.getSettings,
+    staleTime: Infinity,
+  });
+}
+
+export function useSetSettings() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ipc.setSettings,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.settings });
+      // git 경로가 바뀌었을 수 있으니 게이트 재확인
+      void qc.invalidateQueries({ queryKey: keys.git });
+      useUi.getState().pushToast("success", "설정을 저장했습니다");
+    },
+    onError: (e) => useUi.getState().pushToast("error", errorMessage(e)),
+  });
+}
+
+/**
+ * 옵트인 자동 fetch (설계 §9 — 기본 OFF). autoFetchMinutes>0이면 전 프로젝트를
+ * 주기적으로 fetch한다. op-finished 이벤트가 상태를 무효화해 ahead/behind가 갱신된다.
+ */
+export function useAutoFetch() {
+  const { data: settings } = useSettings();
+  const { data: projects } = useProjects();
+  const mins = settings?.autoFetchMinutes ?? 0;
+
+  useEffect(() => {
+    if (!mins || !projects || projects.length === 0) return;
+    const id = window.setInterval(
+      () => {
+        for (const p of projects) void ipc.fetch(p.id).catch(() => {});
+      },
+      mins * 60_000,
+    );
+    return () => window.clearInterval(id);
+  }, [mins, projects]);
 }
 
 export function useAddProject() {

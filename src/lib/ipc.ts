@@ -107,6 +107,16 @@ export interface LogPage {
   allRefs?: boolean;
 }
 
+// ---- M4: 설정 (테마는 후속 보류) ----
+export interface Settings {
+  gitPath: string | null; // null/빈값 = PATH 자동 탐색
+  autoFetchMinutes: number; // 0 = 끔
+  diffFontSize: number;
+  confirmDiscard: boolean;
+}
+
+export type OpenTarget = "explorer" | "terminal";
+
 export interface GitCheck {
   found: boolean;
   version: string | null;
@@ -261,6 +271,13 @@ export const ipc = {
     call<Branches>("get_branches", { projectId }),
   getCommitDetail: (projectId: string, sha: string) =>
     call<CommitDetail>("get_commit_detail", { projectId, sha }),
+
+  // ---- M4: 설정 / 열기 ----
+  getSettings: () => call<Settings>("get_settings"),
+  setSettings: (settings: Settings) =>
+    callMutating<void>("set_settings", { settings }),
+  openIn: (projectId: string, target: OpenTarget) =>
+    callMutating<void>("open_in", { projectId, target }),
 
   // ---- 변경 커맨드 (재시도 없음) ----
   stageFiles: (projectId: string, paths: string[]) =>

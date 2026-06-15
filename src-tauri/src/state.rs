@@ -5,23 +5,27 @@ use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 
 use crate::error::{ErrorCode, IpcError};
-use crate::git::types::Project;
+use crate::git::types::{Project, Settings};
 use crate::watcher::RepoWatcher;
 
 pub const STORE_FILE: &str = "projects.json";
 pub const STORE_KEY: &str = "projects";
+pub const SETTINGS_FILE: &str = "settings.json";
+pub const SETTINGS_KEY: &str = "settings";
 
 pub struct AppState {
     pub projects: RwLock<Vec<Project>>,
+    pub settings: RwLock<Settings>,
     /// 진행 중인 쓰기 작업(stage/commit/push 등)의 프로젝트 id — 레포당 1개만 허용
     ops: Arc<Mutex<HashSet<String>>>,
     pub watchers: Mutex<HashMap<String, RepoWatcher>>,
 }
 
 impl AppState {
-    pub fn new(projects: Vec<Project>) -> Self {
+    pub fn new(projects: Vec<Project>, settings: Settings) -> Self {
         Self {
             projects: RwLock::new(projects),
+            settings: RwLock::new(settings),
             ops: Arc::new(Mutex::new(HashSet::new())),
             watchers: Mutex::new(HashMap::new()),
         }
@@ -73,5 +77,26 @@ pub fn save_projects(app: &AppHandle, projects: &[Project]) -> Result<(), IpcErr
     store
         .save()
         .map_err(|e| IpcError::new(ErrorCode::Io, format!("프로젝트 목록 저장 실패: {e}")))?;
+    Ok(())
+}
+
+pub fn load_settings(app: &AppHandle) -> Settings {
+    let Ok(store) = app.store(SETTINGS_FILE) else {
+        return Settings::default();
+    };
+    let Some(value) = store.get(SETTINGS_KEY) else {
+        return Settings::default();
+    };
+    serde_json::from_value(value).unwrap_or_default()
+}
+
+pub fn save_settings(app: &AppHandle, settings: &Settings) -> Result<(), IpcError> {
+    let store = app
+        .store(SETTINGS_FILE)
+        .map_err(|e| IpcError::new(ErrorCode::Io, format!("스토어 열기 실패: {e}")))?;
+    store.set(SETTINGS_KEY, serde_json::json!(settings));
+    store
+        .save()
+        .map_err(|e| IpcError::new(ErrorCode::Io, format!("설정 저장 실패: {e}")))?;
     Ok(())
 }

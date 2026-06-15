@@ -4,6 +4,8 @@ mod git;
 mod state;
 mod watcher;
 
+use std::path::PathBuf;
+
 use tauri::Manager;
 
 use state::AppState;
@@ -15,7 +17,10 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .setup(|app| {
             let projects = state::load_projects(app.handle());
-            app.manage(AppState::new(projects.clone()));
+            let settings = state::load_settings(app.handle());
+            // 저장된 git 경로를 부팅 시 적용 (이후 set_settings로 갱신)
+            git::runner::set_git_override(settings.git_path.as_ref().map(PathBuf::from));
+            app.manage(AppState::new(projects.clone(), settings));
             // 등록된 모든 레포에 파일 감시 시작 (F7: 외부 수정 자동 반영)
             for project in &projects {
                 watcher::register(app.handle(), project);
@@ -40,6 +45,9 @@ pub fn run() {
             commands::push,
             commands::pull,
             commands::fetch,
+            commands::get_settings,
+            commands::set_settings,
+            commands::open_in,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,9 +1,42 @@
 import { open } from "@tauri-apps/plugin-dialog";
-import { Plus } from "lucide-react";
+import { FolderOpen, Plus, Terminal, Trash2 } from "lucide-react";
+import { useEffect, useState } from "react";
 
+import type { OpenTarget, Project } from "../../lib/ipc";
+import { errorMessage, ipc } from "../../lib/ipc";
 import { useAddProject, useProjects, useRemoveProject } from "../../queries";
 import { useUi } from "../../stores/ui";
 import { ProjectItem } from "./ProjectItem";
+
+interface MenuState {
+  x: number;
+  y: number;
+  project: Project;
+}
+
+function MenuItem({
+  icon: Icon,
+  label,
+  danger,
+  onClick,
+}: {
+  icon: typeof FolderOpen;
+  label: string;
+  danger?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-raised ${
+        danger ? "text-danger" : "text-fg-muted hover:text-fg"
+      }`}
+    >
+      <Icon size={14} className="shrink-0" />
+      {label}
+    </button>
+  );
+}
 
 export function ProjectList() {
   const { data: projects } = useProjects();
@@ -11,6 +44,21 @@ export function ProjectList() {
   const removeProject = useRemoveProject();
   const selectedProjectId = useUi((s) => s.selectedProjectId);
   const selectProject = useUi((s) => s.selectProject);
+
+  const [menu, setMenu] = useState<MenuState | null>(null);
+
+  // 메뉴 열림 동안 바깥 클릭 / Esc 로 닫는다
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setMenu(null);
+    window.addEventListener("click", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [menu]);
 
   async function handleAdd() {
     const dir = await open({
@@ -29,6 +77,13 @@ export function ProjectList() {
     });
   }
 
+  function handleOpenIn(project: Project, target: OpenTarget) {
+    void ipc
+      .openIn(project.id, target)
+      .catch((e) => useUi.getState().pushToast("error", errorMessage(e)));
+    setMenu(null);
+  }
+
   return (
     <aside className="flex h-full w-60 shrink-0 flex-col border-r border-edge bg-panel">
       <div className="px-3 pb-1 pt-3 text-[11px] font-semibold tracking-widest text-fg-dim">
@@ -43,6 +98,10 @@ export function ProjectList() {
             selected={p.id === selectedProjectId}
             onSelect={() => selectProject(p.id)}
             onRemove={() => handleRemove(p.id)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setMenu({ x: e.clientX, y: e.clientY, project: p });
+            }}
           />
         ))}
         {projects && projects.length === 0 && (
@@ -62,6 +121,38 @@ export function ProjectList() {
         <Plus size={14} />
         {addProject.isPending ? "추가하는 중…" : "프로젝트 추가"}
       </button>
+
+      {menu && (
+        <div
+          className="fixed z-50 min-w-44 rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl"
+          style={{
+            left: Math.min(menu.x, window.innerWidth - 190),
+            top: Math.min(menu.y, window.innerHeight - 130),
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <MenuItem
+            icon={FolderOpen}
+            label="탐색기에서 열기"
+            onClick={() => handleOpenIn(menu.project, "explorer")}
+          />
+          <MenuItem
+            icon={Terminal}
+            label="터미널에서 열기"
+            onClick={() => handleOpenIn(menu.project, "terminal")}
+          />
+          <div className="my-1 border-t border-edge" />
+          <MenuItem
+            icon={Trash2}
+            label="프로젝트 제거"
+            danger
+            onClick={() => {
+              handleRemove(menu.project.id);
+              setMenu(null);
+            }}
+          />
+        </div>
+      )}
     </aside>
   );
 }

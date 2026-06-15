@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { useCommit, usePushFlow, useStatus } from "../../queries";
 import { useOps } from "../../stores/ops";
@@ -30,6 +30,17 @@ export function CommitForm({ projectId }: { projectId: string }) {
       },
     );
   }
+
+  // Ctrl+K 단축키 → 커밋. 메시지 상태가 여기 있으므로 이벤트로 받아 처리한다.
+  const commitRef = useRef<() => void>(() => {});
+  commitRef.current = () => {
+    if (canCommit) doCommit(false);
+  };
+  useEffect(() => {
+    const handler = () => commitRef.current();
+    window.addEventListener("gitpervisor:commit", handler);
+    return () => window.removeEventListener("gitpervisor:commit", handler);
+  }, []);
 
   return (
     <div className="border-t border-edge p-3">

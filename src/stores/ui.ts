@@ -24,12 +24,15 @@ interface UiState {
   logOpen: boolean;
   /** Log 패널에서 선택된 커밋 (상세 패널 구동) */
   selectedCommitSha: string | null;
+  /** 설정 모달 열림 여부 */
+  settingsOpen: boolean;
   toasts: Toast[];
   confirm: ConfirmRequest | null;
   selectProject: (id: string | null) => void;
   selectDiff: (target: DiffTarget | null) => void;
   toggleLog: () => void;
   selectCommit: (sha: string | null) => void;
+  setSettingsOpen: (open: boolean) => void;
   pushToast: (kind: Toast["kind"], message: string) => void;
   dismissToast: (id: number) => void;
   askConfirm: (req: ConfirmRequest) => void;
@@ -43,6 +46,7 @@ export const useUi = create<UiState>((set) => ({
   selectedDiff: null,
   logOpen: false,
   selectedCommitSha: null,
+  settingsOpen: false,
   toasts: [],
   confirm: null,
   // 프로젝트 전환 시 diff·커밋 선택은 초기화하되 Log 패널 펼침 상태는 유지
@@ -55,6 +59,7 @@ export const useUi = create<UiState>((set) => ({
   selectDiff: (target) => set({ selectedDiff: target }),
   toggleLog: () => set((s) => ({ logOpen: !s.logOpen })),
   selectCommit: (sha) => set({ selectedCommitSha: sha }),
+  setSettingsOpen: (open) => set({ settingsOpen: open }),
   pushToast: (kind, message) => {
     const id = ++toastSeq;
     set((s) => ({ toasts: [...s.toasts, { id, kind, message }] }));

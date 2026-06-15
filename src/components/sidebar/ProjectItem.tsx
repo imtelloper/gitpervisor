@@ -10,11 +10,13 @@ export function ProjectItem({
   selected,
   onSelect,
   onRemove,
+  onContextMenu,
 }: {
   project: Project;
   selected: boolean;
   onSelect: () => void;
   onRemove: () => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
 }) {
   const { data: status, isLoading, error } = useStatus(project.id);
   const dot = dotStateOf(status, isLoading);
@@ -38,6 +40,7 @@ export function ProjectItem({
   return (
     <div
       onClick={onSelect}
+      onContextMenu={onContextMenu}
       className={`group relative cursor-pointer border-l-2 px-3 py-2 ${
         selected
           ? "border-accent bg-selection"

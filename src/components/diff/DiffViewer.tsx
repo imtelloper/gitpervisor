@@ -2,11 +2,12 @@ import "./monaco-setup";
 
 import { DiffEditor } from "@monaco-editor/react";
 import { FileQuestion, FileWarning } from "lucide-react";
+import { useMemo } from "react";
 
 import { errorMessage } from "../../lib/ipc";
 import type { DiffTarget } from "../../lib/ipc";
 import { languageOf } from "../../lib/language-map";
-import { useDiff } from "../../queries";
+import { useDiff, useSettings } from "../../queries";
 import { EmptyState } from "../common/EmptyState";
 
 function modeLabel(target: DiffTarget): string {
@@ -49,6 +50,12 @@ export default function DiffViewer({
     isPlaceholderData,
     error,
   } = useDiff(projectId, target);
+  const { data: settings } = useSettings();
+
+  const options = useMemo(
+    () => ({ ...DIFF_OPTIONS, fontSize: settings?.diffFontSize ?? 13 }),
+    [settings?.diffFontSize],
+  );
 
   const path = target.path;
 
@@ -104,7 +111,7 @@ export default function DiffViewer({
             modified={diff.newContent ?? ""}
             language={languageOf(path)}
             theme="gitpervisor-dark"
-            options={DIFF_OPTIONS}
+            options={options}
             loading={
               <span className="text-xs text-fg-dim">에디터 로딩 중…</span>
             }

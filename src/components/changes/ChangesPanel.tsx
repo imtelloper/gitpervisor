@@ -7,6 +7,7 @@ import { splitPath } from "../../lib/format";
 import {
   useDiscardFiles,
   usePrefetchDiffs,
+  useSettings,
   useStageFiles,
   useStatus,
   useUnstageFiles,
@@ -142,6 +143,7 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
   const stage = useStageFiles(projectId);
   const unstage = useUnstageFiles(projectId);
   const discard = useDiscardFiles(projectId);
+  const { data: settings } = useSettings();
   usePrefetchDiffs(projectId); // 클릭 전에 diff를 미리 적재 (§12)
 
   const total = status
@@ -171,6 +173,17 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
     },
     onDiscard: (change) => {
       const untracked = change.kind === "untracked";
+      const run = () =>
+        discard.mutate(
+          untracked
+            ? { tracked: [], untracked: [change.path] }
+            : { tracked: [change.path], untracked: [] },
+        );
+      // 설정에서 확인을 끄면 바로 실행 (기본은 확인 — 설계 §11)
+      if (settings?.confirmDiscard === false) {
+        run();
+        return;
+      }
       useUi.getState().askConfirm({
         title: untracked ? "파일 삭제" : "변경 되돌리기",
         message: untracked
@@ -178,12 +191,7 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
           : `'${change.path}' 의 저장되지 않은 변경을 되돌립니다. 복구할 수 없습니다.`,
         confirmLabel: untracked ? "삭제" : "되돌리기",
         danger: true,
-        onConfirm: () =>
-          discard.mutate(
-            untracked
-              ? { tracked: [], untracked: [change.path] }
-              : { tracked: [change.path], untracked: [] },
-          ),
+        onConfirm: run,
       });
     },
   };

@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{OnceLock, RwLock};
 use std::time::Duration;
 
 use tokio::process::Command;
@@ -25,9 +25,19 @@ impl GitOutput {
 }
 
 static GIT_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
+/// 설정에서 지정한 git 경로 오버라이드 (None이면 PATH 자동 탐색으로 폴백).
+static GIT_OVERRIDE: RwLock<Option<PathBuf>> = RwLock::new(None);
 
-pub fn git_path() -> Option<&'static Path> {
-    GIT_PATH.get_or_init(find_git).as_deref()
+/// 설정의 git 경로를 적용한다. 빈 값은 무시(자동 탐색).
+pub fn set_git_override(path: Option<PathBuf>) {
+    *GIT_OVERRIDE.write().unwrap() = path.filter(|p| !p.as_os_str().is_empty());
+}
+
+pub fn git_path() -> Option<PathBuf> {
+    if let Some(p) = GIT_OVERRIDE.read().unwrap().clone() {
+        return Some(p);
+    }
+    GIT_PATH.get_or_init(find_git).clone()
 }
 
 /// 커밋 해시 인자 검증 — hex만 허용해 `-`로 시작하는 플래그 인젝션·잘못된 rev를 차단한다.
