@@ -6,9 +6,12 @@ mod watcher;
 
 use std::path::PathBuf;
 
-use tauri::Manager;
+use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 use state::AppState;
+
+/// WebView2 스로틀링 억제 인자 (최소화/백그라운드에서도 watcher·타이머 정상 동작). 전 빌드 공통.
+const BASE_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtocol,msSleepingTabs,IntensiveWakeUpThrottling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -16,6 +19,20 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .setup(|app| {
+            // 메인 창을 코드에서 생성한다 — 원격 디버깅 포트(CDP)는 debug 빌드에서만 열고
+            // release 빌드에는 노출하지 않기 위함 (정적 config로는 빌드별 분기가 불가).
+            let mut browser_args = String::from(BASE_BROWSER_ARGS);
+            #[cfg(debug_assertions)]
+            browser_args.push_str(" --remote-debugging-port=9222");
+            WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
+                .title("Gitpervisor")
+                .inner_size(1440.0, 900.0)
+                .min_inner_size(1100.0, 700.0)
+                .center()
+                .background_color(tauri::window::Color(30, 31, 34, 255))
+                .additional_browser_args(&browser_args)
+                .build()?;
+
             let projects = state::load_projects(app.handle());
             let settings = state::load_settings(app.handle());
             // 저장된 git 경로를 부팅 시 적용 (이후 set_settings로 갱신)
