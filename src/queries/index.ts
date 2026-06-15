@@ -8,8 +8,8 @@ import {
 } from "@tanstack/react-query";
 import { useEffect } from "react";
 
-import type { DiffTarget } from "../lib/ipc";
-import { errorMessage, ipc } from "../lib/ipc";
+import type { DiffTarget, Project } from "../lib/ipc";
+import { errorMessage, ipc, isIpcError } from "../lib/ipc";
 import type { SyncOp } from "../stores/ops";
 import { useOps } from "../stores/ops";
 import { useUi } from "../stores/ui";
@@ -237,11 +237,23 @@ export function useAddProject() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ipc.addProject,
-    onSuccess: async (project) => {
-      await qc.invalidateQueries({ queryKey: keys.projects });
+    onSuccess: (project) => {
+      // 낙관적 반영 — 추가 직후 list_projects refetch 응답이 WebView2에서 유실돼도
+      // 새 프로젝트가 즉시 목록에 보이게 한다(§10 invoke 응답 유실 대응).
+      qc.setQueryData<Project[]>(keys.projects, (old) => {
+        const rest = (old ?? []).filter((p) => p.id !== project.id);
+        return [...rest, project].sort((a, b) => a.order - b.order);
+      });
+      void qc.invalidateQueries({ queryKey: keys.projects });
       useUi.getState().selectProject(project.id);
     },
-    onError: (e) => useUi.getState().pushToast("error", errorMessage(e)),
+    onError: (e) => {
+      // 이미 등록됐는데 목록엔 없는(stale) 상태 — 진실을 다시 끌어와 표시한다
+      if (isIpcError(e) && e.code === "DUPLICATE_PROJECT") {
+        void qc.invalidateQueries({ queryKey: keys.projects });
+      }
+      useUi.getState().pushToast("error", errorMessage(e));
+    },
   });
 }
 
@@ -249,15 +261,25 @@ export function useRemoveProject() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ipc.removeProject,
-    onSuccess: () => qc.invalidateQueries({ queryKey: keys.projects }),
+    onSuccess: (_void, id) => {
+      // 낙관적 제거 — refetch 유실과 무관하게 즉시 목록에서 빠지게 한다.
+      qc.setQueryData<Project[]>(keys.projects, (old) =>
+        (old ?? []).filter((p) => p.id !== id),
+      );
+      void qc.invalidateQueries({ queryKey: keys.projects });
+    },
     onError: (e) => useUi.getState().pushToast("error", errorMessage(e)),
   });
 }
 
-/** 수동 새로고침: 모든 프로젝트 상태 + 열린 diff + 로그/브랜치 재조회 */
+/** 수동 새로고침: 프로젝트 목록 + 모든 상태 + 열린 diff + 로그/브랜치 재조회 */
 export function useRefreshAll() {
   const qc = useQueryClient();
-  return () => invalidateRepoData(qc);
+  return () => {
+    // 목록이 stale(추가/삭제 갱신 유실)한 경우 F5로 진실을 다시 끌어온다
+    void qc.invalidateQueries({ queryKey: keys.projects });
+    invalidateRepoData(qc);
+  };
 }
 
 function invalidateRepoData(qc: QueryClient) {
