@@ -54,6 +54,59 @@ export interface FileDiff {
   tooLarge: boolean;
 }
 
+/** 중앙 diff 뷰어가 표시할 대상 (설계 §6). */
+export type DiffTarget =
+  | { mode: "worktree"; path: string } // 인덱스(없으면 HEAD) ↔ 워크트리
+  | { mode: "index"; path: string } // HEAD ↔ 인덱스 (staged 검토)
+  | { mode: "commit"; sha: string; path: string }; // 부모 ↔ 해당 커밋
+
+// ---- M3: 히스토리 ----
+
+export interface Commit {
+  sha: string;
+  parents: string[];
+  subject: string;
+  body: string;
+  authorName: string;
+  authorEmail: string;
+  authoredAt: string; // ISO 8601
+  refs: string[]; // ["HEAD -> main", "origin/main", "tag: v1.0"]
+}
+
+export interface LocalBranch {
+  name: string;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+}
+
+export interface RemoteBranch {
+  name: string; // "origin/main" 형태
+}
+
+export interface Branches {
+  head: string | null;
+  local: LocalBranch[];
+  remote: RemoteBranch[];
+}
+
+export interface CommitFile {
+  path: string;
+  origPath: string | null;
+  kind: ChangeKind;
+}
+
+export interface CommitDetail {
+  commit: Commit;
+  files: CommitFile[];
+}
+
+export interface LogPage {
+  limit?: number;
+  skip?: number;
+  allRefs?: boolean;
+}
+
 export interface GitCheck {
   found: boolean;
   version: string | null;
@@ -181,18 +234,33 @@ export const ipc = {
   // 배치: 레포 수 × 콜드 git spawn을 고려해 타임아웃을 넉넉히 잡는다
   getStatuses: (projectIds: string[]) =>
     call<RepoStatus[]>("get_statuses", { projectIds }, { timeoutMs: 20000 }),
-  getWorktreeDiff: (projectId: string, path: string) =>
-    call<FileDiff>("get_file_diff", {
-      projectId,
-      target: { mode: "worktree", path },
-    }),
-  // 프리페치 배치 — background 레인(클릭에 양보), 재시도 없음(선택적 작업), 짧은 타임아웃
+  // 단일 diff — DiffTarget(worktree/index/commit) 어느 모드든 처리
+  getDiff: (projectId: string, target: DiffTarget) =>
+    call<FileDiff>("get_file_diff", { projectId, target }),
+  // 프리페치 배치 (worktree 전용) — background 레인(클릭에 양보), 재시도 없음, 짧은 타임아웃
   getWorktreeDiffs: (projectId: string, paths: string[]) =>
     call<FileDiff[]>(
       "get_file_diffs",
       { projectId, paths },
       { timeoutMs: 12000, attempts: 1, lane: "background" },
     ),
+
+  // ---- M3: 히스토리 (읽기 전용) ----
+  getLog: (projectId: string, page: LogPage = {}) =>
+    call<Commit[]>(
+      "get_log",
+      {
+        projectId,
+        limit: page.limit,
+        skip: page.skip,
+        allRefs: page.allRefs,
+      },
+      { timeoutMs: 15000 },
+    ),
+  getBranches: (projectId: string) =>
+    call<Branches>("get_branches", { projectId }),
+  getCommitDetail: (projectId: string, sha: string) =>
+    call<CommitDetail>("get_commit_detail", { projectId, sha }),
 
   // ---- 변경 커맨드 (재시도 없음) ----
   stageFiles: (projectId: string, paths: string[]) =>

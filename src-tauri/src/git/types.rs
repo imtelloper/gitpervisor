@@ -113,3 +113,59 @@ pub struct GitCheck {
     pub version: Option<String>,
     pub path: Option<String>,
 }
+
+// ---- M3: 히스토리 (로그 / 브랜치 / 커밋 상세) ----
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Commit {
+    pub sha: String,
+    pub parents: Vec<String>,
+    pub subject: String,
+    pub body: String,
+    pub author_name: String,
+    pub author_email: String,
+    /// ISO 8601 (git %aI)
+    pub authored_at: String,
+    /// 데코레이션: ["HEAD -> main", "origin/main", "tag: v1.0"]
+    pub refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalBranch {
+    pub name: String,
+    pub upstream: Option<String>,
+    pub ahead: u32,
+    pub behind: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteBranch {
+    /// "origin/main" 형태
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Branches {
+    pub head: Option<String>,
+    pub local: Vec<LocalBranch>,
+    pub remote: Vec<RemoteBranch>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitFile {
+    pub path: String,
+    pub orig_path: Option<String>,
+    pub kind: ChangeKind,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitDetail {
+    pub commit: Commit,
+    pub files: Vec<CommitFile>,
+}

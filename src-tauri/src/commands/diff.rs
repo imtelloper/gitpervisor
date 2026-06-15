@@ -23,10 +23,8 @@ pub async fn get_file_diff(
     let repo = project_path(&state, &project_id)?;
     match target {
         DiffTarget::Worktree { path } => worktree_diff(&repo, path).await,
-        DiffTarget::Index { .. } | DiffTarget::Commit { .. } => Err(IpcError::new(
-            ErrorCode::GitError,
-            "index/commit diff는 M3에서 지원 예정입니다",
-        )),
+        DiffTarget::Index { path } => index_diff(&repo, path).await,
+        DiffTarget::Commit { sha, path } => commit_diff(&repo, sha, path).await,
     }
 }
 
@@ -66,15 +64,7 @@ pub async fn get_file_diffs(
 async fn worktree_diff(repo: &Path, path: String) -> Result<FileDiff, IpcError> {
     validate_rel_path(&path)?;
 
-    let spec = format!(":{path}");
-    let old_bytes = match runner::run_git(Some(repo), &["show", &spec], runner::READ_TIMEOUT_SECS)
-        .await
-    {
-        Ok(out) if out.code == 0 => Some(out.stdout),
-        Ok(_) => None, // untracked/added — 인덱스에 없음
-        Err(e) => return Err(e),
-    };
-
+    let old_bytes = content_at(repo, &format!(":{path}")).await?;
     let new_bytes = match tokio::fs::read(repo.join(&path)).await {
         Ok(bytes) => Some(bytes),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None, // 워크트리에서 삭제됨
@@ -86,6 +76,39 @@ async fn worktree_diff(repo: &Path, path: String) -> Result<FileDiff, IpcError> 
         }
     };
 
+    Ok(build_diff(path, old_bytes, new_bytes))
+}
+
+/// staged 변경 검토: HEAD 버전 ↔ 인덱스 버전. (설계 §7 index 모드)
+async fn index_diff(repo: &Path, path: String) -> Result<FileDiff, IpcError> {
+    validate_rel_path(&path)?;
+    let old_bytes = content_at(repo, &format!("HEAD:{path}")).await?;
+    let new_bytes = content_at(repo, &format!(":{path}")).await?;
+    Ok(build_diff(path, old_bytes, new_bytes))
+}
+
+/// 커밋 기준 diff: 첫 부모 버전 ↔ 해당 커밋 버전. root 커밋은 부모가 없어 old = None.
+async fn commit_diff(repo: &Path, sha: String, path: String) -> Result<FileDiff, IpcError> {
+    validate_rel_path(&path)?;
+    if !runner::is_valid_sha(&sha) {
+        return Err(IpcError::new(ErrorCode::GitError, "잘못된 커밋 해시입니다"));
+    }
+    let old_bytes = content_at(repo, &format!("{sha}^:{path}")).await?;
+    let new_bytes = content_at(repo, &format!("{sha}:{path}")).await?;
+    Ok(build_diff(path, old_bytes, new_bytes))
+}
+
+/// `git show <spec>` 내용 — 존재하지 않으면(없는 경로/없는 부모) None으로 added/deleted를 표현.
+async fn content_at(repo: &Path, spec: &str) -> Result<Option<Vec<u8>>, IpcError> {
+    match runner::run_git(Some(repo), &["show", spec], runner::READ_TIMEOUT_SECS).await {
+        Ok(out) if out.code == 0 => Ok(Some(out.stdout)),
+        Ok(_) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// 양쪽 바이트에서 바이너리/크기 가드를 적용해 FileDiff를 만든다 (모든 diff 모드 공용).
+fn build_diff(path: String, old_bytes: Option<Vec<u8>>, new_bytes: Option<Vec<u8>>) -> FileDiff {
     let too_large = [&old_bytes, &new_bytes]
         .iter()
         .any(|b| b.as_ref().is_some_and(|b| b.len() > MAX_DIFF_BYTES));
@@ -95,22 +118,22 @@ async fn worktree_diff(repo: &Path, path: String) -> Result<FileDiff, IpcError> 
             .any(|b| b.as_ref().is_some_and(|b| looks_binary(b)));
 
     if too_large || is_binary {
-        return Ok(FileDiff {
+        return FileDiff {
             path,
             old_content: None,
             new_content: None,
             is_binary,
             too_large,
-        });
+        };
     }
 
-    Ok(FileDiff {
+    FileDiff {
         path,
         old_content: old_bytes.map(|b| String::from_utf8_lossy(&b).into_owned()),
         new_content: new_bytes.map(|b| String::from_utf8_lossy(&b).into_owned()),
         is_binary: false,
         too_large: false,
-    })
+    }
 }
 
 /// 경로는 항상 우리 status 출력에서 오지만, 방어적으로 레포 밖 접근을 차단한다.

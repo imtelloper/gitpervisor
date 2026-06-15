@@ -1,7 +1,8 @@
 import { ChevronDown, ChevronRight, Undo2 } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import type { ChangeKind, FileChange } from "../../lib/ipc";
+import type { DiffTarget, FileChange } from "../../lib/ipc";
+import { KIND_BADGE } from "../../lib/change-kind";
 import { splitPath } from "../../lib/format";
 import {
   useDiscardFiles,
@@ -12,16 +13,6 @@ import {
 } from "../../queries";
 import { useUi } from "../../stores/ui";
 import { CommitForm } from "./CommitForm";
-
-const KIND_BADGE: Record<ChangeKind, { letter: string; className: string }> = {
-  modified: { letter: "M", className: "text-mod" },
-  added: { letter: "A", className: "text-add" },
-  deleted: { letter: "D", className: "text-del" },
-  renamed: { letter: "R", className: "text-mod" },
-  typechange: { letter: "T", className: "text-mod" },
-  conflicted: { letter: "!", className: "text-danger" },
-  untracked: { letter: "?", className: "text-untrk" },
-};
 
 interface RowActions {
   onToggleStage: (change: FileChange) => void;
@@ -94,15 +85,18 @@ function Group({
   title,
   changes,
   accent,
-  selectedFilePath,
-  onSelectFile,
+  mode,
+  selectedDiff,
+  onSelect,
   actions,
 }: {
   title: string;
   changes: FileChange[];
   accent?: boolean;
-  selectedFilePath: string | null;
-  onSelectFile: (path: string) => void;
+  /** 이 그룹의 파일을 클릭했을 때의 diff 모드: staged는 index(HEAD↔인덱스), 나머지는 worktree */
+  mode: "worktree" | "index";
+  selectedDiff: DiffTarget | null;
+  onSelect: (target: DiffTarget) => void;
   actions: RowActions;
 }) {
   const [collapsed, setCollapsed] = useState(false);
@@ -120,23 +114,31 @@ function Group({
         <span className="text-fg-dim">{changes.length}</span>
       </button>
       {!collapsed &&
-        changes.map((c) => (
-          <ChangeRow
-            key={`${c.staged ? "s" : "w"}:${c.path}`}
-            change={c}
-            selected={c.path === selectedFilePath}
-            onSelect={() => onSelectFile(c.path)}
-            actions={actions}
-          />
-        ))}
+        changes.map((c) => {
+          const target: DiffTarget =
+            mode === "index"
+              ? { mode: "index", path: c.path }
+              : { mode: "worktree", path: c.path };
+          const selected =
+            selectedDiff?.mode === mode && selectedDiff.path === c.path;
+          return (
+            <ChangeRow
+              key={`${c.staged ? "s" : "w"}:${c.path}`}
+              change={c}
+              selected={selected}
+              onSelect={() => onSelect(target)}
+              actions={actions}
+            />
+          );
+        })}
     </div>
   );
 }
 
 export function ChangesPanel({ projectId }: { projectId: string }) {
   const { data: status } = useStatus(projectId);
-  const selectedFilePath = useUi((s) => s.selectedFilePath);
-  const selectFile = useUi((s) => s.selectFile);
+  const selectedDiff = useUi((s) => s.selectedDiff);
+  const selectDiff = useUi((s) => s.selectDiff);
   const stage = useStageFiles(projectId);
   const unstage = useUnstageFiles(projectId);
   const discard = useDiscardFiles(projectId);
@@ -149,17 +151,18 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
       status.untracked.length
     : 0;
 
-  // 새로고침으로 선택 파일이 변경 목록에서 사라지면 뷰어를 비운다 (설계 §9)
+  // 새로고침으로 선택 파일이 변경 목록에서 사라지면 뷰어를 비운다 (설계 §9).
+  // 커밋(commit) diff는 워크트리 변화와 무관하므로 유지한다.
   useEffect(() => {
-    if (!status || !selectedFilePath) return;
+    if (!status || !selectedDiff || selectedDiff.mode === "commit") return;
     const exists = [
       ...status.conflicted,
       ...status.unstaged,
       ...status.staged,
       ...status.untracked,
-    ].some((c) => c.path === selectedFilePath);
-    if (!exists) selectFile(null);
-  }, [status, selectedFilePath, selectFile]);
+    ].some((c) => c.path === selectedDiff.path);
+    if (!exists) selectDiff(null);
+  }, [status, selectedDiff, selectDiff]);
 
   const actions: RowActions = {
     onToggleStage: (change) => {
@@ -209,29 +212,33 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
               title="Conflicts"
               changes={status.conflicted}
               accent
-              selectedFilePath={selectedFilePath}
-              onSelectFile={selectFile}
+              mode="worktree"
+              selectedDiff={selectedDiff}
+              onSelect={selectDiff}
               actions={actions}
             />
             <Group
               title="Unstaged"
               changes={status.unstaged}
-              selectedFilePath={selectedFilePath}
-              onSelectFile={selectFile}
+              mode="worktree"
+              selectedDiff={selectedDiff}
+              onSelect={selectDiff}
               actions={actions}
             />
             <Group
               title="Staged"
               changes={status.staged}
-              selectedFilePath={selectedFilePath}
-              onSelectFile={selectFile}
+              mode="index"
+              selectedDiff={selectedDiff}
+              onSelect={selectDiff}
               actions={actions}
             />
             <Group
               title="Untracked"
               changes={status.untracked}
-              selectedFilePath={selectedFilePath}
-              onSelectFile={selectFile}
+              mode="worktree"
+              selectedDiff={selectedDiff}
+              onSelect={selectDiff}
               actions={actions}
             />
           </>

@@ -6,6 +6,7 @@ import { ConfirmHost } from "./components/common/ConfirmDialog";
 import { EmptyState } from "./components/common/EmptyState";
 import { Toasts } from "./components/common/Toast";
 import { GitGate } from "./components/GitGate";
+import { LogPanel } from "./components/log/LogPanel";
 import { ProjectList } from "./components/sidebar/ProjectList";
 import { StatusBar } from "./components/StatusBar";
 import { Toolbar } from "./components/toolbar/Toolbar";
@@ -18,7 +19,7 @@ const DiffViewer = lazy(() => import("./components/diff/DiffViewer"));
 export default function App() {
   const { data: projects } = useProjects();
   const selectedProjectId = useUi((s) => s.selectedProjectId);
-  const selectedFilePath = useUi((s) => s.selectedFilePath);
+  const selectedDiff = useUi((s) => s.selectedDiff);
   const selectProject = useUi((s) => s.selectProject);
 
   const selected = projects?.find((p) => p.id === selectedProjectId) ?? null;
@@ -46,24 +47,25 @@ export default function App() {
                 <div className="flex min-h-0 flex-1">
                   <ChangesPanel projectId={selected.id} />
                   <section className="min-w-0 flex-1">
-                    {selectedFilePath ? (
+                    {selectedDiff ? (
                       <Suspense
                         fallback={<EmptyState title="diff 뷰어 로딩 중…" />}
                       >
                         <DiffViewer
                           projectId={selected.id}
-                          path={selectedFilePath}
+                          target={selectedDiff}
                         />
                       </Suspense>
                     ) : (
                       <EmptyState
                         icon={MousePointerClick}
                         title="파일을 선택하세요"
-                        desc="왼쪽 변경 목록에서 파일을 클릭하면 side-by-side diff가 표시됩니다"
+                        desc="왼쪽 변경 목록 또는 아래 Log의 커밋에서 파일을 클릭하면 diff가 표시됩니다"
                       />
                     )}
                   </section>
                 </div>
+                <LogPanel projectId={selected.id} />
               </>
             ) : (
               <EmptyState

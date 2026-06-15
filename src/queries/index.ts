@@ -1,22 +1,43 @@
 import type { QueryClient } from "@tanstack/react-query";
 import {
   keepPreviousData,
+  useInfiniteQuery,
   useMutation,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
 import { useEffect } from "react";
 
+import type { DiffTarget } from "../lib/ipc";
 import { errorMessage, ipc } from "../lib/ipc";
 import type { SyncOp } from "../stores/ops";
 import { useOps } from "../stores/ops";
 import { useUi } from "../stores/ui";
 
+const LOG_PAGE_SIZE = 200;
+
+/** DiffTarget을 안정적인 쿼리 키 문자열로 직렬화 (mode별로 구분). */
+function diffTargetKey(t: DiffTarget): string {
+  switch (t.mode) {
+    case "worktree":
+      return `w:${t.path}`;
+    case "index":
+      return `i:${t.path}`;
+    case "commit":
+      return `c:${t.sha}:${t.path}`;
+  }
+}
+
 export const keys = {
   git: ["git-check"] as const,
   projects: ["projects"] as const,
   statuses: (projectIds: string[]) => ["statuses", projectIds] as const,
-  diff: (projectId: string, path: string) => ["diff", projectId, path] as const,
+  diff: (projectId: string, target: DiffTarget) =>
+    ["diff", projectId, diffTargetKey(target)] as const,
+  log: (projectId: string) => ["log", projectId] as const,
+  branches: (projectId: string) => ["branches", projectId] as const,
+  commitDetail: (projectId: string, sha: string) =>
+    ["commit-detail", projectId, sha] as const,
 };
 
 export function useGitCheck() {
@@ -57,11 +78,11 @@ export function useStatus(projectId: string | null) {
   };
 }
 
-export function useDiff(projectId: string | null, path: string | null) {
+export function useDiff(projectId: string | null, target: DiffTarget | null) {
   return useQuery({
-    queryKey: keys.diff(projectId ?? "none", path ?? "none"),
-    queryFn: () => ipc.getWorktreeDiff(projectId!, path!),
-    enabled: !!projectId && !!path,
+    queryKey: target ? keys.diff(projectId ?? "none", target) : ["diff", "none"],
+    queryFn: () => ipc.getDiff(projectId!, target!),
+    enabled: !!projectId && !!target,
     // 신선도는 watcher·변경 액션의 invalidate가 책임진다 — 캐시 히트 시 재스폰 없음
     staleTime: Infinity,
     // 파일 전환 시 이전 diff를 유지해 "불러오는 중" 깜빡임을 없앤다
@@ -79,17 +100,19 @@ export function usePrefetchDiffs(projectId: string) {
 
   useEffect(() => {
     if (!status || status.error) return;
+    // worktree 모드로 보는 파일만 프리페치한다 — staged 파일은 클릭 시 index 모드로
+    // 조회하고(HEAD↔인덱스), 순수 staged 파일의 worktree diff는 비어 있어 무의미하다.
     const paths = [
       ...status.conflicted,
       ...status.unstaged,
-      ...status.staged,
       ...status.untracked,
     ].map((c) => c.path);
 
     // 한 번도 읽지 않은 파일만 적재한다 — 캐시에 있는 파일은 무효화돼도
     // 클릭 시 기존 내용이 즉시 표시되고 백그라운드로 갱신되므로 프리페치가 불필요.
     const neverLoaded = (p: string) =>
-      qc.getQueryState(keys.diff(projectId, p))?.data === undefined;
+      qc.getQueryState(keys.diff(projectId, { mode: "worktree", path: p }))
+        ?.data === undefined;
 
     // 첫 진입(미적재 파일 존재)은 즉시, 이후 상태 갱신 폭풍 중엔 잠깐 미룬다
     const delay = paths.some(neverLoaded) ? 0 : 600;
@@ -108,7 +131,10 @@ export function usePrefetchDiffs(projectId: string) {
             );
             if (cancelled) return;
             for (const d of diffs) {
-              qc.setQueryData(keys.diff(projectId, d.path), d);
+              qc.setQueryData(
+                keys.diff(projectId, { mode: "worktree", path: d.path }),
+                d,
+              );
             }
           } catch {
             return; // 프리페치 실패는 무시 — 클릭 시 단건 조회가 오류를 표면화한다
@@ -122,6 +148,43 @@ export function usePrefetchDiffs(projectId: string) {
       window.clearTimeout(timer);
     };
   }, [status, projectId, qc]);
+}
+
+// ---- M3: 히스토리 ----
+
+/** 커밋 로그 — 200개 단위 무한 스크롤 (`--skip`, 설계 §12). enabled로 패널 펼침 시에만 조회. */
+export function useLog(projectId: string | null, enabled = true) {
+  return useInfiniteQuery({
+    queryKey: keys.log(projectId ?? "none"),
+    queryFn: ({ pageParam }) =>
+      ipc.getLog(projectId!, { limit: LOG_PAGE_SIZE, skip: pageParam }),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, allPages) =>
+      lastPage.length === LOG_PAGE_SIZE
+        ? allPages.reduce((n, p) => n + p.length, 0)
+        : undefined,
+    enabled: !!projectId && enabled,
+    staleTime: 30_000,
+  });
+}
+
+export function useBranches(projectId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: keys.branches(projectId ?? "none"),
+    queryFn: () => ipc.getBranches(projectId!),
+    enabled: !!projectId && enabled,
+    staleTime: 30_000,
+  });
+}
+
+/** 단일 커밋 상세 — 커밋 내용은 불변이라 무기한 캐시. */
+export function useCommitDetail(projectId: string | null, sha: string | null) {
+  return useQuery({
+    queryKey: keys.commitDetail(projectId ?? "none", sha ?? "none"),
+    queryFn: () => ipc.getCommitDetail(projectId!, sha!),
+    enabled: !!projectId && !!sha,
+    staleTime: Infinity,
+  });
 }
 
 export function useAddProject() {
@@ -145,18 +208,18 @@ export function useRemoveProject() {
   });
 }
 
-/** 수동 새로고침: 모든 프로젝트 상태 + 열린 diff 재조회 */
+/** 수동 새로고침: 모든 프로젝트 상태 + 열린 diff + 로그/브랜치 재조회 */
 export function useRefreshAll() {
   const qc = useQueryClient();
-  return () => {
-    void qc.invalidateQueries({ queryKey: ["statuses"] });
-    void qc.invalidateQueries({ queryKey: ["diff"] });
-  };
+  return () => invalidateRepoData(qc);
 }
 
 function invalidateRepoData(qc: QueryClient) {
   void qc.invalidateQueries({ queryKey: ["statuses"] });
   void qc.invalidateQueries({ queryKey: ["diff"] });
+  // 커밋/풀/페치 후 히스토리·브랜치도 갱신 (커밋 상세는 불변이라 제외)
+  void qc.invalidateQueries({ queryKey: ["log"] });
+  void qc.invalidateQueries({ queryKey: ["branches"] });
 }
 
 // ---- M2 변경 작업 뮤테이션 ----

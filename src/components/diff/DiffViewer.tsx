@@ -4,9 +4,21 @@ import { DiffEditor } from "@monaco-editor/react";
 import { FileQuestion, FileWarning } from "lucide-react";
 
 import { errorMessage } from "../../lib/ipc";
+import type { DiffTarget } from "../../lib/ipc";
 import { languageOf } from "../../lib/language-map";
 import { useDiff } from "../../queries";
 import { EmptyState } from "../common/EmptyState";
+
+function modeLabel(target: DiffTarget): string {
+  switch (target.mode) {
+    case "worktree":
+      return "인덱스 ↔ 워킹 트리";
+    case "index":
+      return "HEAD ↔ 인덱스 (staged)";
+    case "commit":
+      return `부모 ↔ 커밋 ${target.sha.slice(0, 7)}`;
+  }
+}
 
 const DIFF_OPTIONS = {
   readOnly: true,
@@ -26,17 +38,19 @@ const DIFF_OPTIONS = {
 
 export default function DiffViewer({
   projectId,
-  path,
+  target,
 }: {
   projectId: string;
-  path: string;
+  target: DiffTarget;
 }) {
   const {
     data: diff,
     isLoading,
     isPlaceholderData,
     error,
-  } = useDiff(projectId, path);
+  } = useDiff(projectId, target);
+
+  const path = target.path;
 
   const stateBadge = diff
     ? diff.oldContent === null && diff.newContent !== null
@@ -57,7 +71,7 @@ export default function DiffViewer({
         )}
         <div className="flex-1" />
         <span className="shrink-0 text-[11px] text-fg-dim">
-          인덱스 ↔ 워킹 트리
+          {modeLabel(target)}
         </span>
       </div>
 

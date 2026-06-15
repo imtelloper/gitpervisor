@@ -50,6 +50,8 @@ export function attachRepoEvents(qc: QueryClient) {
     timer = window.setTimeout(() => {
       void qc.invalidateQueries({ queryKey: ["statuses"] });
       void qc.invalidateQueries({ queryKey: ["diff"] });
+      void qc.invalidateQueries({ queryKey: ["log"] });
+      void qc.invalidateQueries({ queryKey: ["branches"] });
     }, 250);
   });
 
@@ -68,5 +70,7 @@ export function attachRepoEvents(qc: QueryClient) {
       else useUi.getState().pushToast("error", error ?? `${OP_LABEL[op]} 실패`);
     }
     void qc.invalidateQueries({ queryKey: ["statuses"] });
+    void qc.invalidateQueries({ queryKey: ["log"] });
+    void qc.invalidateQueries({ queryKey: ["branches"] });
   });
 }

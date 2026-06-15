@@ -12,3 +12,16 @@ export function splitPath(path: string): { dir: string; base: string } {
     ? { dir: "", base: path }
     : { dir: path.slice(0, i), base: path.slice(i + 1) };
 }
+
+/** 커밋 날짜(ISO): 24시간 내는 상대시간, 올해는 MM-DD, 그 외 YYYY-MM-DD. */
+export function shortDate(iso: string, now = Date.now()): string {
+  const d = new Date(iso);
+  const t = d.getTime();
+  if (Number.isNaN(t)) return "";
+  if (now - t < 86_400_000) return relativeTime(t, now);
+  const mo = String(d.getMonth() + 1).padStart(2, "0");
+  const da = String(d.getDate()).padStart(2, "0");
+  return d.getFullYear() === new Date(now).getFullYear()
+    ? `${mo}-${da}`
+    : `${d.getFullYear()}-${mo}-${da}`;
+}

@@ -1,5 +1,7 @@
 import { create } from "zustand";
 
+import type { DiffTarget } from "../lib/ipc";
+
 export interface Toast {
   id: number;
   kind: "error" | "info" | "success";
@@ -16,11 +18,18 @@ export interface ConfirmRequest {
 
 interface UiState {
   selectedProjectId: string | null;
-  selectedFilePath: string | null;
+  /** 중앙 뷰어가 표시할 diff 대상 — Changes(worktree/index) 또는 Log(commit)에서 설정 */
+  selectedDiff: DiffTarget | null;
+  /** 하단 Log 패널 펼침 여부 */
+  logOpen: boolean;
+  /** Log 패널에서 선택된 커밋 (상세 패널 구동) */
+  selectedCommitSha: string | null;
   toasts: Toast[];
   confirm: ConfirmRequest | null;
   selectProject: (id: string | null) => void;
-  selectFile: (path: string | null) => void;
+  selectDiff: (target: DiffTarget | null) => void;
+  toggleLog: () => void;
+  selectCommit: (sha: string | null) => void;
   pushToast: (kind: Toast["kind"], message: string) => void;
   dismissToast: (id: number) => void;
   askConfirm: (req: ConfirmRequest) => void;
@@ -31,11 +40,21 @@ let toastSeq = 0;
 
 export const useUi = create<UiState>((set) => ({
   selectedProjectId: null,
-  selectedFilePath: null,
+  selectedDiff: null,
+  logOpen: false,
+  selectedCommitSha: null,
   toasts: [],
   confirm: null,
-  selectProject: (id) => set({ selectedProjectId: id, selectedFilePath: null }),
-  selectFile: (path) => set({ selectedFilePath: path }),
+  // 프로젝트 전환 시 diff·커밋 선택은 초기화하되 Log 패널 펼침 상태는 유지
+  selectProject: (id) =>
+    set({
+      selectedProjectId: id,
+      selectedDiff: null,
+      selectedCommitSha: null,
+    }),
+  selectDiff: (target) => set({ selectedDiff: target }),
+  toggleLog: () => set((s) => ({ logOpen: !s.logOpen })),
+  selectCommit: (sha) => set({ selectedCommitSha: sha }),
   pushToast: (kind, message) => {
     const id = ++toastSeq;
     set((s) => ({ toasts: [...s.toasts, { id, kind, message }] }));

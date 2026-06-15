@@ -30,6 +30,11 @@ pub fn git_path() -> Option<&'static Path> {
     GIT_PATH.get_or_init(find_git).as_deref()
 }
 
+/// 커밋 해시 인자 검증 — hex만 허용해 `-`로 시작하는 플래그 인젝션·잘못된 rev를 차단한다.
+pub fn is_valid_sha(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 #[cfg(windows)]
 fn find_git() -> Option<PathBuf> {
     use std::os::windows::process::CommandExt;
