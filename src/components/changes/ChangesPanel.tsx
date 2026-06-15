@@ -3,7 +3,9 @@ import { useEffect, useState } from "react";
 
 import type { DiffTarget, FileChange } from "../../lib/ipc";
 import { KIND_BADGE } from "../../lib/change-kind";
+import { fileIcon } from "../../lib/file-icon";
 import { splitPath } from "../../lib/format";
+import { usePanelWidth } from "../../lib/use-panel-width";
 import {
   useDiscardFiles,
   usePrefetchDiffs,
@@ -13,6 +15,7 @@ import {
   useUnstageFiles,
 } from "../../queries";
 import { useUi } from "../../stores/ui";
+import { ResizeHandle } from "../common/ResizeHandle";
 import { CommitForm } from "./CommitForm";
 
 interface RowActions {
@@ -32,7 +35,8 @@ function ChangeRow({
   actions: RowActions;
 }) {
   const { dir, base } = splitPath(change.path);
-  const badge = KIND_BADGE[change.kind];
+  const kind = KIND_BADGE[change.kind];
+  const { Icon, color } = fileIcon(change.path);
   const stageable = change.kind !== "conflicted";
   const discardable = !change.staged && change.kind !== "conflicted";
 
@@ -40,7 +44,7 @@ function ChangeRow({
     <div
       onClick={onSelect}
       title={change.origPath ? `${change.origPath} → ${change.path}` : change.path}
-      className={`group flex cursor-pointer items-center gap-2 px-3 py-1 ${
+      className={`group relative flex cursor-pointer items-center gap-2 overflow-hidden px-3 py-1 ${
         selected ? "bg-selection" : "hover:bg-raised"
       }`}
     >
@@ -56,16 +60,19 @@ function ChangeRow({
       ) : (
         <span className="w-[13px] shrink-0" />
       )}
+      <Icon size={15} color={color} className="shrink-0" />
       <span
-        className={`w-3 shrink-0 text-center font-mono text-xs ${badge.className}`}
+        className={`shrink-0 whitespace-nowrap ${kind.className} ${
+          change.kind === "deleted" ? "line-through" : ""
+        }`}
       >
-        {badge.letter}
+        {base}
       </span>
-      <span className="truncate">{base}</span>
       {dir && (
-        <span className="min-w-0 truncate text-xs text-fg-dim">{dir}</span>
+        <span className="shrink-0 whitespace-nowrap text-xs text-fg-dim">
+          {dir}
+        </span>
       )}
-      <span className="flex-1" />
       {discardable && (
         <button
           title={change.kind === "untracked" ? "파일 삭제" : "변경 되돌리기"}
@@ -73,7 +80,7 @@ function ChangeRow({
             e.stopPropagation();
             actions.onDiscard(change);
           }}
-          className="shrink-0 rounded p-0.5 text-fg-dim opacity-0 hover:bg-edge hover:text-danger group-hover:opacity-100"
+          className="absolute right-1 top-1/2 -translate-y-1/2 rounded bg-raised p-0.5 text-fg-dim opacity-0 hover:bg-edge hover:text-danger group-hover:opacity-100"
         >
           <Undo2 size={13} />
         </button>
@@ -145,6 +152,7 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
   const discard = useDiscardFiles(projectId);
   const { data: settings } = useSettings();
   usePrefetchDiffs(projectId); // 클릭 전에 diff를 미리 적재 (§12)
+  const { width, startResize } = usePanelWidth("gp:changes-width", 288, 220, 680);
 
   const total = status
     ? status.conflicted.length +
@@ -197,7 +205,10 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
   };
 
   return (
-    <div className="flex h-full w-72 shrink-0 flex-col border-r border-edge bg-panel">
+    <div
+      style={{ width }}
+      className="relative flex h-full shrink-0 flex-col border-r border-edge bg-panel"
+    >
       <div className="flex items-center gap-2 border-b border-edge px-3 py-2">
         <span className="font-semibold">Changes</span>
         <span className="text-xs text-fg-dim">
@@ -254,6 +265,7 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
       </div>
 
       <CommitForm projectId={projectId} />
+      <ResizeHandle onMouseDown={startResize} />
     </div>
   );
 }

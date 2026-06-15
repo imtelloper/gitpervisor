@@ -4,8 +4,10 @@ import { useEffect, useState } from "react";
 
 import type { OpenTarget, Project } from "../../lib/ipc";
 import { errorMessage, ipc } from "../../lib/ipc";
+import { usePanelWidth } from "../../lib/use-panel-width";
 import { useAddProject, useProjects, useRemoveProject } from "../../queries";
 import { useUi } from "../../stores/ui";
+import { ResizeHandle } from "../common/ResizeHandle";
 import { ProjectItem } from "./ProjectItem";
 
 interface MenuState {
@@ -44,6 +46,7 @@ export function ProjectList() {
   const removeProject = useRemoveProject();
   const selectedProjectId = useUi((s) => s.selectedProjectId);
   const selectProject = useUi((s) => s.selectProject);
+  const { width, startResize } = usePanelWidth("gp:projects-width", 240, 170, 440);
 
   const [menu, setMenu] = useState<MenuState | null>(null);
 
@@ -85,7 +88,10 @@ export function ProjectList() {
   }
 
   return (
-    <aside className="flex h-full w-60 shrink-0 flex-col border-r border-edge bg-panel">
+    <aside
+      style={{ width }}
+      className="relative flex h-full shrink-0 flex-col border-r border-edge bg-panel"
+    >
       <div className="px-3 pb-1 pt-3 text-[11px] font-semibold tracking-widest text-fg-dim">
         PROJECTS
       </div>
@@ -153,6 +159,8 @@ export function ProjectList() {
           />
         </div>
       )}
+
+      <ResizeHandle onMouseDown={startResize} />
     </aside>
   );
 }
