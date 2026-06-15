@@ -5,6 +5,7 @@ import type { ChangeKind, FileChange } from "../../lib/ipc";
 import { splitPath } from "../../lib/format";
 import {
   useDiscardFiles,
+  usePrefetchDiffs,
   useStageFiles,
   useStatus,
   useUnstageFiles,
@@ -139,6 +140,7 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
   const stage = useStageFiles(projectId);
   const unstage = useUnstageFiles(projectId);
   const discard = useDiscardFiles(projectId);
+  usePrefetchDiffs(projectId); // 클릭 전에 diff를 미리 적재 (§12)
 
   const total = status
     ? status.conflicted.length +

@@ -1,5 +1,11 @@
 import type { QueryClient } from "@tanstack/react-query";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+import { useEffect } from "react";
 
 import { errorMessage, ipc } from "../lib/ipc";
 import type { SyncOp } from "../stores/ops";
@@ -56,7 +62,66 @@ export function useDiff(projectId: string | null, path: string | null) {
     queryKey: keys.diff(projectId ?? "none", path ?? "none"),
     queryFn: () => ipc.getWorktreeDiff(projectId!, path!),
     enabled: !!projectId && !!path,
+    // 신선도는 watcher·변경 액션의 invalidate가 책임진다 — 캐시 히트 시 재스폰 없음
+    staleTime: Infinity,
+    // 파일 전환 시 이전 diff를 유지해 "불러오는 중" 깜빡임을 없앤다
+    placeholderData: keepPreviousData,
   });
+}
+
+/**
+ * diff 프리페치: 상태가 갱신될 때 변경 파일들의 diff를 배치로 미리 캐시에 적재한다.
+ * 클릭 시점에는 캐시 히트로 즉시 표시 — "클릭 후 git spawn 대기" 구조를 제거 (§12).
+ */
+export function usePrefetchDiffs(projectId: string) {
+  const qc = useQueryClient();
+  const { data: status } = useStatus(projectId);
+
+  useEffect(() => {
+    if (!status || status.error) return;
+    const paths = [
+      ...status.conflicted,
+      ...status.unstaged,
+      ...status.staged,
+      ...status.untracked,
+    ].map((c) => c.path);
+
+    // 한 번도 읽지 않은 파일만 적재한다 — 캐시에 있는 파일은 무효화돼도
+    // 클릭 시 기존 내용이 즉시 표시되고 백그라운드로 갱신되므로 프리페치가 불필요.
+    const neverLoaded = (p: string) =>
+      qc.getQueryState(keys.diff(projectId, p))?.data === undefined;
+
+    // 첫 진입(미적재 파일 존재)은 즉시, 이후 상태 갱신 폭풍 중엔 잠깐 미룬다
+    const delay = paths.some(neverLoaded) ? 0 : 600;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      // 작은 청크를 순차 실행 — IPC 슬롯을 최대 1개만 점유해 클릭(interactive)에 항상 양보
+      const CHUNK = 8;
+      void (async () => {
+        const missing = paths.slice(0, 30).filter(neverLoaded);
+        for (let i = 0; i < missing.length; i += CHUNK) {
+          if (cancelled) return;
+          try {
+            const diffs = await ipc.getWorktreeDiffs(
+              projectId,
+              missing.slice(i, i + CHUNK),
+            );
+            if (cancelled) return;
+            for (const d of diffs) {
+              qc.setQueryData(keys.diff(projectId, d.path), d);
+            }
+          } catch {
+            return; // 프리페치 실패는 무시 — 클릭 시 단건 조회가 오류를 표면화한다
+          }
+        }
+      })();
+    }, delay);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [status, projectId, qc]);
 }
 
 export function useAddProject() {

@@ -11,6 +11,9 @@ use crate::state::AppState;
 /// 한쪽이 이 크기를 넘으면 내용 전송을 생략한다 (뷰어 멈춤 방지).
 const MAX_DIFF_BYTES: usize = 1_572_864; // 1.5MB
 
+/// 한 번의 배치 프리페치에서 읽는 최대 파일 수 — 거대 변경 목록의 spawn 폭주 방지
+const MAX_BATCH_FILES: usize = 30;
+
 #[tauri::command]
 pub async fn get_file_diff(
     state: State<'_, AppState>,
@@ -25,6 +28,38 @@ pub async fn get_file_diff(
             "index/commit diff는 M3에서 지원 예정입니다",
         )),
     }
+}
+
+/// diff 프리페치용 배치 — 단일 invoke로 여러 파일을 백엔드 병렬 조회 (§10 패턴).
+/// 실패한 항목은 조용히 건너뛴다 — 클릭 시 단건 경로가 오류를 표면화한다.
+#[tauri::command]
+pub async fn get_file_diffs(
+    state: State<'_, AppState>,
+    project_id: String,
+    paths: Vec<String>,
+) -> Result<Vec<FileDiff>, IpcError> {
+    let repo = project_path(&state, &project_id)?;
+
+    let futures = paths.into_iter().take(MAX_BATCH_FILES).map(|path| {
+        let repo = repo.clone();
+        async move { worktree_diff(&repo, path).await.ok() }
+    });
+    let results = futures::future::join_all(futures).await;
+
+    // 단일 IPC 응답 크기 예산 — 초과하는 큰 파일은 제외하고 클릭 시 단건 조회에 맡긴다
+    const BATCH_BYTE_BUDGET: usize = 4 * 1024 * 1024;
+    let mut budget = BATCH_BYTE_BUDGET;
+    let mut out = Vec::new();
+    for diff in results.into_iter().flatten() {
+        let size = diff.old_content.as_ref().map_or(0, String::len)
+            + diff.new_content.as_ref().map_or(0, String::len);
+        if size > budget {
+            continue;
+        }
+        budget -= size;
+        out.push(diff);
+    }
+    Ok(out)
 }
 
 /// old = 인덱스 버전(`git show :<path>`, 없으면 None) / new = 워크트리 파일.

@@ -310,6 +310,7 @@ interface Settings {
 | `get_branches` | `id` | `Branches` | `for-each-ref` 기반 |
 | `get_commit_detail` | `id, sha` | `CommitDetail` | `diff-tree -r --name-status -z` |
 | `get_file_diff` | `id, target: DiffTarget` | `FileDiff` | 내용 출처: `show HEAD:p` / `show :p` / `show SHA:p` / 워크트리 fs 읽기 |
+| `get_file_diffs` | `id, paths[]` | `FileDiff[]` | **프리페치 배치** (≤30개, 백엔드 병렬, 실패 항목 제외) — 상태 갱신 후 800ms 디바운스로 미적재·무효화 diff를 미리 캐시에 적재해 클릭 시 즉시 표시 |
 | `stage_files` | `id, paths[]` | – | `add --` |
 | `unstage_files` | `id, paths[]` | – | `restore --staged --` |
 | `discard_files` | `id, tracked[], untracked[]` | – | tracked: `restore --worktree --`(인덱스 소스 — staged 보존, autocrlf 안전) / untracked: `clean -fd --`. **프론트에서 확인 다이얼로그 필수**. ⚠ `--source=HEAD`+`--worktree` 단독 조합은 autocrlf=true에서 영구 modified 잔류 (M2 실측) |
@@ -470,7 +471,8 @@ sequenceDiagram
 | 변경 파일 수백 개 | 리스트 가상화 |
 | 로그 | 200개 단위 무한 스크롤 (`--skip`) |
 | diff | 1.5MB/사이드 캡, Monaco 모델 재사용·dispose 관리 |
-| Monaco 번들 | 동적 import로 lazy-load — 첫 화면(사이드바)은 즉시 표시 |
+| diff 체감 속도 | **클릭 전 적재 구조**: ① 미적재 파일은 즉시, 적재 후 상태 폭풍 중엔 600ms 디바운스로 배치 프리페치(`get_file_diffs`, ≤30개·응답 4MB 예산) → 클릭 = 캐시 히트 ② 캐시된 파일은 무효화돼도 기존 내용 즉시 표시 + 백그라운드 갱신(재프리페치 불필요) ③ `staleTime: Infinity` + keepPreviousData — 재스폰·로딩 화면 제거 ④ 더 빠르게 필요해지면(M3 커밋 diff) `git cat-file --batch` 상주 프로세스로 spawn 자체 제거 검토 |
+| Monaco 번들 | 동적 import lazy-load + **requestIdleCallback 선로딩** — 첫 화면은 즉시, 첫 파일 클릭 때는 이미 로드 완료 |
 | watcher 이벤트 폭풍 (빌드 산출물 등) | 디바운스 + 결과적으로 status 1회만 실행되므로 자연 흡수 |
 
 ---

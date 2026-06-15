@@ -103,13 +103,28 @@ const MAX_ATTEMPTS = 3;
 let active = 0;
 const waiters: Array<() => void> = [];
 
+interface CallOpts {
+  timeoutMs?: number;
+  attempts?: number;
+  /** background는 큐 맨 뒤에 선다 — 프리페치가 사용자 클릭을 막지 않게 (§12) */
+  lane?: "interactive" | "background";
+}
+
 async function call<T>(
   cmd: string,
   args?: Record<string, unknown>,
-  timeoutMs = INVOKE_TIMEOUT_MS,
+  opts: CallOpts = {},
 ): Promise<T> {
+  const {
+    timeoutMs = INVOKE_TIMEOUT_MS,
+    attempts = MAX_ATTEMPTS,
+    lane = "interactive",
+  } = opts;
+
   if (active >= MAX_CONCURRENT) {
-    await new Promise<void>((r) => waiters.push(r));
+    await new Promise<void>((r) =>
+      lane === "background" ? waiters.push(r) : waiters.unshift(r),
+    );
   }
   active++;
   try {
@@ -122,7 +137,7 @@ async function call<T>(
           ),
         ]);
       } catch (e) {
-        if (!(e instanceof IpcTimeoutError) || attempt >= MAX_ATTEMPTS) throw e;
+        if (!(e instanceof IpcTimeoutError) || attempt >= attempts) throw e;
       }
     }
   } finally {
@@ -165,12 +180,19 @@ export const ipc = {
   removeProject: (id: string) => call<void>("remove_project", { id }),
   // 배치: 레포 수 × 콜드 git spawn을 고려해 타임아웃을 넉넉히 잡는다
   getStatuses: (projectIds: string[]) =>
-    call<RepoStatus[]>("get_statuses", { projectIds }, 20000),
+    call<RepoStatus[]>("get_statuses", { projectIds }, { timeoutMs: 20000 }),
   getWorktreeDiff: (projectId: string, path: string) =>
     call<FileDiff>("get_file_diff", {
       projectId,
       target: { mode: "worktree", path },
     }),
+  // 프리페치 배치 — background 레인(클릭에 양보), 재시도 없음(선택적 작업), 짧은 타임아웃
+  getWorktreeDiffs: (projectId: string, paths: string[]) =>
+    call<FileDiff[]>(
+      "get_file_diffs",
+      { projectId, paths },
+      { timeoutMs: 12000, attempts: 1, lane: "background" },
+    ),
 
   // ---- 변경 커맨드 (재시도 없음) ----
   stageFiles: (projectId: string, paths: string[]) =>

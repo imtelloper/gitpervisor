@@ -29,6 +29,7 @@ pub fn run() {
             commands::remove_project,
             commands::get_statuses,
             commands::get_file_diff,
+            commands::get_file_diffs,
             commands::stage_files,
             commands::unstage_files,
             commands::discard_files,

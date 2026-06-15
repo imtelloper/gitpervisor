@@ -31,7 +31,12 @@ export default function DiffViewer({
   projectId: string;
   path: string;
 }) {
-  const { data: diff, isLoading, error } = useDiff(projectId, path);
+  const {
+    data: diff,
+    isLoading,
+    isPlaceholderData,
+    error,
+  } = useDiff(projectId, path);
 
   const stateBadge = diff
     ? diff.oldContent === null && diff.newContent !== null
@@ -56,7 +61,9 @@ export default function DiffViewer({
         </span>
       </div>
 
-      <div className="min-h-0 flex-1">
+      <div
+        className={`min-h-0 flex-1 ${isPlaceholderData ? "opacity-50 transition-opacity" : ""}`}
+      >
         {isLoading ? (
           <EmptyState title="diff 불러오는 중…" />
         ) : error ? (

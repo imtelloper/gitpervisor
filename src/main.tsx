@@ -18,6 +18,14 @@ const queryClient = new QueryClient({
 // watcher·작업 이벤트 구독 (모듈 스코프 — StrictMode 이중 마운트와 무관하게 1회)
 attachRepoEvents(queryClient);
 
+// Monaco(diff 뷰어) 청크를 유휴 시간에 선로딩 — 첫 파일 클릭의 로드 비용 제거
+const preloadDiffViewer = () => void import("./components/diff/DiffViewer");
+if ("requestIdleCallback" in window) {
+  window.requestIdleCallback(preloadDiffViewer, { timeout: 3000 });
+} else {
+  setTimeout(preloadDiffViewer, 1500);
+}
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
