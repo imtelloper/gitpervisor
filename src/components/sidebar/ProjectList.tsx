@@ -1,5 +1,5 @@
 import { open } from "@tauri-apps/plugin-dialog";
-import { FolderOpen, Plus, Terminal, Trash2 } from "lucide-react";
+import { Copy, FolderOpen, Plus, Terminal, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import type { OpenTarget, Project } from "../../lib/ipc";
@@ -87,6 +87,16 @@ export function ProjectList() {
     setMenu(null);
   }
 
+  function handleCopyPath(project: Project) {
+    void navigator.clipboard
+      .writeText(project.path)
+      .then(() =>
+        useUi.getState().pushToast("success", "프로젝트 경로를 복사했습니다"),
+      )
+      .catch(() => useUi.getState().pushToast("error", "경로 복사에 실패했습니다"));
+    setMenu(null);
+  }
+
   return (
     <aside
       style={{ width }}
@@ -146,6 +156,11 @@ export function ProjectList() {
             icon={Terminal}
             label="터미널에서 열기"
             onClick={() => handleOpenIn(menu.project, "terminal")}
+          />
+          <MenuItem
+            icon={Copy}
+            label="프로젝트 경로 복사"
+            onClick={() => handleCopyPath(menu.project)}
           />
           <div className="my-1 border-t border-edge" />
           <MenuItem

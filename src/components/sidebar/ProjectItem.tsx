@@ -47,22 +47,20 @@ export function ProjectItem({
           : "border-transparent hover:bg-raised"
       }`}
     >
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 overflow-hidden">
         <StatusDot state={dot} />
-        <span className="min-w-0 flex-1 truncate font-medium">
-          {project.name}
-        </span>
-        <button
-          title="프로젝트 제거 (레포는 삭제되지 않음)"
-          onClick={(e) => {
-            e.stopPropagation();
-            onRemove();
-          }}
-          className="shrink-0 rounded p-0.5 text-fg-dim opacity-0 hover:bg-edge hover:text-fg group-hover:opacity-100"
-        >
-          <X size={13} />
-        </button>
+        <span className="whitespace-nowrap font-medium">{project.name}</span>
       </div>
+      <button
+        title="프로젝트 제거 (레포는 삭제되지 않음)"
+        onClick={(e) => {
+          e.stopPropagation();
+          onRemove();
+        }}
+        className="absolute right-1 top-1.5 rounded bg-raised p-0.5 text-fg-dim opacity-0 hover:bg-edge hover:text-fg group-hover:opacity-100"
+      >
+        <X size={13} />
+      </button>
 
       <div className="mt-1 flex items-center gap-2 pl-4 text-xs text-fg-muted">
         {branchLabel && (
