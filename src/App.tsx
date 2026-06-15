@@ -12,7 +12,7 @@ import { SettingsDialog } from "./components/settings/SettingsDialog";
 import { ProjectList } from "./components/sidebar/ProjectList";
 import { StatusBar } from "./components/StatusBar";
 import { Toolbar } from "./components/toolbar/Toolbar";
-import { useAutoFetch, useProjects } from "./queries";
+import { useAutoFetch, useProjects, useSettings } from "./queries";
 import { useUi } from "./stores/ui";
 
 // Monaco 번들은 무겁다 — 파일을 처음 열 때만 로드한다
@@ -24,7 +24,13 @@ export default function App() {
   const selectedDiff = useUi((s) => s.selectedDiff);
   const selectProject = useUi((s) => s.selectProject);
 
+  const { data: settings } = useSettings();
   useAutoFetch(); // 옵트인 자동 fetch (기본 OFF)
+
+  // 선택 테마를 <html data-theme>로 적용 — CSS 변수 오버라이드가 전체 팔레트를 바꾼다
+  useEffect(() => {
+    document.documentElement.dataset.theme = settings?.theme ?? "darcula";
+  }, [settings?.theme]);
 
   const selected = projects?.find((p) => p.id === selectedProjectId) ?? null;
 

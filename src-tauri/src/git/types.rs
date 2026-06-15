@@ -171,7 +171,6 @@ pub struct CommitDetail {
 }
 
 // ---- M4: 설정 ----
-// 테마(dark/light)는 후속 작업으로 보류 — 현재는 다크 단일 (반쪽 토글을 만들지 않는다).
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -182,6 +181,8 @@ pub struct Settings {
     pub auto_fetch_minutes: u32,
     pub diff_font_size: u32,
     pub confirm_discard: bool,
+    /// UI 테마 이름 ("darcula" | "monokai"). 검증·렌더는 프론트가 담당.
+    pub theme: String,
 }
 
 impl Default for Settings {
@@ -191,6 +192,7 @@ impl Default for Settings {
             auto_fetch_minutes: 0,
             diff_font_size: 13,
             confirm_discard: true,
+            theme: "darcula".to_string(),
         }
     }
 }

@@ -30,7 +30,7 @@ export function GitGate({ children }: { children: ReactNode }) {
         </div>
         <button
           onClick={() => refetch()}
-          className="mt-2 flex items-center gap-2 rounded-md bg-accent px-4 py-1.5 text-[13px] font-medium text-white hover:bg-accent-hover"
+          className="mt-2 flex items-center gap-2 rounded-md bg-accent px-4 py-1.5 text-[13px] font-medium text-on-accent hover:bg-accent-hover"
         >
           <RefreshCw size={13} className={isFetching ? "animate-spin" : ""} />
           다시 확인

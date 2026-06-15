@@ -9,6 +9,8 @@
   --color-edge: #393b40;
   --color-accent: #3574f0;
   --color-accent-hover: #4682f4;
+  /* accent 표면 위 텍스트 색 — 테마마다 accent 명도가 달라 토큰화한다 */
+  --color-on-accent: #ffffff;
 
   --color-fg: #dfe1e5;
   --color-fg-muted: #9da0a8;
@@ -28,6 +30,34 @@
   --font-sans: "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo", system-ui,
     sans-serif;
   --font-mono: "Cascadia Code", Consolas, "D2Coding", ui-monospace, monospace;
+}
+
+/*
+ * 테마 오버라이드 — <html data-theme="…">로 전환. 기본(darcula)은 위 @theme 값.
+ * 유틸리티(bg-base 등)는 var(--color-*)를 참조하므로 변수만 덮어쓰면 전체가 바뀐다.
+ */
+:root[data-theme="monokai"] {
+  --color-base: #272822;
+  --color-panel: #2b2c25;
+  --color-raised: #3e3d32;
+  --color-selection: #49483e;
+  --color-edge: #3b3a30;
+  --color-accent: #66d9ef;
+  --color-accent-hover: #82e4f3;
+  --color-on-accent: #1d1e19; /* 시안 accent 위엔 어두운 텍스트 */
+
+  --color-fg: #f8f8f2;
+  --color-fg-muted: #c9c7be;
+  --color-fg-dim: #908a78;
+
+  --color-ok: #a6e22e;
+  --color-warn: #e6db74;
+  --color-danger: #f92672;
+
+  --color-mod: #66d9ef;
+  --color-add: #a6e22e;
+  --color-del: #908a78;
+  --color-untrk: #fd971f;
 }
 
 html,

@@ -71,7 +71,7 @@ export function CommitForm({ projectId }: { projectId: string }) {
         <button
           disabled={!canCommit}
           onClick={() => doCommit(true)}
-          className="flex-1 rounded bg-accent px-3 py-1.5 text-[13px] font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
+          className="flex-1 rounded bg-accent px-3 py-1.5 text-[13px] font-medium text-on-accent hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
         >
           Commit and Push
         </button>

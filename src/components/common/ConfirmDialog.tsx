@@ -33,10 +33,10 @@ export function ConfirmHost() {
               confirm.onConfirm();
               closeConfirm();
             }}
-            className={`rounded px-3 py-1.5 text-[13px] font-medium text-white ${
+            className={`rounded px-3 py-1.5 text-[13px] font-medium ${
               confirm.danger
-                ? "bg-danger hover:bg-danger/80"
-                : "bg-accent hover:bg-accent-hover"
+                ? "bg-danger text-white hover:bg-danger/80"
+                : "bg-accent text-on-accent hover:bg-accent-hover"
             }`}
           >
             {confirm.confirmLabel ?? "확인"}

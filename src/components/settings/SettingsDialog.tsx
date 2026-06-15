@@ -82,6 +82,24 @@ export function SettingsDialog() {
         </div>
 
         <div className="mt-4 space-y-4 text-[13px]">
+          <Field label="테마">
+            <div className="flex gap-2">
+              {(["darcula", "monokai"] as const).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => update("theme", t)}
+                  className={`flex-1 rounded border px-3 py-1.5 ${
+                    form.theme === t
+                      ? "border-accent bg-accent/15 text-fg"
+                      : "border-edge text-fg-muted hover:bg-raised"
+                  }`}
+                >
+                  {t === "darcula" ? "다크 (Darcula)" : "Monokai"}
+                </button>
+              ))}
+            </div>
+          </Field>
+
           <Field label="Diff 폰트 크기" hint="10–24 px">
             <input
               type="number"
@@ -149,7 +167,7 @@ export function SettingsDialog() {
           <button
             onClick={handleSave}
             disabled={save.isPending}
-            className="rounded bg-accent px-3 py-1.5 font-medium text-white hover:bg-accent-hover disabled:opacity-50"
+            className="rounded bg-accent px-3 py-1.5 font-medium text-on-accent hover:bg-accent-hover disabled:opacity-50"
           >
             {save.isPending ? "저장 중…" : "저장"}
           </button>

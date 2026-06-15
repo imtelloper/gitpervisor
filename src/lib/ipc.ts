@@ -107,12 +107,15 @@ export interface LogPage {
   allRefs?: boolean;
 }
 
-// ---- M4: 설정 (테마는 후속 보류) ----
+// ---- M4: 설정 ----
+export type ThemeName = "darcula" | "monokai";
+
 export interface Settings {
   gitPath: string | null; // null/빈값 = PATH 자동 탐색
   autoFetchMinutes: number; // 0 = 끔
   diffFontSize: number;
   confirmDiscard: boolean;
+  theme: ThemeName;
 }
 
 export type OpenTarget = "explorer" | "terminal";

@@ -1,14 +1,25 @@
-import "./monaco-setup";
+import { monaco } from "./monaco-setup";
 
 import { DiffEditor } from "@monaco-editor/react";
-import { FileQuestion, FileWarning } from "lucide-react";
-import { useMemo } from "react";
+import type { DiffOnMount } from "@monaco-editor/react";
+import {
+  FileQuestion,
+  FileWarning,
+  FoldVertical,
+  UnfoldVertical,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { errorMessage } from "../../lib/ipc";
 import type { DiffTarget } from "../../lib/ipc";
 import { languageOf } from "../../lib/language-map";
 import { useDiff, useSettings } from "../../queries";
+import { useUi } from "../../stores/ui";
 import { EmptyState } from "../common/EmptyState";
+
+function monacoThemeOf(theme: string | undefined): string {
+  return theme === "monokai" ? "gitpervisor-monokai" : "gitpervisor-dark";
+}
 
 function modeLabel(target: DiffTarget): string {
   switch (target.mode) {
@@ -44,20 +55,59 @@ export default function DiffViewer({
   projectId: string;
   target: DiffTarget;
 }) {
-  const {
-    data: diff,
-    isLoading,
-    isPlaceholderData,
-    error,
-  } = useDiff(projectId, target);
+  const { data: diff, isLoading, error } = useDiff(projectId, target);
   const { data: settings } = useSettings();
+  const monacoTheme = monacoThemeOf(settings?.theme);
+  const collapseUnchanged = useUi((s) => s.diffCollapseUnchanged);
+  const toggleDiffCollapse = useUi((s) => s.toggleDiffCollapse);
 
   const options = useMemo(
-    () => ({ ...DIFF_OPTIONS, fontSize: settings?.diffFontSize ?? 13 }),
-    [settings?.diffFontSize],
+    () => ({
+      ...DIFF_OPTIONS,
+      fontSize: settings?.diffFontSize ?? 13,
+      hideUnchangedRegions: { enabled: collapseUnchanged },
+    }),
+    [settings?.diffFontSize, collapseUnchanged],
   );
 
+  // Monaco 테마는 전역 — 열려 있는 에디터도 즉시 바뀌도록 명시적으로 적용한다.
+  useEffect(() => {
+    monaco.editor.setTheme(monacoTheme);
+  }, [monacoTheme]);
+
+  // onMount 콜백(1회 등록)에서 최신 토글 값을 참조하기 위한 ref
+  const collapseRef = useRef(collapseUnchanged);
+  collapseRef.current = collapseUnchanged;
+
   const path = target.path;
+  const editorKey =
+    target.mode === "commit"
+      ? `commit:${target.sha}:${path}`
+      : `${target.mode}:${path}`;
+
+  // 파일 전환 시 "펼쳐진 채 잠깐 보였다가 접히는" 깜빡임을 없앤다:
+  // 대상이 바뀌면 에디터를 숨기고(opacity-0), 접기가 적용된 뒤 다시 보여준다.
+  const [pendingCollapse, setPendingCollapse] = useState(false);
+  useEffect(() => {
+    setPendingCollapse(true);
+    // 안전 폴백 — onDidUpdateDiff가 오지 않는 경우에도 일정 시간 뒤 노출
+    const t = window.setTimeout(() => setPendingCollapse(false), 500);
+    return () => window.clearTimeout(t);
+  }, [editorKey]);
+
+  // Monaco 버그 우회: 모델만 교체되는 파일 전환에서는 hideUnchangedRegions 접기가
+  // 재계산되지 않아 전체가 펼쳐진 채 나온다(옵션 값이 그대로라 변화 없음으로 간주).
+  // 같은 값 재설정은 no-op이므로, diff 계산 완료(onDidUpdateDiff) 시점에 반대값으로
+  // 한 번 뒤집었다 되돌려 강제로 재계산시킨다(동기 호출이라 그 자체로 깜빡임 없음).
+  // 접기가 적용된 직후 에디터를 다시 노출해 펼쳐진 중간 프레임이 보이지 않게 한다.
+  const handleMount: DiffOnMount = useCallback((editor) => {
+    editor.onDidUpdateDiff(() => {
+      const want = collapseRef.current;
+      editor.updateOptions({ hideUnchangedRegions: { enabled: !want } });
+      editor.updateOptions({ hideUnchangedRegions: { enabled: want } });
+      requestAnimationFrame(() => setPendingCollapse(false));
+    });
+  }, []);
 
   const stateBadge = diff
     ? diff.oldContent === null && diff.newContent !== null
@@ -77,14 +127,27 @@ export default function DiffViewer({
           </span>
         )}
         <div className="flex-1" />
+        <button
+          onClick={toggleDiffCollapse}
+          title={
+            collapseUnchanged
+              ? "전체 펼치기 (변경 없는 영역까지 표시)"
+              : "변경 없는 영역 접기"
+          }
+          className="shrink-0 rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
+        >
+          {collapseUnchanged ? (
+            <UnfoldVertical size={14} />
+          ) : (
+            <FoldVertical size={14} />
+          )}
+        </button>
         <span className="shrink-0 text-[11px] text-fg-dim">
           {modeLabel(target)}
         </span>
       </div>
 
-      <div
-        className={`min-h-0 flex-1 ${isPlaceholderData ? "opacity-50 transition-opacity" : ""}`}
-      >
+      <div className="min-h-0 flex-1">
         {isLoading ? (
           <EmptyState title="diff 불러오는 중…" />
         ) : error ? (
@@ -106,16 +169,21 @@ export default function DiffViewer({
             desc="1.5MB를 초과하는 파일은 표시하지 않습니다"
           />
         ) : diff ? (
-          <DiffEditor
-            original={diff.oldContent ?? ""}
-            modified={diff.newContent ?? ""}
-            language={languageOf(path)}
-            theme="gitpervisor-dark"
-            options={options}
-            loading={
-              <span className="text-xs text-fg-dim">에디터 로딩 중…</span>
-            }
-          />
+          <div
+            className={`h-full ${pendingCollapse ? "opacity-0" : "opacity-100"}`}
+          >
+            <DiffEditor
+              original={diff.oldContent ?? ""}
+              modified={diff.newContent ?? ""}
+              language={languageOf(path)}
+              theme={monacoTheme}
+              options={options}
+              onMount={handleMount}
+              loading={
+                <span className="text-xs text-fg-dim">에디터 로딩 중…</span>
+              }
+            />
+          </div>
         ) : null}
       </div>
     </div>

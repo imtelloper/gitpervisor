@@ -26,6 +26,8 @@ interface UiState {
   selectedCommitSha: string | null;
   /** 설정 모달 열림 여부 */
   settingsOpen: boolean;
+  /** diff 뷰어: 변경 없는 영역 접기 (기본 접기, 끄면 전체 펼침) */
+  diffCollapseUnchanged: boolean;
   toasts: Toast[];
   confirm: ConfirmRequest | null;
   selectProject: (id: string | null) => void;
@@ -33,6 +35,7 @@ interface UiState {
   toggleLog: () => void;
   selectCommit: (sha: string | null) => void;
   setSettingsOpen: (open: boolean) => void;
+  toggleDiffCollapse: () => void;
   pushToast: (kind: Toast["kind"], message: string) => void;
   dismissToast: (id: number) => void;
   askConfirm: (req: ConfirmRequest) => void;
@@ -47,6 +50,7 @@ export const useUi = create<UiState>((set) => ({
   logOpen: false,
   selectedCommitSha: null,
   settingsOpen: false,
+  diffCollapseUnchanged: true,
   toasts: [],
   confirm: null,
   // 프로젝트 전환 시 diff·커밋 선택은 초기화하되 Log 패널 펼침 상태는 유지
@@ -60,6 +64,8 @@ export const useUi = create<UiState>((set) => ({
   toggleLog: () => set((s) => ({ logOpen: !s.logOpen })),
   selectCommit: (sha) => set({ selectedCommitSha: sha }),
   setSettingsOpen: (open) => set({ settingsOpen: open }),
+  toggleDiffCollapse: () =>
+    set((s) => ({ diffCollapseUnchanged: !s.diffCollapseUnchanged })),
   pushToast: (kind, message) => {
     const id = ++toastSeq;
     set((s) => ({ toasts: [...s.toasts, { id, kind, message }] }));
