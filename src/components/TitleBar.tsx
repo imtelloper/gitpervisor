@@ -1,5 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { GitBranch, GitFork } from "lucide-react";
+import { GitBranch } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { useProjects, useStatus } from "../queries";
@@ -20,7 +20,12 @@ export function TitleBar() {
       className="flex h-8 shrink-0 cursor-default items-center gap-2 border-b border-edge bg-panel pl-3 select-none"
     >
       <div data-tauri-drag-region className="flex items-center gap-1.5">
-        <GitFork size={14} className="text-accent" />
+        <img
+          src="/logo.png"
+          alt=""
+          draggable={false}
+          className="h-[18px] w-[18px] rounded-full"
+        />
         <span className="text-xs font-semibold tracking-wide text-fg">
           Gitpervisor
         </span>
