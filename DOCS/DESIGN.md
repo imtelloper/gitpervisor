@@ -519,10 +519,11 @@ gitpervisor/
 | **M2 — 커밋 워크플로우** | stage/unstage/discard, commit/amend, push/pull/fetch + 진행 스트리밍, **watcher 자동 갱신**, 에러 토스트 | 앱 안에서만으로 일상 루프(수정 감지→커밋→푸시) 완결 |
 | **M3 — 히스토리** | Log 패널 3분할(브랜치/커밋/상세), 페이지네이션, 커밋 파일 diff, staged(index) diff 모드 | 스크린샷의 하단 Log 경험 재현 |
 | **M4 — 폴리시** | 설정 화면, 자동 fetch(옵트인), 단축키, 탐색기/터미널 열기, 빈 상태·로딩 다듬기 | 일상 사용 마찰 제로 |
+| **M5 — 임베디드 터미널 + 탭** | 프로젝트 경로 PTY 터미널(ConPTY), 중앙 뷰어 탭 전환(Viewer ↔ 터미널), 다중 터미널, 설정(셸/폰트), 단축키 | 앱 안에서 터미널 작업 ↔ diff 확인을 탭으로 즉시 전환 (§16) |
 
 각 마일스톤은 독립 배포 가능 상태로 종료 (부분 기능 금지 — 시작한 화면은 그 단계에서 완성).
 
-> 진행 상태: **M1 완료** (2026-06-12) · **M2 완료** (2026-06-12) · **M3 완료** (2026-06-15) · **M4 완료** (2026-06-15) — 라이트 테마(`theme`)는 후속 보류, 나머지(설정·자동 fetch·단축키·열기) 구현
+> 진행 상태: **M1 완료** (2026-06-12) · **M2 완료** (2026-06-12) · **M3 완료** (2026-06-15) · **M4 완료** (2026-06-15) · **M5 진행 중** (2026-06-16, §16) — 라이트 테마(`theme`)는 후속 보류, 나머지(설정·자동 fetch·단축키·열기) 구현
 
 ### 비범위 (v1에서 의도적으로 제외 — YAGNI)
 
@@ -542,3 +543,135 @@ gitpervisor/
 | 자동 fetch | OFF | 설정에서 분 단위 옵트인 |
 | 로그 그래프 | 리스트만 | v2에서 레인 그래프 |
 | 타입 동기화 | tauri-specta 자동 생성 | 수동 TS 타입 (셋업 단순) |
+
+---
+
+## 16. M5 — 임베디드 터미널 + 탭 워크스페이스
+
+> "각 프로젝트 경로로 터미널을 앱 안에서 띄우고, 터미널 작업 ↔ 파일/diff 보기를 **탭으로 쉽게 전환**." 기존 `open_in terminal`(외부 wt 창 spawn, F11)은 그대로 두고, **임베디드 모드**를 추가한다.
+
+### 16.1 기술 선택
+
+| 레이어 | 선택 | 근거 |
+|--------|------|------|
+| PTY (셸 구동) | **`portable-pty`** (wezterm) | Windows **ConPTY** 래핑 → 진짜 의사터미널. oh-my-posh 프롬프트·ANSI·`vim` 등 인터랙티브 프로그램까지 동작. 단순 stdin/stdout 파이프로는 불가 |
+| 터미널 렌더 | **`@xterm/xterm`** + `addon-fit` + `addon-webgl` | VS Code 내장 터미널과 동일 엔진, 사실상 표준 |
+| 출력 스트림 | **Tauri `Channel<bytes>`** | 고빈도 바이트 스트림에 적합·순서 보장. **요청-응답이 아니라 장수명 콜백이라 WebView2 동시 invoke 응답 유실 함정(§10)을 구조적으로 우회** |
+| 종료/에러 | **`term://exit` 이벤트** | 저빈도 — `repo://changed`(§7)와 동일 패턴으로 데이터(Channel)와 분리 |
+
+### 16.2 데이터 흐름
+
+```
+xterm.onData(키입력) ──invoke term_write──▶ PTY stdin
+PTY stdout ──reader thread(std)──▶ Channel.send(bytes) ──▶ xterm.write()
+셸 종료(EOF) ──▶ emit term://exit { termId, code }
+```
+
+- PTY 수명·소유권은 **Rust가 단일 진실** — xterm은 표시 장치일 뿐. 탭/프로젝트를 바꿔도 PTY는 계속 살아있다.
+- **리더는 터미널당 전용 `std::thread`** — 블로킹 PTY read를 tokio 실행기/메인스레드에 올리지 않는다(메인스레드 펌프 크래시 회피, §10).
+
+### 16.3 IPC 계약 추가
+
+**Commands**
+
+| Command | 입력 | 반환 | 비고 |
+|---------|------|------|------|
+| `term_open` | `termId, projectId, cols, rows, onData: Channel<bytes>` | – | **termId는 프론트가 uuid 생성해 전달** → 응답이 유실돼도 고아 PTY 없음(아는 id로 close/재동기화). `project_path()`로 cwd 검증 후 셸 spawn + 리더 스레드 시작. 변경 커맨드이므로 자동 재시도 금지 |
+| `term_write` | `termId, data: string` | – | raw 바이트를 PTY stdin에 그대로 write — 해석/조립 없음(인젝션 표면 없음) |
+| `term_resize` | `termId, cols, rows` | – | `master.resize(PtySize)` (ConPTY 리사이즈) |
+| `term_close` | `termId` | – | `child.kill()` + 레지스트리 제거(드롭이 정리) |
+
+**Events**
+
+| Event | Payload | 트리거 |
+|-------|---------|--------|
+| `term://exit` | `{ termId, code }` | 셸 종료(`exit` 입력/크래시) → 리더 스레드 EOF |
+
+### 16.4 백엔드 (`commands/terminal.rs` + State)
+
+```rust
+// state.rs — AppState에 추가
+pub terminals: Mutex<HashMap<String, TerminalHandle>>,
+
+struct TerminalHandle {
+    writer: Box<dyn Write + Send>,        // 키 입력
+    master: Box<dyn MasterPty + Send>,    // resize
+    child:  Box<dyn Child + Send>,        // kill
+    project_id: String,
+}
+```
+
+- **셸 선택**(Windows): `settings.terminalShell` → `pwsh.exe` → `powershell.exe` → `cmd.exe`. Unix: `$SHELL` → `/bin/bash`.
+- 환경: cwd = 프로젝트 경로. (git용 `GIT_TERMINAL_PROMPT=0` 등은 적용하지 않는다 — 사용자 인터랙티브 셸이므로 환경을 그대로 상속)
+
+### 16.5 프론트 — keep-alive 터미널 + 탭
+
+```
+src/components/workspace/
+  WorkspaceTabs.tsx   # 중앙 탭 스트립 + 활성 탭 콘텐츠 스위처
+  ViewerTab.tsx       # 기존 DiffViewer/EmptyState 래핑
+  TerminalTab.tsx     # xterm 호스트
+src/lib/terminal.ts   # term_* 래퍼 + Channel 배선
+src/stores/terminals.ts
+```
+
+```typescript
+interface TermTab { id: string; projectId: string; title: string; status: "live" | "exited" }
+// store: terminals: TermTab[], activeTab: Record<projectId, "viewer" | termId>
+//        openTerminal(projectId) / closeTerminal(termId) / setActiveTab(projectId, tab)
+```
+
+- **keep-alive**: xterm 인스턴스·스크롤백을 dispose하지 않는다. 모듈 레벨 레지스트리(`Map<termId, {term, fit, hostEl}>`)가 xterm DOM 노드를 소유하고, 탭 전환은 그 노드를 콘텐츠 영역에 **붙였다 뗐다**(display 토글)만 한다. PTY는 Rust에 있으니 숨겨도 계속 동작.
+- **리사이즈**: `ResizeObserver` → `fit()` → `onResize` → `term_resize`. 숨겨진 탭은 측정 불가 → **활성화 시 re-fit**.
+
+### 16.6 UI/UX (확정)
+
+중앙 뷰어 `<section>`만 탭 컨테이너로. **Changes 패널·Log 패널은 그대로** → 터미널 작업 중에도 왼쪽에서 파일 클릭 시 **Viewer 탭 자동 전환**되어 diff 확인.
+
+```
+┌ PROJECTS ┬ Changes ┬─ [📄 Viewer] [❯_ pwsh] [❯_ pwsh 2] [＋] ─────────┐
+│ ●hrcs-gen│ ☑ M a.ts│   GreatHoon@DESKTOP ~ DEVELOPMENT hrcs-gen ⟩dev    │
+│ ●nexus   │ ☐ M b.ts│   ❯ npm run build                                  │
+│          │ 커밋폼  │   ❯ _                                              │
+└──────────┴─────────┴────────────────────────────────────────────────────┘
+```
+
+- 확정 결정: **터미널은 뷰어 영역만 차지**(Changes 유지) · **탭은 프로젝트별**(전환 시 세트 교체, 비활성 프로젝트 터미널은 백그라운드 유지) · **셸 자동 감지**.
+- 툴바 `❯_ 터미널` 버튼 → 현재 프로젝트 새 터미널 탭 + 활성화. 단축키 `` Ctrl+` `` 터미널 토글.
+
+### 16.7 설정 추가
+
+```typescript
+interface Settings {
+  // ...기존
+  terminalShell: string | null;   // null = 자동(pwsh→powershell→cmd)
+  terminalFontSize: number;       // 기본 13
+}
+```
+
+> 프롬프트 파워라인 글리프(❯ 등)는 폰트에 글리프가 있어야 표시 → `Cascadia Code`(이미 사용) 권장, 없으면 일반 글리프 폴백.
+
+### 16.8 라이프사이클 & 엣지케이스
+
+| 케이스 | 동작 |
+|--------|------|
+| **WebView2 응답 유실**(§10) | termId를 프론트가 생성·전달 → open 응답 유실돼도 PTY 생존·id 보유. 데이터는 Channel(장수명)로 흐르므로 무영향 |
+| 셸 자체 종료(`exit`) | 리더 EOF → `term://exit` → 탭 `status=exited`, "프로세스 종료됨 — Enter로 재시작" 표시 |
+| 프로젝트 제거 | 해당 프로젝트 모든 터미널 `term_close` |
+| 앱 종료 | 모든 child kill(`on_window_event`/드롭) — 좀비 셸 방지 |
+| 숨긴 탭 resize | 활성화 시 re-fit |
+| 대량 출력 폭주 | 8KB 청크 읽기 + xterm 버퍼; 필요 시 코얼레싱 |
+| 블로킹 read | 터미널당 전용 std 스레드(tokio·메인스레드 비접촉) |
+
+### 16.9 보안
+
+사용자 자기 머신의 인터랙티브 셸 — 외부 `wt` 여는 것과 동일한 권한 표면, **새 공격면 없음**. `term_write`는 PTY stdin에 raw 전달(셸 문자열 조립 없음), cwd는 등록된 `project_path`로만 검증.
+
+### 16.10 단계 계획
+
+| 단계 | 범위 | 완료 기준 |
+|------|------|----------|
+| **A. PTY 백엔드** | `portable-pty`, `terminal.rs` 4커맨드, State 레지스트리, 리더 스레드, Channel, `term://exit` | 커맨드로 셸 spawn→바이트 왕복 확인 |
+| **B. xterm 단일 터미널** | `@xterm/*`, `terminal.ts`, `TerminalTab`, fit/resize | 한 프로젝트에서 실제 셸 입출력 |
+| **C. 탭 시스템** | `WorkspaceTabs`, terminals store, keep-alive, Viewer 통합, 파일클릭→viewer 자동전환 | 탭 전환으로 터미널↔diff 즉시 전환 |
+| **D. 폴리시** | 다중 터미널, exit/재시작, 프로젝트별 스코프, 설정(셸/폰트), 정리, 단축키 | 일상 사용 마찰 0 |
