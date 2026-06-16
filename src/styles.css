@@ -50,15 +50,16 @@
 
   --color-fg: #e6edf6;
   --color-fg-muted: #98a9bd;
-  --color-fg-dim: #586a80;
+  --color-fg-dim: #74849b; /* WCAG AA 충족(4.9:1) — 보조 텍스트 가독성 */
 
   --color-ok: #57c65c;
   --color-warn: #e2c15a;
   --color-danger: #f0556a;
 
-  --color-mod: #5bbef0;
+  /* 블루 스케일: accent(주요, L73) > mod(수정 상태, L70) — 위계 유지 */
+  --color-mod: #45a8de;
   --color-add: #6cd07f;
-  --color-del: #65788d;
+  --color-del: #76869c; /* WCAG AA 충족(5.1:1) */
   --color-untrk: #e8a447;
 }
 

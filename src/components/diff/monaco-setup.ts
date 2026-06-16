@@ -77,7 +77,8 @@ monaco.editor.defineTheme("gitpervisor-monokai", {
   base: "vs-dark",
   inherit: true,
   rules: [
-    { token: "comment", foreground: "75715E" },
+    // 주석은 쿨 블루그레이로 — 웜 올리브가 쿨 프레임에서 뜨던 문제 해소(구문색은 Monokai 유지)
+    { token: "comment", foreground: "5C6B80" },
     { token: "string", foreground: "E6DB74" },
     { token: "number", foreground: "AE81FF" },
     { token: "keyword", foreground: "F92672" },
