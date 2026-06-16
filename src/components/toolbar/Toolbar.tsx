@@ -8,11 +8,13 @@ import {
   RefreshCcw,
   RefreshCw,
   Settings as SettingsIcon,
+  SquareTerminal,
 } from "lucide-react";
 
 import type { Project, RepoOpState } from "../../lib/ipc";
 import { usePushFlow, useRefreshAll, useStatus, useSyncOp } from "../../queries";
 import { useOps } from "../../stores/ops";
+import { useTerminals } from "../../stores/terminals";
 import { useUi } from "../../stores/ui";
 
 const OP_LABEL: Partial<Record<RepoOpState, string>> = {
@@ -124,6 +126,14 @@ export function Toolbar({ project }: { project: Project }) {
             {status.ahead}
           </span>
         )}
+      </button>
+
+      <button
+        title="이 프로젝트 경로에서 터미널 열기 (Ctrl+`)"
+        onClick={() => useTerminals.getState().openTerminal(project.id)}
+        className="rounded p-1.5 text-fg-muted hover:bg-raised hover:text-fg"
+      >
+        <SquareTerminal size={15} />
       </button>
 
       <button

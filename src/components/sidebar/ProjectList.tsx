@@ -18,6 +18,7 @@ import {
   useRemoveProject,
   useStatuses,
 } from "../../queries";
+import { useTerminals } from "../../stores/terminals";
 import { useUi } from "../../stores/ui";
 import { ResizeHandle } from "../common/ResizeHandle";
 import { ProjectItem } from "./ProjectItem";
@@ -122,6 +123,8 @@ export function ProjectList() {
   }
 
   function handleRemove(id: string) {
+    // 제거되는 프로젝트의 열린 터미널 PTY를 정리한다 (설계 §16.8)
+    useTerminals.getState().closeProjectTerminals(id);
     removeProject.mutate(id, {
       onSuccess: () => {
         if (useUi.getState().selectedProjectId === id) selectProject(null);

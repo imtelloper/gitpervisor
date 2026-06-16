@@ -56,6 +56,14 @@ export function SettingsDialog() {
         24,
         Math.max(10, Math.floor(form.diffFontSize || 13)),
       ),
+      terminalShell:
+        form.terminalShell && form.terminalShell.trim()
+          ? form.terminalShell.trim()
+          : null,
+      terminalFontSize: Math.min(
+        24,
+        Math.max(10, Math.floor(form.terminalFontSize || 13)),
+      ),
     };
     save.mutate(cleaned, { onSuccess: () => setOpen(false) });
   }
@@ -155,6 +163,36 @@ export function SettingsDialog() {
               <span className="text-danger">git을 찾지 못함</span>
             )}
           </div>
+
+          <div className="border-t border-edge pt-3 text-[11px] font-semibold tracking-widest text-fg-dim">
+            터미널
+          </div>
+
+          <Field
+            label="셸"
+            hint="비우면 자동 탐색 (pwsh → powershell → cmd). 새 터미널부터 적용"
+          >
+            <input
+              type="text"
+              value={form.terminalShell ?? ""}
+              placeholder="(자동 탐색)"
+              onChange={(e) => update("terminalShell", e.target.value)}
+              className={`${inputCls} font-mono`}
+            />
+          </Field>
+
+          <Field label="터미널 폰트 크기" hint="10–24 px · 새 터미널부터 적용">
+            <input
+              type="number"
+              min={10}
+              max={24}
+              value={form.terminalFontSize}
+              onChange={(e) =>
+                update("terminalFontSize", Number(e.target.value))
+              }
+              className={inputCls}
+            />
+          </Field>
         </div>
 
         <div className="mt-5 flex justify-end gap-2">

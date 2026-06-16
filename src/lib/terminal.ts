@@ -84,6 +84,8 @@ export function createTerminal(opts: {
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
+  // Ctrl+`(터미널 토글)는 PTY로 보내지 않고 window 핸들러로 흘려보낸다.
+  term.attachCustomKeyEventHandler((e) => !(e.ctrlKey && e.key === "`"));
   term.open(host); // 분리된 host에 먼저 연다 — 실제 fit은 attach 시점에 (DOM 렌더러는 0크기 허용)
 
   const inst: TermInstance = {
