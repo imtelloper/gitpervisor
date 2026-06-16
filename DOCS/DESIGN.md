@@ -520,10 +520,11 @@ gitpervisor/
 | **M3 — 히스토리** | Log 패널 3분할(브랜치/커밋/상세), 페이지네이션, 커밋 파일 diff, staged(index) diff 모드 | 스크린샷의 하단 Log 경험 재현 |
 | **M4 — 폴리시** | 설정 화면, 자동 fetch(옵트인), 단축키, 탐색기/터미널 열기, 빈 상태·로딩 다듬기 | 일상 사용 마찰 제로 |
 | **M5 — 임베디드 터미널 + 탭** | 프로젝트 경로 PTY 터미널(ConPTY), 중앙 뷰어 탭 전환(Viewer ↔ 터미널), 다중 터미널, 설정(셸/폰트), 단축키 | 앱 안에서 터미널 작업 ↔ diff 확인을 탭으로 즉시 전환 (§16) |
+| **M6 — DB 탐색기 (다중 DB 클라이언트)** | Git↔DB 모드 전환, 연결 관리(키체인), 스키마 트리, 쿼리 에디터(Monaco), 결과 그리드. 엔진: Mongo·SQL Server·PostgreSQL·MySQL·SQLite. 읽기/쓰기(가드) | 여러 DB를 연결해 트리 탐색 + 쿼리 + 결과 확인 (§17) |
 
 각 마일스톤은 독립 배포 가능 상태로 종료 (부분 기능 금지 — 시작한 화면은 그 단계에서 완성).
 
-> 진행 상태: **M1 완료** (2026-06-12) · **M2 완료** (2026-06-12) · **M3 완료** (2026-06-15) · **M4 완료** (2026-06-15) · **M5 완료** (2026-06-16, §16) — 라이트 테마(`theme`)는 후속 보류, 나머지(설정·자동 fetch·단축키·열기) 구현
+> 진행 상태: **M1 완료** (2026-06-12) · **M2 완료** (2026-06-12) · **M3 완료** (2026-06-15) · **M4 완료** (2026-06-15) · **M5 완료** (2026-06-16, §16) · **M6 설계** (2026-06-16, §17) — 라이트 테마(`theme`)는 후속 보류, 나머지(설정·자동 fetch·단축키·열기) 구현
 
 ### 비범위 (v1에서 의도적으로 제외 — YAGNI)
 
@@ -691,3 +692,61 @@ interface TermTab { id; projectId; title; layout: Pane; activePaneId; maximizedP
 - **단축키**: `Ctrl+Shift+D` 오른쪽 분할 · `Ctrl+Shift+E` 아래 분할 · `Ctrl+Shift+W` 패널 닫기 (xterm은 `attachCustomKeyEventHandler`로 이들을 PTY에 보내지 않고 window로 위임).
 - **렌더**: `PaneTreeRoot`가 트리를 재귀 렌더(`SplitView`는 flex row/col + 드래그 가능한 divider로 ratio 조절). 최대화 시 해당 패널만 렌더(나머지는 언마운트되지만 PTY·스크롤백은 레지스트리에 보존).
 - 활성 패널은 accent 아웃라인. 패널 닫기 시 형제가 분할 자리를 흡수하고, 마지막 패널을 닫으면 탭이 닫힌다. exit/재시작은 패널 단위.
+
+---
+
+## 17. M6 — DB 탐색기 (다중 DB 클라이언트)
+
+> "여러 DB(Mongo·SQL Server·PostgreSQL·MySQL·SQLite)를 연결해 스키마 탐색 + 쿼리 + 결과 확인." Studio 3T / SSMS를 git 대시보드 안에 얹는 형태 — gitpervisor에 **DB 모드**를 추가한다.
+
+### 17.1 확정 결정
+- **엔진**: MongoDB · SQL Server · PostgreSQL · MySQL · SQLite (전부).
+- **권한**: 읽기/쓰기(가드 포함) — 쓰기 쿼리는 확인 다이얼로그 + 연결별 읽기전용 토글.
+- **위치**: 좌측 레일에 **Git ↔ DB 모드 토글**. DB 모드 전용 레이아웃.
+
+### 17.2 레이아웃 (DB 모드)
+```
+[Git][DB]  ← 좌측 레일 모드 토글
+┌ Connections ┬ 쿼리 에디터 (Monaco: SQL / mongo-js) ───────┐
+│ ▾🖥 NEXUS    │ SELECT TOP 1000 * FROM dbo.erdProject  [▶]   │
+│  ▾ Tables    ├──────────────────────────────────────────────┤
+│    erdProject│ 결과 (Table View · 페이지·셀복사·정렬)       │
+│ ▾🍃 aickyway │ id │ name │ description │ … │ updatedAt        │
+│  ▾ Collections│ … (가상 스크롤)                              │
+└──────────────┴──────────────────────────────────────────────┘
+```
+Monaco·리사이즈 패널·상태바 재사용. 결과 그리드는 신규(가상 테이블).
+
+### 17.3 백엔드 아키텍처
+- `db` 모듈 + **엔진 추상화 trait** `DbDriver`: `connect / databases / tables / columns / query / close`. 활성 연결을 `AppState`에 보관(`connId → DbPool`).
+- 드라이버: **sqlx**(PostgreSQL·MySQL·SQLite 한 크레이트) · **tiberius**(SQL Server) · **mongodb**(MongoDB).
+- 커맨드: `db_connect`/`db_disconnect` · `db_databases`/`db_tables`/`db_columns`(introspection) · `db_query(connId, db, query, limit) → DbResult`.
+- `DbResult`: SQL은 `{ columns: [{name, type}], rows: Cell[][] }`, Mongo는 `{ documents: Json[] }`. Cell은 타입 표식 JSON(number/bool/null/string/date/bytes/doc) — 그리드에서 타입별 렌더.
+
+### 17.4 데이터 모델 / 저장
+```typescript
+type DbEngine = "postgres" | "mysql" | "sqlite" | "mssql" | "mongodb";
+interface DbConnection {
+  id; name; engine: DbEngine; host; port; database?; username; readOnly; color?;
+  // 비밀번호는 메타에 저장하지 않음
+}
+```
+`connections.json`(메타) + **비밀번호는 OS 키체인**(`keyring` = Windows 자격증명 관리자). 평문 저장 금지.
+
+### 17.5 보안
+- 연결별 **읽기전용 토글** + 쓰기 쿼리 **확인 다이얼로그**(INSERT/UPDATE/DELETE/DDL 감지). 읽기전용 연결은 쓰기 차단(가능하면 read-only 트랜잭션/세션).
+- 키체인 자격증명 · 쿼리 **타임아웃** · 결과 **행 한도**(기본 1000) · 큰 셀 잘라보기 · 외부 전송 없음(로컬 전용).
+
+### 17.6 프론트 구성
+- `stores/db.ts`(연결 목록·활성 연결·앱 모드 git|db·결과) · `DbSidebar`(연결+스키마 트리, 지연 로딩) · `DbQueryEditor`(Monaco SQL/JS) · `DbResultGrid`(**`@tanstack/react-virtual` 추가**, 가상 테이블) · `ConnectionDialog`(연결 CRUD).
+- Mongo 결과: 상위 필드 평면화 테이블 + JSON 트리 토글.
+
+### 17.7 단계
+| 단계 | 범위 | 완료 기준 |
+|------|------|----------|
+| **M6.1 (MVP)** | DB 모드 셸, 연결 CRUD+키체인, 1개 엔진 드라이버, 스키마 트리, 쿼리(읽기)+결과 그리드 | 한 DB 연결→트리→SELECT→결과 |
+| **M6.2** | 나머지 엔진(전 5종), Mongo 문서 뷰 | 5종 모두 연결·조회 |
+| **M6.3** | 쓰기 쿼리(가드·확인), 결과 export(CSV/JSON), 결과 탭 다중 | 안전한 쓰기 |
+| **M6.4** | 쿼리 히스토리·저장 쿼리, JSON 트리 뷰, 셀 편집 | 일상 사용 |
+
+> 권장 구현 순서: M6.1을 **실제 사용 DB 한 종**(Mongo 또는 SQL Server)으로 수직 슬라이스 → 아키텍처 검증 후 엔진 확장. drivers 컴파일이 무거우니(특히 sqlx/tiberius) 빌드 시간 고려.
