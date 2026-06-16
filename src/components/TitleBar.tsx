@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 
 import { useProjects, useStatus } from "../queries";
 import { useUi } from "../stores/ui";
+import { SysMonitor } from "./SysMonitor";
 
 const appWindow = getCurrentWindow();
 
@@ -30,6 +31,9 @@ export function TitleBar() {
           Gitpervisor
         </span>
       </div>
+
+      <div className="mx-1 h-4 w-px shrink-0 bg-edge" />
+      <SysMonitor />
 
       <div
         data-tauri-drag-region

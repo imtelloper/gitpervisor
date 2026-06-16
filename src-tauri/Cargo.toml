@@ -30,6 +30,10 @@ chrono = "0.4.45"
 futures = "0.3.32"
 notify-debouncer-full = "0.7.0"
 portable-pty = "0.8.1"
+sysinfo = "0.33"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_Performance"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"

@@ -43,7 +43,21 @@ export const keys = {
   settings: ["settings"] as const,
   dir: (projectId: string, relPath: string) =>
     ["dir", projectId, relPath] as const,
+  sysMetrics: ["sys-metrics"] as const,
 };
+
+/** 타이틀바 시스템 모니터 — 2초 간격 폴링. */
+export function useSysMetrics() {
+  return useQuery({
+    queryKey: keys.sysMetrics,
+    queryFn: ipc.sysMetrics,
+    refetchInterval: 2000,
+    refetchIntervalInBackground: true,
+    staleTime: 0,
+    gcTime: 4000,
+    placeholderData: keepPreviousData,
+  });
+}
 
 export function useGitCheck() {
   return useQuery({

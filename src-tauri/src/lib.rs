@@ -1,6 +1,7 @@
 mod commands;
 mod error;
 mod git;
+mod monitor;
 mod state;
 mod watcher;
 
@@ -72,6 +73,7 @@ pub fn run() {
             commands::term_write,
             commands::term_resize,
             commands::term_close,
+            monitor::sys_metrics,
         ])
         .on_window_event(|window, event| {
             // 창이 닫히면 열린 PTY 자식을 모두 정리한다 (좀비 셸 방지, 설계 §16.8).
