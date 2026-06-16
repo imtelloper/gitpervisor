@@ -36,28 +36,30 @@
  * 테마 오버라이드 — <html data-theme="…">로 전환. 기본(darcula)은 위 @theme 값.
  * 유틸리티(bg-base 등)는 var(--color-*)를 참조하므로 변수만 덮어쓰면 전체가 바뀐다.
  */
+/* Monokai 변형 — 로고(블랙 라운드 스퀘어 + 스카이블루 서클)에 맞춰
+ * UI 바탕을 다크 블루·스카이·블랙 톤으로. 구문 강조는 Monokai 색 유지. */
 :root[data-theme="monokai"] {
-  --color-base: #272822;
-  --color-panel: #2b2c25;
-  --color-raised: #3e3d32;
-  --color-selection: #49483e;
-  --color-edge: #3b3a30;
-  --color-accent: #66d9ef;
-  --color-accent-hover: #82e4f3;
-  --color-on-accent: #1d1e19; /* 시안 accent 위엔 어두운 텍스트 */
+  --color-base: #0b1018; /* 거의 블랙(블루 언더톤) — 로고의 블랙과 어울림 */
+  --color-panel: #121b29;
+  --color-raised: #1d2a3d;
+  --color-selection: #214a78;
+  --color-edge: #243349;
+  --color-accent: #4fb4e6; /* 로고 스카이블루 */
+  --color-accent-hover: #69c2ef;
+  --color-on-accent: #06141f; /* 밝은 스카이 accent 위엔 어두운 텍스트 */
 
-  --color-fg: #f8f8f2;
-  --color-fg-muted: #c9c7be;
-  --color-fg-dim: #908a78;
+  --color-fg: #e6edf6;
+  --color-fg-muted: #9fb0c4;
+  --color-fg-dim: #5e7088;
 
-  --color-ok: #a6e22e;
-  --color-warn: #e6db74;
-  --color-danger: #f92672;
+  --color-ok: #57c65c;
+  --color-warn: #e2c15a;
+  --color-danger: #f0556a;
 
-  --color-mod: #66d9ef;
-  --color-add: #a6e22e;
-  --color-del: #908a78;
-  --color-untrk: #fd971f;
+  --color-mod: #5bbef0;
+  --color-add: #6cd07f;
+  --color-del: #6b7d92;
+  --color-untrk: #e8a447;
 }
 
 html,
