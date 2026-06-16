@@ -25,6 +25,8 @@ function diffTargetKey(t: DiffTarget): string {
       return `i:${t.path}`;
     case "commit":
       return `c:${t.sha}:${t.path}`;
+    case "file":
+      return `f:${t.path}`;
   }
 }
 

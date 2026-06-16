@@ -25,7 +25,19 @@ pub async fn get_file_diff(
         DiffTarget::Worktree { path } => worktree_diff(&repo, path).await,
         DiffTarget::Index { path } => index_diff(&repo, path).await,
         DiffTarget::Commit { sha, path } => commit_diff(&repo, sha, path).await,
+        DiffTarget::File { path } => file_content(&repo, path).await,
     }
+}
+
+/// 단일 파일 보기 — 워크트리 내용만 new_content로 반환(old=None). 트리 클릭용.
+async fn file_content(repo: &Path, path: String) -> Result<FileDiff, IpcError> {
+    validate_rel_path(&path)?;
+    let bytes = match tokio::fs::read(repo.join(&path)).await {
+        Ok(b) => Some(b),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(IpcError::new(ErrorCode::Io, format!("파일 읽기 실패: {e}"))),
+    };
+    Ok(build_diff(path, None, bytes))
 }
 
 /// diff 프리페치용 배치 — 단일 invoke로 여러 파일을 백엔드 병렬 조회 (§10 패턴).

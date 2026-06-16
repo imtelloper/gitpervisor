@@ -1,6 +1,6 @@
 import { monaco } from "./monaco-setup";
 
-import { DiffEditor } from "@monaco-editor/react";
+import { DiffEditor, Editor } from "@monaco-editor/react";
 import type { DiffOnMount } from "@monaco-editor/react";
 import {
   FileQuestion,
@@ -29,8 +29,23 @@ function modeLabel(target: DiffTarget): string {
       return "HEAD ↔ 인덱스 (staged)";
     case "commit":
       return `부모 ↔ 커밋 ${target.sha.slice(0, 7)}`;
+    case "file":
+      return "파일";
   }
 }
+
+/** 단일 파일 보기(트리 클릭)용 — diff 전용 옵션 제외. */
+const FILE_OPTIONS = {
+  readOnly: true,
+  automaticLayout: true,
+  minimap: { enabled: false },
+  renderOverviewRuler: false,
+  scrollBeyondLastLine: false,
+  fontSize: 13,
+  fontFamily: '"Cascadia Code", Consolas, "D2Coding", monospace',
+  lineNumbersMinChars: 4,
+  padding: { top: 8 },
+} as const;
 
 const DIFF_OPTIONS = {
   readOnly: true,
@@ -69,6 +84,11 @@ export default function DiffViewer({
     }),
     [settings?.diffFontSize, collapseUnchanged],
   );
+  const fileOptions = useMemo(
+    () => ({ ...FILE_OPTIONS, fontSize: settings?.diffFontSize ?? 13 }),
+    [settings?.diffFontSize],
+  );
+  const isFileView = target.mode === "file";
 
   // Monaco 테마는 전역 — 열려 있는 에디터도 즉시 바뀌도록 명시적으로 적용한다.
   useEffect(() => {
@@ -109,13 +129,14 @@ export default function DiffViewer({
     });
   }, []);
 
-  const stateBadge = diff
-    ? diff.oldContent === null && diff.newContent !== null
-      ? { text: "추가됨", className: "text-add" }
-      : diff.newContent === null && diff.oldContent !== null
-        ? { text: "삭제됨", className: "text-del" }
-        : null
-    : null;
+  const stateBadge =
+    !isFileView && diff
+      ? diff.oldContent === null && diff.newContent !== null
+        ? { text: "추가됨", className: "text-add" }
+        : diff.newContent === null && diff.oldContent !== null
+          ? { text: "삭제됨", className: "text-del" }
+          : null
+      : null;
 
   return (
     <div className="flex h-full min-w-0 flex-col bg-base">
@@ -127,21 +148,23 @@ export default function DiffViewer({
           </span>
         )}
         <div className="flex-1" />
-        <button
-          onClick={toggleDiffCollapse}
-          title={
-            collapseUnchanged
-              ? "전체 펼치기 (변경 없는 영역까지 표시)"
-              : "변경 없는 영역 접기"
-          }
-          className="shrink-0 rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
-        >
-          {collapseUnchanged ? (
-            <UnfoldVertical size={14} />
-          ) : (
-            <FoldVertical size={14} />
-          )}
-        </button>
+        {!isFileView && (
+          <button
+            onClick={toggleDiffCollapse}
+            title={
+              collapseUnchanged
+                ? "전체 펼치기 (변경 없는 영역까지 표시)"
+                : "변경 없는 영역 접기"
+            }
+            className="shrink-0 rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
+          >
+            {collapseUnchanged ? (
+              <UnfoldVertical size={14} />
+            ) : (
+              <FoldVertical size={14} />
+            )}
+          </button>
+        )}
         <span className="shrink-0 text-[11px] text-fg-dim">
           {modeLabel(target)}
         </span>
@@ -167,6 +190,16 @@ export default function DiffViewer({
             icon={FileWarning}
             title="파일이 너무 큽니다"
             desc="1.5MB를 초과하는 파일은 표시하지 않습니다"
+          />
+        ) : diff && isFileView ? (
+          <Editor
+            value={diff.newContent ?? ""}
+            language={languageOf(path)}
+            theme={monacoTheme}
+            options={fileOptions}
+            loading={
+              <span className="text-xs text-fg-dim">에디터 로딩 중…</span>
+            }
           />
         ) : diff ? (
           <div

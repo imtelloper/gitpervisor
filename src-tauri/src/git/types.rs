@@ -104,6 +104,9 @@ pub enum DiffTarget {
     Index { path: String },
     #[allow(dead_code)]
     Commit { sha: String, path: String },
+    /// 트리에서 클릭한 단일 파일 보기 — 워크트리 내용만(diff 아님)
+    #[allow(dead_code)]
+    File { path: String },
 }
 
 #[derive(Debug, Clone, Serialize)]

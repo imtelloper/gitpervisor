@@ -58,7 +58,8 @@ export interface FileDiff {
 export type DiffTarget =
   | { mode: "worktree"; path: string } // 인덱스(없으면 HEAD) ↔ 워크트리
   | { mode: "index"; path: string } // HEAD ↔ 인덱스 (staged 검토)
-  | { mode: "commit"; sha: string; path: string }; // 부모 ↔ 해당 커밋
+  | { mode: "commit"; sha: string; path: string } // 부모 ↔ 해당 커밋
+  | { mode: "file"; path: string }; // 단일 파일 보기 (트리 클릭, diff 아님)
 
 // ---- M3: 히스토리 ----
 

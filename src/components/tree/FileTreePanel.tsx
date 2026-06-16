@@ -28,12 +28,11 @@ function FileRow({
   const selectedDiff = useUi((s) => s.selectedDiff);
   const selectDiff = useUi((s) => s.selectDiff);
   const { Icon, color } = fileIcon(name);
-  const selected =
-    selectedDiff?.mode === "worktree" && selectedDiff.path === path;
+  const selected = selectedDiff?.mode === "file" && selectedDiff.path === path;
 
   return (
     <div
-      onClick={() => selectDiff({ mode: "worktree", path })}
+      onClick={() => selectDiff({ mode: "file", path })}
       title={path}
       style={{ paddingLeft: depth * INDENT + 8 }}
       className={`flex cursor-pointer items-center gap-1.5 whitespace-nowrap py-0.5 pr-3 ${
