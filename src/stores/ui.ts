@@ -30,6 +30,8 @@ interface UiState {
   diffCollapseUnchanged: boolean;
   /** 파일 트리 패널 표시 여부 (localStorage 영속) */
   fileTreeOpen: boolean;
+  /** PROJECTS: 변경/활동 있는 프로젝트를 위로 정렬 (localStorage 영속) */
+  projectSortByChanges: boolean;
   toasts: Toast[];
   confirm: ConfirmRequest | null;
   selectProject: (id: string | null) => void;
@@ -39,6 +41,7 @@ interface UiState {
   setSettingsOpen: (open: boolean) => void;
   toggleDiffCollapse: () => void;
   toggleFileTree: () => void;
+  toggleProjectSort: () => void;
   pushToast: (kind: Toast["kind"], message: string) => void;
   dismissToast: (id: number) => void;
   askConfirm: (req: ConfirmRequest) => void;
@@ -55,6 +58,7 @@ export const useUi = create<UiState>((set) => ({
   settingsOpen: false,
   diffCollapseUnchanged: true,
   fileTreeOpen: localStorage.getItem("gp:filetree-open") === "1",
+  projectSortByChanges: localStorage.getItem("gp:project-sort-changes") === "1",
   toasts: [],
   confirm: null,
   // 프로젝트 전환 시 diff·커밋 선택은 초기화하되 Log 패널 펼침 상태는 유지
@@ -75,6 +79,12 @@ export const useUi = create<UiState>((set) => ({
       const v = !s.fileTreeOpen;
       localStorage.setItem("gp:filetree-open", v ? "1" : "0");
       return { fileTreeOpen: v };
+    }),
+  toggleProjectSort: () =>
+    set((s) => {
+      const v = !s.projectSortByChanges;
+      localStorage.setItem("gp:project-sort-changes", v ? "1" : "0");
+      return { projectSortByChanges: v };
     }),
   pushToast: (kind, message) => {
     const id = ++toastSeq;

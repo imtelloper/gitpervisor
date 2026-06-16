@@ -1,11 +1,23 @@
 import { open } from "@tauri-apps/plugin-dialog";
-import { Copy, FolderOpen, Plus, Terminal, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import {
+  ArrowDownUp,
+  Copy,
+  FolderOpen,
+  Plus,
+  Terminal,
+  Trash2,
+} from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 
 import type { OpenTarget, Project } from "../../lib/ipc";
 import { errorMessage, ipc } from "../../lib/ipc";
 import { usePanelWidth } from "../../lib/use-panel-width";
-import { useAddProject, useProjects, useRemoveProject } from "../../queries";
+import {
+  useAddProject,
+  useProjects,
+  useRemoveProject,
+  useStatuses,
+} from "../../queries";
 import { useUi } from "../../stores/ui";
 import { ResizeHandle } from "../common/ResizeHandle";
 import { ProjectItem } from "./ProjectItem";
@@ -42,13 +54,50 @@ function MenuItem({
 
 export function ProjectList() {
   const { data: projects } = useProjects();
+  const { data: statuses } = useStatuses();
   const addProject = useAddProject();
   const removeProject = useRemoveProject();
   const selectedProjectId = useUi((s) => s.selectedProjectId);
   const selectProject = useUi((s) => s.selectProject);
+  const sortByChanges = useUi((s) => s.projectSortByChanges);
+  const toggleProjectSort = useUi((s) => s.toggleProjectSort);
   const { width, startResize } = usePanelWidth("gp:projects-width", 240, 170, 440);
 
   const [menu, setMenu] = useState<MenuState | null>(null);
+
+  // 변경/활동 우선 정렬: 작업트리 변경 있는 프로젝트 → push/pull 대기 → 깨끗한 순.
+  // 같은 등급 안에서는 변경 수 많은 순, 그 다음 등록 순서(order)로 안정 정렬.
+  const orderedProjects = useMemo(() => {
+    const list = projects ?? [];
+    if (!sortByChanges) return list;
+    const byId = new Map((statuses ?? []).map((s) => [s.projectId, s]));
+    const changeCount = (p: Project) => {
+      const s = byId.get(p.id);
+      if (!s) return 0;
+      return (
+        s.staged.length +
+        s.unstaged.length +
+        s.untracked.length +
+        s.conflicted.length
+      );
+    };
+    const rank = (p: Project) => {
+      const s = byId.get(p.id);
+      if (!s) return 3; // 상태 미로딩 → 맨 뒤(기존 순서 유지)
+      if (changeCount(p) > 0) return 0;
+      if (s.ahead > 0 || s.behind > 0) return 1;
+      return 2;
+    };
+    return [...list].sort((a, b) => {
+      const ra = rank(a);
+      const rb = rank(b);
+      if (ra !== rb) return ra - rb;
+      const ca = changeCount(a);
+      const cb = changeCount(b);
+      if (ca !== cb) return cb - ca;
+      return a.order - b.order;
+    });
+  }, [projects, statuses, sortByChanges]);
 
   // 메뉴 열림 동안 바깥 클릭 / Esc 로 닫는다
   useEffect(() => {
@@ -102,12 +151,29 @@ export function ProjectList() {
       style={{ width }}
       className="relative flex h-full shrink-0 flex-col border-r border-edge bg-panel"
     >
-      <div className="px-3 pb-1 pt-3 text-[11px] font-semibold tracking-widest text-fg-dim">
-        PROJECTS
+      <div className="flex items-center justify-between px-3 pb-1 pt-3">
+        <span className="text-[11px] font-semibold tracking-widest text-fg-dim">
+          PROJECTS
+        </span>
+        <button
+          onClick={toggleProjectSort}
+          title={
+            sortByChanges
+              ? "변경 우선 정렬 끄기 (등록 순서로)"
+              : "변경/활동 있는 프로젝트 먼저 보기"
+          }
+          className={`shrink-0 rounded p-1 ${
+            sortByChanges
+              ? "text-accent"
+              : "text-fg-dim hover:bg-raised hover:text-fg"
+          }`}
+        >
+          <ArrowDownUp size={13} />
+        </button>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {projects?.map((p) => (
+        {orderedProjects.map((p) => (
           <ProjectItem
             key={p.id}
             project={p}
@@ -120,7 +186,7 @@ export function ProjectList() {
             }}
           />
         ))}
-        {projects && projects.length === 0 && (
+        {projects && orderedProjects.length === 0 && (
           <div className="px-3 py-4 text-xs leading-5 text-fg-dim">
             아직 프로젝트가 없습니다.
             <br />
