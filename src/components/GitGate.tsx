@@ -9,7 +9,7 @@ export function GitGate({ children }: { children: ReactNode }) {
 
   if (isLoading) {
     return (
-      <div className="flex h-screen items-center justify-center text-fg-dim">
+      <div className="flex h-full items-center justify-center text-fg-dim">
         git 확인 중…
       </div>
     );
@@ -17,7 +17,7 @@ export function GitGate({ children }: { children: ReactNode }) {
 
   if (!data?.found) {
     return (
-      <div className="flex h-screen flex-col items-center justify-center gap-3 px-8 text-center">
+      <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center">
         <CircleAlert size={36} className="text-danger" strokeWidth={1.5} />
         <div className="text-base font-semibold">git을 찾을 수 없습니다</div>
         <div className="max-w-100 text-[13px] leading-6 text-fg-muted">

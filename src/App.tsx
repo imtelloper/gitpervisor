@@ -11,6 +11,7 @@ import { LogPanel } from "./components/log/LogPanel";
 import { SettingsDialog } from "./components/settings/SettingsDialog";
 import { ProjectList } from "./components/sidebar/ProjectList";
 import { StatusBar } from "./components/StatusBar";
+import { TitleBar } from "./components/TitleBar";
 import { Toolbar } from "./components/toolbar/Toolbar";
 import { FileTreePanel } from "./components/tree/FileTreePanel";
 import { WorkspaceTabs } from "./components/workspace/WorkspaceTabs";
@@ -44,38 +45,45 @@ export default function App() {
   }, [projects, selectedProjectId, selectProject]);
 
   return (
-    <GitGate>
-      <div className="flex h-screen flex-col">
-        <div className="flex min-h-0 flex-1">
-          <ProjectList />
-          {selected && fileTreeOpen && <FileTreePanel projectId={selected.id} />}
+    <div className="flex h-screen flex-col overflow-hidden">
+      <TitleBar />
+      <div className="min-h-0 flex-1">
+        <GitGate>
+          <div className="flex h-full flex-col">
+            <div className="flex min-h-0 flex-1">
+              <ProjectList />
+              {selected && fileTreeOpen && (
+                <FileTreePanel projectId={selected.id} />
+              )}
 
-          <main className="flex min-w-0 flex-1 flex-col">
-            {selected ? (
-              <>
-                <Toolbar project={selected} />
-                <div className="flex min-h-0 flex-1">
-                  <ChangesPanel projectId={selected.id} />
-                  <WorkspaceTabs projectId={selected.id} />
-                </div>
-                <LogPanel projectId={selected.id} />
-                <KeyboardShortcuts projectId={selected.id} />
-              </>
-            ) : (
-              <EmptyState
-                icon={FolderGit2}
-                title="프로젝트를 추가하세요"
-                desc="좌측 하단 ‘프로젝트 추가’ 버튼으로 git 레포 폴더를 등록하면 상태가 표시됩니다"
-              />
-            )}
-          </main>
-        </div>
+              <main className="flex min-w-0 flex-1 flex-col">
+                {selected ? (
+                  <>
+                    <Toolbar project={selected} />
+                    <div className="flex min-h-0 flex-1">
+                      <ChangesPanel projectId={selected.id} />
+                      <WorkspaceTabs projectId={selected.id} />
+                    </div>
+                    <LogPanel projectId={selected.id} />
+                    <KeyboardShortcuts projectId={selected.id} />
+                  </>
+                ) : (
+                  <EmptyState
+                    icon={FolderGit2}
+                    title="프로젝트를 추가하세요"
+                    desc="좌측 하단 ‘프로젝트 추가’ 버튼으로 git 레포 폴더를 등록하면 상태가 표시됩니다"
+                  />
+                )}
+              </main>
+            </div>
 
-        <StatusBar project={selected} />
+            <StatusBar project={selected} />
+          </div>
+          <Toasts />
+          <ConfirmHost />
+          <SettingsDialog />
+        </GitGate>
       </div>
-      <Toasts />
-      <ConfirmHost />
-      <SettingsDialog />
-    </GitGate>
+    </div>
   );
 }

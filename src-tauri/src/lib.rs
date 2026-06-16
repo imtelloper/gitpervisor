@@ -29,6 +29,8 @@ pub fn run() {
                 .inner_size(1440.0, 900.0)
                 .min_inner_size(1100.0, 700.0)
                 .center()
+                // OS 기본 타이틀바 제거 — 프론트의 커스텀 TitleBar로 대체 (리사이즈는 유지)
+                .decorations(false)
                 .background_color(tauri::window::Color(30, 31, 34, 255))
                 .additional_browser_args(&browser_args)
                 .build()?;
