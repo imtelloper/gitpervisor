@@ -27,6 +27,17 @@ export function KeyboardShortcuts({ projectId }: { projectId: string }) {
       }
       if (!e.ctrlKey) return;
       const k = e.key.toLowerCase();
+      // Ctrl+Shift+D/E/W: 활성 터미널 탭의 활성 패널 분할/닫기
+      if (e.shiftKey && (k === "d" || k === "e" || k === "w")) {
+        const ts = useTerminals.getState();
+        const tab = ts.terminals.find((t) => t.id === ts.activeTab[projectId]);
+        if (!tab) return; // 터미널 탭이 활성일 때만
+        e.preventDefault();
+        if (k === "d") ts.splitPane(tab.id, tab.activePaneId, "row", false);
+        else if (k === "e") ts.splitPane(tab.id, tab.activePaneId, "col", false);
+        else ts.closePane(tab.id, tab.activePaneId);
+        return;
+      }
       if (k === "k") {
         e.preventDefault();
         if (e.shiftKey) actions.push();

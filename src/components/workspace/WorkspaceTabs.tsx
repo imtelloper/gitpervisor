@@ -4,7 +4,7 @@ import { useEffect } from "react";
 import { useSettings } from "../../queries";
 import { useTerminals } from "../../stores/terminals";
 import { useUi } from "../../stores/ui";
-import { TerminalMount } from "./TerminalMount";
+import { PaneTreeRoot } from "./PaneTree";
 import { ViewerTab } from "./ViewerTab";
 
 /** 중앙 워크스페이스 — Viewer ↔ 터미널 탭 전환 (설계 §16.6). */
@@ -14,7 +14,7 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
   const active = useTerminals((s) => s.activeTab[projectId]) ?? "viewer";
   const setActiveTab = useTerminals((s) => s.setActiveTab);
   const openTerminal = useTerminals((s) => s.openTerminal);
-  const closeTerminal = useTerminals((s) => s.closeTerminal);
+  const closeTab = useTerminals((s) => s.closeTab);
 
   const selectedDiff = useUi((s) => s.selectedDiff);
   const { data: settings } = useSettings();
@@ -40,9 +40,8 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
             active={active === t.id}
             icon={<TerminalIcon size={13} />}
             label={t.title}
-            dim={t.status === "exited"}
             onClick={() => setActiveTab(projectId, t.id)}
-            onClose={() => closeTerminal(t.id)}
+            onClose={() => closeTab(t.id)}
           />
         ))}
         <button
@@ -60,7 +59,9 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
         </div>
         {terminals.map((t) => (
           <div key={t.id} className={active === t.id ? "h-full" : "hidden"}>
-            {active === t.id && <TerminalMount tab={t} fontSize={fontSize} />}
+            {active === t.id && (
+              <PaneTreeRoot tab={t} projectId={projectId} fontSize={fontSize} />
+            )}
           </div>
         ))}
       </div>

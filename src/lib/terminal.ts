@@ -84,8 +84,14 @@ export function createTerminal(opts: {
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
-  // Ctrl+`(터미널 토글)는 PTY로 보내지 않고 window 핸들러로 흘려보낸다.
-  term.attachCustomKeyEventHandler((e) => !(e.ctrlKey && e.key === "`"));
+  // 앱 단축키(터미널 토글 Ctrl+`, 분할 Ctrl+Shift+D/E, 닫기 Ctrl+Shift+W)는
+  // PTY로 보내지 않고 window 핸들러로 흘려보낸다.
+  term.attachCustomKeyEventHandler((e) => {
+    if (e.ctrlKey && e.key === "`") return false;
+    if (e.ctrlKey && e.shiftKey && ["D", "E", "W"].includes(e.key.toUpperCase()))
+      return false;
+    return true;
+  });
   term.open(host); // 분리된 host에 먼저 연다 — 실제 fit은 attach 시점에 (DOM 렌더러는 0크기 허용)
 
   const inst: TermInstance = {

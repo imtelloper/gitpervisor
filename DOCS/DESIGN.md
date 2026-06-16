@@ -675,3 +675,19 @@ interface Settings {
 | **B. xterm 단일 터미널** | `@xterm/*`, `terminal.ts`, `TerminalTab`, fit/resize | 한 프로젝트에서 실제 셸 입출력 |
 | **C. 탭 시스템** | `WorkspaceTabs`, terminals store, keep-alive, Viewer 통합, 파일클릭→viewer 자동전환 | 탭 전환으로 터미널↔diff 즉시 전환 |
 | **D. 폴리시** | 다중 터미널, exit/재시작, 프로젝트별 스코프, 설정(셸/폰트), 정리, 단축키 | 일상 사용 마찰 0 |
+
+### 16.11 패널 분할 (한 탭 안 다중 터미널, Windows Terminal 스타일)
+
+한 터미널 탭이 단일 termId가 아니라 **분할 레이아웃 트리**를 갖는다 — 리프 = 터미널 패널(자체 PTY/xterm), 내부 노드 = 분할(`row` 좌우 / `col` 상하, `ratio`).
+
+```typescript
+type Pane =
+  | { kind: "leaf"; paneId: string }
+  | { kind: "split"; id: string; dir: "row" | "col"; ratio: number; a: Pane; b: Pane };
+interface TermTab { id; projectId; title; layout: Pane; activePaneId; maximizedPaneId }
+```
+
+- **우클릭 메뉴**: 오른쪽/왼쪽/아래/위로 분할 · 패널 최대화(토글) · 패널 닫기.
+- **단축키**: `Ctrl+Shift+D` 오른쪽 분할 · `Ctrl+Shift+E` 아래 분할 · `Ctrl+Shift+W` 패널 닫기 (xterm은 `attachCustomKeyEventHandler`로 이들을 PTY에 보내지 않고 window로 위임).
+- **렌더**: `PaneTreeRoot`가 트리를 재귀 렌더(`SplitView`는 flex row/col + 드래그 가능한 divider로 ratio 조절). 최대화 시 해당 패널만 렌더(나머지는 언마운트되지만 PTY·스크롤백은 레지스트리에 보존).
+- 활성 패널은 accent 아웃라인. 패널 닫기 시 형제가 분할 자리를 흡수하고, 마지막 패널을 닫으면 탭이 닫힌다. exit/재시작은 패널 단위.
