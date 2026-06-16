@@ -24,7 +24,7 @@ export function TitleBar() {
           src="/logo.png"
           alt=""
           draggable={false}
-          className="h-[18px] w-[18px] rounded-full"
+          className="h-[18px] w-[18px] rounded-[5px]"
         />
         <span className="text-xs font-semibold tracking-wide text-fg">
           Gitpervisor
