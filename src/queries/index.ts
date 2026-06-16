@@ -56,26 +56,71 @@ export function useNotes() {
   });
 }
 
-/** 메모 저장 — 낙관적 갱신(사이드바 인디케이터 즉시 반영). */
-export function useSetNote() {
+function patchNotes(
+  qc: ReturnType<typeof useQueryClient>,
+  fn: (old: NotesMap) => NotesMap,
+) {
+  qc.setQueryData<NotesMap>(keys.notes, (old) => fn(old ?? {}));
+}
+
+/** 새 메모 추가 — 낙관적(프론트 생성 memoId). */
+export function useAddMemo() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ projectId, text }: { projectId: string; text: string }) =>
-      ipc.setNote(projectId, text),
-    onMutate: async ({ projectId, text }) => {
-      await qc.cancelQueries({ queryKey: keys.notes });
-      const prev = qc.getQueryData<NotesMap>(keys.notes);
-      qc.setQueryData<NotesMap>(keys.notes, (old) => {
-        const next = { ...(old ?? {}) };
-        if (text.trim())
-          next[projectId] = { text, updatedAt: new Date().toISOString() };
+    mutationFn: ({ projectId, memoId }: { projectId: string; memoId: string }) =>
+      ipc.addMemo(projectId, memoId),
+    onMutate: ({ projectId, memoId }) => {
+      const now = new Date().toISOString();
+      patchNotes(qc, (old) => ({
+        ...old,
+        [projectId]: [
+          ...(old[projectId] ?? []),
+          { id: memoId, text: "", createdAt: now, updatedAt: now },
+        ],
+      }));
+    },
+  });
+}
+
+/** 메모 본문 수정 — 낙관적. */
+export function useUpdateMemo() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      projectId,
+      memoId,
+      text,
+    }: {
+      projectId: string;
+      memoId: string;
+      text: string;
+    }) => ipc.updateMemo(projectId, memoId, text),
+    onMutate: ({ projectId, memoId, text }) => {
+      const now = new Date().toISOString();
+      patchNotes(qc, (old) => ({
+        ...old,
+        [projectId]: (old[projectId] ?? []).map((m) =>
+          m.id === memoId ? { ...m, text, updatedAt: now } : m,
+        ),
+      }));
+    },
+  });
+}
+
+/** 메모 삭제 — 낙관적(목록 비면 키 제거). */
+export function useDeleteMemo() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ projectId, memoId }: { projectId: string; memoId: string }) =>
+      ipc.deleteMemo(projectId, memoId),
+    onMutate: ({ projectId, memoId }) => {
+      patchNotes(qc, (old) => {
+        const next = { ...old };
+        const list = (next[projectId] ?? []).filter((m) => m.id !== memoId);
+        if (list.length) next[projectId] = list;
         else delete next[projectId];
         return next;
       });
-      return { prev };
-    },
-    onError: (_e, _v, ctx) => {
-      if (ctx?.prev) qc.setQueryData(keys.notes, ctx.prev);
     },
   });
 }

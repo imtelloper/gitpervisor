@@ -11,7 +11,6 @@ import {
   SquareTerminal,
   StickyNote,
 } from "lucide-react";
-import { useRef } from "react";
 
 import type { Project, RepoOpState } from "../../lib/ipc";
 import {
@@ -24,7 +23,6 @@ import {
 import { useOps } from "../../stores/ops";
 import { useTerminals } from "../../stores/terminals";
 import { useUi } from "../../stores/ui";
-import { MemoPopover } from "../memo/MemoPopover";
 
 const OP_LABEL: Partial<Record<RepoOpState, string>> = {
   merging: "MERGE 진행 중",
@@ -41,11 +39,9 @@ export function Toolbar({ project }: { project: Project }) {
   const startPush = usePushFlow(project.id);
   const running = useOps((s) => s.running[project.id]);
   const fileTreeOpen = useUi((s) => s.fileTreeOpen);
-  const memoOpen = useUi((s) => s.memoOpen);
   const setMemoOpen = useUi((s) => s.setMemoOpen);
   const { data: notes } = useNotes();
-  const hasNote = !!notes?.[project.id]?.text;
-  const memoAnchor = useRef<HTMLDivElement>(null);
+  const memoCount = notes?.[project.id]?.filter((m) => m.text.trim()).length ?? 0;
 
   const branchLabel =
     status?.branch ??
@@ -142,26 +138,20 @@ export function Toolbar({ project }: { project: Project }) {
         )}
       </button>
 
-      <div className="relative" ref={memoAnchor}>
-        <button
-          title="프로젝트 메모"
-          onClick={() => setMemoOpen(!memoOpen)}
-          className={`rounded p-1.5 hover:bg-raised ${
-            memoOpen || hasNote
-              ? "text-accent"
-              : "text-fg-muted hover:text-fg"
-          }`}
-        >
-          <StickyNote size={15} />
-        </button>
-        {memoOpen && (
-          <MemoPopover
-            project={project}
-            anchorRef={memoAnchor}
-            onClose={() => setMemoOpen(false)}
-          />
+      <button
+        title="프로젝트 메모"
+        onClick={() => setMemoOpen(true)}
+        className={`relative rounded p-1.5 hover:bg-raised ${
+          memoCount > 0 ? "text-accent" : "text-fg-muted hover:text-fg"
+        }`}
+      >
+        <StickyNote size={15} />
+        {memoCount > 0 && (
+          <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-accent px-1 text-[9px] font-semibold text-on-accent">
+            {memoCount}
+          </span>
         )}
-      </div>
+      </button>
 
       <button
         title="이 프로젝트 경로에서 터미널 열기 (Ctrl+`)"

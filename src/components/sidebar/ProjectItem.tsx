@@ -20,7 +20,7 @@ export function ProjectItem({
 }) {
   const { data: status, isLoading, error } = useStatus(project.id);
   const { data: notes } = useNotes();
-  const hasNote = !!notes?.[project.id]?.text;
+  const hasNote = !!notes?.[project.id]?.some((m) => m.text.trim());
   const dot = dotStateOf(status, isLoading);
 
   const branchLabel =

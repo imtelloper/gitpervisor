@@ -6,7 +6,7 @@ use tauri_plugin_store::StoreExt;
 
 use crate::commands::TerminalSession;
 use crate::error::{ErrorCode, IpcError};
-use crate::git::types::{Project, ProjectNote, Settings};
+use crate::git::types::{Memo, Project, Settings};
 use crate::monitor::Monitor;
 use crate::watcher::RepoWatcher;
 
@@ -17,7 +17,7 @@ pub const SETTINGS_KEY: &str = "settings";
 pub const NOTES_FILE: &str = "notes.json";
 pub const NOTES_KEY: &str = "notes";
 
-pub type Notes = HashMap<String, ProjectNote>;
+pub type Notes = HashMap<String, Vec<Memo>>;
 
 pub struct AppState {
     pub projects: RwLock<Vec<Project>>,

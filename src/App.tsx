@@ -8,6 +8,7 @@ import { Toasts } from "./components/common/Toast";
 import { GitGate } from "./components/GitGate";
 import { KeyboardShortcuts } from "./components/KeyboardShortcuts";
 import { LogPanel } from "./components/log/LogPanel";
+import { MemoDialog } from "./components/memo/MemoDialog";
 import { SettingsDialog } from "./components/settings/SettingsDialog";
 import { ProjectList } from "./components/sidebar/ProjectList";
 import { StatusBar } from "./components/StatusBar";
@@ -82,6 +83,7 @@ export default function App() {
           <Toasts />
           <ConfirmHost />
           <SettingsDialog />
+          <MemoDialog />
         </GitGate>
       </div>
     </div>

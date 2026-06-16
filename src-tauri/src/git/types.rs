@@ -205,13 +205,15 @@ impl Default for Settings {
     }
 }
 
-// ---- 프로젝트 메모 ----
+// ---- 프로젝트 메모 (프로젝트당 여러 개) ----
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ProjectNote {
+pub struct Memo {
+    pub id: String,
     pub text: String,
-    /// ISO 8601 — 마지막 수정 시각
+    /// ISO 8601
+    pub created_at: String,
     pub updated_at: String,
 }
 
