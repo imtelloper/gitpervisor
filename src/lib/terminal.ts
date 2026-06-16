@@ -18,6 +18,11 @@ export interface TermInstance {
 
 const registry = new Map<string, TermInstance>();
 
+// Linux 웹뷰(WebKitGTK)는 인쇄 가능한 키를 입력기(IME) textarea 경로로 흘려보내는데,
+// 이 버퍼가 비워지지 않아 키마다 직전까지의 내용이 통째로 다시 전송된다(중복 누적,
+// Backspace 무력화). Windows(WebView2)/macOS는 정상. 이 플랫폼에서만 우회한다.
+const isWebKitGtk = /Linux/.test(navigator.userAgent);
+
 type ExitListener = (id: string, code: number) => void;
 const exitListeners = new Set<ExitListener>();
 
@@ -105,6 +110,24 @@ export function createTerminal(opts: {
     if (e.ctrlKey && k === "v") {
       e.preventDefault();
       void pasteIntoTerminal(opts.id);
+      return false;
+    }
+
+    // WebKitGTK IME 누적 버그 우회: 조합 중이 아닌 단일 인쇄 문자는 깨진 textarea
+    // 경로를 거치지 않고 PTY로 직접 보낸다. preventDefault로 textarea 입력 자체를
+    // 막아 누적을 차단한다. Enter·Backspace·방향키 등(key.length>1)과 조합 키는
+    // xterm 기본 경로로 흘려보낸다. (영문·명령 입력 정상화 — 터미널 내부 한글 조합은
+    // 미지원이나 커밋창 등 다른 입력의 IME는 영향 없음)
+    if (
+      isWebKitGtk &&
+      !e.isComposing &&
+      !e.ctrlKey &&
+      !e.altKey &&
+      !e.metaKey &&
+      e.key.length === 1
+    ) {
+      e.preventDefault();
+      void invoke("term_write", { termId: opts.id, data: e.key }).catch(() => {});
       return false;
     }
     return true;
