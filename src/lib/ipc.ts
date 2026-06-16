@@ -123,6 +123,13 @@ export interface Settings {
 
 export type OpenTarget = "explorer" | "terminal";
 
+// ---- 프로젝트 메모 ----
+export interface ProjectNote {
+  text: string;
+  updatedAt: string; // ISO 8601
+}
+export type NotesMap = Record<string, ProjectNote>;
+
 // ---- 타이틀바 시스템 모니터 ----
 export interface SysMetrics {
   cpu: number; // 0-100
@@ -305,6 +312,9 @@ export const ipc = {
     callMutating<void>("open_in", { projectId, target }),
   listDir: (projectId: string, relPath: string) =>
     call<DirEntry[]>("list_dir", { projectId, relPath }),
+  getNotes: () => call<NotesMap>("get_notes"),
+  setNote: (projectId: string, text: string) =>
+    callMutating<ProjectNote | null>("set_note", { projectId, text }),
   // 타이틀바 폴링 — 사용자 클릭에 양보(background), 재시도 없음, 짧은 타임아웃
   sysMetrics: () =>
     call<SysMetrics>("sys_metrics", undefined, {

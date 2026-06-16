@@ -6,7 +6,7 @@ use tauri_plugin_store::StoreExt;
 
 use crate::commands::TerminalSession;
 use crate::error::{ErrorCode, IpcError};
-use crate::git::types::{Project, Settings};
+use crate::git::types::{Project, ProjectNote, Settings};
 use crate::monitor::Monitor;
 use crate::watcher::RepoWatcher;
 
@@ -14,6 +14,10 @@ pub const STORE_FILE: &str = "projects.json";
 pub const STORE_KEY: &str = "projects";
 pub const SETTINGS_FILE: &str = "settings.json";
 pub const SETTINGS_KEY: &str = "settings";
+pub const NOTES_FILE: &str = "notes.json";
+pub const NOTES_KEY: &str = "notes";
+
+pub type Notes = HashMap<String, ProjectNote>;
 
 pub struct AppState {
     pub projects: RwLock<Vec<Project>>,
@@ -25,10 +29,12 @@ pub struct AppState {
     pub terminals: Mutex<HashMap<String, TerminalSession>>,
     /// 타이틀바 시스템 모니터(CPU/GPU/RAM/저장소) — 폴링 시 갱신.
     pub monitor: Mutex<Monitor>,
+    /// 프로젝트별 메모 (projectId → 메모).
+    pub notes: RwLock<Notes>,
 }
 
 impl AppState {
-    pub fn new(projects: Vec<Project>, settings: Settings) -> Self {
+    pub fn new(projects: Vec<Project>, settings: Settings, notes: Notes) -> Self {
         Self {
             projects: RwLock::new(projects),
             settings: RwLock::new(settings),
@@ -36,6 +42,7 @@ impl AppState {
             watchers: Mutex::new(HashMap::new()),
             terminals: Mutex::new(HashMap::new()),
             monitor: Mutex::new(Monitor::new()),
+            notes: RwLock::new(notes),
         }
     }
 
@@ -106,5 +113,26 @@ pub fn save_settings(app: &AppHandle, settings: &Settings) -> Result<(), IpcErro
     store
         .save()
         .map_err(|e| IpcError::new(ErrorCode::Io, format!("설정 저장 실패: {e}")))?;
+    Ok(())
+}
+
+pub fn load_notes(app: &AppHandle) -> Notes {
+    let Ok(store) = app.store(NOTES_FILE) else {
+        return Notes::new();
+    };
+    let Some(value) = store.get(NOTES_KEY) else {
+        return Notes::new();
+    };
+    serde_json::from_value(value).unwrap_or_default()
+}
+
+pub fn save_notes(app: &AppHandle, notes: &Notes) -> Result<(), IpcError> {
+    let store = app
+        .store(NOTES_FILE)
+        .map_err(|e| IpcError::new(ErrorCode::Io, format!("스토어 열기 실패: {e}")))?;
+    store.set(NOTES_KEY, serde_json::json!(notes));
+    store
+        .save()
+        .map_err(|e| IpcError::new(ErrorCode::Io, format!("메모 저장 실패: {e}")))?;
     Ok(())
 }

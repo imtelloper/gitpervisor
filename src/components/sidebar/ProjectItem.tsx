@@ -1,8 +1,8 @@
-import { ArrowDown, ArrowUp, GitBranch, X } from "lucide-react";
+import { ArrowDown, ArrowUp, GitBranch, StickyNote, X } from "lucide-react";
 
 import type { Project } from "../../lib/ipc";
 import { errorMessage } from "../../lib/ipc";
-import { useStatus } from "../../queries";
+import { useNotes, useStatus } from "../../queries";
 import { dotStateOf, StatusDot } from "../common/StatusDot";
 
 export function ProjectItem({
@@ -19,6 +19,8 @@ export function ProjectItem({
   onContextMenu?: (e: React.MouseEvent) => void;
 }) {
   const { data: status, isLoading, error } = useStatus(project.id);
+  const { data: notes } = useNotes();
+  const hasNote = !!notes?.[project.id]?.text;
   const dot = dotStateOf(status, isLoading);
 
   const branchLabel =
@@ -50,6 +52,13 @@ export function ProjectItem({
       <div className="flex items-center gap-2 overflow-hidden">
         <StatusDot state={dot} />
         <span className="whitespace-nowrap font-medium">{project.name}</span>
+        {hasNote && (
+          <StickyNote
+            size={11}
+            className="shrink-0 text-fg-dim"
+            aria-label="메모 있음"
+          />
+        )}
       </div>
       <button
         title="프로젝트 제거 (레포는 삭제되지 않음)"

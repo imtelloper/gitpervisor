@@ -110,5 +110,11 @@ pub fn remove_project(
         }
     }
     crate::watcher::unregister(&app, &id);
+    // 메모도 함께 정리 (있을 때만 저장)
+    let removed_note = state.notes.write().unwrap().remove(&id).is_some();
+    if removed_note {
+        let snapshot = state.notes.read().unwrap().clone();
+        let _ = state::save_notes(&app, &snapshot);
+    }
     state::save_projects(&app, &state.projects.read().unwrap())
 }

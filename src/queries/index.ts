@@ -8,7 +8,7 @@ import {
 } from "@tanstack/react-query";
 import { useEffect } from "react";
 
-import type { DiffTarget, Project } from "../lib/ipc";
+import type { DiffTarget, NotesMap, Project } from "../lib/ipc";
 import { errorMessage, ipc, isIpcError } from "../lib/ipc";
 import type { SyncOp } from "../stores/ops";
 import { useOps } from "../stores/ops";
@@ -44,7 +44,41 @@ export const keys = {
   dir: (projectId: string, relPath: string) =>
     ["dir", projectId, relPath] as const,
   sysMetrics: ["sys-metrics"] as const,
+  notes: ["notes"] as const,
 };
+
+/** 전체 프로젝트 메모 (캐시). */
+export function useNotes() {
+  return useQuery({
+    queryKey: keys.notes,
+    queryFn: ipc.getNotes,
+    staleTime: Infinity,
+  });
+}
+
+/** 메모 저장 — 낙관적 갱신(사이드바 인디케이터 즉시 반영). */
+export function useSetNote() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ projectId, text }: { projectId: string; text: string }) =>
+      ipc.setNote(projectId, text),
+    onMutate: async ({ projectId, text }) => {
+      await qc.cancelQueries({ queryKey: keys.notes });
+      const prev = qc.getQueryData<NotesMap>(keys.notes);
+      qc.setQueryData<NotesMap>(keys.notes, (old) => {
+        const next = { ...(old ?? {}) };
+        if (text.trim())
+          next[projectId] = { text, updatedAt: new Date().toISOString() };
+        else delete next[projectId];
+        return next;
+      });
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => {
+      if (ctx?.prev) qc.setQueryData(keys.notes, ctx.prev);
+    },
+  });
+}
 
 /** 타이틀바 시스템 모니터 — 2초 간격 폴링. */
 export function useSysMetrics() {

@@ -26,6 +26,8 @@ interface UiState {
   selectedCommitSha: string | null;
   /** 설정 모달 열림 여부 */
   settingsOpen: boolean;
+  /** 메모 팝오버 열림 여부 (현재 선택 프로젝트) */
+  memoOpen: boolean;
   /** diff 뷰어: 변경 없는 영역 접기 (기본 접기, 끄면 전체 펼침) */
   diffCollapseUnchanged: boolean;
   /** 파일 트리 패널 표시 여부 (localStorage 영속) */
@@ -39,6 +41,7 @@ interface UiState {
   toggleLog: () => void;
   selectCommit: (sha: string | null) => void;
   setSettingsOpen: (open: boolean) => void;
+  setMemoOpen: (open: boolean) => void;
   toggleDiffCollapse: () => void;
   toggleFileTree: () => void;
   toggleProjectSort: () => void;
@@ -56,6 +59,7 @@ export const useUi = create<UiState>((set) => ({
   logOpen: false,
   selectedCommitSha: null,
   settingsOpen: false,
+  memoOpen: false,
   diffCollapseUnchanged: true,
   fileTreeOpen: localStorage.getItem("gp:filetree-open") === "1",
   projectSortByChanges: localStorage.getItem("gp:project-sort-changes") === "1",
@@ -67,11 +71,13 @@ export const useUi = create<UiState>((set) => ({
       selectedProjectId: id,
       selectedDiff: null,
       selectedCommitSha: null,
+      memoOpen: false,
     }),
   selectDiff: (target) => set({ selectedDiff: target }),
   toggleLog: () => set((s) => ({ logOpen: !s.logOpen })),
   selectCommit: (sha) => set({ selectedCommitSha: sha }),
   setSettingsOpen: (open) => set({ settingsOpen: open }),
+  setMemoOpen: (open) => set({ memoOpen: open }),
   toggleDiffCollapse: () =>
     set((s) => ({ diffCollapseUnchanged: !s.diffCollapseUnchanged })),
   toggleFileTree: () =>

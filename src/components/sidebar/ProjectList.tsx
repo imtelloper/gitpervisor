@@ -4,6 +4,7 @@ import {
   Copy,
   FolderOpen,
   Plus,
+  StickyNote,
   Terminal,
   Trash2,
 } from "lucide-react";
@@ -139,6 +140,12 @@ export function ProjectList() {
     setMenu(null);
   }
 
+  function handleMemo(project: Project) {
+    selectProject(project.id); // memoOpen 초기화됨 → 아래서 다시 연다
+    useUi.getState().setMemoOpen(true);
+    setMenu(null);
+  }
+
   function handleCopyPath(project: Project) {
     void navigator.clipboard
       .writeText(project.path)
@@ -216,6 +223,12 @@ export function ProjectList() {
           }}
           onClick={(e) => e.stopPropagation()}
         >
+          <MenuItem
+            icon={StickyNote}
+            label="메모"
+            onClick={() => handleMemo(menu.project)}
+          />
+          <div className="my-1 border-t border-edge" />
           <MenuItem
             icon={FolderOpen}
             label="탐색기에서 열기"

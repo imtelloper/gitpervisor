@@ -9,13 +9,22 @@ import {
   RefreshCw,
   Settings as SettingsIcon,
   SquareTerminal,
+  StickyNote,
 } from "lucide-react";
+import { useRef } from "react";
 
 import type { Project, RepoOpState } from "../../lib/ipc";
-import { usePushFlow, useRefreshAll, useStatus, useSyncOp } from "../../queries";
+import {
+  useNotes,
+  usePushFlow,
+  useRefreshAll,
+  useStatus,
+  useSyncOp,
+} from "../../queries";
 import { useOps } from "../../stores/ops";
 import { useTerminals } from "../../stores/terminals";
 import { useUi } from "../../stores/ui";
+import { MemoPopover } from "../memo/MemoPopover";
 
 const OP_LABEL: Partial<Record<RepoOpState, string>> = {
   merging: "MERGE 진행 중",
@@ -32,6 +41,11 @@ export function Toolbar({ project }: { project: Project }) {
   const startPush = usePushFlow(project.id);
   const running = useOps((s) => s.running[project.id]);
   const fileTreeOpen = useUi((s) => s.fileTreeOpen);
+  const memoOpen = useUi((s) => s.memoOpen);
+  const setMemoOpen = useUi((s) => s.setMemoOpen);
+  const { data: notes } = useNotes();
+  const hasNote = !!notes?.[project.id]?.text;
+  const memoAnchor = useRef<HTMLDivElement>(null);
 
   const branchLabel =
     status?.branch ??
@@ -127,6 +141,27 @@ export function Toolbar({ project }: { project: Project }) {
           </span>
         )}
       </button>
+
+      <div className="relative" ref={memoAnchor}>
+        <button
+          title="프로젝트 메모"
+          onClick={() => setMemoOpen(!memoOpen)}
+          className={`rounded p-1.5 hover:bg-raised ${
+            memoOpen || hasNote
+              ? "text-accent"
+              : "text-fg-muted hover:text-fg"
+          }`}
+        >
+          <StickyNote size={15} />
+        </button>
+        {memoOpen && (
+          <MemoPopover
+            project={project}
+            anchorRef={memoAnchor}
+            onClose={() => setMemoOpen(false)}
+          />
+        )}
+      </div>
 
       <button
         title="이 프로젝트 경로에서 터미널 열기 (Ctrl+`)"

@@ -205,6 +205,16 @@ impl Default for Settings {
     }
 }
 
+// ---- 프로젝트 메모 ----
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectNote {
+    pub text: String,
+    /// ISO 8601 — 마지막 수정 시각
+    pub updated_at: String,
+}
+
 // ---- 파일 트리 탐색기 ----
 
 #[derive(Debug, Clone, Serialize)]
