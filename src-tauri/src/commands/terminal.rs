@@ -186,6 +186,61 @@ pub fn kill_all(state: &AppState) {
     }
 }
 
+/// 터미널 붙여넣기용 클립보드 판별:
+/// 1) 파일 목록(탐색기/폴더에서 복사) → 인용된 경로(여러 개면 공백 구분)
+/// 2) 이미지 데이터(스크린샷 등) → 임시 파일로 저장 후 그 경로
+/// 3) 일반 텍스트 → 그대로
+#[cfg(windows)]
+#[tauri::command]
+pub fn term_paste() -> String {
+    use clipboard_win::{formats, get_clipboard};
+
+    let files: Vec<String> = get_clipboard(formats::FileList).unwrap_or_default();
+    if !files.is_empty() {
+        return files
+            .iter()
+            .map(|p| shell_quote(p))
+            .collect::<Vec<_>>()
+            .join(" ");
+    }
+
+    let bmp: Vec<u8> = get_clipboard(formats::Bitmap).unwrap_or_default();
+    if bmp.len() > 64 {
+        if let Some(path) = save_temp_image(&bmp) {
+            return shell_quote(&path);
+        }
+    }
+
+    get_clipboard(formats::Unicode).unwrap_or_default()
+}
+
+#[cfg(not(windows))]
+#[tauri::command]
+pub fn term_paste() -> String {
+    String::new()
+}
+
+#[cfg(windows)]
+fn shell_quote(p: &str) -> String {
+    if p.chars().any(|c| c.is_whitespace()) {
+        format!("\"{p}\"")
+    } else {
+        p.to_string()
+    }
+}
+
+#[cfg(windows)]
+fn save_temp_image(bytes: &[u8]) -> Option<String> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    let mut path = std::env::temp_dir();
+    path.push(format!("gitpervisor-paste-{nanos}.bmp"));
+    std::fs::write(&path, bytes).ok()?;
+    Some(path.to_string_lossy().into_owned())
+}
+
 fn resolve_shell(state: &AppState) -> ShellSpec {
     let configured = state.settings.read().unwrap().terminal_shell.clone();
     if let Some(program) = configured.filter(|s| !s.trim().is_empty()) {

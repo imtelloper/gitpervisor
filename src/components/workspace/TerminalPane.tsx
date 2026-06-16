@@ -1,4 +1,6 @@
 import {
+  ClipboardPaste,
+  Copy,
   Maximize2,
   Minimize2,
   RotateCw,
@@ -10,9 +12,11 @@ import { useEffect, useRef, useState } from "react";
 
 import {
   attachTerminal,
+  copyTerminalSelection,
   createTerminal,
   disposeTerminal,
   fitTerminal,
+  pasteIntoTerminal,
 } from "../../lib/terminal";
 import { useTerminals } from "../../stores/terminals";
 
@@ -140,6 +144,19 @@ function PaneMenu({
       onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
     >
+      <Item
+        icon={<Copy size={14} />}
+        label="복사"
+        hint="Ctrl+Shift+C"
+        onClick={run(() => copyTerminalSelection(paneId))}
+      />
+      <Item
+        icon={<ClipboardPaste size={14} />}
+        label="붙여넣기"
+        hint="Ctrl+V"
+        onClick={run(() => void pasteIntoTerminal(paneId))}
+      />
+      <div className="my-1 border-t border-edge" />
       <Item
         icon={<SplitSquareHorizontal size={14} />}
         label="오른쪽으로 분할"

@@ -84,12 +84,29 @@ export function createTerminal(opts: {
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
-  // 앱 단축키(터미널 토글 Ctrl+`, 분할 Ctrl+Shift+D/E, 닫기 Ctrl+Shift+W)는
-  // PTY로 보내지 않고 window 핸들러로 흘려보낸다.
   term.attachCustomKeyEventHandler((e) => {
+    if (e.type !== "keydown") return true;
+    const k = e.key.toLowerCase();
+
+    // 앱 단축키(터미널 토글 Ctrl+`, 분할 Ctrl+Shift+D/E, 닫기 Ctrl+Shift+W)는
+    // PTY로 보내지 않고 window 핸들러로 흘려보낸다.
     if (e.ctrlKey && e.key === "`") return false;
-    if (e.ctrlKey && e.shiftKey && ["D", "E", "W"].includes(e.key.toUpperCase()))
+    if (e.ctrlKey && e.shiftKey && ["d", "e", "w"].includes(k)) return false;
+
+    // 복사: Ctrl+Shift+C, 또는 선택영역이 있을 때 Ctrl+C (없으면 통과 → SIGINT)
+    if (e.ctrlKey && k === "c" && (e.shiftKey || term.hasSelection())) {
+      const sel = term.getSelection();
+      if (sel) void navigator.clipboard.writeText(sel).catch(() => {});
+      term.clearSelection();
+      e.preventDefault();
       return false;
+    }
+    // 붙여넣기: Ctrl+V / Ctrl+Shift+V — 스마트(파일·이미지→경로) 붙여넣기로 대체
+    if (e.ctrlKey && k === "v") {
+      e.preventDefault();
+      void pasteIntoTerminal(opts.id);
+      return false;
+    }
     return true;
   });
   term.open(host); // 분리된 host에 먼저 연다 — 실제 fit은 attach 시점에 (DOM 렌더러는 0크기 허용)
@@ -157,6 +174,23 @@ export function fitTerminal(id: string) {
   } catch {
     /* noop */
   }
+}
+
+/** 스마트 붙여넣기 — 백엔드가 클립보드를 판별(파일/이미지→경로, 그 외 텍스트)해 PTY로 보낸다. */
+export async function pasteIntoTerminal(id: string) {
+  try {
+    const text = await invoke<string>("term_paste");
+    if (text) await invoke("term_write", { termId: id, data: text });
+    getTerminal(id)?.term.focus();
+  } catch {
+    /* noop */
+  }
+}
+
+/** 선택 영역을 클립보드로 복사. */
+export function copyTerminalSelection(id: string) {
+  const sel = registry.get(id)?.term.getSelection();
+  if (sel) void navigator.clipboard.writeText(sel).catch(() => {});
 }
 
 /** 세션 완전 종료 — PTY kill + xterm dispose + 레지스트리 제거. */

@@ -73,6 +73,7 @@ pub fn run() {
             commands::term_write,
             commands::term_resize,
             commands::term_close,
+            commands::term_paste,
             monitor::sys_metrics,
         ])
         .on_window_event(|window, event| {
