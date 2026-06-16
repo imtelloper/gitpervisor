@@ -9,6 +9,8 @@ export function usePanelWidth(
   initial: number,
   min: number,
   max: number,
+  /** 핸들이 패널의 어느 가장자리인지 — "left"면 드래그 방향을 반전한다(우측 패널). */
+  side: "left" | "right" = "right",
 ) {
   const [width, setWidth] = useState(() => {
     const saved = Number(localStorage.getItem(storageKey));
@@ -23,8 +25,10 @@ export function usePanelWidth(
     e.preventDefault();
     const startX = e.clientX;
     const startW = width;
-    const onMove = (ev: MouseEvent) =>
-      setWidth(Math.min(max, Math.max(min, startW + ev.clientX - startX)));
+    const onMove = (ev: MouseEvent) => {
+      const delta = side === "left" ? startX - ev.clientX : ev.clientX - startX;
+      setWidth(Math.min(max, Math.max(min, startW + delta)));
+    };
     const onUp = () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);

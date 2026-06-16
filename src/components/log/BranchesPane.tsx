@@ -1,6 +1,8 @@
 import { Check, GitBranch } from "lucide-react";
 
+import { usePanelWidth } from "../../lib/use-panel-width";
 import { useBranches } from "../../queries";
+import { ResizeHandle } from "../common/ResizeHandle";
 
 function Section({
   title,
@@ -22,10 +24,15 @@ function Section({
 /** Log 패널 좌측: 로컬/리모트 브랜치 트리 (현재 HEAD 체크 표시). */
 export function BranchesPane({ projectId }: { projectId: string }) {
   const { data, isLoading, error } = useBranches(projectId);
+  const { width, startResize } = usePanelWidth("gp:branches-width", 192, 130, 360);
 
   return (
-    <div className="w-48 shrink-0 overflow-y-auto border-r border-edge p-2 text-xs">
-      {isLoading ? (
+    <div
+      style={{ width }}
+      className="relative shrink-0 border-r border-edge"
+    >
+      <div className="h-full overflow-y-auto p-2 text-xs">
+        {isLoading ? (
         <span className="text-fg-dim">브랜치 …</span>
       ) : error ? (
         <span className="text-fg-dim">브랜치를 불러오지 못했습니다</span>
@@ -83,6 +90,8 @@ export function BranchesPane({ projectId }: { projectId: string }) {
           </Section>
         </>
       ) : null}
+      </div>
+      <ResizeHandle onMouseDown={startResize} />
     </div>
   );
 }

@@ -1,7 +1,9 @@
 import { KIND_BADGE } from "../../lib/change-kind";
 import { splitPath } from "../../lib/format";
+import { usePanelWidth } from "../../lib/use-panel-width";
 import { useCommitDetail } from "../../queries";
 import { useUi } from "../../stores/ui";
+import { ResizeHandle } from "../common/ResizeHandle";
 
 /** Log 패널 우측: 선택 커밋의 전체 메시지 + 변경 파일 트리. 파일 클릭 → 중앙 뷰어에 커밋 diff. */
 export function CommitDetailPane({ projectId }: { projectId: string }) {
@@ -9,25 +11,36 @@ export function CommitDetailPane({ projectId }: { projectId: string }) {
   const selectedDiff = useUi((s) => s.selectedDiff);
   const selectDiff = useUi((s) => s.selectDiff);
   const { data, isLoading } = useCommitDetail(projectId, sha);
+  const { width, startResize } = usePanelWidth(
+    "gp:commit-detail-width",
+    320,
+    200,
+    600,
+    "left",
+  );
 
   if (!sha) {
     return (
-      <div className="flex w-80 shrink-0 items-center justify-center border-l border-edge p-3 text-xs text-fg-dim">
-        커밋을 선택하세요
-      </div>
+      <Shell width={width} startResize={startResize}>
+        <div className="flex h-full items-center justify-center p-3 text-xs text-fg-dim">
+          커밋을 선택하세요
+        </div>
+      </Shell>
     );
   }
   if (isLoading || !data) {
     return (
-      <div className="flex w-80 shrink-0 items-center justify-center border-l border-edge p-3 text-xs text-fg-dim">
-        커밋 상세 …
-      </div>
+      <Shell width={width} startResize={startResize}>
+        <div className="flex h-full items-center justify-center p-3 text-xs text-fg-dim">
+          커밋 상세 …
+        </div>
+      </Shell>
     );
   }
 
   const { commit, files } = data;
   return (
-    <div className="w-80 shrink-0 overflow-y-auto border-l border-edge">
+    <Shell width={width} startResize={startResize}>
       <div className="border-b border-edge p-3">
         <div className="text-[13px] font-medium leading-snug">
           {commit.subject}
@@ -81,6 +94,23 @@ export function CommitDetailPane({ projectId }: { projectId: string }) {
           );
         })}
       </div>
+    </Shell>
+  );
+}
+
+function Shell({
+  width,
+  startResize,
+  children,
+}: {
+  width: number;
+  startResize: (e: React.MouseEvent) => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div style={{ width }} className="relative shrink-0 border-l border-edge">
+      <div className="h-full overflow-y-auto">{children}</div>
+      <ResizeHandle onMouseDown={startResize} side="left" />
     </div>
   );
 }
