@@ -1,20 +1,12 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { GitBranch } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import { useProjects, useStatus } from "../queries";
-import { useUi } from "../stores/ui";
 import { SysMonitor } from "./SysMonitor";
 
 const appWindow = getCurrentWindow();
 
-/** 커스텀 타이틀바 — OS 기본 대신 앱 테마에 맞춘 프레임 (decorations:false). */
+/** 커스텀 타이틀바 — 좌: 브랜드 / 우: 시스템 모니터 + 창 컨트롤 (decorations:false). */
 export function TitleBar() {
-  const { data: projects } = useProjects();
-  const selectedId = useUi((s) => s.selectedProjectId);
-  const selected = projects?.find((p) => p.id === selectedId) ?? null;
-  const { data: status } = useStatus(selectedId ?? null);
-
   // F11: 최대화 토글 (전역)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -30,25 +22,9 @@ export function TitleBar() {
   return (
     <header
       data-tauri-drag-region
-      className="flex h-8 shrink-0 cursor-default items-center gap-2 border-b border-edge bg-panel pr-3 select-none"
+      className="flex h-8 shrink-0 cursor-default items-center border-b border-edge bg-panel pl-3 select-none"
     >
-      {/* 창 컨트롤 — 좌측 (코너에 밀착) */}
-      <div className="flex h-full">
-        <CtlButton onClick={() => void appWindow.minimize()} title="최소화">
-          <Glyph>
-            <line x1="1" y1="5.5" x2="10" y2="5.5" />
-          </Glyph>
-        </CtlButton>
-        <MaxRestoreButton />
-        <CtlButton onClick={() => void appWindow.close()} title="닫기" danger>
-          <Glyph>
-            <path d="M1.5 1.5 L9.5 9.5 M9.5 1.5 L1.5 9.5" />
-          </Glyph>
-        </CtlButton>
-      </div>
-
-      <div className="h-4 w-px shrink-0 bg-edge" />
-
+      {/* 좌: 브랜드 */}
       <div data-tauri-drag-region className="flex items-center gap-1.5">
         <img
           src="/logo.png"
@@ -61,26 +37,25 @@ export function TitleBar() {
         </span>
       </div>
 
-      <div className="h-4 w-px shrink-0 bg-edge" />
+      {/* 가운데: 드래그 영역 */}
+      <div data-tauri-drag-region className="h-full flex-1" />
+
+      {/* 우: 시스템 모니터 */}
       <SysMonitor />
 
-      <div
-        data-tauri-drag-region
-        className="flex flex-1 items-center justify-center gap-1.5 text-[11px] text-fg-dim"
-      >
-        {selected && (
-          <>
-            <span className="max-w-[40%] truncate text-fg-muted">
-              {selected.name}
-            </span>
-            {status?.branch && (
-              <span className="flex items-center gap-0.5 font-mono">
-                <GitBranch size={10} />
-                {status.branch}
-              </span>
-            )}
-          </>
-        )}
+      {/* 우끝: 창 컨트롤 */}
+      <div className="ml-3 flex h-full">
+        <CtlButton onClick={() => void appWindow.minimize()} title="최소화">
+          <Glyph>
+            <line x1="1" y1="5.5" x2="10" y2="5.5" />
+          </Glyph>
+        </CtlButton>
+        <MaxRestoreButton />
+        <CtlButton onClick={() => void appWindow.close()} title="닫기" danger>
+          <Glyph>
+            <path d="M1.5 1.5 L9.5 9.5 M9.5 1.5 L1.5 9.5" />
+          </Glyph>
+        </CtlButton>
       </div>
     </header>
   );
