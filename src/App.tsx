@@ -1,5 +1,5 @@
-import { FolderGit2, MousePointerClick } from "lucide-react";
-import { lazy, Suspense, useEffect } from "react";
+import { FolderGit2 } from "lucide-react";
+import { useEffect } from "react";
 
 import { ChangesPanel } from "./components/changes/ChangesPanel";
 import { ConfirmHost } from "./components/common/ConfirmDialog";
@@ -13,16 +13,13 @@ import { ProjectList } from "./components/sidebar/ProjectList";
 import { StatusBar } from "./components/StatusBar";
 import { Toolbar } from "./components/toolbar/Toolbar";
 import { FileTreePanel } from "./components/tree/FileTreePanel";
+import { WorkspaceTabs } from "./components/workspace/WorkspaceTabs";
 import { useAutoFetch, useProjects, useSettings } from "./queries";
 import { useUi } from "./stores/ui";
-
-// Monaco 번들은 무겁다 — 파일을 처음 열 때만 로드한다
-const DiffViewer = lazy(() => import("./components/diff/DiffViewer"));
 
 export default function App() {
   const { data: projects } = useProjects();
   const selectedProjectId = useUi((s) => s.selectedProjectId);
-  const selectedDiff = useUi((s) => s.selectedDiff);
   const selectProject = useUi((s) => s.selectProject);
   const fileTreeOpen = useUi((s) => s.fileTreeOpen);
 
@@ -59,24 +56,7 @@ export default function App() {
                 <Toolbar project={selected} />
                 <div className="flex min-h-0 flex-1">
                   <ChangesPanel projectId={selected.id} />
-                  <section className="min-w-0 flex-1">
-                    {selectedDiff ? (
-                      <Suspense
-                        fallback={<EmptyState title="diff 뷰어 로딩 중…" />}
-                      >
-                        <DiffViewer
-                          projectId={selected.id}
-                          target={selectedDiff}
-                        />
-                      </Suspense>
-                    ) : (
-                      <EmptyState
-                        icon={MousePointerClick}
-                        title="파일을 선택하세요"
-                        desc="왼쪽 변경 목록 또는 아래 Log의 커밋에서 파일을 클릭하면 diff가 표시됩니다"
-                      />
-                    )}
-                  </section>
+                  <WorkspaceTabs projectId={selected.id} />
                 </div>
                 <LogPanel projectId={selected.id} />
                 <KeyboardShortcuts projectId={selected.id} />

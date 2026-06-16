@@ -117,6 +117,8 @@ export interface Settings {
   diffFontSize: number;
   confirmDiscard: boolean;
   theme: ThemeName;
+  terminalShell: string | null; // null/빈값 = 자동(pwsh→powershell→cmd / $SHELL)
+  terminalFontSize: number;
 }
 
 export type OpenTarget = "explorer" | "terminal";
