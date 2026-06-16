@@ -18,6 +18,11 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "imtelloper <newtype9556@gmail.com>",
+    "copyright": "Copyright © 2026 imtelloper",
+    "category": "DeveloperTool",
+    "shortDescription": "멀티 레포 Git 대시보드",
+    "longDescription": "여러 로컬 프로젝트의 git 상태를 한 화면에서 감시하고, diff 확인부터 커밋·푸시까지 처리하는 멀티 레포 Git 대시보드 데스크톱 앱입니다. (Tauri 2 + React 19)",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

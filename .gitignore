@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# 빌드 산출 설치 파일 (배포는 GitHub Releases 사용)
+installers
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
