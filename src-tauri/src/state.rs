@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 
+use crate::commands::TerminalSession;
 use crate::error::{ErrorCode, IpcError};
 use crate::git::types::{Project, Settings};
 use crate::watcher::RepoWatcher;
@@ -19,6 +20,8 @@ pub struct AppState {
     /// 진행 중인 쓰기 작업(stage/commit/push 등)의 프로젝트 id — 레포당 1개만 허용
     ops: Arc<Mutex<HashSet<String>>>,
     pub watchers: Mutex<HashMap<String, RepoWatcher>>,
+    /// 열려 있는 임베디드 터미널 세션 (termId → PTY 핸들). M5 §16.
+    pub terminals: Mutex<HashMap<String, TerminalSession>>,
 }
 
 impl AppState {
@@ -28,6 +31,7 @@ impl AppState {
             settings: RwLock::new(settings),
             ops: Arc::new(Mutex::new(HashSet::new())),
             watchers: Mutex::new(HashMap::new()),
+            terminals: Mutex::new(HashMap::new()),
         }
     }
 

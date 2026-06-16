@@ -186,6 +186,9 @@ pub struct Settings {
     pub confirm_discard: bool,
     /// UI 테마 이름 ("darcula" | "monokai"). 검증·렌더는 프론트가 담당.
     pub theme: String,
+    /// 임베디드 터미널 셸 (null/빈값 = 자동: pwsh→powershell→cmd / $SHELL)
+    pub terminal_shell: Option<String>,
+    pub terminal_font_size: u32,
 }
 
 impl Default for Settings {
@@ -196,6 +199,8 @@ impl Default for Settings {
             diff_font_size: 13,
             confirm_discard: true,
             theme: "darcula".to_string(),
+            terminal_shell: None,
+            terminal_font_size: 13,
         }
     }
 }

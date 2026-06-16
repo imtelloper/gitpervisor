@@ -7,6 +7,7 @@ mod projects;
 mod settings;
 mod status;
 mod sync;
+mod terminal;
 mod tree;
 
 pub use actions::*;
@@ -18,4 +19,5 @@ pub use projects::*;
 pub use settings::*;
 pub use status::*;
 pub use sync::*;
+pub use terminal::*;
 pub use tree::*;

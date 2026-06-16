@@ -66,7 +66,18 @@ pub fn run() {
             commands::set_settings,
             commands::open_in,
             commands::list_dir,
+            commands::term_open,
+            commands::term_write,
+            commands::term_resize,
+            commands::term_close,
         ])
+        .on_window_event(|window, event| {
+            // 창이 닫히면 열린 PTY 자식을 모두 정리한다 (좀비 셸 방지, 설계 §16.8).
+            if let tauri::WindowEvent::Destroyed = event {
+                let state = window.state::<AppState>();
+                commands::kill_all(state.inner());
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
