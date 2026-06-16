@@ -39,18 +39,18 @@
 /* Monokai 변형 — 로고(블랙 라운드 스퀘어 + 스카이블루 서클)에 맞춰
  * UI 바탕을 다크 블루·스카이·블랙 톤으로. 구문 강조는 Monokai 색 유지. */
 :root[data-theme="monokai"] {
-  --color-base: #0b1018; /* 거의 블랙(블루 언더톤) — 로고의 블랙과 어울림 */
-  --color-panel: #121b29;
-  --color-raised: #1d2a3d;
-  --color-selection: #214a78;
-  --color-edge: #243349;
+  --color-base: #070a11; /* 거의 블랙(블루 언더톤) — 로고의 블랙과 어울림 */
+  --color-panel: #0c121b;
+  --color-raised: #161f2c;
+  --color-selection: #1c3f68;
+  --color-edge: #1b2738;
   --color-accent: #4fb4e6; /* 로고 스카이블루 */
   --color-accent-hover: #69c2ef;
   --color-on-accent: #06141f; /* 밝은 스카이 accent 위엔 어두운 텍스트 */
 
   --color-fg: #e6edf6;
-  --color-fg-muted: #9fb0c4;
-  --color-fg-dim: #5e7088;
+  --color-fg-muted: #98a9bd;
+  --color-fg-dim: #586a80;
 
   --color-ok: #57c65c;
   --color-warn: #e2c15a;
@@ -58,7 +58,7 @@
 
   --color-mod: #5bbef0;
   --color-add: #6cd07f;
-  --color-del: #6b7d92;
+  --color-del: #65788d;
   --color-untrk: #e8a447;
 }
 

@@ -95,12 +95,12 @@ monaco.editor.defineTheme("gitpervisor-monokai", {
   ],
   colors: {
     // 바탕은 UI 토큰과 동일한 다크 블루·블랙(로고 조화), 구문색은 위 Monokai 유지
-    "editor.background": "#0B1018",
+    "editor.background": "#070A11",
     "editor.foreground": "#E3EAF3",
-    "editor.lineHighlightBackground": "#141E2D",
-    "editorLineNumber.foreground": "#46566C",
+    "editor.lineHighlightBackground": "#101926",
+    "editorLineNumber.foreground": "#3E4E64",
     "editorLineNumber.activeForeground": "#9FB0C4",
-    "editor.selectionBackground": "#214A78",
+    "editor.selectionBackground": "#1C3F68",
     "diffEditor.insertedTextBackground": "#6CD07F22",
     "diffEditor.insertedLineBackground": "#6CD07F12",
     "diffEditor.removedTextBackground": "#F0556A30",
