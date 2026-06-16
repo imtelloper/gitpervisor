@@ -28,6 +28,8 @@ interface UiState {
   settingsOpen: boolean;
   /** diff 뷰어: 변경 없는 영역 접기 (기본 접기, 끄면 전체 펼침) */
   diffCollapseUnchanged: boolean;
+  /** 파일 트리 패널 표시 여부 (localStorage 영속) */
+  fileTreeOpen: boolean;
   toasts: Toast[];
   confirm: ConfirmRequest | null;
   selectProject: (id: string | null) => void;
@@ -36,6 +38,7 @@ interface UiState {
   selectCommit: (sha: string | null) => void;
   setSettingsOpen: (open: boolean) => void;
   toggleDiffCollapse: () => void;
+  toggleFileTree: () => void;
   pushToast: (kind: Toast["kind"], message: string) => void;
   dismissToast: (id: number) => void;
   askConfirm: (req: ConfirmRequest) => void;
@@ -51,6 +54,7 @@ export const useUi = create<UiState>((set) => ({
   selectedCommitSha: null,
   settingsOpen: false,
   diffCollapseUnchanged: true,
+  fileTreeOpen: localStorage.getItem("gp:filetree-open") === "1",
   toasts: [],
   confirm: null,
   // 프로젝트 전환 시 diff·커밋 선택은 초기화하되 Log 패널 펼침 상태는 유지
@@ -66,6 +70,12 @@ export const useUi = create<UiState>((set) => ({
   setSettingsOpen: (open) => set({ settingsOpen: open }),
   toggleDiffCollapse: () =>
     set((s) => ({ diffCollapseUnchanged: !s.diffCollapseUnchanged })),
+  toggleFileTree: () =>
+    set((s) => {
+      const v = !s.fileTreeOpen;
+      localStorage.setItem("gp:filetree-open", v ? "1" : "0");
+      return { fileTreeOpen: v };
+    }),
   pushToast: (kind, message) => {
     const id = ++toastSeq;
     set((s) => ({ toasts: [...s.toasts, { id, kind, message }] }));

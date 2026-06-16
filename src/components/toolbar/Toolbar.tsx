@@ -3,6 +3,7 @@ import {
   ArrowDownToLine,
   ArrowUp,
   ArrowUpToLine,
+  FolderTree,
   GitBranch,
   RefreshCcw,
   RefreshCw,
@@ -28,6 +29,7 @@ export function Toolbar({ project }: { project: Project }) {
   const pullOp = useSyncOp(project.id, "pull");
   const startPush = usePushFlow(project.id);
   const running = useOps((s) => s.running[project.id]);
+  const fileTreeOpen = useUi((s) => s.fileTreeOpen);
 
   const branchLabel =
     status?.branch ??
@@ -41,6 +43,15 @@ export function Toolbar({ project }: { project: Project }) {
 
   return (
     <header className="flex h-11 shrink-0 items-center gap-3 border-b border-edge bg-panel px-4">
+      <button
+        title="파일 트리 토글"
+        onClick={() => useUi.getState().toggleFileTree()}
+        className={`-ml-1 rounded p-1.5 hover:bg-raised ${
+          fileTreeOpen ? "text-accent" : "text-fg-muted hover:text-fg"
+        }`}
+      >
+        <FolderTree size={16} />
+      </button>
       <span className="font-semibold">{project.name}</span>
 
       {branchLabel && (

@@ -1,4 +1,12 @@
-import { Database, File, FileImage, FileText, FlaskConical } from "lucide-react";
+import {
+  Database,
+  File,
+  FileImage,
+  FileText,
+  FlaskConical,
+  Folder,
+  FolderOpen,
+} from "lucide-react";
 import type { ComponentType } from "react";
 import {
   SiC,
@@ -24,9 +32,14 @@ type IconComponent = ComponentType<{
   className?: string;
 }>;
 
-interface FileIcon {
+export interface FileIcon {
   Icon: IconComponent;
   color: string;
+}
+
+/** 폴더 아이콘 (펼침 여부에 따라). */
+export function folderIcon(open: boolean): FileIcon {
+  return { Icon: open ? FolderOpen : Folder, color: "#7AA7D9" };
 }
 
 /** 확장자 → 언어/타입 아이콘 + 브랜드 색 (다크 배경 가독성 기준으로 조정). */

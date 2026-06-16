@@ -12,6 +12,7 @@ import { SettingsDialog } from "./components/settings/SettingsDialog";
 import { ProjectList } from "./components/sidebar/ProjectList";
 import { StatusBar } from "./components/StatusBar";
 import { Toolbar } from "./components/toolbar/Toolbar";
+import { FileTreePanel } from "./components/tree/FileTreePanel";
 import { useAutoFetch, useProjects, useSettings } from "./queries";
 import { useUi } from "./stores/ui";
 
@@ -23,6 +24,7 @@ export default function App() {
   const selectedProjectId = useUi((s) => s.selectedProjectId);
   const selectedDiff = useUi((s) => s.selectedDiff);
   const selectProject = useUi((s) => s.selectProject);
+  const fileTreeOpen = useUi((s) => s.fileTreeOpen);
 
   const { data: settings } = useSettings();
   useAutoFetch(); // 옵트인 자동 fetch (기본 OFF)
@@ -49,6 +51,7 @@ export default function App() {
       <div className="flex h-screen flex-col">
         <div className="flex min-h-0 flex-1">
           <ProjectList />
+          {selected && fileTreeOpen && <FileTreePanel projectId={selected.id} />}
 
           <main className="flex min-w-0 flex-1 flex-col">
             {selected ? (

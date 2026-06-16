@@ -1,5 +1,5 @@
 import { ChevronDown, ChevronRight, Undo2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import type { DiffTarget, FileChange } from "../../lib/ipc";
 import { KIND_BADGE } from "../../lib/change-kind";
@@ -160,19 +160,6 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
       status.staged.length +
       status.untracked.length
     : 0;
-
-  // 새로고침으로 선택 파일이 변경 목록에서 사라지면 뷰어를 비운다 (설계 §9).
-  // 커밋(commit) diff는 워크트리 변화와 무관하므로 유지한다.
-  useEffect(() => {
-    if (!status || !selectedDiff || selectedDiff.mode === "commit") return;
-    const exists = [
-      ...status.conflicted,
-      ...status.unstaged,
-      ...status.staged,
-      ...status.untracked,
-    ].some((c) => c.path === selectedDiff.path);
-    if (!exists) selectDiff(null);
-  }, [status, selectedDiff, selectDiff]);
 
   const actions: RowActions = {
     onToggleStage: (change) => {

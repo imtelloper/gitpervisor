@@ -196,3 +196,14 @@ impl Default for Settings {
         }
     }
 }
+
+// ---- 파일 트리 탐색기 ----
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirEntry {
+    pub name: String,
+    pub is_dir: bool,
+    /// .gitignore에 의해 무시되는 항목 (.git 포함) — UI에서 흐리게 표시
+    pub is_ignored: bool,
+}

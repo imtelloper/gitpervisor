@@ -120,6 +120,13 @@ export interface Settings {
 
 export type OpenTarget = "explorer" | "terminal";
 
+// ---- 파일 트리 ----
+export interface DirEntry {
+  name: string;
+  isDir: boolean;
+  isIgnored: boolean; // .gitignore 무시 (.git 포함)
+}
+
 export interface GitCheck {
   found: boolean;
   version: string | null;
@@ -281,6 +288,8 @@ export const ipc = {
     callMutating<void>("set_settings", { settings }),
   openIn: (projectId: string, target: OpenTarget) =>
     callMutating<void>("open_in", { projectId, target }),
+  listDir: (projectId: string, relPath: string) =>
+    call<DirEntry[]>("list_dir", { projectId, relPath }),
 
   // ---- 변경 커맨드 (재시도 없음) ----
   stageFiles: (projectId: string, paths: string[]) =>

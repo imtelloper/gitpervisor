@@ -39,6 +39,8 @@ export const keys = {
   commitDetail: (projectId: string, sha: string) =>
     ["commit-detail", projectId, sha] as const,
   settings: ["settings"] as const,
+  dir: (projectId: string, relPath: string) =>
+    ["dir", projectId, relPath] as const,
 };
 
 export function useGitCheck() {
@@ -188,6 +190,16 @@ export function useCommitDetail(projectId: string | null, sha: string | null) {
   });
 }
 
+/** 파일 트리: 한 디렉토리의 항목 (지연 로딩 — 폴더 펼칠 때만 마운트). */
+export function useDir(projectId: string | null, relPath: string) {
+  return useQuery({
+    queryKey: keys.dir(projectId ?? "none", relPath),
+    queryFn: () => ipc.listDir(projectId!, relPath),
+    enabled: !!projectId,
+    staleTime: 30_000,
+  });
+}
+
 // ---- M4: 설정 ----
 
 export function useSettings() {
@@ -278,6 +290,7 @@ export function useRefreshAll() {
   return () => {
     // 목록이 stale(추가/삭제 갱신 유실)한 경우 F5로 진실을 다시 끌어온다
     void qc.invalidateQueries({ queryKey: keys.projects });
+    void qc.invalidateQueries({ queryKey: ["dir"] });
     invalidateRepoData(qc);
   };
 }
