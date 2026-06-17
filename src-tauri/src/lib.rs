@@ -74,6 +74,7 @@ pub fn run() {
             commands::set_settings,
             commands::open_in,
             commands::list_dir,
+            commands::list_project_roots,
             commands::get_notes,
             commands::add_memo,
             commands::update_memo,

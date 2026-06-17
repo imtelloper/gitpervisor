@@ -1,6 +1,8 @@
 use std::collections::HashSet;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
+use std::time::Duration;
 
+use serde::Serialize;
 use tauri::State;
 
 use super::projects::project_path;
@@ -18,12 +20,87 @@ pub async fn list_dir(
     rel_path: String,
 ) -> Result<Vec<DirEntry>, IpcError> {
     let repo = project_path(&state, &project_id)?;
-    validate_rel_dir(&rel_path)?;
+    read_dir_entries(&repo, &rel_path).await
+}
+
+/// 한 프로젝트 루트의 결과(또는 오류) — 배치 프리페치용.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectRoot {
+    pub project_id: String,
+    pub entries: Vec<DirEntry>,
+    pub error: Option<String>,
+}
+
+/// 여러 프로젝트의 루트 디렉토리를 **병렬로** 읽는다 (WebView2 동시 invoke 응답 유실 회피 —
+/// 요청 1개로 전부 처리, 내부는 join_all 동시 실행). 프론트는 결과를 dir 캐시에 시드한다.
+#[tauri::command]
+pub async fn list_project_roots(
+    state: State<'_, AppState>,
+    project_ids: Vec<String>,
+) -> Result<Vec<ProjectRoot>, IpcError> {
+    // 경로 해석은 락 안에서 끝내고, 읽기는 락 밖에서 동시 실행한다.
+    let targets: Vec<(String, Option<PathBuf>)> = {
+        let projects = state.projects.read().unwrap();
+        project_ids
+            .into_iter()
+            .map(|id| {
+                let path = projects
+                    .iter()
+                    .find(|p| p.id == id)
+                    .map(|p| PathBuf::from(&p.path));
+                (id, path)
+            })
+            .collect()
+    };
+
+    // 동시성 제한(buffer_unordered) — Windows에서 git 프로세스를 한꺼번에 수십 개
+    // 띄우면(Defender 스캔·프로세스 생성 폭주) 서로를 굶겨 타임아웃 난다. 소수씩 동시 실행.
+    use futures::stream::StreamExt;
+    const ROOT_CONCURRENCY: usize = 4;
+
+    let results: Vec<ProjectRoot> = futures::stream::iter(targets)
+        .map(|(id, path)| async move {
+            let Some(p) = path else {
+                return ProjectRoot {
+                    project_id: id,
+                    entries: Vec::new(),
+                    error: Some("프로젝트 경로를 찾을 수 없습니다".to_string()),
+                };
+            };
+            match tokio::time::timeout(Duration::from_secs(15), read_dir_entries(&p, "")).await {
+                Ok(Ok(entries)) => ProjectRoot {
+                    project_id: id,
+                    entries,
+                    error: None,
+                },
+                Ok(Err(e)) => ProjectRoot {
+                    project_id: id,
+                    entries: Vec::new(),
+                    error: Some(e.message),
+                },
+                Err(_) => ProjectRoot {
+                    project_id: id,
+                    entries: Vec::new(),
+                    error: Some("루트 읽기 시간 초과".to_string()),
+                },
+            }
+        })
+        .buffer_unordered(ROOT_CONCURRENCY)
+        .collect()
+        .await;
+
+    Ok(results)
+}
+
+/// 한 디렉토리의 항목을 읽어 정렬한다 (list_dir·배치 프리페치 공통).
+async fn read_dir_entries(repo: &Path, rel_path: &str) -> Result<Vec<DirEntry>, IpcError> {
+    validate_rel_dir(rel_path)?;
 
     let dir = if rel_path.is_empty() {
-        repo.clone()
+        repo.to_path_buf()
     } else {
-        repo.join(&rel_path)
+        repo.join(rel_path)
     };
     if !dir.is_dir() {
         return Err(IpcError::new(
@@ -48,12 +125,12 @@ pub async fn list_dir(
     }
 
     // 2) gitignore 판정 (git check-ignore 배치)
-    let ignored = check_ignored(&repo, &rel_path, &items).await;
+    let ignored = check_ignored(repo, rel_path, &items).await;
 
     let mut entries: Vec<DirEntry> = items
         .into_iter()
         .map(|(name, is_dir)| {
-            let rel = join_rel(&rel_path, &name);
+            let rel = join_rel(rel_path, &name);
             DirEntry {
                 is_ignored: name == ".git" || ignored.contains(&rel),
                 name,

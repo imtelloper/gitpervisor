@@ -175,6 +175,12 @@ export interface DirEntry {
   isIgnored: boolean; // .gitignore 무시 (.git 포함)
 }
 
+export interface ProjectRoot {
+  projectId: string;
+  entries: DirEntry[];
+  error: string | null;
+}
+
 export interface GitCheck {
   found: boolean;
   version: string | null;
@@ -338,6 +344,9 @@ export const ipc = {
     callMutating<void>("open_in", { projectId, target }),
   listDir: (projectId: string, relPath: string) =>
     call<DirEntry[]>("list_dir", { projectId, relPath }),
+  // 배치: 전 프로젝트 루트를 한 invoke로 병렬 읽기 (응답 유실 회피, §12)
+  listProjectRoots: (projectIds: string[]) =>
+    call<ProjectRoot[]>("list_project_roots", { projectIds }, { timeoutMs: 20000 }),
   // ---- DB 탐색기 ----
   dbListConnections: () => call<DbConnection[]>("db_list_connections"),
   dbSaveConnection: (connection: DbConnection, password: string | null) =>

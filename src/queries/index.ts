@@ -335,6 +335,28 @@ export function useDir(projectId: string | null, relPath: string) {
   });
 }
 
+/**
+ * 전 프로젝트 루트를 한 invoke로 **병렬** 읽어 dir 캐시에 시드한다 (§12).
+ * 프로젝트 전환 시 트리가 즉시 뜨고, WebView2 동시 invoke 응답 유실에도 강하다.
+ */
+export function useProjectRootsPrefetch() {
+  const { data: projects } = useProjects();
+  const qc = useQueryClient();
+  const ids = (projects ?? []).map((p) => p.id).sort();
+  return useQuery({
+    queryKey: ["project-roots", ids],
+    queryFn: async () => {
+      const roots = await ipc.listProjectRoots(ids);
+      for (const r of roots) {
+        if (!r.error) qc.setQueryData(keys.dir(r.projectId, ""), r.entries);
+      }
+      return roots;
+    },
+    enabled: ids.length > 0,
+    staleTime: Infinity,
+  });
+}
+
 // ---- M4: 설정 ----
 
 export function useSettings() {
