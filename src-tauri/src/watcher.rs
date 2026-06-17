@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Component, Path};
 use std::time::Duration;
 
 use notify_debouncer_full::notify::{RecommendedWatcher, RecursiveMode};
@@ -81,8 +81,31 @@ pub fn unregister(app: &AppHandle, project_id: &str) {
     state.watchers.lock().unwrap().remove(project_id);
 }
 
+/// 빌드/의존성 산출물 디렉토리 — gitignore 대상이라 status에 안 잡히고, 대량 쓰기로
+/// watcher를 폭주시킨다(dev 빌드의 target/, node_modules/ 등). 이 안의 이벤트는 무시.
+const IGNORED_DIRS: &[&str] = &[
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    "out",
+    ".next",
+    ".nuxt",
+    ".svelte-kit",
+    ".vite",
+    ".turbo",
+    ".cache",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".venv",
+    "venv",
+    ".gradle",
+    "coverage",
+];
+
 /// .git 내부는 상태 변화 마커만 통과시킨다 — objects/·*.lock 폭주(gc·fetch·빌드)는 무시.
-/// 워크트리 파일 이벤트는 전부 신호로 취급한다 (필터 정밀화 대신 status 재실행이 싸다, KISS).
+/// 빌드/의존성 디렉토리도 무시한다. 그 외 워크트리 파일 이벤트는 신호로 취급(status 재실행).
 fn is_relevant(path: &Path) -> bool {
     let s = path.to_string_lossy().replace('\\', "/");
 
@@ -103,6 +126,12 @@ fn is_relevant(path: &Path) -> bool {
             || inner.starts_with("rebase-apply");
     }
     if s.ends_with("/.git") {
+        return false;
+    }
+    // 빌드/의존성 디렉토리 내부 이벤트는 무시 (경로 세그먼트 정확 일치)
+    if path.components().any(|c| {
+        matches!(c, Component::Normal(n) if IGNORED_DIRS.contains(&n.to_string_lossy().as_ref()))
+    }) {
         return false;
     }
     true
@@ -131,6 +160,22 @@ mod tests {
         ] {
             assert!(is_relevant(Path::new(p)), "{p}는 통과해야 함");
         }
+    }
+
+    #[test]
+    fn build_dirs_are_ignored() {
+        for p in [
+            r"C:\repo\node_modules\pkg\index.js",
+            r"C:\repo\target\debug\app.exe",
+            r"/repo/dist/bundle.js",
+            r"/repo/__pycache__/mod.pyc",
+            r"/repo/.venv/lib/foo.py",
+        ] {
+            assert!(!is_relevant(Path::new(p)), "{p}는 무시해야 함");
+        }
+        // 비슷한 이름은 통과 (정확 세그먼트 매칭)
+        assert!(is_relevant(Path::new(r"C:\repo\src\mytarget\x.rs")));
+        assert!(is_relevant(Path::new(r"C:\repo\targets\x.rs")));
     }
 
     #[test]

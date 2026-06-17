@@ -223,7 +223,9 @@ class IpcTimeoutError extends Error {
 // (Rust 커맨드는 완료되지만 JS 프라미스가 영원히 settle되지 않음).
 // 유실된 응답은 복구되지 않으므로: 동시성 제한 + 타임아웃 + 재시도로 방어한다.
 // 주의: 읽기 전용 커맨드 전제 — M2의 commit/push 등 변경 커맨드에는 자동 재시도 금지.
-const MAX_CONCURRENT = 3;
+// 한도는 8 — 너무 낮으면(예: 3) 느린/유실된 커맨드가 슬롯을 잡았을 때 사용자 클릭
+// (list_dir 등)이 큐에 갇혀 굶는다. 백엔드는 동시 실행에 문제없다(실측).
+const MAX_CONCURRENT = 8;
 const INVOKE_TIMEOUT_MS = 8000;
 const MAX_ATTEMPTS = 3;
 
@@ -237,10 +239,30 @@ interface CallOpts {
   lane?: "interactive" | "background";
 }
 
+// 진행 중인 동일 (cmd+args) 읽기 호출을 1건으로 합친다(single-flight).
+// 같은 쿼리가 여러 번(예: react-query 키 흔들림으로 get_statuses 다중 생성) 들어와도
+// invoke·슬롯은 1개만 쓴다 — 좀비(유실 응답)가 슬롯을 독점하는 폭주를 구조적으로 차단.
+const inflightByKey = new Map<string, Promise<unknown>>();
+
 async function call<T>(
   cmd: string,
   args?: Record<string, unknown>,
   opts: CallOpts = {},
+): Promise<T> {
+  const dedupKey = `${cmd}:${JSON.stringify(args ?? {})}`;
+  const existing = inflightByKey.get(dedupKey);
+  if (existing) return existing as Promise<T>;
+  const p = runCall<T>(cmd, args, opts).finally(() =>
+    inflightByKey.delete(dedupKey),
+  );
+  inflightByKey.set(dedupKey, p);
+  return p;
+}
+
+async function runCall<T>(
+  cmd: string,
+  args: Record<string, unknown> | undefined,
+  opts: CallOpts,
 ): Promise<T> {
   const {
     timeoutMs = INVOKE_TIMEOUT_MS,
@@ -305,9 +327,14 @@ export const ipc = {
   listProjects: () => call<Project[]>("list_projects"),
   addProject: (path: string) => call<Project>("add_project", { path }),
   removeProject: (id: string) => call<void>("remove_project", { id }),
-  // 배치: 레포 수 × 콜드 git spawn을 고려해 타임아웃을 넉넉히 잡는다
+  // 배치: 레포 수 × 콜드 git spawn을 고려해 타임아웃을 넉넉히 잡는다.
+  // attempts:1 — 유실돼도 재시도로 슬롯을 길게 점유하지 않는다(다음 이벤트/포커스가 재조회).
   getStatuses: (projectIds: string[]) =>
-    call<RepoStatus[]>("get_statuses", { projectIds }, { timeoutMs: 20000 }),
+    call<RepoStatus[]>(
+      "get_statuses",
+      { projectIds },
+      { timeoutMs: 12000, attempts: 2, lane: "background" },
+    ),
   // 단일 diff — DiffTarget(worktree/index/commit) 어느 모드든 처리
   getDiff: (projectId: string, target: DiffTarget) =>
     call<FileDiff>("get_file_diff", { projectId, target }),
@@ -344,9 +371,13 @@ export const ipc = {
     callMutating<void>("open_in", { projectId, target }),
   listDir: (projectId: string, relPath: string) =>
     call<DirEntry[]>("list_dir", { projectId, relPath }),
-  // 배치: 전 프로젝트 루트를 한 invoke로 병렬 읽기 (응답 유실 회피, §12)
+  // 배치: 전 프로젝트 루트를 한 invoke로 병렬 읽기 (응답 유실 회피, §12).
+  // background 레인 — 시작 프리페치가 사용자 폴더 클릭(list_dir)보다 슬롯을 양보한다.
   listProjectRoots: (projectIds: string[]) =>
-    call<ProjectRoot[]>("list_project_roots", { projectIds }, { timeoutMs: 20000 }),
+    call<ProjectRoot[]>("list_project_roots", { projectIds }, {
+      timeoutMs: 20000,
+      lane: "background",
+    }),
   // ---- DB 탐색기 ----
   dbListConnections: () => call<DbConnection[]>("db_list_connections"),
   dbSaveConnection: (connection: DbConnection, password: string | null) =>

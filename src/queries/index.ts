@@ -178,11 +178,16 @@ export function useSysMetrics() {
   });
 }
 
+// 부트스트랩 쿼리(앱 게이트) — staleTime:Infinity라 자연 복구가 없다.
+// git 미설치는 found:false "데이터"로 즉시 표면화되지만, 콜드 로드 응답 유실은
+// throw로 온다(WebView2 §). 전역 retry:false를 덮어 유실만 한정 재시도해 게이트 잠김을 막는다.
 export function useGitCheck() {
   return useQuery({
     queryKey: keys.git,
     queryFn: ipc.checkGit,
     staleTime: Infinity,
+    retry: 3,
+    retryDelay: 600,
   });
 }
 
@@ -191,6 +196,8 @@ export function useProjects() {
     queryKey: keys.projects,
     queryFn: ipc.listProjects,
     staleTime: Infinity,
+    retry: 3,
+    retryDelay: 600,
   });
 }
 
@@ -198,8 +205,10 @@ export function useProjects() {
 export function useStatuses() {
   const { data: projects } = useProjects();
   const ids = (projects ?? []).map((p) => p.id);
+  // 키는 정렬본 — 프로젝트 표시 순서가 바뀌어도 동일 쿼리 1개로 유지(중복 fetch 방지).
+  const key = [...ids].sort();
   return useQuery({
-    queryKey: keys.statuses(ids),
+    queryKey: keys.statuses(key),
     queryFn: () => ipc.getStatuses(ids),
     enabled: ids.length > 0,
   });
