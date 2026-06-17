@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::{Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use futures::stream::TryStreamExt;
 use mongodb::bson::{doc, oid::ObjectId, Bson, DateTime, Decimal128, Document};
@@ -8,8 +8,21 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use tauri::{AppHandle, State};
 use tauri_plugin_store::StoreExt;
+use tiberius::{AuthMethod, Config, EncryptionLevel, QueryItem};
+use tokio::net::TcpStream;
+use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
 use crate::error::{ErrorCode, IpcError};
+
+/// SQL Server(TDS) 클라이언트 — 단일 연결이라 &mut가 필요해 tokio Mutex로 감싼다.
+type MssqlClient = tiberius::Client<Compat<TcpStream>>;
+
+/// 활성 연결 핸들. Mongo Client는 풀이라 clone 가능, MSSQL은 단일 연결이라 Arc<Mutex>.
+#[derive(Clone)]
+enum DbClient {
+    Mongo(Client),
+    Mssql(Arc<tokio::sync::Mutex<MssqlClient>>),
+}
 
 const CONN_FILE: &str = "connections.json";
 const CONN_KEY: &str = "connections";
@@ -66,8 +79,8 @@ pub struct DbResult {
 
 pub struct DbState {
     connections: RwLock<Vec<DbConnection>>,
-    /// 활성 연결 (connId → Mongo 클라이언트). M6.1은 Mongo만.
-    clients: Mutex<HashMap<String, Client>>,
+    /// 활성 연결 (connId → 엔진별 클라이언트).
+    clients: Mutex<HashMap<String, DbClient>>,
 }
 
 impl DbState {
@@ -190,19 +203,28 @@ pub async fn db_connect(state: State<'_, DbState>, id: String) -> Result<(), Ipc
         .cloned()
         .ok_or_else(|| IpcError::new(ErrorCode::NotFound, "연결을 찾을 수 없습니다"))?;
 
-    if conn.engine != DbEngine::Mongodb {
-        return Err(err("아직 MongoDB만 지원합니다 (다른 엔진은 M6.2)"));
-    }
-
     let password = read_password(&conn.id);
-    let client = build_mongo_client(&conn, password).await?;
-    // 연결 확인 — ping (listDatabases 권한 불필요; 인증은 핸드셰이크에서 검증된다).
-    // 최소권한 계정(특정 DB만 readWrite)도 인증만 되면 연결 성공한다.
-    client
-        .database("admin")
-        .run_command(doc! { "ping": 1 })
-        .await
-        .map_err(|e| err(format!("연결 실패: {e}")))?;
+    let client = match conn.engine {
+        DbEngine::Mongodb => {
+            let c = build_mongo_client(&conn, password).await?;
+            // 연결 확인 — ping (listDatabases 권한 불필요; 인증은 핸드셰이크에서 검증).
+            c.database("admin")
+                .run_command(doc! { "ping": 1 })
+                .await
+                .map_err(|e| err(format!("연결 실패: {e}")))?;
+            DbClient::Mongo(c)
+        }
+        DbEngine::Mssql => {
+            // connect 성공 = 로그인/인증 성공 (TDS 핸드셰이크에서 검증).
+            let c = build_mssql_client(&conn, password).await?;
+            DbClient::Mssql(Arc::new(tokio::sync::Mutex::new(c)))
+        }
+        _ => {
+            return Err(err(
+                "아직 MongoDB·SQL Server만 지원합니다 (PostgreSQL/MySQL/SQLite는 추후)",
+            ))
+        }
+    };
 
     state.clients.lock().unwrap().insert(id, client);
     Ok(())
@@ -218,11 +240,13 @@ pub async fn db_databases(
     state: State<'_, DbState>,
     id: String,
 ) -> Result<Vec<String>, IpcError> {
-    let client = client_of(&state, &id)?;
-    client
-        .list_database_names()
-        .await
-        .map_err(|e| err(format!("DB 목록 조회 실패: {e}")))
+    match client_of(&state, &id)? {
+        DbClient::Mongo(c) => c
+            .list_database_names()
+            .await
+            .map_err(|e| err(format!("DB 목록 조회 실패: {e}"))),
+        DbClient::Mssql(c) => mssql_databases(&c).await,
+    }
 }
 
 #[tauri::command]
@@ -231,12 +255,14 @@ pub async fn db_tables(
     id: String,
     database: String,
 ) -> Result<Vec<String>, IpcError> {
-    let client = client_of(&state, &id)?;
-    client
-        .database(&database)
-        .list_collection_names()
-        .await
-        .map_err(|e| err(format!("컬렉션 목록 조회 실패: {e}")))
+    match client_of(&state, &id)? {
+        DbClient::Mongo(c) => c
+            .database(&database)
+            .list_collection_names()
+            .await
+            .map_err(|e| err(format!("컬렉션 목록 조회 실패: {e}"))),
+        DbClient::Mssql(c) => mssql_tables(&c, &database).await,
+    }
 }
 
 #[tauri::command]
@@ -256,12 +282,14 @@ pub async fn db_query(
         .find(|c| c.id == id)
         .map(|c| c.read_only)
         .unwrap_or(false);
-    let client = client_of(&state, &id)?;
     let limit = limit.unwrap_or(ROW_LIMIT).clamp(1, ROW_LIMIT);
-    mongo_query(&client, &database, &query, limit, read_only).await
+    match client_of(&state, &id)? {
+        DbClient::Mongo(c) => mongo_query(&c, &database, &query, limit, read_only).await,
+        DbClient::Mssql(c) => mssql_query(&c, &database, &query, limit, read_only).await,
+    }
 }
 
-fn client_of(state: &State<'_, DbState>, id: &str) -> Result<Client, IpcError> {
+fn client_of(state: &State<'_, DbState>, id: &str) -> Result<DbClient, IpcError> {
     state
         .clients
         .lock()
@@ -310,6 +338,214 @@ fn pct(s: &str) -> String {
         }
     }
     out
+}
+
+// ---- SQL Server(TDS) 드라이버 ----
+
+async fn build_mssql_client(
+    conn: &DbConnection,
+    password: Option<String>,
+) -> Result<MssqlClient, IpcError> {
+    let mut config = Config::new();
+    config.host(&conn.host);
+    config.port(conn.port);
+    config.authentication(AuthMethod::sql_server(
+        &conn.username,
+        password.as_deref().unwrap_or(""),
+    ));
+    if let Some(db) = conn.database.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        config.database(db);
+    }
+    let opts = conn.options.as_deref().unwrap_or("");
+    // 내부 서버는 자체서명 인증서가 흔하다 — 기본 신뢰, 옵션으로 끔(trustServerCertificate=false)
+    if !opts.contains("trustServerCertificate=false") {
+        config.trust_cert();
+    }
+    // TLS 미지원 서버는 encrypt=false 로 평문 협상
+    if opts.contains("encrypt=false") {
+        config.encryption(EncryptionLevel::NotSupported);
+    }
+    let tcp = TcpStream::connect(config.get_addr())
+        .await
+        .map_err(|e| err(format!("TCP 연결 실패: {e}")))?;
+    tcp.set_nodelay(true).ok();
+    tiberius::Client::connect(config, tcp.compat_write())
+        .await
+        .map_err(|e| err(format!("SQL Server 연결/인증 실패: {e}")))
+}
+
+async fn mssql_databases(
+    arc: &Arc<tokio::sync::Mutex<MssqlClient>>,
+) -> Result<Vec<String>, IpcError> {
+    let mut client = arc.lock().await;
+    let rows = client
+        .simple_query("SELECT name FROM sys.databases ORDER BY name")
+        .await
+        .map_err(|e| err(format!("DB 목록 조회 실패: {e}")))?
+        .into_first_result()
+        .await
+        .map_err(|e| err(format!("DB 목록 수집 실패: {e}")))?;
+    Ok(rows
+        .iter()
+        .filter_map(|r| r.try_get::<&str, _>(0).ok().flatten().map(str::to_string))
+        .collect())
+}
+
+async fn mssql_tables(
+    arc: &Arc<tokio::sync::Mutex<MssqlClient>>,
+    database: &str,
+) -> Result<Vec<String>, IpcError> {
+    // 3부 이름으로 대상 DB의 테이블·뷰를 한 번에 (USE 없이). schema.table 형태로 반환.
+    let q = format!(
+        "SELECT TABLE_SCHEMA + '.' + TABLE_NAME FROM [{}].INFORMATION_SCHEMA.TABLES \
+         WHERE TABLE_TYPE IN ('BASE TABLE','VIEW') ORDER BY TABLE_SCHEMA, TABLE_NAME",
+        database.replace(']', "]]")
+    );
+    let mut client = arc.lock().await;
+    let rows = client
+        .simple_query(q)
+        .await
+        .map_err(|e| err(format!("테이블 목록 조회 실패: {e}")))?
+        .into_first_result()
+        .await
+        .map_err(|e| err(format!("테이블 목록 수집 실패: {e}")))?;
+    Ok(rows
+        .iter()
+        .filter_map(|r| r.try_get::<&str, _>(0).ok().flatten().map(str::to_string))
+        .collect())
+}
+
+async fn mssql_query(
+    arc: &Arc<tokio::sync::Mutex<MssqlClient>>,
+    database: &str,
+    query: &str,
+    limit: i64,
+    read_only: bool,
+) -> Result<DbResult, IpcError> {
+    if read_only && is_write_sql(query) {
+        return Err(err(
+            "읽기 전용 연결입니다 — 쓰기/DDL 문은 차단됩니다 (연결 편집에서 해제 가능)",
+        ));
+    }
+    let mut batch = String::new();
+    if !database.trim().is_empty() {
+        batch.push_str(&format!("USE [{}];\n", database.replace(']', "]]")));
+    }
+    batch.push_str(query);
+
+    let mut client = arc.lock().await;
+    let mut stream = client
+        .simple_query(batch)
+        .await
+        .map_err(|e| err(format!("쿼리 실패: {e}")))?;
+
+    let mut cols: Vec<String> = Vec::new();
+    let mut rows: Vec<Vec<Json>> = Vec::new();
+    while let Some(item) = stream
+        .try_next()
+        .await
+        .map_err(|e| err(format!("결과 수집 실패: {e}")))?
+    {
+        match item {
+            QueryItem::Metadata(_) => {}
+            QueryItem::Row(row) => {
+                if cols.is_empty() {
+                    cols = row.columns().iter().map(|c| c.name().to_string()).collect();
+                }
+                // limit까지만 적재하되, 스트림은 끝까지 읽어 연결 상태를 유지한다
+                if (rows.len() as i64) < limit {
+                    let cells = (0..row.columns().len())
+                        .map(|i| mssql_cell_to_json(&row, i))
+                        .collect();
+                    rows.push(cells);
+                }
+            }
+        }
+    }
+
+    let row_count = rows.len();
+    Ok(DbResult {
+        columns: cols
+            .into_iter()
+            .map(|name| Column { name, type_name: None })
+            .collect(),
+        rows,
+        row_count,
+    })
+}
+
+/// SQL Server 셀 → JSON. 일치하는 첫 타입으로 변환(불일치는 Err라 다음으로 넘어간다).
+fn mssql_cell_to_json(row: &tiberius::Row, i: usize) -> Json {
+    use serde_json::json;
+    macro_rules! attempt {
+        ($t:ty => $conv:expr) => {
+            match row.try_get::<$t, _>(i) {
+                Ok(Some(v)) => return $conv(v),
+                Ok(None) => return Json::Null,
+                Err(_) => {}
+            }
+        };
+    }
+    attempt!(&str => |v: &str| json!(v));
+    attempt!(i32 => |v: i32| json!(v));
+    attempt!(i64 => |v: i64| json!(v));
+    attempt!(i16 => |v: i16| json!(v));
+    attempt!(u8 => |v: u8| json!(v));
+    attempt!(bool => |v: bool| json!(v));
+    attempt!(f32 => |v: f32| json!(v));
+    attempt!(f64 => |v: f64| json!(v));
+    attempt!(rust_decimal::Decimal => |v: rust_decimal::Decimal| json!(v.to_string()));
+    attempt!(chrono::DateTime<chrono::Utc> => |v: chrono::DateTime<chrono::Utc>| json!(v.to_rfc3339()));
+    attempt!(chrono::NaiveDateTime => |v: chrono::NaiveDateTime| json!(v.to_string()));
+    attempt!(chrono::NaiveDate => |v: chrono::NaiveDate| json!(v.to_string()));
+    attempt!(chrono::NaiveTime => |v: chrono::NaiveTime| json!(v.to_string()));
+    attempt!(uuid::Uuid => |v: uuid::Uuid| json!(v.to_string()));
+    attempt!(&[u8] => |v: &[u8]| json!(format!(
+        "0x{}",
+        v.iter().map(|b| format!("{b:02X}")).collect::<String>()
+    )));
+    Json::Null
+}
+
+/// 첫 키워드가 쓰기/DDL인지 — read_only 연결의 안전망(완벽한 SQL 파서는 아님).
+fn is_write_sql(query: &str) -> bool {
+    matches!(
+        first_keyword(query).as_str(),
+        "INSERT"
+            | "UPDATE"
+            | "DELETE"
+            | "MERGE"
+            | "DROP"
+            | "ALTER"
+            | "CREATE"
+            | "TRUNCATE"
+            | "EXEC"
+            | "EXECUTE"
+            | "GRANT"
+            | "REVOKE"
+            | "DENY"
+            | "BACKUP"
+            | "RESTORE"
+            | "BULK"
+    )
+}
+
+/// 선행 주석(-- , /* */)·공백을 건너뛴 첫 키워드(대문자).
+fn first_keyword(query: &str) -> String {
+    let mut s = query.trim_start();
+    loop {
+        if let Some(rest) = s.strip_prefix("--") {
+            s = rest.find('\n').map(|i| &rest[i + 1..]).unwrap_or("").trim_start();
+        } else if let Some(rest) = s.strip_prefix("/*") {
+            s = rest.find("*/").map(|i| &rest[i + 2..]).unwrap_or("").trim_start();
+        } else {
+            break;
+        }
+    }
+    s.chars()
+        .take_while(|c| c.is_ascii_alphabetic() || *c == '_')
+        .collect::<String>()
+        .to_ascii_uppercase()
 }
 
 enum MongoOp {
@@ -902,5 +1138,24 @@ mod tests {
         let f = doc! {"$where": "true"};
         assert!(guard_ops(&MongoOp::Find(f.clone()), true).is_err());
         assert!(guard_ops(&MongoOp::Find(f), false).is_ok());
+    }
+
+    #[test]
+    fn first_keyword_skips_comments() {
+        assert_eq!(first_keyword("-- c\nSELECT 1"), "SELECT");
+        assert_eq!(first_keyword("/* x */ delete from t"), "DELETE");
+        assert_eq!(first_keyword("   select top 10 *"), "SELECT");
+        assert_eq!(first_keyword(""), "");
+    }
+
+    #[test]
+    fn write_sql_detection() {
+        assert!(is_write_sql("DELETE FROM t"));
+        assert!(is_write_sql("update t set a=1"));
+        assert!(is_write_sql("-- note\nDROP TABLE t"));
+        assert!(is_write_sql("TRUNCATE TABLE t"));
+        assert!(!is_write_sql("SELECT * FROM t"));
+        assert!(!is_write_sql("  select top 10 * from t"));
+        assert!(!is_write_sql("WITH x AS (SELECT 1) SELECT * FROM x"));
     }
 }

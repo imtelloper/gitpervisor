@@ -26,15 +26,17 @@ function CollNode({
   connId,
   database,
   coll,
+  engine,
 }: {
   connId: string;
   database: string;
   coll: string;
+  engine: DbEngine;
 }) {
   const openCollection = useDb((s) => s.openCollection);
   return (
     <div
-      onClick={() => void openCollection(connId, database, coll)}
+      onClick={() => void openCollection(connId, database, coll, engine)}
       style={{ paddingLeft: 42 }}
       title={coll}
       className="flex cursor-pointer items-center gap-1.5 whitespace-nowrap py-0.5 pr-2 hover:bg-raised"
@@ -45,7 +47,15 @@ function CollNode({
   );
 }
 
-function DatabaseNode({ connId, database }: { connId: string; database: string }) {
+function DatabaseNode({
+  connId,
+  database,
+  engine,
+}: {
+  connId: string;
+  database: string;
+  engine: DbEngine;
+}) {
   const expanded = useDb((s) => s.expandedDbs.includes(dbKey(connId, database)));
   const toggleDb = useDb((s) => s.toggleDb);
   const { data: tables, isLoading } = useDbTables(connId, database, expanded);
@@ -53,7 +63,7 @@ function DatabaseNode({ connId, database }: { connId: string; database: string }
   return (
     <>
       <div
-        onClick={() => toggleDb(connId, database)}
+        onClick={() => toggleDb(connId, database, engine)}
         style={{ paddingLeft: 24 }}
         className="flex cursor-pointer items-center gap-1 whitespace-nowrap py-0.5 pr-2 hover:bg-raised"
       >
@@ -72,7 +82,13 @@ function DatabaseNode({ connId, database }: { connId: string; database: string }
           </div>
         ) : (
           tables?.map((t) => (
-            <CollNode key={t} connId={connId} database={database} coll={t} />
+            <CollNode
+              key={t}
+              connId={connId}
+              database={database}
+              coll={t}
+              engine={engine}
+            />
           ))
         ))}
     </>
@@ -94,7 +110,7 @@ function ConnNode({ conn }: { conn: DbConnection }) {
   return (
     <>
       <div
-        onClick={() => void toggleConn(conn.id)}
+        onClick={() => void toggleConn(conn.id, conn.engine)}
         title={`${conn.host}:${conn.port}`}
         className="group flex cursor-pointer items-center gap-1.5 whitespace-nowrap px-2 py-1 hover:bg-raised"
       >
@@ -142,7 +158,12 @@ function ConnNode({ conn }: { conn: DbConnection }) {
           </div>
         ) : (
           databases?.map((db) => (
-            <DatabaseNode key={db} connId={conn.id} database={db} />
+            <DatabaseNode
+              key={db}
+              connId={conn.id}
+              database={db}
+              engine={conn.engine}
+            />
           ))
         ))}
     </>

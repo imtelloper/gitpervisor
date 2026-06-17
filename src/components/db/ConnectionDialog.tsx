@@ -10,7 +10,7 @@ const ENGINES: { value: DbEngine; label: string; port: number; soon?: boolean }[
     { value: "mongodb", label: "MongoDB", port: 27017 },
     { value: "postgres", label: "PostgreSQL", port: 5432, soon: true },
     { value: "mysql", label: "MySQL", port: 3306, soon: true },
-    { value: "mssql", label: "SQL Server", port: 1433, soon: true },
+    { value: "mssql", label: "SQL Server", port: 1433 },
     { value: "sqlite", label: "SQLite", port: 0, soon: true },
   ];
 
@@ -223,7 +223,11 @@ export function ConnectionDialog() {
             <input
               value={form.options ?? ""}
               onChange={(e) => update("options", e.target.value)}
-              placeholder="authSource=admin&tls=true"
+              placeholder={
+                form.engine === "mssql"
+                  ? "encrypt=false&trustServerCertificate=false"
+                  : "authSource=admin&tls=true"
+              }
               className={`${inputCls} font-mono`}
             />
           </Field>

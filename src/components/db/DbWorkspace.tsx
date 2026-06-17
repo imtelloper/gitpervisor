@@ -16,6 +16,9 @@ function QueryEditor() {
   const limit = useDb((s) => s.limit);
   const setLimit = useDb((s) => s.setLimit);
   const activeDatabase = useDb((s) => s.activeDatabase);
+  const activeEngine = useDb((s) => s.activeEngine);
+  const lang = activeEngine === "mssql" ? "sql" : "javascript";
+  const dialect = activeEngine === "mssql" ? "sql" : "mongo-js";
   const { data: settings } = useSettings();
   const theme =
     settings?.theme === "monokai" ? "gitpervisor-monokai" : "gitpervisor-dark";
@@ -24,7 +27,9 @@ function QueryEditor() {
     <div className="flex h-[210px] shrink-0 flex-col border-b border-edge">
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-edge px-3">
         <span className="text-xs text-fg-dim">
-          {activeDatabase ? `mongo-js · ${activeDatabase}` : "왼쪽에서 DB를 선택하세요"}
+          {activeDatabase
+            ? `${dialect} · ${activeDatabase}`
+            : "왼쪽에서 DB를 선택하세요"}
         </span>
         <div className="flex-1" />
         <label className="flex items-center gap-1 text-xs text-fg-dim">
@@ -53,7 +58,7 @@ function QueryEditor() {
       </div>
       <div className="min-h-0 flex-1">
         <Editor
-          language="javascript"
+          language={lang}
           value={queryText}
           onChange={(v) => setQuery(v ?? "")}
           theme={theme}
