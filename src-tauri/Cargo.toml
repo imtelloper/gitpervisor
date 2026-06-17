@@ -34,7 +34,7 @@ sysinfo = "0.33"
 mongodb = "3"
 keyring = { version = "3", features = ["windows-native"] }
 # SQL Server(TDS) 드라이버 — native-tls(Windows schannel)로 로그인 암호화
-tiberius = { version = "0.12", default-features = false, features = ["tds73", "native-tls", "chrono", "rust_decimal"] }
+tiberius = { version = "0.12", default-features = false, features = ["tds73", "native-tls", "chrono", "rust_decimal", "winauth"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 rust_decimal = "1"
 

@@ -349,10 +349,21 @@ async fn build_mssql_client(
     let mut config = Config::new();
     config.host(&conn.host);
     config.port(conn.port);
-    config.authentication(AuthMethod::sql_server(
-        &conn.username,
-        password.as_deref().unwrap_or(""),
-    ));
+    // Windows 통합 인증(SSPI) — 사용자명이 비었거나 trusted_connection/integrated 옵션이 있으면
+    // 현재 Windows 사용자로 로그인(SQL 인증이 막힌 Windows-only 모드 서버 대응).
+    let opts_lc = conn.options.as_deref().unwrap_or("").to_ascii_lowercase();
+    if conn.username.trim().is_empty()
+        || opts_lc.contains("trusted_connection=yes")
+        || opts_lc.contains("trustedconnection=yes")
+        || opts_lc.contains("integrated")
+    {
+        config.authentication(AuthMethod::Integrated);
+    } else {
+        config.authentication(AuthMethod::sql_server(
+            &conn.username,
+            password.as_deref().unwrap_or(""),
+        ));
+    }
     if let Some(db) = conn.database.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
         config.database(db);
     }

@@ -27,6 +27,16 @@ function toggleTls(options: string | null, on: boolean): string | null {
   return parts.join("&") || null;
 }
 
+/** SQL Server Windows 통합 인증(trusted_connection=yes) 토글. */
+function toggleTrusted(options: string | null, on: boolean): string | null {
+  const parts = (options ?? "")
+    .split("&")
+    .map((p) => p.trim())
+    .filter((p) => p && !/^trusted_connection=/i.test(p));
+  if (on) parts.push("trusted_connection=yes");
+  return parts.join("&") || null;
+}
+
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="block">
@@ -242,17 +252,35 @@ export function ConnectionDialog() {
             <span>읽기 전용 (쓰기 쿼리 차단)</span>
           </label>
 
-          <label className="flex cursor-pointer items-center gap-2">
-            <input
-              type="checkbox"
-              checked={(form.options ?? "").includes("tls=true")}
-              onChange={(e) =>
-                update("options", toggleTls(form.options, e.target.checked))
-              }
-              className="accent-accent"
-            />
-            <span>TLS 사용 (암호화 연결 — 서버가 지원할 때)</span>
-          </label>
+          {form.engine !== "mssql" && (
+            <label className="flex cursor-pointer items-center gap-2">
+              <input
+                type="checkbox"
+                checked={(form.options ?? "").includes("tls=true")}
+                onChange={(e) =>
+                  update("options", toggleTls(form.options, e.target.checked))
+                }
+                className="accent-accent"
+              />
+              <span>TLS 사용 (암호화 연결 — 서버가 지원할 때)</span>
+            </label>
+          )}
+
+          {form.engine === "mssql" && (
+            <label className="flex cursor-pointer items-center gap-2">
+              <input
+                type="checkbox"
+                checked={(form.options ?? "")
+                  .toLowerCase()
+                  .includes("trusted_connection=yes")}
+                onChange={(e) =>
+                  update("options", toggleTrusted(form.options, e.target.checked))
+                }
+                className="accent-accent"
+              />
+              <span>Windows 인증 (통합 보안 — 사용자/비밀번호 무시)</span>
+            </label>
+          )}
           <div className="text-[11px] text-fg-dim">
             비밀번호는 OS 키체인(Windows 자격증명 관리자)에 저장됩니다.
           </div>
