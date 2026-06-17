@@ -1,9 +1,35 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { Database, GitBranch } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { useProjects } from "../queries";
 import { useUi } from "../stores/ui";
 import { SysMonitor } from "./SysMonitor";
+
+function ModeButton({
+  mode,
+  icon: Icon,
+  label,
+}: {
+  mode: "git" | "db";
+  icon: typeof GitBranch;
+  label: string;
+}) {
+  const appMode = useUi((s) => s.appMode);
+  const setAppMode = useUi((s) => s.setAppMode);
+  const active = appMode === mode;
+  return (
+    <button
+      onClick={() => setAppMode(mode)}
+      className={`flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium transition-colors ${
+        active ? "bg-raised text-fg" : "text-fg-dim hover:text-fg"
+      }`}
+    >
+      <Icon size={12} />
+      {label}
+    </button>
+  );
+}
 
 const appWindow = getCurrentWindow();
 
@@ -48,6 +74,12 @@ export function TitleBar() {
         <span className="text-xs font-semibold tracking-wide text-fg">
           Gitpervisor
         </span>
+      </div>
+
+      {/* 모드 전환 — Git ↔ DB */}
+      <div className="ml-3 flex items-center gap-0.5 rounded bg-base/50 p-0.5">
+        <ModeButton mode="git" icon={GitBranch} label="Git" />
+        <ModeButton mode="db" icon={Database} label="DB" />
       </div>
 
       {/* 가운데: 드래그 영역 */}

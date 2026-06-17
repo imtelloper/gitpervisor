@@ -1,4 +1,5 @@
 mod commands;
+mod db;
 mod error;
 mod git;
 mod monitor;
@@ -42,6 +43,9 @@ pub fn run() {
             // 저장된 git 경로를 부팅 시 적용 (이후 set_settings로 갱신)
             git::runner::set_git_override(settings.git_path.as_ref().map(PathBuf::from));
             app.manage(AppState::new(projects.clone(), settings, notes));
+            // DB 탐색기 — 연결 메타 로드 + 활성 연결 상태 (M6 §17)
+            let db_conns = db::load_connections(app.handle());
+            app.manage(db::DbState::new(db_conns));
             // 등록된 모든 레포에 파일 감시 시작 (F7: 외부 수정 자동 반영)
             for project in &projects {
                 watcher::register(app.handle(), project);
@@ -80,6 +84,14 @@ pub fn run() {
             commands::term_close,
             commands::term_paste,
             monitor::sys_metrics,
+            db::db_list_connections,
+            db::db_save_connection,
+            db::db_delete_connection,
+            db::db_connect,
+            db::db_disconnect,
+            db::db_databases,
+            db::db_tables,
+            db::db_query,
         ])
         .on_window_event(|window, event| {
             // 창이 닫히면 열린 PTY 자식을 모두 정리한다 (좀비 셸 방지, 설계 §16.8).

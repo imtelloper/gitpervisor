@@ -3,6 +3,7 @@ import { useEffect } from "react";
 
 import { ChangesPanel } from "./components/changes/ChangesPanel";
 import { ConfirmHost } from "./components/common/ConfirmDialog";
+import { DbWorkspace } from "./components/db/DbWorkspace";
 import { EmptyState } from "./components/common/EmptyState";
 import { Toasts } from "./components/common/Toast";
 import { GitGate } from "./components/GitGate";
@@ -21,6 +22,7 @@ import { useUi } from "./stores/ui";
 
 export default function App() {
   const { data: projects } = useProjects();
+  const appMode = useUi((s) => s.appMode);
   const selectedProjectId = useUi((s) => s.selectedProjectId);
   const selectProject = useUi((s) => s.selectProject);
   const fileTreeOpen = useUi((s) => s.fileTreeOpen);
@@ -50,6 +52,9 @@ export default function App() {
       <TitleBar />
       <div className="min-h-0 flex-1">
         <GitGate>
+          {appMode === "db" ? (
+            <DbWorkspace />
+          ) : (
           <div className="flex h-full flex-col">
             <div className="flex min-h-0 flex-1">
               <ProjectList />
@@ -80,6 +85,7 @@ export default function App() {
 
             <StatusBar project={selected} />
           </div>
+          )}
           <Toasts />
           <ConfirmHost />
           <SettingsDialog />

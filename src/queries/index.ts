@@ -47,6 +47,46 @@ export const keys = {
   notes: ["notes"] as const,
 };
 
+// ---- DB 탐색기 (M6 §17) ----
+export function useDbConnections() {
+  return useQuery({
+    queryKey: ["db-connections"],
+    queryFn: ipc.dbListConnections,
+    staleTime: Infinity,
+  });
+}
+export function useDbDatabases(connId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ["db-databases", connId],
+    queryFn: () => ipc.dbDatabases(connId),
+    enabled,
+    staleTime: 30_000,
+  });
+}
+export function useDbTables(connId: string, database: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ["db-tables", connId, database],
+    queryFn: () => ipc.dbTables(connId, database),
+    enabled,
+    staleTime: 30_000,
+  });
+}
+export function useSaveConnection() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { connection: import("../lib/ipc").DbConnection; password: string | null }) =>
+      ipc.dbSaveConnection(v.connection, v.password),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["db-connections"] }),
+  });
+}
+export function useDeleteConnection() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => ipc.dbDeleteConnection(id),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["db-connections"] }),
+  });
+}
+
 /** 전체 프로젝트 메모 (캐시). */
 export function useNotes() {
   return useQuery({

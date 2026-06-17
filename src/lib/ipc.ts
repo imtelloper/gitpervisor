@@ -123,6 +123,30 @@ export interface Settings {
 
 export type OpenTarget = "explorer" | "terminal";
 
+// ---- DB 탐색기 (M6 §17) ----
+export type DbEngine = "mongodb" | "postgres" | "mysql" | "sqlite" | "mssql";
+export interface DbConnection {
+  id: string;
+  name: string;
+  engine: DbEngine;
+  host: string;
+  port: number;
+  database: string | null;
+  username: string;
+  options: string | null;
+  readOnly: boolean;
+  color: string | null;
+}
+export interface DbColumn {
+  name: string;
+  typeName: string | null;
+}
+export interface DbResult {
+  columns: DbColumn[];
+  rows: unknown[][];
+  rowCount: number;
+}
+
 // ---- 프로젝트 메모 (프로젝트당 여러 개) ----
 export interface Memo {
   id: string;
@@ -314,6 +338,23 @@ export const ipc = {
     callMutating<void>("open_in", { projectId, target }),
   listDir: (projectId: string, relPath: string) =>
     call<DirEntry[]>("list_dir", { projectId, relPath }),
+  // ---- DB 탐색기 ----
+  dbListConnections: () => call<DbConnection[]>("db_list_connections"),
+  dbSaveConnection: (connection: DbConnection, password: string | null) =>
+    callMutating<DbConnection>("db_save_connection", {
+      payload: { connection, password },
+    }),
+  dbDeleteConnection: (id: string) =>
+    callMutating<void>("db_delete_connection", { id }),
+  dbConnect: (id: string) => callMutating<void>("db_connect", { id }, 60_000),
+  dbDisconnect: (id: string) => callMutating<void>("db_disconnect", { id }),
+  dbDatabases: (id: string) =>
+    callMutating<string[]>("db_databases", { id }, 60_000),
+  dbTables: (id: string, database: string) =>
+    callMutating<string[]>("db_tables", { id, database }, 60_000),
+  dbQuery: (id: string, database: string, query: string, limit: number) =>
+    callMutating<DbResult>("db_query", { id, database, query, limit }, 120_000),
+
   getNotes: () => call<NotesMap>("get_notes"),
   addMemo: (projectId: string, memoId: string) =>
     callMutating<Memo>("add_memo", { projectId, memoId }),
