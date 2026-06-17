@@ -702,7 +702,7 @@ interface TermTab { id; projectId; title; layout: Pane; activePaneId; maximizedP
 ### 17.1 확정 결정
 - **엔진**: MongoDB · SQL Server · PostgreSQL · MySQL · SQLite (전부).
 - **권한**: 읽기/쓰기(가드 포함) — 쓰기 쿼리는 확인 다이얼로그 + 연결별 읽기전용 토글.
-- **위치**: 좌측 레일에 **Git ↔ DB 모드 토글**. DB 모드 전용 레이아웃.
+- **위치**: 중앙 **워크스페이스 탭**(Viewer·터미널 옆 `🛢 DB` 탭). 툴바 DB 버튼으로 열기. (초기 설계의 Git↔DB 모드 토글 대신 — 탭이 더 자연스러움)
 
 ### 17.2 레이아웃 (DB 모드)
 ```

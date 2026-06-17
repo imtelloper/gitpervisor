@@ -5,7 +5,6 @@ import { Play } from "lucide-react";
 
 import { useSettings } from "../../queries";
 import { useDb } from "../../stores/db";
-import { ConnectionDialog } from "./ConnectionDialog";
 import { DbSidebar } from "./DbSidebar";
 
 function QueryEditor() {
@@ -151,7 +150,6 @@ export function DbWorkspace() {
           <ResultGrid />
         </div>
       </div>
-      <ConnectionDialog />
     </div>
   );
 }

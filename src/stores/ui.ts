@@ -17,9 +17,6 @@ export interface ConfirmRequest {
 }
 
 interface UiState {
-  /** 앱 모드 — Git 대시보드 ↔ DB 탐색기 (M6 §17) */
-  appMode: "git" | "db";
-  setAppMode: (mode: "git" | "db") => void;
   selectedProjectId: string | null;
   /** 중앙 뷰어가 표시할 diff 대상 — Changes(worktree/index) 또는 Log(commit)에서 설정 */
   selectedDiff: DiffTarget | null;
@@ -57,8 +54,6 @@ interface UiState {
 let toastSeq = 0;
 
 export const useUi = create<UiState>((set) => ({
-  appMode: "git",
-  setAppMode: (mode) => set({ appMode: mode }),
   selectedProjectId: null,
   selectedDiff: null,
   logOpen: false,

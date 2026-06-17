@@ -1,13 +1,20 @@
-import { FileText, Plus, Terminal as TerminalIcon, X } from "lucide-react";
+import {
+  Database,
+  FileText,
+  Plus,
+  Terminal as TerminalIcon,
+  X,
+} from "lucide-react";
 import { useEffect } from "react";
 
 import { useSettings } from "../../queries";
 import { useTerminals } from "../../stores/terminals";
 import { useUi } from "../../stores/ui";
+import { DbWorkspace } from "../db/DbWorkspace";
 import { PaneTreeRoot } from "./PaneTree";
 import { ViewerTab } from "./ViewerTab";
 
-/** 중앙 워크스페이스 — Viewer ↔ 터미널 탭 전환 (설계 §16.6). */
+/** 중앙 워크스페이스 — Viewer ↔ DB ↔ 터미널 탭 전환 (설계 §16.6, §17). */
 export function WorkspaceTabs({ projectId }: { projectId: string }) {
   const allTerminals = useTerminals((s) => s.terminals);
   const terminals = allTerminals.filter((t) => t.projectId === projectId);
@@ -15,6 +22,8 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
   const setActiveTab = useTerminals((s) => s.setActiveTab);
   const openTerminal = useTerminals((s) => s.openTerminal);
   const closeTab = useTerminals((s) => s.closeTab);
+  const dbOpen = useTerminals((s) => s.dbProjects.includes(projectId));
+  const closeDbTab = useTerminals((s) => s.closeDbTab);
 
   const selectedDiff = useUi((s) => s.selectedDiff);
   const { data: settings } = useSettings();
@@ -34,6 +43,15 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
           label="Viewer"
           onClick={() => setActiveTab(projectId, "viewer")}
         />
+        {dbOpen && (
+          <TabChip
+            active={active === "db"}
+            icon={<Database size={13} />}
+            label="DB"
+            onClick={() => setActiveTab(projectId, "db")}
+            onClose={() => closeDbTab(projectId)}
+          />
+        )}
         {terminals.map((t) => (
           <TabChip
             key={t.id}
@@ -57,6 +75,11 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
         <div className={active === "viewer" ? "h-full" : "hidden"}>
           <ViewerTab projectId={projectId} />
         </div>
+        {dbOpen && (
+          <div className={active === "db" ? "h-full" : "hidden"}>
+            <DbWorkspace />
+          </div>
+        )}
         {terminals.map((t) => (
           <div key={t.id} className={active === t.id ? "h-full" : "hidden"}>
             {active === t.id && (
@@ -100,7 +123,7 @@ function TabChip({
             e.stopPropagation();
             onClose();
           }}
-          title="터미널 닫기"
+          title="탭 닫기"
           className="ml-0.5 shrink-0 rounded p-0.5 text-fg-dim opacity-0 hover:bg-edge hover:text-fg group-hover:opacity-100"
         >
           <X size={12} />

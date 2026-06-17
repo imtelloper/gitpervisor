@@ -3,6 +3,7 @@ import {
   ArrowDownToLine,
   ArrowUp,
   ArrowUpToLine,
+  Database,
   FolderTree,
   GitBranch,
   RefreshCcw,
@@ -159,6 +160,14 @@ export function Toolbar({ project }: { project: Project }) {
         className="rounded p-1.5 text-fg-muted hover:bg-raised hover:text-fg"
       >
         <SquareTerminal size={15} />
+      </button>
+
+      <button
+        title="DB 탐색기 (탭)"
+        onClick={() => useTerminals.getState().openDbTab(project.id)}
+        className="rounded p-1.5 text-fg-muted hover:bg-raised hover:text-fg"
+      >
+        <Database size={15} />
       </button>
 
       <button

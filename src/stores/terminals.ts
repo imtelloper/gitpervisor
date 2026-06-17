@@ -86,6 +86,10 @@ interface TerminalsState {
   closeTab: (tabId: string) => void;
   closeProjectTerminals: (projectId: string) => void;
   setActiveTab: (projectId: string, tab: string) => void;
+  /** DB 탐색기 탭이 열린 프로젝트들 */
+  dbProjects: string[];
+  openDbTab: (projectId: string) => void;
+  closeDbTab: (projectId: string) => void;
   splitPane: (
     tabId: string,
     paneId: string,
@@ -103,6 +107,25 @@ export const useTerminals = create<TerminalsState>((set, get) => ({
   terminals: [],
   activeTab: {},
   paneStatus: {},
+  dbProjects: [],
+
+  openDbTab: (projectId) =>
+    set((s) => ({
+      dbProjects: s.dbProjects.includes(projectId)
+        ? s.dbProjects
+        : [...s.dbProjects, projectId],
+      activeTab: { ...s.activeTab, [projectId]: "db" },
+    })),
+
+  closeDbTab: (projectId) =>
+    set((s) => ({
+      dbProjects: s.dbProjects.filter((p) => p !== projectId),
+      activeTab: {
+        ...s.activeTab,
+        [projectId]:
+          s.activeTab[projectId] === "db" ? "viewer" : s.activeTab[projectId],
+      },
+    })),
 
   openTerminal: (projectId) => {
     const tabId = crypto.randomUUID();
