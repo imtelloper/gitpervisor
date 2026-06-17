@@ -78,11 +78,61 @@ function QueryEditor() {
   );
 }
 
+/** "2020-01-02T03:04:05.123Z" → "2020-01-02 03:04:05" (저장된 UTC 그대로, 가독성만). */
+function trimIso(iso: string): string {
+  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})/.exec(iso);
+  return m ? `${m[1]} ${m[2]}` : iso;
+}
+
+/** relaxed 확장 JSON 단일 키 래퍼($oid·$date·$numberDecimal 등)를 읽기 좋은 값으로 푼다. */
+function unwrapExtjson(
+  v: Record<string, unknown>,
+): { text: string; kind: "id" | "date" | "num"; title?: string } | null {
+  const keys = Object.keys(v);
+  if (keys.length !== 1) return null;
+  const k = keys[0];
+  const inner = v[k];
+  switch (k) {
+    case "$oid":
+      return typeof inner === "string" ? { text: inner, kind: "id" } : null;
+    case "$date": {
+      if (typeof inner === "string")
+        return { text: trimIso(inner), kind: "date", title: inner };
+      // 범위 밖 날짜: {"$date":{"$numberLong":"ms"}}
+      if (inner && typeof inner === "object" && "$numberLong" in inner) {
+        const ms = Number((inner as Record<string, unknown>).$numberLong);
+        if (!Number.isNaN(ms)) {
+          const iso = new Date(ms).toISOString();
+          return { text: trimIso(iso), kind: "date", title: iso };
+        }
+      }
+      return null;
+    }
+    case "$numberDecimal":
+    case "$numberLong":
+    case "$numberInt":
+      return typeof inner === "string" ? { text: inner, kind: "num" } : null;
+    default:
+      return null;
+  }
+}
+
 function renderCell(v: unknown) {
   if (v === null || v === undefined)
     return <span className="text-fg-dim">null</span>;
-  if (typeof v === "object")
+  if (typeof v === "object") {
+    const u = unwrapExtjson(v as Record<string, unknown>);
+    if (u) {
+      const cls =
+        u.kind === "date" ? "text-add" : u.kind === "num" ? "text-mod" : "";
+      return (
+        <span className={cls} title={u.title}>
+          {u.text}
+        </span>
+      );
+    }
     return <span className="text-mod">{JSON.stringify(v)}</span>;
+  }
   if (typeof v === "boolean")
     return <span className="text-add">{String(v)}</span>;
   if (typeof v === "number") return <span className="text-mod">{v}</span>;
