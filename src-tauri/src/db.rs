@@ -359,6 +359,20 @@ pub async fn db_table_meta(
     }
 }
 
+/// 예상 실행 계획(ShowPlan XML) — 쿼리를 실행하지 않고 계획만 받는다 (SQL 엔진 전용).
+#[tauri::command]
+pub async fn db_explain(
+    state: State<'_, DbState>,
+    id: String,
+    database: String,
+    query: String,
+) -> Result<String, IpcError> {
+    match client_of(&state, &id)? {
+        DbClient::Mssql(c) => mssql_explain(&c, &database, &query).await,
+        DbClient::Mongo(_) => Err(err("실행 계획은 SQL 엔진만 지원합니다")),
+    }
+}
+
 fn client_of(state: &State<'_, DbState>, id: &str) -> Result<DbClient, IpcError> {
     state
         .clients
@@ -586,6 +600,51 @@ fn mssql_cell_to_json(row: &tiberius::Row, i: usize) -> Json {
         v.iter().map(|b| format!("{b:02X}")).collect::<String>()
     )));
     Json::Null
+}
+
+async fn run_explain_inner(client: &mut MssqlClient, query: &str) -> Result<String, IpcError> {
+    let rows = client
+        .simple_query(query)
+        .await
+        .map_err(|e| err(format!("계획 생성 실패: {e}")))?
+        .into_first_result()
+        .await
+        .map_err(|e| err(format!("계획 수집 실패: {e}")))?;
+    rows.first()
+        .and_then(|r| r.try_get::<&str, _>(0).ok().flatten())
+        .map(str::to_string)
+        .ok_or_else(|| err("실행 계획을 받지 못했습니다"))
+}
+
+/// SET SHOWPLAN_XML ON으로 예상 계획 XML을 받고, 항상 OFF로 복구한다(연결 상태 유지).
+async fn mssql_explain(
+    arc: &Arc<tokio::sync::Mutex<MssqlClient>>,
+    database: &str,
+    query: &str,
+) -> Result<String, IpcError> {
+    let mut client = arc.lock().await;
+    if !database.trim().is_empty() {
+        client
+            .simple_query(format!("USE [{}]", database.replace(']', "]]")))
+            .await
+            .map_err(|e| err(format!("DB 전환 실패: {e}")))?
+            .into_results()
+            .await
+            .ok();
+    }
+    client
+        .simple_query("SET SHOWPLAN_XML ON")
+        .await
+        .map_err(|e| err(format!("SHOWPLAN 설정 실패: {e}")))?
+        .into_results()
+        .await
+        .ok();
+    let result = run_explain_inner(&mut client, query).await;
+    // 어떤 경우든 OFF로 복구 — 안 그러면 다음 쿼리들이 실행 대신 계획만 반환한다
+    if let Ok(s) = client.simple_query("SET SHOWPLAN_XML OFF").await {
+        s.into_results().await.ok();
+    }
+    result
 }
 
 /// 행에서 i번째 컬럼을 문자열로 (NULL/오류 → 빈 문자열).

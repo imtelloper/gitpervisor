@@ -94,6 +94,7 @@ pub fn run() {
             db::db_tables,
             db::db_query,
             db::db_table_meta,
+            db::db_explain,
         ])
         .on_window_event(|window, event| {
             // 창이 닫히면 열린 PTY 자식을 모두 정리한다 (좀비 셸 방지, 설계 §16.8).

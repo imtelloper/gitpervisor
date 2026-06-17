@@ -434,6 +434,8 @@ export const ipc = {
     callMutating<DbResult>("db_query", { id, database, query, limit }, 120_000),
   dbTableMeta: (id: string, database: string, table: string) =>
     callMutating<TableMeta>("db_table_meta", { id, database, table }, 60_000),
+  dbExplain: (id: string, database: string, query: string) =>
+    callMutating<string>("db_explain", { id, database, query }, 60_000),
 
   getNotes: () => call<NotesMap>("get_notes"),
   addMemo: (projectId: string, memoId: string) =>

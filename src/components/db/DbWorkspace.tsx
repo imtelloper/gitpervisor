@@ -12,6 +12,7 @@ function QueryEditor() {
   const queryText = useDb((s) => s.queryText);
   const setQuery = useDb((s) => s.setQuery);
   const runQuery = useDb((s) => s.runQuery);
+  const runExplain = useDb((s) => s.runExplain);
   const running = useDb((s) => s.running);
   const limit = useDb((s) => s.limit);
   const setLimit = useDb((s) => s.setLimit);
@@ -47,6 +48,16 @@ function QueryEditor() {
             ))}
           </select>
         </label>
+        {activeEngine === "mssql" && (
+          <button
+            onClick={() => void runExplain()}
+            disabled={running || !activeDatabase}
+            title="예상 실행 계획 (쿼리 미실행)"
+            className="rounded border border-edge px-2 py-1 text-xs text-fg-muted hover:bg-raised hover:text-fg disabled:opacity-50"
+          >
+            실행 계획
+          </button>
+        )}
         <button
           onClick={() => void runQuery()}
           disabled={running || !activeDatabase}
@@ -316,6 +327,105 @@ function ResultGrid() {
 }
 
 /** DB 모드 워크스페이스 — 좌: 연결/스키마 트리 / 우: 쿼리 에디터 + 결과 그리드 (M6 §17). */
+interface PlanNode {
+  op: string;
+  rows: string;
+  cost: string;
+  object: string | null;
+  children: PlanNode[];
+}
+
+/** SQL Server ShowPlan XML → 연산자 트리. 기본 네임스페이스를 제거해 querySelector로 다룬다. */
+function parsePlan(xml: string): PlanNode[] {
+  const clean = xml.replace(/xmlns(:\w+)?="[^"]*"/g, "");
+  const doc = new DOMParser().parseFromString(clean, "application/xml");
+  const childRelOps = (el: Element): Element[] =>
+    [...el.querySelectorAll("RelOp")].filter(
+      (r) => r.parentElement?.closest("RelOp") === el,
+    );
+  const toNode = (relop: Element): PlanNode => {
+    const objEl = [...relop.querySelectorAll("Object")].find(
+      (o) => o.closest("RelOp") === relop,
+    );
+    const obj = objEl
+      ? [objEl.getAttribute("Table"), objEl.getAttribute("Index")]
+          .filter(Boolean)
+          .map((s) => (s ?? "").replace(/[[\]]/g, ""))
+          .join(".")
+      : null;
+    return {
+      op: relop.getAttribute("PhysicalOp") ?? "?",
+      rows: relop.getAttribute("EstimateRows") ?? "",
+      cost: relop.getAttribute("EstimatedTotalSubtreeCost") ?? "",
+      object: obj || null,
+      children: childRelOps(relop).map(toNode),
+    };
+  };
+  return [...doc.querySelectorAll("RelOp")]
+    .filter((r) => r.parentElement?.closest("RelOp") == null)
+    .map(toNode);
+}
+
+function PlanRow({ node, depth }: { node: PlanNode; depth: number }) {
+  const cost = parseFloat(node.cost);
+  return (
+    <>
+      <div
+        style={{ paddingLeft: 8 + depth * 16 }}
+        className="flex items-center gap-2 whitespace-nowrap py-0.5 text-[12px] hover:bg-raised/40"
+      >
+        <span className="text-fg">{node.op}</span>
+        {node.object && (
+          <span className="font-mono text-fg-dim">{node.object}</span>
+        )}
+        {node.rows && (
+          <span className="text-fg-dim">
+            rows {Math.round(parseFloat(node.rows))}
+          </span>
+        )}
+        {!Number.isNaN(cost) && (
+          <span className="text-mod">cost {cost.toFixed(4)}</span>
+        )}
+      </div>
+      {node.children.map((c, i) => (
+        <PlanRow key={i} node={c} depth={depth + 1} />
+      ))}
+    </>
+  );
+}
+
+function PlanView() {
+  const xml = useDb((s) => s.planXml);
+  const closePlan = useDb((s) => s.closePlan);
+  const nodes = useMemo(() => (xml ? parsePlan(xml) : []), [xml]);
+  return (
+    <div className="flex h-full flex-col">
+      <div className="flex h-8 shrink-0 items-center gap-2 border-b border-edge px-3 text-xs text-fg-dim">
+        <span>예상 실행 계획</span>
+        <div className="flex-1" />
+        <button
+          onClick={closePlan}
+          className="rounded px-2 py-0.5 hover:bg-raised hover:text-fg"
+        >
+          결과로 ✕
+        </button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto py-1 font-mono">
+        {nodes.length ? (
+          nodes.map((n, i) => <PlanRow key={i} node={n} depth={0} />)
+        ) : (
+          <Center>계획을 표시할 수 없습니다</Center>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ResultArea() {
+  const planXml = useDb((s) => s.planXml);
+  return planXml ? <PlanView /> : <ResultGrid />;
+}
+
 export function DbWorkspace() {
   return (
     <div className="flex h-full min-w-0">
@@ -323,7 +433,7 @@ export function DbWorkspace() {
       <div className="flex min-w-0 flex-1 flex-col bg-base">
         <QueryEditor />
         <div className="min-h-0 flex-1">
-          <ResultGrid />
+          <ResultArea />
         </div>
       </div>
     </div>
