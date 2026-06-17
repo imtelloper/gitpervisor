@@ -7,6 +7,7 @@ import {
   Pencil,
   Plus,
   Table2,
+  Unplug,
 } from "lucide-react";
 
 import type { DbConnection, DbEngine } from "../../lib/ipc";
@@ -84,6 +85,7 @@ function ConnNode({ conn }: { conn: DbConnection }) {
   const connected = useDb((s) => s.connectedIds.includes(conn.id));
   const toggleConn = useDb((s) => s.toggleConn);
   const openDialog = useDb((s) => s.openDialog);
+  const disconnect = useDb((s) => s.disconnect);
   const { data: databases, isLoading } = useDbDatabases(
     conn.id,
     expanded && connected,
@@ -107,16 +109,30 @@ function ConnNode({ conn }: { conn: DbConnection }) {
         {connected && !connecting && (
           <span className="h-1.5 w-1.5 rounded-full bg-ok" title="연결됨" />
         )}
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            openDialog(conn);
-          }}
-          title="연결 편집"
-          className="ml-auto rounded p-0.5 text-fg-dim opacity-0 hover:bg-edge hover:text-fg group-hover:opacity-100"
-        >
-          <Pencil size={12} />
-        </button>
+        <div className="ml-auto flex items-center opacity-0 group-hover:opacity-100">
+          {connected && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                void disconnect(conn.id);
+              }}
+              title="연결 끊기"
+              className="rounded p-0.5 text-fg-dim hover:bg-edge hover:text-fg"
+            >
+              <Unplug size={12} />
+            </button>
+          )}
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              openDialog(conn);
+            }}
+            title="연결 편집"
+            className="rounded p-0.5 text-fg-dim hover:bg-edge hover:text-fg"
+          >
+            <Pencil size={12} />
+          </button>
+        </div>
       </div>
       {expanded &&
         connected &&

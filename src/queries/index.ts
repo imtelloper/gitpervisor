@@ -10,6 +10,7 @@ import { useEffect } from "react";
 
 import type { DiffTarget, NotesMap, Project } from "../lib/ipc";
 import { errorMessage, ipc, isIpcError } from "../lib/ipc";
+import { useDb } from "../stores/db";
 import type { SyncOp } from "../stores/ops";
 import { useOps } from "../stores/ops";
 import { useUi } from "../stores/ui";
@@ -76,7 +77,14 @@ export function useSaveConnection() {
   return useMutation({
     mutationFn: (v: { connection: import("../lib/ipc").DbConnection; password: string | null }) =>
       ipc.dbSaveConnection(v.connection, v.password),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["db-connections"] }),
+    onSuccess: (_data, v) => {
+      void qc.invalidateQueries({ queryKey: ["db-connections"] });
+      // 편집 시 옛 DB/컬렉션 캐시와 연결 상태를 비워 다음 확장에서 새 설정으로 재연결되게 한다
+      const id = v.connection.id;
+      void qc.invalidateQueries({ queryKey: ["db-databases", id] });
+      void qc.invalidateQueries({ queryKey: ["db-tables", id] });
+      useDb.getState().onConnectionRemoved(id);
+    },
     onError: (e) =>
       useUi.getState().pushToast("error", `연결 저장 실패: ${errorMessage(e)}`),
   });

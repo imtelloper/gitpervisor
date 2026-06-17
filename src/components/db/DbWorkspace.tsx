@@ -4,7 +4,7 @@ import { Editor } from "@monaco-editor/react";
 import { Play } from "lucide-react";
 
 import { useSettings } from "../../queries";
-import { useDb } from "../../stores/db";
+import { LIMIT_OPTIONS, useDb } from "../../stores/db";
 import { DbSidebar } from "./DbSidebar";
 
 function QueryEditor() {
@@ -12,6 +12,8 @@ function QueryEditor() {
   const setQuery = useDb((s) => s.setQuery);
   const runQuery = useDb((s) => s.runQuery);
   const running = useDb((s) => s.running);
+  const limit = useDb((s) => s.limit);
+  const setLimit = useDb((s) => s.setLimit);
   const activeDatabase = useDb((s) => s.activeDatabase);
   const { data: settings } = useSettings();
   const theme =
@@ -24,6 +26,21 @@ function QueryEditor() {
           {activeDatabase ? `mongo-js · ${activeDatabase}` : "왼쪽에서 DB를 선택하세요"}
         </span>
         <div className="flex-1" />
+        <label className="flex items-center gap-1 text-xs text-fg-dim">
+          행
+          <select
+            value={limit}
+            onChange={(e) => setLimit(Number(e.target.value))}
+            title="조회 행 수 제한"
+            className="rounded border border-edge bg-base px-1 py-0.5 text-fg outline-none focus:border-accent"
+          >
+            {LIMIT_OPTIONS.map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
+        </label>
         <button
           onClick={() => void runQuery()}
           disabled={running || !activeDatabase}
@@ -88,6 +105,7 @@ function ResultGrid() {
   const result = useDb((s) => s.result);
   const error = useDb((s) => s.resultError);
   const running = useDb((s) => s.running);
+  const limit = useDb((s) => s.limit);
 
   if (running) return <Center>실행 중…</Center>;
   if (error) return <Center danger>{error}</Center>;
@@ -134,6 +152,11 @@ function ResultGrid() {
       </div>
       <div className="shrink-0 border-t border-edge bg-panel px-3 py-1 text-[11px] text-fg-dim">
         {result.rowCount} docs · {result.columns.length} fields
+        {result.rowCount >= limit && (
+          <span className="ml-2 text-mod">
+            · 상위 {limit}개만 표시 — 더 있을 수 있어요 (행 수를 늘려보세요)
+          </span>
+        )}
       </div>
     </div>
   );

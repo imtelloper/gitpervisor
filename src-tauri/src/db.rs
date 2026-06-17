@@ -104,17 +104,23 @@ fn save_connections(app: &AppHandle, conns: &[DbConnection]) -> Result<(), IpcEr
 fn keyring_entry(conn_id: &str) -> Option<keyring::Entry> {
     keyring::Entry::new(KEYRING_SERVICE, conn_id).ok()
 }
-fn store_password(conn_id: &str, password: &str) {
-    if let Some(e) = keyring_entry(conn_id) {
-        let _ = e.set_password(password);
-    }
+fn store_password(conn_id: &str, password: &str) -> Result<(), IpcError> {
+    let entry =
+        keyring_entry(conn_id).ok_or_else(|| err("키체인 접근 실패 — 비밀번호를 저장할 수 없습니다"))?;
+    entry
+        .set_password(password)
+        .map_err(|e| err(format!("비밀번호 저장 실패: {e}")))
 }
 fn read_password(conn_id: &str) -> Option<String> {
     keyring_entry(conn_id).and_then(|e| e.get_password().ok())
 }
 fn delete_password(conn_id: &str) {
-    if let Some(e) = keyring_entry(conn_id) {
-        let _ = e.delete_credential();
+    if let Some(entry) = keyring_entry(conn_id) {
+        // NoEntry(이미 없음)는 정상 — 그 외 실패는 고아 자격증명을 남기므로 경고
+        match entry.delete_credential() {
+            Ok(_) | Err(keyring::Error::NoEntry) => {}
+            Err(e) => eprintln!("[db] 키체인 자격증명 삭제 실패 {conn_id}: {e}"),
+        }
     }
 }
 
@@ -144,8 +150,10 @@ pub fn db_save_connection(
 ) -> Result<DbConnection, IpcError> {
     let conn = payload.connection;
     if let Some(pw) = payload.password.filter(|p| !p.is_empty()) {
-        store_password(&conn.id, &pw);
+        store_password(&conn.id, &pw)?;
     }
+    // 편집 시 기존 활성 클라이언트를 버려 다음 조회가 새 설정/비밀번호로 재연결되게 한다
+    state.clients.lock().unwrap().remove(&conn.id);
     {
         let mut conns = state.connections.write().unwrap();
         if let Some(existing) = conns.iter_mut().find(|c| c.id == conn.id) {
@@ -188,9 +196,11 @@ pub async fn db_connect(state: State<'_, DbState>, id: String) -> Result<(), Ipc
 
     let password = read_password(&conn.id);
     let client = build_mongo_client(&conn, password).await?;
-    // 연결 확인 — DB 목록 조회로 핑
+    // 연결 확인 — ping (listDatabases 권한 불필요; 인증은 핸드셰이크에서 검증된다).
+    // 최소권한 계정(특정 DB만 readWrite)도 인증만 되면 연결 성공한다.
     client
-        .list_database_names()
+        .database("admin")
+        .run_command(doc! { "ping": 1 })
         .await
         .map_err(|e| err(format!("연결 실패: {e}")))?;
 

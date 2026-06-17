@@ -17,6 +17,16 @@ const ENGINES: { value: DbEngine; label: string; port: number; soon?: boolean }[
 const inputCls =
   "w-full rounded border border-edge bg-base px-2 py-1 outline-none focus:border-accent";
 
+/** 옵션 문자열에서 tls=true를 토글한다(다른 옵션은 보존). */
+function toggleTls(options: string | null, on: boolean): string | null {
+  const parts = (options ?? "")
+    .split("&")
+    .map((p) => p.trim())
+    .filter((p) => p && !/^tls=/i.test(p));
+  if (on) parts.push("tls=true");
+  return parts.join("&") || null;
+}
+
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="block">
@@ -160,8 +170,18 @@ export function ConnectionDialog() {
               <Field label="포트">
                 <input
                   type="number"
+                  min={0}
+                  max={65535}
                   value={form.port}
-                  onChange={(e) => update("port", Number(e.target.value))}
+                  onChange={(e) =>
+                    update(
+                      "port",
+                      Math.max(
+                        0,
+                        Math.min(65535, Math.floor(Number(e.target.value) || 0)),
+                      ),
+                    )
+                  }
                   className={`${inputCls} font-mono`}
                 />
               </Field>
@@ -216,6 +236,18 @@ export function ConnectionDialog() {
               className="accent-accent"
             />
             <span>읽기 전용 (쓰기 쿼리 차단)</span>
+          </label>
+
+          <label className="flex cursor-pointer items-center gap-2">
+            <input
+              type="checkbox"
+              checked={(form.options ?? "").includes("tls=true")}
+              onChange={(e) =>
+                update("options", toggleTls(form.options, e.target.checked))
+              }
+              className="accent-accent"
+            />
+            <span>TLS 사용 (암호화 연결 — 서버가 지원할 때)</span>
           </label>
           <div className="text-[11px] text-fg-dim">
             비밀번호는 OS 키체인(Windows 자격증명 관리자)에 저장됩니다.
