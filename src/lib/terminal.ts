@@ -113,11 +113,10 @@ export function createTerminal(opts: {
       return false;
     }
 
-    // WebKitGTK IME 누적 버그 우회: 조합 중이 아닌 단일 인쇄 문자는 깨진 textarea
-    // 경로를 거치지 않고 PTY로 직접 보낸다. preventDefault로 textarea 입력 자체를
-    // 막아 누적을 차단한다. Enter·Backspace·방향키 등(key.length>1)과 조합 키는
-    // xterm 기본 경로로 흘려보낸다. (영문·명령 입력 정상화 — 터미널 내부 한글 조합은
-    // 미지원이나 커밋창 등 다른 입력의 IME는 영향 없음)
+    // WebKitGTK IME 누적 버그 우회(영문/비조합): 조합 중이 아닌 단일 인쇄 문자는 깨진
+    // textarea 경로를 거치지 않고 PTY로 직접 보낸다. preventDefault로 textarea 입력 자체를
+    // 막아 누적을 차단한다. Enter·Backspace·방향키 등(key.length>1)은 xterm 기본 경로로,
+    // 조합 키(한글 등, isComposing)는 아래 compositionend 핸들러가 처리한다.
     if (
       isWebKitGtk &&
       !e.isComposing &&
@@ -133,6 +132,37 @@ export function createTerminal(opts: {
     return true;
   });
   term.open(host); // 분리된 host에 먼저 연다 — 실제 fit은 attach 시점에 (DOM 렌더러는 0크기 허용)
+
+  // WebKitGTK 한글(IME 조합) 입력: xterm 기본 컴포지션 처리가 이 플랫폼에서 매 자모마다
+  // 조합 버퍼를 통째로 다시 보내 깨진다(누적). 캡처 단계에서 xterm 내부 핸들러를 차단하고
+  // (stopImmediatePropagation), "확정된 글자(compositionend.data)"만 PTY로 보낸다.
+  if (isWebKitGtk && term.textarea) {
+    const ta = term.textarea;
+    ta.addEventListener("compositionstart", (e) => e.stopImmediatePropagation(), true);
+    ta.addEventListener("compositionupdate", (e) => e.stopImmediatePropagation(), true);
+    ta.addEventListener(
+      "compositionend",
+      (e) => {
+        e.stopImmediatePropagation();
+        const data = (e as CompositionEvent).data;
+        if (data) void invoke("term_write", { termId: opts.id, data }).catch(() => {});
+        ta.value = "";
+      },
+      true,
+    );
+    // 조합 과정/확정에 뒤따르는 input 은 compositionend 에서 처리하므로 xterm 으로 흘리지 않는다.
+    ta.addEventListener(
+      "input",
+      (e) => {
+        const ie = e as InputEvent;
+        if (ie.isComposing || ie.inputType === "insertCompositionText") {
+          e.stopImmediatePropagation();
+          ta.value = "";
+        }
+      },
+      true,
+    );
+  }
 
   const inst: TermInstance = {
     id: opts.id,
