@@ -9,8 +9,10 @@ import {
   Loader2,
   Pencil,
   Plus,
+  ShieldCheck,
   Table2,
   Unplug,
+  Zap,
 } from "lucide-react";
 import { useState } from "react";
 
@@ -195,6 +197,53 @@ function SqlTableNode({
                       {i.unique ? "UNIQUE " : ""}
                       {i.kind}
                     </span>
+                  </MetaRow>
+                ))
+              )}
+            </MetaSection>
+            <MetaSection
+              pad={46}
+              icon={<ShieldCheck size={12} className="shrink-0 text-fg-dim" />}
+              label="Constraints"
+              count={meta.constraints.length}
+            >
+              {meta.constraints.length === 0 ? (
+                <MetaRow pad={66}>
+                  <span className="text-fg-dim">없음</span>
+                </MetaRow>
+              ) : (
+                meta.constraints.map((c) => (
+                  <MetaRow
+                    key={c.name}
+                    pad={66}
+                    title={`${c.name}: ${c.definition}`}
+                  >
+                    <span className="text-mod">
+                      {c.kind === "DEFAULT" ? "DF" : "CK"}
+                    </span>
+                    {c.column && <span>{c.column}</span>}
+                    <span className="truncate text-fg-dim">{c.definition}</span>
+                  </MetaRow>
+                ))
+              )}
+            </MetaSection>
+            <MetaSection
+              pad={46}
+              icon={<Zap size={12} className="shrink-0 text-fg-dim" />}
+              label="Triggers"
+              count={meta.triggers.length}
+            >
+              {meta.triggers.length === 0 ? (
+                <MetaRow pad={66}>
+                  <span className="text-fg-dim">없음</span>
+                </MetaRow>
+              ) : (
+                meta.triggers.map((t) => (
+                  <MetaRow key={t.name} pad={66} title={t.name}>
+                    <span className={t.disabled ? "text-fg-dim line-through" : ""}>
+                      {t.name}
+                    </span>
+                    <span className="text-[10px] text-fg-dim">{t.events}</span>
                   </MetaRow>
                 ))
               )}

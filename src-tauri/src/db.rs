@@ -107,10 +107,30 @@ pub struct IndexInfo {
 }
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ConstraintInfo {
+    pub name: String,
+    /// "CHECK" | "DEFAULT"
+    pub kind: String,
+    /// DEFAULT는 대상 컬럼
+    pub column: Option<String>,
+    pub definition: String,
+}
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TriggerInfo {
+    pub name: String,
+    /// "INSERT, UPDATE" 등
+    pub events: String,
+    pub disabled: bool,
+}
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TableMeta {
     pub columns: Vec<ColumnInfo>,
     pub keys: Vec<KeyInfo>,
     pub indexes: Vec<IndexInfo>,
+    pub constraints: Vec<ConstraintInfo>,
+    pub triggers: Vec<TriggerInfo>,
 }
 
 pub struct DbState {
@@ -652,6 +672,19 @@ async fn mssql_table_meta(
          WHERE i.object_id=OBJECT_ID(N'{obj}') AND i.type>0 AND i.is_hypothetical=0 AND ic.is_included_column=0 \
          ORDER BY i.name, ic.key_ordinal"
     );
+    let chk_sql = format!(
+        "SELECT name, definition FROM sys.check_constraints WHERE parent_object_id=OBJECT_ID(N'{obj}') ORDER BY name"
+    );
+    let def_sql = format!(
+        "SELECT dc.name, c.name, dc.definition FROM sys.default_constraints dc \
+         JOIN sys.columns c ON c.object_id=dc.parent_object_id AND c.column_id=dc.parent_column_id \
+         WHERE dc.parent_object_id=OBJECT_ID(N'{obj}') ORDER BY dc.name"
+    );
+    let trg_sql = format!(
+        "SELECT t.name, t.is_disabled, te.type_desc FROM sys.triggers t \
+         LEFT JOIN sys.trigger_events te ON te.object_id=t.object_id \
+         WHERE t.parent_id=OBJECT_ID(N'{obj}') ORDER BY t.name, te.type"
+    );
 
     let mut client = arc.lock().await;
     // 대상 DB 컨텍스트로 전환(2부 이름·OBJECT_ID가 올바른 DB에서 해석되도록)
@@ -666,6 +699,9 @@ async fn mssql_table_meta(
     let key_rows = run_rows(&mut client, &keys_sql).await?;
     let fk_rows = run_rows(&mut client, &fk_sql).await?;
     let idx_rows = run_rows(&mut client, &idx_sql).await?;
+    let chk_rows = run_rows(&mut client, &chk_sql).await?;
+    let def_rows = run_rows(&mut client, &def_sql).await?;
+    let trg_rows = run_rows(&mut client, &trg_sql).await?;
     drop(client);
 
     // 키(PK/UNIQUE) + PK 컬럼 집합
@@ -738,11 +774,59 @@ async fn mssql_table_meta(
             }),
         }
     }
+    // 제약(CHECK/DEFAULT)
+    let mut constraints: Vec<ConstraintInfo> = Vec::new();
+    for r in &chk_rows {
+        constraints.push(ConstraintInfo {
+            name: gstr(r, 0),
+            kind: "CHECK".to_string(),
+            column: None,
+            definition: gstr(r, 1),
+        });
+    }
+    for r in &def_rows {
+        let col = gstr(r, 1);
+        constraints.push(ConstraintInfo {
+            name: gstr(r, 0),
+            kind: "DEFAULT".to_string(),
+            column: if col.is_empty() { None } else { Some(col) },
+            definition: gstr(r, 2),
+        });
+    }
+    // 트리거(이벤트 묶음)
+    let mut triggers: Vec<TriggerInfo> = Vec::new();
+    for r in &trg_rows {
+        let name = gstr(r, 0);
+        if name.is_empty() {
+            continue;
+        }
+        let disabled = r.try_get::<bool, _>(1).ok().flatten().unwrap_or(false);
+        let ev = gstr(r, 2);
+        match triggers.iter_mut().find(|t| t.name == name) {
+            Some(t) => {
+                if !ev.is_empty() && !t.events.split(", ").any(|e| e == ev) {
+                    if t.events.is_empty() {
+                        t.events = ev;
+                    } else {
+                        t.events.push_str(", ");
+                        t.events.push_str(&ev);
+                    }
+                }
+            }
+            None => triggers.push(TriggerInfo {
+                name,
+                events: ev,
+                disabled,
+            }),
+        }
+    }
 
     Ok(TableMeta {
         columns,
         keys,
         indexes,
+        constraints,
+        triggers,
     })
 }
 

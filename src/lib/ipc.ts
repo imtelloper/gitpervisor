@@ -166,10 +166,23 @@ export interface IndexInfo {
   unique: boolean;
   columns: string[];
 }
+export interface ConstraintInfo {
+  name: string;
+  kind: string; // CHECK | DEFAULT
+  column: string | null;
+  definition: string;
+}
+export interface TriggerInfo {
+  name: string;
+  events: string; // "INSERT, UPDATE"
+  disabled: boolean;
+}
 export interface TableMeta {
   columns: ColumnInfo[];
   keys: KeyInfo[];
   indexes: IndexInfo[];
+  constraints: ConstraintInfo[];
+  triggers: TriggerInfo[];
 }
 
 // ---- 프로젝트 메모 (프로젝트당 여러 개) ----
