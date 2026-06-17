@@ -1,18 +1,27 @@
 import {
   ChevronDown,
   ChevronRight,
+  Columns3,
   Database,
+  KeyRound,
   Leaf,
+  ListTree,
   Loader2,
   Pencil,
   Plus,
   Table2,
   Unplug,
 } from "lucide-react";
+import { useState } from "react";
 
 import type { DbConnection, DbEngine } from "../../lib/ipc";
 import { usePanelWidth } from "../../lib/use-panel-width";
-import { useDbConnections, useDbDatabases, useDbTables } from "../../queries";
+import {
+  useDbConnections,
+  useDbDatabases,
+  useDbTables,
+  useTableMeta,
+} from "../../queries";
 import { dbKey, useDb } from "../../stores/db";
 import { ResizeHandle } from "../common/ResizeHandle";
 
@@ -20,6 +29,180 @@ function EngineIcon({ engine }: { engine: DbEngine }) {
   if (engine === "mongodb")
     return <Leaf size={13} className="shrink-0 text-add" />;
   return <Database size={13} className="shrink-0 text-mod" />;
+}
+
+function MetaRow({
+  pad,
+  title,
+  children,
+}: {
+  pad: number;
+  title?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      style={{ paddingLeft: pad }}
+      title={title}
+      className="flex items-center gap-1.5 whitespace-nowrap py-0.5 pr-2 text-[12px]"
+    >
+      {children}
+    </div>
+  );
+}
+
+/** 컬럼/키/인덱스 하위 그룹 — 접을 수 있음. */
+function MetaSection({
+  pad,
+  icon,
+  label,
+  count,
+  children,
+}: {
+  pad: number;
+  icon: React.ReactNode;
+  label: string;
+  count: number;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <div
+        onClick={() => setOpen((o) => !o)}
+        style={{ paddingLeft: pad }}
+        className="flex cursor-pointer items-center gap-1 whitespace-nowrap py-0.5 pr-2 text-fg-dim hover:bg-raised"
+      >
+        {open ? (
+          <ChevronDown size={11} className="shrink-0" />
+        ) : (
+          <ChevronRight size={11} className="shrink-0" />
+        )}
+        {icon}
+        <span>
+          {label} ({count})
+        </span>
+      </div>
+      {open && children}
+    </>
+  );
+}
+
+/** SQL 테이블 노드 — 펼치면 컬럼/키/인덱스(오브젝트 탐색기). 이름 클릭 = 데이터 미리보기. */
+function SqlTableNode({
+  connId,
+  database,
+  coll,
+  engine,
+}: {
+  connId: string;
+  database: string;
+  coll: string;
+  engine: DbEngine;
+}) {
+  const [open, setOpen] = useState(false);
+  const openCollection = useDb((s) => s.openCollection);
+  const { data: meta, isLoading } = useTableMeta(connId, database, coll, open);
+  return (
+    <>
+      <div
+        style={{ paddingLeft: 28 }}
+        className="flex items-center gap-1 whitespace-nowrap py-0.5 pr-2 hover:bg-raised"
+      >
+        <button
+          onClick={() => setOpen((o) => !o)}
+          title="컬럼/키/인덱스"
+          className="shrink-0 text-fg-dim hover:text-fg"
+        >
+          {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        </button>
+        <div
+          onClick={() => void openCollection(connId, database, coll, engine)}
+          title={`${coll} — 클릭: 데이터 미리보기`}
+          className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5"
+        >
+          <Table2 size={13} className="shrink-0 text-fg-dim" />
+          <span className="truncate">{coll}</span>
+        </div>
+      </div>
+      {open &&
+        (isLoading ? (
+          <div style={{ paddingLeft: 48 }} className="py-0.5 text-xs text-fg-dim">
+            …
+          </div>
+        ) : meta ? (
+          <>
+            <MetaSection
+              pad={46}
+              icon={<Columns3 size={12} className="shrink-0 text-fg-dim" />}
+              label="Columns"
+              count={meta.columns.length}
+            >
+              {meta.columns.map((c) => (
+                <MetaRow key={c.name} pad={66} title={`${c.name} ${c.typeName}`}>
+                  {c.pk && <KeyRound size={11} className="shrink-0 text-mod" />}
+                  <span className={c.pk ? "text-fg" : ""}>{c.name}</span>
+                  <span className="text-fg-dim">{c.typeName}</span>
+                  {!c.nullable && (
+                    <span className="text-[10px] text-fg-dim">NOT NULL</span>
+                  )}
+                </MetaRow>
+              ))}
+            </MetaSection>
+            <MetaSection
+              pad={46}
+              icon={<KeyRound size={12} className="shrink-0 text-fg-dim" />}
+              label="Keys"
+              count={meta.keys.length}
+            >
+              {meta.keys.length === 0 ? (
+                <MetaRow pad={66}>
+                  <span className="text-fg-dim">없음</span>
+                </MetaRow>
+              ) : (
+                meta.keys.map((k) => (
+                  <MetaRow key={k.name} pad={66} title={k.name}>
+                    <span className="text-mod">
+                      {k.kind === "PRIMARY KEY"
+                        ? "PK"
+                        : k.kind === "FOREIGN KEY"
+                          ? "FK"
+                          : "UQ"}
+                    </span>
+                    <span>{k.columns.join(", ")}</span>
+                    {k.references && (
+                      <span className="text-fg-dim">→ {k.references}</span>
+                    )}
+                  </MetaRow>
+                ))
+              )}
+            </MetaSection>
+            <MetaSection
+              pad={46}
+              icon={<ListTree size={12} className="shrink-0 text-fg-dim" />}
+              label="Indexes"
+              count={meta.indexes.length}
+            >
+              {meta.indexes.length === 0 ? (
+                <MetaRow pad={66}>
+                  <span className="text-fg-dim">없음</span>
+                </MetaRow>
+              ) : (
+                meta.indexes.map((i) => (
+                  <MetaRow key={i.name} pad={66} title={i.name}>
+                    <span>{i.columns.join(", ")}</span>
+                    <span className="text-[10px] text-fg-dim">
+                      {i.unique ? "UNIQUE " : ""}
+                      {i.kind}
+                    </span>
+                  </MetaRow>
+                ))
+              )}
+            </MetaSection>
+          </>
+        ) : null)}
+    </>
+  );
 }
 
 function CollNode({
@@ -34,6 +217,17 @@ function CollNode({
   engine: DbEngine;
 }) {
   const openCollection = useDb((s) => s.openCollection);
+  // SQL 엔진은 테이블을 펼쳐 컬럼/키/인덱스 표시. Mongo는 단순 리프(클릭=쿼리).
+  if (engine !== "mongodb") {
+    return (
+      <SqlTableNode
+        connId={connId}
+        database={database}
+        coll={coll}
+        engine={engine}
+      />
+    );
+  }
   return (
     <div
       onClick={() => void openCollection(connId, database, coll, engine)}

@@ -72,6 +72,19 @@ export function useDbTables(connId: string, database: string, enabled: boolean) 
     staleTime: 30_000,
   });
 }
+export function useTableMeta(
+  connId: string,
+  database: string,
+  table: string,
+  enabled: boolean,
+) {
+  return useQuery({
+    queryKey: ["db-table-meta", connId, database, table],
+    queryFn: () => ipc.dbTableMeta(connId, database, table),
+    enabled,
+    staleTime: 60_000,
+  });
+}
 export function useSaveConnection() {
   const qc = useQueryClient();
   return useMutation({

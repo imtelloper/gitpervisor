@@ -147,6 +147,31 @@ export interface DbResult {
   rowCount: number;
 }
 
+// 오브젝트 탐색기 메타(SQL 엔진)
+export interface ColumnInfo {
+  name: string;
+  typeName: string;
+  nullable: boolean;
+  pk: boolean;
+}
+export interface KeyInfo {
+  name: string;
+  kind: string; // PRIMARY KEY | UNIQUE | FOREIGN KEY
+  columns: string[];
+  references: string | null;
+}
+export interface IndexInfo {
+  name: string;
+  kind: string; // CLUSTERED | NONCLUSTERED …
+  unique: boolean;
+  columns: string[];
+}
+export interface TableMeta {
+  columns: ColumnInfo[];
+  keys: KeyInfo[];
+  indexes: IndexInfo[];
+}
+
 // ---- 프로젝트 메모 (프로젝트당 여러 개) ----
 export interface Memo {
   id: string;
@@ -394,6 +419,8 @@ export const ipc = {
     callMutating<string[]>("db_tables", { id, database }, 60_000),
   dbQuery: (id: string, database: string, query: string, limit: number) =>
     callMutating<DbResult>("db_query", { id, database, query, limit }, 120_000),
+  dbTableMeta: (id: string, database: string, table: string) =>
+    callMutating<TableMeta>("db_table_meta", { id, database, table }, 60_000),
 
   getNotes: () => call<NotesMap>("get_notes"),
   addMemo: (projectId: string, memoId: string) =>

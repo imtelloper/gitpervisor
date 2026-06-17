@@ -77,6 +77,42 @@ pub struct DbResult {
     pub row_count: usize,
 }
 
+// ---- 오브젝트 탐색기 메타(SQL 엔진) ----
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnInfo {
+    pub name: String,
+    pub type_name: String,
+    pub nullable: bool,
+    pub pk: bool,
+}
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyInfo {
+    pub name: String,
+    /// "PRIMARY KEY" | "UNIQUE" | "FOREIGN KEY"
+    pub kind: String,
+    pub columns: Vec<String>,
+    /// FK일 때 참조 대상 "schema.table(col)"
+    pub references: Option<String>,
+}
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexInfo {
+    pub name: String,
+    /// "CLUSTERED" | "NONCLUSTERED" 등
+    pub kind: String,
+    pub unique: bool,
+    pub columns: Vec<String>,
+}
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableMeta {
+    pub columns: Vec<ColumnInfo>,
+    pub keys: Vec<KeyInfo>,
+    pub indexes: Vec<IndexInfo>,
+}
+
 pub struct DbState {
     connections: RwLock<Vec<DbConnection>>,
     /// 활성 연결 (connId → 엔진별 클라이언트).
@@ -286,6 +322,20 @@ pub async fn db_query(
     match client_of(&state, &id)? {
         DbClient::Mongo(c) => mongo_query(&c, &database, &query, limit, read_only).await,
         DbClient::Mssql(c) => mssql_query(&c, &database, &query, limit, read_only).await,
+    }
+}
+
+/// 테이블의 컬럼/키/인덱스 메타 (SQL 엔진 전용 — 오브젝트 탐색기).
+#[tauri::command]
+pub async fn db_table_meta(
+    state: State<'_, DbState>,
+    id: String,
+    database: String,
+    table: String,
+) -> Result<TableMeta, IpcError> {
+    match client_of(&state, &id)? {
+        DbClient::Mssql(c) => mssql_table_meta(&c, &database, &table).await,
+        DbClient::Mongo(_) => Err(err("컬럼/키/인덱스는 SQL 엔진만 지원합니다")),
     }
 }
 
@@ -516,6 +566,184 @@ fn mssql_cell_to_json(row: &tiberius::Row, i: usize) -> Json {
         v.iter().map(|b| format!("{b:02X}")).collect::<String>()
     )));
     Json::Null
+}
+
+/// 행에서 i번째 컬럼을 문자열로 (NULL/오류 → 빈 문자열).
+fn gstr(r: &tiberius::Row, i: usize) -> String {
+    r.try_get::<&str, _>(i)
+        .ok()
+        .flatten()
+        .unwrap_or("")
+        .to_string()
+}
+
+async fn run_rows(client: &mut MssqlClient, sql: &str) -> Result<Vec<tiberius::Row>, IpcError> {
+    client
+        .simple_query(sql)
+        .await
+        .map_err(|e| err(format!("메타 조회 실패: {e}")))?
+        .into_first_result()
+        .await
+        .map_err(|e| err(format!("메타 수집 실패: {e}")))
+}
+
+/// SQL Server 컬럼 타입 표기 (varchar(50)·nvarchar(MAX)·decimal(18,2) 등).
+fn format_sql_type(dt: &str, clen: Option<i32>, prec: Option<i32>, scale: Option<i32>) -> String {
+    match dt.to_ascii_lowercase().as_str() {
+        "varchar" | "char" | "varbinary" | "binary" | "nvarchar" | "nchar" => match clen {
+            Some(-1) => format!("{dt}(MAX)"),
+            Some(n) => format!("{dt}({n})"),
+            None => dt.to_string(),
+        },
+        "decimal" | "numeric" => match (prec, scale) {
+            (Some(p), Some(s)) => format!("{dt}({p},{s})"),
+            (Some(p), None) => format!("{dt}({p})"),
+            _ => dt.to_string(),
+        },
+        _ => dt.to_string(),
+    }
+}
+
+async fn mssql_table_meta(
+    arc: &Arc<tokio::sync::Mutex<MssqlClient>>,
+    database: &str,
+    table: &str,
+) -> Result<TableMeta, IpcError> {
+    let (schema, name) = table.split_once('.').unwrap_or(("dbo", table));
+    // 문자열 리터럴 이스케이프('→'') / 식별자 대괄호 이스케이프(]→]])
+    let lit = |s: &str| s.replace('\'', "''");
+    let (sch_l, tab_l) = (lit(schema), lit(name));
+    let obj = format!(
+        "[{}].[{}]",
+        schema.replace(']', "]]").replace('\'', "''"),
+        name.replace(']', "]]").replace('\'', "''")
+    );
+    let db_br = database.replace(']', "]]");
+
+    let columns_sql = format!(
+        "SELECT COLUMN_NAME, DATA_TYPE, CAST(CHARACTER_MAXIMUM_LENGTH AS int), \
+         CAST(NUMERIC_PRECISION AS int), CAST(NUMERIC_SCALE AS int), IS_NULLABLE \
+         FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=N'{sch_l}' AND TABLE_NAME=N'{tab_l}' \
+         ORDER BY ORDINAL_POSITION"
+    );
+    let keys_sql = format!(
+        "SELECT tc.CONSTRAINT_NAME, tc.CONSTRAINT_TYPE, ku.COLUMN_NAME \
+         FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc \
+         JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE ku \
+           ON tc.CONSTRAINT_NAME=ku.CONSTRAINT_NAME AND tc.TABLE_SCHEMA=ku.TABLE_SCHEMA AND tc.TABLE_NAME=ku.TABLE_NAME \
+         WHERE tc.TABLE_SCHEMA=N'{sch_l}' AND tc.TABLE_NAME=N'{tab_l}' \
+           AND tc.CONSTRAINT_TYPE IN ('PRIMARY KEY','UNIQUE') \
+         ORDER BY tc.CONSTRAINT_NAME, ku.ORDINAL_POSITION"
+    );
+    let fk_sql = format!(
+        "SELECT fk.name, cpar.name, \
+           OBJECT_SCHEMA_NAME(fkc.referenced_object_id)+'.'+OBJECT_NAME(fkc.referenced_object_id), cref.name \
+         FROM sys.foreign_keys fk \
+         JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id=fk.object_id \
+         JOIN sys.columns cpar ON cpar.object_id=fkc.parent_object_id AND cpar.column_id=fkc.parent_column_id \
+         JOIN sys.columns cref ON cref.object_id=fkc.referenced_object_id AND cref.column_id=fkc.referenced_column_id \
+         WHERE fk.parent_object_id=OBJECT_ID(N'{obj}') ORDER BY fk.name, fkc.constraint_column_id"
+    );
+    let idx_sql = format!(
+        "SELECT i.name, i.is_unique, i.is_primary_key, i.type_desc, c.name \
+         FROM sys.indexes i \
+         JOIN sys.index_columns ic ON ic.object_id=i.object_id AND ic.index_id=i.index_id \
+         JOIN sys.columns c ON c.object_id=ic.object_id AND c.column_id=ic.column_id \
+         WHERE i.object_id=OBJECT_ID(N'{obj}') AND i.type>0 AND i.is_hypothetical=0 AND ic.is_included_column=0 \
+         ORDER BY i.name, ic.key_ordinal"
+    );
+
+    let mut client = arc.lock().await;
+    // 대상 DB 컨텍스트로 전환(2부 이름·OBJECT_ID가 올바른 DB에서 해석되도록)
+    client
+        .simple_query(format!("USE [{db_br}]"))
+        .await
+        .map_err(|e| err(format!("DB 전환 실패: {e}")))?
+        .into_results()
+        .await
+        .ok();
+    let col_rows = run_rows(&mut client, &columns_sql).await?;
+    let key_rows = run_rows(&mut client, &keys_sql).await?;
+    let fk_rows = run_rows(&mut client, &fk_sql).await?;
+    let idx_rows = run_rows(&mut client, &idx_sql).await?;
+    drop(client);
+
+    // 키(PK/UNIQUE) + PK 컬럼 집합
+    let mut keys: Vec<KeyInfo> = Vec::new();
+    let mut pk_cols: HashSet<String> = HashSet::new();
+    for r in &key_rows {
+        let (cname, ctype, col) = (gstr(r, 0), gstr(r, 1), gstr(r, 2));
+        if ctype == "PRIMARY KEY" {
+            pk_cols.insert(col.clone());
+        }
+        match keys.iter_mut().find(|k| k.name == cname) {
+            Some(k) => k.columns.push(col),
+            None => keys.push(KeyInfo {
+                name: cname,
+                kind: ctype,
+                columns: vec![col],
+                references: None,
+            }),
+        }
+    }
+    // FK
+    for r in &fk_rows {
+        let (fkname, col, reftbl, refcol) = (gstr(r, 0), gstr(r, 1), gstr(r, 2), gstr(r, 3));
+        match keys.iter_mut().find(|k| k.name == fkname) {
+            Some(k) => k.columns.push(col),
+            None => keys.push(KeyInfo {
+                name: fkname,
+                kind: "FOREIGN KEY".to_string(),
+                columns: vec![col],
+                references: Some(format!("{reftbl}({refcol})")),
+            }),
+        }
+    }
+    // 컬럼
+    let columns = col_rows
+        .iter()
+        .map(|r| {
+            let name = gstr(r, 0);
+            let type_name = format_sql_type(
+                &gstr(r, 1),
+                r.try_get::<i32, _>(2).ok().flatten(),
+                r.try_get::<i32, _>(3).ok().flatten(),
+                r.try_get::<i32, _>(4).ok().flatten(),
+            );
+            ColumnInfo {
+                pk: pk_cols.contains(&name),
+                nullable: gstr(r, 5) == "YES",
+                name,
+                type_name,
+            }
+        })
+        .collect();
+    // 인덱스
+    let mut indexes: Vec<IndexInfo> = Vec::new();
+    for r in &idx_rows {
+        let iname = gstr(r, 0);
+        if iname.is_empty() {
+            continue;
+        }
+        let unique = r.try_get::<bool, _>(1).ok().flatten().unwrap_or(false);
+        let kind = gstr(r, 3);
+        let col = gstr(r, 4);
+        match indexes.iter_mut().find(|x| x.name == iname) {
+            Some(x) => x.columns.push(col),
+            None => indexes.push(IndexInfo {
+                name: iname,
+                kind,
+                unique,
+                columns: vec![col],
+            }),
+        }
+    }
+
+    Ok(TableMeta {
+        columns,
+        keys,
+        indexes,
+    })
 }
 
 /// 첫 키워드가 쓰기/DDL인지 — read_only 연결의 안전망(완벽한 SQL 파서는 아님).
