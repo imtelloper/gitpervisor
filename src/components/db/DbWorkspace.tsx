@@ -2,6 +2,7 @@ import { monaco } from "../diff/monaco-setup";
 
 import { Editor } from "@monaco-editor/react";
 import { Play } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 
 import { useSettings } from "../../queries";
 import { LIMIT_OPTIONS, useDb } from "../../stores/db";
@@ -139,6 +140,34 @@ function renderCell(v: unknown) {
   return <span>{String(v)}</span>;
 }
 
+/** 셀의 표시 문자열 — 컬럼 너비 측정용(renderCell과 동일한 텍스트). */
+function cellText(v: unknown): string {
+  if (v === null || v === undefined) return "null";
+  if (typeof v === "object") {
+    const u = unwrapExtjson(v as Record<string, unknown>);
+    return u ? u.text : JSON.stringify(v);
+  }
+  return String(v);
+}
+
+let measureCanvas: HTMLCanvasElement | null = null;
+// 셀 폰트(ui-monospace)가 캔버스 폴백 폰트보다 넓을 수 있어 약간 키운다(잘림 방지).
+const FONT_SAFETY = 1.1;
+/** 컬럼명 + 모든 셀 텍스트의 최대 폭(px)으로 적정 너비 계산(패딩 여유 + 최소/최대 클램프). */
+function measureColWidth(name: string, values: unknown[]): number {
+  if (!measureCanvas) measureCanvas = document.createElement("canvas");
+  const ctx = measureCanvas.getContext("2d");
+  if (!ctx) return 160;
+  ctx.font = "12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+  let max = ctx.measureText(name).width + 8; // 헤더 + 핸들 여백
+  for (const v of values) {
+    const w = ctx.measureText(cellText(v)).width;
+    if (w > max) max = w;
+  }
+  // 안전 계수 + 좌우 패딩(px-2 = 16px) 여유
+  return Math.min(600, Math.max(56, Math.ceil(max * FONT_SAFETY) + 22));
+}
+
 function Center({ children, danger }: { children: React.ReactNode; danger?: boolean }) {
   return (
     <div
@@ -157,15 +186,76 @@ function ResultGrid() {
   const running = useDb((s) => s.running);
   const limit = useDb((s) => s.limit);
 
+  // 콘텐츠 맞춤 자동 너비 — 결과가 바뀔 때만 재계산
+  const autoWidths = useMemo(() => {
+    const w: Record<string, number> = {};
+    if (result) {
+      result.columns.forEach((c, j) => {
+        w[c.name] = measureColWidth(
+          c.name,
+          result.rows.map((r) => r[j]),
+        );
+      });
+    }
+    return w;
+  }, [result]);
+
+  // 드래그로 덮어쓴 너비 — 결과가 바뀌면 초기화
+  const [overrides, setOverrides] = useState<Record<string, number>>({});
+  useEffect(() => setOverrides({}), [result]);
+
   if (running) return <Center>실행 중…</Center>;
   if (error) return <Center danger>{error}</Center>;
   if (!result) return <Center>컬렉션을 클릭하거나 쿼리를 실행하세요</Center>;
   if (result.rows.length === 0) return <Center>결과 없음</Center>;
 
+  const widthOf = (name: string) => overrides[name] ?? autoWidths[name] ?? 160;
+  const total = 44 + result.columns.reduce((s, c) => s + widthOf(c.name), 0);
+
+  // 헤더 경계 드래그 → 해당 컬럼 너비 조절
+  const startResize = (e: React.MouseEvent, name: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.clientX;
+    const startW = widthOf(name);
+    const onMove = (ev: MouseEvent) =>
+      setOverrides((o) => ({
+        ...o,
+        [name]: Math.max(48, startW + (ev.clientX - startX)),
+      }));
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  };
+
+  // 더블클릭 → 최대값에 맞춰 자동 너비(수동 덮어쓰기 해제)
+  const autoFit = (name: string) =>
+    setOverrides((o) => {
+      const n = { ...o };
+      delete n[name];
+      return n;
+    });
+
   return (
     <div className="flex h-full flex-col">
       <div className="min-h-0 flex-1 overflow-auto">
-        <table className="w-max min-w-full border-collapse text-[12px]">
+        <table
+          className="table-fixed border-collapse text-[12px]"
+          style={{ width: total }}
+        >
+          <colgroup>
+            <col style={{ width: 44 }} />
+            {result.columns.map((c) => (
+              <col key={c.name} style={{ width: widthOf(c.name) }} />
+            ))}
+          </colgroup>
           <thead className="sticky top-0 z-10">
             <tr className="bg-panel">
               <th className="border-b border-r border-edge px-2 py-1 text-left font-medium text-fg-dim">
@@ -174,9 +264,17 @@ function ResultGrid() {
               {result.columns.map((c) => (
                 <th
                   key={c.name}
-                  className="whitespace-nowrap border-b border-r border-edge px-2 py-1 text-left font-medium text-fg-muted"
+                  className="relative border-b border-r border-edge px-2 py-1 text-left font-medium text-fg-muted"
                 >
-                  {c.name}
+                  <span className="block truncate" title={c.name}>
+                    {c.name}
+                  </span>
+                  <div
+                    onMouseDown={(e) => startResize(e, c.name)}
+                    onDoubleClick={() => autoFit(c.name)}
+                    title="드래그: 너비 조절 · 더블클릭: 자동 맞춤"
+                    className="absolute right-0 top-0 z-10 h-full w-1.5 cursor-col-resize hover:bg-accent"
+                  />
                 </th>
               ))}
             </tr>
@@ -190,7 +288,7 @@ function ResultGrid() {
                 {row.map((cell, j) => (
                   <td
                     key={j}
-                    className="max-w-[380px] truncate border-b border-r border-edge px-2 py-1 align-top font-mono"
+                    className="truncate border-b border-r border-edge px-2 py-1 align-top font-mono"
                   >
                     {renderCell(cell)}
                   </td>
