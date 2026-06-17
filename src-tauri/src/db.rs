@@ -373,6 +373,46 @@ pub async fn db_explain(
     }
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PkCell {
+    pub col: String,
+    pub value: Json,
+}
+
+/// 그리드 셀 직접 편집 — PK로 한 행을 UPDATE (SQL 엔진, read_only 아닐 때만).
+#[tauri::command]
+pub async fn db_update_cell(
+    state: State<'_, DbState>,
+    id: String,
+    database: String,
+    table: String,
+    pk: Vec<PkCell>,
+    set_col: String,
+    set_value: Json,
+) -> Result<(), IpcError> {
+    let read_only = state
+        .connections
+        .read()
+        .unwrap()
+        .iter()
+        .find(|c| c.id == id)
+        .map(|c| c.read_only)
+        .unwrap_or(false);
+    if read_only {
+        return Err(err("읽기 전용 연결입니다 — 편집하려면 연결 설정에서 해제하세요"));
+    }
+    if pk.is_empty() {
+        return Err(err("기본 키가 없어 안전하게 편집할 수 없습니다"));
+    }
+    match client_of(&state, &id)? {
+        DbClient::Mssql(c) => {
+            mssql_update_cell(&c, &database, &table, &pk, &set_col, &set_value).await
+        }
+        DbClient::Mongo(_) => Err(err("셀 편집은 SQL 엔진만 지원합니다")),
+    }
+}
+
 fn client_of(state: &State<'_, DbState>, id: &str) -> Result<DbClient, IpcError> {
     state
         .clients
@@ -614,6 +654,128 @@ async fn run_explain_inner(client: &mut MssqlClient, query: &str) -> Result<Stri
         .and_then(|r| r.try_get::<&str, _>(0).ok().flatten())
         .map(str::to_string)
         .ok_or_else(|| err("실행 계획을 받지 못했습니다"))
+}
+
+/// JSON 값 → 타입에 맞는 SQL 리터럴(주입 안전: 숫자는 검증, 문자열은 '' 이스케이프).
+fn sql_literal(v: &Json, data_type: &str) -> Result<String, IpcError> {
+    if v.is_null() {
+        return Ok("NULL".to_string());
+    }
+    let s = match v {
+        Json::String(s) => s.clone(),
+        Json::Number(n) => n.to_string(),
+        Json::Bool(b) => {
+            if *b {
+                "1".to_string()
+            } else {
+                "0".to_string()
+            }
+        }
+        _ => return Err(err("지원하지 않는 값 형식입니다")),
+    };
+    match data_type.to_ascii_lowercase().as_str() {
+        "bit" => {
+            let truthy = matches!(
+                s.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "t" | "y" | "yes"
+            );
+            Ok(if truthy { "1".into() } else { "0".into() })
+        }
+        "int" | "bigint" | "smallint" | "tinyint" => {
+            s.trim()
+                .parse::<i64>()
+                .map_err(|_| err(format!("정수가 아닙니다: {s}")))?;
+            Ok(s.trim().to_string())
+        }
+        "decimal" | "numeric" | "float" | "real" | "money" | "smallmoney" => {
+            s.trim()
+                .parse::<f64>()
+                .map_err(|_| err(format!("숫자가 아닙니다: {s}")))?;
+            Ok(s.trim().to_string())
+        }
+        "uniqueidentifier" => Ok(format!(
+            "CAST(N'{}' AS uniqueidentifier)",
+            s.replace('\'', "''")
+        )),
+        dt @ ("date" | "datetime" | "datetime2" | "smalldatetime" | "datetimeoffset" | "time") => {
+            Ok(format!("CAST(N'{}' AS {})", s.replace('\'', "''"), dt))
+        }
+        // varchar/nvarchar/char/text 등 및 기타 → 유니코드 문자열 리터럴
+        _ => Ok(format!("N'{}'", s.replace('\'', "''"))),
+    }
+}
+
+/// 테이블의 컬럼 → DATA_TYPE 맵.
+async fn mssql_column_types(
+    arc: &Arc<tokio::sync::Mutex<MssqlClient>>,
+    database: &str,
+    schema: &str,
+    table: &str,
+) -> Result<HashMap<String, String>, IpcError> {
+    let q = format!(
+        "SELECT COLUMN_NAME, DATA_TYPE FROM [{}].INFORMATION_SCHEMA.COLUMNS \
+         WHERE TABLE_SCHEMA=N'{}' AND TABLE_NAME=N'{}'",
+        database.replace(']', "]]"),
+        schema.replace('\'', "''"),
+        table.replace('\'', "''")
+    );
+    let mut client = arc.lock().await;
+    let rows = run_rows(&mut client, &q).await?;
+    Ok(rows
+        .iter()
+        .filter_map(|r| {
+            let c = gstr(r, 0);
+            if c.is_empty() {
+                None
+            } else {
+                Some((c, gstr(r, 1)))
+            }
+        })
+        .collect())
+}
+
+async fn mssql_update_cell(
+    arc: &Arc<tokio::sync::Mutex<MssqlClient>>,
+    database: &str,
+    table: &str,
+    pk: &[PkCell],
+    set_col: &str,
+    set_value: &Json,
+) -> Result<(), IpcError> {
+    let (schema, name) = table.split_once('.').unwrap_or(("dbo", table));
+    let types = mssql_column_types(arc, database, schema, name).await?;
+    let ty = |c: &str| types.get(c).map(String::as_str).unwrap_or("");
+    let qcol = |c: &str| format!("[{}]", c.replace(']', "]]"));
+
+    let set_lit = sql_literal(set_value, ty(set_col))?;
+    let mut where_parts = Vec::new();
+    for p in pk {
+        if p.value.is_null() {
+            where_parts.push(format!("{} IS NULL", qcol(&p.col)));
+        } else {
+            where_parts.push(format!("{} = {}", qcol(&p.col), sql_literal(&p.value, ty(&p.col))?));
+        }
+    }
+    let sql = format!(
+        "UPDATE [{}].[{}].[{}] SET {} = {} WHERE {}",
+        database.replace(']', "]]"),
+        schema.replace(']', "]]"),
+        name.replace(']', "]]"),
+        qcol(set_col),
+        set_lit,
+        where_parts.join(" AND ")
+    );
+
+    let mut client = arc.lock().await;
+    let res = client
+        .execute(sql, &[])
+        .await
+        .map_err(|e| err(format!("업데이트 실패: {e}")))?;
+    match res.total() {
+        0 => Err(err("일치하는 행이 없습니다 (이미 변경됐거나 삭제됨)")),
+        1 => Ok(()),
+        n => Err(err(format!("{n}개 행이 영향받음 — PK가 유일하지 않습니다(취소)"))),
+    }
 }
 
 /// SET SHOWPLAN_XML ON으로 예상 계획 XML을 받고, 항상 OFF로 복구한다(연결 상태 유지).

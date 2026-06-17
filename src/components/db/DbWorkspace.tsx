@@ -4,7 +4,7 @@ import { Editor } from "@monaco-editor/react";
 import { Play } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
-import { useSettings } from "../../queries";
+import { useDbConnections, useSettings } from "../../queries";
 import { LIMIT_OPTIONS, useDb } from "../../stores/db";
 import { DbSidebar } from "./DbSidebar";
 
@@ -201,6 +201,17 @@ function ResultGrid() {
   const error = useDb((s) => s.resultError);
   const running = useDb((s) => s.running);
   const limit = useDb((s) => s.limit);
+  const activeEngine = useDb((s) => s.activeEngine);
+  const activeConnId = useDb((s) => s.activeConnId);
+  const editTable = useDb((s) => s.editTable);
+  const editPk = useDb((s) => s.editPk);
+  const updateCell = useDb((s) => s.updateCell);
+  const { data: connections } = useDbConnections();
+  const [edit, setEdit] = useState<{
+    row: number;
+    col: number;
+    value: string;
+  } | null>(null);
 
   // 콘텐츠 맞춤 자동 너비 — 결과가 바뀔 때만 재계산
   const autoWidths = useMemo(() => {
@@ -227,6 +238,15 @@ function ResultGrid() {
 
   const widthOf = (name: string) => overrides[name] ?? autoWidths[name] ?? 160;
   const total = 44 + result.columns.reduce((s, c) => s + widthOf(c.name), 0);
+
+  // 편집 가능: SQL 테이블 미리보기 + PK 존재 + 읽기전용 아님
+  const conn = connections?.find((c) => c.id === activeConnId);
+  const editable =
+    activeEngine === "mssql" &&
+    !!editTable &&
+    !!editPk &&
+    editPk.length > 0 &&
+    !conn?.readOnly;
 
   // 헤더 경계 드래그 → 해당 컬럼 너비 조절
   const startResize = (e: React.MouseEvent, name: string) => {
@@ -301,14 +321,47 @@ function ResultGrid() {
                 <td className="border-b border-r border-edge px-2 py-1 text-fg-dim">
                   {i + 1}
                 </td>
-                {row.map((cell, j) => (
-                  <td
-                    key={j}
-                    className="truncate border-b border-r border-edge px-2 py-1 align-top font-mono"
-                  >
-                    {renderCell(cell)}
-                  </td>
-                ))}
+                {row.map((cell, j) => {
+                  const colName = result.columns[j]?.name;
+                  const isPk = editPk?.includes(colName) ?? false;
+                  const cellEditable = editable && !isPk;
+                  const isEditing = edit?.row === i && edit?.col === j;
+                  return (
+                    <td
+                      key={j}
+                      onDoubleClick={
+                        cellEditable
+                          ? () =>
+                              setEdit({ row: i, col: j, value: cellText(cell) })
+                          : undefined
+                      }
+                      title={cellEditable ? "더블클릭으로 편집" : undefined}
+                      className={`truncate border-b border-r border-edge px-2 py-1 align-top font-mono ${
+                        cellEditable ? "cursor-text" : ""
+                      }`}
+                    >
+                      {isEditing ? (
+                        <input
+                          autoFocus
+                          value={edit.value}
+                          onChange={(e) =>
+                            setEdit({ row: i, col: j, value: e.target.value })
+                          }
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              void updateCell(i, j, edit.value);
+                              setEdit(null);
+                            } else if (e.key === "Escape") setEdit(null);
+                          }}
+                          onBlur={() => setEdit(null)}
+                          className="w-full bg-base px-0.5 text-fg outline outline-1 outline-accent"
+                        />
+                      ) : (
+                        renderCell(cell)
+                      )}
+                    </td>
+                  );
+                })}
               </tr>
             ))}
           </tbody>
@@ -320,6 +373,9 @@ function ResultGrid() {
           <span className="ml-2 text-mod">
             · 상위 {limit}개만 표시 — 더 있을 수 있어요 (행 수를 늘려보세요)
           </span>
+        )}
+        {editable && (
+          <span className="ml-2 text-fg-dim">· 셀 더블클릭 → 편집(Enter 저장)</span>
         )}
       </div>
     </div>
