@@ -77,6 +77,8 @@ export function useSaveConnection() {
     mutationFn: (v: { connection: import("../lib/ipc").DbConnection; password: string | null }) =>
       ipc.dbSaveConnection(v.connection, v.password),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["db-connections"] }),
+    onError: (e) =>
+      useUi.getState().pushToast("error", `연결 저장 실패: ${errorMessage(e)}`),
   });
 }
 export function useDeleteConnection() {
@@ -84,6 +86,8 @@ export function useDeleteConnection() {
   return useMutation({
     mutationFn: (id: string) => ipc.dbDeleteConnection(id),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["db-connections"] }),
+    onError: (e) =>
+      useUi.getState().pushToast("error", `연결 삭제 실패: ${errorMessage(e)}`),
   });
 }
 

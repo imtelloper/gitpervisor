@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, RwLock};
 
 use futures::stream::TryStreamExt;
-use mongodb::bson::{doc, Bson, Document};
+use mongodb::bson::{doc, oid::ObjectId, Bson, DateTime, Decimal128, Document};
 use mongodb::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
@@ -237,9 +237,18 @@ pub async fn db_query(
     query: String,
     limit: Option<i64>,
 ) -> Result<DbResult, IpcError> {
+    // 연결의 읽기 전용 플래그 — 쓰기/서버JS 차단 판정에 쓴다
+    let read_only = state
+        .connections
+        .read()
+        .unwrap()
+        .iter()
+        .find(|c| c.id == id)
+        .map(|c| c.read_only)
+        .unwrap_or(false);
     let client = client_of(&state, &id)?;
     let limit = limit.unwrap_or(ROW_LIMIT).clamp(1, ROW_LIMIT);
-    mongo_query(&client, &database, &query, limit).await
+    mongo_query(&client, &database, &query, limit, read_only).await
 }
 
 fn client_of(state: &State<'_, DbState>, id: &str) -> Result<Client, IpcError> {
@@ -307,8 +316,10 @@ async fn mongo_query(
     database: &str,
     query: &str,
     limit: i64,
+    read_only: bool,
 ) -> Result<DbResult, IpcError> {
     let parsed = parse_mongo(query)?;
+    guard_ops(&parsed.op, read_only)?;
     let db = client.database(database);
     let coll = db.collection::<Document>(&parsed.collection);
 
@@ -346,7 +357,8 @@ fn parse_mongo(query: &str) -> Result<ParsedMongo, IpcError> {
         let v: Json = if arg.trim().is_empty() {
             serde_json::json!([])
         } else {
-            serde_json::from_str(&arg).map_err(|e| err(format!("aggregate 인자 JSON 오류: {e}")))?
+            serde_json::from_str(&normalize_mongo(&arg))
+                .map_err(|e| err(format!("aggregate 인자 JSON 오류: {e}")))?
         };
         let pipeline = v
             .as_array()
@@ -362,8 +374,8 @@ fn parse_mongo(query: &str) -> Result<ParsedMongo, IpcError> {
         let filter = if arg.trim().is_empty() {
             Document::new()
         } else {
-            let v: Json =
-                serde_json::from_str(&arg).map_err(|e| err(format!("find 필터 JSON 오류: {e}")))?;
+            let v: Json = serde_json::from_str(&normalize_mongo(&arg))
+                .map_err(|e| err(format!("find 필터 JSON 오류: {e}")))?;
             json_to_doc(&v)
         };
         Ok(ParsedMongo {
@@ -402,41 +414,134 @@ fn extract_db_dot(q: &str) -> Option<String> {
     }
 }
 
-/// `.method(` 뒤 균형 괄호 안의 인자 문자열 추출
+/// `.method(` 뒤 균형 괄호 안의 인자 문자열 추출 (문자열 리터럴 내부의 괄호·이스케이프는 무시).
 fn extract_call(q: &str, method: &str) -> Option<String> {
     let pat = format!(".{method}(");
-    let start = q.find(&pat)? + pat.len();
-    let bytes = q.as_bytes();
-    let mut depth = 1usize;
-    let mut j = start;
-    while j < q.len() {
-        match bytes[j] {
-            b'(' => depth += 1,
-            b')' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(q[start..j].to_string());
-                }
+    let pos = q.find(&pat)?;
+    let open = pos + pat.len() - 1; // '(' 위치
+    let close = scan_balanced(q.as_bytes(), open)?; // ')' 다음 인덱스
+    Some(q[open + 1..close - 1].to_string())
+}
+
+/// `b[open]`가 '('일 때 짝이 맞는 ')' 다음 인덱스. 문자열 리터럴 내부 괄호는 센다(무시).
+fn scan_balanced(b: &[u8], open: usize) -> Option<usize> {
+    let n = b.len();
+    let mut depth = 0usize;
+    let mut i = open;
+    let mut in_str: Option<u8> = None;
+    let mut esc = false;
+    while i < n {
+        let c = b[i];
+        if let Some(quote) = in_str {
+            if esc {
+                esc = false;
+            } else if c == b'\\' {
+                esc = true;
+            } else if c == quote {
+                in_str = None;
             }
-            _ => {}
+        } else {
+            match c {
+                b'"' | b'\'' => in_str = Some(c),
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(i + 1);
+                    }
+                }
+                _ => {}
+            }
         }
-        j += 1;
+        i += 1;
     }
     None
 }
 
+/// serde_json Value → BSON Document. 확장 JSON 래퍼($oid·$date·$numberLong 등)를 직접 해석해
+/// 실제 BSON 타입으로 복원한다(이전의 to_bson은 {"$oid":..}를 하위 문서로 취급해 _id 조회 불가).
 fn json_to_doc(v: &Json) -> Document {
-    match mongodb::bson::to_bson(v) {
-        Ok(Bson::Document(d)) => d,
+    match json_value_to_bson(v) {
+        Bson::Document(d) => d,
         _ => Document::new(),
     }
 }
 
+/// serde_json Value → Bson. 단일 키 확장 JSON 래퍼는 해당 BSON 타입으로 복원한다.
+fn json_value_to_bson(v: &Json) -> Bson {
+    match v {
+        Json::Null => Bson::Null,
+        Json::Bool(b) => Bson::Boolean(*b),
+        Json::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Bson::Int64(i)
+            } else if let Some(u) = n.as_u64() {
+                Bson::Int64(u as i64)
+            } else {
+                Bson::Double(n.as_f64().unwrap_or(0.0))
+            }
+        }
+        Json::String(s) => Bson::String(s.clone()),
+        Json::Array(a) => Bson::Array(a.iter().map(json_value_to_bson).collect()),
+        Json::Object(o) => {
+            if o.len() == 1 {
+                if let Some(b) = try_extjson_wrapper(o) {
+                    return b;
+                }
+            }
+            let mut d = Document::new();
+            for (k, val) in o {
+                d.insert(k.clone(), json_value_to_bson(val));
+            }
+            Bson::Document(d)
+        }
+    }
+}
+
+/// 단일 키 확장 JSON 래퍼({"$oid":".."} 등)를 실제 BSON 타입으로. 인식 못하면 None.
+fn try_extjson_wrapper(o: &serde_json::Map<String, Json>) -> Option<Bson> {
+    let (k, v) = o.iter().next()?;
+    match k.as_str() {
+        "$oid" => v
+            .as_str()
+            .and_then(|s| ObjectId::parse_str(s).ok())
+            .map(Bson::ObjectId),
+        "$numberLong" => v.as_str().and_then(|s| s.parse().ok()).map(Bson::Int64),
+        "$numberInt" => v.as_str().and_then(|s| s.parse().ok()).map(Bson::Int32),
+        "$numberDouble" => v.as_str().and_then(|s| s.parse().ok()).map(Bson::Double),
+        "$numberDecimal" => v
+            .as_str()
+            .and_then(|s| s.parse::<Decimal128>().ok())
+            .map(Bson::Decimal128),
+        "$date" => parse_extjson_date(v),
+        _ => None,
+    }
+}
+
+fn parse_extjson_date(v: &Json) -> Option<Bson> {
+    if let Some(s) = v.as_str() {
+        return DateTime::parse_rfc3339_str(s).ok().map(Bson::DateTime);
+    }
+    if let Some(ms) = v
+        .as_object()
+        .and_then(|o| o.get("$numberLong"))
+        .and_then(|x| x.as_str())
+        .and_then(|s| s.parse::<i64>().ok())
+    {
+        return Some(Bson::DateTime(DateTime::from_millis(ms)));
+    }
+    None
+}
+
 fn docs_to_result(docs: Vec<Document>) -> DbResult {
-    let json_docs: Vec<Json> = docs
+    let mut json_docs: Vec<Json> = docs
         .into_iter()
         .map(|d| Bson::Document(d).into_relaxed_extjson())
         .collect();
+    // 2^53 이상 정수(NumberLong 등)는 JS JSON.parse에서 반올림된다 — 문자열로 보존해 정확히 표시
+    for jd in json_docs.iter_mut() {
+        stringify_big_ints(jd);
+    }
 
     let mut columns: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -470,5 +575,322 @@ fn docs_to_result(docs: Vec<Document>) -> DbResult {
             })
             .collect(),
         rows,
+    }
+}
+
+/// 2^53 이상 정수를 문자열로 바꿔 JS JSON.parse 반올림(정밀도 손실)을 막는다. 재귀.
+fn stringify_big_ints(v: &mut Json) {
+    const MAX_SAFE: i64 = 9_007_199_254_740_991; // 2^53 - 1
+    match v {
+        Json::Number(num) => {
+            if let Some(i) = num.as_i64() {
+                if i > MAX_SAFE || i < -MAX_SAFE {
+                    *v = Json::String(i.to_string());
+                }
+            } else if let Some(u) = num.as_u64() {
+                if u > MAX_SAFE as u64 {
+                    *v = Json::String(u.to_string());
+                }
+            }
+        }
+        Json::Array(a) => a.iter_mut().for_each(stringify_big_ints),
+        Json::Object(o) => o.values_mut().for_each(stringify_big_ints),
+        _ => {}
+    }
+}
+
+// ---- 쓰기/위험 연산자 차단 ----
+
+/// $out·$merge는 뷰어에서 항상 차단(컬렉션 쓰기). read_only면 서버측 JS도 차단.
+fn guard_ops(op: &MongoOp, read_only: bool) -> Result<(), IpcError> {
+    const WRITE: &[&str] = &["$out", "$merge"];
+    const JS: &[&str] = &["$where", "$function", "$accumulator"];
+    let check = |d: &Document| -> Result<(), IpcError> {
+        if let Some(found) = doc_find_op(d, WRITE) {
+            return Err(err(format!(
+                "쓰기 연산 '{found}'는 읽기 전용 뷰어에서 차단됩니다"
+            )));
+        }
+        if read_only {
+            if let Some(found) = doc_find_op(d, JS) {
+                return Err(err(format!(
+                    "서버측 JS '{found}'는 읽기 전용 연결에서 차단됩니다"
+                )));
+            }
+        }
+        Ok(())
+    };
+    match op {
+        MongoOp::Find(filter) => check(filter)?,
+        MongoOp::Aggregate(stages) => {
+            for s in stages {
+                check(s)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn doc_find_op(doc: &Document, ops: &[&str]) -> Option<String> {
+    for (k, v) in doc.iter() {
+        if ops.contains(&k.as_str()) {
+            return Some(k.clone());
+        }
+        if let Some(found) = bson_find_op(v, ops) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn bson_find_op(b: &Bson, ops: &[&str]) -> Option<String> {
+    match b {
+        Bson::Document(d) => doc_find_op(d, ops),
+        Bson::Array(a) => a.iter().find_map(|x| bson_find_op(x, ops)),
+        _ => None,
+    }
+}
+
+// ---- Mongo 셸 → strict JSON 정규화 ----
+
+fn is_ident_start(c: u8) -> bool {
+    c.is_ascii_alphabetic() || c == b'_' || c == b'$'
+}
+fn is_ident_part(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || c == b'_' || c == b'$'
+}
+fn is_json_literal(id: &[u8]) -> bool {
+    id == b"true" || id == b"false" || id == b"null"
+}
+fn is_helper(id: &[u8]) -> bool {
+    matches!(
+        id,
+        b"ObjectId" | b"ISODate" | b"Date" | b"NumberLong" | b"NumberInt" | b"NumberDecimal"
+    )
+}
+fn peek_non_space(b: &[u8], mut i: usize) -> usize {
+    while i < b.len() && matches!(b[i], b' ' | b'\t' | b'\n' | b'\r') {
+        i += 1;
+    }
+    i
+}
+/// `b[start]`가 따옴표일 때 닫는 따옴표 다음 인덱스(미종료면 끝).
+fn string_end(b: &[u8], start: usize, quote: u8) -> usize {
+    let mut i = start + 1;
+    let mut esc = false;
+    while i < b.len() {
+        let c = b[i];
+        if esc {
+            esc = false;
+        } else if c == b'\\' {
+            esc = true;
+        } else if c == quote {
+            return i + 1;
+        }
+        i += 1;
+    }
+    b.len()
+}
+/// 임의 바이트열을 쌍따옴표 JSON 문자열로 방출(필요한 문자만 이스케이프).
+fn push_json_string_raw(out: &mut Vec<u8>, s: &[u8]) {
+    out.push(b'"');
+    for &c in s {
+        match c {
+            b'"' => out.extend_from_slice(b"\\\""),
+            b'\\' => out.extend_from_slice(b"\\\\"),
+            b'\n' => out.extend_from_slice(b"\\n"),
+            b'\r' => out.extend_from_slice(b"\\r"),
+            b'\t' => out.extend_from_slice(b"\\t"),
+            _ => out.push(c),
+        }
+    }
+    out.push(b'"');
+}
+/// 홑따옴표 문자열 내용 → 쌍따옴표 JSON 문자열(`\'`→`'`, `"`→`\"`).
+fn push_single_as_json(out: &mut Vec<u8>, inner: &[u8]) {
+    out.push(b'"');
+    let mut i = 0;
+    while i < inner.len() {
+        let c = inner[i];
+        if c == b'\\' && i + 1 < inner.len() {
+            let nx = inner[i + 1];
+            if nx == b'\'' {
+                out.push(b'\'');
+            } else {
+                out.push(b'\\');
+                out.push(nx);
+            }
+            i += 2;
+            continue;
+        }
+        if c == b'"' {
+            out.extend_from_slice(b"\\\"");
+        } else {
+            out.push(c);
+        }
+        i += 1;
+    }
+    out.push(b'"');
+}
+/// 셸 헬퍼(ObjectId 등) → 확장 JSON. 값은 항상 JSON 문자열로 감싼다.
+fn push_helper_extjson(out: &mut Vec<u8>, ident: &[u8], inner: &[u8]) {
+    let inner_s = String::from_utf8_lossy(inner);
+    let normalized = normalize_mongo(&inner_s);
+    let trimmed = normalized.trim();
+    let val = trimmed
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(trimmed);
+    let key: &[u8] = match ident {
+        b"ObjectId" => b"$oid",
+        b"ISODate" | b"Date" => b"$date",
+        b"NumberLong" => b"$numberLong",
+        b"NumberInt" => b"$numberInt",
+        b"NumberDecimal" => b"$numberDecimal",
+        _ => b"$unknown",
+    };
+    out.push(b'{');
+    out.push(b'"');
+    out.extend_from_slice(key);
+    out.push(b'"');
+    out.push(b':');
+    push_json_string_raw(out, val.as_bytes());
+    out.push(b'}');
+}
+
+/// Mongo 셸 표기를 strict JSON으로 정규화한다(find/aggregate 인자 전용).
+/// 홑따옴표→쌍따옴표, 따옴표 없는 키→따옴표, 셸 헬퍼→확장 JSON, // 및 /* */ 주석 제거.
+/// 문자열 리터럴 내부는 절대 건드리지 않는다(괄호·콜론·따옴표는 데이터).
+fn normalize_mongo(input: &str) -> String {
+    let b = input.as_bytes();
+    let n = b.len();
+    let mut out: Vec<u8> = Vec::with_capacity(n + 16);
+    let mut i = 0;
+    while i < n {
+        let c = b[i];
+        if c == b'/' && i + 1 < n && b[i + 1] == b'/' {
+            i += 2;
+            while i < n && b[i] != b'\n' {
+                i += 1;
+            }
+        } else if c == b'/' && i + 1 < n && b[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < n && !(b[i] == b'*' && b[i + 1] == b'/') {
+                i += 1;
+            }
+            i = (i + 2).min(n);
+        } else if c == b'"' {
+            let end = string_end(b, i, b'"');
+            out.extend_from_slice(&b[i..end]);
+            i = end;
+        } else if c == b'\'' {
+            let end = string_end(b, i, b'\'');
+            let close = end.saturating_sub(1).max(i + 1);
+            push_single_as_json(&mut out, &b[i + 1..close]);
+            i = end;
+        } else if is_ident_start(c) {
+            let mut j = i + 1;
+            while j < n && is_ident_part(b[j]) {
+                j += 1;
+            }
+            let ident = &b[i..j];
+            let after = peek_non_space(b, j);
+            if after < n && b[after] == b'(' && is_helper(ident) {
+                if let Some(close) = scan_balanced(b, after) {
+                    push_helper_extjson(&mut out, ident, &b[after + 1..close - 1]);
+                    i = close;
+                    continue;
+                }
+                out.extend_from_slice(ident);
+                i = j;
+            } else if after < n && b[after] == b':' && !is_json_literal(ident) {
+                out.push(b'"');
+                out.extend_from_slice(ident);
+                out.push(b'"');
+                i = j;
+            } else {
+                out.extend_from_slice(ident);
+                i = j;
+            }
+        } else {
+            out.push(c);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mongodb::bson::doc;
+
+    #[test]
+    fn normalize_objectid_helper() {
+        assert_eq!(
+            normalize_mongo(r#"{"_id": ObjectId("507f1f77bcf86cd799439011")}"#),
+            r#"{"_id": {"$oid":"507f1f77bcf86cd799439011"}}"#
+        );
+    }
+
+    #[test]
+    fn normalize_unquoted_keys_and_single_quotes() {
+        assert_eq!(normalize_mongo("{category:'illust'}"), r#"{"category":"illust"}"#);
+    }
+
+    #[test]
+    fn normalize_numberlong_both_forms() {
+        assert_eq!(
+            normalize_mongo("{n: NumberLong(5)}"),
+            r#"{"n": {"$numberLong":"5"}}"#
+        );
+        assert_eq!(
+            normalize_mongo(r#"{n: NumberLong("5")}"#),
+            r#"{"n": {"$numberLong":"5"}}"#
+        );
+    }
+
+    #[test]
+    fn extjson_oid_roundtrips_to_objectid() {
+        let v: Json =
+            serde_json::from_str(r#"{"_id":{"$oid":"507f1f77bcf86cd799439011"}}"#).unwrap();
+        let d = json_to_doc(&v);
+        assert!(matches!(d.get("_id"), Some(Bson::ObjectId(_))));
+    }
+
+    #[test]
+    fn extract_call_ignores_paren_in_string() {
+        let q = r#"db.users.find({"name": "Smith) & Co"})"#;
+        assert_eq!(
+            extract_call(q, "find").as_deref(),
+            Some(r#"{"name": "Smith) & Co"}"#)
+        );
+    }
+
+    #[test]
+    fn big_ints_become_strings() {
+        let mut v: Json = serde_json::json!({"a": 1234567890123456789_i64, "b": 5});
+        stringify_big_ints(&mut v);
+        assert_eq!(v["a"], Json::String("1234567890123456789".into()));
+        assert_eq!(v["b"], serde_json::json!(5));
+    }
+
+    #[test]
+    fn guard_blocks_out_stage_always() {
+        let stages = vec![doc! {"$match": {}}, doc! {"$out": "backup"}];
+        assert!(guard_ops(&MongoOp::Aggregate(stages), false).is_err());
+    }
+
+    #[test]
+    fn guard_allows_normal_aggregate() {
+        let stages = vec![doc! {"$match": {"a": 1}}, doc! {"$group": {"_id": "$x"}}];
+        assert!(guard_ops(&MongoOp::Aggregate(stages), true).is_ok());
+    }
+
+    #[test]
+    fn guard_where_only_blocked_when_readonly() {
+        let f = doc! {"$where": "true"};
+        assert!(guard_ops(&MongoOp::Find(f.clone()), true).is_err());
+        assert!(guard_ops(&MongoOp::Find(f), false).is_ok());
     }
 }
