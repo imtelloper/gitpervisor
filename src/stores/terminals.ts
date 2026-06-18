@@ -119,12 +119,8 @@ function loadPersistedTerminals(): PersistedTerminals {
       const p = JSON.parse(raw) as Partial<PersistedTerminals>;
       return {
         terminals: Array.isArray(p.terminals) ? p.terminals : [],
-        // 활성 탭은 복구하지 않는다(항상 viewer로 시작). 저장된 터미널 탭을 그대로
-        // 자동 활성화하면 앱 시작과 동시에 셸이 자동 실행되는데, 창 초기화 중 spawn된
-        // ConPTY는 pwsh의 PSReadLine이 콘솔 입력을 못 읽어 크래시할 수 있다
-        // ("Cannot read keys ... console input has been redirected"). 탭은 복구하되
-        // 셸은 사용자가 그 탭을 클릭할 때 뜨게 한다.
-        activeTab: {},
+        activeTab:
+          p.activeTab && typeof p.activeTab === "object" ? p.activeTab : {},
         dbProjects: Array.isArray(p.dbProjects) ? p.dbProjects : [],
       };
     }
