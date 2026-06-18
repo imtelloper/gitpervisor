@@ -85,6 +85,10 @@ pub struct ColumnInfo {
     pub type_name: String,
     pub nullable: bool,
     pub pk: bool,
+    /// IDENTITY 컬럼(자동 증가) — INSERT에서 제외
+    pub identity: bool,
+    /// 기본값 제약 있음 — INSERT에서 생략 가능
+    pub has_default: bool,
 }
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -411,6 +415,59 @@ pub async fn db_update_cell(
         }
         DbClient::Mongo(_) => Err(err("셀 편집은 SQL 엔진만 지원합니다")),
     }
+}
+
+/// 그리드 행 삭제 — PK로 한 행을 DELETE (SQL 엔진, read_only 아닐 때만).
+#[tauri::command]
+pub async fn db_delete_row(
+    state: State<'_, DbState>,
+    id: String,
+    database: String,
+    table: String,
+    pk: Vec<PkCell>,
+) -> Result<(), IpcError> {
+    if read_only_of(&state, &id) {
+        return Err(err("읽기 전용 연결입니다 — 삭제하려면 연결 설정에서 해제하세요"));
+    }
+    if pk.is_empty() {
+        return Err(err("기본 키가 없어 안전하게 삭제할 수 없습니다"));
+    }
+    match client_of(&state, &id)? {
+        DbClient::Mssql(c) => mssql_delete_row(&c, &database, &table, &pk).await,
+        DbClient::Mongo(_) => Err(err("행 삭제는 SQL 엔진만 지원합니다")),
+    }
+}
+
+/// 그리드 행 삽입 — 제공된 컬럼만 INSERT (identity/기본값은 생략 가능).
+#[tauri::command]
+pub async fn db_insert_row(
+    state: State<'_, DbState>,
+    id: String,
+    database: String,
+    table: String,
+    values: Vec<PkCell>,
+) -> Result<(), IpcError> {
+    if read_only_of(&state, &id) {
+        return Err(err("읽기 전용 연결입니다 — 삽입하려면 연결 설정에서 해제하세요"));
+    }
+    if values.is_empty() {
+        return Err(err("입력할 값이 없습니다"));
+    }
+    match client_of(&state, &id)? {
+        DbClient::Mssql(c) => mssql_insert_row(&c, &database, &table, &values).await,
+        DbClient::Mongo(_) => Err(err("행 삽입은 SQL 엔진만 지원합니다")),
+    }
+}
+
+fn read_only_of(state: &State<'_, DbState>, id: &str) -> bool {
+    state
+        .connections
+        .read()
+        .unwrap()
+        .iter()
+        .find(|c| c.id == id)
+        .map(|c| c.read_only)
+        .unwrap_or(false)
 }
 
 fn client_of(state: &State<'_, DbState>, id: &str) -> Result<DbClient, IpcError> {
@@ -778,6 +835,77 @@ async fn mssql_update_cell(
     }
 }
 
+async fn mssql_delete_row(
+    arc: &Arc<tokio::sync::Mutex<MssqlClient>>,
+    database: &str,
+    table: &str,
+    pk: &[PkCell],
+) -> Result<(), IpcError> {
+    let (schema, name) = table.split_once('.').unwrap_or(("dbo", table));
+    let types = mssql_column_types(arc, database, schema, name).await?;
+    let ty = |c: &str| types.get(c).map(String::as_str).unwrap_or("");
+    let qcol = |c: &str| format!("[{}]", c.replace(']', "]]"));
+    let mut where_parts = Vec::new();
+    for p in pk {
+        if p.value.is_null() {
+            where_parts.push(format!("{} IS NULL", qcol(&p.col)));
+        } else {
+            where_parts.push(format!("{} = {}", qcol(&p.col), sql_literal(&p.value, ty(&p.col))?));
+        }
+    }
+    let sql = format!(
+        "DELETE FROM [{}].[{}].[{}] WHERE {}",
+        database.replace(']', "]]"),
+        schema.replace(']', "]]"),
+        name.replace(']', "]]"),
+        where_parts.join(" AND ")
+    );
+    let mut client = arc.lock().await;
+    let res = client
+        .execute(sql, &[])
+        .await
+        .map_err(|e| err(format!("삭제 실패: {e}")))?;
+    match res.total() {
+        0 => Err(err("일치하는 행이 없습니다 (이미 삭제됨)")),
+        1 => Ok(()),
+        n => Err(err(format!("{n}개 행이 영향받음 — 취소"))),
+    }
+}
+
+async fn mssql_insert_row(
+    arc: &Arc<tokio::sync::Mutex<MssqlClient>>,
+    database: &str,
+    table: &str,
+    values: &[PkCell],
+) -> Result<(), IpcError> {
+    let (schema, name) = table.split_once('.').unwrap_or(("dbo", table));
+    let types = mssql_column_types(arc, database, schema, name).await?;
+    let ty = |c: &str| types.get(c).map(String::as_str).unwrap_or("");
+    let qcol = |c: &str| format!("[{}]", c.replace(']', "]]"));
+    let cols: Vec<String> = values.iter().map(|v| qcol(&v.col)).collect();
+    let mut lits = Vec::with_capacity(values.len());
+    for v in values {
+        lits.push(sql_literal(&v.value, ty(&v.col))?);
+    }
+    let sql = format!(
+        "INSERT INTO [{}].[{}].[{}] ({}) VALUES ({})",
+        database.replace(']', "]]"),
+        schema.replace(']', "]]"),
+        name.replace(']', "]]"),
+        cols.join(", "),
+        lits.join(", ")
+    );
+    let mut client = arc.lock().await;
+    let res = client
+        .execute(sql, &[])
+        .await
+        .map_err(|e| err(format!("삽입 실패: {e}")))?;
+    if res.total() == 0 {
+        return Err(err("삽입되지 않았습니다"));
+    }
+    Ok(())
+}
+
 /// SET SHOWPLAN_XML ON으로 예상 계획 XML을 받고, 항상 OFF로 복구한다(연결 상태 유지).
 async fn mssql_explain(
     arc: &Arc<tokio::sync::Mutex<MssqlClient>>,
@@ -863,7 +991,9 @@ async fn mssql_table_meta(
 
     let columns_sql = format!(
         "SELECT COLUMN_NAME, DATA_TYPE, CAST(CHARACTER_MAXIMUM_LENGTH AS int), \
-         CAST(NUMERIC_PRECISION AS int), CAST(NUMERIC_SCALE AS int), IS_NULLABLE \
+         CAST(NUMERIC_PRECISION AS int), CAST(NUMERIC_SCALE AS int), IS_NULLABLE, \
+         COLUMNPROPERTY(OBJECT_ID(N'{obj}'), COLUMN_NAME, 'IsIdentity'), \
+         CASE WHEN COLUMN_DEFAULT IS NULL THEN 0 ELSE 1 END \
          FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=N'{sch_l}' AND TABLE_NAME=N'{tab_l}' \
          ORDER BY ORDINAL_POSITION"
     );
@@ -970,6 +1100,8 @@ async fn mssql_table_meta(
             ColumnInfo {
                 pk: pk_cols.contains(&name),
                 nullable: gstr(r, 5) == "YES",
+                identity: r.try_get::<i32, _>(6).ok().flatten().unwrap_or(0) == 1,
+                has_default: r.try_get::<i32, _>(7).ok().flatten().unwrap_or(0) == 1,
                 name,
                 type_name,
             }

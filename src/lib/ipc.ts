@@ -153,6 +153,8 @@ export interface ColumnInfo {
   typeName: string;
   nullable: boolean;
   pk: boolean;
+  identity: boolean;
+  hasDefault: boolean;
 }
 export interface KeyInfo {
   name: string;
@@ -447,6 +449,23 @@ export const ipc = {
     callMutating<void>(
       "db_update_cell",
       { id, database, table, pk, setCol, setValue },
+      60_000,
+    ),
+  dbDeleteRow: (
+    id: string,
+    database: string,
+    table: string,
+    pk: { col: string; value: unknown }[],
+  ) => callMutating<void>("db_delete_row", { id, database, table, pk }, 60_000),
+  dbInsertRow: (
+    id: string,
+    database: string,
+    table: string,
+    values: { col: string; value: unknown }[],
+  ) =>
+    callMutating<void>(
+      "db_insert_row",
+      { id, database, table, values },
       60_000,
     ),
 

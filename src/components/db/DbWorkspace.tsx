@@ -1,11 +1,12 @@
 import { monaco } from "../diff/monaco-setup";
 
 import { Editor } from "@monaco-editor/react";
-import { Play } from "lucide-react";
+import { Play, Plus, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
-import { useDbConnections, useSettings } from "../../queries";
+import { useDbConnections, useSettings, useTableMeta } from "../../queries";
 import { LIMIT_OPTIONS, useDb } from "../../stores/db";
+import { useUi } from "../../stores/ui";
 import { DbSidebar } from "./DbSidebar";
 
 function QueryEditor() {
@@ -206,12 +207,15 @@ function ResultGrid() {
   const editTable = useDb((s) => s.editTable);
   const editPk = useDb((s) => s.editPk);
   const updateCell = useDb((s) => s.updateCell);
+  const deleteRow = useDb((s) => s.deleteRow);
+  const askConfirm = useUi((s) => s.askConfirm);
   const { data: connections } = useDbConnections();
   const [edit, setEdit] = useState<{
     row: number;
     col: number;
     value: string;
   } | null>(null);
+  const [insertOpen, setInsertOpen] = useState(false);
 
   // 콘텐츠 맞춤 자동 너비 — 결과가 바뀔 때만 재계산
   const autoWidths = useMemo(() => {
@@ -237,7 +241,6 @@ function ResultGrid() {
   if (result.rows.length === 0) return <Center>결과 없음</Center>;
 
   const widthOf = (name: string) => overrides[name] ?? autoWidths[name] ?? 160;
-  const total = 44 + result.columns.reduce((s, c) => s + widthOf(c.name), 0);
 
   // 편집 가능: SQL 테이블 미리보기 + PK 존재 + 읽기전용 아님
   const conn = connections?.find((c) => c.id === activeConnId);
@@ -247,6 +250,8 @@ function ResultGrid() {
     !!editPk &&
     editPk.length > 0 &&
     !conn?.readOnly;
+  const idxColW = editable ? 64 : 44;
+  const total = idxColW + result.columns.reduce((s, c) => s + widthOf(c.name), 0);
 
   // 헤더 경계 드래그 → 해당 컬럼 너비 조절
   const startResize = (e: React.MouseEvent, name: string) => {
@@ -287,7 +292,7 @@ function ResultGrid() {
           style={{ width: total }}
         >
           <colgroup>
-            <col style={{ width: 44 }} />
+            <col style={{ width: idxColW }} />
             {result.columns.map((c) => (
               <col key={c.name} style={{ width: widthOf(c.name) }} />
             ))}
@@ -317,9 +322,28 @@ function ResultGrid() {
           </thead>
           <tbody>
             {result.rows.map((row, i) => (
-              <tr key={i} className="hover:bg-raised/40">
+              <tr key={i} className="group hover:bg-raised/40">
                 <td className="border-b border-r border-edge px-2 py-1 text-fg-dim">
-                  {i + 1}
+                  <div className="flex items-center gap-1">
+                    {editable && (
+                      <button
+                        onClick={() =>
+                          askConfirm({
+                            title: "행 삭제",
+                            message: "이 행을 삭제할까요? 되돌릴 수 없습니다.",
+                            confirmLabel: "삭제",
+                            danger: true,
+                            onConfirm: () => void deleteRow(i),
+                          })
+                        }
+                        title="행 삭제"
+                        className="text-fg-dim opacity-0 hover:text-danger group-hover:opacity-100"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    )}
+                    {i + 1}
+                  </div>
                 </td>
                 {row.map((cell, j) => {
                   const colName = result.columns[j]?.name;
@@ -375,8 +399,112 @@ function ResultGrid() {
           </span>
         )}
         {editable && (
-          <span className="ml-2 text-fg-dim">· 셀 더블클릭 → 편집(Enter 저장)</span>
+          <>
+            <span className="ml-2 text-fg-dim">· 셀 더블클릭 → 편집(Enter)</span>
+            <button
+              onClick={() => setInsertOpen(true)}
+              className="ml-2 rounded border border-edge px-1.5 align-middle hover:bg-raised hover:text-fg"
+            >
+              <Plus size={11} className="inline" /> 행 추가
+            </button>
+          </>
         )}
+      </div>
+      {insertOpen && <InsertRowDialog onClose={() => setInsertOpen(false)} />}
+    </div>
+  );
+}
+
+/** 행 추가 폼 — non-identity 컬럼 입력. 비우면 nullable/기본값 컬럼은 생략. */
+function InsertRowDialog({ onClose }: { onClose: () => void }) {
+  const editTable = useDb((s) => s.editTable);
+  const activeConnId = useDb((s) => s.activeConnId);
+  const insertRow = useDb((s) => s.insertRow);
+  const { data: meta } = useTableMeta(
+    activeConnId ?? "",
+    editTable?.database ?? "",
+    editTable?.table ?? "",
+    !!editTable && !!activeConnId,
+  );
+  const [vals, setVals] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  if (!editTable) return null;
+  const cols = (meta?.columns ?? []).filter((c) => !c.identity);
+
+  const submit = async () => {
+    const values = cols
+      .filter((c) => {
+        const v = vals[c.name];
+        // 비웠고 NULL/기본값이 가능하면 생략
+        return !((v === undefined || v === "") && (c.nullable || c.hasDefault));
+      })
+      .map((c) => ({ col: c.name, value: vals[c.name] ?? "" }));
+    setBusy(true);
+    try {
+      await insertRow(values);
+      onClose();
+    } catch {
+      /* 토스트로 안내 — 폼 유지 */
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      onClick={onClose}
+    >
+      <div
+        className="max-h-[80vh] w-[440px] overflow-auto rounded-lg border border-edge bg-panel p-5 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-3 font-semibold">행 추가 · {editTable.table}</div>
+        <div className="space-y-2 text-[13px]">
+          {!meta && <div className="text-fg-dim">컬럼 불러오는 중…</div>}
+          {cols.map((c) => {
+            const required = !c.nullable && !c.hasDefault;
+            return (
+              <label key={c.name} className="block">
+                <div className="mb-0.5 flex items-center gap-1 text-[12px] text-fg-muted">
+                  <span className={c.pk ? "text-mod" : ""}>{c.name}</span>
+                  <span className="text-fg-dim">{c.typeName}</span>
+                  {required && <span className="text-danger">*</span>}
+                  {c.hasDefault && <span className="text-fg-dim">기본값</span>}
+                </div>
+                <input
+                  value={vals[c.name] ?? ""}
+                  onChange={(e) =>
+                    setVals((v) => ({ ...v, [c.name]: e.target.value }))
+                  }
+                  placeholder={
+                    c.nullable
+                      ? "(비우면 NULL)"
+                      : c.hasDefault
+                        ? "(비우면 기본값)"
+                        : ""
+                  }
+                  className="w-full rounded border border-edge bg-base px-2 py-1 font-mono outline-none focus:border-accent"
+                />
+              </label>
+            );
+          })}
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            className="rounded px-3 py-1.5 text-fg-muted hover:bg-raised"
+          >
+            취소
+          </button>
+          <button
+            onClick={() => void submit()}
+            disabled={busy || !meta}
+            className="rounded bg-accent px-3 py-1.5 font-medium text-on-accent hover:bg-accent-hover disabled:opacity-50"
+          >
+            {busy ? "추가 중…" : "추가"}
+          </button>
+        </div>
       </div>
     </div>
   );
