@@ -1,6 +1,9 @@
 // Monaco를 CDN이 아닌 번들로 로드한다 (오프라인 데스크톱 앱 필수).
 import { loader } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
+// basic-languages 하위 모듈은 타입 선언이 없다 — 문법 객체만 가져온다.
+// @ts-expect-error 타입 선언 없음
+import { language as pythonLanguage } from "monaco-editor/esm/vs/basic-languages/python/python.js";
 import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import cssWorker from "monaco-editor/esm/vs/language/css/css.worker?worker";
 import htmlWorker from "monaco-editor/esm/vs/language/html/html.worker?worker";
@@ -112,5 +115,39 @@ monaco.editor.defineTheme("gitpervisor-monokai", {
     "scrollbarSlider.hoverBackground": "#34496AAA",
   },
 });
+
+// ── Python 삼중 따옴표 f-string 구문 강조 수정 ──────────────────────────────
+// Monaco 기본 Python 문법은 삼중 따옴표 f-string(f"""...""")을 한 줄 문자열로 취급해
+// 첫 줄 끝에서 닫아버린다. 그러면 실제 닫는 """가 "새 도크스트링 시작"으로 오인되고,
+// 도크스트링은 줄 끝에서 안 닫히므로 그 아래 전체가 문자열색(Monokai 노랑)으로 새어나간다.
+// → 접두사(f/r/b/u…) 삼중 따옴표를 "닫는 삼중 따옴표까지 불투명 처리"하는 상태를 추가한다.
+const patchedPython: monaco.languages.IMonarchLanguage = {
+  ...pythonLanguage,
+  tokenizer: {
+    ...pythonLanguage.tokenizer,
+    // 접두사 삼중 따옴표를 단일행 f-string 규칙(@fDblStringBody 등)보다 먼저 가로챈다.
+    strings: [
+      [/[bBfFrRuU]{1,3}"""/, "string", "@tripleDoubleBody"],
+      [/[bBfFrRuU]{1,3}'''/, "string", "@tripleSingleBody"],
+      ...pythonLanguage.tokenizer.strings,
+    ],
+    tripleDoubleBody: [
+      [/[^"]+/, "string"],
+      [/"""/, "string", "@pop"],
+      [/"/, "string"],
+    ],
+    tripleSingleBody: [
+      [/[^']+/, "string"],
+      [/'''/, "string", "@pop"],
+      [/'/, "string"],
+    ],
+  },
+};
+
+// python 문법은 monaco import 시 등록되므로 즉시 덮어쓴다(지연 로드 대비 onLanguage도 등록).
+monaco.languages.setMonarchTokensProvider("python", patchedPython);
+monaco.languages.onLanguage("python", () =>
+  monaco.languages.setMonarchTokensProvider("python", patchedPython),
+);
 
 export { monaco };
