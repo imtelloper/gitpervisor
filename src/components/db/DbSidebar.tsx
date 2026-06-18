@@ -1,6 +1,7 @@
 import {
   ChevronDown,
   ChevronRight,
+  Cog,
   Columns3,
   Database,
   KeyRound,
@@ -21,6 +22,7 @@ import { usePanelWidth } from "../../lib/use-panel-width";
 import {
   useDbConnections,
   useDbDatabases,
+  useDbProcedures,
   useDbTables,
   useTableMeta,
 } from "../../queries";
@@ -332,6 +334,62 @@ function DatabaseNode({
               coll={t}
               engine={engine}
             />
+          ))
+        ))}
+      {expanded && engine !== "mongodb" && (
+        <ProceduresGroup connId={connId} database={database} />
+      )}
+    </>
+  );
+}
+
+/** 저장 프로시저 그룹 — 펼치면 목록, 클릭하면 EXEC 템플릿 생성. */
+function ProceduresGroup({
+  connId,
+  database,
+}: {
+  connId: string;
+  database: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const { data: procs, isLoading } = useDbProcedures(connId, database, open);
+  const openProc = useDb((s) => s.openProc);
+  return (
+    <>
+      <div
+        onClick={() => setOpen((o) => !o)}
+        style={{ paddingLeft: 28 }}
+        className="flex cursor-pointer items-center gap-1 whitespace-nowrap py-0.5 pr-2 text-fg-dim hover:bg-raised"
+      >
+        {open ? (
+          <ChevronDown size={12} className="shrink-0" />
+        ) : (
+          <ChevronRight size={12} className="shrink-0" />
+        )}
+        <Cog size={12} className="shrink-0" />
+        <span>프로시저{procs ? ` (${procs.length})` : ""}</span>
+      </div>
+      {open &&
+        (isLoading ? (
+          <div style={{ paddingLeft: 46 }} className="py-0.5 text-xs text-fg-dim">
+            …
+          </div>
+        ) : procs && procs.length === 0 ? (
+          <div style={{ paddingLeft: 46 }} className="py-0.5 text-xs text-fg-dim">
+            없음
+          </div>
+        ) : (
+          procs?.map((p) => (
+            <div
+              key={p}
+              onClick={() => void openProc(connId, database, p)}
+              style={{ paddingLeft: 46 }}
+              title={`${p} — 클릭: EXEC 템플릿 생성`}
+              className="flex cursor-pointer items-center gap-1.5 whitespace-nowrap py-0.5 pr-2 hover:bg-raised"
+            >
+              <Cog size={13} className="shrink-0 text-fg-dim" />
+              <span className="truncate">{p}</span>
+            </div>
           ))
         ))}
     </>

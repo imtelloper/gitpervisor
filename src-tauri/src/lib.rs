@@ -98,6 +98,8 @@ pub fn run() {
             db::db_update_cell,
             db::db_delete_row,
             db::db_insert_row,
+            db::db_procedures,
+            db::db_proc_params,
         ])
         .on_window_event(|window, event| {
             // 창이 닫히면 열린 PTY 자식을 모두 정리한다 (좀비 셸 방지, 설계 §16.8).

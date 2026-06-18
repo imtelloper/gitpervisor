@@ -186,6 +186,12 @@ export interface TableMeta {
   constraints: ConstraintInfo[];
   triggers: TriggerInfo[];
 }
+export interface ProcParam {
+  name: string;
+  typeName: string;
+  output: boolean;
+  hasDefault: boolean;
+}
 
 // ---- 프로젝트 메모 (프로젝트당 여러 개) ----
 export interface Memo {
@@ -468,6 +474,10 @@ export const ipc = {
       { id, database, table, values },
       60_000,
     ),
+  dbProcedures: (id: string, database: string) =>
+    callMutating<string[]>("db_procedures", { id, database }, 60_000),
+  dbProcParams: (id: string, database: string, proc: string) =>
+    callMutating<ProcParam[]>("db_proc_params", { id, database, proc }, 60_000),
 
   getNotes: () => call<NotesMap>("get_notes"),
   addMemo: (projectId: string, memoId: string) =>

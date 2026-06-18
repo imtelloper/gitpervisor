@@ -459,6 +459,42 @@ pub async fn db_insert_row(
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcParam {
+    pub name: String,
+    pub type_name: String,
+    pub output: bool,
+    pub has_default: bool,
+}
+
+/// DB의 저장 프로시저 목록 (schema.proc).
+#[tauri::command]
+pub async fn db_procedures(
+    state: State<'_, DbState>,
+    id: String,
+    database: String,
+) -> Result<Vec<String>, IpcError> {
+    match client_of(&state, &id)? {
+        DbClient::Mssql(c) => mssql_procedures(&c, &database).await,
+        DbClient::Mongo(_) => Err(err("저장 프로시저는 SQL 엔진만 지원합니다")),
+    }
+}
+
+/// 저장 프로시저의 파라미터 목록 (EXEC 템플릿 생성용).
+#[tauri::command]
+pub async fn db_proc_params(
+    state: State<'_, DbState>,
+    id: String,
+    database: String,
+    proc: String,
+) -> Result<Vec<ProcParam>, IpcError> {
+    match client_of(&state, &id)? {
+        DbClient::Mssql(c) => mssql_proc_params(&c, &database, &proc).await,
+        DbClient::Mongo(_) => Err(err("저장 프로시저는 SQL 엔진만 지원합니다")),
+    }
+}
+
 fn read_only_of(state: &State<'_, DbState>, id: &str) -> bool {
     state
         .connections
@@ -904,6 +940,78 @@ async fn mssql_insert_row(
         return Err(err("삽입되지 않았습니다"));
     }
     Ok(())
+}
+
+async fn mssql_procedures(
+    arc: &Arc<tokio::sync::Mutex<MssqlClient>>,
+    database: &str,
+) -> Result<Vec<String>, IpcError> {
+    let mut client = arc.lock().await;
+    client
+        .simple_query(format!("USE [{}]", database.replace(']', "]]")))
+        .await
+        .map_err(|e| err(format!("DB 전환 실패: {e}")))?
+        .into_results()
+        .await
+        .ok();
+    let rows = run_rows(
+        &mut client,
+        "SELECT SCHEMA_NAME(schema_id) + '.' + name FROM sys.procedures \
+         WHERE is_ms_shipped = 0 ORDER BY SCHEMA_NAME(schema_id), name",
+    )
+    .await?;
+    Ok(rows
+        .iter()
+        .filter_map(|r| {
+            let s = gstr(r, 0);
+            if s.is_empty() {
+                None
+            } else {
+                Some(s)
+            }
+        })
+        .collect())
+}
+
+async fn mssql_proc_params(
+    arc: &Arc<tokio::sync::Mutex<MssqlClient>>,
+    database: &str,
+    proc: &str,
+) -> Result<Vec<ProcParam>, IpcError> {
+    let (schema, name) = proc.split_once('.').unwrap_or(("dbo", proc));
+    let obj = format!(
+        "[{}].[{}]",
+        schema.replace(']', "]]").replace('\'', "''"),
+        name.replace(']', "]]").replace('\'', "''")
+    );
+    let mut client = arc.lock().await;
+    client
+        .simple_query(format!("USE [{}]", database.replace(']', "]]")))
+        .await
+        .map_err(|e| err(format!("DB 전환 실패: {e}")))?
+        .into_results()
+        .await
+        .ok();
+    let q = format!(
+        "SELECT pa.name, TYPE_NAME(pa.user_type_id), pa.is_output, pa.has_default_value \
+         FROM sys.parameters pa WHERE pa.object_id = OBJECT_ID(N'{obj}') ORDER BY pa.parameter_id"
+    );
+    let rows = run_rows(&mut client, &q).await?;
+    Ok(rows
+        .iter()
+        .filter_map(|r| {
+            let n = gstr(r, 0);
+            if n.is_empty() {
+                return None;
+            }
+            Some(ProcParam {
+                name: n,
+                type_name: gstr(r, 1),
+                output: r.try_get::<bool, _>(2).ok().flatten().unwrap_or(false),
+                has_default: r.try_get::<bool, _>(3).ok().flatten().unwrap_or(false),
+            })
+        })
+        .collect())
 }
 
 /// SET SHOWPLAN_XML ON으로 예상 계획 XML을 받고, 항상 OFF로 복구한다(연결 상태 유지).
