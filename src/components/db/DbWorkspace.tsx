@@ -550,31 +550,65 @@ function parsePlan(xml: string): PlanNode[] {
     .map(toNode);
 }
 
-function PlanRow({ node, depth }: { node: PlanNode; depth: number }) {
+/** 연산자 박스 — 이름·대상·예상행·상대비용 막대(SSMS식). */
+function PlanBox({ node, total }: { node: PlanNode; total: number }) {
   const cost = parseFloat(node.cost);
+  const pct =
+    total > 0 && !Number.isNaN(cost) ? Math.round((cost / total) * 100) : null;
+  const rows = Math.round(parseFloat(node.rows) || 0);
   return (
-    <>
-      <div
-        style={{ paddingLeft: 8 + depth * 16 }}
-        className="flex items-center gap-2 whitespace-nowrap py-0.5 text-[12px] hover:bg-raised/40"
-      >
-        <span className="text-fg">{node.op}</span>
-        {node.object && (
-          <span className="font-mono text-fg-dim">{node.object}</span>
-        )}
-        {node.rows && (
-          <span className="text-fg-dim">
-            rows {Math.round(parseFloat(node.rows))}
-          </span>
-        )}
-        {!Number.isNaN(cost) && (
-          <span className="text-mod">cost {cost.toFixed(4)}</span>
-        )}
+    <div className="my-1 w-[152px] shrink-0 rounded border border-edge bg-panel px-2 py-1.5 text-[11px] shadow-sm">
+      <div className="truncate font-medium text-fg" title={node.op}>
+        {node.op}
       </div>
-      {node.children.map((c, i) => (
-        <PlanRow key={i} node={c} depth={depth + 1} />
-      ))}
-    </>
+      {node.object && (
+        <div
+          className="truncate font-mono text-[10px] text-fg-dim"
+          title={node.object}
+        >
+          {node.object}
+        </div>
+      )}
+      <div className="mt-0.5 text-fg-dim">
+        rows {rows}
+        {pct != null && <span className="text-mod"> · {pct}%</span>}
+      </div>
+      {pct != null && (
+        <div className="mt-1 h-1 w-full overflow-hidden rounded bg-edge">
+          <div className="h-1 rounded bg-accent" style={{ width: `${pct}%` }} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 재귀 트리 — 부모는 왼쪽, 자식은 오른쪽(데이터 흐름 오른쪽→왼쪽). 연결선은 CSS로. */
+function PlanTreeNode({
+  node,
+  total,
+  root,
+}: {
+  node: PlanNode;
+  total: number;
+  root?: boolean;
+}) {
+  return (
+    <div
+      className={`flex items-center ${
+        root
+          ? ""
+          : "relative before:absolute before:left-[-16px] before:top-1/2 before:w-4 before:border-t before:border-edge"
+      }`}
+    >
+      <PlanBox node={node} total={total} />
+      {node.children.length > 0 && (
+        <div className="ml-4 flex flex-col justify-center border-l border-edge">
+          {node.children.map((c, i) => (
+            <PlanTreeNode key={i} node={c} total={total} />
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -582,10 +616,12 @@ function PlanView() {
   const xml = useDb((s) => s.planXml);
   const closePlan = useDb((s) => s.closePlan);
   const nodes = useMemo(() => (xml ? parsePlan(xml) : []), [xml]);
+  const total = nodes.reduce((m, n) => Math.max(m, parseFloat(n.cost) || 0), 0);
   return (
     <div className="flex h-full flex-col">
       <div className="flex h-8 shrink-0 items-center gap-2 border-b border-edge px-3 text-xs text-fg-dim">
         <span>예상 실행 계획</span>
+        <span className="text-[11px]">데이터 흐름: 오른쪽 → 왼쪽</span>
         <div className="flex-1" />
         <button
           onClick={closePlan}
@@ -594,9 +630,11 @@ function PlanView() {
           결과로 ✕
         </button>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto py-1 font-mono">
+      <div className="min-h-0 flex-1 overflow-auto p-3">
         {nodes.length ? (
-          nodes.map((n, i) => <PlanRow key={i} node={n} depth={0} />)
+          nodes.map((n, i) => (
+            <PlanTreeNode key={i} node={n} total={total} root />
+          ))
         ) : (
           <Center>계획을 표시할 수 없습니다</Center>
         )}
