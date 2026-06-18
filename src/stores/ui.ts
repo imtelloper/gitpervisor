@@ -54,7 +54,8 @@ interface UiState {
 let toastSeq = 0;
 
 export const useUi = create<UiState>((set) => ({
-  selectedProjectId: null,
+  // 마지막 선택 프로젝트를 복원한다 — 재시작 시 그 프로젝트(+복구된 터미널 탭)로 바로 진입
+  selectedProjectId: localStorage.getItem("gp:selected-project"),
   selectedDiff: null,
   logOpen: false,
   selectedCommitSha: null,
@@ -66,13 +67,16 @@ export const useUi = create<UiState>((set) => ({
   toasts: [],
   confirm: null,
   // 프로젝트 전환 시 diff·커밋 선택은 초기화하되 Log 패널 펼침 상태는 유지
-  selectProject: (id) =>
+  selectProject: (id) => {
+    if (id) localStorage.setItem("gp:selected-project", id);
+    else localStorage.removeItem("gp:selected-project");
     set({
       selectedProjectId: id,
       selectedDiff: null,
       selectedCommitSha: null,
       memoOpen: false,
-    }),
+    });
+  },
   selectDiff: (target) => set({ selectedDiff: target }),
   toggleLog: () => set((s) => ({ logOpen: !s.logOpen })),
   selectCommit: (sha) => set({ selectedCommitSha: sha }),

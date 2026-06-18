@@ -103,11 +103,40 @@ interface TerminalsState {
   setPaneStatus: (paneId: string, status: PaneStatus) => void;
 }
 
+// 터미널 탭 구성을 localStorage에 영속화한다 — 앱 재시작 시 같은 탭/분할 레이아웃으로
+// 복구한다. PTY는 재시작 시 죽으므로 스크롤백·실행 중 프로세스는 복구하지 못하고,
+// 탭/레이아웃/제목만 되살려 새 셸을 같은 모양으로 다시 띄운다.
+const PERSIST_KEY = "gp:terminals";
+interface PersistedTerminals {
+  terminals: TermTab[];
+  activeTab: Record<string, string>;
+  dbProjects: string[];
+}
+function loadPersistedTerminals(): PersistedTerminals {
+  try {
+    const raw = localStorage.getItem(PERSIST_KEY);
+    if (raw) {
+      const p = JSON.parse(raw) as Partial<PersistedTerminals>;
+      return {
+        terminals: Array.isArray(p.terminals) ? p.terminals : [],
+        activeTab:
+          p.activeTab && typeof p.activeTab === "object" ? p.activeTab : {},
+        dbProjects: Array.isArray(p.dbProjects) ? p.dbProjects : [],
+      };
+    }
+  } catch {
+    /* 손상된 데이터는 빈 상태로 무시 */
+  }
+  return { terminals: [], activeTab: {}, dbProjects: [] };
+}
+
+const persisted = loadPersistedTerminals();
+
 export const useTerminals = create<TerminalsState>((set, get) => ({
-  terminals: [],
-  activeTab: {},
+  terminals: persisted.terminals,
+  activeTab: persisted.activeTab,
   paneStatus: {},
-  dbProjects: [],
+  dbProjects: persisted.dbProjects,
 
   openDbTab: (projectId) =>
     set((s) => ({
@@ -270,3 +299,19 @@ export const useTerminals = create<TerminalsState>((set, get) => ({
 
 // 셸 종료(term://exit) → 해당 패널을 exited로 표시 (모듈 로드 시 1회 구독)
 onTermExit((id) => useTerminals.getState().setPaneStatus(id, "exited"));
+
+// 탭/레이아웃이 바뀔 때마다 localStorage에 저장 — 다음 실행에서 복구한다.
+useTerminals.subscribe((s) => {
+  try {
+    localStorage.setItem(
+      PERSIST_KEY,
+      JSON.stringify({
+        terminals: s.terminals,
+        activeTab: s.activeTab,
+        dbProjects: s.dbProjects,
+      }),
+    );
+  } catch {
+    /* localStorage 불가 환경 무시 */
+  }
+});
