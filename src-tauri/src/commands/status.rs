@@ -50,7 +50,7 @@ async fn status_of(project_id: &str, path: &Path) -> RepoStatus {
     let out = match runner::run_git(
         Some(path),
         &["status", "--porcelain=v2", "--branch", "-z"],
-        runner::READ_TIMEOUT_SECS,
+        runner::STATUS_TIMEOUT_SECS,
     )
     .await
     {

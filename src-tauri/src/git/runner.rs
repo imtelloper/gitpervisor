@@ -7,6 +7,9 @@ use tokio::process::Command;
 use crate::error::{ErrorCode, IpcError};
 
 pub const READ_TIMEOUT_SECS: u64 = 10;
+/// git status 전용 — 거대한 레포에서 AI CLI 등이 격렬히 파일을 바꾸면 status가
+/// 디스크 I/O 경합으로 10초를 넘길 수 있어 더 넉넉히 잡는다.
+pub const STATUS_TIMEOUT_SECS: u64 = 45;
 /// 훅 실행 여유를 포함한 로컬 변경 작업(add/commit 등) 타임아웃
 pub const ACTION_TIMEOUT_SECS: u64 = 60;
 /// push/pull/fetch 등 네트워크 작업 타임아웃 (설계 §8)

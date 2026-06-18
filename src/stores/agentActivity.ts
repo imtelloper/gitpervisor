@@ -42,15 +42,14 @@ export const useAgentActivity = create<AgentActivityStore>((set) => ({
 // Claude Code는 한 턴을 처리하는 동안 하단 상태줄에 "esc to interrupt"를 표시한다.
 // 이 마커가 보이면 작업 중, 사라지면 직전 턴이 끝난 것으로 본다(완료).
 const WORKING_RE = /esc to interrupt/i;
-const SCAN_LINES = 15; // 커서 기준 위쪽 N줄 — Claude 상태줄은 활성 커서 근처에 그려진다
 
-// 커서 위치를 기준으로 스캔한다. 새 터미널은 내용이 상단에 있고 화면 하단이 빈 줄로
-// 채워지므로 "버퍼 끝줄"만 보면 마커를 놓친다. 커서 근처(현재 작업 영역)를 본다.
-function bufferTail(term: Terminal): string {
+// 현재 화면(뷰포트)에 그려진 모든 줄을 읽는다. Claude Code는 "esc to interrupt"를 입력
+// 커서 '아래' 푸터(plan mode 줄 등)에 그리기도 해서 커서 위쪽만 보면 놓친다. 또 새 터미널은
+// 내용이 상단에 있고 하단이 빈 줄이라 "버퍼 끝줄"만 봐도 안 된다 → 보이는 화면 전체를 본다.
+function visibleScreen(term: Terminal): string {
   const buf = term.buffer.active;
-  const cursor = buf.baseY + buf.cursorY;
-  const end = Math.min(buf.length, cursor + 3);
-  const start = Math.max(0, end - SCAN_LINES);
+  const start = buf.baseY;
+  const end = Math.min(buf.length, buf.baseY + term.rows);
   let s = "";
   for (let i = start; i < end; i++) {
     const line = buf.getLine(i);
@@ -65,7 +64,7 @@ export function scanAgents() {
   for (const t of listTerminals()) {
     if (t.status !== "live") continue;
     const prev = working.get(t.projectId) ?? false;
-    working.set(t.projectId, prev || WORKING_RE.test(bufferTail(t.term)));
+    working.set(t.projectId, prev || WORKING_RE.test(visibleScreen(t.term)));
   }
   useAgentActivity.getState().applyScan(working);
 }

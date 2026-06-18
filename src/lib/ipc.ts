@@ -379,7 +379,9 @@ export const ipc = {
     call<RepoStatus[]>(
       "get_statuses",
       { projectIds },
-      { timeoutMs: 12000, attempts: 2, lane: "background" },
+      // 백엔드 status 타임아웃(45초)보다 길게 — 거대/바쁜 레포에서 status가 느려도
+      // 프론트가 먼저 끊지 않게 한다.
+      { timeoutMs: 50000, attempts: 2, lane: "background" },
     ),
   // 단일 diff — DiffTarget(worktree/index/commit) 어느 모드든 처리
   getDiff: (projectId: string, target: DiffTarget) =>

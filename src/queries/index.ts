@@ -8,7 +8,7 @@ import {
 } from "@tanstack/react-query";
 import { useEffect } from "react";
 
-import type { DiffTarget, NotesMap, Project } from "../lib/ipc";
+import type { DiffTarget, NotesMap, Project, RepoStatus } from "../lib/ipc";
 import { errorMessage, ipc, isIpcError } from "../lib/ipc";
 import { useDb } from "../stores/db";
 import type { SyncOp } from "../stores/ops";
@@ -238,6 +238,24 @@ export function useProjects() {
   });
 }
 
+/**
+ * status가 일시적으로 타임아웃하면 직전 정상 상태를 유지한다 — 거대/바쁜 레포에서
+ * status가 가끔 느려도 "시간 초과" 오류가 깜빡이지 않게 한다. 타임아웃이 아닌 실제
+ * 오류(NOT_A_REPO 등)는 그대로 표면화한다.
+ */
+function keepLastGoodStatuses(
+  prev: RepoStatus[] | undefined,
+  next: RepoStatus[],
+): RepoStatus[] {
+  if (!prev) return next;
+  const prevById = new Map(prev.map((s) => [s.projectId, s]));
+  return next.map((s) => {
+    const old = prevById.get(s.projectId);
+    if (s.error?.includes("시간 초과") && old && !old.error) return old;
+    return s;
+  });
+}
+
 /** 전 프로젝트 상태 단일 배치 쿼리 — 요청 1개로 모든 사이드바 뱃지를 채운다 */
 export function useStatuses() {
   const { data: projects } = useProjects();
@@ -248,6 +266,11 @@ export function useStatuses() {
     queryKey: keys.statuses(key),
     queryFn: () => ipc.getStatuses(ids),
     enabled: ids.length > 0,
+    structuralSharing: (prev, next) =>
+      keepLastGoodStatuses(
+        prev as RepoStatus[] | undefined,
+        next as RepoStatus[],
+      ) as unknown as typeof next,
   });
 }
 
