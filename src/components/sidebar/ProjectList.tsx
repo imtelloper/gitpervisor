@@ -19,6 +19,7 @@ import {
   useRemoveProject,
   useStatuses,
 } from "../../queries";
+import { useAgentScanner } from "../../stores/agentActivity";
 import { useTerminals } from "../../stores/terminals";
 import { useUi } from "../../stores/ui";
 import { ResizeHandle } from "../common/ResizeHandle";
@@ -64,6 +65,9 @@ export function ProjectList() {
   const sortByChanges = useUi((s) => s.projectSortByChanges);
   const toggleProjectSort = useUi((s) => s.toggleProjectSort);
   const { width, startResize } = usePanelWidth("gp:projects-width", 240, 170, 440);
+
+  // 터미널의 Claude Code 작업중/완료 상태를 주기 스캔(1회 마운트)
+  useAgentScanner();
 
   const [menu, setMenu] = useState<MenuState | null>(null);
 

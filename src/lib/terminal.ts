@@ -48,6 +48,11 @@ export function getTerminal(id: string): TermInstance | undefined {
   return registry.get(id);
 }
 
+/** 현재 살아 있는 모든 터미널 인스턴스 (에이전트 활동 스캐너용). */
+export function listTerminals(): TermInstance[] {
+  return Array.from(registry.values());
+}
+
 function readTheme(): ITheme {
   const css = getComputedStyle(document.documentElement);
   const v = (name: string, fallback: string) =>

@@ -1,8 +1,17 @@
-import { ArrowDown, ArrowUp, GitBranch, StickyNote, X } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowUp,
+  CircleCheck,
+  GitBranch,
+  Loader2,
+  StickyNote,
+  X,
+} from "lucide-react";
 
 import type { Project } from "../../lib/ipc";
 import { errorMessage } from "../../lib/ipc";
 import { useNotes, useStatus } from "../../queries";
+import { useAgentActivity } from "../../stores/agentActivity";
 import { dotStateOf, StatusDot } from "../common/StatusDot";
 
 export function ProjectItem({
@@ -22,6 +31,7 @@ export function ProjectItem({
   const { data: notes } = useNotes();
   const hasNote = !!notes?.[project.id]?.some((m) => m.text.trim());
   const dot = dotStateOf(status, isLoading);
+  const agent = useAgentActivity((s) => s.byProject[project.id]);
 
   const branchLabel =
     status?.branch ??
@@ -52,6 +62,27 @@ export function ProjectItem({
       <div className="flex items-center gap-2 overflow-hidden">
         <StatusDot state={dot} />
         <span className="whitespace-nowrap font-medium">{project.name}</span>
+        {agent === "working" && (
+          <span title="Claude Code 작업 중…" className="flex shrink-0">
+            <Loader2
+              size={12}
+              className="animate-spin text-accent"
+              aria-label="Claude Code 작업 중"
+            />
+          </span>
+        )}
+        {agent === "done" && (
+          <span
+            title="Claude Code 작업 완료 — 확인하세요"
+            className="flex shrink-0"
+          >
+            <CircleCheck
+              size={12}
+              className="text-add"
+              aria-label="Claude Code 작업 완료"
+            />
+          </span>
+        )}
         {hasNote && (
           <StickyNote
             size={11}
