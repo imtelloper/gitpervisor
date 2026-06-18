@@ -3,6 +3,8 @@ import { monaco } from "./monaco-setup";
 import { DiffEditor, Editor } from "@monaco-editor/react";
 import type { DiffOnMount } from "@monaco-editor/react";
 import {
+  Code2,
+  Eye,
   FileQuestion,
   FileWarning,
   FoldVertical,
@@ -16,6 +18,7 @@ import { languageOf } from "../../lib/language-map";
 import { useDiff, useSettings } from "../../queries";
 import { useUi } from "../../stores/ui";
 import { EmptyState } from "../common/EmptyState";
+import MarkdownView from "./MarkdownView";
 
 function monacoThemeOf(theme: string | undefined): string {
   return theme === "monokai" ? "gitpervisor-monokai" : "gitpervisor-dark";
@@ -89,6 +92,7 @@ export default function DiffViewer({
     [settings?.diffFontSize],
   );
   const isFileView = target.mode === "file";
+  const isMarkdown = isFileView && languageOf(target.path) === "markdown";
 
   // Monaco 테마는 전역 — 열려 있는 에디터도 즉시 바뀌도록 명시적으로 적용한다.
   useEffect(() => {
@@ -104,6 +108,10 @@ export default function DiffViewer({
     target.mode === "commit"
       ? `commit:${target.sha}:${path}`
       : `${target.mode}:${path}`;
+
+  // .md 파일은 기본 미리보기(렌더). 파일이 바뀌면 다시 미리보기로 돌아간다.
+  const [mdRaw, setMdRaw] = useState(false);
+  useEffect(() => setMdRaw(false), [editorKey]);
 
   // 파일 전환 시 "펼쳐진 채 잠깐 보였다가 접히는" 깜빡임을 없앤다:
   // 대상이 바뀌면 에디터를 숨기고(opacity-0), 접기가 적용된 뒤 다시 보여준다.
@@ -148,6 +156,15 @@ export default function DiffViewer({
           </span>
         )}
         <div className="flex-1" />
+        {isMarkdown && (
+          <button
+            onClick={() => setMdRaw((v) => !v)}
+            title={mdRaw ? "미리보기 (렌더된 마크다운)" : "원본 보기 (마크다운 소스)"}
+            className="shrink-0 rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
+          >
+            {mdRaw ? <Eye size={14} /> : <Code2 size={14} />}
+          </button>
+        )}
         {!isFileView && (
           <button
             onClick={toggleDiffCollapse}
@@ -191,6 +208,8 @@ export default function DiffViewer({
             title="파일이 너무 큽니다"
             desc="1.5MB를 초과하는 파일은 표시하지 않습니다"
           />
+        ) : diff && isMarkdown && !mdRaw ? (
+          <MarkdownView content={diff.newContent ?? ""} />
         ) : diff && isFileView ? (
           <Editor
             value={diff.newContent ?? ""}
