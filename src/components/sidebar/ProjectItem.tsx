@@ -57,7 +57,7 @@ export function ProjectItem({
         selected
           ? "border-accent bg-selection"
           : "border-transparent hover:bg-raised"
-      }`}
+      } ${agent === "working" ? "ai-working" : agent === "done" ? "ai-done" : ""}`}
     >
       <div className="flex items-center gap-2 overflow-hidden">
         <StatusDot state={dot} />

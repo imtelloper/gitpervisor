@@ -270,3 +270,56 @@ textarea {
 .md-body img {
   max-width: 100%;
 }
+
+/* ── AI(Claude Code) 작업 상태 — PROJECTS 바 행 배경 ──────────────────────
+ * 작업 중: 은은하게 흐르는 무지개 그라데이션(배경 이미지라 텍스트는 그대로 위에).
+ * bg-selection/hover 색 위에 얹혀도 가독성 유지(낮은 알파). */
+@keyframes ai-rainbow-flow {
+  from {
+    background-position: 0% 50%;
+  }
+  to {
+    background-position: 300% 50%;
+  }
+}
+@keyframes ai-working-glow {
+  0%,
+  100% {
+    box-shadow: inset 0 0 22px -10px rgba(120, 180, 255, 0.55);
+  }
+  50% {
+    box-shadow: inset 0 0 26px -8px rgba(200, 140, 255, 0.7);
+  }
+}
+.ai-working {
+  background-image: linear-gradient(
+    90deg,
+    rgba(255, 99, 132, 0.26),
+    rgba(255, 179, 71, 0.26),
+    rgba(120, 222, 130, 0.26),
+    rgba(79, 180, 230, 0.26),
+    rgba(168, 124, 240, 0.26),
+    rgba(255, 99, 132, 0.26)
+  );
+  background-size: 300% 100%;
+  animation:
+    ai-rainbow-flow 4.5s linear infinite,
+    ai-working-glow 2.6s ease-in-out infinite;
+}
+
+/* 완료: 차분한 초록빛이 왼쪽에서 은은히 — 끝난 프로젝트를 한눈에 (애니메이션 없음). */
+.ai-done {
+  background-image: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--color-add) 22%, transparent),
+    transparent 55%
+  );
+}
+
+/* 모션 최소화 환경에선 깜빡이는 글로우 펄스는 빼되, 흐르는 무지개는 더 느리게 유지
+ * (작업 중 표시는 의도된 핵심 큐라 완전히 끄지 않는다). */
+@media (prefers-reduced-motion: reduce) {
+  .ai-working {
+    animation: ai-rainbow-flow 6s linear infinite;
+  }
+}
