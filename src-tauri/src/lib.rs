@@ -46,10 +46,15 @@ pub fn run() {
             // DB 탐색기 — 연결 메타 로드 + 활성 연결 상태 (M6 §17)
             let db_conns = db::load_connections(app.handle());
             app.manage(db::DbState::new(db_conns));
-            // 등록된 모든 레포에 파일 감시 시작 (F7: 외부 수정 자동 반영)
-            for project in &projects {
-                watcher::register(app.handle(), project);
-            }
+            // 파일 감시 등록을 백그라운드 스레드로 미룬다. 재귀 감시 + 캐시 인덱싱이 거대 레포는
+            // 레포당 수 초씩 걸려, 메인 스레드(setup)에서 하면 이벤트 루프가 시작도 못 해 시작 시
+            // 창이 수십 초 멈춘다("응답 없음"). 등록 전까지는 수동/포커스 새로고침이 상태를 채운다.
+            let watch_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                for project in &projects {
+                    watcher::register(&watch_handle, project);
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
