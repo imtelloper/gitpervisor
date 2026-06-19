@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use tauri::webview::{NewWindowResponse, PageLoadEvent, WebviewBuilder};
+use tauri::webview::{DownloadEvent, NewWindowResponse, PageLoadEvent, WebviewBuilder};
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State, Url, WebviewUrl,
 };
@@ -55,6 +55,14 @@ struct NavEvent {
 struct TitleEvent {
     browser_id: String,
     title: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DownloadInfo {
+    url: String,
+    /// true = OS 기본 브라우저로 위임됨, false = 지원 안 되는 스킴이라 차단됨
+    delegated: bool,
 }
 
 fn label_of(id: &str) -> String {
@@ -146,6 +154,24 @@ pub async fn browser_open(
                 open_external(url.as_str());
             }
             NewWindowResponse::Deny
+        })
+        // 다운로드 정책: 인앱 다운로드는 항상 취소(특권 앱 옆 drive-by-write 방지).
+        // http(s)는 OS 기본 브라우저로 위임해 사용자 동의·다운로드 폴더로 받게 한다.
+        .on_download(|webview, event| {
+            if let DownloadEvent::Requested { url, .. } = event {
+                let delegated = matches!(url.scheme(), "http" | "https");
+                if delegated {
+                    open_external(url.as_str());
+                }
+                let _ = webview.emit(
+                    "browser://download",
+                    DownloadInfo {
+                        url: url.to_string(),
+                        delegated,
+                    },
+                );
+            }
+            false // 인앱 다운로드 취소
         })
         .on_page_load(|webview, payload| {
             let loading = matches!(payload.event(), PageLoadEvent::Started);

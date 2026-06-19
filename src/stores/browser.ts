@@ -46,12 +46,18 @@ export interface HistoryEntry {
   url: string;
   title: string;
 }
+export interface BookmarkEntry {
+  url: string;
+  title: string;
+}
 const HISTORY_CAP = 120;
 
 interface BrowsersState {
   browsers: BrowserTab[];
   /** 방문 기록 (최근 우선, 중복 제거) — 옴니박스 자동완성. 영속. */
   history: HistoryEntry[];
+  /** 북마크 (추가 우선). 영속. */
+  bookmarks: BookmarkEntry[];
   /** 탭별 로딩 여부 (전이 상태, 비영속) */
   loading: Record<string, boolean>;
   openBrowser: (projectId: string, url?: string) => string;
@@ -61,6 +67,8 @@ interface BrowsersState {
   /** 백엔드 browser://nav 반영 (페이지가 스스로 이동한 경우 포함) */
   applyNav: (tabId: string, p: { url: string; loading: boolean }) => void;
   setTitle: (tabId: string, title: string) => void;
+  /** 북마크 토글 — 있으면 제거, 없으면 추가 */
+  toggleBookmark: (url: string, title: string) => void;
 }
 
 function pushHistory(history: HistoryEntry[], url: string, title?: string): HistoryEntry[] {
@@ -70,22 +78,31 @@ function pushHistory(history: HistoryEntry[], url: string, title?: string): Hist
   return [{ url, title: title || prev?.title || "" }, ...rest].slice(0, HISTORY_CAP);
 }
 
-// 터미널과 분리된 키로 영속 — 탭/마지막 URL + 방문기록(네이티브 webview history·세션은 복구 불가).
+// 터미널과 분리된 키로 영속 — 탭/마지막 URL + 방문기록 + 북마크(네이티브 history·세션은 복구 불가).
 const PERSIST_KEY = "gp:browser";
-function loadPersisted(): { browsers: BrowserTab[]; history: HistoryEntry[] } {
+function loadPersisted(): {
+  browsers: BrowserTab[];
+  history: HistoryEntry[];
+  bookmarks: BookmarkEntry[];
+} {
   try {
     const raw = localStorage.getItem(PERSIST_KEY);
     if (raw) {
-      const p = JSON.parse(raw) as { browsers?: BrowserTab[]; history?: HistoryEntry[] };
+      const p = JSON.parse(raw) as {
+        browsers?: BrowserTab[];
+        history?: HistoryEntry[];
+        bookmarks?: BookmarkEntry[];
+      };
       return {
         browsers: Array.isArray(p.browsers) ? p.browsers : [],
         history: Array.isArray(p.history) ? p.history : [],
+        bookmarks: Array.isArray(p.bookmarks) ? p.bookmarks : [],
       };
     }
   } catch {
     /* 손상 데이터 무시 */
   }
-  return { browsers: [], history: [] };
+  return { browsers: [], history: [], bookmarks: [] };
 }
 
 function hostTitle(url: string): string {
@@ -101,6 +118,7 @@ const persisted = loadPersisted();
 export const useBrowsers = create<BrowsersState>((set, get) => ({
   browsers: persisted.browsers,
   history: persisted.history,
+  bookmarks: persisted.bookmarks,
   loading: {},
 
   openBrowser: (projectId, url = "") => {
@@ -158,19 +176,40 @@ export const useBrowsers = create<BrowsersState>((set, get) => ({
         browsers: s.browsers.map((b) =>
           b.id === tabId ? { ...b, title: title || b.title } : b,
         ),
-        // 같은 URL의 방문기록에 제목 보강
+        // 같은 URL의 방문기록·북마크에 제목 보강
         history:
           tab && title ? pushHistory(s.history, tab.url, title) : s.history,
+        bookmarks:
+          tab && title
+            ? s.bookmarks.map((bm) =>
+                bm.url === tab.url && !bm.title ? { ...bm, title } : bm,
+              )
+            : s.bookmarks,
+      };
+    }),
+
+  toggleBookmark: (url, title) =>
+    set((s) => {
+      if (!url) return s;
+      const exists = s.bookmarks.some((b) => b.url === url);
+      return {
+        bookmarks: exists
+          ? s.bookmarks.filter((b) => b.url !== url)
+          : [{ url, title: title || url }, ...s.bookmarks],
       };
     }),
 }));
 
-// 탭/URL/방문기록이 바뀔 때마다 localStorage에 저장 — 다음 실행에서 복구.
+// 탭/URL/방문기록/북마크가 바뀔 때마다 localStorage에 저장 — 다음 실행에서 복구.
 useBrowsers.subscribe((s) => {
   try {
     localStorage.setItem(
       PERSIST_KEY,
-      JSON.stringify({ browsers: s.browsers, history: s.history }),
+      JSON.stringify({
+        browsers: s.browsers,
+        history: s.history,
+        bookmarks: s.bookmarks,
+      }),
     );
   } catch {
     /* 무시 */

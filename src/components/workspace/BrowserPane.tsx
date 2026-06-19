@@ -1,11 +1,13 @@
 import {
   ArrowLeft,
   ArrowRight,
+  Bookmark,
   CornerUpLeft,
   Globe,
   Lock,
   Plug,
   RotateCw,
+  Star,
   Unlock,
   X,
 } from "lucide-react";
@@ -27,7 +29,7 @@ import {
   stop,
 } from "../../lib/browser";
 import {
-  type HistoryEntry,
+  type BookmarkEntry,
   resolveOmnibox,
   useBrowsers,
   type BrowserTab,
@@ -36,6 +38,13 @@ import { useDb } from "../../stores/db";
 import { useTerminals } from "../../stores/terminals";
 import { useUi } from "../../stores/ui";
 import { EmptyState } from "../common/EmptyState";
+import { Favicon } from "./Favicon";
+
+interface Suggestion {
+  url: string;
+  title: string;
+  bookmarked: boolean;
+}
 
 function hostOf(url: string): string {
   try {
@@ -60,6 +69,9 @@ export function BrowserPane({ tab }: { tab: BrowserTab }) {
   const setUrl = useBrowsers((s) => s.setUrl);
   const loading = useBrowsers((s) => s.loading[tab.id] ?? false);
   const history = useBrowsers((s) => s.history);
+  const bookmarks = useBrowsers((s) => s.bookmarks);
+  const toggleBookmark = useBrowsers((s) => s.toggleBookmark);
+  const isBookmarked = bookmarks.some((b) => b.url === tab.url);
 
   // 점유(occlusion) 조건 — 활성 탭 & 차단성 모달 없음
   const active = useTerminals((s) => s.activeTab[tab.projectId]) === tab.id;
@@ -84,17 +96,22 @@ export function BrowserPane({ tab }: { tab: BrowserTab }) {
   }, [tab.url, focused]);
   useEffect(() => setSel(-1), [draft]);
 
-  // 옴니박스 자동완성 후보 — 방문기록에서 substring 매칭(최대 6)
+  // 옴니박스 자동완성 — 북마크(우선) + 방문기록 합쳐 substring 매칭(최대 6)
   const q = draft.trim().toLowerCase();
-  const matches: HistoryEntry[] =
-    focused && q && q !== tab.url.toLowerCase()
-      ? history
-          .filter(
-            (h) =>
-              h.url.toLowerCase().includes(q) || h.title.toLowerCase().includes(q),
-          )
-          .slice(0, 6)
-      : [];
+  const matches: Suggestion[] = (() => {
+    if (!focused || !q || q === tab.url.toLowerCase()) return [];
+    const bm: Suggestion[] = bookmarks.map((b) => ({ ...b, bookmarked: true }));
+    const seen = new Set(bm.map((b) => b.url));
+    const hist: Suggestion[] = history
+      .filter((h) => !seen.has(h.url))
+      .map((h) => ({ ...h, bookmarked: false }));
+    return [...bm, ...hist]
+      .filter(
+        (x) =>
+          x.url.toLowerCase().includes(q) || x.title.toLowerCase().includes(q),
+      )
+      .slice(0, 6);
+  })();
 
   // 모듈 1회 이벤트 구독
   useEffect(() => {
@@ -233,7 +250,11 @@ export function BrowserPane({ tab }: { tab: BrowserTab }) {
                     i === sel ? "bg-raised text-fg" : "text-fg-muted hover:bg-raised"
                   }`}
                 >
-                  <Globe size={12} className="shrink-0 text-fg-dim" />
+                  {m.bookmarked ? (
+                    <Star size={12} className="shrink-0 fill-accent text-accent" />
+                  ) : (
+                    <Globe size={12} className="shrink-0 text-fg-dim" />
+                  )}
                   <span className="truncate">{m.title || m.url}</span>
                   <span className="ml-auto shrink-0 truncate text-[11px] text-fg-dim">
                     {hostOf(m.url)}
@@ -244,11 +265,23 @@ export function BrowserPane({ tab }: { tab: BrowserTab }) {
           )}
         </div>
 
+        {hasUrl && (
+          <NavBtn
+            label={isBookmarked ? "북마크 제거" : "북마크 추가"}
+            onClick={() => toggleBookmark(tab.url, tab.title)}
+          >
+            <Star
+              size={15}
+              className={isBookmarked ? "fill-accent text-accent" : ""}
+            />
+          </NavBtn>
+        )}
         {tab.mode === "native" && hasUrl && (
           <NavBtn label="앱으로 포커스 (단축키 복귀)" onClick={() => blurBrowser()}>
             <CornerUpLeft size={15} />
           </NavBtn>
         )}
+        <BookmarksMenu bookmarks={bookmarks} onPick={(url) => go(url)} />
         <DevPorts onPick={(url) => go(url)} />
       </div>
 
@@ -260,7 +293,7 @@ export function BrowserPane({ tab }: { tab: BrowserTab }) {
       {/* 뷰포트 — 네이티브 webview가 이 사각형에 bounds-clip (localhost면 iframe) */}
       <div ref={viewportRef} className="relative min-h-0 flex-1 bg-base">
         {!hasUrl ? (
-          <BrowserEmpty onPick={(url) => go(url)} />
+          <BrowserEmpty onPick={(url) => go(url)} bookmarks={bookmarks} />
         ) : tab.mode === "iframe" ? (
           <iframe
             title={tab.title}
@@ -352,7 +385,61 @@ function DevPorts({ onPick }: { onPick: (url: string) => void }) {
   );
 }
 
-function BrowserEmpty({ onPick }: { onPick: (url: string) => void }) {
+/** 북마크 드롭다운 — 저장된 북마크 목록, 클릭 시 이동. */
+function BookmarksMenu({
+  bookmarks,
+  onPick,
+}: {
+  bookmarks: BookmarkEntry[];
+  onPick: (url: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative shrink-0">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        title="북마크"
+        className="rounded p-1.5 text-fg-dim hover:bg-raised hover:text-fg"
+      >
+        <Bookmark size={15} />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 top-full z-50 mt-1 max-h-80 min-w-56 overflow-auto rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl">
+            {bookmarks.length === 0 ? (
+              <div className="px-3 py-1.5 text-fg-dim">
+                북마크 없음 — 주소창의 ★로 추가
+              </div>
+            ) : (
+              bookmarks.map((b) => (
+                <button
+                  key={b.url}
+                  onClick={() => {
+                    onPick(b.url);
+                    setOpen(false);
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-fg-muted hover:bg-raised hover:text-fg"
+                >
+                  <Favicon url={b.url} size={13} />
+                  <span className="truncate">{b.title || b.url}</span>
+                </button>
+              ))
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function BrowserEmpty({
+  onPick,
+  bookmarks,
+}: {
+  onPick: (url: string) => void;
+  bookmarks: BookmarkEntry[];
+}) {
   const [ports, setPorts] = useState<number[]>([]);
   useEffect(() => {
     void scanDevPorts().then(setPorts);
@@ -364,7 +451,18 @@ function BrowserEmpty({ onPick }: { onPick: (url: string) => void }) {
       title="주소를 입력하거나 검색하세요"
       desc="위 주소창에 URL을 넣으면 바로 열리고, 검색어를 넣으면 Google에서 찾아봅니다"
       action={
-        <div className="flex flex-wrap justify-center gap-2">
+        <div className="flex max-w-md flex-wrap justify-center gap-2">
+          {bookmarks.slice(0, 8).map((b) => (
+            <button
+              key={b.url}
+              onClick={() => onPick(b.url)}
+              title={b.url}
+              className="flex items-center gap-1.5 rounded border border-edge px-3 py-1.5 text-xs text-fg-muted hover:bg-raised hover:text-fg"
+            >
+              <Favicon url={b.url} size={12} />
+              <span className="max-w-32 truncate">{b.title || b.url}</span>
+            </button>
+          ))}
           {ports.map((p) => (
             <button
               key={p}

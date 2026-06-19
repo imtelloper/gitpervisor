@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 import { useBrowsers } from "../stores/browser";
+import { useUi } from "../stores/ui";
 
 // 네이티브 자식 webview 제어는 전부 백엔드 커스텀 커맨드로만 한다(권한 표면 축소 +
 // 동시 invoke 유실 대응). 위치/크기/표시는 terminal.ts처럼 "백엔드가 단일 진실"이고
@@ -128,5 +129,16 @@ export function ensureBrowserEvents(): void {
   });
   void listen<{ browserId: string; title: string }>("browser://title", (e) => {
     useBrowsers.getState().setTitle(e.payload.browserId, e.payload.title);
+  });
+  // 다운로드는 인앱에서 받지 않고 OS 브라우저로 위임 — 사용자에게 알린다.
+  void listen<{ url: string; delegated: boolean }>("browser://download", (e) => {
+    useUi
+      .getState()
+      .pushToast(
+        e.payload.delegated ? "info" : "error",
+        e.payload.delegated
+          ? "다운로드를 외부 브라우저에서 엽니다"
+          : "이 다운로드는 지원되지 않습니다",
+      );
   });
 }
