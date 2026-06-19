@@ -266,6 +266,10 @@ export function useStatuses() {
     queryKey: keys.statuses(key),
     queryFn: () => ipc.getStatuses(ids),
     enabled: ids.length > 0,
+    // 프로젝트 추가/제거로 키(전체 id 목록)가 바뀌어도 직전 상태를 유지한다 —
+    // 그렇지 않으면 기존 프로젝트까지 전부 "불러오는 중"으로 떨어진다. 기존은 그대로
+    // 보이고, 새로 추가된 프로젝트만 (직전 데이터에 없으니) 로딩으로 표시된다.
+    placeholderData: keepPreviousData,
     structuralSharing: (prev, next) =>
       keepLastGoodStatuses(
         prev as RepoStatus[] | undefined,
