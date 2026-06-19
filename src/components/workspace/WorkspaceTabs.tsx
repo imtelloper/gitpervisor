@@ -5,14 +5,19 @@ import {
   Terminal as TerminalIcon,
   X,
 } from "lucide-react";
-import { useEffect } from "react";
+import { lazy, Suspense, useEffect } from "react";
 
 import { useSettings } from "../../queries";
 import { useTerminals } from "../../stores/terminals";
 import { useUi } from "../../stores/ui";
-import { DbWorkspace } from "../db/DbWorkspace";
 import { PaneTreeRoot } from "./PaneTree";
 import { ViewerTab } from "./ViewerTab";
+
+// DB 탐색기는 monaco 에디터(~2-3MB)를 끌어온다 — DB 탭을 처음 열 때만 로드해
+// 초기 번들에서 monaco를 빼고 첫 화면을 빠르게 한다.
+const DbWorkspace = lazy(() =>
+  import("../db/DbWorkspace").then((m) => ({ default: m.DbWorkspace })),
+);
 
 /** 중앙 워크스페이스 — Viewer ↔ DB ↔ 터미널 탭 전환 (설계 §16.6, §17). */
 export function WorkspaceTabs({ projectId }: { projectId: string }) {
@@ -77,7 +82,9 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
         </div>
         {dbOpen && (
           <div className={active === "db" ? "h-full" : "hidden"}>
-            <DbWorkspace />
+            <Suspense fallback={null}>
+              <DbWorkspace />
+            </Suspense>
           </div>
         )}
         {terminals.map((t) => (
