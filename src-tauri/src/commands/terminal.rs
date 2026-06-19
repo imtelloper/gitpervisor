@@ -71,6 +71,14 @@ pub fn term_open(
         cmd.arg(a);
     }
     cmd.cwd(&path);
+    // 터미널 에뮬레이터는 PTY 셸의 TERM 을 직접 지정해야 한다(모든 터미널이 그렇게 한다).
+    // 지정하지 않으면 앱을 GNOME 메뉴/systemd 로 띄울 때 그 환경에 TERM 이 없어
+    // (터미널에서 띄울 때만 TERM=xterm-256color 를 물려받음) 셸이 빈 TERM 으로 떠서,
+    // zsh-syntax-highlighting·zsh-autosuggestions 가 terminfo 능력을 잘못 판정해
+    // 어긋난 커서 이동·clear escape 를 보내 입력줄이 깨진다(고스트 잔상·한글 커서 드리프트).
+    // → 같은 바이너리도 "dev/터미널 실행은 정상, 메뉴 설치본은 깨짐"의 진짜 원인.
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
 
     let child = pair
         .slave

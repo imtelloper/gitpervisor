@@ -87,7 +87,11 @@ export function createTerminal(opts: {
 
   const term = new Terminal({
     fontSize: opts.fontSize,
-    fontFamily: '"Cascadia Code", Consolas, "D2Coding", monospace',
+    // 한글은 반드시 "고정폭" CJK 폰트로 렌더해야 칸(2셀)에 맞아 커서가 안 어긋난다.
+    // generic monospace 폴백은 한글을 프로포셔널 폰트(Noto Sans CJK)로 대체해 깨져 보인다.
+    // → 고정폭 한글(Noto Sans Mono CJK KR / D2Coding)을 명시적으로 끼워넣는다.
+    fontFamily:
+      '"Cascadia Code", Consolas, "D2Coding", "Noto Sans Mono CJK KR", "Nanum Gothic Coding", monospace',
     cursorBlink: true,
     scrollback: 5000,
     theme: readTheme(),

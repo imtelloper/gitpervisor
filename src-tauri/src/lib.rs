@@ -17,6 +17,23 @@ const BASE_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartS
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // IME 보정 (Linux/X11): GNOME 메뉴·세션에서 앱을 띄우면 GTK_IM_MODULE 가 비어 있어
+    // WebKitGTK 의 한글(IME) 조합이 깨진다(같은 바이너리도 터미널에서 직접 띄우면 정상).
+    // GTK init 전에(=Tauri 빌드 전에) 시스템 기본 입력기 ibus 를 명시해 항상 동일 동작하게 한다.
+    #[cfg(target_os = "linux")]
+    {
+        let empty = |k: &str| std::env::var_os(k).map_or(true, |v| v.is_empty());
+        if empty("GTK_IM_MODULE") {
+            std::env::set_var("GTK_IM_MODULE", "ibus");
+        }
+        if empty("XMODIFIERS") {
+            std::env::set_var("XMODIFIERS", "@im=ibus");
+        }
+        if empty("QT_IM_MODULE") {
+            std::env::set_var("QT_IM_MODULE", "ibus");
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::new().build())
