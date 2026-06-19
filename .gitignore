@@ -14,6 +14,8 @@ dist-ssr
 
 # 빌드 산출 설치 파일 (배포는 GitHub Releases 사용)
 installers
+# tauri build 후 프로젝트 루트로 복사하는 설치파일 (사용자 선호 위치)
+gitpervisor-installer.exe
 
 # Editor directories and files
 .vscode/*
