@@ -89,6 +89,18 @@ pub fn run() {
             commands::term_resize,
             commands::term_close,
             commands::term_paste,
+            commands::browser_open,
+            commands::browser_navigate,
+            commands::browser_set_bounds,
+            commands::browser_set_visible,
+            commands::browser_back,
+            commands::browser_forward,
+            commands::browser_reload,
+            commands::browser_stop,
+            commands::browser_focus,
+            commands::browser_blur,
+            commands::browser_close,
+            commands::browser_scan_dev_ports,
             monitor::sys_metrics,
             db::db_list_connections,
             db::db_save_connection,
@@ -111,6 +123,7 @@ pub fn run() {
             if let tauri::WindowEvent::Destroyed = event {
                 let state = window.state::<AppState>();
                 commands::kill_all(state.inner());
+                commands::browser_kill_all(window.app_handle(), state.inner());
             }
         })
         .run(tauri::generate_context!())

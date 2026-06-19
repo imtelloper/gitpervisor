@@ -1,15 +1,21 @@
 import {
+  ChevronDown,
   Database,
   FileText,
+  Globe,
   Plus,
   Terminal as TerminalIcon,
   X,
 } from "lucide-react";
-import { lazy, Suspense, useEffect } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 
+import { disposeBrowser } from "../../lib/browser";
 import { useSettings } from "../../queries";
+import { useBrowsers } from "../../stores/browser";
 import { useTerminals } from "../../stores/terminals";
 import { useUi } from "../../stores/ui";
+import { BrowserPane } from "./BrowserPane";
+import { Favicon } from "./Favicon";
 import { PaneTreeRoot } from "./PaneTree";
 import { ViewerTab } from "./ViewerTab";
 
@@ -29,6 +35,10 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
   const closeTab = useTerminals((s) => s.closeTab);
   const dbOpen = useTerminals((s) => s.dbProjects.includes(projectId));
   const closeDbTab = useTerminals((s) => s.closeDbTab);
+  const allBrowsers = useBrowsers((s) => s.browsers);
+  const browsers = allBrowsers.filter((b) => b.projectId === projectId);
+  const openBrowser = useBrowsers((s) => s.openBrowser);
+  const closeBrowser = useBrowsers((s) => s.closeBrowser);
 
   const selectedDiff = useUi((s) => s.selectedDiff);
   const { data: settings } = useSettings();
@@ -67,13 +77,23 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
             onClose={() => closeTab(t.id)}
           />
         ))}
-        <button
-          onClick={() => openTerminal(projectId)}
-          title="새 터미널"
-          className="shrink-0 rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
-        >
-          <Plus size={14} />
-        </button>
+        {browsers.map((b) => (
+          <TabChip
+            key={b.id}
+            active={active === b.id}
+            icon={b.url ? <Favicon url={b.url} /> : <Globe size={13} />}
+            label={b.title}
+            onClick={() => setActiveTab(projectId, b.id)}
+            onClose={() => {
+              void disposeBrowser(b.id);
+              closeBrowser(b.id);
+            }}
+          />
+        ))}
+        <NewTabControls
+          onNewTerminal={() => openTerminal(projectId)}
+          onNewBrowser={() => openBrowser(projectId)}
+        />
       </div>
 
       <div className="min-h-0 flex-1">
@@ -94,8 +114,87 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
             )}
           </div>
         ))}
+        {/* 브라우저 탭은 항상 마운트 — 네이티브 webview rect 추적(ResizeObserver)이
+            끊기지 않게 한다(터미널과 의도된 차이). 비활성은 hidden→rect 0→자동 hide. */}
+        {browsers.map((b) => (
+          <div key={b.id} className={active === b.id ? "h-full" : "hidden"}>
+            <BrowserPane tab={b} />
+          </div>
+        ))}
       </div>
     </section>
+  );
+}
+
+/** 새 탭 — "+"는 빠른 새 터미널, "▾"는 종류 선택(터미널/브라우저). */
+function NewTabControls({
+  onNewTerminal,
+  onNewBrowser,
+}: {
+  onNewTerminal: () => void;
+  onNewBrowser: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative flex shrink-0 items-center">
+      <button
+        onClick={onNewTerminal}
+        title="새 터미널"
+        className="rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
+      >
+        <Plus size={14} />
+      </button>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        title="새 탭"
+        className="rounded p-0.5 text-fg-dim hover:bg-raised hover:text-fg"
+      >
+        <ChevronDown size={12} />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute left-0 top-full z-50 mt-1 min-w-40 rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl">
+            <MenuItem
+              icon={<TerminalIcon size={14} />}
+              label="새 터미널"
+              onClick={() => {
+                onNewTerminal();
+                setOpen(false);
+              }}
+            />
+            <MenuItem
+              icon={<Globe size={14} />}
+              label="새 브라우저"
+              onClick={() => {
+                onNewBrowser();
+                setOpen(false);
+              }}
+            />
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function MenuItem({
+  icon,
+  label,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-fg-muted hover:bg-raised hover:text-fg"
+    >
+      <span className="shrink-0">{icon}</span>
+      <span>{label}</span>
+    </button>
   );
 }
 

@@ -1,4 +1,5 @@
 mod actions;
+mod browser;
 mod check;
 mod diff;
 mod log;
@@ -12,6 +13,7 @@ mod terminal;
 mod tree;
 
 pub use actions::*;
+pub use browser::*;
 pub use check::*;
 pub use diff::*;
 pub use log::*;
