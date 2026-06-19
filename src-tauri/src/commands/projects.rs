@@ -88,7 +88,13 @@ pub async fn add_project(
     };
 
     state::save_projects(&app, &state.projects.read().unwrap())?;
-    crate::watcher::register(&app, &project);
+    // 파일 감시 등록을 백그라운드로 — 거대 레포는 재귀 감시 + 캐시 인덱싱이 수 초 걸려
+    // 추가 응답이 그만큼 늦어진다. 등록은 미루고 프로젝트를 즉시 반환한다.
+    let watch_app = app.clone();
+    let watch_project = project.clone();
+    std::thread::spawn(move || {
+        crate::watcher::register(&watch_app, &watch_project);
+    });
     Ok(project)
 }
 

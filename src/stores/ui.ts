@@ -62,7 +62,8 @@ export const useUi = create<UiState>((set) => ({
   settingsOpen: false,
   memoOpen: false,
   diffCollapseUnchanged: true,
-  fileTreeOpen: localStorage.getItem("gp:filetree-open") === "1",
+  // 파일 트리는 기본 열림 — 사용자가 명시적으로 닫은 경우("0")만 닫힌 채 복원
+  fileTreeOpen: localStorage.getItem("gp:filetree-open") !== "0",
   projectSortByChanges: localStorage.getItem("gp:project-sort-changes") === "1",
   toasts: [],
   confirm: null,

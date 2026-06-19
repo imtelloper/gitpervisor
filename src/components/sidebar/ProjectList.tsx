@@ -119,12 +119,22 @@ export function ProjectList() {
   }, [menu]);
 
   async function handleAdd() {
-    const dir = await open({
+    const picked = await open({
       directory: true,
-      multiple: false,
-      title: "git 프로젝트 폴더 선택",
+      multiple: true,
+      title: "git 프로젝트 폴더 선택 (여러 개 선택 가능)",
     });
-    if (typeof dir === "string") addProject.mutate(dir);
+    if (!picked) return;
+    const paths = Array.isArray(picked) ? picked : [picked];
+    // 순차 추가 — 동시 add는 projects 저장이 경합할 수 있다. 감시 등록을 백엔드가
+    // 백그라운드로 미루므로 각 추가는 빠르다. 개별 실패(비-git 폴더 등)는 토스트로 알리고 계속.
+    for (const p of paths) {
+      try {
+        await addProject.mutateAsync(p);
+      } catch {
+        /* onError가 토스트를 띄운다 — 다음 폴더 계속 */
+      }
+    }
   }
 
   function handleRemove(id: string) {
