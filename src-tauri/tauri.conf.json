@@ -33,8 +33,7 @@
     "windows": {
       "nsis": {
         "installMode": "perMachine",
-        "languages": ["Korean", "English"],
-        "displayLanguageSelector": true
+        "languages": ["Korean"]
       }
     }
   }
