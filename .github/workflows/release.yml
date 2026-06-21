@@ -19,12 +19,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # OS별 안정 번들 포맷만 선택 (msi=WiX·dmg는 CI에서 불안정)
           - platform: macos-latest
-            args: "--target universal-apple-darwin"
+            args: "--target universal-apple-darwin --bundles dmg --verbose"
           - platform: ubuntu-22.04
-            args: ""
+            args: "--bundles deb rpm appimage"
           - platform: windows-latest
-            args: ""
+            args: "--bundles nsis"
 
     runs-on: ${{ matrix.platform }}
     steps:
