@@ -1,6 +1,6 @@
 [package]
 name = "gitpervisor"
-version = "0.1.0"
+version = "0.2.0"
 description = "멀티 레포 Git 상태를 한 화면에서 감시하고 diff·커밋·푸시까지 처리하는 데스크톱 대시보드"
 authors = ["imtelloper <newtype9556@gmail.com>"]
 edition = "2021"

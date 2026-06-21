@@ -16,7 +16,7 @@ _Think “JetBrains commit tool window × Windows Terminal × a DB client,” bu
 [![Rust](https://img.shields.io/badge/Rust-stable-000000?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org)
 
 ![Platform](https://img.shields.io/badge/platform-Windows%20·%20macOS%20·%20Linux-555?style=flat-square)
-![Version](https://img.shields.io/badge/version-0.1.0-blue?style=flat-square)
+![Version](https://img.shields.io/badge/version-0.2.0-blue?style=flat-square)
 
 <br/>
 
