@@ -17,7 +17,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": "all",
     "publisher": "imtelloper <newtype9556@gmail.com>",
     "copyright": "Copyright © 2026 imtelloper",
     "category": "DeveloperTool",
