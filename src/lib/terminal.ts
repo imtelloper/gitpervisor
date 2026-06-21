@@ -22,6 +22,9 @@ const registry = new Map<string, TermInstance>();
 // 이 버퍼가 비워지지 않아 키마다 직전까지의 내용이 통째로 다시 전송된다(중복 누적,
 // Backspace 무력화). Windows(WebView2)/macOS는 정상. 이 플랫폼에서만 우회한다.
 const isWebKitGtk = /Linux/.test(navigator.userAgent);
+// macOS WKWebView도 WebKit 계열이라 IME(한글 등) 조합 중 keydown으로 raw 자모가 PTY로
+// 흘러나가 조합이 깨진다("이거"→"ㅇ거"). compositionend로만 확정 문자열을 송출하도록 가로챈다.
+const isMacWebKit = /Mac/i.test(navigator.userAgent);
 
 type ExitListener = (id: string, code: number) => void;
 const exitListeners = new Set<ExitListener>();
@@ -102,6 +105,33 @@ export function createTerminal(opts: {
     if (e.type !== "keydown") return true;
     const k = e.key.toLowerCase();
 
+    // IME 조합 중 keydown은 PTY로 흘리지 않는다 — 한글 첫 자모(ㅇ 등)만 raw로 송출되면
+    // 조합이 깨진다. composition 종료 시 아래 compositionend 핸들러가 확정 문자열을 보낸다.
+    // - keyCode 229: Chromium/WebKit이 IME 조합 중 keydown에 부여
+    // - "Process"/"Unidentified": Safari/WKWebView가 일부 케이스에서 부여
+    // - isComposing: compositionstart 이후의 keydown
+    if (
+      e.isComposing ||
+      e.keyCode === 229 ||
+      e.key === "Process" ||
+      e.key === "Unidentified"
+    ) {
+      return false;
+    }
+    // macOS WKWebView 안전망: IME가 첫 keydown의 keyCode를 정상 키로 보내고 e.key에 자모를
+    // 그대로 끼워주는 케이스 — 단일 비-ASCII 인쇄 문자(한글 자모/CJK 등)는 xterm으로 보내지
+    // 말고 textarea(=composition 경로)에 맡긴다.
+    if (
+      isMacWebKit &&
+      !e.ctrlKey &&
+      !e.altKey &&
+      !e.metaKey &&
+      e.key.length === 1 &&
+      e.key.charCodeAt(0) > 0x7f
+    ) {
+      return false;
+    }
+
     // 앱 단축키(터미널 토글 Ctrl+`, 분할 Ctrl+Shift+D/E, 닫기 Ctrl+Shift+W)는
     // PTY로 보내지 않고 window 핸들러로 흘려보낸다.
     if (e.ctrlKey && e.key === "`") return false;
@@ -142,11 +172,13 @@ export function createTerminal(opts: {
   });
   term.open(host); // 분리된 host에 먼저 연다 — 실제 fit은 attach 시점에 (DOM 렌더러는 0크기 허용)
 
-  // WebKitGTK 한글(IME 조합) 입력: xterm 기본 컴포지션 처리가 이 플랫폼에서 매 자모마다
-  // 조합 버퍼를 통째로 다시 보내 깨진다(누적). 캡처 단계에서 xterm 내부 핸들러를 차단하고
-  // (stopImmediatePropagation), "확정된 글자(compositionend.data)"만 PTY로 보낸다.
-  if (isWebKitGtk && term.textarea) {
+  // WebKit 계열(Linux WebKitGTK / macOS WKWebView) 한글(IME 조합) 입력 우회.
+  // 두 플랫폼이 같은 WebKit이지만 IME 이벤트 모델이 다르다 — 둘 다 케이스별로 처리한다.
+  // (자세한 진단/원인은 DOCS/TROUBLESHOOTING.md §3 참고)
+  if ((isWebKitGtk || isMacWebKit) && term.textarea) {
     const ta = term.textarea;
+    // Linux WebKitGTK: composition* 이벤트로 들어옴 — xterm 기본 처리를 가로채고
+    // 확정 문자(compositionend.data)만 PTY로 보낸다(매 자모마다 누적 송출되는 버그 우회).
     ta.addEventListener("compositionstart", (e) => e.stopImmediatePropagation(), true);
     ta.addEventListener("compositionupdate", (e) => e.stopImmediatePropagation(), true);
     ta.addEventListener(
@@ -159,7 +191,14 @@ export function createTerminal(opts: {
       },
       true,
     );
-    // 조합 과정/확정에 뒤따르는 input 은 compositionend 에서 처리하므로 xterm 으로 흘리지 않는다.
+    // input 이벤트 처리:
+    // - Linux WebKitGTK: 조합 중/insertCompositionText는 위 compositionend가 처리하므로 차단.
+    // - macOS WKWebView: 한글 IME가 compositionstart/end를 발화하지 않고, 음절이 바뀔 때마다
+    //   inputType=insertReplacementText로 textarea 내용을 갈아끼운다. xterm 기본 핸들러는
+    //   insertText만 PTY로 보내므로 insertReplacementText는 누락 → 첫 자모만 PTY에 남고 나머지 손실
+    //   ("이거 실행해봐" → "ㅇ거 ㅅ해ㅎ보"). 해결: insertReplacementText를 가로채서
+    //   "직전 1자 삭제(\x7f) + 새 데이터"를 PTY로 보낸다 — 셸 readline이 \x7f를 받으면
+    //   입력 라인의 직전 한 글자(한글 1음절 포함)를 지운다.
     ta.addEventListener(
       "input",
       (e) => {
@@ -167,6 +206,15 @@ export function createTerminal(opts: {
         if (ie.isComposing || ie.inputType === "insertCompositionText") {
           e.stopImmediatePropagation();
           ta.value = "";
+          return;
+        }
+        if (isMacWebKit && ie.inputType === "insertReplacementText") {
+          e.stopImmediatePropagation();
+          const data = ie.data ?? "";
+          void invoke("term_write", {
+            termId: opts.id,
+            data: "\x7f" + data,
+          }).catch(() => {});
         }
       },
       true,
