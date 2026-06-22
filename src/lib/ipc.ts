@@ -231,6 +231,7 @@ export interface GitCheck {
   found: boolean;
   version: string | null;
   path: string | null;
+  reason: string | null;
 }
 
 export type ErrorCode =
