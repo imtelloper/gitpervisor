@@ -74,8 +74,9 @@ export function TerminalPane({
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-base/70 text-sm text-fg-muted">
           <span>프로세스가 종료되었습니다</span>
           <button
-            onClick={() => {
-              disposeTerminal(paneId);
+            onClick={async () => {
+              // 옛 PTY가 backend에서 완전히 닫힌 뒤 새로 연다 — term_close↔term_open 레이스 방지.
+              await disposeTerminal(paneId);
               createTerminal({ id: paneId, projectId, fontSize });
               if (ref.current) attachTerminal(paneId, ref.current);
               useTerminals.getState().setPaneStatus(paneId, "live");

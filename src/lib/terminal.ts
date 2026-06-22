@@ -251,16 +251,17 @@ export function copyTerminalSelection(id: string) {
   if (sel) void navigator.clipboard.writeText(sel).catch(() => {});
 }
 
-/** 세션 완전 종료 — PTY kill + xterm dispose + 레지스트리 제거. */
-export function disposeTerminal(id: string) {
+/** 세션 완전 종료 — PTY kill + xterm dispose + 레지스트리 제거. term_close 완료를 await할 수 있다. */
+export function disposeTerminal(id: string): Promise<void> {
   const inst = registry.get(id);
-  if (!inst) return;
+  if (!inst) return Promise.resolve();
   registry.delete(id);
-  void invoke("term_close", { termId: id }).catch(() => {});
+  const closed = invoke("term_close", { termId: id }).catch(() => {}) as Promise<void>;
   try {
     inst.term.dispose();
   } catch {
     /* noop */
   }
   inst.host.remove();
+  return closed;
 }

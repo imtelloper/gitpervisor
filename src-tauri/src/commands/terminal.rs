@@ -1,4 +1,5 @@
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
@@ -19,6 +20,10 @@ pub struct TerminalSession {
     master: Box<dyn MasterPty + Send>,
     /// kill용 자식 프로세스 (리더 스레드와 공유 — EOF 시 wait로 종료코드 수집)
     child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
+    /// 의도적 종료(term_close/replace/kill_all) 표시 — true면 리더가 term://exit를 억제한다.
+    /// 재시작 시 옛 PTY를 kill하면 그 리더가 지연된 exit를 쏘아 새 PTY를 "exited"로 잘못
+    /// 표시하는 레이스를 막는다.
+    closed: Arc<AtomicBool>,
     #[allow(dead_code)]
     project_id: String,
 }
@@ -89,11 +94,13 @@ pub fn term_open(
         .map_err(|e| IpcError::new(ErrorCode::Io, format!("PTY 라이터 생성 실패: {e}")))?;
 
     let child = Arc::new(Mutex::new(child));
+    let closed = Arc::new(AtomicBool::new(false));
 
     // 전용 std 스레드에서 블로킹 read 루프 — tokio 실행기/메인스레드를 막지 않는다(설계 §16.2).
     {
         let app = app.clone();
         let child = Arc::clone(&child);
+        let closed = Arc::clone(&closed);
         let term_id = term_id.clone();
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
@@ -114,7 +121,10 @@ pub fn term_open(
                 .wait()
                 .map(|s| s.exit_code() as i32)
                 .unwrap_or(-1);
-            let _ = app.emit("term://exit", TermExit { term_id, code });
+            // 의도적으로 닫힌(재시작/교체/앱종료) 세션은 exit 이벤트를 쏘지 않는다 — 레이스 방지.
+            if !closed.load(Ordering::Relaxed) {
+                let _ = app.emit("term://exit", TermExit { term_id, code });
+            }
         });
     }
 
@@ -122,9 +132,15 @@ pub fn term_open(
         writer,
         master: pair.master,
         child,
+        closed,
         project_id,
     };
-    state.terminals.lock().unwrap().insert(term_id, session);
+    // 같은 id의 옛 세션이 남아있으면(비정상 경로) 먼저 억제+kill 후 교체한다.
+    let old = state.terminals.lock().unwrap().insert(term_id.clone(), session);
+    if let Some(old) = old {
+        old.closed.store(true, Ordering::Relaxed);
+        let _ = old.child.lock().unwrap().kill();
+    }
     Ok(())
 }
 
@@ -173,6 +189,8 @@ pub fn term_resize(
 #[tauri::command]
 pub fn term_close(state: State<'_, AppState>, term_id: String) -> Result<(), IpcError> {
     if let Some(session) = state.terminals.lock().unwrap().remove(&term_id) {
+        // 의도적 종료 표시 → 리더가 지연된 term://exit를 쏘지 않는다(재시작 레이스 방지).
+        session.closed.store(true, Ordering::Relaxed);
         let _ = session.child.lock().unwrap().kill();
     }
     Ok(())
@@ -182,6 +200,7 @@ pub fn term_close(state: State<'_, AppState>, term_id: String) -> Result<(), Ipc
 pub fn kill_all(state: &AppState) {
     let mut terms = state.terminals.lock().unwrap();
     for (_, session) in terms.drain() {
+        session.closed.store(true, Ordering::Relaxed);
         let _ = session.child.lock().unwrap().kill();
     }
 }
