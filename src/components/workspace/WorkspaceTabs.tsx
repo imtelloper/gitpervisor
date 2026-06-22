@@ -10,8 +10,9 @@ import {
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 
 import { useSettings } from "../../queries";
+import { useAgentActivity } from "../../stores/agentActivity";
 import { useBrowsers } from "../../stores/browser";
-import { useTerminals } from "../../stores/terminals";
+import { collectPanes, useTerminals } from "../../stores/terminals";
 import { useUi } from "../../stores/ui";
 import { BrowserPane } from "./BrowserPane";
 import { Favicon } from "./Favicon";
@@ -41,6 +42,16 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
     .filter((b): b is NonNullable<typeof b> => !!b && b.projectId === projectId);
   const openBrowser = useBrowsers((s) => s.openBrowser);
   const closeBrowser = useBrowsers((s) => s.closeBrowser);
+  // 터미널 탭별 AI 작업 상태 — 패널(paneId)별 상태를 탭 단위로 집계해 무지개 배경 표시
+  const byTerminal = useAgentActivity((s) => s.byTerminal);
+  const tabAgentClass = (t: (typeof terminals)[number]): string => {
+    let done = false;
+    for (const paneId of collectPanes(t.layout)) {
+      if (byTerminal[paneId] === "working") return "ai-working";
+      if (byTerminal[paneId] === "done") done = true;
+    }
+    return done ? "ai-done" : "";
+  };
 
   const selectedDiff = useUi((s) => s.selectedDiff);
   const { data: settings } = useSettings();
@@ -75,6 +86,7 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
             active={active === t.id}
             icon={<TerminalIcon size={13} />}
             label={t.title}
+            extraClass={tabAgentClass(t)}
             onClick={() => setActiveTab(projectId, t.id)}
             onClose={() => closeTab(t.id)}
           />
@@ -219,6 +231,7 @@ function TabChip({
   icon,
   label,
   dim,
+  extraClass,
   onClick,
   onClose,
 }: {
@@ -226,6 +239,8 @@ function TabChip({
   icon: React.ReactNode;
   label: string;
   dim?: boolean;
+  /** ai-working/ai-done 등 추가 클래스 (무지개 배경) */
+  extraClass?: string;
   onClick: () => void;
   onClose?: () => void;
 }) {
@@ -235,7 +250,7 @@ function TabChip({
       title={label}
       className={`group flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded px-2 text-xs ${
         active ? "bg-raised text-fg" : "text-fg-muted hover:bg-raised/60 hover:text-fg"
-      } ${dim ? "opacity-60" : ""}`}
+      } ${dim ? "opacity-60" : ""} ${extraClass ?? ""}`}
     >
       <span className="shrink-0">{icon}</span>
       <span className="whitespace-nowrap">{label}</span>

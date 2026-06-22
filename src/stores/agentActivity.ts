@@ -9,7 +9,12 @@ export type AgentState = "working" | "done";
 interface AgentActivityStore {
   /** projectId → 에이전트 상태. 키가 없으면 배지 표시 안 함. */
   byProject: Record<string, AgentState>;
-  applyScan: (workingByProject: Map<string, boolean>) => void;
+  /** termId(=paneId) → 에이전트 상태. 터미널 탭 무지개 표시용. */
+  byTerminal: Record<string, AgentState>;
+  applyScan: (
+    workingByProject: Map<string, boolean>,
+    workingByTerminal: Map<string, boolean>,
+  ) => void;
 }
 
 function sameRecord(
@@ -22,20 +27,35 @@ function sameRecord(
   return true;
 }
 
+// 작업 맵 → 상태 맵. working이면 "working", 한 번이라도 working/done이었으면 "done" 유지,
+// 그 외(처음 보는데 작업 안 함)는 표시 없음. 닫힌 키는 빠져 자연 해제된다.
+function reduceStates(
+  working: Map<string, boolean>,
+  prevStates: Record<string, AgentState>,
+): Record<string, AgentState> {
+  const next: Record<string, AgentState> = {};
+  for (const [key, isWorking] of working) {
+    const prev = prevStates[key];
+    if (isWorking) next[key] = "working";
+    else if (prev === "working" || prev === "done") next[key] = "done";
+  }
+  return next;
+}
+
 export const useAgentActivity = create<AgentActivityStore>((set) => ({
   byProject: {},
-  applyScan: (working) =>
+  byTerminal: {},
+  applyScan: (workingByProject, workingByTerminal) =>
     set((s) => {
-      const next: Record<string, AgentState> = {};
-      // working 맵의 키 = 라이브 터미널이 있는 프로젝트. 닫힌 프로젝트는 키가 빠져
-      // 자연히 배지가 해제된다. 한 번 working이었다가 멈추면 done으로 유지된다.
-      for (const [pid, isWorking] of working) {
-        const prev = s.byProject[pid];
-        if (isWorking) next[pid] = "working";
-        else if (prev === "working" || prev === "done") next[pid] = "done";
-        // prev 없음 + 작업 안 함 → 표시 없음
-      }
-      return sameRecord(s.byProject, next) ? s : { byProject: next };
+      const nextProject = reduceStates(workingByProject, s.byProject);
+      const nextTerminal = reduceStates(workingByTerminal, s.byTerminal);
+      const projectSame = sameRecord(s.byProject, nextProject);
+      const terminalSame = sameRecord(s.byTerminal, nextTerminal);
+      if (projectSame && terminalSame) return s;
+      return {
+        byProject: projectSame ? s.byProject : nextProject,
+        byTerminal: terminalSame ? s.byTerminal : nextTerminal,
+      };
     }),
 }));
 
@@ -58,15 +78,17 @@ function visibleScreen(term: Terminal): string {
   return s;
 }
 
-/** 모든 라이브 터미널 버퍼를 스캔해 프로젝트별 작업중 여부를 산출하고 스토어에 반영. */
+/** 모든 라이브 터미널 버퍼를 스캔해 프로젝트별·터미널별 작업중 여부를 산출하고 스토어에 반영. */
 export function scanAgents() {
-  const working = new Map<string, boolean>();
+  const byProject = new Map<string, boolean>();
+  const byTerminal = new Map<string, boolean>();
   for (const t of listTerminals()) {
     if (t.status !== "live") continue;
-    const prev = working.get(t.projectId) ?? false;
-    working.set(t.projectId, prev || WORKING_RE.test(visibleScreen(t.term)));
+    const isWorking = WORKING_RE.test(visibleScreen(t.term));
+    byTerminal.set(t.id, isWorking); // t.id = paneId
+    byProject.set(t.projectId, (byProject.get(t.projectId) ?? false) || isWorking);
   }
-  useAgentActivity.getState().applyScan(working);
+  useAgentActivity.getState().applyScan(byProject, byTerminal);
 }
 
 /** 1.2초 간격 스캐너 — 앱에서 1회 마운트. */
