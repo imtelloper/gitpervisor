@@ -27,3 +27,6 @@ gitpervisor-installer.exe
 *.njsproj
 *.sln
 *.sw?
+
+# Claude Code 로컬 캐시
+.claude/
