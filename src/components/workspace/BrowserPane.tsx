@@ -74,7 +74,15 @@ const EMPTY_ITEM: BrowserItem = {
  * localhost는 <iframe>. `active`는 호출자가 계산한 "차단 모달이 없으면 보여야 하는가" 신호다
  * (탭=활성탭 여부, 패널=다른 패널 maximize/분할드래그 아님).
  */
-export function BrowserPane({ id, active }: { id: string; active: boolean }) {
+export function BrowserPane({
+  id,
+  active,
+  paneControls,
+}: {
+  id: string;
+  active: boolean;
+  paneControls?: React.ReactNode;
+}) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -302,6 +310,12 @@ export function BrowserPane({ id, active }: { id: string; active: boolean }) {
         )}
         <BookmarksMenu bookmarks={bookmarks} onPick={(u) => go(u)} />
         <DevPorts onPick={(u) => go(u)} />
+        {paneControls && (
+          <>
+            <div className="mx-0.5 h-5 w-px shrink-0 bg-edge" />
+            {paneControls}
+          </>
+        )}
       </div>
 
       {/* 로딩 바 */}
