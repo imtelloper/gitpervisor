@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 import { useBrowsers } from "../stores/browser";
+import { collectByContent, useTerminals } from "../stores/terminals";
 import { useUi } from "../stores/ui";
 
 // 네이티브 자식 webview 제어는 전부 백엔드 커스텀 커맨드로만 한다(권한 표면 축소 +
@@ -61,6 +62,27 @@ export async function disposeBrowser(id: string): Promise<void> {
     await invoke("browser_close", { browserId: id });
   } catch {
     /* 무시 */
+  }
+}
+
+/** 이 브라우저 id가 아직 어딘가(독립 탭 또는 분할 트리의 browser leaf)에서 쓰이는가. */
+export function isBrowserReferenced(id: string): boolean {
+  if (useBrowsers.getState().tabIds.includes(id)) return true;
+  return useTerminals
+    .getState()
+    .terminals.some((t) => collectByContent(t.layout, "browser").includes(id));
+}
+
+/**
+ * 패널 언마운트 시 호출 — 여전히 참조되면 hide(탭 전환), 아니면 dispose(닫힘/터미널 전환).
+ * 표준 탭/패널 양쪽에서 동일하게 동작.
+ */
+export function releaseBrowser(id: string): void {
+  if (isBrowserReferenced(id)) {
+    void setVisible(id, false);
+  } else {
+    void disposeBrowser(id);
+    useBrowsers.getState().removePane(id);
   }
 }
 

@@ -4,9 +4,12 @@ import { disposeTerminal, onTermExit } from "../lib/terminal";
 
 export type SplitDir = "row" | "col"; // row=좌우 분할, col=상하 분할
 
-/** 한 터미널 탭의 분할 레이아웃 트리. 리프 = 터미널 패널(paneId=termId). */
+/** 리프 패널의 내용 종류 — 터미널(PTY) 또는 브라우저(웹뷰). */
+export type PaneKind = "terminal" | "browser";
+
+/** 한 탭의 분할 레이아웃 트리. 리프 = 패널(paneId). content로 터미널/웹 구분. */
 export type Pane =
-  | { kind: "leaf"; paneId: string }
+  | { kind: "leaf"; paneId: string; content: PaneKind }
   | { kind: "split"; id: string; dir: SplitDir; ratio: number; a: Pane; b: Pane };
 
 export interface TermTab {
@@ -35,11 +38,12 @@ function splitAt(
   dir: SplitDir,
   newPaneId: string,
   newFirst: boolean,
+  content: PaneKind,
 ): Pane {
   if (node.kind === "leaf") {
     if (node.paneId !== target) return node;
     const oldLeaf: Pane = node;
-    const newLeaf: Pane = { kind: "leaf", paneId: newPaneId };
+    const newLeaf: Pane = { kind: "leaf", paneId: newPaneId, content };
     return {
       kind: "split",
       id: crypto.randomUUID(),
@@ -51,9 +55,34 @@ function splitAt(
   }
   return {
     ...node,
-    a: splitAt(node.a, target, dir, newPaneId, newFirst),
-    b: splitAt(node.b, target, dir, newPaneId, newFirst),
+    a: splitAt(node.a, target, dir, newPaneId, newFirst, content),
+    b: splitAt(node.b, target, dir, newPaneId, newFirst, content),
   };
+}
+
+/** 리프의 content(터미널↔브라우저)만 바꾼다. */
+function setContentAt(node: Pane, target: string, content: PaneKind): Pane {
+  if (node.kind === "leaf")
+    return node.paneId === target ? { ...node, content } : node;
+  return {
+    ...node,
+    a: setContentAt(node.a, target, content),
+    b: setContentAt(node.b, target, content),
+  };
+}
+
+/** 트리를 순회하며 특정 content의 paneId만 모은다 (예: 브라우저 패널 정리용). */
+function collectByContent(node: Pane, content: PaneKind): string[] {
+  if (node.kind === "leaf")
+    return node.content === content ? [node.paneId] : [];
+  return [...collectByContent(node.a, content), ...collectByContent(node.b, content)];
+}
+
+/** 영속 데이터 마이그레이션 — content 없는 구버전 리프를 terminal로 채운다. */
+function migrateLeafContent(node: Pane): Pane {
+  if (node.kind === "leaf")
+    return { ...node, content: node.content ?? "terminal" };
+  return { ...node, a: migrateLeafContent(node.a), b: migrateLeafContent(node.b) };
 }
 
 function removePane(node: Pane, target: string): Pane | null {
@@ -75,7 +104,7 @@ function setRatioAt(node: Pane, splitId: string, ratio: number): Pane {
   };
 }
 
-export { collectPanes };
+export { collectByContent, collectPanes };
 
 interface TerminalsState {
   terminals: TermTab[];
@@ -95,12 +124,18 @@ interface TerminalsState {
     paneId: string,
     dir: SplitDir,
     newFirst: boolean,
+    content?: PaneKind,
   ) => void;
   closePane: (tabId: string, paneId: string) => void;
   setActivePane: (tabId: string, paneId: string) => void;
   toggleMaximize: (tabId: string, paneId: string) => void;
   setRatio: (tabId: string, splitId: string, ratio: number) => void;
   setPaneStatus: (paneId: string, status: PaneStatus) => void;
+  /** 리프 패널의 내용을 터미널↔브라우저로 전환 */
+  setPaneContent: (tabId: string, paneId: string, content: PaneKind) => void;
+  /** 분할 divider 드래그 중 여부 — 브라우저 웹뷰 jank 차단용(전이 상태) */
+  draggingSplit: boolean;
+  setDraggingSplit: (v: boolean) => void;
 }
 
 // 터미널 탭 구성을 localStorage에 영속화한다 — 앱 재시작 시 같은 탭/분할 레이아웃으로
@@ -117,8 +152,13 @@ function loadPersistedTerminals(): PersistedTerminals {
     const raw = localStorage.getItem(PERSIST_KEY);
     if (raw) {
       const p = JSON.parse(raw) as Partial<PersistedTerminals>;
+      const terminals = Array.isArray(p.terminals) ? p.terminals : [];
       return {
-        terminals: Array.isArray(p.terminals) ? p.terminals : [],
+        // 구버전 레이아웃(content 없는 리프)을 terminal로 마이그레이션
+        terminals: terminals.map((t) => ({
+          ...t,
+          layout: migrateLeafContent(t.layout),
+        })),
         activeTab:
           p.activeTab && typeof p.activeTab === "object" ? p.activeTab : {},
         dbProjects: Array.isArray(p.dbProjects) ? p.dbProjects : [],
@@ -137,6 +177,8 @@ export const useTerminals = create<TerminalsState>((set, get) => ({
   activeTab: persisted.activeTab,
   paneStatus: {},
   dbProjects: persisted.dbProjects,
+  draggingSplit: false,
+  setDraggingSplit: (v) => set({ draggingSplit: v }),
 
   openDbTab: (projectId) =>
     set((s) => ({
@@ -167,7 +209,7 @@ export const useTerminals = create<TerminalsState>((set, get) => ({
           id: tabId,
           projectId,
           title: `터미널 ${n}`,
-          layout: { kind: "leaf", paneId },
+          layout: { kind: "leaf", paneId, content: "terminal" },
           activePaneId: paneId,
           maximizedPaneId: null,
         },
@@ -216,14 +258,14 @@ export const useTerminals = create<TerminalsState>((set, get) => ({
   setActiveTab: (projectId, tab) =>
     set((s) => ({ activeTab: { ...s.activeTab, [projectId]: tab } })),
 
-  splitPane: (tabId, paneId, dir, newFirst) => {
+  splitPane: (tabId, paneId, dir, newFirst, content = "terminal") => {
     const newPaneId = crypto.randomUUID();
     set((s) => ({
       terminals: s.terminals.map((t) =>
         t.id === tabId
           ? {
               ...t,
-              layout: splitAt(t.layout, paneId, dir, newPaneId, newFirst),
+              layout: splitAt(t.layout, paneId, dir, newPaneId, newFirst, content),
               activePaneId: newPaneId,
               maximizedPaneId: null,
             }
@@ -232,6 +274,15 @@ export const useTerminals = create<TerminalsState>((set, get) => ({
       paneStatus: { ...s.paneStatus, [newPaneId]: "live" },
     }));
   },
+
+  setPaneContent: (tabId, paneId, content) =>
+    set((s) => ({
+      terminals: s.terminals.map((t) =>
+        t.id === tabId
+          ? { ...t, layout: setContentAt(t.layout, paneId, content) }
+          : t,
+      ),
+    })),
 
   closePane: (tabId, paneId) => {
     disposeTerminal(paneId);

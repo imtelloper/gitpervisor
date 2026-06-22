@@ -22,6 +22,7 @@ import {
   isBrowserCreated,
   navigate,
   openBrowser,
+  releaseBrowser,
   reload,
   scanDevPorts,
   setBounds,
@@ -30,12 +31,11 @@ import {
 } from "../../lib/browser";
 import {
   type BookmarkEntry,
+  type BrowserItem,
   resolveOmnibox,
   useBrowsers,
-  type BrowserTab,
 } from "../../stores/browser";
 import { useDb } from "../../stores/db";
-import { useTerminals } from "../../stores/terminals";
 import { useUi } from "../../stores/ui";
 import { EmptyState } from "../common/EmptyState";
 import { Favicon } from "./Favicon";
@@ -61,45 +61,59 @@ function rectOf(el: HTMLElement | null): Bounds {
   return { x: r.left, y: r.top, width: r.width, height: r.height };
 }
 
-/** 단일 브라우저 탭 — 외부 URL은 네이티브 자식 webview, localhost는 <iframe>. */
-export function BrowserPane({ tab }: { tab: BrowserTab }) {
+const EMPTY_ITEM: BrowserItem = {
+  id: "",
+  projectId: "",
+  title: "새 브라우저",
+  url: "",
+  mode: "native",
+};
+
+/**
+ * 브라우저 패널 — 독립 탭과 분할 패널 양쪽에서 재사용. 외부 URL은 네이티브 자식 webview,
+ * localhost는 <iframe>. `active`는 호출자가 계산한 "차단 모달이 없으면 보여야 하는가" 신호다
+ * (탭=활성탭 여부, 패널=다른 패널 maximize/분할드래그 아님).
+ */
+export function BrowserPane({ id, active }: { id: string; active: boolean }) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  const item = useBrowsers((s) => s.items[id]) ?? EMPTY_ITEM;
+  const url = item.url;
+  const mode = item.mode;
   const setUrl = useBrowsers((s) => s.setUrl);
-  const loading = useBrowsers((s) => s.loading[tab.id] ?? false);
+  const loading = useBrowsers((s) => s.loading[id] ?? false);
   const history = useBrowsers((s) => s.history);
   const bookmarks = useBrowsers((s) => s.bookmarks);
   const toggleBookmark = useBrowsers((s) => s.toggleBookmark);
-  const isBookmarked = bookmarks.some((b) => b.url === tab.url);
+  const isBookmarked = bookmarks.some((b) => b.url === url);
 
-  // 점유(occlusion) 조건 — 활성 탭 & 차단성 모달 없음
-  const active = useTerminals((s) => s.activeTab[tab.projectId]) === tab.id;
+  // 점유(occlusion) 조건 — active(호출자) & 네이티브 & URL 있음 & 차단성 모달 없음
   const settingsOpen = useUi((s) => s.settingsOpen);
   const memoOpen = useUi((s) => s.memoOpen);
   const confirm = useUi((s) => s.confirm);
   const dbDialog = useDb((s) => s.dialog);
 
   const shouldShow =
-    active && tab.mode === "native" && !!tab.url && !settingsOpen && !memoOpen && !confirm && !dbDialog;
+    active && mode === "native" && !!url && !settingsOpen && !memoOpen && !confirm && !dbDialog;
 
   // 안정 리스너에서 최신 shouldShow를 읽기 위한 ref
   const shouldShowRef = useRef(shouldShow);
   shouldShowRef.current = shouldShow;
 
-  // 주소창 입력 로컬 상태 (미포커스 시 tab.url을 따라감)
-  const [draft, setDraft] = useState(tab.url);
+  // 주소창 입력 로컬 상태 (미포커스 시 url을 따라감)
+  const [draft, setDraft] = useState(url);
   const [focused, setFocused] = useState(false);
   const [sel, setSel] = useState(-1); // 자동완성 선택 인덱스 (-1=입력값 사용)
   useEffect(() => {
-    if (!focused) setDraft(tab.url);
-  }, [tab.url, focused]);
+    if (!focused) setDraft(url);
+  }, [url, focused]);
   useEffect(() => setSel(-1), [draft]);
 
   // 옴니박스 자동완성 — 북마크(우선) + 방문기록 합쳐 substring 매칭(최대 6)
   const q = draft.trim().toLowerCase();
   const matches: Suggestion[] = (() => {
-    if (!focused || !q || q === tab.url.toLowerCase()) return [];
+    if (!focused || !q || q === url.toLowerCase()) return [];
     const bm: Suggestion[] = bookmarks.map((b) => ({ ...b, bookmarked: true }));
     const seen = new Set(bm.map((b) => b.url));
     const hist: Suggestion[] = history
@@ -118,52 +132,57 @@ export function BrowserPane({ tab }: { tab: BrowserTab }) {
     ensureBrowserEvents();
   }, []);
 
+  // 언마운트 정리 — 여전히 참조되면 hide(탭 전환), 아니면 dispose(닫힘/터미널 전환)
+  useEffect(() => {
+    return () => releaseBrowser(id);
+  }, [id]);
+
   // 생성/네비게이션 (네이티브 · 활성일 때만 lazy 생성)
   const prevUrlRef = useRef("");
   useEffect(() => {
-    if (tab.mode !== "native" || !tab.url || !active) return;
-    if (!isBrowserCreated(tab.id)) {
-      void openBrowser(tab.id, tab.url, rectOf(viewportRef.current));
-      prevUrlRef.current = tab.url;
-    } else if (prevUrlRef.current !== tab.url) {
-      navigate(tab.id, tab.url);
-      prevUrlRef.current = tab.url;
+    if (mode !== "native" || !url || !active) return;
+    if (!isBrowserCreated(id)) {
+      void openBrowser(id, url, rectOf(viewportRef.current));
+      prevUrlRef.current = url;
+    } else if (prevUrlRef.current !== url) {
+      navigate(id, url);
+      prevUrlRef.current = url;
     }
-  }, [tab.id, tab.mode, tab.url, active]);
+  }, [id, mode, url, active]);
 
   // 표시/숨김 (점유 제어). iframe 모드면 네이티브는 항상 hide.
   useEffect(() => {
-    if (tab.mode !== "native") {
-      if (isBrowserCreated(tab.id)) void setVisible(tab.id, false);
+    if (mode !== "native") {
+      if (isBrowserCreated(id)) void setVisible(id, false);
       return;
     }
-    if (shouldShow) void setVisible(tab.id, true, rectOf(viewportRef.current));
-    else void setVisible(tab.id, false);
-  }, [shouldShow, tab.mode, tab.id]);
+    if (shouldShow) void setVisible(id, true, rectOf(viewportRef.current));
+    else void setVisible(id, false);
+  }, [shouldShow, mode, id]);
 
-  // bounds 동기화 — 콘텐츠 rect 변화가 단일 진실(ResizeObserver). LogPanel/FileTree
+  // bounds 동기화 — 콘텐츠 rect 변화가 단일 진실(ResizeObserver). LogPanel/FileTree/분할
   // 토글 등 모든 리플로우는 viewport 크기를 바꾸므로 여기서 잡힌다.
   useEffect(() => {
     const el = viewportRef.current;
     if (!el) return;
     const sync = () => {
-      if (tab.mode === "native" && isBrowserCreated(tab.id)) setBounds(tab.id, rectOf(el));
+      if (mode === "native" && isBrowserCreated(id)) setBounds(id, rectOf(el));
     };
     const ro = new ResizeObserver(sync);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [tab.id, tab.mode]);
+  }, [id, mode]);
 
   // 창 리사이즈 jank 차단 — 리사이즈 중엔 hide, 멈추면 show+bounds(보일 조건일 때만)
   useEffect(() => {
-    if (tab.mode !== "native") return;
+    if (mode !== "native") return;
     let t: number | undefined;
     const onResize = () => {
       if (!shouldShowRef.current) return;
-      void setVisible(tab.id, false);
+      void setVisible(id, false);
       window.clearTimeout(t);
       t = window.setTimeout(() => {
-        if (shouldShowRef.current) void setVisible(tab.id, true, rectOf(viewportRef.current));
+        if (shouldShowRef.current) void setVisible(id, true, rectOf(viewportRef.current));
       }, 160);
     };
     window.addEventListener("resize", onResize);
@@ -171,31 +190,31 @@ export function BrowserPane({ tab }: { tab: BrowserTab }) {
       window.removeEventListener("resize", onResize);
       window.clearTimeout(t);
     };
-  }, [tab.id, tab.mode]);
+  }, [id, mode]);
 
   const go = (raw: string) => {
-    const url = resolveOmnibox(raw);
-    if (!url) return;
-    setUrl(tab.id, url);
+    const resolved = resolveOmnibox(raw);
+    if (!resolved) return;
+    setUrl(id, resolved);
     inputRef.current?.blur();
   };
 
-  const secure = tab.url.startsWith("https://");
-  const hasUrl = !!tab.url;
+  const secure = url.startsWith("https://");
+  const hasUrl = !!url;
 
   return (
     <div className="flex h-full w-full flex-col bg-base">
       {/* 컨트롤 바 — 항상 React DOM (네이티브 webview bounds는 이 아래 viewport로만 한정) */}
       <div className="flex h-9 shrink-0 items-center gap-1 border-b border-edge px-2">
-        <NavBtn label="뒤로" onClick={() => back(tab.id)} disabled={!hasUrl}>
+        <NavBtn label="뒤로" onClick={() => back(id)} disabled={!hasUrl}>
           <ArrowLeft size={15} />
         </NavBtn>
-        <NavBtn label="앞으로" onClick={() => forward(tab.id)} disabled={!hasUrl}>
+        <NavBtn label="앞으로" onClick={() => forward(id)} disabled={!hasUrl}>
           <ArrowRight size={15} />
         </NavBtn>
         <NavBtn
           label={loading ? "정지" : "새로고침"}
-          onClick={() => (loading ? stop(tab.id) : reload(tab.id))}
+          onClick={() => (loading ? stop(id) : reload(id))}
           disabled={!hasUrl}
         >
           {loading ? <X size={15} /> : <RotateCw size={15} />}
@@ -227,7 +246,7 @@ export function BrowserPane({ tab }: { tab: BrowserTab }) {
                   e.preventDefault();
                   setSel((i) => (i <= 0 ? matches.length - 1 : i - 1));
                 } else if (e.key === "Escape") {
-                  setDraft(tab.url);
+                  setDraft(url);
                   inputRef.current?.blur();
                 }
               }}
@@ -268,7 +287,7 @@ export function BrowserPane({ tab }: { tab: BrowserTab }) {
         {hasUrl && (
           <NavBtn
             label={isBookmarked ? "북마크 제거" : "북마크 추가"}
-            onClick={() => toggleBookmark(tab.url, tab.title)}
+            onClick={() => toggleBookmark(url, item.title)}
           >
             <Star
               size={15}
@@ -276,13 +295,13 @@ export function BrowserPane({ tab }: { tab: BrowserTab }) {
             />
           </NavBtn>
         )}
-        {tab.mode === "native" && hasUrl && (
+        {mode === "native" && hasUrl && (
           <NavBtn label="앱으로 포커스 (단축키 복귀)" onClick={() => blurBrowser()}>
             <CornerUpLeft size={15} />
           </NavBtn>
         )}
-        <BookmarksMenu bookmarks={bookmarks} onPick={(url) => go(url)} />
-        <DevPorts onPick={(url) => go(url)} />
+        <BookmarksMenu bookmarks={bookmarks} onPick={(u) => go(u)} />
+        <DevPorts onPick={(u) => go(u)} />
       </div>
 
       {/* 로딩 바 */}
@@ -293,18 +312,18 @@ export function BrowserPane({ tab }: { tab: BrowserTab }) {
       {/* 뷰포트 — 네이티브 webview가 이 사각형에 bounds-clip (localhost면 iframe) */}
       <div ref={viewportRef} className="relative min-h-0 flex-1 bg-base">
         {!hasUrl ? (
-          <BrowserEmpty onPick={(url) => go(url)} bookmarks={bookmarks} />
-        ) : tab.mode === "iframe" ? (
+          <BrowserEmpty onPick={(u) => go(u)} bookmarks={bookmarks} />
+        ) : mode === "iframe" ? (
           <iframe
-            title={tab.title}
-            src={tab.url}
+            title={item.title}
+            src={url}
             className="h-full w-full border-0 bg-white"
             sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-modals"
           />
         ) : (
           // 네이티브 모드: webview가 위를 덮는다. 숨겨질 때 보이는 중립 배경.
           <div className="flex h-full w-full items-center justify-center text-xs text-fg-dim">
-            {!active && "다른 탭에서 표시 중…"}
+            {!active && "다른 곳에서 표시 중…"}
           </div>
         )}
       </div>

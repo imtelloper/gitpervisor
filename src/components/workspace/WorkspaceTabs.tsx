@@ -7,9 +7,8 @@ import {
   Terminal as TerminalIcon,
   X,
 } from "lucide-react";
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 
-import { disposeBrowser } from "../../lib/browser";
 import { useSettings } from "../../queries";
 import { useBrowsers } from "../../stores/browser";
 import { useTerminals } from "../../stores/terminals";
@@ -35,8 +34,11 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
   const closeTab = useTerminals((s) => s.closeTab);
   const dbOpen = useTerminals((s) => s.dbProjects.includes(projectId));
   const closeDbTab = useTerminals((s) => s.closeDbTab);
-  const allBrowsers = useBrowsers((s) => s.browsers);
-  const browsers = allBrowsers.filter((b) => b.projectId === projectId);
+  const tabIds = useBrowsers((s) => s.tabIds);
+  const items = useBrowsers((s) => s.items);
+  const browsers = tabIds
+    .map((id) => items[id])
+    .filter((b): b is NonNullable<typeof b> => !!b && b.projectId === projectId);
   const openBrowser = useBrowsers((s) => s.openBrowser);
   const closeBrowser = useBrowsers((s) => s.closeBrowser);
 
@@ -84,10 +86,7 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
             icon={b.url ? <Favicon url={b.url} /> : <Globe size={13} />}
             label={b.title}
             onClick={() => setActiveTab(projectId, b.id)}
-            onClose={() => {
-              void disposeBrowser(b.id);
-              closeBrowser(b.id);
-            }}
+            onClose={() => closeBrowser(b.id)}
           />
         ))}
         <NewTabControls
@@ -118,7 +117,7 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
             끊기지 않게 한다(터미널과 의도된 차이). 비활성은 hidden→rect 0→자동 hide. */}
         {browsers.map((b) => (
           <div key={b.id} className={active === b.id ? "h-full" : "hidden"}>
-            <BrowserPane tab={b} />
+            <BrowserPane id={b.id} active={active === b.id} />
           </div>
         ))}
       </div>
@@ -134,9 +133,22 @@ function NewTabControls({
   onNewTerminal: () => void;
   onNewBrowser: () => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const chevronRef = useRef<HTMLButtonElement>(null);
+
+  // 탭 줄은 overflow-x-auto라 그 안의 absolute 드롭다운이 세로로 잘린다.
+  // 버튼 rect 기준 fixed 위치로 띄워 클리핑을 벗어난다(PaneMenu와 동일 패턴).
+  const toggle = () => {
+    if (menu) {
+      setMenu(null);
+      return;
+    }
+    const r = chevronRef.current?.getBoundingClientRect();
+    if (r) setMenu({ x: r.left, y: r.bottom + 4 });
+  };
+
   return (
-    <div className="relative flex shrink-0 items-center">
+    <div className="flex shrink-0 items-center">
       <button
         onClick={onNewTerminal}
         title="새 터미널"
@@ -145,22 +157,26 @@ function NewTabControls({
         <Plus size={14} />
       </button>
       <button
-        onClick={() => setOpen((v) => !v)}
+        ref={chevronRef}
+        onClick={toggle}
         title="새 탭"
         className="rounded p-0.5 text-fg-dim hover:bg-raised hover:text-fg"
       >
         <ChevronDown size={12} />
       </button>
-      {open && (
+      {menu && (
         <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute left-0 top-full z-50 mt-1 min-w-40 rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl">
+          <div className="fixed inset-0 z-40" onClick={() => setMenu(null)} />
+          <div
+            className="fixed z-50 min-w-40 rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl"
+            style={{ left: menu.x, top: menu.y }}
+          >
             <MenuItem
               icon={<TerminalIcon size={14} />}
               label="새 터미널"
               onClick={() => {
                 onNewTerminal();
-                setOpen(false);
+                setMenu(null);
               }}
             />
             <MenuItem
@@ -168,7 +184,7 @@ function NewTabControls({
               label="새 브라우저"
               onClick={() => {
                 onNewBrowser();
-                setOpen(false);
+                setMenu(null);
               }}
             />
           </div>
