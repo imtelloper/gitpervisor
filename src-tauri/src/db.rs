@@ -574,7 +574,18 @@ async fn build_mssql_client(
         || opts_lc.contains("trustedconnection=yes")
         || opts_lc.contains("integrated")
     {
-        config.authentication(AuthMethod::Integrated);
+        // 통합 인증(SSPI)은 tiberius 에서 Windows 전용 변종이라 Linux 빌드엔 존재하지 않는다.
+        // cfg 로 가드하고, 비-Windows에서 통합인증을 요청하면 명확한 에러로 안내한다.
+        #[cfg(windows)]
+        {
+            config.authentication(AuthMethod::Integrated);
+        }
+        #[cfg(not(windows))]
+        {
+            return Err(err(
+                "Windows 통합 인증(SSPI)은 Windows에서만 지원됩니다 — 사용자명/비밀번호로 로그인하세요",
+            ));
+        }
     } else {
         config.authentication(AuthMethod::sql_server(
             &conn.username,

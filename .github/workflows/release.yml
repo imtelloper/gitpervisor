@@ -19,12 +19,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # OS별 안정 번들 포맷만 선택 (msi=WiX·dmg는 CI에서 불안정)
           - platform: macos-latest
-            args: "--target universal-apple-darwin"
+            args: "--target universal-apple-darwin --bundles dmg --verbose"
           - platform: ubuntu-22.04
-            args: ""
+            args: "--bundles deb rpm appimage"
           - platform: windows-latest
-            args: ""
+            args: "--bundles nsis"
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -53,7 +54,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
             librsvg2-dev \
             patchelf \
             libssl-dev \
@@ -71,6 +71,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Monaco 번들링이 기본 Node 힙(~2GB)을 넘겨 OOM → 힙 상향
+          NODE_OPTIONS: --max-old-space-size=4096
         with:
           tagName: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           releaseName: "Gitpervisor ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"

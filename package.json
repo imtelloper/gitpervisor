@@ -1,8 +1,17 @@
 {
   "name": "gitpervisor",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
+  "description": "A developer cockpit that supervises all your local projects from one window — Git, diffs, commit/push, an embedded terminal, a DB workspace, and live AI coding-agent activity detection.",
+  "license": "MIT",
+  "author": "imtelloper <newtype9556@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/imtelloper/gitpervisor.git"
+  },
+  "homepage": "https://github.com/imtelloper/gitpervisor#readme",
+  "bugs": "https://github.com/imtelloper/gitpervisor/issues",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
