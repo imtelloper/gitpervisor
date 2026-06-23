@@ -143,7 +143,7 @@ mod tests {
     async fn status_of(repo: &Path) -> RepoStatus {
         let out = runner::run_git(
             Some(repo),
-            &["status", "--porcelain=v2", "--branch", "-z"],
+            &["status", "--porcelain=v2", "--branch", "--untracked-files=all", "-z"],
             30,
         )
         .await

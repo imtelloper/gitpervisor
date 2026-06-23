@@ -49,7 +49,10 @@ async fn status_of(project_id: &str, path: &Path) -> RepoStatus {
 
     let out = match runner::run_git(
         Some(path),
-        &["status", "--porcelain=v2", "--branch", "-z"],
+        // --untracked-files=all: 새 폴더를 한 줄("? src/")로 접지 말고 그 안의 파일을 모두
+        // 개별 나열한다(git 기본 normal은 폴더만 보고 → Changes에 폴더가 파일처럼 한 줄로 뜸).
+        // .gitignore된 경로는 여전히 제외되므로 node_modules 등은 나열되지 않는다.
+        &["status", "--porcelain=v2", "--branch", "--untracked-files=all", "-z"],
         runner::STATUS_TIMEOUT_SECS,
     )
     .await
