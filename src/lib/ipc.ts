@@ -59,7 +59,15 @@ export type DiffTarget =
   | { mode: "worktree"; path: string } // 인덱스(없으면 HEAD) ↔ 워크트리
   | { mode: "index"; path: string } // HEAD ↔ 인덱스 (staged 검토)
   | { mode: "commit"; sha: string; path: string } // 부모 ↔ 해당 커밋
-  | { mode: "file"; path: string }; // 단일 파일 보기 (트리 클릭, diff 아님)
+  | { mode: "file"; path: string; line?: number }; // 단일 파일 보기 (line=점프 대상 줄)
+
+/** Go-to-Definition 후보 (commands/tree.rs find_definition). */
+export interface DefMatch {
+  path: string; // 레포 상대 경로
+  line: number; // 1-based
+  column: number; // 1-based
+  signature: string; // 데코레이터 + 정의줄 + 파라미터
+}
 
 // ---- M3: 히스토리 ----
 
@@ -523,6 +531,12 @@ export const ipc = {
     callMutating<void>("open_in", { projectId, target }),
   listDir: (projectId: string, relPath: string) =>
     call<DirEntry[]>("list_dir", { projectId, relPath }),
+  // Viewer 편집 저장 — 텍스트 파일 내용을 디스크에 쓴다(레포 상대 경로). 재시도 금지.
+  writeFile: (projectId: string, relPath: string, content: string) =>
+    callMutating<void>("write_file", { projectId, relPath, content }),
+  // Go-to-Definition — 심볼 정의 후보를 휴리스틱 검색(ripgrep). 읽기 레인.
+  findDefinition: (projectId: string, symbol: string, ext: string) =>
+    call<DefMatch[]>("find_definition", { projectId, symbol, ext }),
   // 배치: 전 프로젝트 루트를 한 invoke로 병렬 읽기 (응답 유실 회피, §12).
   // background 레인 — 시작 프리페치가 사용자 폴더 클릭(list_dir)보다 슬롯을 양보한다.
   listProjectRoots: (projectIds: string[]) =>

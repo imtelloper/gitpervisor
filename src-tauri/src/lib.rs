@@ -97,6 +97,8 @@ pub fn run() {
             commands::open_in,
             commands::list_dir,
             commands::list_project_roots,
+            commands::write_file,
+            commands::find_definition,
             commands::get_notes,
             commands::add_memo,
             commands::update_memo,

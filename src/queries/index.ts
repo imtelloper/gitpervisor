@@ -563,6 +563,20 @@ export function useDiscardFiles(projectId: string) {
   });
 }
 
+/** Viewer 편집 저장 — 파일을 디스크에 쓰고 status/diff만 갱신(히스토리·브랜치는 불변). */
+export function useWriteFile(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { path: string; content: string }) =>
+      ipc.writeFile(projectId, v.path, v.content),
+    onError: (e) => useUi.getState().pushToast("error", errorMessage(e)),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["statuses"] });
+      void qc.invalidateQueries({ queryKey: ["diff"] });
+    },
+  });
+}
+
 export function useCommit(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
