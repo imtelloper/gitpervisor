@@ -16,7 +16,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:e2e": "node tests/e2e/run.mjs"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
