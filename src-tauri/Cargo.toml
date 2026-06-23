@@ -40,6 +40,12 @@ keyring = { version = "3", features = ["windows-native"] }
 tiberius = { version = "0.12", default-features = false, features = ["tds73", "native-tls", "chrono", "rust_decimal", "winauth"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 rust_decimal = "1"
+# API 클라이언트 HTTP 엔진 (DOCS/api-client-design.md §4.6). tauri가 이미 0.13.4를 트리에 가지므로
+# 0.13으로 통일해 트리 1벌 유지(0.12는 semver 비호환 → 2벌 컴파일). rustls-tls로 verifyTls 결정론적 토글.
+# 0.13에서 TLS feature는 "rustls"(0.12의 "rustls-tls" 대체). rustls 백엔드 = verifyTls 결정론적 토글.
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "charset", "gzip", "brotli", "deflate", "zstd", "json", "query", "multipart", "stream", "cookies"] }
+serde_urlencoded = "0.7"
+base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_System_Performance"] }

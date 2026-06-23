@@ -118,6 +118,8 @@ pub fn run() {
             commands::browser_blur,
             commands::browser_close,
             commands::browser_scan_dev_ports,
+            commands::http_request,
+            commands::http_cancel,
             monitor::sys_metrics,
             db::db_list_connections,
             db::db_save_connection,

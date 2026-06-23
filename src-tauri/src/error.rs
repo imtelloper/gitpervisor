@@ -12,6 +12,13 @@ pub enum ErrorCode {
     OpInProgress,
     AuthFailed,
     Io,
+    // API 클라이언트 HTTP 엔진 (DOCS/api-client-design.md §4.8)
+    Network,
+    DnsFailure,
+    ConnectionRefused,
+    TlsError,
+    Cancelled,
+    InvalidUrl,
 }
 
 /// 모든 IPC 커맨드의 공통 오류 형태. 프론트엔드는 code로 분기하고 stderr를 상세로 노출한다.

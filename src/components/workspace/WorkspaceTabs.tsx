@@ -4,6 +4,7 @@ import {
   FileText,
   Globe,
   Plus,
+  Send,
   Terminal as TerminalIcon,
   X,
 } from "lucide-react";
@@ -11,6 +12,7 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 
 import { useSettings } from "../../queries";
 import { useAgentActivity } from "../../stores/agentActivity";
+import { useApiClient } from "../../stores/apiclient";
 import { useBrowsers } from "../../stores/browser";
 import { collectPanes, useTerminals } from "../../stores/terminals";
 import { useUi } from "../../stores/ui";
@@ -23,6 +25,11 @@ import { ViewerTab } from "./ViewerTab";
 // 초기 번들에서 monaco를 빼고 첫 화면을 빠르게 한다.
 const DbWorkspace = lazy(() =>
   import("../db/DbWorkspace").then((m) => ({ default: m.DbWorkspace })),
+);
+
+// API 클라이언트 탭도 monaco(~2-3MB)를 끌어온다 — named export라 동일하게 lazy 래핑.
+const ApiClientTab = lazy(() =>
+  import("../apiclient/ApiClientTab").then((m) => ({ default: m.ApiClientTab })),
 );
 
 /** 중앙 워크스페이스 — Viewer ↔ DB ↔ 터미널 탭 전환 (설계 §16.6, §17). */
@@ -42,6 +49,13 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
     .filter((b): b is NonNullable<typeof b> => !!b && b.projectId === projectId);
   const openBrowser = useBrowsers((s) => s.openBrowser);
   const closeBrowser = useBrowsers((s) => s.closeBrowser);
+  const apiTabIds = useApiClient((s) => s.tabIds);
+  const apiItems = useApiClient((s) => s.items);
+  const apiTabs = apiTabIds
+    .map((id) => apiItems[id])
+    .filter((t): t is NonNullable<typeof t> => !!t && t.projectId === projectId);
+  const openApiClient = useApiClient((s) => s.openTab);
+  const closeApiClient = useApiClient((s) => s.closeTab);
   // 터미널 탭별 AI 작업 상태 — 패널(paneId)별 상태를 탭 단위로 집계해 무지개 배경 표시
   const byTerminal = useAgentActivity((s) => s.byTerminal);
   const tabAgentClass = (t: (typeof terminals)[number]): string => {
@@ -101,9 +115,20 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
             onClose={() => closeBrowser(b.id)}
           />
         ))}
+        {apiTabs.map((t) => (
+          <TabChip
+            key={t.id}
+            active={active === t.id}
+            icon={<Send size={13} />}
+            label={t.title}
+            onClick={() => setActiveTab(projectId, t.id)}
+            onClose={() => closeApiClient(t.id)}
+          />
+        ))}
         <NewTabControls
           onNewTerminal={() => openTerminal(projectId)}
           onNewBrowser={() => openBrowser(projectId)}
+          onNewApiClient={() => openApiClient(projectId)}
         />
       </div>
 
@@ -132,6 +157,16 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
             <BrowserPane id={b.id} active={active === b.id} />
           </div>
         ))}
+        {/* API 클라이언트 탭 — active일 때만 마운트(monaco lazy, 비활성 메모리 절감). */}
+        {apiTabs.map((t) => (
+          <div key={t.id} className={active === t.id ? "h-full" : "hidden"}>
+            {active === t.id && (
+              <Suspense fallback={null}>
+                <ApiClientTab tabId={t.id} projectId={projectId} />
+              </Suspense>
+            )}
+          </div>
+        ))}
       </div>
     </section>
   );
@@ -141,9 +176,11 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
 function NewTabControls({
   onNewTerminal,
   onNewBrowser,
+  onNewApiClient,
 }: {
   onNewTerminal: () => void;
   onNewBrowser: () => void;
+  onNewApiClient: () => void;
 }) {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const chevronRef = useRef<HTMLButtonElement>(null);
@@ -196,6 +233,14 @@ function NewTabControls({
               label="새 브라우저"
               onClick={() => {
                 onNewBrowser();
+                setMenu(null);
+              }}
+            />
+            <MenuItem
+              icon={<Send size={14} />}
+              label="새 API 클라이언트"
+              onClick={() => {
+                onNewApiClient();
                 setMenu(null);
               }}
             />

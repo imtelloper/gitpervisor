@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 
-use crate::commands::{BrowserReg, TerminalSession};
+use crate::commands::{BrowserReg, HttpReg, TerminalSession};
 use crate::error::{ErrorCode, IpcError};
 use crate::git::types::{Memo, Project, Settings};
 use crate::monitor::Monitor;
@@ -33,6 +33,8 @@ pub struct AppState {
     pub notes: RwLock<Notes>,
     /// 임베디드 브라우저 자식 webview 레지스트리 (browserId → 마지막 bounds). browser.rs §.
     pub browser: Mutex<BrowserReg>,
+    /// API 클라이언트 in-flight HTTP 요청 레지스트리 (requestId → AbortHandle). http.rs §4.9.
+    pub http: Mutex<HttpReg>,
 }
 
 impl AppState {
@@ -46,6 +48,7 @@ impl AppState {
             monitor: Mutex::new(Monitor::new()),
             notes: RwLock::new(notes),
             browser: Mutex::new(BrowserReg::default()),
+            http: Mutex::new(HttpReg::default()),
         }
     }
 

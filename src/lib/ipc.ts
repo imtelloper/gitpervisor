@@ -242,7 +242,110 @@ export type ErrorCode =
   | "GIT_ERROR"
   | "OP_IN_PROGRESS"
   | "AUTH_FAILED"
-  | "IO";
+  | "IO"
+  // ---- API 클라이언트 (commands/http.rs §4.8) ----
+  | "NETWORK"
+  | "DNS_FAILURE"
+  | "CONNECTION_REFUSED"
+  | "TLS_ERROR"
+  | "CANCELLED"
+  | "INVALID_URL";
+
+// ---- API 클라이언트 전송 계약 (commands/http.rs §4.9 / §5.1) ----
+// 백엔드 HttpRequest의 camelCase serde와 1:1 정합. lib/apiclient.ts에서 조립한
+// PreparedRequest를 그대로(camelCase) 실어 백엔드 BodyKind/HttpRequest로 역직렬화한다.
+
+/** §5.1 PreparedBody — 백엔드 BodyKind(§4.A.1/§4.9)와 동형의 태그드 유니온. */
+export type PreparedBody =
+  | { kind: "none" }
+  | { kind: "json"; text: string }
+  | { kind: "raw"; text: string }
+  | { kind: "formUrlencoded"; fields: { key: string; value: string }[] }
+  | { kind: "formData"; parts: PreparedMultipartPart[] }
+  | { kind: "binary"; base64?: string; filePath?: string; contentType: string | null };
+
+/** 백엔드 MultipartPart(§4.A.2) 미러 — text 파트는 value, file 파트는 filePath. */
+export interface PreparedMultipartPart {
+  field: string;
+  value?: string;
+  filePath?: string;
+  fileName?: string;
+  contentType?: string;
+}
+
+/** 백엔드 HttpRequest(§4.9)와 정확히 정합하는 전송 페이로드. */
+export interface PreparedRequest {
+  method: string; // HttpMethod | 커스텀 — reqwest from_bytes
+  url: string;
+  query: { key: string; value: string }[]; // 순서/중복 보존
+  headers: { name: string; value: string }[]; // 순서/중복 보존
+  body: PreparedBody;
+  timeoutMs?: number; // 기본 30_000(백엔드)
+  followRedirects?: boolean; // 기본 true(백엔드)
+  maxRedirects?: number; // 기본 10(백엔드)
+  verifyTls?: boolean; // 기본 true(백엔드)
+  maxBodyBytes?: number; // 기본 25MB(백엔드)
+  allowInsecureRedirect?: boolean; // https→http 다운그레이드 허용(기본 false — §10.3)
+}
+
+/** 백엔드 HttpTiming(§4.B.1) 프론트 미러. timingExact=false면 dns/connect/tls는 근사. */
+export interface HttpTiming {
+  dnsMs: number;
+  connectMs: number;
+  tlsMs: number;
+  ttfbMs: number;
+  downloadMs: number;
+  totalMs: number;
+  timingExact: boolean;
+}
+
+/** 백엔드 RedirectHop(§4.B.2) 프론트 미러. */
+export interface RedirectHop {
+  status: number;
+  url: string;
+  location: string | null;
+}
+
+/** 백엔드 HeaderKv 미러(응답 headers). */
+export interface HttpHeaderKv {
+  name: string;
+  value: string;
+}
+
+/** 백엔드 SetCookie(§4.B) 미러. */
+export interface HttpSetCookie {
+  name: string;
+  value: string;
+  domain: string | null;
+  path: string | null;
+  expires: string | null;
+  maxAge: number | null;
+  httpOnly: boolean;
+  secure: boolean;
+  sameSite: string | null;
+}
+
+/** 백엔드 ResponseBody(§4.B) 미러. */
+export interface HttpResponseBody {
+  base64: string;
+  contentType: string | null;
+  size: number;
+  truncated: boolean;
+}
+
+/** 백엔드 HttpResponse(§4.B) 1:1 — http_request 응답. */
+export interface HttpResponse {
+  status: number;
+  statusText: string;
+  httpVersion: string;
+  headers: HttpHeaderKv[];
+  cookies: HttpSetCookie[];
+  timing: HttpTiming;
+  body: HttpResponseBody;
+  redirects: RedirectHop[];
+  remoteAddr: string | null;
+  verifyTls: boolean; // 실제 사용된 verifyTls echo — "검증 꺼짐" 경고 배지용(§4.A/§10.4)
+}
 
 export interface IpcError {
   code: ErrorCode;
@@ -509,4 +612,17 @@ export const ipc = {
     callMutating<void>("push", { projectId, setUpstream }),
   pull: (projectId: string) => callMutating<void>("pull", { projectId }),
   fetch: (projectId: string) => callMutating<void>("fetch", { projectId }),
+
+  // ---- API 클라이언트 (commands/http.rs) ----
+  // 비멱등 네트워크 호출 — callMutating(재시도 금지). requestId는 프론트 UUID라
+  // invoke 응답이 유실돼도 "아는 id"로 httpCancel 가능(고아 in-flight 방지).
+  httpRequest: (reqId: string, prepared: PreparedRequest) =>
+    callMutating<HttpResponse>(
+      "http_request",
+      { requestId: reqId, req: prepared },
+      120_000,
+    ),
+  // 진행 중 요청 취소 — 멱등(없으면 백엔드 no-op).
+  httpCancel: (reqId: string) =>
+    callMutating<void>("http_cancel", { requestId: reqId }, 8_000),
 };
