@@ -11,6 +11,7 @@ export interface Toast {
 export interface ConfirmRequest {
   title: string;
   message: string;
+  detail?: string; // 본문 아래 모노스페이스 박스(경로 등 — 줄바꿈 보존)
   confirmLabel?: string;
   danger?: boolean;
   onConfirm: () => void;

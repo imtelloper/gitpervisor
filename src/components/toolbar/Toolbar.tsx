@@ -6,20 +6,26 @@ import {
   Database,
   FolderTree,
   GitBranch,
+  HardDrive,
+  Loader2,
   RefreshCcw,
   RefreshCw,
   Settings as SettingsIcon,
   SquareTerminal,
   StickyNote,
+  Trash2,
 } from "lucide-react";
 
+import { formatBytes } from "../../lib/format";
 import type { Project, RepoOpState } from "../../lib/ipc";
 import {
+  useCleanTarget,
   useNotes,
   usePushFlow,
   useRefreshAll,
   useStatus,
   useSyncOp,
+  useTargetSize,
 } from "../../queries";
 import { useOps } from "../../stores/ops";
 import { useTerminals } from "../../stores/terminals";
@@ -43,6 +49,24 @@ export function Toolbar({ project }: { project: Project }) {
   const setMemoOpen = useUi((s) => s.setMemoOpen);
   const { data: notes } = useNotes();
   const memoCount = notes?.[project.id]?.filter((m) => m.text.trim()).length ?? 0;
+  const targetSize = useTargetSize(project.id);
+  const cleanTarget = useCleanTarget();
+
+  function handleCleanTarget() {
+    if (cleanTarget.isPending) return;
+    const paths = targetSize?.paths ?? [];
+    const folderWord = paths.length > 1 ? "폴더들" : "폴더";
+    useUi.getState().askConfirm({
+      title: "target 청소",
+      message: `'${project.name}'의 Rust 빌드 산출물 ${formatBytes(
+        targetSize?.bytes ?? 0,
+      )}를 비웁니다. 아래 ${folderWord}가 통째로 삭제되며, 다음 빌드는 처음부터 진행됩니다. 계속할까요?`,
+      detail: paths.join("\n"),
+      confirmLabel: "청소",
+      danger: true,
+      onConfirm: () => cleanTarget.mutate(project.id),
+    });
+  }
 
   const branchLabel =
     status?.branch ??
@@ -138,6 +162,36 @@ export function Toolbar({ project }: { project: Project }) {
           </span>
         )}
       </button>
+
+      {targetSize?.isRust && (
+        <span
+          title={
+            targetSize.targetCount > 1
+              ? `Rust 빌드 산출물 (target ${targetSize.targetCount}개 합산)`
+              : "Rust 빌드 산출물 (target)"
+          }
+          className="flex items-center gap-1.5 rounded border border-edge px-2 py-1 text-xs text-fg-muted"
+        >
+          <HardDrive size={12} className="shrink-0" />
+          <span className="font-mono">{formatBytes(targetSize.bytes)}</span>
+          {targetSize.bytes > 0 &&
+            (cleanTarget.isPending ? (
+              <Loader2
+                size={12}
+                className="animate-spin text-accent"
+                aria-label="청소 중"
+              />
+            ) : (
+              <button
+                title="target 청소 (빌드 산출물 삭제 — 용량 회수)"
+                onClick={handleCleanTarget}
+                className="-mr-0.5 rounded p-0.5 text-fg-dim hover:bg-edge hover:text-danger"
+              >
+                <Trash2 size={13} />
+              </button>
+            ))}
+        </span>
+      )}
 
       <button
         title="프로젝트 메모"

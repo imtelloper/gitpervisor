@@ -242,6 +242,20 @@ export interface GitCheck {
   reason: string | null;
 }
 
+// ---- Rust target 용량 관리 (commands/disk.rs) ----
+export interface TargetSize {
+  projectId: string;
+  isRust: boolean; // Cargo.toml 존재 → 사이드바에 용량 표시
+  bytes: number; // 모든 cargo target 디렉토리 합산
+  targetCount: number; // 청소 대상 디렉토리 수
+  paths: string[]; // 삭제될 정확한 절대 경로 (확인 다이얼로그 표시용)
+}
+
+export interface CleanResult {
+  freedBytes: number;
+  removed: number;
+}
+
 export type ErrorCode =
   | "NOT_A_REPO"
   | "GIT_NOT_FOUND"
@@ -640,4 +654,17 @@ export const ipc = {
   // 진행 중 요청 취소 — 멱등(없으면 백엔드 no-op).
   httpCancel: (reqId: string) =>
     callMutating<void>("http_cancel", { requestId: reqId }, 8_000),
+
+  // ---- Rust target 용량 (commands/disk.rs) ----
+  // 배치: 전 프로젝트의 target 용량을 한 invoke로. 거대 디렉토리 열거가 수 초 걸릴 수
+  // 있어 타임아웃을 넉넉히, background 레인, 재시도 없음(다음 새로고침이 재조회).
+  getTargetSizes: (projectIds: string[]) =>
+    call<TargetSize[]>("get_target_sizes", { projectIds }, {
+      timeoutMs: 60_000,
+      attempts: 1,
+      lane: "background",
+    }),
+  // target 디렉토리 통째 삭제(= cargo clean). 대용량 삭제는 오래 걸릴 수 있어 길게.
+  cleanTarget: (projectId: string) =>
+    callMutating<CleanResult>("clean_target", { projectId }, 300_000),
 };

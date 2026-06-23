@@ -42,7 +42,7 @@ pub fn run() {
             // release 빌드에는 노출하지 않기 위함 (정적 config로는 빌드별 분기가 불가).
             let mut browser_args = String::from(BASE_BROWSER_ARGS);
             #[cfg(debug_assertions)]
-            browser_args.push_str(" --remote-debugging-port=9222");
+            browser_args.push_str(" --remote-debugging-port=29222");
             WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
                 .title("Gitpervisor")
                 .inner_size(1440.0, 900.0)
@@ -122,6 +122,8 @@ pub fn run() {
             commands::browser_scan_dev_ports,
             commands::http_request,
             commands::http_cancel,
+            commands::get_target_sizes,
+            commands::clean_target,
             monitor::sys_metrics,
             db::db_list_connections,
             db::db_save_connection,

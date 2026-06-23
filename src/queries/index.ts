@@ -8,7 +8,14 @@ import {
 } from "@tanstack/react-query";
 import { useEffect } from "react";
 
-import type { DiffTarget, NotesMap, Project, RepoStatus } from "../lib/ipc";
+import type {
+  DiffTarget,
+  NotesMap,
+  Project,
+  RepoStatus,
+  TargetSize,
+} from "../lib/ipc";
+import { formatBytes } from "../lib/format";
 import { errorMessage, ipc, isIpcError } from "../lib/ipc";
 import { useDb } from "../stores/db";
 import type { SyncOp } from "../stores/ops";
@@ -46,6 +53,7 @@ export const keys = {
     ["dir", projectId, relPath] as const,
   sysMetrics: ["sys-metrics"] as const,
   notes: ["notes"] as const,
+  targetSizes: (projectIds: string[]) => ["target-sizes", projectIds] as const,
 };
 
 // ---- DB 탐색기 (M6 §17) ----
@@ -287,6 +295,46 @@ export function useStatus(projectId: string | null) {
       ? batch.data?.find((s) => s.projectId === projectId)
       : undefined,
   };
+}
+
+// ---- Rust target 용량 관리 (commands/disk.rs) ----
+
+/**
+ * 전 프로젝트의 target 용량 단일 배치 쿼리. 폴링하지 않는다(staleTime: Infinity) —
+ * 디스크 용량은 자주 안 변하고 거대 디렉토리 열거가 비싸다. 청소 후엔 무효화로 갱신.
+ */
+export function useTargetSizes() {
+  const { data: projects } = useProjects();
+  const ids = (projects ?? []).map((p) => p.id);
+  const key = [...ids].sort();
+  return useQuery({
+    queryKey: keys.targetSizes(key),
+    queryFn: () => ipc.getTargetSizes(ids),
+    enabled: ids.length > 0,
+    staleTime: Infinity,
+    placeholderData: keepPreviousData,
+  });
+}
+
+/** 배치 결과에서 한 프로젝트의 target 용량을 선택한다. */
+export function useTargetSize(projectId: string): TargetSize | undefined {
+  const { data } = useTargetSizes();
+  return data?.find((t) => t.projectId === projectId);
+}
+
+/** target 청소(= cargo clean). 성공 시 용량 배치를 무효화하고 회수량을 토스트로 알린다. */
+export function useCleanTarget() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (projectId: string) => ipc.cleanTarget(projectId),
+    onSuccess: (res) => {
+      void qc.invalidateQueries({ queryKey: ["target-sizes"] });
+      useUi
+        .getState()
+        .pushToast("success", `target 청소 완료 — ${formatBytes(res.freedBytes)} 회수`);
+    },
+    onError: (e) => useUi.getState().pushToast("error", errorMessage(e)),
+  });
 }
 
 export function useDiff(projectId: string | null, target: DiffTarget | null) {
