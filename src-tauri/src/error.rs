@@ -3,6 +3,8 @@ use serde::Serialize;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ErrorCode {
+    // 비-git 폴더 등록 허용 이후 현재 Rust에서는 발화하지 않지만, IPC 코드 안정성을 위해 유지.
+    #[allow(dead_code)]
     NotARepo,
     GitNotFound,
     DuplicateProject,

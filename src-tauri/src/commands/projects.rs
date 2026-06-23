@@ -40,22 +40,20 @@ pub async fn add_project(
         ));
     }
 
-    // git 레포 검증 + 서브디렉토리를 골라도 레포 루트로 정규화해 등록한다
-    let out = runner::run_git(
+    // git 레포면 서브디렉토리를 골라도 레포 루트로 정규화해 등록한다.
+    // 비-git 폴더는 초안 단계로 그대로 허용 — 사용자가 나중에 `git init`하면 watcher가
+    // .git 생성을 감지해 상태가 자동 갱신된다.
+    let target = match runner::run_git(
         Some(&dir),
         &["rev-parse", "--show-toplevel"],
         runner::READ_TIMEOUT_SECS,
     )
-    .await?;
-    if out.code != 0 {
-        return Err(IpcError {
-            code: ErrorCode::NotARepo,
-            message: format!("git 레포가 아닙니다: {path}"),
-            stderr: Some(out.stderr),
-        });
-    }
-    let toplevel = out.stdout_str().trim().to_string();
-    let canonical = dunce::canonicalize(&toplevel)
+    .await
+    {
+        Ok(out) if out.code == 0 => PathBuf::from(out.stdout_str().trim()),
+        _ => dir.clone(),
+    };
+    let canonical = dunce::canonicalize(&target)
         .map_err(|e| IpcError::new(ErrorCode::Io, format!("경로 정규화 실패: {e}")))?;
     let canonical_str = canonical.display().to_string();
 
