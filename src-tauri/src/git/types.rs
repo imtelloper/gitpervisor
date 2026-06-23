@@ -115,6 +115,7 @@ pub struct GitCheck {
     pub found: bool,
     pub version: Option<String>,
     pub path: Option<String>,
+    pub reason: Option<String>,
 }
 
 // ---- M3: 히스토리 (로그 / 브랜치 / 커밋 상세) ----

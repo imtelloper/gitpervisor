@@ -72,3 +72,84 @@ cmd.env("COLORTERM", "truecolor");
 - **MSSQL `AuthMethod::Integrated`(Windows 전용)**: `#[cfg(windows)]` 가드 없이 써서 Linux 컴파일 실패(`src-tauri/src/db.rs`) → cfg로 가드하고 비-Windows에선 명확한 에러 반환.
 - **`libssl-dev` 부재**: `tiberius`의 `native-tls`가 openssl을 요구. Linux 빌드 머신엔 `sudo apt install libssl-dev pkg-config`가 필요(또는 `OPENSSL_*` 환경변수로 헤더·lib 경로 지정).
 - **`bundle.targets`가 `nsis`(Windows)뿐**: Linux에선 `tauri build -- --bundles deb,appimage`로 타깃을 오버라이드해야 deb가 나온다.
+
+---
+
+## 3. macOS 임베디드 터미널에서 한글 입력이 깨진다
+
+### 3.1 증상
+
+macOS(`Gitpervisor.app` / `tauri dev`) 터미널 패널에서 한글을 입력하면 각 음절의 첫 자모만 남고 나머지가 사라진다.
+
+- 입력: `이거 실행해봐`
+- 화면: `ㅇ거 ㅅ해ㅎ보`
+
+영문 입력·복사·붙여넣기·Backspace는 정상. Linux 빌드는 §1 수정 이후 멀쩡(WebKitGTK는 composition 이벤트 모델). Windows(WebView2)도 정상.
+
+### 3.2 근본 원인 — macOS WKWebView 한글 IME 이벤트 모델
+
+진단 인스트루먼테이션(textarea의 keydown/input/composition* 전 이벤트를 stderr로 흘림)을 박고 "이거"를 타이핑한 로그:
+
+```
+keydown key="ㅇ" kc=229
+input data="ㅇ" type=insertText             ta="ㅇ"
+keydown key="ㅣ" kc=229
+input data="이" type=insertReplacementText  ta="이"   ← ㅇ을 통째로 "이"로 교체
+keydown key="ㄱ" kc=229
+input data="익" type=insertReplacementText  ta="익"   ← 이→익 (IME 추정)
+keydown key="ㅓ" kc=229
+input data="이" type=insertReplacementText  ta="이"   ← 익→이 (decommit)
+input data="거" type=insertText             ta="이거"  ← 새 음절 거 시작
+```
+
+핵심 사실:
+- **macOS WKWebView 한글 IME는 `compositionstart`/`compositionupdate`/`compositionend`를 발화하지 않는다.** 음절이 바뀔 때마다 textarea의 `input` 이벤트로 `inputType=insertReplacementText`를 흘리며 textarea 내용을 통째로 갈아끼운다.
+- xterm.js의 기본 input 핸들러는 `inputType=insertText`만 `onData`로 PTY에 전달한다. `insertReplacementText`는 무시 → 새 음절의 시작(insertText)만 PTY에 도착하고, 같은 음절의 갱신(insertReplacementText)은 모두 누락.
+- 결과적으로 각 "음절 세션"의 첫 자모만 PTY 입력 라인에 남는다.
+
+WebKitGTK(Linux)와 같은 WebKit 계열이지만 IME 이벤트 모델이 다르다는 점이 함정. Linux용 `compositionend` 우회만으로는 macOS는 안 고쳐진다.
+
+### 3.3 해결
+
+`src/lib/terminal.ts`에서 `isMacWebKit` 분기와 textarea `input` 리스너를 추가해 `insertReplacementText`를 가로챈다. **"직전 1자 삭제(`\x7f`) + 새 데이터"** 를 PTY로 보낸다 — 셸의 readline이 `\x7f`(DEL)를 받으면 입력 라인의 직전 한 글자(한글 1음절 포함)를 지운다.
+
+```ts
+const isMacWebKit = /Mac/i.test(navigator.userAgent);
+
+ta.addEventListener("input", (e) => {
+  const ie = e as InputEvent;
+  if (isMacWebKit && ie.inputType === "insertReplacementText") {
+    e.stopImmediatePropagation();
+    const data = ie.data ?? "";
+    void invoke("term_write", { termId, data: "\x7f" + data });
+  }
+}, true);
+```
+
+또한 IME 조합 중 raw 자모가 xterm의 keydown 경로로 새지 않도록 `attachCustomKeyEventHandler` 초반에 다음 가드를 둔다:
+
+```ts
+if (e.isComposing || e.keyCode === 229 || e.key === "Process" || e.key === "Unidentified") {
+  return false;
+}
+```
+
+### 3.4 검증
+
+같은 로그 인스트루먼테이션으로 다시 "이거 실행해봐"를 입력:
+
+```
+>>> REPLACE handler firing: data="이" sending=\x7f+이
+>>> REPLACE handler firing: data="익" sending=\x7f+익
+>>> REPLACE handler firing: data="이" sending=\x7f+이
+>>> REPLACE handler firing: data="거" sending=\x7f+거
+...
+```
+
+화면 표시: `이거 실행해봐` ✅
+
+### 3.5 교훈
+
+- "같은 WebKit이니 Linux용 우회가 macOS에도 통하겠지"는 함정. **WKWebView와 WebKitGTK의 IME 이벤트 표현이 다르다** — Linux는 `composition*` 이벤트, macOS는 `input` 이벤트의 `insertReplacementText`.
+- IME 디버깅은 추측보다 **textarea의 모든 keydown/input/composition* 이벤트를 backend stderr로 흘려 dev 로그에서 관측**하는 게 가장 빠르다. xterm 내부의 `onData`도 같이 찍어 "어떤 글자가 PTY에 실제로 갔는지"를 함께 보면 누락 지점이 즉시 드러난다.
+- 셸 readline의 `\x7f`(DEL) 한 글자 삭제는 한글 1음절도 한 단위로 삭제한다 — IME의 replacement를 "백스페이스 + 새 데이터"로 PTY에 모사할 때 활용.

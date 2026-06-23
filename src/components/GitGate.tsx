@@ -3,6 +3,13 @@ import type { ReactNode } from "react";
 
 import { useGitCheck } from "../queries";
 
+function downloadUrlForPlatform(): string {
+  const ua = navigator.userAgent;
+  if (/Mac/i.test(ua)) return "git-scm.com/download/mac";
+  if (/Linux/i.test(ua)) return "git-scm.com/download/linux";
+  return "git-scm.com/download/win";
+}
+
 /** 앱 시작 게이트: git 실행 파일이 없으면 안내 화면으로 막는다. */
 export function GitGate({ children }: { children: ReactNode }) {
   const { data, isLoading, refetch, isFetching } = useGitCheck();
@@ -24,10 +31,24 @@ export function GitGate({ children }: { children: ReactNode }) {
           Gitpervisor는 시스템에 설치된 git CLI를 사용합니다 (2.35 이상 권장).
           <br />
           <span className="select-text font-mono text-fg">
-            git-scm.com/download/win
+            {downloadUrlForPlatform()}
           </span>
           에서 설치한 뒤 다시 시도하세요.
         </div>
+        {(data?.path || data?.reason) && (
+          <div className="mt-1 max-w-120 select-text rounded-md border border-border bg-bg-soft px-3 py-2 text-left font-mono text-[11px] leading-5 text-fg-muted">
+            {data?.path && (
+              <div>
+                <span className="text-fg-dim">path:</span> {data.path}
+              </div>
+            )}
+            {data?.reason && (
+              <div>
+                <span className="text-fg-dim">reason:</span> {data.reason}
+              </div>
+            )}
+          </div>
+        )}
         <button
           onClick={() => refetch()}
           className="mt-2 flex items-center gap-2 rounded-md bg-accent px-4 py-1.5 text-[13px] font-medium text-on-accent hover:bg-accent-hover"

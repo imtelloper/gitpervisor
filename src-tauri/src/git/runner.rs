@@ -78,19 +78,30 @@ fn find_git() -> Option<PathBuf> {
 
 #[cfg(not(windows))]
 fn find_git() -> Option<PathBuf> {
-    let out = std::process::Command::new("sh")
+    if let Ok(out) = std::process::Command::new("sh")
         .args(["-c", "command -v git"])
         .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
+    {
+        if out.status.success() {
+            let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !line.is_empty() {
+                let p = PathBuf::from(line);
+                if p.is_file() {
+                    return Some(p);
+                }
+            }
+        }
     }
-    let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if line.is_empty() {
-        None
-    } else {
-        Some(PathBuf::from(line))
-    }
+    // GUI에서 launchd로 실행될 때 PATH가 빈약해 `command -v`가 실패하는 케이스 대비
+    [
+        "/opt/homebrew/bin/git",
+        "/usr/local/bin/git",
+        "/usr/bin/git",
+        "/usr/local/git/current/bin/git",
+    ]
+    .iter()
+    .map(PathBuf::from)
+    .find(|p| p.is_file())
 }
 
 /// 모든 git 실행의 단일 관문. 인자는 배열로만 받는다 — 셸 문자열 조합 금지.
