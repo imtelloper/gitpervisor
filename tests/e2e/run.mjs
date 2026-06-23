@@ -21,6 +21,8 @@ const SUITES = [
   "./suites/07-browser.mjs",
   "./suites/08-apiclient.mjs",
   "./suites/09-db.mjs",
+  "./suites/10-codenav.mjs",
+  "./suites/11-disk.mjs",
 ];
 
 const report = createReport();

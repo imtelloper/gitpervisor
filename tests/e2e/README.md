@@ -41,6 +41,8 @@ npm run test:e2e
 | `07-browser` | `browser_open/navigate/back/forward/reload/stop/set_bounds/set_visible/focus/blur/close/scan_dev_ports` |
 | `08-apiclient` | `http_request`, `http_cancel` |
 | `09-db` | `db_list_connections`, `db_save_connection`, `db_connect`, `db_disconnect`, `db_databases`, `db_delete_connection`; `db_tables`/`db_query`/`db_table_meta`/`db_explain`/`db_procedures`/`db_proc_params`/`db_update_cell`/`db_delete_row`/`db_insert_row` (등록+가드 검증; 풀 CRUD 는 로컬 DB 서버 있을 때만) |
+| `10-codenav` | `find_definition` (정의 점프 — git grep -P 휴리스틱) |
+| `11-disk` | `get_target_sizes`, `clean_target` (cargo target 측정·정리 — 격리 픽스처에서만) |
 
 > 모든 부정(오류 기대) 단언은 `E2E_TIMEOUT` 을 실패로 간주하지 않도록 실제 오류코드를 검사해 false-pass 를 막습니다.
 
