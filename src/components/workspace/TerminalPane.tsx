@@ -46,12 +46,19 @@ export function TerminalPane({
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
-    createTerminal({ id: paneId, projectId, fontSize });
+    let cancelled = false;
     const el = ref.current;
-    if (el) attachTerminal(paneId, el);
+    // createTerminal은 무거운 xterm 엔진(~441kB)을 동적 import하므로 async — 로드 후 attach.
+    // 첫 터미널 탭에서만 엔진 청크가 로드되고, 이후 생성은 즉시 반환된다.
+    void createTerminal({ id: paneId, projectId, fontSize }).then(() => {
+      if (!cancelled && el) attachTerminal(paneId, el);
+    });
     const ro = new ResizeObserver(() => fitTerminal(paneId));
     if (el) ro.observe(el);
-    return () => ro.disconnect();
+    return () => {
+      cancelled = true;
+      ro.disconnect();
+    };
     // fontSize는 생성 시점에만 쓰인다
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paneId]);
@@ -77,7 +84,7 @@ export function TerminalPane({
             onClick={async () => {
               // 옛 PTY가 backend에서 완전히 닫힌 뒤 새로 연다 — term_close↔term_open 레이스 방지.
               await disposeTerminal(paneId);
-              createTerminal({ id: paneId, projectId, fontSize });
+              await createTerminal({ id: paneId, projectId, fontSize });
               if (ref.current) attachTerminal(paneId, ref.current);
               useTerminals.getState().setPaneStatus(paneId, "live");
             }}

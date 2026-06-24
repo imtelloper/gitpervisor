@@ -80,6 +80,9 @@ function visibleScreen(term: Terminal): string {
 
 /** 모든 라이브 터미널 버퍼를 스캔해 프로젝트별·터미널별 작업중 여부를 산출하고 스토어에 반영. */
 export function scanAgents() {
+  // 창이 보이지 않으면(최소화/비포커스) 표시가 어차피 안 보이므로 스캔을 건너뛴다 —
+  // 매 1.2초 전 터미널 버퍼를 읽는 비용을 절약. 복귀 시 다음 틱(≤1.2s)에 현재 상태로 복원된다.
+  if (typeof document !== "undefined" && document.hidden) return;
   const byProject = new Map<string, boolean>();
   const byTerminal = new Map<string, boolean>();
   for (const t of listTerminals()) {
