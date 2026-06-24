@@ -1,0 +1,127 @@
+@import "tailwindcss";
+
+/* ── Design tokens (extracted from the Pencil design) ──────────────── */
+@theme {
+  /* surfaces */
+  --color-base: #09090b; /* page background */
+  --color-base-2: #0c0c0e; /* alt sections */
+  --color-panel: #131316; /* mockup chrome / inset */
+  --color-card: #18181b; /* feature cards */
+  --color-card-2: #1c1c20; /* nested surfaces */
+  --color-line: #27272a; /* borders */
+  --color-line-2: #3f3f46; /* hover borders */
+
+  /* text */
+  --color-ink: #fafafa; /* primary text */
+  --color-muted: #a1a1aa; /* secondary text */
+  --color-faint: #71717a; /* tertiary / labels */
+
+  /* accents */
+  --color-accent: #a855f7; /* purple — primary brand (text/borders/tints on dark) */
+  --color-accent-strong: #9333ea; /* deeper purple for solid button bg (white text meets WCAG AA) */
+  --color-cyan: #06b6d4;
+  --color-pink: #ec4899;
+  --color-green: #22c55e; /* live / online status */
+  --color-yellow: #eab308;
+  --color-red: #ef4444;
+
+  /* fonts (wired in layout.tsx via next/font) */
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-geist), var(--font-inter), sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SFMono-Regular", monospace;
+}
+
+/* ── Base ──────────────────────────────────────────────────────────── */
+html {
+  scroll-behavior: smooth;
+}
+body {
+  background: var(--color-base);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow-x: hidden; /* safety net against any stray full-width element on phones */
+}
+::selection {
+  background: color-mix(in srgb, var(--color-accent) 35%, transparent);
+  color: #fff;
+}
+
+/* ── Reusable design utilities ─────────────────────────────────────── */
+.text-gradient {
+  background: linear-gradient(120deg, #fafafa 0%, #d8b4fe 45%, var(--color-accent) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.bg-grid {
+  background-image: linear-gradient(to right, rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 56px 56px;
+}
+.bg-grid-fade {
+  -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 30%, transparent 75%);
+  mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 30%, transparent 75%);
+}
+/* soft brand glow used behind hero / CTA */
+.glow-accent {
+  background: radial-gradient(
+    closest-side,
+    color-mix(in srgb, var(--color-accent) 28%, transparent),
+    transparent
+  );
+}
+.glow-cyan {
+  background: radial-gradient(
+    closest-side,
+    color-mix(in srgb, var(--color-cyan) 22%, transparent),
+    transparent
+  );
+}
+/* gradient hairline border via mask */
+.ring-gradient {
+  position: relative;
+}
+.ring-gradient::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(135deg, var(--color-accent), transparent 40%, var(--color-cyan));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+/* ── Animations ────────────────────────────────────────────────────── */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.85); }
+}
+.animate-pulse-dot {
+  animation: pulse-dot 1.6s ease-in-out infinite;
+}
+@keyframes spin-slow {
+  to { transform: rotate(360deg); }
+}
+.animate-spin-slow {
+  animation: spin-slow 1.1s linear infinite;
+}
+@keyframes float-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-float-up {
+  animation: float-up 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .animate-pulse-dot,
+  .animate-spin-slow,
+  .animate-float-up { animation: none; }
+}
