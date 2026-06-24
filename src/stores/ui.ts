@@ -23,6 +23,8 @@ interface UiState {
   selectedDiff: DiffTarget | null;
   /** 하단 Log 패널 펼침 여부 */
   logOpen: boolean;
+  /** 하단 Log 패널 펼침 높이(px) — 드래그로 조절, localStorage 영속 */
+  logHeight: number;
   /** Log 패널에서 선택된 커밋 (상세 패널 구동) */
   selectedCommitSha: string | null;
   /** 설정 모달 열림 여부 */
@@ -40,6 +42,7 @@ interface UiState {
   selectProject: (id: string | null) => void;
   selectDiff: (target: DiffTarget | null) => void;
   toggleLog: () => void;
+  setLogHeight: (h: number) => void;
   selectCommit: (sha: string | null) => void;
   setSettingsOpen: (open: boolean) => void;
   setMemoOpen: (open: boolean) => void;
@@ -59,6 +62,10 @@ export const useUi = create<UiState>((set) => ({
   selectedProjectId: localStorage.getItem("gp:selected-project"),
   selectedDiff: null,
   logOpen: false,
+  logHeight: (() => {
+    const raw = Number(localStorage.getItem("gp:log-height"));
+    return raw >= 120 ? raw : 288; // 기본 288px(기존 h-72)
+  })(),
   selectedCommitSha: null,
   settingsOpen: false,
   memoOpen: false,
@@ -81,6 +88,11 @@ export const useUi = create<UiState>((set) => ({
   },
   selectDiff: (target) => set({ selectedDiff: target }),
   toggleLog: () => set((s) => ({ logOpen: !s.logOpen })),
+  setLogHeight: (h) => {
+    const v = Math.max(120, Math.min(h, window.innerHeight - 200));
+    localStorage.setItem("gp:log-height", String(v));
+    set({ logHeight: v });
+  },
   selectCommit: (sha) => set({ selectedCommitSha: sha }),
   setSettingsOpen: (open) => set({ settingsOpen: open }),
   setMemoOpen: (open) => set({ memoOpen: open }),

@@ -56,3 +56,23 @@ export function languageOf(path: string): string {
   if (dot <= 0) return "plaintext";
   return EXT_LANG[base.slice(dot + 1).toLowerCase()] ?? "plaintext";
 }
+
+const IMAGE_EXT = new Set([
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "webp",
+  "bmp",
+  "ico",
+  "avif",
+  "svg",
+]);
+
+/** 이미지로 렌더할 파일인지 (확장자 기준). svg도 이미지로 본다. */
+export function isImage(path: string): boolean {
+  const base = path.split("/").pop() ?? path;
+  const dot = base.lastIndexOf(".");
+  if (dot <= 0) return false;
+  return IMAGE_EXT.has(base.slice(dot + 1).toLowerCase());
+}

@@ -96,6 +96,29 @@ pub async fn add_project(
     Ok(project)
 }
 
+/// 사이드바 드래그로 정한 새 순서를 영속화한다 — 주어진 순서대로 order를 0..n 재할당.
+/// 목록에 없는 id는 무시하고, ordered_ids에 빠진 프로젝트는 뒤로 보낸다(기존 상대순서 유지).
+#[tauri::command]
+pub fn reorder_projects(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    ordered_ids: Vec<String>,
+) -> Result<(), IpcError> {
+    {
+        let mut projects = state.projects.write().unwrap();
+        let rank: std::collections::HashMap<&str, u32> = ordered_ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| (id.as_str(), i as u32))
+            .collect();
+        let tail = ordered_ids.len() as u32;
+        for p in projects.iter_mut() {
+            p.order = rank.get(p.id.as_str()).copied().unwrap_or(tail);
+        }
+    }
+    state::save_projects(&app, &state.projects.read().unwrap())
+}
+
 #[tauri::command]
 pub fn remove_project(
     app: AppHandle,

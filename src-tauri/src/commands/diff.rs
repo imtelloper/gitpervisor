@@ -1,5 +1,8 @@
 use std::path::{Component, Path};
 
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine as _;
+use serde::Serialize;
 use tauri::State;
 
 use super::projects::project_path;
@@ -159,4 +162,54 @@ fn validate_rel_path(path: &str) -> Result<(), IpcError> {
 
 fn looks_binary(bytes: &[u8]) -> bool {
     bytes.iter().take(8192).any(|&b| b == 0)
+}
+
+/// 이미지 뷰어용 파일 한도 — base64로 IPC 전송하므로 과대 파일을 막는다.
+const MAX_IMAGE_BYTES: usize = 25 * 1024 * 1024; // 25MB
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileBytes {
+    pub mime: String,
+    pub base64: String,
+}
+
+/// 워크트리의 파일을 그대로 읽어 (mime, base64)로 반환 — 이미지(png/jpg/webp/svg…) 미리보기용.
+#[tauri::command]
+pub async fn read_file_base64(
+    state: State<'_, AppState>,
+    project_id: String,
+    rel_path: String,
+) -> Result<FileBytes, IpcError> {
+    let repo = project_path(&state, &project_id)?;
+    validate_rel_path(&rel_path)?;
+    let bytes = tokio::fs::read(repo.join(&rel_path))
+        .await
+        .map_err(|e| IpcError::new(ErrorCode::Io, format!("파일 읽기 실패: {e}")))?;
+    if bytes.len() > MAX_IMAGE_BYTES {
+        return Err(IpcError::new(
+            ErrorCode::Io,
+            "파일이 너무 큽니다 (25MB 초과)",
+        ));
+    }
+    Ok(FileBytes {
+        mime: mime_of(&rel_path),
+        base64: B64.encode(&bytes),
+    })
+}
+
+fn mime_of(path: &str) -> String {
+    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "ico" => "image/x-icon",
+        "avif" => "image/avif",
+        "svg" => "image/svg+xml",
+        _ => "application/octet-stream",
+    }
+    .to_string()
 }

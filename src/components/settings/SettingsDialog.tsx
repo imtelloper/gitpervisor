@@ -193,6 +193,30 @@ export function SettingsDialog() {
               className={inputCls}
             />
           </Field>
+
+          <div className="border-t border-edge pt-3 text-[11px] font-semibold tracking-widest text-fg-dim">
+            알림
+          </div>
+
+          <Field
+            label="AI 작업 완료 알림"
+            hint="터미널의 Claude가 작업을 끝내면 OS 알림을 보냅니다. 상태바의 AI 칩을 클릭하면 해당 프로젝트로 이동합니다."
+          >
+            <select
+              value={form.notifyMode || "project-inactive"}
+              onChange={(e) =>
+                update("notifyMode", e.target.value as Settings["notifyMode"])
+              }
+              className={inputCls}
+            >
+              <option value="off">끔</option>
+              <option value="project-inactive">
+                프로젝트 단위 · 창이 비활성일 때만
+              </option>
+              <option value="terminal">터미널 단위로 매번</option>
+              <option value="always">항상 (포커스 중에도)</option>
+            </select>
+          </Field>
         </div>
 
         <div className="mt-5 flex justify-end gap-2">

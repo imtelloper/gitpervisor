@@ -1,6 +1,8 @@
 import {
   ClipboardPaste,
   Copy,
+  ExternalLink,
+  LayoutGrid,
   Maximize2,
   Minimize2,
   RotateCw,
@@ -189,9 +191,30 @@ function PaneMenu({
       />
       <div className="my-1 border-t border-edge" />
       <Item
+        icon={<LayoutGrid size={14} />}
+        label="2분할 (좌우)"
+        onClick={run(() => ts.splitGrid(tabId, paneId, 2))}
+      />
+      <Item
+        icon={<LayoutGrid size={14} />}
+        label="4분할 (2×2)"
+        onClick={run(() => ts.splitGrid(tabId, paneId, 4))}
+      />
+      <Item
+        icon={<LayoutGrid size={14} />}
+        label="8분할 (2×4)"
+        onClick={run(() => ts.splitGrid(tabId, paneId, 8))}
+      />
+      <div className="my-1 border-t border-edge" />
+      <Item
         icon={maximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
         label={maximized ? "패널 최대화 해제" : "패널 최대화"}
         onClick={run(() => ts.toggleMaximize(tabId, paneId))}
+      />
+      <Item
+        icon={<ExternalLink size={14} />}
+        label="새 창으로 분리 (Float)"
+        onClick={run(() => ts.floatPane(tabId, paneId))}
       />
       <Item
         icon={<X size={14} />}

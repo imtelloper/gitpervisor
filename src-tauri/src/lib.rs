@@ -15,6 +15,49 @@ use state::AppState;
 /// WebView2 스로틀링 억제 인자 (최소화/백그라운드에서도 watcher·타이머 정상 동작). 전 빌드 공통.
 const BASE_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtocol,msSleepingTabs,IntensiveWakeUpThrottling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling";
 
+/// 모든 창이 동일한 WebView2 환경 인자를 써야 한다 — 같은 user-data 폴더를 공유하는 웹뷰는
+/// 환경 인자가 일치하지 않으면 추가 웹뷰가 초기화에 실패해 빈 창이 된다. 메인·플로팅 공용.
+fn browser_args() -> String {
+    let mut s = String::from(BASE_BROWSER_ARGS);
+    #[cfg(debug_assertions)]
+    s.push_str(" --remote-debugging-port=29222");
+    s
+}
+
+/// 터미널 패널을 별도 OS 창으로 띄운다(플로팅). JS의 new WebviewWindow는 기본 인자로 생성돼
+/// 메인 창과 환경 인자가 어긋나 웹뷰가 로드되지 않으므로, 같은 인자로 Rust에서 생성한다.
+/// paneId는 창 라벨(`float-<paneId>`)로 전달한다 — WebviewUrl::App은 쿼리스트링을 지원하지
+/// 않아(쿼리를 넣으면 about:blank로 떨어진다) URL 대신 라벨에서 프론트가 paneId를 읽는다.
+// async 커맨드 — 워커 스레드에서 실행돼 메인 이벤트 루프를 막지 않는다. 그래야 run_on_main_thread
+// 가 보낸 창 생성 클로저를 루프가 정상 펌프하며 처리해 웹뷰가 끝까지 초기화된다(아니면 webview가
+// about:blank로 멈춘다 — tao/wry 메인스레드 펌프 이슈, 메모리 노트).
+#[tauri::command]
+async fn open_float_window(
+    app: tauri::AppHandle,
+    pane_id: String,
+    origin: String,
+) -> Result<(), String> {
+    let label = format!("float-{pane_id}");
+    // 메인 창이 이미 떠 있는 origin을 그대로 로드한다 — dev(localhost devUrl)·prod(tauri://localhost)
+    // 모두에서 같은 index를 띄운다. 런타임의 WebviewUrl::App은 dev에서 about:blank로 떨어진다.
+    let url = tauri::Url::parse(&origin).map_err(|e| format!("잘못된 origin: {e}"))?;
+    let app2 = app.clone();
+    app.run_on_main_thread(move || {
+        let r = WebviewWindowBuilder::new(&app2, &label, WebviewUrl::External(url))
+            .title("터미널")
+            .inner_size(900.0, 600.0)
+            .center()
+            .background_color(tauri::window::Color(30, 31, 34, 255))
+            .additional_browser_args(&browser_args())
+            .build();
+        if let Err(e) = r {
+            eprintln!("플로팅 창 생성 실패: {e}");
+        }
+    })
+    .map_err(|e| format!("플로팅 창 예약 실패: {e}"))?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // IME 보정 (Linux/X11): GNOME 메뉴·세션에서 앱을 띄우면 GTK_IM_MODULE 가 비어 있어
@@ -37,12 +80,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             // 메인 창을 코드에서 생성한다 — 원격 디버깅 포트(CDP)는 debug 빌드에서만 열고
             // release 빌드에는 노출하지 않기 위함 (정적 config로는 빌드별 분기가 불가).
-            let mut browser_args = String::from(BASE_BROWSER_ARGS);
-            #[cfg(debug_assertions)]
-            browser_args.push_str(" --remote-debugging-port=29222");
             WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
                 .title("Gitpervisor")
                 .inner_size(1440.0, 900.0)
@@ -51,7 +92,7 @@ pub fn run() {
                 // OS 기본 타이틀바 제거 — 프론트의 커스텀 TitleBar로 대체 (리사이즈는 유지)
                 .decorations(false)
                 .background_color(tauri::window::Color(30, 31, 34, 255))
-                .additional_browser_args(&browser_args)
+                .additional_browser_args(&browser_args())
                 .build()?;
 
             let projects = state::load_projects(app.handle());
@@ -79,12 +120,14 @@ pub fn run() {
             commands::list_projects,
             commands::add_project,
             commands::remove_project,
+            commands::reorder_projects,
             commands::get_statuses,
             commands::get_log,
             commands::get_branches,
             commands::get_commit_detail,
             commands::get_file_diff,
             commands::get_file_diffs,
+            commands::read_file_base64,
             commands::stage_files,
             commands::unstage_files,
             commands::discard_files,
@@ -103,7 +146,9 @@ pub fn run() {
             commands::add_memo,
             commands::update_memo,
             commands::delete_memo,
+            open_float_window,
             commands::term_open,
+            commands::term_attach,
             commands::term_write,
             commands::term_resize,
             commands::term_close,
@@ -142,11 +187,18 @@ pub fn run() {
             db::db_proc_params,
         ])
         .on_window_event(|window, event| {
-            // 창이 닫히면 열린 PTY 자식을 모두 정리한다 (좀비 셸 방지, 설계 §16.8).
             if let tauri::WindowEvent::Destroyed = event {
-                let state = window.state::<AppState>();
-                commands::kill_all(state.inner());
-                commands::browser_kill_all(window.app_handle(), state.inner());
+                let label = window.label();
+                if label == "main" {
+                    // 메인 창이 닫히면 열린 PTY 자식을 모두 정리한다 (좀비 셸 방지, 설계 §16.8).
+                    let state = window.state::<AppState>();
+                    commands::kill_all(state.inner());
+                    commands::browser_kill_all(window.app_handle(), state.inner());
+                } else if let Some(term_id) = label.strip_prefix("float-") {
+                    // 플로팅 터미널 창이 닫히면 그 세션의 PTY만 종료한다(나머지는 메인이 유지).
+                    let state = window.state::<AppState>();
+                    commands::close_session(state.inner(), term_id);
+                }
             }
         })
         .run(tauri::generate_context!())

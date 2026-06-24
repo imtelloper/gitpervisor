@@ -54,6 +54,12 @@ export interface FileDiff {
   tooLarge: boolean;
 }
 
+/** 이미지 미리보기용 파일 바이트 (read_file_base64). */
+export interface FileBytes {
+  mime: string;
+  base64: string;
+}
+
 /** 중앙 diff 뷰어가 표시할 대상 (설계 §6). */
 export type DiffTarget =
   | { mode: "worktree"; path: string } // 인덱스(없으면 HEAD) ↔ 워크트리
@@ -119,6 +125,10 @@ export interface LogPage {
 // ---- M4: 설정 ----
 export type ThemeName = "darcula" | "monokai";
 
+/** AI 완료 알림 모드 — off=끔, project-inactive=프로젝트 단위·창 비활성 시만,
+ *  terminal=터미널 단위 매번, always=항상. */
+export type NotifyMode = "off" | "project-inactive" | "terminal" | "always";
+
 export interface Settings {
   gitPath: string | null; // null/빈값 = PATH 자동 탐색
   autoFetchMinutes: number; // 0 = 끔
@@ -127,6 +137,7 @@ export interface Settings {
   theme: ThemeName;
   terminalShell: string | null; // null/빈값 = 자동(pwsh→powershell→cmd / $SHELL)
   terminalFontSize: number;
+  notifyMode: NotifyMode;
 }
 
 export type OpenTarget = "explorer" | "terminal";
@@ -499,6 +510,9 @@ export const ipc = {
   listProjects: () => call<Project[]>("list_projects"),
   addProject: (path: string) => call<Project>("add_project", { path }),
   removeProject: (id: string) => call<void>("remove_project", { id }),
+  // 사이드바 드래그 순서 영속화 — 새 id 순서대로 order 재할당. 재시도 금지.
+  reorderProjects: (orderedIds: string[]) =>
+    callMutating<void>("reorder_projects", { orderedIds }),
   // 배치: 레포 수 × 콜드 git spawn을 고려해 타임아웃을 넉넉히 잡는다.
   // attempts:1 — 유실돼도 재시도로 슬롯을 길게 점유하지 않는다(다음 이벤트/포커스가 재조회).
   getStatuses: (projectIds: string[]) =>
@@ -512,6 +526,13 @@ export const ipc = {
   // 단일 diff — DiffTarget(worktree/index/commit) 어느 모드든 처리
   getDiff: (projectId: string, target: DiffTarget) =>
     call<FileDiff>("get_file_diff", { projectId, target }),
+  // 이미지 미리보기 — 워크트리 파일을 base64로. 큰 파일 대비 타임아웃 넉넉히, 재시도 없음.
+  readFileBase64: (projectId: string, relPath: string) =>
+    call<FileBytes>(
+      "read_file_base64",
+      { projectId, relPath },
+      { timeoutMs: 30_000, attempts: 1 },
+    ),
   // 프리페치 배치 (worktree 전용) — background 레인(클릭에 양보), 재시도 없음, 짧은 타임아웃
   getWorktreeDiffs: (projectId: string, paths: string[]) =>
     call<FileDiff[]>(

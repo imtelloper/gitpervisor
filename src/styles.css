@@ -323,3 +323,19 @@ textarea {
     animation: ai-rainbow-flow 6s linear infinite;
   }
 }
+
+/* 이미지 뷰어 배경 — 투명 PNG/SVG의 알파를 드러내는 체커보드. */
+.checkerboard {
+  background-color: #2b2d31;
+  background-image:
+    linear-gradient(45deg, rgba(255, 255, 255, 0.05) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(255, 255, 255, 0.05) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(255, 255, 255, 0.05) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(255, 255, 255, 0.05) 75%);
+  background-size: 20px 20px;
+  background-position:
+    0 0,
+    0 10px,
+    10px -10px,
+    -10px 0;
+}

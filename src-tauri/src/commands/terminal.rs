@@ -24,6 +24,9 @@ pub struct TerminalSession {
     /// 재시작 시 옛 PTY를 kill하면 그 리더가 지연된 exit를 쏘아 새 PTY를 "exited"로 잘못
     /// 표시하는 레이스를 막는다.
     closed: Arc<AtomicBool>,
+    /// 출력 sink — 현재 이 PTY를 그리는 웹뷰의 Channel. term_attach가 이 sink를 다른 창의
+    /// Channel로 교체해 살아있는 세션을 별도 OS 창(플로팅)으로 옮긴다.
+    sink: Arc<Mutex<Channel<Vec<u8>>>>,
     #[allow(dead_code)]
     project_id: String,
 }
@@ -103,12 +106,15 @@ pub fn term_open(
 
     let child = Arc::new(Mutex::new(child));
     let closed = Arc::new(AtomicBool::new(false));
+    // 출력 sink를 Arc<Mutex>로 — 플로팅 분리 시 term_attach가 이 sink를 새 창 Channel로 바꾼다.
+    let sink = Arc::new(Mutex::new(on_data));
 
     // 전용 std 스레드에서 블로킹 read 루프 — tokio 실행기/메인스레드를 막지 않는다(설계 §16.2).
     {
         let app = app.clone();
         let child = Arc::clone(&child);
         let closed = Arc::clone(&closed);
+        let sink = Arc::clone(&sink);
         let term_id = term_id.clone();
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
@@ -116,9 +122,10 @@ pub fn term_open(
                 match reader.read(&mut buf) {
                     Ok(0) => break, // EOF — 셸 종료
                     Ok(n) => {
-                        if on_data.send(buf[..n].to_vec()).is_err() {
-                            break; // 프론트 채널 소멸
-                        }
+                        // 현재 sink로 전송. 창이 닫혀 send가 실패해도 PTY는 살린다 —
+                        // 플로팅 분리 중(detach↔attach 사이)의 짧은 공백을 위해 루프를 끊지 않는다.
+                        // 의도적 종료는 term_close가 child를 kill해 EOF로 루프를 끝낸다.
+                        let _ = sink.lock().unwrap().send(buf[..n].to_vec());
                     }
                     Err(_) => break,
                 }
@@ -141,6 +148,7 @@ pub fn term_open(
         master: pair.master,
         child,
         closed,
+        sink,
         project_id,
     };
     // 같은 id의 옛 세션이 남아있으면(비정상 경로) 먼저 억제+kill 후 교체한다.
@@ -170,6 +178,22 @@ pub fn term_write(
         .map_err(|e| IpcError::new(ErrorCode::Io, format!("터미널 입력 실패: {e}")))
 }
 
+/// 살아있는 PTY의 출력 sink를 새 웹뷰 Channel로 교체 — 별도 OS 창(플로팅)이 기존 세션에 재연결.
+/// PTY/프로세스는 그대로 유지되고 출력만 새 창으로 흐른다(스크롤백은 옮겨지지 않음).
+#[tauri::command]
+pub fn term_attach(
+    state: State<'_, AppState>,
+    term_id: String,
+    on_data: Channel<Vec<u8>>,
+) -> Result<(), IpcError> {
+    let terms = state.terminals.lock().unwrap();
+    let session = terms
+        .get(&term_id)
+        .ok_or_else(|| IpcError::new(ErrorCode::NotFound, "터미널 세션을 찾을 수 없습니다"))?;
+    *session.sink.lock().unwrap() = on_data;
+    Ok(())
+}
+
 /// ConPTY 리사이즈 — xterm fit 결과(cols/rows)를 반영.
 #[tauri::command]
 pub fn term_resize(
@@ -196,12 +220,17 @@ pub fn term_resize(
 /// 세션 종료 — child kill 후 레지스트리에서 제거(드롭이 writer·master를 닫는다).
 #[tauri::command]
 pub fn term_close(state: State<'_, AppState>, term_id: String) -> Result<(), IpcError> {
-    if let Some(session) = state.terminals.lock().unwrap().remove(&term_id) {
+    close_session(state.inner(), &term_id);
+    Ok(())
+}
+
+/// 단일 세션 종료(child kill + 제거). 커맨드/창 이벤트(플로팅 창 닫힘) 공용.
+pub fn close_session(state: &AppState, term_id: &str) {
+    if let Some(session) = state.terminals.lock().unwrap().remove(term_id) {
         // 의도적 종료 표시 → 리더가 지연된 term://exit를 쏘지 않는다(재시작 레이스 방지).
         session.closed.store(true, Ordering::Relaxed);
         let _ = session.child.lock().unwrap().kill();
     }
-    Ok(())
 }
 
 /// 앱 종료 시 모든 PTY 자식을 정리한다 (좀비 셸 방지, 설계 §16.8).

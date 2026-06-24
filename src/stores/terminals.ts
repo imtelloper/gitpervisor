@@ -1,6 +1,7 @@
 import { create } from "zustand";
 
-import { disposeTerminal, onTermExit } from "../lib/terminal";
+import { openFloatingWindow } from "../lib/floating";
+import { detachTerminalKeepPty, disposeTerminal, onTermExit } from "../lib/terminal";
 
 export type SplitDir = "row" | "col"; // row=좌우 분할, col=상하 분할
 
@@ -58,6 +59,33 @@ function splitAt(
     a: splitAt(node.a, target, dir, newPaneId, newFirst, content),
     b: splitAt(node.b, target, dir, newPaneId, newFirst, content),
   };
+}
+
+/** 노드 배열을 한 방향(dir)으로 균형 분할 트리로 묶는다(절반씩 재귀 → 칸이 고르게 나뉜다). */
+function makeBalanced(nodes: Pane[], dir: SplitDir): Pane {
+  if (nodes.length === 1) return nodes[0];
+  const mid = Math.ceil(nodes.length / 2);
+  return {
+    kind: "split",
+    id: crypto.randomUUID(),
+    dir,
+    ratio: mid / nodes.length,
+    a: makeBalanced(nodes.slice(0, mid), dir),
+    b: makeBalanced(nodes.slice(mid), dir),
+  };
+}
+
+/** paneId 목록을 cols열 그리드(행=row 분할, 행 묶음=col 분할)로 배치한다. */
+function buildGrid(paneIds: string[], cols: number): Pane {
+  const leaves: Pane[] = paneIds.map((id) => ({
+    kind: "leaf",
+    paneId: id,
+    content: "terminal",
+  }));
+  const rows: Pane[] = [];
+  for (let i = 0; i < leaves.length; i += cols)
+    rows.push(makeBalanced(leaves.slice(i, i + cols), "row"));
+  return makeBalanced(rows, "col");
 }
 
 /** 리프의 content(터미널↔브라우저)만 바꾼다. */
@@ -126,6 +154,10 @@ interface TerminalsState {
     newFirst: boolean,
     content?: PaneKind,
   ) => void;
+  /** 활성 패널을 기준으로 탭 레이아웃을 N개(2/4/8) 터미널 그리드로 한 번에 구성 */
+  splitGrid: (tabId: string, paneId: string, count: number) => void;
+  /** 패널을 트리에서 떼어 별도 OS 창으로 띄운다(PTY 유지 — 새 창이 term_attach로 이어받음) */
+  floatPane: (tabId: string, paneId: string) => void;
   closePane: (tabId: string, paneId: string) => void;
   setActivePane: (tabId: string, paneId: string) => void;
   toggleMaximize: (tabId: string, paneId: string) => void;
@@ -273,6 +305,79 @@ export const useTerminals = create<TerminalsState>((set, get) => ({
       ),
       paneStatus: { ...s.paneStatus, [newPaneId]: "live" },
     }));
+  },
+
+  splitGrid: (tabId, paneId, count) => {
+    const tab = get().terminals.find((t) => t.id === tabId);
+    if (!tab) return;
+    // 활성 패널(paneId)만 유지하고, 기존 레이아웃의 나머지 패널 PTY는 정리한다(고아 방지).
+    collectPanes(tab.layout).forEach((p) => {
+      if (p !== paneId) disposeTerminal(p);
+    });
+    const cols = count >= 8 ? 4 : 2; // 2→2×1, 4→2×2, 8→4×2
+    const ids = [paneId];
+    for (let i = 1; i < count; i++) ids.push(crypto.randomUUID());
+    const layout = buildGrid(ids, cols);
+    set((s) => {
+      const paneStatus = { ...s.paneStatus };
+      collectPanes(tab.layout).forEach((p) => {
+        if (p !== paneId) delete paneStatus[p];
+      });
+      ids.forEach((id) => {
+        paneStatus[id] = "live";
+      });
+      return {
+        terminals: s.terminals.map((t) =>
+          t.id === tabId
+            ? { ...t, layout, activePaneId: paneId, maximizedPaneId: null }
+            : t,
+        ),
+        paneStatus,
+      };
+    });
+  },
+
+  floatPane: (tabId, paneId) => {
+    const tab = get().terminals.find((t) => t.id === tabId);
+    if (!tab) return;
+    // PTY는 살린 채 메인 창의 xterm만 정리하고 트리에서 패널을 뺀다(closePane과 달리 term_close 안 함).
+    detachTerminalKeepPty(paneId);
+    const layout = removePane(tab.layout, paneId);
+    set((s) => {
+      const paneStatus = { ...s.paneStatus };
+      delete paneStatus[paneId];
+      if (layout === null) {
+        // 패널이 이 하나뿐이던 탭 → 탭 제거 + Viewer로 전환
+        const activeTab = { ...s.activeTab };
+        if (activeTab[tab.projectId] === tabId) activeTab[tab.projectId] = "viewer";
+        return {
+          terminals: s.terminals.filter((t) => t.id !== tabId),
+          activeTab,
+          paneStatus,
+        };
+      }
+      const remaining = collectPanes(layout);
+      return {
+        terminals: s.terminals.map((t) =>
+          t.id === tabId
+            ? {
+                ...t,
+                layout,
+                activePaneId: remaining.includes(t.activePaneId)
+                  ? t.activePaneId
+                  : remaining[remaining.length - 1],
+                maximizedPaneId:
+                  t.maximizedPaneId && remaining.includes(t.maximizedPaneId)
+                    ? t.maximizedPaneId
+                    : null,
+              }
+            : t,
+        ),
+        paneStatus,
+      };
+    });
+    // 별도 OS 창을 띄운다 — 새 창이 term_attach로 살아있는 PTY 출력을 이어받는다.
+    openFloatingWindow(paneId, tab.projectId);
   },
 
   setPaneContent: (tabId, paneId, content) =>

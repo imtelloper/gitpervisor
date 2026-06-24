@@ -42,11 +42,14 @@ function readTheme(): ITheme {
   };
 }
 
-/** xterm 인스턴스를 만들고 PTY를 띄운다. 이미 있으면 기존 것을 반환(멱등). */
+/** xterm 인스턴스를 만들고 PTY를 띄운다. 이미 있으면 기존 것을 반환(멱등).
+ *  attach=true면 새 PTY를 spawn하지 않고 살아있는 세션에 출력만 재연결(term_attach) —
+ *  플로팅(별도 OS 창)에서 메인 창이 만든 세션을 이어받을 때 쓴다. */
 export function createTerminalImpl(opts: {
   id: string;
   projectId: string;
   fontSize: number;
+  attach?: boolean;
 }): TermInstance {
   ensureExitListener();
   const existing = registry.get(opts.id);
@@ -104,6 +107,9 @@ export function createTerminalImpl(opts: {
     // PTY로 보내지 않고 window 핸들러로 흘려보낸다.
     if (e.ctrlKey && e.key === "`") return false;
     if (e.ctrlKey && e.shiftKey && ["d", "e", "w"].includes(k)) return false;
+    // 프로젝트 위/아래 이동(Ctrl+Shift+↑/↓)도 PTY로 보내지 않고 window 핸들러로 흘려보낸다.
+    if (e.ctrlKey && e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown"))
+      return false;
 
     // 복사: Ctrl+Shift+C, 또는 선택영역이 있을 때 Ctrl+C (없으면 통과 → SIGINT)
     if (e.ctrlKey && k === "c" && (e.shiftKey || term.hasSelection())) {
@@ -212,19 +218,31 @@ export function createTerminalImpl(opts: {
   registry.set(opts.id, inst);
 
   // 출력: Channel(raw bytes) → xterm. 멀티바이트 경계 안전을 위해 바이트 그대로 write.
+  // 플로팅 분리 중(detach 후 term_attach 전)엔 Rust가 잠깐 옛 채널로 보낼 수 있어, 이미 dispose된
+  // xterm에 write가 떨어질 수 있다 — try/catch로 그 짧은 공백의 예외를 무시한다.
   const channel = new Channel<number[]>();
-  channel.onmessage = (bytes) => term.write(new Uint8Array(bytes));
+  channel.onmessage = (bytes) => {
+    try {
+      term.write(new Uint8Array(bytes));
+    } catch {
+      /* dispose/detach 직후 — 무시 */
+    }
+  };
 
-  void invoke("term_open", {
-    termId: opts.id,
-    projectId: opts.projectId,
-    cols: term.cols || 80,
-    rows: term.rows || 24,
-    onData: channel,
-  }).catch((e: unknown) => {
+  // attach=새 창이 살아있는 PTY 출력만 이어받음(term_attach), 아니면 새 PTY spawn(term_open).
+  const startCmd = opts.attach
+    ? invoke("term_attach", { termId: opts.id, onData: channel })
+    : invoke("term_open", {
+        termId: opts.id,
+        projectId: opts.projectId,
+        cols: term.cols || 80,
+        rows: term.rows || 24,
+        onData: channel,
+      });
+  void startCmd.catch((e: unknown) => {
     inst.status = "exited";
     const msg = e instanceof Error ? e.message : String(e);
-    term.writeln(`\r\n\x1b[31m[터미널 시작 실패] ${msg}\x1b[0m`);
+    term.writeln(`\r\n\x1b[31m[터미널 연결 실패] ${msg}\x1b[0m`);
   });
 
   // 입력 → PTY stdin

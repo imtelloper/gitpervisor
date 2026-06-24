@@ -351,6 +351,16 @@ export function useDiff(projectId: string | null, target: DiffTarget | null) {
   });
 }
 
+/** 이미지 파일 미리보기 — 워크트리 파일 바이트(base64). 내용은 watcher invalidate에 맡긴다. */
+export function useFileImage(projectId: string | null, path: string | null) {
+  return useQuery({
+    queryKey: ["file-image", projectId ?? "none", path ?? "none"],
+    queryFn: () => ipc.readFileBase64(projectId!, path!),
+    enabled: !!projectId && !!path,
+    staleTime: Infinity,
+  });
+}
+
 /**
  * diff 프리페치: 상태가 갱신될 때 변경 파일들의 diff를 배치로 미리 캐시에 적재한다.
  * 클릭 시점에는 캐시 히트로 즉시 표시 — "클릭 후 git spawn 대기" 구조를 제거 (§12).
@@ -546,6 +556,28 @@ export function useAddProject() {
       }
       useUi.getState().pushToast("error", errorMessage(e));
     },
+  });
+}
+
+/** 사이드바 드래그 정렬 — 낙관적으로 캐시 order를 갱신하고 백엔드에 영속화한다. */
+export function useReorderProjects() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (orderedIds: string[]) => ipc.reorderProjects(orderedIds),
+    onMutate: (orderedIds) => {
+      qc.setQueryData<Project[]>(keys.projects, (old) => {
+        if (!old) return old;
+        const rank = new Map(orderedIds.map((id, i) => [id, i]));
+        return [...old]
+          .map((p) => ({ ...p, order: rank.get(p.id) ?? p.order }))
+          .sort((a, b) => a.order - b.order);
+      });
+    },
+    onError: (e) => {
+      void qc.invalidateQueries({ queryKey: keys.projects });
+      useUi.getState().pushToast("error", errorMessage(e));
+    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: keys.projects }),
   });
 }
 

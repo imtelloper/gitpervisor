@@ -17,6 +17,7 @@ import { TitleBar } from "./components/TitleBar";
 import { Toolbar } from "./components/toolbar/Toolbar";
 import { FileTreePanel } from "./components/tree/FileTreePanel";
 import { WorkspaceTabs } from "./components/workspace/WorkspaceTabs";
+import { useAgentNotifications } from "./lib/agent-notify";
 import {
   useAutoFetch,
   useProjectRootsPrefetch,
@@ -34,6 +35,7 @@ export default function App() {
   const { data: settings } = useSettings();
   useAutoFetch(); // 옵트인 자동 fetch (기본 OFF)
   useProjectRootsPrefetch(); // 전 프로젝트 루트 병렬 프리페치 → 트리 즉시 표시
+  useAgentNotifications(); // AI 작업 완료 OS 알림 (메인 창 1회 — 설정 모드별)
 
   // 선택 테마를 <html data-theme>로 적용 — CSS 변수 오버라이드가 전체 팔레트를 바꾼다
   useEffect(() => {

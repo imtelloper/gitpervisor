@@ -17,10 +17,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { errorMessage } from "../../lib/ipc";
 import type { DiffTarget } from "../../lib/ipc";
-import { languageOf } from "../../lib/language-map";
+import { isImage, languageOf } from "../../lib/language-map";
 import { useDiff, useSettings, useWriteFile } from "../../queries";
 import { useUi } from "../../stores/ui";
 import { EmptyState } from "../common/EmptyState";
+import ImageView from "./ImageView";
 import MarkdownView from "./MarkdownView";
 
 function monacoThemeOf(theme: string | undefined): string {
@@ -92,9 +93,12 @@ export default function DiffViewer({
     [settings?.diffFontSize, collapseUnchanged],
   );
   const isFileView = target.mode === "file";
-  const isMarkdown = isFileView && languageOf(target.path) === "markdown";
-  // 파일뷰만 직접 편집한다. diff뷰(worktree/index)는 "편집" 버튼으로 파일뷰 전환.
-  const editable = isFileView;
+  // 이미지 파일은 모드와 무관하게 워크트리 파일을 이미지로 렌더(텍스트 diff 대신).
+  const isImageView = isImage(target.path);
+  const isMarkdown =
+    isFileView && !isImageView && languageOf(target.path) === "markdown";
+  // 파일뷰만 직접 편집한다. diff뷰(worktree/index)는 "편집" 버튼으로 파일뷰 전환. 이미지는 편집 불가.
+  const editable = isFileView && !isImageView;
   const fileOptions = useMemo(
     () => ({ ...FILE_OPTIONS, readOnly: !editable, fontSize: settings?.diffFontSize ?? 13 }),
     [settings?.diffFontSize, editable],
@@ -225,7 +229,8 @@ export default function DiffViewer({
       : null;
 
   // diff뷰에서 워킹 파일을 편집 가능한 파일뷰로 여는 버튼 표시 여부.
-  const canEditFromDiff = target.mode === "worktree" || target.mode === "index";
+  const canEditFromDiff =
+    !isImageView && (target.mode === "worktree" || target.mode === "index");
 
   return (
     <div className="flex h-full min-w-0 flex-col bg-base">
@@ -271,7 +276,7 @@ export default function DiffViewer({
             {mdRaw ? <Eye size={14} /> : <Code2 size={14} />}
           </button>
         )}
-        {!isFileView && (
+        {!isFileView && !isImageView && (
           <button
             onClick={toggleDiffCollapse}
             title={
@@ -294,7 +299,9 @@ export default function DiffViewer({
       </div>
 
       <div className="min-h-0 flex-1">
-        {isLoading ? (
+        {isImageView ? (
+          <ImageView projectId={projectId} path={path} />
+        ) : isLoading ? (
           <EmptyState title="diff 불러오는 중…" />
         ) : error ? (
           <EmptyState

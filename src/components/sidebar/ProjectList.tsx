@@ -8,7 +8,7 @@ import {
   Terminal,
   Trash2,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { OpenTarget, Project } from "../../lib/ipc";
 import { errorMessage, ipc } from "../../lib/ipc";
@@ -17,6 +17,7 @@ import {
   useAddProject,
   useProjects,
   useRemoveProject,
+  useReorderProjects,
   useStatuses,
 } from "../../queries";
 import { useAgentScanner } from "../../stores/agentActivity";
@@ -104,6 +105,67 @@ export function ProjectList() {
       return a.order - b.order;
     });
   }, [projects, statuses, sortByChanges]);
+
+  // ── 드래그 순서 정렬 (수동 순서 모드에서만 — 변경 우선 정렬 중엔 의미 없어 비활성) ──
+  const reorder = useReorderProjects();
+  const reorderMutate = reorder.mutate;
+  const dragEnabled = !sortByChanges;
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [overId, setOverId] = useState<string | null>(null);
+  // 콜백을 안정 참조로 두기 위해 최신 목록/드래그 대상은 ref로 본다(ProjectItem memo 보존).
+  const orderedRef = useRef(orderedProjects);
+  orderedRef.current = orderedProjects;
+  const dragRef = useRef<string | null>(null);
+  dragRef.current = dragId;
+
+  const handleDragStart = useCallback((id: string) => setDragId(id), []);
+  const handleDragEnd = useCallback(() => {
+    setDragId(null);
+    setOverId(null);
+  }, []);
+  const handleDragOver = useCallback((e: React.DragEvent, id: string) => {
+    e.preventDefault();
+    setOverId((cur) => (cur === id ? cur : id));
+  }, []);
+  const handleDrop = useCallback(
+    (targetId: string) => {
+      const from = dragRef.current;
+      setDragId(null);
+      setOverId(null);
+      if (!from || from === targetId) return;
+      const ids = orderedRef.current.map((p) => p.id);
+      const fromIdx = ids.indexOf(from);
+      if (fromIdx === -1) return;
+      ids.splice(fromIdx, 1); // 끌고 온 항목을 빼고
+      const at = ids.indexOf(targetId);
+      ids.splice(at === -1 ? ids.length : at, 0, from); // 대상 앞에 삽입
+      reorderMutate(ids);
+    },
+    [reorderMutate],
+  );
+
+  // Ctrl+Shift+↑/↓ 로 프로젝트 선택을 위/아래로 이동 (표시 순서 기준, 양끝 wrap-around).
+  // 최신 목록/선택을 ref로 참조해 리스너를 1회만 등록한다(KeyboardShortcuts와 동일 패턴).
+  // 터미널 포커스 중에도 동작하도록 xterm은 이 조합을 PTY로 보내지 않고 흘려보낸다(terminal-engine).
+  const navRef = useRef({ orderedProjects, selectedProjectId });
+  navRef.current = { orderedProjects, selectedProjectId };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.ctrlKey || !e.shiftKey) return;
+      if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+      const { orderedProjects: list, selectedProjectId: sel } = navRef.current;
+      if (list.length === 0) return;
+      e.preventDefault();
+      const idx = list.findIndex((p) => p.id === sel);
+      const delta = e.key === "ArrowDown" ? 1 : -1;
+      // 선택이 없으면 방향에 맞춰 양끝에서 시작
+      const base = idx === -1 ? (delta === 1 ? -1 : 0) : idx;
+      const next = (base + delta + list.length) % list.length;
+      selectProject(list[next].id);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectProject]);
 
   // 메뉴 열림 동안 바깥 클릭 / Esc 로 닫는다
   useEffect(() => {
@@ -220,6 +282,12 @@ export function ProjectList() {
             onSelect={selectProject}
             onRemove={handleRemove}
             onContextMenu={handleItemContextMenu}
+            draggable={dragEnabled}
+            isOver={dragEnabled && overId === p.id && dragId !== p.id}
+            onDragStart={handleDragStart}
+            onDragOver={handleDragOver}
+            onDrop={handleDrop}
+            onDragEnd={handleDragEnd}
           />
         ))}
         {projects && orderedProjects.length === 0 && (

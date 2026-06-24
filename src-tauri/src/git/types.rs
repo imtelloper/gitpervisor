@@ -190,6 +190,8 @@ pub struct Settings {
     /// 임베디드 터미널 셸 (null/빈값 = 자동: pwsh→powershell→cmd / $SHELL)
     pub terminal_shell: Option<String>,
     pub terminal_font_size: u32,
+    /// AI 작업 완료 알림 모드: "off" | "project-inactive" | "terminal" | "always"
+    pub notify_mode: String,
 }
 
 impl Default for Settings {
@@ -202,6 +204,7 @@ impl Default for Settings {
             theme: "darcula".to_string(),
             terminal_shell: None,
             terminal_font_size: 13,
+            notify_mode: "project-inactive".to_string(),
         }
     }
 }

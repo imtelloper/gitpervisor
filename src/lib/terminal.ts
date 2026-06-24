@@ -60,6 +60,8 @@ export async function createTerminal(opts: {
   id: string;
   projectId: string;
   fontSize: number;
+  /** true면 새 PTY를 spawn하지 않고 살아있는 세션에 재연결(플로팅 창 — term_attach). */
+  attach?: boolean;
 }): Promise<TermInstance> {
   const existing = registry.get(opts.id);
   if (existing) return existing;
@@ -109,6 +111,20 @@ export async function pasteIntoTerminal(id: string) {
 export function copyTerminalSelection(id: string) {
   const sel = registry.get(id)?.term.getSelection();
   if (sel) void navigator.clipboard.writeText(sel).catch(() => {});
+}
+
+/** 플로팅 분리용 — xterm 인스턴스/host만 정리하고 PTY(term_close)는 호출하지 않는다.
+ *  PTY는 살아있고, 새 OS 창이 term_attach로 출력을 이어받는다. */
+export function detachTerminalKeepPty(id: string) {
+  const inst = registry.get(id);
+  if (!inst) return;
+  registry.delete(id);
+  try {
+    inst.term.dispose();
+  } catch {
+    /* noop */
+  }
+  inst.host.remove();
 }
 
 /** 세션 완전 종료 — PTY kill + xterm dispose + 레지스트리 제거. term_close 완료를 await할 수 있다. */

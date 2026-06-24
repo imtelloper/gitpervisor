@@ -25,12 +25,25 @@ export const ProjectItem = memo(function ProjectItem({
   onSelect,
   onRemove,
   onContextMenu,
+  draggable,
+  isOver,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDragEnd,
 }: {
   project: Project;
   selected: boolean;
   onSelect: (id: string) => void;
   onRemove: (id: string) => void;
   onContextMenu?: (e: React.MouseEvent, project: Project) => void;
+  /** 드래그 정렬 (수동 순서 모드에서만 활성) */
+  draggable?: boolean;
+  isOver?: boolean;
+  onDragStart?: (id: string) => void;
+  onDragOver?: (e: React.DragEvent, id: string) => void;
+  onDrop?: (id: string) => void;
+  onDragEnd?: () => void;
 }) {
   const { data: status, isLoading, error } = useStatus(project.id);
   const { data: notes } = useNotes();
@@ -58,12 +71,27 @@ export const ProjectItem = memo(function ProjectItem({
     <div
       onClick={() => onSelect(project.id)}
       onContextMenu={onContextMenu ? (e) => onContextMenu(e, project) : undefined}
+      draggable={draggable}
+      onDragStart={
+        draggable
+          ? (e) => {
+              e.dataTransfer.effectAllowed = "move";
+              onDragStart?.(project.id);
+            }
+          : undefined
+      }
+      onDragOver={draggable ? (e) => onDragOver?.(e, project.id) : undefined}
+      onDrop={draggable ? () => onDrop?.(project.id) : undefined}
+      onDragEnd={draggable ? () => onDragEnd?.() : undefined}
       className={`group relative cursor-pointer border-l-2 px-3 py-2 ${
         selected
           ? "border-accent bg-selection"
           : "border-transparent hover:bg-raised"
       } ${agent === "working" ? "ai-working" : agent === "done" ? "ai-done" : ""}`}
     >
+      {isOver && (
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-0.5 bg-accent" />
+      )}
       <div className="flex items-center gap-2 overflow-hidden">
         <StatusDot state={dot} />
         <span className="whitespace-nowrap font-medium">{project.name}</span>
