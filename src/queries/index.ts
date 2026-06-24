@@ -216,7 +216,9 @@ export function useSysMetrics() {
     queryKey: keys.sysMetrics,
     queryFn: ipc.sysMetrics,
     refetchInterval: 2000,
-    refetchIntervalInBackground: true,
+    // 창이 백그라운드(비포커스/최소화)면 폴링 중단 — 보이지 않는 동안 CPU·IPC를 절약한다.
+    // 포커스 복귀 시 refetchOnWindowFocus(staleTime:0)로 즉시 최신화된다.
+    refetchIntervalInBackground: false,
     staleTime: 0,
     gcTime: 4000,
     placeholderData: keepPreviousData,

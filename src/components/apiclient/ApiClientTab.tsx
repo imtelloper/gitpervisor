@@ -33,14 +33,17 @@ function topCollectionOf(
 export function ApiClientTab({
   tabId,
   projectId,
+  active,
 }: {
   tabId: string;
   projectId: string;
+  active: boolean;
 }) {
   const urlRef = useRef<HTMLInputElement>(null);
   const pushToast = useUi((s) => s.pushToast);
 
-  // 탭 스코프 단축키(§8.6) — 탭 활성 시에만 마운트되므로 전역 충돌 없음.
+  // 탭 스코프 단축키(§8.6) — 모든 API 탭이 항상 마운트되지만(hidden 토글), onKeyDown은
+  // tabIndex=-1 div의 React 핸들러라 포커스된(=활성) 탭에서만 발화해 전역 충돌이 없다.
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       const ctrl = e.ctrlKey || e.metaKey;
@@ -113,7 +116,9 @@ export function ApiClientTab({
         <RequestTabs tabId={tabId} />
       </div>
       <ResponsePanel tabId={tabId} />
-      <EnvDialog />
+      {/* EnvDialog는 전역 단일 모달(envDialogOpen) — 모든 API 탭이 항상 마운트되므로
+          활성 탭에서만 렌더해 N중 인스턴스(중복 오버레이·낭비 재렌더)를 막는다. */}
+      {active && <EnvDialog />}
     </div>
   );
 }

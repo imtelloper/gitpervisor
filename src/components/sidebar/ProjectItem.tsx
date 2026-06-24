@@ -8,13 +8,18 @@ import {
   X,
 } from "lucide-react";
 
+import { memo } from "react";
+
 import type { Project } from "../../lib/ipc";
 import { errorMessage } from "../../lib/ipc";
 import { useNotes, useStatus } from "../../queries";
 import { useAgentActivity } from "../../stores/agentActivity";
 import { dotStateOf, StatusDot } from "../common/StatusDot";
 
-export function ProjectItem({
+// memo — 부모(ProjectList)의 로컬 상태 변화(컨텍스트 메뉴 열림/닫힘, 사이드바 폭 드래그 등)가
+// 모든 항목으로 재렌더 캐스케이드되지 않게 한다. 콜백은 id를 인자로 받는 안정 참조라야 효과가 있다.
+// (status/notes/agent 구독에 의한 재렌더는 각 항목이 직접 구독하므로 memo와 무관하게 일어난다.)
+export const ProjectItem = memo(function ProjectItem({
   project,
   selected,
   onSelect,
@@ -23,9 +28,9 @@ export function ProjectItem({
 }: {
   project: Project;
   selected: boolean;
-  onSelect: () => void;
-  onRemove: () => void;
-  onContextMenu?: (e: React.MouseEvent) => void;
+  onSelect: (id: string) => void;
+  onRemove: (id: string) => void;
+  onContextMenu?: (e: React.MouseEvent, project: Project) => void;
 }) {
   const { data: status, isLoading, error } = useStatus(project.id);
   const { data: notes } = useNotes();
@@ -51,8 +56,8 @@ export function ProjectItem({
 
   return (
     <div
-      onClick={onSelect}
-      onContextMenu={onContextMenu}
+      onClick={() => onSelect(project.id)}
+      onContextMenu={onContextMenu ? (e) => onContextMenu(e, project) : undefined}
       className={`group relative cursor-pointer border-l-2 px-3 py-2 ${
         selected
           ? "border-accent bg-selection"
@@ -95,7 +100,7 @@ export function ProjectItem({
         title="프로젝트 제거 (레포는 삭제되지 않음)"
         onClick={(e) => {
           e.stopPropagation();
-          onRemove();
+          onRemove(project.id);
         }}
         className="absolute right-1 top-1.5 rounded bg-raised p-0.5 text-fg-dim opacity-0 hover:bg-edge hover:text-fg group-hover:opacity-100"
       >
@@ -155,4 +160,4 @@ export function ProjectItem({
       </div>
     </div>
   );
-}
+});

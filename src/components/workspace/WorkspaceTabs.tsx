@@ -157,14 +157,17 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
             <BrowserPane id={b.id} active={active === b.id} />
           </div>
         ))}
-        {/* API 클라이언트 탭 — active일 때만 마운트(monaco lazy, 비활성 메모리 절감). */}
+        {/* API 클라이언트 탭 — 한 번 열면 마운트 유지(hidden 토글)해 탭 복귀 시 Monaco
+            재초기화를 없애고 즉시 전환되게 한다. 첫 마운트에만 monaco 청크가 lazy 로드된다. */}
         {apiTabs.map((t) => (
           <div key={t.id} className={active === t.id ? "h-full" : "hidden"}>
-            {active === t.id && (
-              <Suspense fallback={null}>
-                <ApiClientTab tabId={t.id} projectId={projectId} />
-              </Suspense>
-            )}
+            <Suspense fallback={null}>
+              <ApiClientTab
+                tabId={t.id}
+                projectId={projectId}
+                active={active === t.id}
+              />
+            </Suspense>
           </div>
         ))}
       </div>

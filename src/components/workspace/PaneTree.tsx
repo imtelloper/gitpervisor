@@ -191,10 +191,23 @@ function Divider({
   const setDraggingSplit = useTerminals((s) => s.setDraggingSplit);
   const isRow = dir === "row";
 
+  // 드래그 도중 이 divider가 사라져도(패널 닫기/탭 전환/최대화) 리스너·rAF를 정리하고
+  // draggingSplit이 true로 고착(브라우저 웹뷰 영구 숨김)되지 않게 하는 언마운트 안전망.
+  const teardownRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => teardownRef.current?.(), []);
+
   const onPointerDown = (e: React.PointerEvent) => {
     e.preventDefault();
     // 드래그 중엔 브라우저 웹뷰를 숨겨 리사이즈 잔상을 막는다
     setDraggingSplit(true);
+    // pointermove는 프레임당 여러 번 발화한다 — setRatio(스토어 갱신=워크스페이스 트리
+    // 재렌더)를 rAF로 합쳐(coalesce) 프레임당 최대 1회만 커밋해 드래그 중 재렌더 폭주를 막는다.
+    let raf = 0;
+    let pending = 0;
+    const flush = () => {
+      raf = 0;
+      setRatio(tabId, splitId, pending);
+    };
     const move = (ev: PointerEvent) => {
       const el = containerRef.current;
       if (!el) return;
@@ -202,13 +215,25 @@ function Divider({
       const ratio = isRow
         ? (ev.clientX - r.left) / r.width
         : (ev.clientY - r.top) / r.height;
-      setRatio(tabId, splitId, Math.min(0.9, Math.max(0.1, ratio)));
+      pending = Math.min(0.9, Math.max(0.1, ratio));
+      if (!raf) raf = requestAnimationFrame(flush);
     };
-    const up = () => {
+    const teardown = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      if (raf) cancelAnimationFrame(raf);
+      teardownRef.current = null;
       setDraggingSplit(false);
     };
+    const up = () => {
+      if (raf) {
+        cancelAnimationFrame(raf);
+        raf = 0;
+        setRatio(tabId, splitId, pending); // 마지막 위치를 확정 커밋
+      }
+      teardown();
+    };
+    teardownRef.current = teardown;
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
   };

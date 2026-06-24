@@ -8,7 +8,7 @@ import {
   Terminal,
   Trash2,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import type { OpenTarget, Project } from "../../lib/ipc";
 import { errorMessage, ipc } from "../../lib/ipc";
@@ -137,15 +137,30 @@ export function ProjectList() {
     }
   }
 
-  function handleRemove(id: string) {
-    // 제거되는 프로젝트의 열린 터미널 PTY를 정리한다 (설계 §16.8)
-    useTerminals.getState().closeProjectTerminals(id);
-    removeProject.mutate(id, {
-      onSuccess: () => {
-        if (useUi.getState().selectedProjectId === id) selectProject(null);
-      },
-    });
-  }
+  // 안정 참조 콜백 — ProjectItem(memo)이 부모 로컬 상태 변화에 재렌더되지 않게 한다.
+  // removeProject(useMutation 결과)는 매 렌더 새 객체라 dep로 쓰면 콜백이 매번 새로 생겨
+  // memo가 무력화된다 — v5에서 안정 참조인 .mutate만 dep로 잡는다.
+  const removeMutate = removeProject.mutate;
+  const handleRemove = useCallback(
+    (id: string) => {
+      // 제거되는 프로젝트의 열린 터미널 PTY를 정리한다 (설계 §16.8)
+      useTerminals.getState().closeProjectTerminals(id);
+      removeMutate(id, {
+        onSuccess: () => {
+          if (useUi.getState().selectedProjectId === id) selectProject(null);
+        },
+      });
+    },
+    [removeMutate, selectProject],
+  );
+
+  const handleItemContextMenu = useCallback(
+    (e: React.MouseEvent, project: Project) => {
+      e.preventDefault();
+      setMenu({ x: e.clientX, y: e.clientY, project });
+    },
+    [],
+  );
 
   function handleOpenIn(project: Project, target: OpenTarget) {
     void ipc
@@ -202,12 +217,9 @@ export function ProjectList() {
             key={p.id}
             project={p}
             selected={p.id === selectedProjectId}
-            onSelect={() => selectProject(p.id)}
-            onRemove={() => handleRemove(p.id)}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              setMenu({ x: e.clientX, y: e.clientY, project: p });
-            }}
+            onSelect={selectProject}
+            onRemove={handleRemove}
+            onContextMenu={handleItemContextMenu}
           />
         ))}
         {projects && orderedProjects.length === 0 && (
