@@ -54,3 +54,14 @@ clipboard-win = "5"
 [dev-dependencies]
 tempfile = "3.27.0"
 
+# 배포 바이너리 최적화 — Thin LTO + 단일 codegen 유닛으로 크로스-크레이트 인라이닝/최적화를
+# 얻고 strip으로 심볼 제거(바이너리 축소). 무거운 의존성 트리(mongodb/tiberius/reqwest/tauri)
+# 때문에 fat LTO(lto=true)는 릴리스 빌드를 15~40분+로 늘리고 RAM도 크게 먹는데, IPC 바운드
+# 앱이라 런타임 이득은 thin 대비 한 자릿수 %에 그쳐 thin이 비용/효과상 낫다. 릴리스 빌드(=설치본)
+# 에만 적용되며 dev/디버그 속도엔 영향이 없다. panic은 unwind 유지 — 커맨드 내부 패닉이 앱
+# 전체를 죽이지 않고 해당 작업만 실패하도록(crash 내성).
+[profile.release]
+codegen-units = 1
+lto = "thin"
+strip = true
+
