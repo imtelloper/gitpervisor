@@ -1,0 +1,2286 @@
+{
+  "version": "2.13",
+  "children": [
+    {
+      "type": "frame",
+      "id": "vinty",
+      "x": 0,
+      "y": 0,
+      "name": "Gitpervisor Landing",
+      "clip": true,
+      "width": 1440,
+      "fill": "$bg-dark",
+      "layout": "vertical",
+      "children": [
+        {
+          "type": "frame",
+          "id": "hy6c5",
+          "name": "Hero Section",
+          "width": "fill_container",
+          "layout": "vertical",
+          "gap": 32,
+          "padding": [
+            120,
+            120,
+            80,
+            120
+          ],
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "frame",
+              "id": "a0yqt",
+              "name": "Nav Bar",
+              "width": "fill_container",
+              "justifyContent": "space_between",
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "text",
+                  "id": "ssAE5",
+                  "name": "Logo",
+                  "fill": "$text-primary",
+                  "content": "Gitpervisor",
+                  "fontFamily": "Geist",
+                  "fontSize": 20,
+                  "fontWeight": "700"
+                },
+                {
+                  "type": "frame",
+                  "id": "Hj5f2",
+                  "name": "Nav Links",
+                  "gap": 32,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "dcmW1",
+                      "name": "Features",
+                      "fill": "$text-secondary",
+                      "content": "Features",
+                      "fontFamily": "Inter",
+                      "fontSize": 14,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "text",
+                      "id": "TGnFz",
+                      "name": "Download",
+                      "fill": "$text-secondary",
+                      "content": "Download",
+                      "fontFamily": "Inter",
+                      "fontSize": 14,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "text",
+                      "id": "u92Yh0",
+                      "name": "GitHub",
+                      "fill": "$text-secondary",
+                      "content": "GitHub",
+                      "fontFamily": "Inter",
+                      "fontSize": 14,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "kxmOl",
+                      "name": "GitHub Star",
+                      "fill": "#27272A",
+                      "cornerRadius": 6,
+                      "gap": 6,
+                      "padding": [
+                        6,
+                        14
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "Fff3A",
+                          "name": "GitHub Icon",
+                          "width": 14,
+                          "height": 14,
+                          "icon": "star",
+                          "library": "lucide",
+                          "fill": "$accent-purple"
+                        },
+                        {
+                          "type": "text",
+                          "id": "aqH9d",
+                          "name": "Star Label",
+                          "fill": "$text-primary",
+                          "content": "Star on GitHub",
+                          "fontFamily": "Geist Mono",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "gNns1",
+              "name": "Badge",
+              "cornerRadius": 20,
+              "stroke": "$border-accent",
+              "gap": 6,
+              "padding": [
+                6,
+                14
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "text",
+                  "id": "cigQp",
+                  "name": "Badge Text",
+                  "fill": "$accent-purple",
+                  "content": "v1.0  ·  Free & Open Source  ·  MIT License",
+                  "fontFamily": "Geist Mono",
+                  "fontSize": 12,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "id": "g2L8X",
+              "name": "Headline",
+              "fill": "$text-primary",
+              "textGrowth": "fixed-width",
+              "width": 900,
+              "content": "Your AI Coding\nCommand Center",
+              "lineHeight": 1.1,
+              "textAlign": "center",
+              "fontFamily": "Geist",
+              "fontSize": 64,
+              "fontWeight": "700"
+            },
+            {
+              "type": "text",
+              "id": "vXtwr",
+              "name": "Subtitle",
+              "fill": "$text-secondary",
+              "textGrowth": "fixed-width",
+              "width": 680,
+              "content": "Manage multiple Git projects, supervise AI agents like Claude in real time,\nand monitor everything from one open-source desktop app.",
+              "lineHeight": 1.6,
+              "textAlign": "center",
+              "fontFamily": "Inter",
+              "fontSize": 18,
+              "fontWeight": "normal"
+            },
+            {
+              "type": "frame",
+              "id": "zckwy",
+              "name": "Download Buttons",
+              "gap": 12,
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "zQ30S",
+                  "name": "DL Windows",
+                  "fill": "$accent-purple",
+                  "cornerRadius": 8,
+                  "gap": 8,
+                  "padding": [
+                    14,
+                    24
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "GJSOy",
+                      "name": "Windows Icon",
+                      "width": 18,
+                      "height": 18,
+                      "icon": "monitor",
+                      "library": "lucide",
+                      "fill": "#FFFFFF"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "tP7IE",
+                      "name": "Windows Text",
+                      "layout": "vertical",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "kriSr",
+                          "name": "Windows Label",
+                          "fill": "#FFFFFF",
+                          "content": "Download for Windows",
+                          "fontFamily": "Geist",
+                          "fontSize": 14,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "r0p3N",
+                          "name": "Windows Sub",
+                          "fill": "#FFFFFFAA",
+                          "content": ".exe",
+                          "fontFamily": "Geist Mono",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "oQF7W",
+                  "name": "DL macOS",
+                  "fill": "#18181B",
+                  "cornerRadius": 8,
+                  "stroke": "$border-subtle",
+                  "gap": 8,
+                  "padding": [
+                    14,
+                    24
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "JZvON",
+                      "name": "macOS Icon",
+                      "width": 18,
+                      "height": 18,
+                      "icon": "command",
+                      "library": "lucide",
+                      "fill": "$text-secondary"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "MBJVw",
+                      "name": "macOS Text",
+                      "layout": "vertical",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "MZmx3",
+                          "name": "macOS Label",
+                          "fill": "$text-primary",
+                          "content": "Download for macOS",
+                          "fontFamily": "Geist",
+                          "fontSize": 14,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "gWAIt",
+                          "name": "macOS Sub",
+                          "fill": "$text-muted",
+                          "content": ".dmg",
+                          "fontFamily": "Geist Mono",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "AeTB8",
+                  "name": "DL Linux",
+                  "fill": "#18181B",
+                  "cornerRadius": 8,
+                  "stroke": "$border-subtle",
+                  "gap": 8,
+                  "padding": [
+                    14,
+                    24
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "P8r0Pj",
+                      "name": "Linux Icon",
+                      "width": 18,
+                      "height": 18,
+                      "icon": "terminal",
+                      "library": "lucide",
+                      "fill": "$text-secondary"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "x0ZV6v",
+                      "name": "Linux Text",
+                      "layout": "vertical",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "m9D08b",
+                          "name": "Linux Label",
+                          "fill": "$text-primary",
+                          "content": "Download for Linux",
+                          "fontFamily": "Geist",
+                          "fontSize": 14,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "SGUZv",
+                          "name": "Linux Sub",
+                          "fill": "$text-muted",
+                          "content": ".AppImage",
+                          "fontFamily": "Geist Mono",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "VkCmC",
+                  "name": "GitHub Link",
+                  "cornerRadius": 8,
+                  "stroke": "$border-subtle",
+                  "gap": 6,
+                  "padding": [
+                    14,
+                    20
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "XDF3y",
+                      "name": "GH Icon",
+                      "width": 18,
+                      "height": 18,
+                      "icon": "github",
+                      "library": "lucide",
+                      "fill": "$text-secondary"
+                    },
+                    {
+                      "type": "text",
+                      "id": "wJda4",
+                      "name": "GH Text",
+                      "fill": "$text-secondary",
+                      "content": "View Source",
+                      "fontFamily": "Inter",
+                      "fontSize": 14,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "S9HJv",
+              "name": "Platform Note",
+              "gap": 6,
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "text",
+                  "id": "JhuO8",
+                  "name": "Platform Text",
+                  "fill": "$text-muted",
+                  "content": "Windows · macOS · Linux",
+                  "fontFamily": "Geist Mono",
+                  "fontSize": 12,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "P1jHhb",
+              "name": "Mockup Wrapper",
+              "width": "fill_container",
+              "layout": "vertical",
+              "padding": [
+                40,
+                0,
+                0,
+                0
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "SKwEB",
+                  "name": "App Mockup",
+                  "clip": true,
+                  "width": 1100,
+                  "height": 640,
+                  "fill": "#111113",
+                  "cornerRadius": 12,
+                  "stroke": "$border-subtle",
+                  "effect": {
+                    "type": "shadow",
+                    "shadowType": "outer",
+                    "color": "#A855F71A",
+                    "blur": 80
+                  },
+                  "layout": "vertical",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "kkLs6",
+                      "name": "Title Bar",
+                      "width": "fill_container",
+                      "height": 36,
+                      "fill": "#0C0C0E",
+                      "stroke": "$border-subtle",
+                      "padding": [
+                        0,
+                        12
+                      ],
+                      "justifyContent": "space_between",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "AklUu",
+                          "name": "Window Dots",
+                          "gap": 6,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "ellipse",
+                              "id": "b6uOFy",
+                              "name": "Dot",
+                              "fill": "#EF4444",
+                              "width": 10,
+                              "height": 10
+                            },
+                            {
+                              "type": "ellipse",
+                              "id": "OxX7z",
+                              "name": "Dot",
+                              "fill": "#EAB308",
+                              "width": 10,
+                              "height": 10
+                            },
+                            {
+                              "type": "ellipse",
+                              "id": "CvVAA",
+                              "name": "Dot",
+                              "fill": "#22C55E",
+                              "width": 10,
+                              "height": 10
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "o8B6K8",
+                          "name": "Title Text",
+                          "fill": "$text-muted",
+                          "content": "Gitpervisor — ~/projects",
+                          "fontFamily": "Geist Mono",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "frame",
+                          "id": "fdsGo",
+                          "name": "Window Actions",
+                          "gap": 8,
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "SaaiE",
+                              "name": "minus btn",
+                              "width": 12,
+                              "height": 12,
+                              "icon": "minus",
+                              "library": "lucide",
+                              "fill": "$text-muted"
+                            },
+                            {
+                              "type": "icon",
+                              "id": "WlHB2",
+                              "name": "square btn",
+                              "width": 12,
+                              "height": 12,
+                              "icon": "square",
+                              "library": "lucide",
+                              "fill": "$text-muted"
+                            },
+                            {
+                              "type": "icon",
+                              "id": "SMWxC",
+                              "name": "x btn",
+                              "width": 12,
+                              "height": 12,
+                              "icon": "x",
+                              "library": "lucide",
+                              "fill": "$text-muted"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "wCaY8",
+                      "name": "App Body",
+                      "width": "fill_container",
+                      "height": "fill_container",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "K5xdx8",
+                          "name": "Sidebar",
+                          "width": 220,
+                          "height": "fill_container",
+                          "fill": "#0C0C0E",
+                          "layout": "vertical",
+                          "gap": 8,
+                          "padding": [
+                            12,
+                            8
+                          ],
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "N0d8iJ",
+                              "name": "Projects Header",
+                              "fill": "$text-muted",
+                              "content": "PROJECTS",
+                              "fontFamily": "Geist Mono",
+                              "fontSize": 10,
+                              "fontWeight": "600"
+                            },
+                            {
+                              "type": "frame",
+                              "id": "zjxVD",
+                              "name": "Project gitpervisor",
+                              "width": "fill_container",
+                              "fill": "#1A1A1E",
+                              "cornerRadius": 6,
+                              "gap": 8,
+                              "padding": [
+                                8,
+                                10
+                              ],
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "ellipse",
+                                  "id": "qwOCr",
+                                  "name": "Status Dot",
+                                  "fill": "#A855F7",
+                                  "width": 8,
+                                  "height": 8
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "WZ1L2",
+                                  "name": "Proj Name",
+                                  "fill": "$text-primary",
+                                  "content": "gitpervisor",
+                                  "fontFamily": "Geist Mono",
+                                  "fontSize": 12,
+                                  "fontWeight": "normal"
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "rpJPi",
+                                  "name": "Agent Badge",
+                                  "fill": "$accent-purple",
+                                  "content": "AI",
+                                  "fontFamily": "Geist Mono",
+                                  "fontSize": 9,
+                                  "fontWeight": "normal"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "uaJE9",
+                              "name": "Project my-saas-app",
+                              "width": "fill_container",
+                              "cornerRadius": 6,
+                              "gap": 8,
+                              "padding": [
+                                8,
+                                10
+                              ],
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "ellipse",
+                                  "id": "s9FGcA",
+                                  "name": "Status Dot",
+                                  "fill": "#22C55E",
+                                  "width": 8,
+                                  "height": 8
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "kEAVS",
+                                  "name": "Proj Name",
+                                  "fill": "$text-secondary",
+                                  "content": "my-saas-app",
+                                  "fontFamily": "Geist Mono",
+                                  "fontSize": 12,
+                                  "fontWeight": "normal"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "z0Ah6",
+                              "name": "Project design-system",
+                              "width": "fill_container",
+                              "cornerRadius": 6,
+                              "gap": 8,
+                              "padding": [
+                                8,
+                                10
+                              ],
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "ellipse",
+                                  "id": "NJDoT",
+                                  "name": "Status Dot",
+                                  "fill": "#71717A",
+                                  "width": 8,
+                                  "height": 8
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "BuNrh",
+                                  "name": "Proj Name",
+                                  "fill": "$text-secondary",
+                                  "content": "design-system",
+                                  "fontFamily": "Geist Mono",
+                                  "fontSize": 12,
+                                  "fontWeight": "normal"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "xQTDe",
+                              "name": "Project api-gateway",
+                              "width": "fill_container",
+                              "cornerRadius": 6,
+                              "gap": 8,
+                              "padding": [
+                                8,
+                                10
+                              ],
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "ellipse",
+                                  "id": "UZZMa",
+                                  "name": "Status Dot",
+                                  "fill": "#A855F7",
+                                  "width": 8,
+                                  "height": 8
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "A9IKm",
+                                  "name": "Proj Name",
+                                  "fill": "$text-secondary",
+                                  "content": "api-gateway",
+                                  "fontFamily": "Geist Mono",
+                                  "fontSize": 12,
+                                  "fontWeight": "normal"
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "E9ITRg",
+                                  "name": "Agent Badge",
+                                  "fill": "$accent-purple",
+                                  "content": "AI",
+                                  "fontFamily": "Geist Mono",
+                                  "fontSize": 9,
+                                  "fontWeight": "normal"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "CGrbS",
+                              "name": "Project docs-site",
+                              "width": "fill_container",
+                              "cornerRadius": 6,
+                              "gap": 8,
+                              "padding": [
+                                8,
+                                10
+                              ],
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "ellipse",
+                                  "id": "B41l9c",
+                                  "name": "Status Dot",
+                                  "fill": "#71717A",
+                                  "width": 8,
+                                  "height": 8
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "mpKO9",
+                                  "name": "Proj Name",
+                                  "fill": "$text-secondary",
+                                  "content": "docs-site",
+                                  "fontFamily": "Geist Mono",
+                                  "fontSize": 12,
+                                  "fontWeight": "normal"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "QiyvP",
+                              "name": "Sidebar Spacer",
+                              "width": "fill_container",
+                              "height": "fill_container"
+                            },
+                            {
+                              "type": "frame",
+                              "id": "Acjq1",
+                              "name": "GPU Monitor",
+                              "width": "fill_container",
+                              "cornerRadius": 6,
+                              "stroke": "$border-subtle",
+                              "layout": "vertical",
+                              "gap": 4,
+                              "padding": [
+                                8,
+                                10
+                              ],
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "LsRwx",
+                                  "name": "GPU Title",
+                                  "fill": "$text-muted",
+                                  "content": "GPU · RTX 4070",
+                                  "fontFamily": "Geist Mono",
+                                  "fontSize": 10,
+                                  "fontWeight": "600"
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "zJuci",
+                                  "name": "GPU Bar BG",
+                                  "width": "fill_container",
+                                  "height": 4,
+                                  "fill": "#27272A",
+                                  "cornerRadius": 2,
+                                  "children": [
+                                    {
+                                      "type": "frame",
+                                      "id": "xPqsI",
+                                      "layoutPosition": "absolute",
+                                      "x": 0,
+                                      "y": 0,
+                                      "name": "GPU Bar Fill",
+                                      "width": 140,
+                                      "height": 4,
+                                      "fill": "$accent-cyan",
+                                      "cornerRadius": 2
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "cH59N",
+                                  "name": "GPU Stats",
+                                  "fill": "$text-muted",
+                                  "content": "42% · VRAM 4.2/12 GB",
+                                  "fontFamily": "Geist Mono",
+                                  "fontSize": 10,
+                                  "fontWeight": "normal"
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "PXvox",
+                          "name": "Main Area",
+                          "width": "fill_container",
+                          "height": "fill_container",
+                          "layout": "vertical",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "XeBoi",
+                              "name": "Tabs Bar",
+                              "width": "fill_container",
+                              "height": 36,
+                              "fill": "#0C0C0E",
+                              "padding": [
+                                0,
+                                8
+                              ],
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "frame",
+                                  "id": "S884Rh",
+                                  "name": "Tab Terminal",
+                                  "fill": "#111113",
+                                  "gap": 6,
+                                  "padding": [
+                                    8,
+                                    14
+                                  ],
+                                  "alignItems": "center",
+                                  "children": [
+                                    {
+                                      "type": "text",
+                                      "id": "BMmpQ",
+                                      "name": "Terminal Label",
+                                      "fill": "$text-primary",
+                                      "content": "Terminal",
+                                      "fontFamily": "Geist Mono",
+                                      "fontSize": 11,
+                                      "fontWeight": "normal"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "Lj0Bh",
+                                  "name": "Tab API Client",
+                                  "gap": 6,
+                                  "padding": [
+                                    8,
+                                    14
+                                  ],
+                                  "alignItems": "center",
+                                  "children": [
+                                    {
+                                      "type": "text",
+                                      "id": "hUcm8",
+                                      "name": "API Client Label",
+                                      "fill": "$text-muted",
+                                      "content": "API Client",
+                                      "fontFamily": "Geist Mono",
+                                      "fontSize": 11,
+                                      "fontWeight": "normal"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "pPUOr",
+                                  "name": "Tab Browser",
+                                  "gap": 6,
+                                  "padding": [
+                                    8,
+                                    14
+                                  ],
+                                  "alignItems": "center",
+                                  "children": [
+                                    {
+                                      "type": "text",
+                                      "id": "yg9QU",
+                                      "name": "Browser Label",
+                                      "fill": "$text-muted",
+                                      "content": "Browser",
+                                      "fontFamily": "Geist Mono",
+                                      "fontSize": 11,
+                                      "fontWeight": "normal"
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "v77dt",
+                              "name": "Terminal Area",
+                              "width": "fill_container",
+                              "height": "fill_container",
+                              "fill": "#0A0A0C",
+                              "gap": 4,
+                              "padding": 8,
+                              "children": [
+                                {
+                                  "type": "frame",
+                                  "id": "AcN4z",
+                                  "name": "Pane 1",
+                                  "width": "fill_container",
+                                  "height": "fill_container",
+                                  "cornerRadius": 4,
+                                  "stroke": "$border-subtle",
+                                  "layout": "vertical",
+                                  "gap": 2,
+                                  "padding": 8,
+                                  "children": [
+                                    {
+                                      "type": "text",
+                                      "id": "j5i2XT",
+                                      "name": "Line",
+                                      "fill": "$accent-cyan",
+                                      "content": "~/gitpervisor $ claude",
+                                      "fontFamily": "Geist Mono",
+                                      "fontSize": 11,
+                                      "fontWeight": "normal"
+                                    },
+                                    {
+                                      "type": "text",
+                                      "id": "py3ZN",
+                                      "name": "Line",
+                                      "fill": "$accent-purple",
+                                      "content": "⠋ Working on task...",
+                                      "fontFamily": "Geist Mono",
+                                      "fontSize": 11,
+                                      "fontWeight": "normal"
+                                    },
+                                    {
+                                      "type": "text",
+                                      "id": "WlTB3",
+                                      "name": "Line",
+                                      "fill": "$text-muted",
+                                      "content": "Reading src/main.rs",
+                                      "fontFamily": "Geist Mono",
+                                      "fontSize": 11,
+                                      "fontWeight": "normal"
+                                    },
+                                    {
+                                      "type": "text",
+                                      "id": "G4wH5",
+                                      "name": "Line",
+                                      "fill": "$text-muted",
+                                      "content": "Analyzing dependencies...",
+                                      "fontFamily": "Geist Mono",
+                                      "fontSize": 11,
+                                      "fontWeight": "normal"
+                                    },
+                                    {
+                                      "type": "text",
+                                      "id": "pL7SS",
+                                      "name": "Line",
+                                      "fill": "#22C55E",
+                                      "content": "✓ Fixed import ordering",
+                                      "fontFamily": "Geist Mono",
+                                      "fontSize": 11,
+                                      "fontWeight": "normal"
+                                    },
+                                    {
+                                      "type": "text",
+                                      "id": "DkcQg",
+                                      "name": "Line",
+                                      "fill": "#22C55E",
+                                      "content": "✓ Updated Cargo.toml",
+                                      "fontFamily": "Geist Mono",
+                                      "fontSize": 11,
+                                      "fontWeight": "normal"
+                                    },
+                                    {
+                                      "type": "text",
+                                      "id": "qJytz",
+                                      "name": "Line",
+                                      "fill": "$text-muted",
+                                      "content": " ",
+                                      "fontFamily": "Geist Mono",
+                                      "fontSize": 11,
+                                      "fontWeight": "normal"
+                                    },
+                                    {
+                                      "type": "text",
+                                      "id": "Dr3lz",
+                                      "name": "Line",
+                                      "fill": "$accent-cyan",
+                                      "content": "~/gitpervisor $ ",
+                                      "fontFamily": "Geist Mono",
+                                      "fontSize": 11,
+                                      "fontWeight": "normal"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "t7F1f9",
+                                  "name": "Pane 2",
+                                  "width": "fill_container",
+                                  "height": "fill_container",
+                                  "cornerRadius": 4,
+                                  "stroke": "$border-subtle",
+                                  "layout": "vertical",
+                                  "gap": 2,
+                                  "padding": 8,
+                                  "children": [
+                                    {
+                                      "type": "text",
+                                      "id": "PXpvv",
+                                      "name": "Line",
+                                      "fill": "$accent-cyan",
+                                      "content": "~/my-saas-app $ npm run dev",
+                                      "fontFamily": "Geist Mono",
+                                      "fontSize": 11,
+                                      "fontWeight": "normal"
+                                    },
+                                    {
+                                      "type": "text",
+                                      "id": "RdlwE",
+                                      "name": "Line",
+                                      "fill": "$text-muted",
+                                      "content": " ",
+                                      "fontFamily": "Geist Mono",
+                                      "fontSize": 11,
+                                      "fontWeight": "normal"
+                                    },
+                                    {
+                                      "type": "text",
+                                      "id": "g7OMnX",
+                                      "name": "Line",
+                                      "fill": "#22C55E",
+                                      "content": "  VITE v5.4.0  ready in 340ms",
+                                      "fontFamily": "Geist Mono",
+                                      "fontSize": 11,
+                                      "fontWeight": "normal"
+                                    },
+                                    {
+                                      "type": "text",
+                                      "id": "HoLiH",
+                                      "name": "Line",
+                                      "fill": "$text-muted",
+                                      "content": " ",
+                                      "fontFamily": "Geist Mono",
+                                      "fontSize": 11,
+                                      "fontWeight": "normal"
+                                    },
+                                    {
+                                      "type": "text",
+                                      "id": "sRiZ9",
+                                      "name": "Line",
+                                      "fill": "$accent-cyan",
+                                      "content": "  ➜  Local:   http://localhost:3000/",
+                                      "fontFamily": "Geist Mono",
+                                      "fontSize": 11,
+                                      "fontWeight": "normal"
+                                    },
+                                    {
+                                      "type": "text",
+                                      "id": "bx41T",
+                                      "name": "Line",
+                                      "fill": "$accent-cyan",
+                                      "content": "  ➜  Network: http://192.168.1.42:3000/",
+                                      "fontFamily": "Geist Mono",
+                                      "fontSize": 11,
+                                      "fontWeight": "normal"
+                                    },
+                                    {
+                                      "type": "text",
+                                      "id": "JqbFK",
+                                      "name": "Line",
+                                      "fill": "$text-muted",
+                                      "content": " ",
+                                      "fontFamily": "Geist Mono",
+                                      "fontSize": 11,
+                                      "fontWeight": "normal"
+                                    },
+                                    {
+                                      "type": "text",
+                                      "id": "fBDqT",
+                                      "name": "Line",
+                                      "fill": "$text-muted",
+                                      "content": "[HMR] connected",
+                                      "fontFamily": "Geist Mono",
+                                      "fontSize": 11,
+                                      "fontWeight": "normal"
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "T54l77",
+              "layoutPosition": "absolute",
+              "x": 100,
+              "y": 50,
+              "name": "Streak 1",
+              "opacity": 0.6,
+              "rotation": 5,
+              "width": 600,
+              "height": 3,
+              "fill": {
+                "type": "gradient",
+                "gradientType": "linear",
+                "enabled": true,
+                "rotation": 0,
+                "size": {
+                  "height": 1
+                },
+                "colors": [
+                  {
+                    "color": "#A855F700",
+                    "position": 0
+                  },
+                  {
+                    "color": "#A855F740",
+                    "position": 0.4
+                  },
+                  {
+                    "color": "#EC489930",
+                    "position": 0.7
+                  },
+                  {
+                    "color": "#EC489900",
+                    "position": 1
+                  }
+                ]
+              },
+              "cornerRadius": 2,
+              "effect": {
+                "type": "blur",
+                "radius": 12
+              }
+            },
+            {
+              "type": "frame",
+              "id": "k1iTq",
+              "layoutPosition": "absolute",
+              "x": 500,
+              "y": 80,
+              "name": "Streak 2",
+              "opacity": 0.5,
+              "rotation": -3.0000000000000004,
+              "width": 500,
+              "height": 2,
+              "fill": {
+                "type": "gradient",
+                "gradientType": "linear",
+                "enabled": true,
+                "rotation": 0,
+                "size": {
+                  "height": 1
+                },
+                "colors": [
+                  {
+                    "color": "#06B6D400",
+                    "position": 0
+                  },
+                  {
+                    "color": "#06B6D430",
+                    "position": 0.5
+                  },
+                  {
+                    "color": "#A855F720",
+                    "position": 0.8
+                  },
+                  {
+                    "color": "#A855F700",
+                    "position": 1
+                  }
+                ]
+              },
+              "cornerRadius": 2,
+              "effect": {
+                "type": "blur",
+                "radius": 8
+              }
+            },
+            {
+              "type": "frame",
+              "id": "rHAjq",
+              "layoutPosition": "absolute",
+              "x": 50,
+              "y": 580,
+              "name": "Streak 3",
+              "opacity": 0.5,
+              "rotation": 7,
+              "width": 700,
+              "height": 2,
+              "fill": {
+                "type": "gradient",
+                "gradientType": "linear",
+                "enabled": true,
+                "rotation": 0,
+                "size": {
+                  "height": 1
+                },
+                "colors": [
+                  {
+                    "color": "#EC489900",
+                    "position": 0
+                  },
+                  {
+                    "color": "#EC489925",
+                    "position": 0.3
+                  },
+                  {
+                    "color": "#06B6D420",
+                    "position": 0.7
+                  },
+                  {
+                    "color": "#06B6D400",
+                    "position": 1
+                  }
+                ]
+              },
+              "cornerRadius": 2,
+              "effect": {
+                "type": "blur",
+                "radius": 10
+              }
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "D4UAe",
+          "name": "Features Section",
+          "width": "fill_container",
+          "layout": "vertical",
+          "gap": 48,
+          "padding": [
+            100,
+            120
+          ],
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "text",
+              "id": "yCLJX",
+              "name": "Features Badge",
+              "fill": "$accent-purple",
+              "content": "FEATURES",
+              "fontFamily": "Geist Mono",
+              "fontSize": 12,
+              "fontWeight": "normal"
+            },
+            {
+              "type": "text",
+              "id": "M7DT6",
+              "name": "Features Heading",
+              "fill": "$text-primary",
+              "textGrowth": "fixed-width",
+              "width": 700,
+              "content": "Everything you need.\nNothing you don't.",
+              "lineHeight": 1.15,
+              "textAlign": "center",
+              "fontFamily": "Geist",
+              "fontSize": 44,
+              "fontWeight": "700"
+            },
+            {
+              "type": "text",
+              "id": "tfJXh",
+              "name": "Features Sub",
+              "fill": "$text-secondary",
+              "textGrowth": "fixed-width",
+              "width": 600,
+              "content": "A single app that replaces your terminal multiplexer, API client, and project switcher.",
+              "textAlign": "center",
+              "fontFamily": "Inter",
+              "fontSize": 16,
+              "fontWeight": "normal"
+            },
+            {
+              "type": "frame",
+              "id": "WPZ74",
+              "name": "Features Grid",
+              "width": "fill_container",
+              "layout": "vertical",
+              "gap": 16,
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "iT3MQ",
+                  "name": "Feature Row 1",
+                  "width": "fill_container",
+                  "gap": 16,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "oawUw",
+                      "name": "Feature Multi-Project Sidebar",
+                      "width": "fill_container",
+                      "fill": "$bg-card",
+                      "cornerRadius": 12,
+                      "stroke": "$border-subtle",
+                      "layout": "vertical",
+                      "gap": 16,
+                      "padding": 28,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "klLFB",
+                          "name": "Multi-Project Sidebar Icon Wrap",
+                          "width": 44,
+                          "height": 44,
+                          "fill": "#1C1C20",
+                          "cornerRadius": 10,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "YsJrp",
+                              "name": "Multi-Project Sidebar Icon",
+                              "width": 22,
+                              "height": 22,
+                              "icon": "layout-grid",
+                              "library": "lucide",
+                              "fill": "$accent-purple"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "IpLI3",
+                          "name": "Multi-Project Sidebar Title",
+                          "fill": "$text-primary",
+                          "content": "Multi-Project Sidebar",
+                          "fontFamily": "Geist",
+                          "fontSize": 18,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "jD0Sg",
+                          "name": "Multi-Project Sidebar Desc",
+                          "fill": "$text-secondary",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Organize all your Git repositories in one place. Switch projects instantly — each with its own terminal sessions and state.",
+                          "lineHeight": 1.6,
+                          "fontFamily": "Inter",
+                          "fontSize": 14,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "cxWPP",
+                      "name": "Feature Split Terminal Panes",
+                      "width": "fill_container",
+                      "fill": "$bg-card",
+                      "cornerRadius": 12,
+                      "stroke": "$border-subtle",
+                      "layout": "vertical",
+                      "gap": 16,
+                      "padding": 28,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "bMpuu",
+                          "name": "Split Terminal Panes Icon Wrap",
+                          "width": 44,
+                          "height": 44,
+                          "fill": "#1C1C20",
+                          "cornerRadius": 10,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "gg0vT",
+                              "name": "Split Terminal Panes Icon",
+                              "width": 22,
+                              "height": 22,
+                              "icon": "columns-2",
+                              "library": "lucide",
+                              "fill": "$accent-purple"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "WRC7y",
+                          "name": "Split Terminal Panes Title",
+                          "fill": "$text-primary",
+                          "content": "Split Terminal Panes",
+                          "fontFamily": "Geist",
+                          "fontSize": 18,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "tFZWp",
+                          "name": "Split Terminal Panes Desc",
+                          "fill": "$text-secondary",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Run multiple terminals side by side. Resize, split vertically or horizontally. Each pane keeps its own shell session.",
+                          "lineHeight": 1.6,
+                          "fontFamily": "Inter",
+                          "fontSize": 14,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "j5nJnv",
+                      "name": "Feature Live AI Agent Status",
+                      "width": "fill_container",
+                      "fill": "$bg-card",
+                      "cornerRadius": 12,
+                      "stroke": "$border-subtle",
+                      "layout": "vertical",
+                      "gap": 16,
+                      "padding": 28,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "b4av8",
+                          "name": "Live AI Agent Status Icon Wrap",
+                          "width": 44,
+                          "height": 44,
+                          "fill": "#1C1C20",
+                          "cornerRadius": 10,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "O0bmXu",
+                              "name": "Live AI Agent Status Icon",
+                              "width": 22,
+                              "height": 22,
+                              "icon": "bot",
+                              "library": "lucide",
+                              "fill": "$accent-purple"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "uLX2Z",
+                          "name": "Live AI Agent Status Title",
+                          "fill": "$text-primary",
+                          "content": "Live AI Agent Status",
+                          "fontFamily": "Geist",
+                          "fontSize": 18,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "DgQIY",
+                          "name": "Live AI Agent Status Desc",
+                          "fill": "$text-secondary",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "See which projects have AI agents running in real time. Watch Claude work, know when it's done — no tab-switching needed.",
+                          "lineHeight": 1.6,
+                          "fontFamily": "Inter",
+                          "fontSize": 14,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "h9jFF",
+                  "name": "Feature Row 2",
+                  "width": "fill_container",
+                  "gap": 16,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "ZFLoc",
+                      "name": "Feature Built-in API Client",
+                      "width": "fill_container",
+                      "fill": "$bg-card",
+                      "cornerRadius": 12,
+                      "stroke": "$border-subtle",
+                      "layout": "vertical",
+                      "gap": 16,
+                      "padding": 28,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "lUfMg",
+                          "name": "Built-in API Client Icon Wrap",
+                          "width": 44,
+                          "height": 44,
+                          "fill": "#1C1C20",
+                          "cornerRadius": 10,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "XJQVK",
+                              "name": "Built-in API Client Icon",
+                              "width": 22,
+                              "height": 22,
+                              "icon": "send",
+                              "library": "lucide",
+                              "fill": "$accent-purple"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "chDN8",
+                          "name": "Built-in API Client Title",
+                          "fill": "$text-primary",
+                          "content": "Built-in API Client",
+                          "fontFamily": "Geist",
+                          "fontSize": 18,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "XvK47",
+                          "name": "Built-in API Client Desc",
+                          "fill": "$text-secondary",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Test HTTP endpoints directly inside the app. Save requests, inspect responses, replay with one click. No Postman needed.",
+                          "lineHeight": 1.6,
+                          "fontFamily": "Inter",
+                          "fontSize": 14,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "Xz6iu",
+                      "name": "Feature Integrated Browser Tabs",
+                      "width": "fill_container",
+                      "fill": "$bg-card",
+                      "cornerRadius": 12,
+                      "stroke": "$border-subtle",
+                      "layout": "vertical",
+                      "gap": 16,
+                      "padding": 28,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "Izp8Z",
+                          "name": "Integrated Browser Tabs Icon Wrap",
+                          "width": 44,
+                          "height": 44,
+                          "fill": "#1C1C20",
+                          "cornerRadius": 10,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "p0rgP1",
+                              "name": "Integrated Browser Tabs Icon",
+                              "width": 22,
+                              "height": 22,
+                              "icon": "globe",
+                              "library": "lucide",
+                              "fill": "$accent-purple"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "m37lBs",
+                          "name": "Integrated Browser Tabs Title",
+                          "fill": "$text-primary",
+                          "content": "Integrated Browser Tabs",
+                          "fontFamily": "Geist",
+                          "fontSize": 18,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "OAsXU",
+                          "name": "Integrated Browser Tabs Desc",
+                          "fill": "$text-secondary",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Open documentation, local dev servers, and web previews in native browser tabs right alongside your terminals.",
+                          "lineHeight": 1.6,
+                          "fontFamily": "Inter",
+                          "fontSize": 14,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "QIo2I",
+                      "name": "Feature GPU & VRAM Monitor",
+                      "width": "fill_container",
+                      "fill": "$bg-card",
+                      "cornerRadius": 12,
+                      "stroke": "$border-subtle",
+                      "layout": "vertical",
+                      "gap": 16,
+                      "padding": 28,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "GjfK6",
+                          "name": "GPU & VRAM Monitor Icon Wrap",
+                          "width": 44,
+                          "height": 44,
+                          "fill": "#1C1C20",
+                          "cornerRadius": 10,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "UuX4f",
+                              "name": "GPU & VRAM Monitor Icon",
+                              "width": 22,
+                              "height": 22,
+                              "icon": "gauge",
+                              "library": "lucide",
+                              "fill": "$accent-purple"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "d0VU0L",
+                          "name": "GPU & VRAM Monitor Title",
+                          "fill": "$text-primary",
+                          "content": "GPU & VRAM Monitor",
+                          "fontFamily": "Geist",
+                          "fontSize": 18,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "TAabU",
+                          "name": "GPU & VRAM Monitor Desc",
+                          "fill": "$text-secondary",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Track your discrete GPU usage and VRAM consumption at a glance. Know exactly what your hardware is doing.",
+                          "lineHeight": 1.6,
+                          "fontFamily": "Inter",
+                          "fontSize": 14,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "Bnufh",
+          "name": "Open Source Section",
+          "width": "fill_container",
+          "gap": 48,
+          "padding": [
+            80,
+            120
+          ],
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "frame",
+              "id": "IcC0H",
+              "name": "OSS Left",
+              "width": "fill_container",
+              "layout": "vertical",
+              "gap": 20,
+              "children": [
+                {
+                  "type": "text",
+                  "id": "US3uZ",
+                  "name": "OSS Badge",
+                  "fill": "$accent-cyan",
+                  "content": "OPEN SOURCE",
+                  "fontFamily": "Geist Mono",
+                  "fontSize": 12,
+                  "fontWeight": "normal"
+                },
+                {
+                  "type": "text",
+                  "id": "i2aKV",
+                  "name": "OSS Heading",
+                  "fill": "$text-primary",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "Built in the open.\nOwned by you.",
+                  "lineHeight": 1.2,
+                  "fontFamily": "Geist",
+                  "fontSize": 36,
+                  "fontWeight": "700"
+                },
+                {
+                  "type": "text",
+                  "id": "Z10fLU",
+                  "name": "OSS Desc",
+                  "fill": "$text-secondary",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "Gitpervisor is MIT-licensed and free forever. No telemetry, no accounts, no vendor lock-in. Your machine, your data, your rules.",
+                  "lineHeight": 1.65,
+                  "fontFamily": "Inter",
+                  "fontSize": 16,
+                  "fontWeight": "normal"
+                },
+                {
+                  "type": "frame",
+                  "id": "BDcdn",
+                  "name": "OSS Points",
+                  "layout": "vertical",
+                  "gap": 14,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "JNpYU",
+                      "name": "Point No telemetry or data collection",
+                      "gap": 10,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "v6gF3r",
+                          "name": "No telemetry or data collection Icon",
+                          "width": 18,
+                          "height": 18,
+                          "icon": "shield-check",
+                          "library": "lucide",
+                          "fill": "$accent-cyan"
+                        },
+                        {
+                          "type": "text",
+                          "id": "e0mhCZ",
+                          "name": "No telemetry or data collection Text",
+                          "fill": "$text-secondary",
+                          "content": "No telemetry or data collection",
+                          "fontFamily": "Inter",
+                          "fontSize": 14,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "RF4F1",
+                      "name": "Point MIT License — fork it, modify it, own it",
+                      "gap": 10,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "e98n1l",
+                          "name": "MIT License — fork it, modify it, own it Icon",
+                          "width": 18,
+                          "height": 18,
+                          "icon": "lock-open",
+                          "library": "lucide",
+                          "fill": "$accent-cyan"
+                        },
+                        {
+                          "type": "text",
+                          "id": "a2txv8",
+                          "name": "MIT License — fork it, modify it, own it Text",
+                          "fill": "$text-secondary",
+                          "content": "MIT License — fork it, modify it, own it",
+                          "fontFamily": "Inter",
+                          "fontSize": 14,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "RfgRP",
+                      "name": "Point Runs entirely on your local machine",
+                      "gap": 10,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "V15wvr",
+                          "name": "Runs entirely on your local machine Icon",
+                          "width": 18,
+                          "height": 18,
+                          "icon": "hard-drive",
+                          "library": "lucide",
+                          "fill": "$accent-cyan"
+                        },
+                        {
+                          "type": "text",
+                          "id": "DeYHo",
+                          "name": "Runs entirely on your local machine Text",
+                          "fill": "$text-secondary",
+                          "content": "Runs entirely on your local machine",
+                          "fontFamily": "Inter",
+                          "fontSize": 14,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "w6TXZ",
+                      "name": "Point Contribute on GitHub — PRs welcome",
+                      "gap": 10,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "jEmLE",
+                          "name": "Contribute on GitHub — PRs welcome Icon",
+                          "width": 18,
+                          "height": 18,
+                          "icon": "git-branch",
+                          "library": "lucide",
+                          "fill": "$accent-cyan"
+                        },
+                        {
+                          "type": "text",
+                          "id": "RNJnx",
+                          "name": "Contribute on GitHub — PRs welcome Text",
+                          "fill": "$text-secondary",
+                          "content": "Contribute on GitHub — PRs welcome",
+                          "fontFamily": "Inter",
+                          "fontSize": 14,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "QquVp",
+              "name": "OSS Visual",
+              "width": "fill_container",
+              "fill": "$bg-card",
+              "cornerRadius": 12,
+              "stroke": "$border-subtle",
+              "layout": "vertical",
+              "gap": 16,
+              "padding": 32,
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "xt5wu",
+                  "name": "Stat Free & Open Source",
+                  "width": "fill_container",
+                  "justifyContent": "space_between",
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "QdyAQ",
+                      "name": "Stat Label Free & Open Source",
+                      "fill": "$text-secondary",
+                      "content": "Free & Open Source",
+                      "fontFamily": "Inter",
+                      "fontSize": 14,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "text",
+                      "id": "PkvGs",
+                      "name": "Stat Value 100%",
+                      "fill": "$text-primary",
+                      "content": "100%",
+                      "fontFamily": "Geist",
+                      "fontSize": 20,
+                      "fontWeight": "700"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "a0yZ0",
+                  "name": "Divider 1",
+                  "width": "fill_container",
+                  "height": 1,
+                  "fill": "$border-subtle"
+                },
+                {
+                  "type": "frame",
+                  "id": "sI4Cc",
+                  "name": "Stat Telemetry & Tracking",
+                  "width": "fill_container",
+                  "justifyContent": "space_between",
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "EHiVT",
+                      "name": "Stat Label Telemetry & Tracking",
+                      "fill": "$text-secondary",
+                      "content": "Telemetry & Tracking",
+                      "fontFamily": "Inter",
+                      "fontSize": 14,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "text",
+                      "id": "F3pJ5k",
+                      "name": "Stat Value 0",
+                      "fill": "$text-primary",
+                      "content": "0",
+                      "fontFamily": "Geist",
+                      "fontSize": 20,
+                      "fontWeight": "700"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "p3LumD",
+                  "name": "Divider 2",
+                  "width": "fill_container",
+                  "height": 1,
+                  "fill": "$border-subtle"
+                },
+                {
+                  "type": "frame",
+                  "id": "IkE8E",
+                  "name": "Stat License",
+                  "width": "fill_container",
+                  "justifyContent": "space_between",
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "B46xm",
+                      "name": "Stat Label License",
+                      "fill": "$text-secondary",
+                      "content": "License",
+                      "fontFamily": "Inter",
+                      "fontSize": 14,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "text",
+                      "id": "Eg5LG",
+                      "name": "Stat Value MIT",
+                      "fill": "$text-primary",
+                      "content": "MIT",
+                      "fontFamily": "Geist",
+                      "fontSize": 20,
+                      "fontWeight": "700"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "uQY1X",
+                  "name": "Divider 3",
+                  "width": "fill_container",
+                  "height": 1,
+                  "fill": "$border-subtle"
+                },
+                {
+                  "type": "frame",
+                  "id": "u9BWz",
+                  "name": "Stat Platforms Supported",
+                  "width": "fill_container",
+                  "justifyContent": "space_between",
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "X0PT1",
+                      "name": "Stat Label Platforms Supported",
+                      "fill": "$text-secondary",
+                      "content": "Platforms Supported",
+                      "fontFamily": "Inter",
+                      "fontSize": 14,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "text",
+                      "id": "darpV",
+                      "name": "Stat Value 3",
+                      "fill": "$text-primary",
+                      "content": "3",
+                      "fontFamily": "Geist",
+                      "fontSize": 20,
+                      "fontWeight": "700"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "Uehod",
+          "name": "CTA Section",
+          "width": "fill_container",
+          "layout": "vertical",
+          "gap": 32,
+          "padding": [
+            100,
+            120
+          ],
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "text",
+              "id": "GAEq9",
+              "name": "CTA Heading",
+              "fill": "$text-primary",
+              "content": "Ready to take control?",
+              "textAlign": "center",
+              "fontFamily": "Geist",
+              "fontSize": 44,
+              "fontWeight": "700"
+            },
+            {
+              "type": "text",
+              "id": "Fr93V",
+              "name": "CTA Sub",
+              "fill": "$text-secondary",
+              "content": "Download Gitpervisor for free. No sign-up required.",
+              "textAlign": "center",
+              "fontFamily": "Inter",
+              "fontSize": 16,
+              "fontWeight": "normal"
+            },
+            {
+              "type": "frame",
+              "id": "JFcU5",
+              "name": "CTA Buttons",
+              "gap": 12,
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "JGQCz",
+                  "name": "CTA Download",
+                  "fill": "$accent-purple",
+                  "cornerRadius": 8,
+                  "gap": 8,
+                  "padding": [
+                    16,
+                    32
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "LjVMi",
+                      "name": "CTA DL Icon",
+                      "width": 18,
+                      "height": 18,
+                      "icon": "download",
+                      "library": "lucide",
+                      "fill": "#FFFFFF"
+                    },
+                    {
+                      "type": "text",
+                      "id": "Ce4fB",
+                      "name": "CTA DL Text",
+                      "fill": "#FFFFFF",
+                      "content": "Download for Free",
+                      "fontFamily": "Geist",
+                      "fontSize": 16,
+                      "fontWeight": "600"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "Tniuh",
+                  "name": "CTA GitHub",
+                  "cornerRadius": 8,
+                  "stroke": "$border-subtle",
+                  "gap": 8,
+                  "padding": [
+                    16,
+                    32
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "D4xrQe",
+                      "name": "CTA GH Icon",
+                      "width": 18,
+                      "height": 18,
+                      "icon": "github",
+                      "library": "lucide",
+                      "fill": "$text-secondary"
+                    },
+                    {
+                      "type": "text",
+                      "id": "XyHHf",
+                      "name": "CTA GH Text",
+                      "fill": "$text-secondary",
+                      "content": "View on GitHub",
+                      "fontFamily": "Inter",
+                      "fontSize": 16,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "pCrdo",
+          "name": "Footer Divider",
+          "width": "fill_container",
+          "height": 1,
+          "fill": "$border-subtle"
+        },
+        {
+          "type": "frame",
+          "id": "VUYK9",
+          "name": "Footer",
+          "width": "fill_container",
+          "stroke": "$border-subtle",
+          "padding": [
+            32,
+            120
+          ],
+          "justifyContent": "space_between",
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "frame",
+              "id": "YPdSk",
+              "name": "Footer Left",
+              "gap": 8,
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "text",
+                  "id": "fvL9W",
+                  "name": "Footer Logo",
+                  "fill": "$text-muted",
+                  "content": "Gitpervisor",
+                  "fontFamily": "Geist",
+                  "fontSize": 14,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "text",
+                  "id": "a8NEQ",
+                  "name": "Footer Copy",
+                  "fill": "$text-muted",
+                  "content": "· MIT License · Made for developers",
+                  "fontFamily": "Inter",
+                  "fontSize": 13,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "toF3J",
+              "name": "Footer Right",
+              "gap": 20,
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "text",
+                  "id": "X1TIYa",
+                  "name": "Footer GitHub",
+                  "fill": "$text-muted",
+                  "content": "GitHub",
+                  "fontFamily": "Inter",
+                  "fontSize": 13,
+                  "fontWeight": "normal"
+                },
+                {
+                  "type": "text",
+                  "id": "qrIkH",
+                  "name": "Footer Releases",
+                  "fill": "$text-muted",
+                  "content": "Releases",
+                  "fontFamily": "Inter",
+                  "fontSize": 13,
+                  "fontWeight": "normal"
+                },
+                {
+                  "type": "text",
+                  "id": "lHTAu",
+                  "name": "Footer Docs",
+                  "fill": "$text-muted",
+                  "content": "Docs",
+                  "fontFamily": "Inter",
+                  "fontSize": 13,
+                  "fontWeight": "normal"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "variables": {
+    "accent-cyan": {
+      "type": "color",
+      "value": "#06B6D4"
+    },
+    "accent-pink": {
+      "type": "color",
+      "value": "#EC4899"
+    },
+    "accent-purple": {
+      "type": "color",
+      "value": "#A855F7"
+    },
+    "bg-card": {
+      "type": "color",
+      "value": "#131316"
+    },
+    "bg-dark": {
+      "type": "color",
+      "value": "#09090B"
+    },
+    "border-accent": {
+      "type": "color",
+      "value": "#A855F733"
+    },
+    "border-subtle": {
+      "type": "color",
+      "value": "#27272A"
+    },
+    "text-muted": {
+      "type": "color",
+      "value": "#71717A"
+    },
+    "text-primary": {
+      "type": "color",
+      "value": "#FAFAFA"
+    },
+    "text-secondary": {
+      "type": "color",
+      "value": "#A1A1AA"
+    }
+  }
+}
