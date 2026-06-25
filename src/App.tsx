@@ -1,6 +1,7 @@
 import { FolderGit2 } from "lucide-react";
 import { useEffect } from "react";
 
+import { AggregateTerminals } from "./components/AggregateTerminals";
 import { ChangesPanel } from "./components/changes/ChangesPanel";
 import { ConfirmHost } from "./components/common/ConfirmDialog";
 import { ConnectionDialog } from "./components/db/ConnectionDialog";
@@ -31,6 +32,7 @@ export default function App() {
   const selectedProjectId = useUi((s) => s.selectedProjectId);
   const selectProject = useUi((s) => s.selectProject);
   const fileTreeOpen = useUi((s) => s.fileTreeOpen);
+  const aggregateOpen = useUi((s) => s.aggregateOpen);
 
   const { data: settings } = useSettings();
   useAutoFetch(); // 옵트인 자동 fetch (기본 OFF)
@@ -67,7 +69,9 @@ export default function App() {
               )}
 
               <main className="flex min-w-0 flex-1 flex-col">
-                {selected ? (
+                {aggregateOpen ? (
+                  <AggregateTerminals />
+                ) : selected ? (
                   <>
                     <Toolbar project={selected} />
                     <div className="flex min-h-0 flex-1">
