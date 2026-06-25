@@ -77,6 +77,19 @@ export function createTerminalImpl(opts: {
     if (e.type !== "keydown") return true;
     const k = e.key.toLowerCase();
 
+    // Tab/Shift+Tab은 물리 키(e.code)로 IME 가드보다 "먼저" 잡는다. WebKitGTK가 Shift+Tab의
+    // e.key를 "Unidentified"로 보고하면 아래 IME 가드에 걸려 핸들러가 우회되고 웹뷰 포커스가
+    // 다른 요소로 튄다. e.code는 IME 무관 물리 키라 항상 "Tab". preventDefault로 포커스 이동을
+    // 막고 Tab→\t / Shift+Tab→\x1b[Z 를 PTY로 보낸다(xterm은 Shift+Tab에 cancel을 안 거는 버그).
+    if (e.code === "Tab" && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      e.preventDefault();
+      void invoke("term_write", {
+        termId: opts.id,
+        data: e.shiftKey ? "\x1b[Z" : "\t",
+      }).catch(() => {});
+      return false;
+    }
+
     // IME 조합 중 keydown은 PTY로 흘리지 않는다 — 한글 첫 자모(ㅇ 등)만 raw로 송출되면
     // 조합이 깨진다. composition 종료 시 아래 compositionend 핸들러가 확정 문자열을 보낸다.
     // - keyCode 229: Chromium/WebKit이 IME 조합 중 keydown에 부여

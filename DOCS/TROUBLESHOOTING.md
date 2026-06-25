@@ -153,3 +153,36 @@ if (e.isComposing || e.keyCode === 229 || e.key === "Process" || e.key === "Unid
 - "같은 WebKit이니 Linux용 우회가 macOS에도 통하겠지"는 함정. **WKWebView와 WebKitGTK의 IME 이벤트 표현이 다르다** — Linux는 `composition*` 이벤트, macOS는 `input` 이벤트의 `insertReplacementText`.
 - IME 디버깅은 추측보다 **textarea의 모든 keydown/input/composition* 이벤트를 backend stderr로 흘려 dev 로그에서 관측**하는 게 가장 빠르다. xterm 내부의 `onData`도 같이 찍어 "어떤 글자가 PTY에 실제로 갔는지"를 함께 보면 누락 지점이 즉시 드러난다.
 - 셸 readline의 `\x7f`(DEL) 한 글자 삭제는 한글 1음절도 한 단위로 삭제한다 — IME의 replacement를 "백스페이스 + 새 데이터"로 PTY에 모사할 때 활용.
+
+---
+
+## 4. 터미널에서 Shift+Tab이 포커스를 다른 요소로 옮긴다 (Claude Code 모드 전환 안 됨)
+
+### 4.1 증상
+
+임베디드 터미널에서 **Shift+Tab**을 누르면 터미널이 받지 못하고 웹뷰 포커스가 다른 UI 요소로 튄다. 터미널에서 Claude Code를 쓸 때 Shift+Tab(권한/모드 전환)이 안 먹힌다. 일반 Tab은 정상.
+
+### 4.2 근본 원인 (두 겹)
+
+1. **xterm 버그**: xterm은 일반 Tab엔 `cancel=true`(preventDefault)를 걸지만 Shift+Tab(`\x1b[Z`)엔 안 건다 — 키보드 처리부 `case 9: if(shiftKey){key=ESC+"[Z"; break}`. 그래서 웹뷰 기본 포커스 이동(Shift+Tab=이전 요소)이 안 막힌다.
+2. **IME 가드에 삼켜짐**: 직접 `e.key === "Tab"`으로 잡아도, WebKitGTK가 Shift+Tab의 `e.key`를 때때로 `"Unidentified"`로 보고한다. 핸들러 상단의 IME 가드(`e.key === "Unidentified"` → return false, §3 참고)가 이를 먼저 삼켜 Tab 처리가 우회된다.
+
+### 4.3 해결
+
+`terminal-engine.ts`의 `attachCustomKeyEventHandler`에서 Tab/Shift+Tab을 **물리 키 `e.code === "Tab"`로, IME 가드보다 먼저** 잡는다. `e.code`는 IME/`e.key` 보고값과 무관한 물리 키라 항상 `"Tab"`이다.
+
+```ts
+if (e.code === "Tab" && !e.ctrlKey && !e.altKey && !e.metaKey) {
+  e.preventDefault();                       // 웹뷰 포커스 이동 차단
+  void invoke("term_write", {
+    termId: opts.id,
+    data: e.shiftKey ? "\x1b[Z" : "\t",      // Shift+Tab→백탭, Tab→탭
+  }).catch(() => {});
+  return false;
+}
+```
+
+### 4.4 교훈
+
+- 키 이벤트는 `e.key`(논리값, IME에 흔들림)보다 **`e.code`(물리 키)** 가 안정적이다. 특수키/단축키는 `e.code`로 잡으면 IME·레이아웃에 안 흔들린다.
+- IME 가드(`Unidentified`/`Process`/keyCode 229)는 광범위해서 Tab 같은 **비-IME 키도 삼킬 수 있다** — 비-IME 키 처리는 IME 가드 **앞**에 둔다.
