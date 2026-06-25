@@ -88,6 +88,16 @@ function buildGrid(paneIds: string[], cols: number): Pane {
   return makeBalanced(rows, "col");
 }
 
+/** 트리에서 target 리프를 subtree로 교체한다(탭의 나머지 레이아웃은 그대로 유지). */
+function replaceLeaf(node: Pane, target: string, subtree: Pane): Pane {
+  if (node.kind === "leaf") return node.paneId === target ? subtree : node;
+  return {
+    ...node,
+    a: replaceLeaf(node.a, target, subtree),
+    b: replaceLeaf(node.b, target, subtree),
+  };
+}
+
 /** 리프의 content(터미널↔브라우저)만 바꾼다. */
 function setContentAt(node: Pane, target: string, content: PaneKind): Pane {
   if (node.kind === "leaf")
@@ -310,19 +320,15 @@ export const useTerminals = create<TerminalsState>((set, get) => ({
   splitGrid: (tabId, paneId, count) => {
     const tab = get().terminals.find((t) => t.id === tabId);
     if (!tab) return;
-    // 활성 패널(paneId)만 유지하고, 기존 레이아웃의 나머지 패널 PTY는 정리한다(고아 방지).
-    collectPanes(tab.layout).forEach((p) => {
-      if (p !== paneId) disposeTerminal(p);
-    });
     const cols = count >= 8 ? 4 : 2; // 2→2×1, 4→2×2, 8→4×2
+    // 우클릭한 그 패널만 N분할한다. 첫 칸은 기존 터미널(paneId/PTY 유지), 나머지는 새 패널.
+    // 대상 리프만 그리드로 교체하므로 탭의 다른 패널은 보존되고, 분할된 칸에서 다시 분할하면
+    // 그 칸이 또 N분할된다(중첩).
     const ids = [paneId];
     for (let i = 1; i < count; i++) ids.push(crypto.randomUUID());
-    const layout = buildGrid(ids, cols);
+    const layout = replaceLeaf(tab.layout, paneId, buildGrid(ids, cols));
     set((s) => {
       const paneStatus = { ...s.paneStatus };
-      collectPanes(tab.layout).forEach((p) => {
-        if (p !== paneId) delete paneStatus[p];
-      });
       ids.forEach((id) => {
         paneStatus[id] = "live";
       });
