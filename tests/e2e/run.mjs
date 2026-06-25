@@ -23,6 +23,9 @@ const SUITES = [
   "./suites/09-db.mjs",
   "./suites/10-codenav.mjs",
   "./suites/11-disk.mjs",
+  "./suites/12-new-commands.mjs",
+  "./suites/13-float-window.mjs",
+  "./suites/14-frontend-dom.mjs",
 ];
 
 const report = createReport();

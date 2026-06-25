@@ -21,9 +21,16 @@ export async function run({ cdp, report: r, fix }) {
   const noDir = await cdp.try("add_project", { path: join(fix.root, "does-not-exist-xyz") });
   r.check("add_project: 없는 폴더 → NOT_FOUND", !noDir.ok && noDir.code === "NOT_FOUND", noDir.code || "(ok?)");
 
+  // 비-git 폴더는 "초안"으로 그대로 허용된다(projects.rs: 이후 git init 시 watcher가 자동 갱신).
+  // → 추가된 초안 프로젝트는 반드시 정리한다(안 그러면 사용자 목록에 잔여가 남는다).
   const nonRepo = mkdtempSync(join(tmpdir(), "gpv-e2e-norepo-"));
-  const notRepo = await cdp.try("add_project", { path: nonRepo });
-  r.check("add_project: git 아님 → NOT_A_REPO", !notRepo.ok && notRepo.code === "NOT_A_REPO", notRepo.code || "(ok?)");
+  const draft = await cdp.try("add_project", { path: nonRepo });
+  r.check(
+    "add_project: 비-git 폴더 → 초안으로 허용",
+    draft.ok && !!draft.r?.id,
+    draft.ok ? draft.r.path : draft.code || "(reject?)",
+  );
+  if (draft.ok && draft.r?.id) await cdp.try("remove_project", { id: draft.r.id });
   try { rmSync(nonRepo, { recursive: true, force: true }); } catch (_) { /* noop */ }
 
   // ── list_dir(루트) ──
