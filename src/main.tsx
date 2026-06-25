@@ -4,11 +4,16 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 
 import App from "./App";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { FloatingTerminal } from "./FloatingTerminal";
 import { attachRepoEvents } from "./lib/events";
+import { setupErrorLogging } from "./lib/logging";
 import "./styles.css";
 
 const root = ReactDOM.createRoot(document.getElementById("root")!);
+
+// 미처리 에러/프라미스 거부를 Rust 로그 파일로 보낸다 — 메인·플로팅 창 모두 1회.
+setupErrorLogging();
 
 // 플로팅 창은 라벨이 `float-<paneId>` 다 — 이 경우 단일 터미널만 렌더하고 메인 부트스트랩은 건너뛴다.
 // (WebviewUrl::App이 쿼리스트링을 못 실어 라벨로 paneId를 전달한다.)
@@ -29,7 +34,9 @@ if (floatPaneId) {
   root.render(
     <React.StrictMode>
       <QueryClientProvider client={floatQc}>
-        <FloatingTerminal paneId={floatPaneId} />
+        <ErrorBoundary>
+          <FloatingTerminal paneId={floatPaneId} />
+        </ErrorBoundary>
       </QueryClientProvider>
     </React.StrictMode>,
   );
@@ -57,7 +64,9 @@ if (floatPaneId) {
   root.render(
     <React.StrictMode>
       <QueryClientProvider client={queryClient}>
-        <App />
+        <ErrorBoundary>
+          <App />
+        </ErrorBoundary>
       </QueryClientProvider>
     </React.StrictMode>,
   );

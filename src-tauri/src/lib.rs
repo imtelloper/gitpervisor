@@ -12,6 +12,37 @@ use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 use state::AppState;
 
+/// 패닉이 나도 어딘가에 흔적을 남긴다 — 메인 스레드/스폰 스레드 어디서 패닉해도 크래시 로그가
+/// 남도록 전역 패닉 훅을 건다. 로그 플러그인이 떠 있으면 거기에도, 항상 크래시 파일(append)에도
+/// 패닉 메시지+위치+백트레이스를 기록한 뒤 기본 훅(stderr)을 호출한다.
+static CRASH_LOG: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+fn install_panic_hook() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        use std::io::Write;
+        let bt = std::backtrace::Backtrace::force_capture();
+        let when = chrono::Local::now().to_rfc3339();
+        let body = format!("\n===== PANIC @ {when} =====\n{info}\n--- backtrace ---\n{bt}\n");
+        log::error!("패닉: {info}");
+        let path = CRASH_LOG
+            .get()
+            .cloned()
+            .unwrap_or_else(|| std::env::temp_dir().join("gitpervisor-crash.log"));
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            let _ = f.write_all(body.as_bytes());
+        }
+        default(info);
+    }));
+}
+
 /// WebView2 스로틀링 억제 인자 (최소화/백그라운드에서도 watcher·타이머 정상 동작). 전 빌드 공통.
 const BASE_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtocol,msSleepingTabs,IntensiveWakeUpThrottling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling";
 
@@ -54,7 +85,7 @@ async fn open_float_window(
             .additional_browser_args(&browser_args())
             .build();
         if let Err(e) = r {
-            eprintln!("플로팅 창 생성 실패: {e}");
+            log::error!("플로팅 창 생성 실패: {e}");
         }
     })
     .map_err(|e| format!("플로팅 창 예약 실패: {e}"))?;
@@ -80,11 +111,28 @@ pub fn run() {
         }
     }
 
-    tauri::Builder::default()
+    install_panic_hook();
+
+    let result = tauri::Builder::default()
+        // 파일 로그(앱 로그 폴더) + stdout. log::error!·패닉·프론트 미처리 에러까지 한 파일에 모인다.
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .level(log::LevelFilter::Info)
+                .max_file_size(10_000_000)
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepAll)
+                .build(),
+        )
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
+            // 크래시 로그 경로 확정(패닉 훅이 여기에 남긴다) + 시작 로그.
+            if let Ok(dir) = app.path().app_log_dir() {
+                let _ = std::fs::create_dir_all(&dir);
+                let _ = CRASH_LOG.set(dir.join("panic.log"));
+            }
+            log::info!("Gitpervisor 시작 v{}", env!("CARGO_PKG_VERSION"));
+
             // 메인 창을 코드에서 생성한다 — 원격 디버깅 포트(CDP)는 debug 빌드에서만 열고
             // release 빌드에는 노출하지 않기 위함 (정적 config로는 빌드별 분기가 불가).
             WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
@@ -205,6 +253,10 @@ pub fn run() {
                 }
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .run(tauri::generate_context!());
+    if let Err(e) = result {
+        log::error!("Tauri 런타임 실행 실패: {e:?}");
+        eprintln!("error while running tauri application: {e:?}");
+        std::process::exit(1);
+    }
 }

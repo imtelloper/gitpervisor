@@ -15,6 +15,7 @@
     "core:webview:allow-create-webview-window",
     "dialog:default",
     "store:default",
-    "notification:default"
+    "notification:default",
+    "log:default"
   ]
 }
