@@ -106,10 +106,11 @@ export function ProjectList() {
     });
   }, [projects, statuses, sortByChanges]);
 
-  // ── 드래그 순서 정렬 (수동 순서 모드에서만 — 변경 우선 정렬 중엔 의미 없어 비활성) ──
+  // ── 드래그 순서 정렬 ── 항상 활성. 변경 우선 정렬(sortByChanges)이 켜져 있어도 드래그하면
+  // 드롭 시 수동 순서 모드로 전환해 드래그가 실제로 반영되게 한다(드래그=수동 정렬 의도).
   const reorder = useReorderProjects();
   const reorderMutate = reorder.mutate;
-  const dragEnabled = !sortByChanges;
+  const dragEnabled = true;
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
   // 콜백을 안정 참조로 두기 위해 최신 목록/드래그 대상은 ref로 본다(ProjectItem memo 보존).
@@ -139,6 +140,9 @@ export function ProjectList() {
       ids.splice(fromIdx, 1); // 끌고 온 항목을 빼고
       const at = ids.indexOf(targetId);
       ids.splice(at === -1 ? ids.length : at, 0, from); // 대상 앞에 삽입
+      // 드래그로 직접 순서를 정했으니 변경 우선 정렬은 끄고 수동 순서로 전환(드래그가 보이게 반영)
+      if (useUi.getState().projectSortByChanges)
+        useUi.getState().toggleProjectSort();
       reorderMutate(ids);
     },
     [reorderMutate],
