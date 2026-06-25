@@ -46,7 +46,10 @@ async fn open_float_window(
         let r = WebviewWindowBuilder::new(&app2, &label, WebviewUrl::External(url))
             .title("터미널")
             .inner_size(900.0, 600.0)
+            .min_inner_size(360.0, 240.0)
             .center()
+            // OS 기본 타이틀바 제거 — 프론트의 커스텀 FloatTitleBar로 대체 (리사이즈 유지)
+            .decorations(false)
             .background_color(tauri::window::Color(30, 31, 34, 255))
             .additional_browser_args(&browser_args())
             .build();
@@ -149,6 +152,7 @@ pub fn run() {
             open_float_window,
             commands::term_open,
             commands::term_attach,
+            commands::term_project,
             commands::term_write,
             commands::term_resize,
             commands::term_close,

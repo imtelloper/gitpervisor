@@ -27,7 +27,7 @@ pub struct TerminalSession {
     /// 출력 sink — 현재 이 PTY를 그리는 웹뷰의 Channel. term_attach가 이 sink를 다른 창의
     /// Channel로 교체해 살아있는 세션을 별도 OS 창(플로팅)으로 옮긴다.
     sink: Arc<Mutex<Channel<Vec<u8>>>>,
-    #[allow(dead_code)]
+    /// 이 PTY가 속한 프로젝트 — 플로팅 창이 이 값으로 새 분할 패널의 cwd를 잡는다.
     project_id: String,
 }
 
@@ -192,6 +192,17 @@ pub fn term_attach(
         .ok_or_else(|| IpcError::new(ErrorCode::NotFound, "터미널 세션을 찾을 수 없습니다"))?;
     *session.sink.lock().unwrap() = on_data;
     Ok(())
+}
+
+/// 살아있는 PTY의 프로젝트 id를 돌려준다 — 플로팅 창이 새 분할 패널을 같은 프로젝트로 열 때 사용.
+#[tauri::command]
+pub fn term_project(state: State<'_, AppState>, term_id: String) -> Option<String> {
+    state
+        .terminals
+        .lock()
+        .unwrap()
+        .get(&term_id)
+        .map(|s| s.project_id.clone())
 }
 
 /// ConPTY 리사이즈 — xterm fit 결과(cols/rows)를 반영.

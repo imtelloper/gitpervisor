@@ -24,9 +24,13 @@ const floatPaneId = label.startsWith("float-")
   : null;
 
 if (floatPaneId) {
+  // 플로팅 창도 QueryClientProvider로 감싼다 — 분할 패널 컴포넌트가 쿼리를 쓰더라도 안전하게.
+  const floatQc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   root.render(
     <React.StrictMode>
-      <FloatingTerminal paneId={floatPaneId} />
+      <QueryClientProvider client={floatQc}>
+        <FloatingTerminal paneId={floatPaneId} />
+      </QueryClientProvider>
     </React.StrictMode>,
   );
 } else {

@@ -526,6 +526,9 @@ export const ipc = {
   // 단일 diff — DiffTarget(worktree/index/commit) 어느 모드든 처리
   getDiff: (projectId: string, target: DiffTarget) =>
     call<FileDiff>("get_file_diff", { projectId, target }),
+  // 플로팅 창이 floated PTY의 프로젝트 id를 조회 — 새 분할 패널을 같은 프로젝트로 연다.
+  termProject: (termId: string) =>
+    call<string | null>("term_project", { termId }),
   // 이미지 미리보기 — 워크트리 파일을 base64로. 큰 파일 대비 타임아웃 넉넉히, 재시도 없음.
   readFileBase64: (projectId: string, relPath: string) =>
     call<FileBytes>(

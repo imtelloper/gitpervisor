@@ -1,7 +1,19 @@
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { create } from "zustand";
 
 import { openFloatingWindow } from "../lib/floating";
 import { detachTerminalKeepPty, disposeTerminal, onTermExit } from "../lib/terminal";
+
+// 플로팅 창(label=float-*)은 메인 창과 같은 origin이라 localStorage(gp:terminals)를 공유한다.
+// 따라서 플로팅 창의 스토어는 빈 상태로 시작하고 영속화하지 않는다(메인 창 탭을 덮어쓰지 않게).
+// 플로팅 창의 초기 탭은 FloatingTerminal이 시드한다.
+const IS_FLOAT = (() => {
+  try {
+    return getCurrentWebviewWindow().label.startsWith("float-");
+  } catch {
+    return false;
+  }
+})();
 
 export type SplitDir = "row" | "col"; // row=좌우 분할, col=상하 분할
 
@@ -212,7 +224,9 @@ function loadPersistedTerminals(): PersistedTerminals {
   return { terminals: [], activeTab: {}, dbProjects: [] };
 }
 
-const persisted = loadPersistedTerminals();
+const persisted = IS_FLOAT
+  ? { terminals: [], activeTab: {}, dbProjects: [] }
+  : loadPersistedTerminals();
 
 export const useTerminals = create<TerminalsState>((set, get) => ({
   terminals: persisted.terminals,
@@ -463,17 +477,19 @@ export const useTerminals = create<TerminalsState>((set, get) => ({
 onTermExit((id) => useTerminals.getState().setPaneStatus(id, "exited"));
 
 // 탭/레이아웃이 바뀔 때마다 localStorage에 저장 — 다음 실행에서 복구한다.
-useTerminals.subscribe((s) => {
-  try {
-    localStorage.setItem(
-      PERSIST_KEY,
-      JSON.stringify({
-        terminals: s.terminals,
-        activeTab: s.activeTab,
-        dbProjects: s.dbProjects,
-      }),
-    );
-  } catch {
-    /* localStorage 불가 환경 무시 */
-  }
-});
+// 플로팅 창에서는 영속화하지 않는다(메인 창과 공유 키를 덮어쓰지 않게).
+if (!IS_FLOAT)
+  useTerminals.subscribe((s) => {
+    try {
+      localStorage.setItem(
+        PERSIST_KEY,
+        JSON.stringify({
+          terminals: s.terminals,
+          activeTab: s.activeTab,
+          dbProjects: s.dbProjects,
+        }),
+      );
+    } catch {
+      /* localStorage 불가 환경 무시 */
+    }
+  });
