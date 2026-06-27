@@ -173,16 +173,20 @@ export function createTerminalImpl(opts: {
   });
   term.open(host); // 분리된 host에 먼저 연다 — 실제 fit은 attach 시점에 (DOM 렌더러는 0크기 허용)
 
-  // GPU 가속 렌더러 — 빌드 로그·AI 에이전트 스트리밍 등 대량 출력에서 기본 DOM 렌더러 대비
-  // CPU 사용·잔상을 크게 줄인다(VS Code 내장 터미널과 동일 엔진). 컨텍스트 유실(드라이버
-  // 리셋 등) 시 애드온을 버리면 xterm이 자동으로 DOM 렌더러로 폴백한다. WebGL 미지원
-  // 환경은 catch로 무시(DOM 렌더러 유지). loadAddon은 반드시 open() 이후라야 한다.
-  try {
-    const webgl = new WebglAddon();
-    webgl.onContextLoss(() => webgl.dispose());
-    term.loadAddon(webgl);
-  } catch {
-    /* WebGL 불가 — xterm 기본 DOM 렌더러로 동작 */
+  // GPU 가속 렌더러(WebGL) — 대량 출력에서 DOM 렌더러 대비 CPU·잔상을 줄인다(VS Code 내장
+  // 터미널과 동일 엔진). 단 WebKitGTK(Linux)에서는 GPU/드라이버 조합(특히 NVIDIA 프로프라이어터리
+  // 드라이버·소프트웨어 GL)에 따라 WebGL 컨텍스트가 웹뷰 렌더러 프로세스를 크래시시켜 화면 전체가
+  // 까맣게 먹통된다(분할로 터미널을 여럿 띄우면 더 잘 터짐 — 컨텍스트 다수). 그래서 WebGL이
+  // 안정적인 WebView2(Windows)/WKWebView(macOS)에서만 켜고, WebKitGTK에서는 안정적인 기본 DOM
+  // 렌더러를 쓴다. loadAddon은 반드시 open() 이후라야 한다.
+  if (!isWebKitGtk) {
+    try {
+      const webgl = new WebglAddon();
+      webgl.onContextLoss(() => webgl.dispose());
+      term.loadAddon(webgl);
+    } catch {
+      /* WebGL 불가 — xterm 기본 DOM 렌더러로 동작 */
+    }
   }
 
   // WebKit 계열(Linux WebKitGTK / macOS WKWebView) 한글(IME 조합) 입력 우회.

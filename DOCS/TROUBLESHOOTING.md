@@ -186,3 +186,28 @@ if (e.code === "Tab" && !e.ctrlKey && !e.altKey && !e.metaKey) {
 
 - 키 이벤트는 `e.key`(논리값, IME에 흔들림)보다 **`e.code`(물리 키)** 가 안정적이다. 특수키/단축키는 `e.code`로 잡으면 IME·레이아웃에 안 흔들린다.
 - IME 가드(`Unidentified`/`Process`/keyCode 229)는 광범위해서 Tab 같은 **비-IME 키도 삼킬 수 있다** — 비-IME 키 처리는 IME 가드 **앞**에 둔다.
+
+---
+
+## 5. 화면이 통째로 까맣게 먹통 — WebKitGTK + NVIDIA + 터미널 WebGL 렌더러
+
+### 5.1 증상
+
+앱을 한참 쓰다 보면(특히 분할로 터미널을 여러 개 띄운 상태) **창 전체가 갑자기 까맣게** 먹통된다. 입력도 안 되고 아무것도 안 그려진다.
+
+### 5.2 근본 원인
+
+WebKitGTK의 **웹뷰 렌더러 프로세스(WebKitWebProcess)가 크래시**한 것. 메인(Rust) 프로세스는 살아 있어 창틀은 떠 있지만 내용이 안 그려진다.
+
+- 확인: `pstree -p <앱PID>`에 **WebKitWebProcess가 없고**(NetworkProcess만 남음), `/var/crash/..._WebKitWebProcess..._crash` 덤프가 먹통 시각에 남는다. 앱 로그·panic.log엔 안 남는다(네이티브 렌더러 크래시라 Rust 패닉 훅·JS 둘 다 못 잡는다).
+- 원인: **NVIDIA 프로프라이어터리 드라이버 + WebKitGTK + WebGL**. 터미널이 GPU 가속 렌더러(`@xterm/addon-webgl`)를 쓰는데, 이 조합에서 WebGL 컨텍스트가 렌더러 프로세스를 죽인다. 분할로 터미널이 많으면 WebGL 컨텍스트가 여럿이라 더 잘 터진다(`card0`가 `simple-framebuffer`로 잡히는 등 GL 경로가 비정상인 환경에서 특히).
+
+### 5.3 해결 (두 겹)
+
+1. **터미널 WebGL을 WebKitGTK(Linux)에서 끈다** — `terminal-engine.ts`에서 `if (!isWebKitGtk)`로 감싸 WebView2(Windows)/WKWebView(macOS)에서만 WebGL을 켜고, WebKitGTK에서는 안정적인 기본 DOM 렌더러를 쓴다.
+2. **WebKitGTK DMABUF 렌더러를 끈다** — `lib.rs`에서 GTK init 전에 `WEBKIT_DISABLE_DMABUF_RENDERER=1` 설정(NVIDIA에서 웹뷰 렌더링 안정화).
+
+### 5.4 교훈
+
+- WebKitGTK(Linux)의 **WebGL/하드웨어 가속 렌더링은 GPU 드라이버 조합에 매우 취약**하다 — Chromium(WebView2)에서 멀쩡한 GPU 기능이 WebKitGTK에선 렌더러를 죽인다. GPU 가속 기능은 플랫폼별로 분기하라.
+- "메인은 살아있는데 화면만 까맣다" = 거의 항상 **웹뷰 렌더러 프로세스 크래시**. `pstree`로 WebKitWebProcess 생존 여부 + `/var/crash`를 먼저 본다.

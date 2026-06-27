@@ -109,6 +109,12 @@ pub fn run() {
         if empty("QT_IM_MODULE") {
             std::env::set_var("QT_IM_MODULE", "ibus");
         }
+        // WebKitGTK 가 NVIDIA 등 일부 GPU/드라이버에서 DMABUF 렌더러로 웹뷰 렌더러 프로세스를
+        // 크래시(화면이 통째로 까맣게 먹통)시키는 사례가 잦다. DMABUF 렌더러를 끄면 안정화된다
+        // (약간의 가속 손실 — 터미널 WebGL 렌더러는 어차피 Linux에서 끈다). GTK init 전에 설정.
+        if empty("WEBKIT_DISABLE_DMABUF_RENDERER") {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
     }
 
     install_panic_hook();
