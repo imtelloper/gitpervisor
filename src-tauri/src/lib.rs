@@ -227,6 +227,8 @@ pub fn run() {
             commands::http_cancel,
             commands::get_target_sizes,
             commands::clean_target,
+            commands::scan_quarantined_tools,
+            commands::clear_quarantine,
             monitor::sys_metrics,
             db::db_list_connections,
             db::db_save_connection,

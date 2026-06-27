@@ -1,11 +1,13 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { ShieldAlert } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import { useProjects } from "../queries";
+import { useProjects, useQuarantinedTools } from "../queries";
 import { useUi } from "../stores/ui";
 import { SysMonitor } from "./SysMonitor";
 
 const appWindow = getCurrentWindow();
+const isMacOS = /Mac/i.test(navigator.userAgent);
 
 /** 커스텀 타이틀바 — 좌: 브랜드 / 중앙: 프로젝트명 / 우: 시스템 모니터 + 창 컨트롤. */
 export function TitleBar() {
@@ -56,6 +58,9 @@ export function TitleBar() {
       {/* 우: 시스템 모니터 */}
       <SysMonitor />
 
+      {/* 우: macOS 격리 도구 배지 (차단 항목 있을 때만) */}
+      {isMacOS && <QuarantineBadge />}
+
       {/* 우끝: 창 컨트롤 */}
       <div className="ml-3 flex h-full">
         <CtlButton onClick={() => void appWindow.minimize()} title="최소화">
@@ -71,6 +76,27 @@ export function TitleBar() {
         </CtlButton>
       </div>
     </header>
+  );
+}
+
+/**
+ * macOS 격리 도구 배지 — brew cask CLI에 박힌 quarantine을 자동 스캔해 카운트로 노출.
+ * 클릭하면 Settings를 열어 해제 섹션으로 이동시킨다(섹션은 항상 보이므로 별도 스크롤 불필요).
+ */
+function QuarantineBadge() {
+  const { data } = useQuarantinedTools();
+  const setSettingsOpen = useUi((s) => s.setSettingsOpen);
+  const count = data?.length ?? 0;
+  if (count === 0) return null;
+  return (
+    <button
+      onClick={() => setSettingsOpen(true)}
+      title={`brew cask CLI ${count}개가 macOS 격리로 차단됨 — 클릭하여 해제`}
+      className="mx-2 flex items-center gap-1 rounded border border-danger/40 bg-danger/10 px-2 py-0.5 text-[11px] font-medium text-danger hover:bg-danger/20"
+    >
+      <ShieldAlert size={12} />
+      <span>{count}개 차단</span>
+    </button>
   );
 }
 

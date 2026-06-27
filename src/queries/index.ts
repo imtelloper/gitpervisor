@@ -339,6 +339,34 @@ export function useCleanTarget() {
   });
 }
 
+/**
+ * macOS 격리 도구(brew cask로 깐 CLI에 박힌 com.apple.quarantine) 스캔.
+ * 비-macOS에선 백엔드가 빈 배열을 반환. staleTime을 길게 잡아 자주 재실행하지 않는다.
+ */
+export function useQuarantinedTools() {
+  return useQuery({
+    queryKey: ["quarantined-tools"],
+    queryFn: () => ipc.scanQuarantinedTools(),
+    staleTime: 5 * 60_000, // 5분
+    refetchOnWindowFocus: false,
+  });
+}
+
+/** 격리 해제 mutation — 성공 시 스캔 캐시 무효화 + 토스트. */
+export function useClearQuarantine() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (paths: string[]) => ipc.clearQuarantine(paths),
+    onSuccess: (_, paths) => {
+      void qc.invalidateQueries({ queryKey: ["quarantined-tools"] });
+      useUi
+        .getState()
+        .pushToast("success", `격리 해제 완료 (${paths.length}개)`);
+    },
+    onError: (e) => useUi.getState().pushToast("error", errorMessage(e)),
+  });
+}
+
 export function useDiff(projectId: string | null, target: DiffTarget | null) {
   return useQuery({
     queryKey: target ? keys.diff(projectId ?? "none", target) : ["diff", "none"],

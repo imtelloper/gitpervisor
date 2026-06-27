@@ -267,6 +267,13 @@ export interface CleanResult {
   removed: number;
 }
 
+// ---- macOS 격리 도구 (commands/quarantine.rs) ----
+export interface QuarantinedItem {
+  path: string; // 격리 속성이 박힌 실행 파일 절대경로
+  name: string; // 파일명 (UI 표시용)
+  cask: string; // brew cask 이름 (예: "claude-code")
+}
+
 export type ErrorCode =
   | "NOT_A_REPO"
   | "GIT_NOT_FOUND"
@@ -691,4 +698,16 @@ export const ipc = {
   // target 디렉토리 통째 삭제(= cargo clean). 대용량 삭제는 오래 걸릴 수 있어 길게.
   cleanTarget: (projectId: string) =>
     callMutating<CleanResult>("clean_target", { projectId }, 300_000),
+
+  // ---- macOS 격리 도구 (commands/quarantine.rs, macOS 전용) ----
+  // brew cask로 깐 CLI에 박힌 com.apple.quarantine을 스캔/해제한다.
+  // 비-macOS에서는 백엔드가 빈 배열을 반환한다.
+  scanQuarantinedTools: () =>
+    call<QuarantinedItem[]>("scan_quarantined_tools", {}, {
+      timeoutMs: 30_000,
+      attempts: 1,
+      lane: "background",
+    }),
+  clearQuarantine: (paths: string[]) =>
+    callMutating<void>("clear_quarantine", { paths }, 60_000),
 };

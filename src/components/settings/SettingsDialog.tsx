@@ -1,9 +1,17 @@
-import { Settings as SettingsIcon, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { RefreshCw, Settings as SettingsIcon, ShieldCheck, X } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 
 import type { Settings } from "../../lib/ipc";
-import { useGitCheck, useSetSettings, useSettings } from "../../queries";
+import {
+  useClearQuarantine,
+  useGitCheck,
+  useQuarantinedTools,
+  useSetSettings,
+  useSettings,
+} from "../../queries";
 import { useUi } from "../../stores/ui";
+
+const isMacOS = /Mac/i.test(navigator.userAgent);
 
 const inputCls =
   "w-full rounded border border-edge bg-base px-2 py-1 outline-none focus:border-accent";
@@ -23,6 +31,124 @@ function Field({
       {children}
       {hint && <div className="mt-1 text-[11px] text-fg-dim">{hint}</div>}
     </div>
+  );
+}
+
+/**
+ * macOS 격리 도구 검사 섹션.
+ * brew cask로 설치한 CLI(예: claude)에 박힌 com.apple.quarantine을 스캔·해제한다.
+ * 비-macOS에선 호출 측에서 렌더링하지 않는다.
+ */
+function QuarantineSection() {
+  const { data, isFetching, refetch } = useQuarantinedTools();
+  const clear = useClearQuarantine();
+  const items = data ?? [];
+
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  // 스캔 결과가 바뀌면 선택 상태를 초기화한다 — 사라진 항목이 선택돼 있으면 헷갈리니까.
+  // 기본은 "전부 선택"으로 시작해 한 번에 해제하는 흐름을 자연스럽게 만든다.
+  useEffect(() => {
+    setSelected(new Set(items.map((i) => i.path)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
+
+  const allSelected = items.length > 0 && selected.size === items.length;
+  const selectedList = useMemo(
+    () => items.filter((i) => selected.has(i.path)).map((i) => i.path),
+    [items, selected],
+  );
+
+  const toggle = (path: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+
+  const toggleAll = () =>
+    setSelected(allSelected ? new Set() : new Set(items.map((i) => i.path)));
+
+  return (
+    <>
+      <div className="border-t border-edge pt-3 text-[11px] font-semibold tracking-widest text-fg-dim">
+        macOS 격리 도구
+      </div>
+      <div className="text-[11px] leading-5 text-fg-muted">
+        Homebrew cask로 설치한 CLI는 macOS 격리 속성이 박혀
+        터미널에서 <span className="font-mono">permission denied</span>로
+        실행이 막힙니다. 여기서 한 번에 해제할 수 있습니다.
+      </div>
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => void refetch()}
+          disabled={isFetching || clear.isPending}
+          className="flex items-center gap-1.5 rounded border border-edge px-2.5 py-1 text-fg-muted hover:bg-raised hover:text-fg disabled:opacity-50"
+        >
+          <RefreshCw size={12} className={isFetching ? "animate-spin" : ""} />
+          다시 검사
+        </button>
+        {items.length === 0 && !isFetching && (
+          <span className="flex items-center gap-1.5 text-[12px] text-add">
+            <ShieldCheck size={13} />
+            차단된 항목 없음
+          </span>
+        )}
+        {items.length > 0 && (
+          <span className="text-[12px] text-danger">
+            ⚠️ 차단된 항목 {items.length}개
+          </span>
+        )}
+      </div>
+
+      {items.length > 0 && (
+        <>
+          <div className="max-h-44 overflow-y-auto rounded border border-edge bg-base">
+            <label className="flex cursor-pointer items-center gap-2 border-b border-edge px-2 py-1.5 text-[12px] font-medium text-fg-muted hover:bg-raised">
+              <input
+                type="checkbox"
+                checked={allSelected}
+                onChange={toggleAll}
+                className="accent-accent"
+              />
+              <span>전체 선택</span>
+            </label>
+            {items.map((it) => (
+              <label
+                key={it.path}
+                className="flex cursor-pointer items-start gap-2 px-2 py-1.5 hover:bg-raised"
+              >
+                <input
+                  type="checkbox"
+                  checked={selected.has(it.path)}
+                  onChange={() => toggle(it.path)}
+                  className="mt-0.5 accent-accent"
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="text-[12px]">
+                    <span className="font-medium">{it.name}</span>
+                    <span className="ml-1 text-fg-dim">({it.cask})</span>
+                  </div>
+                  <div className="break-all font-mono text-[10px] text-fg-dim">
+                    {it.path}
+                  </div>
+                </div>
+              </label>
+            ))}
+          </div>
+          <button
+            onClick={() => clear.mutate(selectedList)}
+            disabled={selectedList.length === 0 || clear.isPending}
+            className="w-full rounded bg-accent px-3 py-1.5 text-[12px] font-medium text-on-accent hover:bg-accent-hover disabled:opacity-50"
+          >
+            {clear.isPending
+              ? "해제 중…"
+              : `선택 ${selectedList.length}개 격리 해제`}
+          </button>
+        </>
+      )}
+    </>
   );
 }
 
@@ -74,7 +200,7 @@ export function SettingsDialog() {
       onClick={() => setOpen(false)}
     >
       <div
-        className="w-[460px] rounded-lg border border-edge bg-panel p-5 shadow-xl"
+        className="flex max-h-[85vh] w-[500px] flex-col rounded-lg border border-edge bg-panel p-5 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-2">
@@ -89,7 +215,7 @@ export function SettingsDialog() {
           </button>
         </div>
 
-        <div className="mt-4 space-y-4 text-[13px]">
+        <div className="mt-4 flex-1 space-y-4 overflow-y-auto pr-1 text-[13px]">
           <Field label="테마">
             <div className="flex gap-2">
               {(["darcula", "monokai"] as const).map((t) => (
@@ -217,6 +343,8 @@ export function SettingsDialog() {
               <option value="always">항상 (포커스 중에도)</option>
             </select>
           </Field>
+
+          {isMacOS && <QuarantineSection />}
         </div>
 
         <div className="mt-5 flex justify-end gap-2">
