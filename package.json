@@ -17,6 +17,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "build:mac": "npm run tauri build && bash scripts/build-mac-dmg.sh",
     "test:e2e": "node tests/e2e/run.mjs"
   },
   "dependencies": {
