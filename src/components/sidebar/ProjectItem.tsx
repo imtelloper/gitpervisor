@@ -25,25 +25,21 @@ export const ProjectItem = memo(function ProjectItem({
   onSelect,
   onRemove,
   onContextMenu,
-  draggable,
   isOver,
-  onDragStart,
-  onDragOver,
-  onDrop,
-  onDragEnd,
+  isDragging,
+  onPointerDownDrag,
 }: {
   project: Project;
   selected: boolean;
   onSelect: (id: string) => void;
   onRemove: (id: string) => void;
   onContextMenu?: (e: React.MouseEvent, project: Project) => void;
-  /** 드래그 정렬 (수동 순서 모드에서만 활성) */
-  draggable?: boolean;
+  /** 드래그 정렬 — 이 항목 위에 삽입선 표시 */
   isOver?: boolean;
-  onDragStart?: (id: string) => void;
-  onDragOver?: (e: React.DragEvent, id: string) => void;
-  onDrop?: (id: string) => void;
-  onDragEnd?: () => void;
+  /** 이 항목을 지금 끌고 있는 중(흐리게) */
+  isDragging?: boolean;
+  /** 포인터 드래그 시작(좌클릭 후 임계 이동 시 정렬 드래그로 전환) */
+  onPointerDownDrag?: (e: React.PointerEvent, id: string) => void;
 }) {
   const { data: status, isLoading, error } = useStatus(project.id);
   const { data: notes } = useNotes();
@@ -69,25 +65,19 @@ export const ProjectItem = memo(function ProjectItem({
 
   return (
     <div
+      data-project-id={project.id}
       onClick={() => onSelect(project.id)}
       onContextMenu={onContextMenu ? (e) => onContextMenu(e, project) : undefined}
-      draggable={draggable}
-      onDragStart={
-        draggable
-          ? (e) => {
-              e.dataTransfer.effectAllowed = "move";
-              onDragStart?.(project.id);
-            }
-          : undefined
+      onPointerDown={
+        onPointerDownDrag ? (e) => onPointerDownDrag(e, project.id) : undefined
       }
-      onDragOver={draggable ? (e) => onDragOver?.(e, project.id) : undefined}
-      onDrop={draggable ? () => onDrop?.(project.id) : undefined}
-      onDragEnd={draggable ? () => onDragEnd?.() : undefined}
-      className={`group relative cursor-pointer border-l-2 px-3 py-2 ${
+      className={`group relative cursor-pointer select-none border-l-2 px-3 py-2 ${
         selected
           ? "border-accent bg-selection"
           : "border-transparent hover:bg-raised"
-      } ${agent === "working" ? "ai-working" : agent === "done" ? "ai-done" : ""}`}
+      } ${isDragging ? "opacity-40" : ""} ${
+        agent === "working" ? "ai-working" : agent === "done" ? "ai-done" : ""
+      }`}
     >
       {isOver && (
         <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-0.5 bg-accent" />
@@ -126,6 +116,7 @@ export const ProjectItem = memo(function ProjectItem({
       </div>
       <button
         title="프로젝트 제거 (레포는 삭제되지 않음)"
+        onPointerDown={(e) => e.stopPropagation()}
         onClick={(e) => {
           e.stopPropagation();
           onRemove(project.id);

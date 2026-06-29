@@ -106,44 +106,65 @@ export function ProjectList() {
     });
   }, [projects, statuses, sortByChanges]);
 
-  // ── 드래그 순서 정렬 ── 항상 활성. 변경 우선 정렬(sortByChanges)이 켜져 있어도 드래그하면
-  // 드롭 시 수동 순서 모드로 전환해 드래그가 실제로 반영되게 한다(드래그=수동 정렬 의도).
+  // ── 드래그 순서 정렬 (포인터 기반) ──
+  // HTML5 drag&drop은 WebView2(Windows)에서 OS 드래그-드롭 가로채기·user-select 등으로 불안정하다.
+  // 패널 리사이즈와 동일한 포인터 이벤트 방식으로 직접 구현: 좌클릭 후 임계(5px) 넘게 움직이면
+  // 드래그로 전환 → 항목 중점 기준으로 삽입 위치(overId, null=맨 끝) 계산·표시 → 떼면 재정렬.
   const reorder = useReorderProjects();
   const reorderMutate = reorder.mutate;
-  const dragEnabled = true;
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
-  // 콜백을 안정 참조로 두기 위해 최신 목록/드래그 대상은 ref로 본다(ProjectItem memo 보존).
   const orderedRef = useRef(orderedProjects);
   orderedRef.current = orderedProjects;
-  const dragRef = useRef<string | null>(null);
-  dragRef.current = dragId;
+  const listRef = useRef<HTMLDivElement | null>(null);
 
-  const handleDragStart = useCallback((id: string) => setDragId(id), []);
-  const handleDragEnd = useCallback(() => {
-    setDragId(null);
-    setOverId(null);
-  }, []);
-  const handleDragOver = useCallback((e: React.DragEvent, id: string) => {
-    e.preventDefault();
-    setOverId((cur) => (cur === id ? cur : id));
-  }, []);
-  const handleDrop = useCallback(
-    (targetId: string) => {
-      const from = dragRef.current;
-      setDragId(null);
-      setOverId(null);
-      if (!from || from === targetId) return;
-      const ids = orderedRef.current.map((p) => p.id);
-      const fromIdx = ids.indexOf(from);
-      if (fromIdx === -1) return;
-      ids.splice(fromIdx, 1); // 끌고 온 항목을 빼고
-      const at = ids.indexOf(targetId);
-      ids.splice(at === -1 ? ids.length : at, 0, from); // 대상 앞에 삽입
-      // 드래그로 직접 순서를 정했으니 변경 우선 정렬은 끄고 수동 순서로 전환(드래그가 보이게 반영)
-      if (useUi.getState().projectSortByChanges)
-        useUi.getState().toggleProjectSort();
-      reorderMutate(ids);
+  const beginDrag = useCallback(
+    (e: React.PointerEvent, id: string) => {
+      if (e.button !== 0) return; // 좌클릭만 (우클릭=컨텍스트 메뉴)
+      const startY = e.clientY;
+      let dragging = false;
+      let over: string | null = null;
+
+      const move = (ev: PointerEvent) => {
+        if (!dragging) {
+          if (Math.abs(ev.clientY - startY) < 5) return; // 클릭/드래그 구분 임계
+          dragging = true;
+          setDragId(id);
+        }
+        const cont = listRef.current;
+        if (!cont) return;
+        // 포인터 Y가 어느 항목의 위쪽 절반에 있는지로 "그 항목 앞에 삽입"을 정한다. 끝이면 null.
+        let target: string | null = null;
+        for (const el of cont.querySelectorAll<HTMLElement>("[data-project-id]")) {
+          const r = el.getBoundingClientRect();
+          if (ev.clientY < r.top + r.height / 2) {
+            target = el.dataset.projectId ?? null;
+            break;
+          }
+        }
+        over = target;
+        setOverId(target);
+      };
+      const up = () => {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        setDragId(null);
+        setOverId(null);
+        if (!dragging) return; // 임계 미달 = 단순 클릭 → onClick이 선택 처리
+        const ids = orderedRef.current.map((p) => p.id);
+        const fromIdx = ids.indexOf(id);
+        if (fromIdx === -1) return;
+        ids.splice(fromIdx, 1);
+        let at = over == null ? ids.length : ids.indexOf(over);
+        if (at === -1) at = ids.length;
+        ids.splice(at, 0, id);
+        // 드래그로 순서를 정했으니 변경 우선 정렬은 끄고 수동 순서로 전환(드래그가 보이게 반영)
+        if (useUi.getState().projectSortByChanges)
+          useUi.getState().toggleProjectSort();
+        reorderMutate(ids);
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
     },
     [reorderMutate],
   );
@@ -277,7 +298,7 @@ export function ProjectList() {
         </button>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto">
         {orderedProjects.map((p) => (
           <ProjectItem
             key={p.id}
@@ -286,14 +307,15 @@ export function ProjectList() {
             onSelect={selectProject}
             onRemove={handleRemove}
             onContextMenu={handleItemContextMenu}
-            draggable={dragEnabled}
-            isOver={dragEnabled && overId === p.id && dragId !== p.id}
-            onDragStart={handleDragStart}
-            onDragOver={handleDragOver}
-            onDrop={handleDrop}
-            onDragEnd={handleDragEnd}
+            isOver={overId === p.id && dragId !== p.id}
+            isDragging={dragId === p.id}
+            onPointerDownDrag={beginDrag}
           />
         ))}
+        {/* 맨 끝에 삽입할 때의 표시선 */}
+        {dragId && overId === null && (
+          <div className="mx-2 h-0.5 bg-accent" />
+        )}
         {projects && orderedProjects.length === 0 && (
           <div className="px-3 py-4 text-xs leading-5 text-fg-dim">
             아직 프로젝트가 없습니다.
