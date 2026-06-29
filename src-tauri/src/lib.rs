@@ -148,6 +148,10 @@ pub fn run() {
                 .center()
                 // OS 기본 타이틀바 제거 — 프론트의 커스텀 TitleBar로 대체 (리사이즈는 유지)
                 .decorations(false)
+                // OS 레벨 드래그-드롭을 끈다 — Windows(WebView2)에서 이게 켜져 있으면 OS 핸들러가
+                // 웹뷰 안의 HTML5 drag&drop 이벤트를 가로채, PROJECTS 사이드바 드래그 정렬이 안 먹는다.
+                // 앱은 OS 파일 드롭을 쓰지 않으므로(전부 다이얼로그/클릭) 꺼도 잃는 기능이 없다.
+                .drag_and_drop(false)
                 .background_color(tauri::window::Color(30, 31, 34, 255))
                 .additional_browser_args(&browser_args())
                 .build()?;
