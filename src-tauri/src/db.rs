@@ -6,6 +6,9 @@ use mongodb::bson::{doc, oid::ObjectId, Bson, DateTime, Decimal128, Document};
 use mongodb::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
+// sqlx 트레이트 메서드(.try_get/.columns/.name/.type_info/.is_null)만 익명(as _)으로 들여온다 —
+// 로컬 `Column` 구조체와 이름 충돌을 피하면서 AnyRow/AnyColumn의 메서드를 쓰기 위함.
+use sqlx::{Column as _, Row as _, TypeInfo as _, ValueRef as _};
 use tauri::{AppHandle, State};
 use tauri_plugin_store::StoreExt;
 use tiberius::{AuthMethod, Config, EncryptionLevel, QueryItem};
@@ -18,10 +21,13 @@ use crate::error::{ErrorCode, IpcError};
 type MssqlClient = tiberius::Client<Compat<TcpStream>>;
 
 /// 활성 연결 핸들. Mongo Client는 풀이라 clone 가능, MSSQL은 단일 연결이라 Arc<Mutex>.
+/// Sql(AnyPool)은 PostgreSQL/MySQL/SQLite 공용 — Any 드라이버가 URL 스킴으로 분기한다.
+/// 어느 엔진인지(메타·EXPLAIN·식별자 인용 분기)는 DbEngine을 함께 들고 다닌다.
 #[derive(Clone)]
 enum DbClient {
     Mongo(Client),
     Mssql(Arc<tokio::sync::Mutex<MssqlClient>>),
+    Sql(sqlx::AnyPool, DbEngine),
 }
 
 const CONN_FILE: &str = "connections.json";
@@ -279,10 +285,14 @@ pub async fn db_connect(state: State<'_, DbState>, id: String) -> Result<(), Ipc
             let c = build_mssql_client(&conn, password).await?;
             DbClient::Mssql(Arc::new(tokio::sync::Mutex::new(c)))
         }
-        _ => {
-            return Err(err(
-                "아직 MongoDB·SQL Server만 지원합니다 (PostgreSQL/MySQL/SQLite는 추후)",
-            ))
+        DbEngine::Postgres | DbEngine::Mysql | DbEngine::Sqlite => {
+            let pool = build_sql_client(&conn, password, conn.engine).await?;
+            // 연결 확인 — 가벼운 쿼리(인증/파일열기 검증).
+            sqlx::query("SELECT 1")
+                .fetch_optional(&pool)
+                .await
+                .map_err(|e| err(format!("연결 확인 실패: {e}")))?;
+            DbClient::Sql(pool, conn.engine)
         }
     };
 
@@ -306,6 +316,7 @@ pub async fn db_databases(
             .await
             .map_err(|e| err(format!("DB 목록 조회 실패: {e}"))),
         DbClient::Mssql(c) => mssql_databases(&c).await,
+        DbClient::Sql(pool, engine) => sql_databases(&pool, engine).await,
     }
 }
 
@@ -322,6 +333,7 @@ pub async fn db_tables(
             .await
             .map_err(|e| err(format!("컬렉션 목록 조회 실패: {e}"))),
         DbClient::Mssql(c) => mssql_tables(&c, &database).await,
+        DbClient::Sql(pool, engine) => sql_tables(&pool, engine, &database).await,
     }
 }
 
@@ -346,6 +358,9 @@ pub async fn db_query(
     match client_of(&state, &id)? {
         DbClient::Mongo(c) => mongo_query(&c, &database, &query, limit, read_only).await,
         DbClient::Mssql(c) => mssql_query(&c, &database, &query, limit, read_only).await,
+        DbClient::Sql(pool, engine) => {
+            sql_query(&pool, engine, &query, limit, read_only).await
+        }
     }
 }
 
@@ -359,6 +374,7 @@ pub async fn db_table_meta(
 ) -> Result<TableMeta, IpcError> {
     match client_of(&state, &id)? {
         DbClient::Mssql(c) => mssql_table_meta(&c, &database, &table).await,
+        DbClient::Sql(pool, engine) => sql_table_meta(&pool, engine, &table).await,
         DbClient::Mongo(_) => Err(err("컬럼/키/인덱스는 SQL 엔진만 지원합니다")),
     }
 }
@@ -373,6 +389,7 @@ pub async fn db_explain(
 ) -> Result<String, IpcError> {
     match client_of(&state, &id)? {
         DbClient::Mssql(c) => mssql_explain(&c, &database, &query).await,
+        DbClient::Sql(pool, engine) => sql_explain(&pool, engine, &query).await,
         DbClient::Mongo(_) => Err(err("실행 계획은 SQL 엔진만 지원합니다")),
     }
 }
@@ -413,6 +430,9 @@ pub async fn db_update_cell(
         DbClient::Mssql(c) => {
             mssql_update_cell(&c, &database, &table, &pk, &set_col, &set_value).await
         }
+        DbClient::Sql(pool, engine) => {
+            sql_update_cell(&pool, engine, &table, &pk, &set_col, &set_value).await
+        }
         DbClient::Mongo(_) => Err(err("셀 편집은 SQL 엔진만 지원합니다")),
     }
 }
@@ -434,6 +454,7 @@ pub async fn db_delete_row(
     }
     match client_of(&state, &id)? {
         DbClient::Mssql(c) => mssql_delete_row(&c, &database, &table, &pk).await,
+        DbClient::Sql(pool, engine) => sql_delete_row(&pool, engine, &table, &pk).await,
         DbClient::Mongo(_) => Err(err("행 삭제는 SQL 엔진만 지원합니다")),
     }
 }
@@ -455,6 +476,7 @@ pub async fn db_insert_row(
     }
     match client_of(&state, &id)? {
         DbClient::Mssql(c) => mssql_insert_row(&c, &database, &table, &values).await,
+        DbClient::Sql(pool, engine) => sql_insert_row(&pool, engine, &table, &values).await,
         DbClient::Mongo(_) => Err(err("행 삽입은 SQL 엔진만 지원합니다")),
     }
 }
@@ -477,6 +499,8 @@ pub async fn db_procedures(
 ) -> Result<Vec<String>, IpcError> {
     match client_of(&state, &id)? {
         DbClient::Mssql(c) => mssql_procedures(&c, &database).await,
+        // PG/MySQL/SQLite 프로시저 탐색은 v1 범위 밖 — 빈 목록(테이블/쿼리 기능엔 영향 없음).
+        DbClient::Sql(_, _) => Ok(Vec::new()),
         DbClient::Mongo(_) => Err(err("저장 프로시저는 SQL 엔진만 지원합니다")),
     }
 }
@@ -491,6 +515,7 @@ pub async fn db_proc_params(
 ) -> Result<Vec<ProcParam>, IpcError> {
     match client_of(&state, &id)? {
         DbClient::Mssql(c) => mssql_proc_params(&c, &database, &proc).await,
+        DbClient::Sql(_, _) => Ok(Vec::new()),
         DbClient::Mongo(_) => Err(err("저장 프로시저는 SQL 엔진만 지원합니다")),
     }
 }
@@ -1299,6 +1324,779 @@ async fn mssql_table_meta(
         indexes,
         constraints,
         triggers,
+    })
+}
+
+// ============================================================================
+// PostgreSQL / MySQL / SQLite — sqlx Any 드라이버 (단일 코드경로)
+//
+// Any가 URL 스킴(postgres://·mysql://·sqlite:)으로 드라이버를 고른다. 플레이스홀더는 백엔드
+// 네이티브 그대로 통과하므로(PG=$1, MySQL/SQLite=?) 엔진별로 맞춰 만든다.
+// 타입 충실도 주의: Any는 기본형(정수/실수/불리언/문자열/blob)만 디코드한다. PG/MySQL의
+// 날짜·decimal·uuid 등은 NULL로 떨어질 수 있다(SQLite는 동적 타이핑이라 충실). 탐색 용도엔 충분.
+// ============================================================================
+
+/// Any 드라이버 등록은 프로세스당 1회.
+fn ensure_sql_drivers() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(sqlx::any::install_default_drivers);
+}
+
+async fn build_sql_client(
+    conn: &DbConnection,
+    password: Option<String>,
+    engine: DbEngine,
+) -> Result<sqlx::AnyPool, IpcError> {
+    ensure_sql_drivers();
+    let url = match engine {
+        DbEngine::Sqlite => {
+            let path = conn
+                .database
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| err("SQLite는 데이터베이스 파일 경로가 필요합니다"))?;
+            let mode = if conn.read_only { "ro" } else { "rwc" };
+            // 역슬래시→슬래시(SQLite 수용). scheme은 `sqlite:`(단일) — `//`는 authority라 `C:`가
+            // 호스트로 잘못 잡힌다.
+            format!("sqlite:{}?mode={}", path.replace('\\', "/"), mode)
+        }
+        DbEngine::Postgres | DbEngine::Mysql => {
+            let scheme = if engine == DbEngine::Postgres {
+                "postgres"
+            } else {
+                "mysql"
+            };
+            let mut url = format!("{scheme}://");
+            if !conn.username.is_empty() {
+                url.push_str(&pct(&conn.username));
+                if let Some(pw) = &password {
+                    url.push(':');
+                    url.push_str(&pct(pw));
+                }
+                url.push('@');
+            }
+            url.push_str(&conn.host);
+            url.push(':');
+            url.push_str(&conn.port.to_string());
+            url.push('/');
+            if let Some(db) = conn
+                .database
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                url.push_str(db);
+            }
+            if let Some(opts) = conn
+                .options
+                .as_deref()
+                .map(str::trim)
+                .filter(|o| !o.is_empty())
+            {
+                url.push('?');
+                url.push_str(opts);
+            }
+            url
+        }
+        _ => return Err(err("내부 오류: SQL 엔진이 아닙니다")),
+    };
+    sqlx::any::AnyPoolOptions::new()
+        .max_connections(4)
+        .acquire_timeout(std::time::Duration::from_secs(15))
+        .connect(&url)
+        .await
+        .map_err(|e| err(format!("연결 실패: {e}")))
+}
+
+/// AnyRow의 i번째 셀 → JSON. 기본형 우선(정수→실수→불리언→문자열→blob), 미지원은 NULL.
+fn any_cell_to_json(row: &sqlx::any::AnyRow, i: usize) -> Json {
+    use serde_json::json;
+    if let Ok(v) = row.try_get_raw(i) {
+        if v.is_null() {
+            return Json::Null;
+        }
+    }
+    macro_rules! attempt {
+        ($t:ty => $f:expr) => {
+            if let Ok(v) = row.try_get::<$t, _>(i) {
+                return $f(v);
+            }
+        };
+    }
+    attempt!(i64 => |v: i64| json!(v));
+    attempt!(f64 => |v: f64| json!(v));
+    attempt!(bool => |v: bool| json!(v));
+    attempt!(String => |v: String| json!(v));
+    attempt!(Vec<u8> => |v: Vec<u8>| json!(format!(
+        "0x{}",
+        v.iter().map(|b| format!("{b:02X}")).collect::<String>()
+    )));
+    Json::Null
+}
+
+/// AnyRow 묶음 → DbResult(컬럼명/타입 + 셀).
+fn sql_rows_to_result(rows: &[sqlx::any::AnyRow]) -> DbResult {
+    let columns: Vec<Column> = rows
+        .first()
+        .map(|r| {
+            r.columns()
+                .iter()
+                .map(|c| Column {
+                    name: c.name().to_string(),
+                    type_name: Some(c.type_info().name().to_string()),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let ncols = columns.len();
+    let out: Vec<Vec<Json>> = rows
+        .iter()
+        .map(|r| (0..ncols).map(|i| any_cell_to_json(r, i)).collect())
+        .collect();
+    let row_count = out.len();
+    DbResult {
+        columns,
+        rows: out,
+        row_count,
+    }
+}
+
+async fn sql_databases(pool: &sqlx::AnyPool, engine: DbEngine) -> Result<Vec<String>, IpcError> {
+    let sql = match engine {
+        // datname은 pg `name`타입 → Any는 TEXT만 디코드하므로 ::text 캐스트.
+        DbEngine::Postgres => {
+            "SELECT datname::text FROM pg_database WHERE datistemplate = false ORDER BY datname"
+        }
+        DbEngine::Mysql => "SHOW DATABASES",
+        DbEngine::Sqlite => return Ok(vec!["main".to_string()]),
+        _ => return Err(err("내부 오류")),
+    };
+    let rows = sqlx::query(sql)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| err(format!("DB 목록 조회 실패: {e}")))?;
+    Ok(rows
+        .iter()
+        .filter_map(|r| r.try_get::<String, _>(0).ok())
+        .collect())
+}
+
+async fn sql_tables(
+    pool: &sqlx::AnyPool,
+    engine: DbEngine,
+    database: &str,
+) -> Result<Vec<String>, IpcError> {
+    let rows = match engine {
+        DbEngine::Postgres => sqlx::query(
+            "SELECT (table_schema || '.' || table_name)::text FROM information_schema.tables \
+             WHERE table_type IN ('BASE TABLE','VIEW') \
+               AND table_schema NOT IN ('pg_catalog','information_schema') ORDER BY 1",
+        )
+        .fetch_all(pool)
+        .await,
+        DbEngine::Mysql => sqlx::query(
+            "SELECT table_name FROM information_schema.tables \
+             WHERE table_schema = ? ORDER BY table_name",
+        )
+        .bind(database)
+        .fetch_all(pool)
+        .await,
+        DbEngine::Sqlite => sqlx::query(
+            "SELECT name FROM sqlite_master WHERE type IN ('table','view') \
+             AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        )
+        .fetch_all(pool)
+        .await,
+        _ => return Err(err("내부 오류")),
+    }
+    .map_err(|e| err(format!("테이블 목록 조회 실패: {e}")))?;
+    Ok(rows
+        .iter()
+        .filter_map(|r| r.try_get::<String, _>(0).ok())
+        .collect())
+}
+
+async fn sql_query(
+    pool: &sqlx::AnyPool,
+    _engine: DbEngine,
+    query: &str,
+    limit: i64,
+    read_only: bool,
+) -> Result<DbResult, IpcError> {
+    if read_only && is_write_sql(query) {
+        return Err(err(
+            "읽기 전용 연결입니다 — 쓰기/DDL 문은 차단됩니다 (연결 편집에서 해제 가능)",
+        ));
+    }
+    // 스트림으로 limit행까지만 적재(거대 결과 메모리 폭발 방지). 조기 종료는 sqlx가 연결을 정리.
+    let mut stream = sqlx::query(query).fetch(pool);
+    let mut rows: Vec<sqlx::any::AnyRow> = Vec::new();
+    while let Some(row) = stream
+        .try_next()
+        .await
+        .map_err(|e| err(format!("쿼리 실패: {e}")))?
+    {
+        if (rows.len() as i64) < limit {
+            rows.push(row);
+        } else {
+            break;
+        }
+    }
+    Ok(sql_rows_to_result(&rows))
+}
+
+async fn sql_explain(
+    pool: &sqlx::AnyPool,
+    engine: DbEngine,
+    query: &str,
+) -> Result<String, IpcError> {
+    let sql = match engine {
+        DbEngine::Sqlite => format!("EXPLAIN QUERY PLAN {query}"),
+        DbEngine::Postgres | DbEngine::Mysql => format!("EXPLAIN {query}"),
+        _ => return Err(err("내부 오류")),
+    };
+    let rows = sqlx::query(&sql)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| err(format!("실행 계획 실패: {e}")))?;
+    let mut out = String::new();
+    for r in &rows {
+        let parts: Vec<String> = (0..r.columns().len())
+            .map(|i| match any_cell_to_json(r, i) {
+                Json::String(s) => s,
+                Json::Null => String::new(),
+                v => v.to_string(),
+            })
+            .collect();
+        out.push_str(&parts.join(" | "));
+        out.push('\n');
+    }
+    Ok(out)
+}
+
+// ---- 식별자 인용 / placeholder (엔진별) ----
+fn quote_ident(engine: DbEngine, ident: &str) -> String {
+    match engine {
+        DbEngine::Mysql => format!("`{}`", ident.replace('`', "``")),
+        _ => format!("\"{}\"", ident.replace('"', "\"\"")), // postgres / sqlite — 표준 더블쿼트
+    }
+}
+fn placeholder(engine: DbEngine, n: usize) -> String {
+    match engine {
+        DbEngine::Postgres => format!("${n}"), // 1-based
+        _ => "?".to_string(),                  // mysql / sqlite
+    }
+}
+/// "schema.table" 또는 "table" → 인용된 정규화 식별자(엔진별).
+fn quote_table(engine: DbEngine, table: &str) -> String {
+    match table.split_once('.') {
+        Some((s, n)) => format!("{}.{}", quote_ident(engine, s), quote_ident(engine, n)),
+        None => quote_ident(engine, table),
+    }
+}
+
+/// Json 값을 Any 쿼리에 바인딩(소유값 — 수명 단순화). NULL은 타입드 None.
+fn bind_json<'q>(
+    q: sqlx::query::Query<'q, sqlx::Any, sqlx::any::AnyArguments<'q>>,
+    v: &Json,
+) -> sqlx::query::Query<'q, sqlx::Any, sqlx::any::AnyArguments<'q>> {
+    match v {
+        Json::Null => q.bind(None::<String>),
+        Json::Bool(b) => q.bind(*b),
+        Json::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                q.bind(i)
+            } else {
+                q.bind(n.as_f64().unwrap_or(0.0))
+            }
+        }
+        Json::String(s) => q.bind(s.clone()),
+        other => q.bind(other.to_string()),
+    }
+}
+
+async fn sql_update_cell(
+    pool: &sqlx::AnyPool,
+    engine: DbEngine,
+    table: &str,
+    pk: &[PkCell],
+    set_col: &str,
+    set_value: &Json,
+) -> Result<(), IpcError> {
+    let mut n = 0usize;
+    let mut next = || {
+        n += 1;
+        placeholder(engine, n)
+    };
+    let set_ph = next();
+    let mut wheres = Vec::new();
+    for p in pk {
+        if p.value.is_null() {
+            wheres.push(format!("{} IS NULL", quote_ident(engine, &p.col)));
+        } else {
+            wheres.push(format!("{} = {}", quote_ident(engine, &p.col), next()));
+        }
+    }
+    let sql = format!(
+        "UPDATE {} SET {} = {} WHERE {}",
+        quote_table(engine, table),
+        quote_ident(engine, set_col),
+        set_ph,
+        wheres.join(" AND ")
+    );
+    let mut q = sqlx::query(&sql);
+    q = bind_json(q, set_value);
+    for p in pk {
+        if !p.value.is_null() {
+            q = bind_json(q, &p.value);
+        }
+    }
+    let res = q
+        .execute(pool)
+        .await
+        .map_err(|e| err(format!("업데이트 실패: {e}")))?;
+    match res.rows_affected() {
+        0 => Err(err("일치하는 행이 없습니다 (이미 변경됐거나 삭제됨)")),
+        1 => Ok(()),
+        m => Err(err(format!("{m}개 행이 영향받음 — PK가 유일하지 않습니다(취소)"))),
+    }
+}
+
+async fn sql_delete_row(
+    pool: &sqlx::AnyPool,
+    engine: DbEngine,
+    table: &str,
+    pk: &[PkCell],
+) -> Result<(), IpcError> {
+    let mut n = 0usize;
+    let mut wheres = Vec::new();
+    for p in pk {
+        if p.value.is_null() {
+            wheres.push(format!("{} IS NULL", quote_ident(engine, &p.col)));
+        } else {
+            n += 1;
+            wheres.push(format!(
+                "{} = {}",
+                quote_ident(engine, &p.col),
+                placeholder(engine, n)
+            ));
+        }
+    }
+    let sql = format!(
+        "DELETE FROM {} WHERE {}",
+        quote_table(engine, table),
+        wheres.join(" AND ")
+    );
+    let mut q = sqlx::query(&sql);
+    for p in pk {
+        if !p.value.is_null() {
+            q = bind_json(q, &p.value);
+        }
+    }
+    let res = q
+        .execute(pool)
+        .await
+        .map_err(|e| err(format!("삭제 실패: {e}")))?;
+    match res.rows_affected() {
+        0 => Err(err("일치하는 행이 없습니다 (이미 삭제됨)")),
+        1 => Ok(()),
+        m => Err(err(format!("{m}개 행이 영향받음 — 취소"))),
+    }
+}
+
+async fn sql_insert_row(
+    pool: &sqlx::AnyPool,
+    engine: DbEngine,
+    table: &str,
+    values: &[PkCell],
+) -> Result<(), IpcError> {
+    let cols: Vec<String> = values.iter().map(|v| quote_ident(engine, &v.col)).collect();
+    let phs: Vec<String> = (1..=values.len()).map(|i| placeholder(engine, i)).collect();
+    let sql = format!(
+        "INSERT INTO {} ({}) VALUES ({})",
+        quote_table(engine, table),
+        cols.join(", "),
+        phs.join(", ")
+    );
+    let mut q = sqlx::query(&sql);
+    for v in values {
+        q = bind_json(q, &v.value);
+    }
+    let res = q
+        .execute(pool)
+        .await
+        .map_err(|e| err(format!("삽입 실패: {e}")))?;
+    if res.rows_affected() == 0 {
+        return Err(err("삽입되지 않았습니다"));
+    }
+    Ok(())
+}
+
+// ---- 테이블 메타(컬럼/PK/인덱스/FK) — 엔진별. 제약/트리거 상세는 MSSQL 한정(여기선 빈 목록) ----
+async fn sql_table_meta(
+    pool: &sqlx::AnyPool,
+    engine: DbEngine,
+    table: &str,
+) -> Result<TableMeta, IpcError> {
+    match engine {
+        DbEngine::Sqlite => sqlite_table_meta(pool, table).await,
+        DbEngine::Postgres => pg_table_meta(pool, table).await,
+        DbEngine::Mysql => mysql_table_meta(pool, table).await,
+        _ => Err(err("내부 오류")),
+    }
+}
+
+async fn sqlite_table_meta(pool: &sqlx::AnyPool, table: &str) -> Result<TableMeta, IpcError> {
+    let name = table.rsplit('.').next().unwrap_or(table);
+    let qname = format!("\"{}\"", name.replace('"', "\"\""));
+
+    let col_rows = sqlx::query(&format!("PRAGMA table_info({qname})"))
+        .fetch_all(pool)
+        .await
+        .map_err(|e| err(format!("컬럼 조회 실패: {e}")))?;
+    let mut columns = Vec::new();
+    let mut pk_cols: Vec<(i64, String)> = Vec::new();
+    for r in &col_rows {
+        let cname = r.try_get::<String, _>("name").unwrap_or_default();
+        if cname.is_empty() {
+            continue;
+        }
+        let ctype = r.try_get::<String, _>("type").unwrap_or_default();
+        let notnull = r.try_get::<i64, _>("notnull").unwrap_or(0) != 0;
+        let pkpos = r.try_get::<i64, _>("pk").unwrap_or(0);
+        let has_default = r
+            .try_get::<Option<String>, _>("dflt_value")
+            .ok()
+            .flatten()
+            .is_some();
+        if pkpos > 0 {
+            pk_cols.push((pkpos, cname.clone()));
+        }
+        columns.push(ColumnInfo {
+            pk: pkpos > 0,
+            nullable: !notnull,
+            // INTEGER PRIMARY KEY는 rowid 별칭(자동 증가) → INSERT에서 생략 가능하게 identity 처리.
+            identity: pkpos > 0 && ctype.to_ascii_uppercase().contains("INT"),
+            has_default,
+            name: cname,
+            type_name: ctype,
+        });
+    }
+    pk_cols.sort_by_key(|(pos, _)| *pos);
+    let mut keys: Vec<KeyInfo> = Vec::new();
+    if !pk_cols.is_empty() {
+        keys.push(KeyInfo {
+            name: "PRIMARY".to_string(),
+            kind: "PRIMARY KEY".to_string(),
+            columns: pk_cols.into_iter().map(|(_, c)| c).collect(),
+            references: None,
+        });
+    }
+
+    // FK
+    let fk_rows = sqlx::query(&format!("PRAGMA foreign_key_list({qname})"))
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+    for r in &fk_rows {
+        let id = r.try_get::<i64, _>("id").unwrap_or(0);
+        let reftbl = r.try_get::<String, _>("table").unwrap_or_default();
+        let from = r.try_get::<String, _>("from").unwrap_or_default();
+        let to = r.try_get::<String, _>("to").unwrap_or_default();
+        let kname = format!("fk_{id}");
+        match keys.iter_mut().find(|k| k.name == kname) {
+            Some(k) => k.columns.push(from),
+            None => keys.push(KeyInfo {
+                name: kname,
+                kind: "FOREIGN KEY".to_string(),
+                columns: vec![from],
+                references: Some(format!("{reftbl}({to})")),
+            }),
+        }
+    }
+
+    // 인덱스
+    let mut indexes: Vec<IndexInfo> = Vec::new();
+    let idx_list = sqlx::query(&format!("PRAGMA index_list({qname})"))
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+    for r in &idx_list {
+        let iname = r.try_get::<String, _>("name").unwrap_or_default();
+        if iname.is_empty() {
+            continue;
+        }
+        let unique = r.try_get::<i64, _>("unique").unwrap_or(0) != 0;
+        let qi = format!("\"{}\"", iname.replace('"', "\"\""));
+        let info = sqlx::query(&format!("PRAGMA index_info({qi})"))
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
+        let cols = info
+            .iter()
+            .filter_map(|r| r.try_get::<Option<String>, _>("name").ok().flatten())
+            .collect();
+        indexes.push(IndexInfo {
+            name: iname,
+            kind: if unique { "UNIQUE" } else { "INDEX" }.to_string(),
+            unique,
+            columns: cols,
+        });
+    }
+
+    Ok(TableMeta {
+        columns,
+        keys,
+        indexes,
+        constraints: Vec::new(),
+        triggers: Vec::new(),
+    })
+}
+
+async fn pg_table_meta(pool: &sqlx::AnyPool, table: &str) -> Result<TableMeta, IpcError> {
+    let (schema, name) = table.split_once('.').unwrap_or(("public", table));
+
+    // 컬럼 — information_schema 도메인 타입(sql_identifier/character_data/yes_or_no)은 ::text 캐스트.
+    let col_rows = sqlx::query(
+        "SELECT column_name::text, data_type::text, is_nullable::text, \
+                (column_default IS NOT NULL) AS has_default, is_identity::text, \
+                COALESCE(column_default,'')::text AS dflt \
+         FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2 \
+         ORDER BY ordinal_position",
+    )
+    .bind(schema)
+    .bind(name)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| err(format!("컬럼 조회 실패: {e}")))?;
+
+    let pk_rows = sqlx::query(
+        "SELECT kcu.column_name::text FROM information_schema.table_constraints tc \
+         JOIN information_schema.key_column_usage kcu \
+           ON kcu.constraint_name = tc.constraint_name AND kcu.table_schema = tc.table_schema \
+         WHERE tc.table_schema = $1 AND tc.table_name = $2 AND tc.constraint_type = 'PRIMARY KEY' \
+         ORDER BY kcu.ordinal_position",
+    )
+    .bind(schema)
+    .bind(name)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    let pk_set: HashSet<String> = pk_rows
+        .iter()
+        .filter_map(|r| r.try_get::<String, _>(0).ok())
+        .collect();
+
+    let columns = col_rows
+        .iter()
+        .map(|r| {
+            let cn = r.try_get::<String, _>(0).unwrap_or_default();
+            let dflt = r.try_get::<String, _>("dflt").unwrap_or_default();
+            let is_identity = r.try_get::<String, _>(4).unwrap_or_default() == "YES"
+                || dflt.starts_with("nextval(");
+            ColumnInfo {
+                pk: pk_set.contains(&cn),
+                nullable: r.try_get::<String, _>(2).unwrap_or_default() == "YES",
+                identity: is_identity,
+                has_default: r.try_get::<bool, _>("has_default").unwrap_or(false),
+                type_name: r.try_get::<String, _>(1).unwrap_or_default(),
+                name: cn,
+            }
+        })
+        .collect();
+
+    let mut keys: Vec<KeyInfo> = Vec::new();
+    if !pk_set.is_empty() {
+        keys.push(KeyInfo {
+            name: "PRIMARY KEY".to_string(),
+            kind: "PRIMARY KEY".to_string(),
+            columns: pk_rows
+                .iter()
+                .filter_map(|r| r.try_get::<String, _>(0).ok())
+                .collect(),
+            references: None,
+        });
+    }
+    // FK
+    let fk_rows = sqlx::query(
+        "SELECT tc.constraint_name::text, kcu.column_name::text, \
+                (ccu.table_schema || '.' || ccu.table_name)::text, ccu.column_name::text \
+         FROM information_schema.table_constraints tc \
+         JOIN information_schema.key_column_usage kcu ON kcu.constraint_name = tc.constraint_name \
+         JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = tc.constraint_name \
+         WHERE tc.table_schema = $1 AND tc.table_name = $2 AND tc.constraint_type = 'FOREIGN KEY'",
+    )
+    .bind(schema)
+    .bind(name)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    for r in &fk_rows {
+        let fkname = r.try_get::<String, _>(0).unwrap_or_default();
+        let col = r.try_get::<String, _>(1).unwrap_or_default();
+        let reftbl = r.try_get::<String, _>(2).unwrap_or_default();
+        let refcol = r.try_get::<String, _>(3).unwrap_or_default();
+        match keys.iter_mut().find(|k| k.name == fkname) {
+            Some(k) => k.columns.push(col),
+            None => keys.push(KeyInfo {
+                name: fkname,
+                kind: "FOREIGN KEY".to_string(),
+                columns: vec![col],
+                references: Some(format!("{reftbl}({refcol})")),
+            }),
+        }
+    }
+    // 인덱스 (pg_catalog)
+    let idx_rows = sqlx::query(
+        "SELECT i.relname::text, ix.indisunique, a.attname::text \
+         FROM pg_class t JOIN pg_index ix ON ix.indrelid = t.oid \
+         JOIN pg_class i ON i.oid = ix.indexrelid \
+         JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(ix.indkey::int2[]) \
+         WHERE t.relname = $2 AND t.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = $1) \
+         ORDER BY i.relname, array_position(ix.indkey::int2[], a.attnum)",
+    )
+    .bind(schema)
+    .bind(name)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    let mut indexes: Vec<IndexInfo> = Vec::new();
+    for r in &idx_rows {
+        let iname = r.try_get::<String, _>(0).unwrap_or_default();
+        if iname.is_empty() {
+            continue;
+        }
+        let unique = r.try_get::<bool, _>(1).unwrap_or(false);
+        let col = r.try_get::<String, _>(2).unwrap_or_default();
+        match indexes.iter_mut().find(|x| x.name == iname) {
+            Some(x) => x.columns.push(col),
+            None => indexes.push(IndexInfo {
+                name: iname,
+                kind: if unique { "UNIQUE" } else { "INDEX" }.to_string(),
+                unique,
+                columns: vec![col],
+            }),
+        }
+    }
+
+    Ok(TableMeta {
+        columns,
+        keys,
+        indexes,
+        constraints: Vec::new(),
+        triggers: Vec::new(),
+    })
+}
+
+async fn mysql_table_meta(pool: &sqlx::AnyPool, table: &str) -> Result<TableMeta, IpcError> {
+    let name = table.rsplit('.').next().unwrap_or(table);
+
+    let col_rows = sqlx::query(
+        "SELECT column_name, column_type, is_nullable, column_default, extra, column_key \
+         FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? \
+         ORDER BY ordinal_position",
+    )
+    .bind(name)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| err(format!("컬럼 조회 실패: {e}")))?;
+
+    let mut columns = Vec::new();
+    let mut pk_cols: Vec<String> = Vec::new();
+    for r in &col_rows {
+        let cn = r.try_get::<String, _>(0).unwrap_or_default();
+        if cn.is_empty() {
+            continue;
+        }
+        let key = r.try_get::<String, _>("column_key").unwrap_or_default();
+        let extra = r.try_get::<String, _>("extra").unwrap_or_default();
+        let is_pk = key == "PRI";
+        if is_pk {
+            pk_cols.push(cn.clone());
+        }
+        columns.push(ColumnInfo {
+            pk: is_pk,
+            nullable: r.try_get::<String, _>(2).unwrap_or_default() == "YES",
+            identity: extra.contains("auto_increment"),
+            has_default: r
+                .try_get::<Option<String>, _>("column_default")
+                .ok()
+                .flatten()
+                .is_some(),
+            type_name: r.try_get::<String, _>(1).unwrap_or_default(),
+            name: cn,
+        });
+    }
+    let mut keys: Vec<KeyInfo> = Vec::new();
+    if !pk_cols.is_empty() {
+        keys.push(KeyInfo {
+            name: "PRIMARY".to_string(),
+            kind: "PRIMARY KEY".to_string(),
+            columns: pk_cols,
+            references: None,
+        });
+    }
+    // FK
+    let fk_rows = sqlx::query(
+        "SELECT constraint_name, column_name, referenced_table_name, referenced_column_name \
+         FROM information_schema.key_column_usage \
+         WHERE table_schema = DATABASE() AND table_name = ? AND referenced_table_name IS NOT NULL \
+         ORDER BY constraint_name, ordinal_position",
+    )
+    .bind(name)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    for r in &fk_rows {
+        let fkname = r.try_get::<String, _>(0).unwrap_or_default();
+        let col = r.try_get::<String, _>(1).unwrap_or_default();
+        let reftbl = r.try_get::<String, _>(2).unwrap_or_default();
+        let refcol = r.try_get::<String, _>(3).unwrap_or_default();
+        match keys.iter_mut().find(|k| k.name == fkname) {
+            Some(k) => k.columns.push(col),
+            None => keys.push(KeyInfo {
+                name: fkname,
+                kind: "FOREIGN KEY".to_string(),
+                columns: vec![col],
+                references: Some(format!("{reftbl}({refcol})")),
+            }),
+        }
+    }
+    // 인덱스
+    let idx_rows = sqlx::query(
+        "SELECT index_name, non_unique, column_name FROM information_schema.statistics \
+         WHERE table_schema = DATABASE() AND table_name = ? ORDER BY index_name, seq_in_index",
+    )
+    .bind(name)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    let mut indexes: Vec<IndexInfo> = Vec::new();
+    for r in &idx_rows {
+        let iname = r.try_get::<String, _>(0).unwrap_or_default();
+        if iname.is_empty() {
+            continue;
+        }
+        let unique = r.try_get::<i64, _>(1).unwrap_or(1) == 0;
+        let col = r.try_get::<String, _>(2).unwrap_or_default();
+        match indexes.iter_mut().find(|x| x.name == iname) {
+            Some(x) => x.columns.push(col),
+            None => indexes.push(IndexInfo {
+                name: iname,
+                kind: if unique { "UNIQUE" } else { "INDEX" }.to_string(),
+                unique,
+                columns: vec![col],
+            }),
+        }
+    }
+
+    Ok(TableMeta {
+        columns,
+        keys,
+        indexes,
+        constraints: Vec::new(),
+        triggers: Vec::new(),
     })
 }
 

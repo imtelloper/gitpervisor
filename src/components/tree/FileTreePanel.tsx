@@ -2,6 +2,7 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
+  FilePlus,
   FolderPlus,
   ImageDown,
   Link,
@@ -36,6 +37,7 @@ import { isImage } from "../../lib/language-map";
 import { usePanelWidth } from "../../lib/use-panel-width";
 import {
   useCreateDir,
+  useCreateFile,
   useDeletePath,
   useDir,
   useProjects,
@@ -347,9 +349,10 @@ function parentDir(rel: string): string {
   return i >= 0 ? rel.slice(0, i) : "";
 }
 
-/** 폴더/파일 이름 검증 — 경로 구분자·`..` 거부. 통과면 null. */
+/** 폴더/파일 이름 검증 — 빈 이름·경로 구분자·`..` 거부. 통과면 null. */
 function validateName(v: string): string | null {
   const t = v.trim();
+  if (!t) return "이름을 입력하세요";
   if (/[\\/]/.test(t)) return "이름에 경로 구분자를 쓸 수 없습니다";
   if (t === "." || t === ".." || t.includes("..")) return "잘못된 이름입니다";
   return null;
@@ -366,6 +369,7 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
   const openImageEditor = useUi((s) => s.openImageEditor);
   const selectDiff = useUi((s) => s.selectDiff);
   const createDir = useCreateDir(projectId);
+  const createFile = useCreateFile(projectId);
   const deletePath = useDeletePath(projectId);
   const saveImage = useSaveImage(projectId);
   const qc = useQueryClient();
@@ -493,7 +497,27 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
       placeholder: "폴더 이름",
       confirmLabel: "만들기",
       validate: validateName,
-      onConfirm: (name) => createDir.mutate(joinPath(baseDir, name)),
+      onConfirm: (name) => createDir.mutate(joinPath(baseDir, name.trim())),
+    });
+  }
+
+  // 새 파일 — 임의 확장자(.py/.html/.js/.css …). 폴더면 그 안에, 파일이면 같은 폴더에.
+  // 생성 성공 시 방금 만든 파일을 뷰어로 연다(확장자로 구문강조 구동).
+  function newFile(m: TreeMenu) {
+    const baseDir = m.isDir ? m.path : parentDir(m.path);
+    setMenu(null);
+    askPrompt({
+      title: "새 파일",
+      label: baseDir ? `${toOsPath(baseDir)} 안에 만듭니다` : "프로젝트 루트에 만듭니다",
+      placeholder: "파일 이름 (예: main.py)",
+      confirmLabel: "만들기",
+      validate: validateName,
+      onConfirm: (name) => {
+        const rel = joinPath(baseDir, name.trim());
+        createFile.mutate(rel, {
+          onSuccess: () => selectDiff({ mode: "file", path: rel }),
+        });
+      },
     });
   }
 
@@ -674,6 +698,15 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
         <span className="font-semibold">Files</span>
         <div className="flex-1" />
         <button
+          title="새 파일 (루트)"
+          onClick={() =>
+            newFile({ x: 0, y: 0, name: "", path: "", isDir: true })
+          }
+          className="rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
+        >
+          <FilePlus size={14} />
+        </button>
+        <button
           title="새 폴더 (루트)"
           onClick={() =>
             newFolder({ x: 0, y: 0, name: "", path: "", isDir: true })
@@ -729,11 +762,18 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
           onClick={(e) => e.stopPropagation()}
         >
           {menu.root ? (
-            <MenuItem
-              icon={FolderPlus}
-              label="새 폴더"
-              onClick={() => newFolder(menu)}
-            />
+            <>
+              <MenuItem
+                icon={FilePlus}
+                label="새 파일"
+                onClick={() => newFile(menu)}
+              />
+              <MenuItem
+                icon={FolderPlus}
+                label="새 폴더"
+                onClick={() => newFolder(menu)}
+              />
+            </>
           ) : (
             <>
               {showBatch && (
@@ -773,6 +813,11 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
                   <div className="my-1 border-t border-edge/60" />
                 </>
               )}
+              <MenuItem
+                icon={FilePlus}
+                label="새 파일"
+                onClick={() => newFile(menu)}
+              />
               <MenuItem
                 icon={FolderPlus}
                 label="새 폴더"

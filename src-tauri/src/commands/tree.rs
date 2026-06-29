@@ -74,6 +74,33 @@ pub async fn create_dir(
         .map_err(|e| IpcError::new(ErrorCode::Io, format!("폴더 생성 실패: {e}")))
 }
 
+/// 새 파일 생성 — `rel_path`는 레포 루트 기준 상대 경로(만들 파일 자신, 확장자 포함).
+/// 빈 파일을 만든다(에디터가 확장자로 구문강조를 구동). 상위 디렉토리가 존재해야 하고
+/// 같은 이름이 이미 있으면 거부한다. 경로 탈출(빈 경로·절대경로·`..`·`.git`·예약 장치명)을 막는다.
+#[tauri::command]
+pub async fn create_file(
+    state: State<'_, AppState>,
+    project_id: String,
+    rel_path: String,
+) -> Result<(), IpcError> {
+    let repo = project_path(&state, &project_id)?;
+    let target = resolve_in_repo(&repo, &rel_path)?;
+    // create_new=true — 경합(TOCTOU)에서도 기존 파일을 절대 덮어쓰지 않는다(데이터 손실 방지).
+    match tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&target)
+        .await
+    {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(IpcError::new(
+            ErrorCode::AlreadyExists,
+            "같은 이름이 이미 있습니다",
+        )),
+        Err(e) => Err(IpcError::new(ErrorCode::Io, format!("파일 생성 실패: {e}"))),
+    }
+}
+
 /// 파일/폴더 삭제 — **파괴적**. 프론트의 확인 다이얼로그를 거친 뒤에만 호출된다.
 /// 디렉토리는 재귀 삭제한다. 심볼릭 링크는 따라가지 않고 링크 자체만 지운다.
 /// 루트(빈 경로)·`.git`·절대경로·`..`는 거부한다.
@@ -531,7 +558,27 @@ fn is_dotgit_component(os: &OsStr) -> bool {
         .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
 }
 
-/// 파일/폴더 작업용 경로 검증 — 빈 경로·절대경로·`..`·(모든 컴포넌트의) `.git` 진입 거부.
+/// 한 경로 컴포넌트가 Windows 예약 장치명(CON/PRN/AUX/NUL/COM1‑9/LPT1‑9)으로 귀결되는지.
+/// Windows는 `CON.txt`처럼 확장자가 붙어도, 끝에 점·공백이 붙어도 콘솔/장치로 해석하므로
+/// 이런 이름의 생성은 행/오작동을 유발한다 — 첫 '.' 이전 stem을 대소문자 무시로 검사한다.
+fn is_reserved_win_name(os: &OsStr) -> bool {
+    let s = os.to_string_lossy();
+    // stem = 첫 '.' 이전 + 끝의 점·공백 제거(Win32 정규화와 동일).
+    let stem = s.split('.').next().unwrap_or("");
+    let stem = stem.trim_end_matches(|c| c == ' ' || c == '.');
+    let u = stem.to_ascii_uppercase();
+    if matches!(u.as_str(), "CON" | "PRN" | "AUX" | "NUL") {
+        return true;
+    }
+    // COM1‑9 / LPT1‑9 (COM0·LPT0은 예약 아님).
+    let b = u.as_bytes();
+    (u.starts_with("COM") || u.starts_with("LPT"))
+        && b.len() == 4
+        && b[3].is_ascii_digit()
+        && b[3] != b'0'
+}
+
+/// 파일/폴더 작업용 경로 검증 — 빈 경로·절대경로·`..`·(모든 컴포넌트의) `.git`·예약 장치명 거부.
 /// 컨테인먼트(레포 밖 탈출)는 정규화로 별도 검증한다([resolve_in_repo]).
 fn validate_rel_file(rel: &str) -> Result<(), IpcError> {
     let p = Path::new(rel);
@@ -540,7 +587,7 @@ fn validate_rel_file(rel: &str) -> Result<(), IpcError> {
         // Prefix(`C:`)·RootDir(`\`)는 join 시 레포 루트를 통째로 대체한다 — 루트/드라이브 상대 거부.
         || p.components().any(|c| match c {
             Component::Prefix(_) | Component::RootDir | Component::ParentDir => true,
-            Component::Normal(os) => is_dotgit_component(os),
+            Component::Normal(os) => is_dotgit_component(os) || is_reserved_win_name(os),
             _ => false,
         })
     {

@@ -138,7 +138,20 @@ export interface Settings {
   terminalShell: string | null; // null/빈값 = 자동(pwsh→powershell→cmd / $SHELL)
   terminalFontSize: number;
   notifyMode: NotifyMode;
+  // ---- AI 완료 외부 알림 (Slack 웹훅 / SMTP email) ----
+  // 시크릿(웹훅 URL·SMTP 비번)은 여기 두지 않고 OS 키링에 저장한다(notifySetSecret).
+  slackEnabled: boolean;
+  emailEnabled: boolean;
+  smtpHost: string | null;
+  smtpPort: number;
+  smtpUsername: string | null;
+  smtpFrom: string | null;
+  smtpTo: string | null;
+  smtpTls: boolean; // true=암호화(465 implicit / 587 STARTTLS), false=평문
 }
+
+/** 외부 알림 시크릿 종류 — 키링 계정 키. */
+export type NotifySecret = "slack" | "smtp";
 
 export type OpenTarget = "explorer" | "terminal";
 
@@ -265,6 +278,20 @@ export interface TargetSize {
 export interface CleanResult {
   freedBytes: number;
   removed: number;
+}
+
+/** 프로젝트 폴더 전체 용량 (commands/disk.rs get_project_sizes). */
+export interface ProjectSize {
+  projectId: string;
+  bytes: number;
+  error: string | null; // 경로 소실 등 — 있으면 배지 숨김
+}
+
+/** 로그/크래시 상태 (commands/diagnostics.rs). */
+export interface LogStatus {
+  logDir: string;
+  panicLogBytes: number;
+  lastCrashAt: string | null; // panic.log 최종 수정 시각(RFC3339)
 }
 
 // ---- macOS 격리 도구 (commands/quarantine.rs) ----
@@ -586,6 +613,9 @@ export const ipc = {
   // 새 폴더 생성 (트리 컨텍스트 메뉴). 재시도 금지.
   createDir: (projectId: string, relPath: string) =>
     callMutating<void>("create_dir", { projectId, relPath }),
+  // 새 파일 생성 (빈 파일, 임의 확장자). 같은 이름이 있으면 ALREADY_EXISTS. 재시도 금지.
+  createFile: (projectId: string, relPath: string) =>
+    callMutating<void>("create_file", { projectId, relPath }),
   // 파일/폴더 삭제 — 파괴적, 프론트 확인 후 호출. 재시도 금지.
   deletePath: (projectId: string, relPath: string) =>
     callMutating<void>("delete_path", { projectId, relPath }),
@@ -721,6 +751,43 @@ export const ipc = {
   // target 디렉토리 통째 삭제(= cargo clean). 대용량 삭제는 오래 걸릴 수 있어 길게.
   cleanTarget: (projectId: string) =>
     callMutating<CleanResult>("clean_target", { projectId }, 300_000),
+  // 배치: 전 프로젝트의 폴더 전체 용량. 거대 트리 워크가 수 초 걸릴 수 있어 길게,
+  // background 레인, 재시도 없음(다음 새로고침이 재조회). get_target_sizes와 동형.
+  getProjectSizes: (projectIds: string[]) =>
+    call<ProjectSize[]>("get_project_sizes", { projectIds }, {
+      timeoutMs: 120_000,
+      attempts: 1,
+      lane: "background",
+    }),
+
+  // ---- 진단/로그 (commands/diagnostics.rs) ----
+  openLogsFolder: () => callMutating<void>("open_logs_folder", {}),
+  getLogStatus: () =>
+    call<LogStatus>("get_log_status", undefined, {
+      lane: "background",
+      attempts: 1,
+      timeoutMs: 6000,
+    }),
+  readCrashLog: (maxBytes: number) =>
+    call<string>("read_crash_log", { maxBytes }, {
+      attempts: 1,
+      timeoutMs: 10_000,
+    }),
+  clearCrashLog: () => callMutating<void>("clear_crash_log", {}),
+
+  // ---- AI 완료 외부 알림 (commands/notify.rs) ----
+  // 시크릿(웹훅 URL·SMTP 비번)을 OS 키링에 저장/제거. 빈 문자열이면 제거.
+  notifySetSecret: (kind: NotifySecret, value: string) =>
+    callMutating<void>("notify_set_secret", { kind, value }),
+  // 시크릿 저장 여부 — UI에서 "저장됨" 표시용.
+  notifyHasSecret: (kind: NotifySecret) =>
+    call<boolean>("notify_has_secret", { kind }),
+  // 설정된 한 채널로 테스트 알림 전송(설정 화면 "테스트").
+  notifyTest: (channel: NotifySecret) =>
+    callMutating<void>("notify_test", { channel }, 30_000),
+  // working→done 엣지에서 활성 외부 채널(Slack/email)로 팬아웃. 실패는 호출 측이 무시한다.
+  notifyExternal: (title: string, body: string) =>
+    callMutating<void>("notify_external", { title, body }, 30_000),
 
   // ---- macOS 격리 도구 (commands/quarantine.rs, macOS 전용) ----
   // brew cask로 깐 CLI에 박힌 com.apple.quarantine을 스캔/해제한다.

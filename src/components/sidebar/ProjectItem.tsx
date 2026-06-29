@@ -3,6 +3,7 @@ import {
   ArrowUp,
   CircleCheck,
   GitBranch,
+  HardDrive,
   Loader2,
   StickyNote,
   X,
@@ -10,9 +11,10 @@ import {
 
 import { memo } from "react";
 
+import { formatBytes } from "../../lib/format";
 import type { Project } from "../../lib/ipc";
 import { errorMessage } from "../../lib/ipc";
-import { useNotes, useStatus } from "../../queries";
+import { useNotes, useProjectSize, useStatus } from "../../queries";
 import { useAgentActivity } from "../../stores/agentActivity";
 import { dotStateOf, StatusDot } from "../common/StatusDot";
 
@@ -46,6 +48,7 @@ export const ProjectItem = memo(function ProjectItem({
   const hasNote = !!notes?.[project.id]?.some((m) => m.text.trim());
   const dot = dotStateOf(status, isLoading);
   const agent = useAgentActivity((s) => s.byProject[project.id]);
+  const size = useProjectSize(project.id);
 
   const branchLabel =
     status?.branch ??
@@ -143,6 +146,15 @@ export const ProjectItem = memo(function ProjectItem({
           <span className="flex shrink-0 items-center text-mod">
             <ArrowDown size={11} />
             {status.behind}
+          </span>
+        )}
+        {size && !size.error && size.bytes > 0 && (
+          <span
+            className="ml-auto flex shrink-0 items-center gap-1 text-fg-dim"
+            title="폴더 용량 (우클릭 → 용량 새로고침)"
+          >
+            <HardDrive size={11} />
+            {formatBytes(size.bytes)}
           </span>
         )}
       </div>

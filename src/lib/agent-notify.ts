@@ -7,7 +7,7 @@ import { useEffect, useRef } from "react";
 
 import { useProjects, useSettings } from "../queries";
 import { useAgentActivity, type AgentState } from "../stores/agentActivity";
-import type { Project } from "./ipc";
+import { ipc, type Project, type Settings } from "./ipc";
 import { listTerminals } from "./terminal";
 
 // OS 알림 권한은 1회만 요청한다(여러 알림이 동시에 권한을 묻지 않게 프라미스 캐시).
@@ -58,14 +58,28 @@ export function useAgentNotifications() {
   projRef.current = projects;
   const modeRef = useRef(mode);
   modeRef.current = mode;
+  const settingsRef = useRef<Settings | undefined>(undefined);
+  settingsRef.current = settings;
 
   const byProject = useAgentActivity((s) => s.byProject);
   const byTerminal = useAgentActivity((s) => s.byTerminal);
   const prevProject = useRef<Record<string, AgentState>>({});
   const prevTerminal = useRef<Record<string, AgentState>>({});
+  // 외부 채널(Slack/email) 연타 방지 — 키(프로젝트/터미널)당 최소 간격.
+  const lastExternal = useRef<Record<string, number>>({});
 
   const projectName = (pid: string | undefined) =>
     (pid && projRef.current?.find((p) => p.id === pid)?.name) || "프로젝트";
+
+  // OS 토스트에 더해 Slack/email로도 보낸다(설정에 켜졌을 때만). 실패는 무시(OS 토스트가 폴백).
+  const fireExternal = (title: string, body: string, key: string) => {
+    const s = settingsRef.current;
+    if (!s || (!s.slackEnabled && !s.emailEnabled)) return;
+    const now = Date.now();
+    if (now - (lastExternal.current[key] ?? 0) < 30_000) return; // 키당 30초
+    lastExternal.current[key] = now;
+    void ipc.notifyExternal(title, body).catch(() => {});
+  };
 
   // 프로젝트 단위 엣지 (project-inactive / always)
   useEffect(() => {
@@ -75,7 +89,9 @@ export function useAgentNotifications() {
       for (const [pid, st] of Object.entries(byProject)) {
         if (st === "done" && prev[pid] === "working") {
           if (m === "project-inactive" && document.hasFocus()) continue;
-          void fire("AI 작업 완료", `${projectName(pid)} — 작업이 끝났습니다`);
+          const body = `${projectName(pid)} — 작업이 끝났습니다`;
+          void fire("AI 작업 완료", body);
+          fireExternal("AI 작업 완료", body, `p:${pid}`);
         }
       }
     }
@@ -90,10 +106,9 @@ export function useAgentNotifications() {
       for (const [tid, st] of Object.entries(byTerminal)) {
         if (st === "done" && prev[tid] === "working") {
           const pid = listTerminals().find((t) => t.id === tid)?.projectId;
-          void fire(
-            "AI 작업 완료",
-            `${projectName(pid)} — 터미널 작업이 끝났습니다`,
-          );
+          const body = `${projectName(pid)} — 터미널 작업이 끝났습니다`;
+          void fire("AI 작업 완료", body);
+          fireExternal("AI 작업 완료", body, `t:${tid}`);
         }
       }
     }

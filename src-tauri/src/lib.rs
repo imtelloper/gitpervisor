@@ -3,6 +3,7 @@ mod db;
 mod error;
 mod git;
 mod monitor;
+mod notifications;
 mod state;
 mod watcher;
 
@@ -41,6 +42,38 @@ fn install_panic_hook() {
         }
         default(info);
     }));
+}
+
+/// 프로세스 AUMID(AppUserModelID)를 명시 설정 — Windows 토스트 알림 아이콘 해석에 필요.
+/// 설치본의 시작메뉴 바로가기가 같은 AUMID·아이콘을 가지면 토스트가 앱 아이콘으로 뜬다.
+#[cfg(windows)]
+fn set_app_user_model_id(id: &str) {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
+    let wide: Vec<u16> = std::ffi::OsStr::new(id)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // 실패해도 무해(알림이 일반 아이콘으로 뜰 뿐) — best-effort.
+    unsafe {
+        let _ = SetCurrentProcessExplicitAppUserModelID(wide.as_ptr());
+    }
+}
+
+/// 패닉 훅과 동일한 형식으로 크래시 로그(panic.log)에 한 줄 남긴다 — 런타임 실행 실패처럼
+/// 패닉이 아닌 치명적 종료도 같은 파일에서 사후 디버깅되게 한다.
+fn append_crash_log(body: &str) {
+    use std::io::Write;
+    let Some(path) = CRASH_LOG.get().cloned() else {
+        return;
+    };
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = f.write_all(body.as_bytes());
+    }
 }
 
 /// WebView2 스로틀링 억제 인자 (최소화/백그라운드에서도 watcher·타이머 정상 동작). 전 빌드 공통.
@@ -121,11 +154,13 @@ pub fn run() {
 
     let result = tauri::Builder::default()
         // 파일 로그(앱 로그 폴더) + stdout. log::error!·패닉·프론트 미처리 에러까지 한 파일에 모인다.
+        // 무한 증가 방지: 10MB마다 회전하고 최신 8개 아카이브만 보존(= 활성 + 8 ≈ 최신 90MB).
+        // 플러그인이 회전·시작 시점마다 오래된 것부터 지워 항상 "최신 내용"만 남긴다(KeepAll은 무한 누적).
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level(log::LevelFilter::Info)
                 .max_file_size(10_000_000)
-                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepAll)
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(8))
                 .build(),
         )
         .plugin(tauri_plugin_dialog::init())
@@ -136,7 +171,14 @@ pub fn run() {
             if let Ok(dir) = app.path().app_log_dir() {
                 let _ = std::fs::create_dir_all(&dir);
                 let _ = CRASH_LOG.set(dir.join("panic.log"));
+                // 무한 증가 차단 — 패닉 로그 1세대 보존 + 로그 폴더 총량 상한(best-effort).
+                commands::prune_logs(&dir);
             }
+            // Windows 토스트 알림이 앱 아이콘으로 뜨도록 프로세스 AUMID를 식별자에 맞춘다.
+            // 설치본은 NSIS가 같은 AUMID·아이콘의 시작메뉴 바로가기를 등록 → 토스트가 그 아이콘을
+            // 사용한다. dev는 바로가기가 없어 일반 아이콘이 정상 — 실제 아이콘은 설치본에서 확인.
+            #[cfg(windows)]
+            set_app_user_model_id("com.greathoon.gitpervisor");
             log::info!("Gitpervisor 시작 v{}", env!("CARGO_PKG_VERSION"));
 
             // 메인 창을 코드에서 생성한다 — 원격 디버깅 포트(CDP)는 debug 빌드에서만 열고
@@ -204,6 +246,7 @@ pub fn run() {
             commands::list_project_roots,
             commands::write_file,
             commands::create_dir,
+            commands::create_file,
             commands::delete_path,
             commands::write_file_bytes,
             commands::find_definition,
@@ -234,9 +277,14 @@ pub fn run() {
             commands::http_request,
             commands::http_cancel,
             commands::get_target_sizes,
+            commands::get_project_sizes,
             commands::clean_target,
             commands::scan_quarantined_tools,
             commands::clear_quarantine,
+            commands::open_logs_folder,
+            commands::get_log_status,
+            commands::read_crash_log,
+            commands::clear_crash_log,
             monitor::sys_metrics,
             db::db_list_connections,
             db::db_save_connection,
@@ -253,6 +301,10 @@ pub fn run() {
             db::db_insert_row,
             db::db_procedures,
             db::db_proc_params,
+            notifications::notify_set_secret,
+            notifications::notify_has_secret,
+            notifications::notify_external,
+            notifications::notify_test,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
@@ -271,7 +323,11 @@ pub fn run() {
         })
         .run(tauri::generate_context!());
     if let Err(e) = result {
+        let when = chrono::Local::now().to_rfc3339();
         log::error!("Tauri 런타임 실행 실패: {e:?}");
+        append_crash_log(&format!(
+            "\n===== RUNTIME FAILURE @ {when} =====\n{e:?}\n"
+        ));
         eprintln!("error while running tauri application: {e:?}");
         std::process::exit(1);
     }

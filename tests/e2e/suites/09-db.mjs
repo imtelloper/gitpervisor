@@ -1,8 +1,10 @@
 // DB 탐색기 — db_list/save/delete_connection + connect 오류분류(죽은 포트). 서버 불필요 경로 우선.
-// 로컬 MongoDB(27017)/MSSQL(1433) 가 떠 있으면 connect→databases 까지 추가 검증(없으면 SKIP).
+// SQLite(파일 기반)는 서버 없이 실통합 검증한다. 로컬 MongoDB(27017)/MSSQL(1433) 가 떠 있으면
+// connect→databases 까지 추가 검증(없으면 SKIP).
 import net from "node:net";
+import { join } from "node:path";
 
-export const name = "DB 탐색기 (db_list / save / connect / delete)";
+export const name = "DB 탐색기 (db_list / save / connect / delete + SQLite 실통합)";
 const CONN_ID = "gpv-e2e-conn";
 
 function portOpen(port, host = "127.0.0.1", timeout = 600) {
@@ -17,7 +19,7 @@ function portOpen(port, host = "127.0.0.1", timeout = 600) {
   });
 }
 
-export async function run({ cdp, report: r }) {
+export async function run({ cdp, report: r, fix }) {
   // ── list(기존 연결 보존 확인용 베이스라인) ──
   const before = await cdp.invoke("db_list_connections");
   r.check("db_list_connections: 배열 반환", Array.isArray(before), `${before?.length}개`);
@@ -54,6 +56,55 @@ export async function run({ cdp, report: r }) {
     // 미등록(notFound)도, 타임아웃(E2E_TIMEOUT — 등록을 증명 못 함)도 통과시키지 않는다.
     r.check(`${cmd}: 등록됨 + 비연결 시 오류`, !res.ok && !notFound && res.code !== "E2E_TIMEOUT", res.code || res.message?.slice(0, 40) || "(ok?)");
   }
+
+  // ── SQLite 실통합 (서버 불필요 — 파일 기반). 연결/CREATE/INSERT/SELECT/UPDATE/메타/EXPLAIN/DELETE ──
+  const SQLITE_ID = "gpv-e2e-sqlite";
+  const dbFile = join(fix.repo, "e2e-sqlite.db"); // 픽스처 정리 시 함께 삭제됨
+  const sconn = {
+    id: SQLITE_ID, name: "e2e-sqlite", engine: "sqlite",
+    host: "", port: 0, database: dbFile, username: "", options: null,
+    readOnly: false, color: null,
+  };
+  await cdp.invoke("db_save_connection", { payload: { connection: sconn, password: null } });
+  const sc = await cdp.try("db_connect", { id: SQLITE_ID }, { timeoutMs: 12000 });
+  r.check("sqlite: db_connect(파일 생성)", sc.ok, sc.code || sc.message?.slice(0, 60) || "");
+  if (sc.ok) {
+    const Q = (query) => ({ id: SQLITE_ID, database: "main", query, limit: 100 });
+    const ddl = await cdp.try("db_query", Q("CREATE TABLE t(id INTEGER PRIMARY KEY, name TEXT)"), { timeoutMs: 12000 });
+    r.check("sqlite: CREATE TABLE", ddl.ok, ddl.code || ddl.message?.slice(0, 60) || "");
+
+    const ins = await cdp.try("db_insert_row", { id: SQLITE_ID, database: "main", table: "t", values: [{ col: "id", value: 1 }, { col: "name", value: "alice" }] }, { timeoutMs: 12000 });
+    r.check("sqlite: db_insert_row(파라미터 DML)", ins.ok, ins.code || ins.message?.slice(0, 60) || "");
+
+    const sel = await cdp.try("db_query", Q("SELECT id, name FROM t"), { timeoutMs: 12000 });
+    r.check(
+      "sqlite: SELECT 결과 정합",
+      sel.ok && sel.r?.rowCount === 1 && sel.r.rows?.[0]?.[1] === "alice",
+      JSON.stringify(sel.r?.rows),
+    );
+
+    const upd = await cdp.try("db_update_cell", { id: SQLITE_ID, database: "main", table: "t", pk: [{ col: "id", value: 1 }], setCol: "name", setValue: "bob" }, { timeoutMs: 12000 });
+    r.check("sqlite: db_update_cell", upd.ok, upd.code || upd.message?.slice(0, 60) || "");
+
+    const meta = await cdp.try("db_table_meta", { id: SQLITE_ID, database: "main", table: "t" }, { timeoutMs: 12000 });
+    r.check(
+      "sqlite: db_table_meta(컬럼/PK)",
+      meta.ok && meta.r?.columns?.some((c) => c.name === "id" && c.pk),
+      JSON.stringify(meta.r?.columns?.map((c) => [c.name, c.pk])),
+    );
+
+    const exp = await cdp.try("db_explain", { id: SQLITE_ID, database: "main", query: "SELECT * FROM t WHERE id=1" }, { timeoutMs: 12000 });
+    r.check("sqlite: db_explain(QUERY PLAN)", exp.ok && typeof exp.r === "string" && exp.r.length > 0, exp.ok ? "(계획 반환)" : exp.code);
+
+    const tbls = await cdp.try("db_tables", { id: SQLITE_ID, database: "main" }, { timeoutMs: 12000 });
+    r.check("sqlite: db_tables", tbls.ok && (tbls.r || []).includes("t"), JSON.stringify(tbls.r));
+
+    const del2 = await cdp.try("db_delete_row", { id: SQLITE_ID, database: "main", table: "t", pk: [{ col: "id", value: 1 }] }, { timeoutMs: 12000 });
+    r.check("sqlite: db_delete_row", del2.ok, del2.code || "");
+
+    await cdp.try("db_disconnect", { id: SQLITE_ID });
+  }
+  await cdp.invoke("db_delete_connection", { id: SQLITE_ID });
 
   // ── 선택: 로컬 DB 서버가 있으면 connect→databases 추가 검증 ──
   const mongoUp = await portOpen(27017);

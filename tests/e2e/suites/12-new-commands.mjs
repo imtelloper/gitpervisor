@@ -133,4 +133,41 @@ export async function run({ cdp, report: r, fix }) {
   } finally {
     await cdp.try("term_close", { termId: TID });
   }
+
+  // ── 진단/로그 + 외부 알림 (읽기 전용 스모크 — 사용자 시크릿/채널은 건드리지 않는다) ──
+  const logSt = await cdp.try("get_log_status", {});
+  r.check(
+    "get_log_status: {logDir,panicLogBytes,lastCrashAt}",
+    logSt.ok &&
+      typeof logSt.r?.logDir === "string" &&
+      typeof logSt.r?.panicLogBytes === "number",
+    logSt.ok ? logSt.r.logDir : logSt.code,
+  );
+  const crashLog = await cdp.try("read_crash_log", { maxBytes: 4096 });
+  r.check(
+    "read_crash_log: 문자열 반환",
+    crashLog.ok && typeof crashLog.r === "string",
+    crashLog.ok ? `len=${crashLog.r.length}` : crashLog.code,
+  );
+
+  const hasSlack = await cdp.try("notify_has_secret", { kind: "slack" });
+  r.check(
+    "notify_has_secret(slack): boolean",
+    hasSlack.ok && typeof hasSlack.r === "boolean",
+    hasSlack.ok ? String(hasSlack.r) : hasSlack.code,
+  );
+  const hasBad = await cdp.try("notify_has_secret", { kind: "bogus" });
+  r.check("notify_has_secret: 알 수 없는 종류 → 오류", !hasBad.ok, hasBad.code || "(ok?)");
+
+  // notify_test 는 시크릿이 없을 때만 — 설정돼 있으면 실제 전송되므로 사용자 채널 보호로 스킵.
+  if (hasSlack.ok && hasSlack.r === false) {
+    const t = await cdp.try("notify_test", { channel: "slack" }, { timeoutMs: 9000 });
+    r.check(
+      "notify_test(미설정 slack) → 설정 안내 오류",
+      !t.ok && t.code !== "E2E_TIMEOUT",
+      t.code || t.message?.slice(0, 40) || "(ok?)",
+    );
+  } else {
+    r.skip("notify_test(slack)", "사용자 웹훅이 설정돼 있어 실제 전송 방지로 스킵");
+  }
 }

@@ -12,6 +12,7 @@ import type {
   DiffTarget,
   NotesMap,
   Project,
+  ProjectSize,
   RepoStatus,
   TargetSize,
 } from "../lib/ipc";
@@ -54,6 +55,8 @@ export const keys = {
   sysMetrics: ["sys-metrics"] as const,
   notes: ["notes"] as const,
   targetSizes: (projectIds: string[]) => ["target-sizes", projectIds] as const,
+  projectSizes: (projectIds: string[]) =>
+    ["project-sizes", projectIds] as const,
 };
 
 // ---- DB 탐색기 (M6 §17) ----
@@ -322,6 +325,35 @@ export function useTargetSizes() {
 export function useTargetSize(projectId: string): TargetSize | undefined {
   const { data } = useTargetSizes();
   return data?.find((t) => t.projectId === projectId);
+}
+
+/**
+ * 전 프로젝트의 폴더 전체 용량 단일 배치 쿼리. 폴링하지 않는다(staleTime: Infinity) —
+ * 거대 트리(node_modules/.git/target) 워크가 비싸다. 컨텍스트 메뉴 "용량 새로고침"이 무효화한다.
+ */
+export function useProjectSizes() {
+  const { data: projects } = useProjects();
+  const ids = (projects ?? []).map((p) => p.id);
+  const key = [...ids].sort();
+  return useQuery({
+    queryKey: keys.projectSizes(key),
+    queryFn: () => ipc.getProjectSizes(ids),
+    enabled: ids.length > 0,
+    staleTime: Infinity,
+    placeholderData: keepPreviousData,
+  });
+}
+
+/** 배치 결과에서 한 프로젝트의 폴더 용량을 선택한다. */
+export function useProjectSize(projectId: string): ProjectSize | undefined {
+  const { data } = useProjectSizes();
+  return data?.find((s) => s.projectId === projectId);
+}
+
+/** 폴더 용량 수동 새로고침 — 배치 쿼리를 무효화해 다시 계산하게 한다. */
+export function useRefreshProjectSizes() {
+  const qc = useQueryClient();
+  return () => void qc.invalidateQueries({ queryKey: ["project-sizes"] });
 }
 
 /** target 청소(= cargo clean). 성공 시 용량 배치를 무효화하고 회수량을 토스트로 알린다. */
@@ -696,6 +728,23 @@ export function useCreateDir(projectId: string) {
       void qc.invalidateQueries({ queryKey: ["dir"] });
       void qc.invalidateQueries({ queryKey: ["statuses"] });
       useUi.getState().pushToast("success", "폴더를 만들었습니다");
+    },
+    onError: (e) => useUi.getState().pushToast("error", errorMessage(e)),
+  });
+}
+
+/**
+ * 새 파일 생성 — 성공 시 트리(dir)·상태 무효화 + 토스트. 성공 콜백(onCreated)으로
+ * 호출 측이 방금 만든 파일을 뷰어로 열 수 있다.
+ */
+export function useCreateFile(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (relPath: string) => ipc.createFile(projectId, relPath),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["dir"] });
+      void qc.invalidateQueries({ queryKey: ["statuses"] });
+      useUi.getState().pushToast("success", "파일을 만들었습니다");
     },
     onError: (e) => useUi.getState().pushToast("error", errorMessage(e)),
   });

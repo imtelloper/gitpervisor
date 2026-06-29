@@ -192,6 +192,17 @@ pub struct Settings {
     pub terminal_font_size: u32,
     /// AI 작업 완료 알림 모드: "off" | "project-inactive" | "terminal" | "always"
     pub notify_mode: String,
+    // ---- AI 완료 외부 알림 (Slack 웹훅 / SMTP email) ----
+    // 시크릿(웹훅 URL·SMTP 비번)은 여기 두지 않고 OS 키링에 저장한다(notify.rs).
+    pub slack_enabled: bool,
+    pub email_enabled: bool,
+    pub smtp_host: Option<String>,
+    pub smtp_port: u16,
+    pub smtp_username: Option<String>,
+    pub smtp_from: Option<String>,
+    pub smtp_to: Option<String>,
+    /// true = 암호화(465 implicit TLS / 587 STARTTLS), false = 평문
+    pub smtp_tls: bool,
 }
 
 impl Default for Settings {
@@ -205,6 +216,14 @@ impl Default for Settings {
             terminal_shell: None,
             terminal_font_size: 13,
             notify_mode: "project-inactive".to_string(),
+            slack_enabled: false,
+            email_enabled: false,
+            smtp_host: None,
+            smtp_port: 587,
+            smtp_username: None,
+            smtp_from: None,
+            smtp_to: None,
+            smtp_tls: true,
         }
     }
 }

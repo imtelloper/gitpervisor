@@ -150,6 +150,68 @@ pub async fn get_target_sizes(
     .map_err(|e| IpcError::new(ErrorCode::Io, format!("용량 계산 실패: {e}")))
 }
 
+/// 프로젝트 폴더 전체 용량(바이트) — 사이드바 표시용.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSize {
+    project_id: String,
+    bytes: u64,
+    /// 경로 소실 등 — 값이 있으면 배지를 표시하지 않는다.
+    error: Option<String>,
+}
+
+/// 전 프로젝트의 폴더 전체 용량을 배치로 계산한다(사이드바 표시).
+/// 거대 트리(node_modules/.git/target 포함) 워크는 수 초 걸릴 수 있어 프로젝트별 스레드로
+/// 병렬화하고 blocking 풀에서 돌려 async 런타임을 막지 않는다. 프론트는 background 레인 +
+/// staleTime:Infinity로 1회만 계산하고 수동 새로고침으로 갱신한다(get_target_sizes와 동형).
+#[tauri::command]
+pub async fn get_project_sizes(
+    state: State<'_, AppState>,
+    project_ids: Vec<String>,
+) -> Result<Vec<ProjectSize>, IpcError> {
+    let jobs: Vec<(String, Option<PathBuf>)> = {
+        let projects = state.projects.read().unwrap();
+        project_ids
+            .iter()
+            .map(|id| {
+                let path = projects
+                    .iter()
+                    .find(|p| &p.id == id)
+                    .map(|p| PathBuf::from(&p.path));
+                (id.clone(), path)
+            })
+            .collect()
+    };
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let handles: Vec<_> = jobs
+            .into_iter()
+            .map(|(id, path)| {
+                std::thread::spawn(move || match path {
+                    Some(p) if p.is_dir() => ProjectSize {
+                        project_id: id,
+                        bytes: dir_size(&p),
+                        error: None,
+                    },
+                    Some(_) => ProjectSize {
+                        project_id: id,
+                        bytes: 0,
+                        error: Some("경로를 찾을 수 없습니다".into()),
+                    },
+                    None => ProjectSize {
+                        project_id: id,
+                        bytes: 0,
+                        error: Some("프로젝트를 찾을 수 없습니다".into()),
+                    },
+                })
+            })
+            .collect();
+        handles.into_iter().filter_map(|h| h.join().ok()).collect()
+    })
+    .await
+    .map_err(|e| IpcError::new(ErrorCode::Io, format!("용량 계산 실패: {e}")))
+}
+
 /// 한 프로젝트의 cargo target 디렉토리를 통째로 삭제한다(= `cargo clean` 의미).
 /// 명시적 사용자 액션이므로 최근/현재 toolchain 산출물도 함께 비운다 — 다음 빌드는
 /// 처음부터지만 즉시 최대치를 회수한다.

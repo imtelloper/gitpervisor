@@ -3,6 +3,7 @@ import {
   ArrowDownUp,
   Copy,
   FolderOpen,
+  HardDrive,
   Plus,
   StickyNote,
   Terminal,
@@ -16,6 +17,7 @@ import { usePanelWidth } from "../../lib/use-panel-width";
 import {
   useAddProject,
   useProjects,
+  useRefreshProjectSizes,
   useRemoveProject,
   useReorderProjects,
   useStatuses,
@@ -61,6 +63,7 @@ export function ProjectList() {
   const { data: statuses } = useStatuses();
   const addProject = useAddProject();
   const removeProject = useRemoveProject();
+  const refreshSizes = useRefreshProjectSizes();
   const selectedProjectId = useUi((s) => s.selectedProjectId);
   const selectProject = useUi((s) => s.selectProject);
   const sortByChanges = useUi((s) => s.projectSortByChanges);
@@ -363,6 +366,14 @@ export function ProjectList() {
             icon={Copy}
             label="프로젝트 경로 복사"
             onClick={() => handleCopyPath(menu.project)}
+          />
+          <MenuItem
+            icon={HardDrive}
+            label="용량 새로고침"
+            onClick={() => {
+              refreshSizes();
+              setMenu(null);
+            }}
           />
           <div className="my-1 border-t border-edge" />
           <MenuItem

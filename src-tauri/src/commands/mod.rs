@@ -1,6 +1,7 @@
 mod actions;
 mod browser;
 mod check;
+mod diagnostics;
 mod diff;
 mod disk;
 mod http;
@@ -18,6 +19,7 @@ mod tree;
 pub use actions::*;
 pub use browser::*;
 pub use check::*;
+pub use diagnostics::*;
 pub use diff::*;
 pub use disk::*;
 pub use http::*;

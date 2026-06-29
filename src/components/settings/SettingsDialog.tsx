@@ -1,7 +1,17 @@
-import { RefreshCw, Settings as SettingsIcon, ShieldCheck, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import {
+  FolderOpen,
+  RefreshCw,
+  ScrollText,
+  Send,
+  Settings as SettingsIcon,
+  ShieldCheck,
+  X,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
-import type { Settings } from "../../lib/ipc";
+import { formatBytes } from "../../lib/format";
+import type { LogStatus, NotifySecret, Settings } from "../../lib/ipc";
+import { errorMessage, ipc } from "../../lib/ipc";
 import {
   useClearQuarantine,
   useGitCheck,
@@ -152,6 +162,106 @@ function QuarantineSection() {
   );
 }
 
+/**
+ * 진단/로그 섹션 — 패닉 로그(panic.log)를 열고·보고·비운다.
+ * 앱이 비정상 종료해도 원인+백트레이스가 로그 폴더에 남으므로, 사용자가 이를 찾아 디버깅할 수 있게 한다.
+ */
+function DiagnosticsSection() {
+  const [status, setStatus] = useState<LogStatus | null>(null);
+  const [log, setLog] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = useCallback(() => {
+    void ipc.getLogStatus().then(setStatus).catch(() => {});
+  }, []);
+  useEffect(() => refresh(), [refresh]);
+
+  const hasCrash = !!status && status.panicLogBytes > 0;
+  const toast = (kind: "error" | "success", m: string) =>
+    useUi.getState().pushToast(kind, m);
+
+  return (
+    <>
+      <div className="border-t border-edge pt-3 text-[11px] font-semibold tracking-widest text-fg-dim">
+        진단 / 로그
+      </div>
+      <div className="text-[11px] leading-5 text-fg-muted">
+        앱이 비정상 종료해도 원인과 백트레이스가{" "}
+        <span className="font-mono">panic.log</span>에 기록됩니다. 여기서 로그
+        폴더를 열거나 마지막 크래시 내용을 확인할 수 있습니다.
+      </div>
+      {status?.logDir && (
+        <div className="break-all font-mono text-[10px] text-fg-dim">
+          {status.logDir}
+        </div>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          onClick={() =>
+            void ipc
+              .openLogsFolder()
+              .catch((e) => toast("error", errorMessage(e)))
+          }
+          className="flex items-center gap-1.5 rounded border border-edge px-2.5 py-1 text-fg-muted hover:bg-raised hover:text-fg"
+        >
+          <FolderOpen size={12} />
+          로그 폴더 열기
+        </button>
+        <button
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              setLog(await ipc.readCrashLog(256 * 1024));
+            } catch (e) {
+              toast("error", errorMessage(e));
+            } finally {
+              setBusy(false);
+            }
+          }}
+          className="flex items-center gap-1.5 rounded border border-edge px-2.5 py-1 text-fg-muted hover:bg-raised hover:text-fg disabled:opacity-50"
+        >
+          <ScrollText size={12} />
+          패닉 로그 보기
+        </button>
+        {hasCrash && (
+          <button
+            onClick={async () => {
+              try {
+                await ipc.clearCrashLog();
+                setLog(null);
+                refresh();
+                toast("success", "크래시 로그를 비웠습니다");
+              } catch (e) {
+                toast("error", errorMessage(e));
+              }
+            }}
+            className="rounded border border-edge px-2.5 py-1 text-danger hover:bg-danger/15"
+          >
+            비우기
+          </button>
+        )}
+      </div>
+      {hasCrash ? (
+        <span className="text-[12px] text-danger">
+          ⚠️ 마지막 크래시: {status?.lastCrashAt ?? "?"} (
+          {formatBytes(status?.panicLogBytes ?? 0)})
+        </span>
+      ) : (
+        <span className="flex items-center gap-1.5 text-[12px] text-add">
+          <ShieldCheck size={13} />
+          크래시 기록 없음
+        </span>
+      )}
+      {log !== null && (
+        <pre className="max-h-52 overflow-auto whitespace-pre-wrap rounded border border-edge bg-base p-2 font-mono text-[10px] leading-4">
+          {log || "(비어 있음)"}
+        </pre>
+      )}
+    </>
+  );
+}
+
 /** 설정 모달 호스트 — 툴바 ⚙ 버튼으로 연다 (설계 F12). 테마는 후속 보류. */
 export function SettingsDialog() {
   const open = useUi((s) => s.settingsOpen);
@@ -161,10 +271,21 @@ export function SettingsDialog() {
   const save = useSetSettings();
 
   const [form, setForm] = useState<Settings | null>(null);
+  // 외부 알림 시크릿(웹훅 URL·SMTP 비번)은 키링에 별도 저장 — 입력값이 비면 "변경 안 함".
+  const [slackSecret, setSlackSecret] = useState("");
+  const [smtpSecret, setSmtpSecret] = useState("");
+  const [slackHas, setSlackHas] = useState(false);
+  const [smtpHas, setSmtpHas] = useState(false);
 
-  // 모달을 열 때 현재 설정으로 폼을 초기화한다
+  // 모달을 열 때 현재 설정으로 폼을 초기화 + 시크릿 저장 여부를 조회한다
   useEffect(() => {
     if (open && settings) setForm({ ...settings });
+    if (open) {
+      setSlackSecret("");
+      setSmtpSecret("");
+      void ipc.notifyHasSecret("slack").then(setSlackHas).catch(() => {});
+      void ipc.notifyHasSecret("smtp").then(setSmtpHas).catch(() => {});
+    }
   }, [open, settings]);
 
   if (!open || !form) return null;
@@ -172,26 +293,67 @@ export function SettingsDialog() {
   const update = <K extends keyof Settings>(key: K, value: Settings[K]) =>
     setForm((f) => (f ? { ...f, [key]: value } : f));
 
-  function handleSave() {
-    if (!form) return;
-    const cleaned: Settings = {
-      ...form,
-      gitPath: form.gitPath && form.gitPath.trim() ? form.gitPath.trim() : null,
-      autoFetchMinutes: Math.max(0, Math.floor(form.autoFetchMinutes || 0)),
-      diffFontSize: Math.min(
-        24,
-        Math.max(10, Math.floor(form.diffFontSize || 13)),
-      ),
+  function buildCleaned(f: Settings): Settings {
+    return {
+      ...f,
+      gitPath: f.gitPath && f.gitPath.trim() ? f.gitPath.trim() : null,
+      autoFetchMinutes: Math.max(0, Math.floor(f.autoFetchMinutes || 0)),
+      diffFontSize: Math.min(24, Math.max(10, Math.floor(f.diffFontSize || 13))),
       terminalShell:
-        form.terminalShell && form.terminalShell.trim()
-          ? form.terminalShell.trim()
+        f.terminalShell && f.terminalShell.trim()
+          ? f.terminalShell.trim()
           : null,
       terminalFontSize: Math.min(
         24,
-        Math.max(10, Math.floor(form.terminalFontSize || 13)),
+        Math.max(10, Math.floor(f.terminalFontSize || 13)),
       ),
+      smtpHost: f.smtpHost?.trim() || null,
+      smtpPort: Math.min(65535, Math.max(1, Math.floor(f.smtpPort || 587))),
+      smtpUsername: f.smtpUsername?.trim() || null,
+      smtpFrom: f.smtpFrom?.trim() || null,
+      smtpTo: f.smtpTo?.trim() || null,
     };
-    save.mutate(cleaned, { onSuccess: () => setOpen(false) });
+  }
+
+  /** 시크릿(있으면) + 설정을 영속화한다. 성공 시 true. */
+  async function persist(): Promise<boolean> {
+    if (!form) return false;
+    try {
+      if (slackSecret.trim()) {
+        await ipc.notifySetSecret("slack", slackSecret.trim());
+        setSlackSecret("");
+        setSlackHas(true);
+      }
+      if (smtpSecret.trim()) {
+        await ipc.notifySetSecret("smtp", smtpSecret.trim());
+        setSmtpSecret("");
+        setSmtpHas(true);
+      }
+      await save.mutateAsync(buildCleaned(form));
+      return true;
+    } catch (e) {
+      useUi.getState().pushToast("error", errorMessage(e));
+      return false;
+    }
+  }
+
+  function handleSave() {
+    void persist().then((ok) => {
+      if (ok) setOpen(false);
+    });
+  }
+
+  // 테스트 — 먼저 현재 설정+시크릿을 저장한 뒤 해당 채널로 샘플 알림을 보낸다.
+  function handleTest(channel: NotifySecret) {
+    void persist().then((ok) => {
+      if (!ok) return;
+      void ipc
+        .notifyTest(channel)
+        .then(() =>
+          useUi.getState().pushToast("success", "테스트 알림을 보냈습니다"),
+        )
+        .catch((e) => useUi.getState().pushToast("error", errorMessage(e)));
+    });
   }
 
   return (
@@ -343,6 +505,121 @@ export function SettingsDialog() {
               <option value="always">항상 (포커스 중에도)</option>
             </select>
           </Field>
+
+          <div className="text-[11px] leading-5 text-fg-muted">
+            아래를 켜면 OS 알림에 더해 Slack·이메일로도 완료 알림을 보냅니다 —
+            원격에서도 작업 종료를 알 수 있습니다(시크릿은 OS 키링에 저장).
+          </div>
+
+          <label className="flex cursor-pointer items-center gap-2">
+            <input
+              type="checkbox"
+              checked={form.slackEnabled}
+              onChange={(e) => update("slackEnabled", e.target.checked)}
+              className="accent-accent"
+            />
+            <span>Slack 웹훅으로도 알림</span>
+          </label>
+          {form.slackEnabled && (
+            <div className="space-y-2 pl-6">
+              <input
+                type="password"
+                value={slackSecret}
+                placeholder={
+                  slackHas
+                    ? "(저장됨 — 변경하려면 새 URL 입력)"
+                    : "https://hooks.slack.com/services/..."
+                }
+                onChange={(e) => setSlackSecret(e.target.value)}
+                className={`${inputCls} font-mono`}
+              />
+              <button
+                onClick={() => handleTest("slack")}
+                className="flex items-center gap-1.5 rounded border border-edge px-2.5 py-1 text-fg-muted hover:bg-raised hover:text-fg"
+              >
+                <Send size={12} />
+                테스트 전송
+              </button>
+            </div>
+          )}
+
+          <label className="flex cursor-pointer items-center gap-2">
+            <input
+              type="checkbox"
+              checked={form.emailEnabled}
+              onChange={(e) => update("emailEnabled", e.target.checked)}
+              className="accent-accent"
+            />
+            <span>이메일(SMTP)로도 알림</span>
+          </label>
+          {form.emailEnabled && (
+            <div className="space-y-2 pl-6">
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={form.smtpHost ?? ""}
+                  placeholder="SMTP 호스트 (예: smtp.gmail.com)"
+                  onChange={(e) => update("smtpHost", e.target.value)}
+                  className={`${inputCls} flex-1 font-mono`}
+                />
+                <input
+                  type="number"
+                  value={form.smtpPort || 587}
+                  onChange={(e) => update("smtpPort", Number(e.target.value))}
+                  className={`${inputCls} w-20`}
+                  title="포트 (465=암호화, 587=STARTTLS)"
+                />
+              </div>
+              <input
+                type="text"
+                value={form.smtpFrom ?? ""}
+                placeholder="보내는 주소 (from)"
+                onChange={(e) => update("smtpFrom", e.target.value)}
+                className={`${inputCls} font-mono`}
+              />
+              <input
+                type="text"
+                value={form.smtpTo ?? ""}
+                placeholder="받는 주소 (to)"
+                onChange={(e) => update("smtpTo", e.target.value)}
+                className={`${inputCls} font-mono`}
+              />
+              <input
+                type="text"
+                value={form.smtpUsername ?? ""}
+                placeholder="사용자명 (보통 from과 동일)"
+                onChange={(e) => update("smtpUsername", e.target.value)}
+                className={`${inputCls} font-mono`}
+              />
+              <input
+                type="password"
+                value={smtpSecret}
+                placeholder={
+                  smtpHas ? "(저장됨 — 변경하려면 입력)" : "비밀번호 / 앱 비밀번호"
+                }
+                onChange={(e) => setSmtpSecret(e.target.value)}
+                className={`${inputCls} font-mono`}
+              />
+              <label className="flex cursor-pointer items-center gap-2 text-[12px]">
+                <input
+                  type="checkbox"
+                  checked={form.smtpTls}
+                  onChange={(e) => update("smtpTls", e.target.checked)}
+                  className="accent-accent"
+                />
+                <span>TLS 암호화 사용 (권장)</span>
+              </label>
+              <button
+                onClick={() => handleTest("smtp")}
+                className="flex items-center gap-1.5 rounded border border-edge px-2.5 py-1 text-fg-muted hover:bg-raised hover:text-fg"
+              >
+                <Send size={12} />
+                테스트 전송
+              </button>
+            </div>
+          )}
+
+          <DiagnosticsSection />
 
           {isMacOS && <QuarantineSection />}
         </div>

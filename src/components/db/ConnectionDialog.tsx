@@ -1,3 +1,4 @@
+import { open } from "@tauri-apps/plugin-dialog";
 import { Database, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
@@ -5,14 +6,13 @@ import type { DbConnection, DbEngine } from "../../lib/ipc";
 import { useDeleteConnection, useSaveConnection } from "../../queries";
 import { useDb } from "../../stores/db";
 
-const ENGINES: { value: DbEngine; label: string; port: number; soon?: boolean }[] =
-  [
-    { value: "mongodb", label: "MongoDB", port: 27017 },
-    { value: "postgres", label: "PostgreSQL", port: 5432, soon: true },
-    { value: "mysql", label: "MySQL", port: 3306, soon: true },
-    { value: "mssql", label: "SQL Server", port: 1433 },
-    { value: "sqlite", label: "SQLite", port: 0, soon: true },
-  ];
+const ENGINES: { value: DbEngine; label: string; port: number }[] = [
+  { value: "mongodb", label: "MongoDB", port: 27017 },
+  { value: "postgres", label: "PostgreSQL", port: 5432 },
+  { value: "mysql", label: "MySQL", port: 3306 },
+  { value: "mssql", label: "SQL Server", port: 1433 },
+  { value: "sqlite", label: "SQLite", port: 0 },
+];
 
 const inputCls =
   "w-full rounded border border-edge bg-base px-2 py-1 outline-none focus:border-accent";
@@ -98,7 +98,11 @@ export function ConnectionDialog() {
     if (!form) return;
     const cleaned: DbConnection = {
       ...form,
-      name: form.name.trim() || `${form.host}:${form.port}`,
+      name:
+        form.name.trim() ||
+        (form.engine === "sqlite"
+          ? form.database?.split(/[\\/]/).pop() || "SQLite"
+          : `${form.host}:${form.port}`),
       database: form.database?.trim() || null,
       options: form.options?.trim() || null,
     };
@@ -158,89 +162,123 @@ export function ConnectionDialog() {
               className={inputCls}
             >
               {ENGINES.map((e) => (
-                <option key={e.value} value={e.value} disabled={e.soon}>
+                <option key={e.value} value={e.value}>
                   {e.label}
-                  {e.soon ? " (곧 — M6.2)" : ""}
                 </option>
               ))}
             </select>
           </Field>
 
-          <div className="flex gap-2">
-            <div className="flex-1">
-              <Field label="호스트">
+          {form.engine === "sqlite" ? (
+            // SQLite는 파일 1개 = DB 1개 — 호스트/포트/인증이 아니라 파일 경로가 필요하다.
+            <Field label="데이터베이스 파일">
+              <div className="flex gap-2">
                 <input
-                  value={form.host}
-                  onChange={(e) => update("host", e.target.value)}
+                  value={form.database ?? ""}
+                  onChange={(e) => update("database", e.target.value)}
+                  placeholder="C:\\path\\to\\app.db"
+                  className={`${inputCls} flex-1 font-mono`}
+                />
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const picked = await open({
+                      multiple: false,
+                      directory: false,
+                      title: "SQLite 데이터베이스 파일 선택",
+                    });
+                    if (typeof picked === "string") update("database", picked);
+                  }}
+                  className="shrink-0 rounded border border-edge px-3 text-fg-muted hover:bg-raised hover:text-fg"
+                >
+                  찾아보기
+                </button>
+              </div>
+            </Field>
+          ) : (
+            <>
+              <div className="flex gap-2">
+                <div className="flex-1">
+                  <Field label="호스트">
+                    <input
+                      value={form.host}
+                      onChange={(e) => update("host", e.target.value)}
+                      className={`${inputCls} font-mono`}
+                    />
+                  </Field>
+                </div>
+                <div className="w-24">
+                  <Field label="포트">
+                    <input
+                      type="number"
+                      min={0}
+                      max={65535}
+                      value={form.port}
+                      onChange={(e) =>
+                        update(
+                          "port",
+                          Math.max(
+                            0,
+                            Math.min(
+                              65535,
+                              Math.floor(Number(e.target.value) || 0),
+                            ),
+                          ),
+                        )
+                      }
+                      className={`${inputCls} font-mono`}
+                    />
+                  </Field>
+                </div>
+              </div>
+
+              <div className="flex gap-2">
+                <div className="flex-1">
+                  <Field label="사용자 (선택)">
+                    <input
+                      value={form.username}
+                      onChange={(e) => update("username", e.target.value)}
+                      className={inputCls}
+                    />
+                  </Field>
+                </div>
+                <div className="flex-1">
+                  <Field
+                    label={isNew ? "비밀번호 (선택)" : "비밀번호 (변경 시만)"}
+                  >
+                    <input
+                      type="password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder={isNew ? "" : "(유지)"}
+                      className={inputCls}
+                    />
+                  </Field>
+                </div>
+              </div>
+
+              <Field label="기본 DB (선택)">
+                <input
+                  value={form.database ?? ""}
+                  onChange={(e) => update("database", e.target.value)}
                   className={`${inputCls} font-mono`}
                 />
               </Field>
-            </div>
-            <div className="w-24">
-              <Field label="포트">
+
+              <Field label="옵션 (선택)">
                 <input
-                  type="number"
-                  min={0}
-                  max={65535}
-                  value={form.port}
-                  onChange={(e) =>
-                    update(
-                      "port",
-                      Math.max(
-                        0,
-                        Math.min(65535, Math.floor(Number(e.target.value) || 0)),
-                      ),
-                    )
+                  value={form.options ?? ""}
+                  onChange={(e) => update("options", e.target.value)}
+                  placeholder={
+                    form.engine === "mssql"
+                      ? "encrypt=false&trustServerCertificate=false"
+                      : "authSource=admin&tls=true"
                   }
                   className={`${inputCls} font-mono`}
                 />
               </Field>
-            </div>
-          </div>
-
-          <div className="flex gap-2">
-            <div className="flex-1">
-              <Field label="사용자 (선택)">
-                <input
-                  value={form.username}
-                  onChange={(e) => update("username", e.target.value)}
-                  className={inputCls}
-                />
-              </Field>
-            </div>
-            <div className="flex-1">
-              <Field label={isNew ? "비밀번호 (선택)" : "비밀번호 (변경 시만)"}>
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder={isNew ? "" : "(유지)"}
-                  className={inputCls}
-                />
-              </Field>
-            </div>
-          </div>
-
-          <Field label="기본 DB (선택)">
-            <input
-              value={form.database ?? ""}
-              onChange={(e) => update("database", e.target.value)}
-              className={`${inputCls} font-mono`}
-            />
-          </Field>
-
-          <Field label="옵션 (선택)">
-            <input
-              value={form.options ?? ""}
-              onChange={(e) => update("options", e.target.value)}
-              placeholder={
-                form.engine === "mssql"
-                  ? "encrypt=false&trustServerCertificate=false"
-                  : "authSource=admin&tls=true"
-              }
-              className={`${inputCls} font-mono`}
-            />
-          </Field>
+            </>
+          )}
 
           <label className="flex cursor-pointer items-center gap-2">
             <input
@@ -252,7 +290,7 @@ export function ConnectionDialog() {
             <span>읽기 전용 (쓰기 쿼리 차단)</span>
           </label>
 
-          {form.engine !== "mssql" && (
+          {form.engine !== "mssql" && form.engine !== "sqlite" && (
             <label className="flex cursor-pointer items-center gap-2">
               <input
                 type="checkbox"
@@ -281,9 +319,11 @@ export function ConnectionDialog() {
               <span>Windows 인증 (통합 보안 — 사용자/비밀번호 무시)</span>
             </label>
           )}
-          <div className="text-[11px] text-fg-dim">
-            비밀번호는 OS 키체인(Windows 자격증명 관리자)에 저장됩니다.
-          </div>
+          {form.engine !== "sqlite" && (
+            <div className="text-[11px] text-fg-dim">
+              비밀번호는 OS 키체인(Windows 자격증명 관리자)에 저장됩니다.
+            </div>
+          )}
         </div>
 
         <div className="mt-5 flex items-center gap-2">

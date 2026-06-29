@@ -35,6 +35,36 @@ export async function run({ cdp, report: r, fix }) {
   const mkGit = await cdp.try("create_dir", P(".git/evil"));
   r.check("create_dir: .git 진입 거부", !mkGit.ok, mkGit.code || "(ok?)");
 
+  // ── create_file (임의 확장자) ──
+  const cf = await cdp.try("create_file", P("e2e-newdir/main.py"));
+  r.check(
+    "create_file: 새 파일 생성",
+    cf.ok && has("e2e-newdir/main.py"),
+    cf.ok ? "(생성됨)" : cf.code,
+  );
+  const cfDup = await cdp.try("create_file", P("e2e-newdir/main.py"));
+  r.check(
+    "create_file: 중복 → ALREADY_EXISTS",
+    !cfDup.ok && cfDup.code === "ALREADY_EXISTS",
+    cfDup.code || "(ok?)",
+  );
+  const cfEsc = await cdp.try("create_file", P("../escape.py"));
+  r.check(
+    "create_file: '..' 경로 거부",
+    !cfEsc.ok && cfEsc.code === "IO",
+    cfEsc.code || "(ok?)",
+  );
+  const cfGit = await cdp.try("create_file", P(".git/evil.py"));
+  r.check("create_file: .git 진입 거부", !cfGit.ok, cfGit.code || "(ok?)");
+  // 윈도우 예약 장치명 — 확장자가 붙어도 거부(CON.txt 류).
+  const cfReserved = await cdp.try("create_file", P("CON.txt"));
+  r.check(
+    "create_file: 예약 장치명(CON.txt) 거부",
+    !cfReserved.ok && cfReserved.code === "IO",
+    cfReserved.code || "(ok?)",
+  );
+  await cdp.try("delete_path", P("e2e-newdir/main.py"));
+
   // ── 윈도우 정규화 .git 우회 차단 (CVE-2019-1352 류) ──
   const gitDot = await cdp.try("create_dir", P(".git./evil"));
   r.check(

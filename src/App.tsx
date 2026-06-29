@@ -20,6 +20,7 @@ import { Toolbar } from "./components/toolbar/Toolbar";
 import { FileTreePanel } from "./components/tree/FileTreePanel";
 import { WorkspaceTabs } from "./components/workspace/WorkspaceTabs";
 import { useAgentNotifications } from "./lib/agent-notify";
+import { ipc } from "./lib/ipc";
 import {
   useAutoFetch,
   useProjectRootsPrefetch,
@@ -48,6 +49,25 @@ export default function App() {
   useEffect(() => {
     document.documentElement.dataset.theme = settings?.theme ?? "darcula";
   }, [settings?.theme]);
+
+  // 이전 실행에서 크래시가 있었으면(패닉 로그가 남았으면) 1회 알린다. 같은 크래시(파일 mtime)는
+  // localStorage 마커로 중복 표시하지 않는다. 자세한 내용은 설정 › 진단/로그에서 본다.
+  useEffect(() => {
+    void ipc
+      .getLogStatus()
+      .then((s) => {
+        if (!s.lastCrashAt || s.panicLogBytes === 0) return;
+        if (localStorage.getItem("gp:last-crash-seen") === s.lastCrashAt) return;
+        localStorage.setItem("gp:last-crash-seen", s.lastCrashAt);
+        useUi
+          .getState()
+          .pushToast(
+            "error",
+            "이전 실행에서 오류가 감지되었습니다 — 설정 › 진단/로그에서 확인하세요",
+          );
+      })
+      .catch(() => {});
+  }, []);
 
   const selected = projects?.find((p) => p.id === selectedProjectId) ?? null;
 

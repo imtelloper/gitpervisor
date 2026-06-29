@@ -41,6 +41,11 @@ mongodb = "3"
 keyring = { version = "3", features = ["windows-native"] }
 # SQL Server(TDS) 드라이버 — native-tls(Windows schannel)로 로그인 암호화
 tiberius = { version = "0.12", default-features = false, features = ["tds73", "native-tls", "chrono", "rust_decimal", "winauth"] }
+# PostgreSQL/MySQL/SQLite 통합 드라이버 — Any 드라이버로 URL 스킴별 단일 코드경로.
+# TLS는 tiberius와 동일하게 native-tls(중복 TLS 스택 회피). sqlite는 libsqlite3 번들(C 컴파일러 필요).
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-native-tls", "any", "postgres", "mysql", "sqlite"] }
+# 이메일(SMTP) 알림 — tokio + native-tls(implicit 465 / STARTTLS 587).
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1-native-tls", "hostname"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 rust_decimal = "1"
 # API 클라이언트 HTTP 엔진 (DOCS/api-client-design.md §4.6). tauri가 이미 0.13.4를 트리에 가지므로

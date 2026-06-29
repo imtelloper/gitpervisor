@@ -41,4 +41,16 @@ export async function run({ cdp, report: r, fix }) {
   // ── 5) 없는 프로젝트 → NOT_FOUND ──
   const bad = await cdp.try("clean_target", { projectId: "no-such-project-id" });
   r.check("clean_target: 없는 프로젝트 → NOT_FOUND", !bad.ok && bad.code === "NOT_FOUND", bad.code || "(ok?)");
+
+  // ── 6) get_project_sizes: 폴더 전체 용량(사이드바 표시) ──
+  // 픽스처에 알려진 크기의 파일을 둔다 → bytes 가 그만큼 이상이어야 한다.
+  writeFileSync(join(fix.repo, "e2e-size-probe.bin"), Buffer.alloc(4096, 7));
+  const psizes = await cdp.invoke("get_project_sizes", { projectIds: [fix.projectId] }, { timeoutMs: 120000 });
+  const ps = (psizes || []).find((s) => s.projectId === fix.projectId);
+  r.check("get_project_sizes: 항목 반환", !!ps && ps.error == null, JSON.stringify(ps));
+  r.check("get_project_sizes: bytes 측정(≥4KB)", (ps?.bytes || 0) >= 4096, `bytes=${ps?.bytes}`);
+  const psBad = (
+    await cdp.invoke("get_project_sizes", { projectIds: ["no-such-project-id"] }, { timeoutMs: 12000 })
+  ).find((s) => s.projectId === "no-such-project-id");
+  r.check("get_project_sizes: 없는 프로젝트 → error 표기", !!psBad && psBad.error != null, JSON.stringify(psBad));
 }
