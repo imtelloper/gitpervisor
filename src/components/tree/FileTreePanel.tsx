@@ -411,8 +411,9 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
     setMenu(null);
   }
 
-  // 행 클릭 — Ctrl/Cmd면 멀티선택 토글, 아니면 단일선택(diff) + 멀티선택 해제.
-  // 함수형 setState 라 treeSel 의존이 없어 참조가 안정적(불필요한 재렌더 방지).
+  // 행 클릭 — Ctrl/Cmd면 멀티선택에 토글(누적), 아니면 그 파일을 **단일 선택**으로 세운다.
+  // 플레인 클릭이 선택을 비우지 않고 {그 파일}로 세팅해야(파일 탐색기처럼) 이어지는 Ctrl 클릭이
+  // 누적돼 "클릭 → Ctrl+클릭 → …" 자연 흐름으로 여러 장을 고를 수 있다. 함수형 setState 로 참조 안정.
   const onRowClick = useCallback(
     (path: string, e: React.MouseEvent) => {
       if (e.ctrlKey || e.metaKey) {
@@ -423,7 +424,7 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
           return next;
         });
       } else {
-        setTreeSel((prev) => (prev.size ? new Set() : prev));
+        setTreeSel(new Set([path]));
         selectDiff({ mode: "file", path });
       }
     },
