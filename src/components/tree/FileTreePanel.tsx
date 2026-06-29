@@ -15,6 +15,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 
@@ -152,6 +153,7 @@ function FileRow({
 
   return (
     <div
+      data-tree-file={path}
       onClick={(e) => row?.onClick(path, e)}
       onDoubleClick={() => row?.onDouble(path, name)}
       onContextMenu={(e) => {
@@ -380,9 +382,15 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
   const treeStatus = useMemo(() => buildTreeStatus(status), [status]);
 
   const [menu, setMenu] = useState<TreeMenu | null>(null);
-  // 파일 멀티선택(Ctrl/Cmd 클릭) — 이미지 일괄 변환에 사용. 프로젝트 전환 시 비운다.
+  // 파일 멀티선택(Ctrl/Cmd 토글, Shift 범위) — 이미지 일괄 변환에 사용. 프로젝트 전환 시 비운다.
   const [treeSel, setTreeSel] = useState<Set<string>>(new Set());
-  useEffect(() => setTreeSel(new Set()), [projectId]);
+  // Shift 범위 선택의 기준(앵커) 파일 경로 + 트리 컨테이너 ref(DOM 순서로 범위 계산).
+  const anchorRef = useRef<string | null>(null);
+  const treeRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    setTreeSel(new Set());
+    anchorRef.current = null;
+  }, [projectId]);
 
   // 메뉴 열림 동안 바깥 클릭 / Esc 로 닫는다 (ProjectList와 동일 패턴)
   useEffect(() => {
@@ -411,11 +419,26 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
     setMenu(null);
   }
 
-  // 행 클릭 — Ctrl/Cmd면 멀티선택에 토글(누적), 아니면 그 파일을 **단일 선택**으로 세운다.
-  // 플레인 클릭이 선택을 비우지 않고 {그 파일}로 세팅해야(파일 탐색기처럼) 이어지는 Ctrl 클릭이
-  // 누적돼 "클릭 → Ctrl+클릭 → …" 자연 흐름으로 여러 장을 고를 수 있다. 함수형 setState 로 참조 안정.
+  // 행 클릭 — Shift면 앵커~클릭 사이 파일을 범위 선택, Ctrl/Cmd면 토글(누적),
+  // 아니면 그 파일을 **단일 선택**으로 세우고 앵커로 삼는다(파일 탐색기처럼). 함수형 setState 로 참조 안정.
   const onRowClick = useCallback(
     (path: string, e: React.MouseEvent) => {
+      // Shift 범위 — 화면에 보이는 파일 행의 DOM 순서로 앵커~클릭 사이를 모두 선택.
+      if (e.shiftKey && anchorRef.current) {
+        const order = Array.from(
+          treeRef.current?.querySelectorAll<HTMLElement>("[data-tree-file]") ?? [],
+        )
+          .map((el) => el.dataset.treeFile)
+          .filter((p): p is string => !!p);
+        const a = order.indexOf(anchorRef.current);
+        const b = order.indexOf(path);
+        if (a >= 0 && b >= 0) {
+          const [lo, hi] = a < b ? [a, b] : [b, a];
+          setTreeSel(new Set(order.slice(lo, hi + 1)));
+          selectDiff({ mode: "file", path });
+          return; // 앵커는 유지(연속 Shift 클릭으로 범위 조절 가능)
+        }
+      }
       if (e.ctrlKey || e.metaKey) {
         setTreeSel((prev) => {
           const next = new Set(prev);
@@ -423,9 +446,11 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
           else next.add(path);
           return next;
         });
+        anchorRef.current = path;
       } else {
         setTreeSel(new Set([path]));
         selectDiff({ mode: "file", path });
+        anchorRef.current = path;
       }
     },
     [selectDiff],
@@ -659,6 +684,7 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
         </button>
       </div>
       <div
+        ref={treeRef}
         className="min-h-0 flex-1 overflow-auto py-1 text-[13px]"
         onContextMenu={(e) => {
           // 빈 영역 우클릭 → 루트 새 폴더 메뉴 (행은 stopPropagation으로 여기 안 온다).
