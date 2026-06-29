@@ -284,6 +284,7 @@ export type ErrorCode =
   | "OP_IN_PROGRESS"
   | "AUTH_FAILED"
   | "IO"
+  | "ALREADY_EXISTS"
   // ---- API 클라이언트 (commands/http.rs §4.8) ----
   | "NETWORK"
   | "DNS_FAILURE"
@@ -574,11 +575,33 @@ export const ipc = {
     callMutating<void>("set_settings", { settings }),
   openIn: (projectId: string, target: OpenTarget) =>
     callMutating<void>("open_in", { projectId, target }),
+  // 파일트리에서 실행 파일 더블클릭 → OS 기본 실행기로 띄운다(프론트가 확인 후 호출).
+  runExecutable: (projectId: string, relPath: string) =>
+    callMutating<void>("run_executable", { projectId, relPath }),
   listDir: (projectId: string, relPath: string) =>
     call<DirEntry[]>("list_dir", { projectId, relPath }),
   // Viewer 편집 저장 — 텍스트 파일 내용을 디스크에 쓴다(레포 상대 경로). 재시도 금지.
   writeFile: (projectId: string, relPath: string, content: string) =>
     callMutating<void>("write_file", { projectId, relPath, content }),
+  // 새 폴더 생성 (트리 컨텍스트 메뉴). 재시도 금지.
+  createDir: (projectId: string, relPath: string) =>
+    callMutating<void>("create_dir", { projectId, relPath }),
+  // 파일/폴더 삭제 — 파괴적, 프론트 확인 후 호출. 재시도 금지.
+  deletePath: (projectId: string, relPath: string) =>
+    callMutating<void>("delete_path", { projectId, relPath }),
+  // 이미지 변환·편집 저장 — base64 바이트를 디스크에 쓴다. overwrite=false면 기존 파일 충돌 시
+  // ALREADY_EXISTS 오류(프론트가 덮어쓰기 확인). 큰 이미지 대비 타임아웃 넉넉히.
+  writeFileBytes: (
+    projectId: string,
+    relPath: string,
+    base64: string,
+    overwrite: boolean,
+  ) =>
+    callMutating<void>(
+      "write_file_bytes",
+      { projectId, relPath, base64, overwrite },
+      60_000,
+    ),
   // Go-to-Definition — 심볼 정의 후보를 휴리스틱 검색(ripgrep). 읽기 레인.
   findDefinition: (projectId: string, symbol: string, ext: string) =>
     call<DefMatch[]>("find_definition", { projectId, symbol, ext }),

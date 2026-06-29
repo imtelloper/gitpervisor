@@ -9,6 +9,18 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(async () => ({
   plugins: [react(), tailwindcss()],
 
+  // @jsquash/avif는 emscripten 글루 + .wasm을 동적 import한다. esbuild 사전번들에 끌려가면
+  // 코덱 wasm 경로 해석이 깨지므로 제외해 런타임 동적 import 그대로 둔다(AVIF 인코딩 전용).
+  optimizeDeps: {
+    exclude: ["@jsquash/avif"],
+  },
+
+  // avif 멀티스레드 코덱(avif_enc_mt.js)은 emscripten pthread 워커를 쓴다. Vite 기본
+  // worker.format("iife")는 코드 스플리팅과 충돌하므로 ES 모듈 워커로 빌드한다(Chromium 지원).
+  worker: {
+    format: "es",
+  },
+
   build: {
     chunkSizeWarningLimit: 1500,
     rollupOptions: {

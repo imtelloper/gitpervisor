@@ -1,9 +1,10 @@
 import { FolderGit2 } from "lucide-react";
-import { useEffect } from "react";
+import { lazy, Suspense, useEffect } from "react";
 
 import { AggregateTerminals } from "./components/AggregateTerminals";
 import { ChangesPanel } from "./components/changes/ChangesPanel";
 import { ConfirmHost } from "./components/common/ConfirmDialog";
+import { PromptHost } from "./components/common/PromptDialog";
 import { ConnectionDialog } from "./components/db/ConnectionDialog";
 import { EmptyState } from "./components/common/EmptyState";
 import { Toasts } from "./components/common/Toast";
@@ -27,12 +28,16 @@ import {
 } from "./queries";
 import { useUi } from "./stores/ui";
 
+// 이미지 편집기는 무겁고(canvas + avif wasm 동적 로드) 자주 안 열리므로 처음 열 때만 로드한다.
+const ImageEditor = lazy(() => import("./components/image/ImageEditor"));
+
 export default function App() {
   const { data: projects } = useProjects();
   const selectedProjectId = useUi((s) => s.selectedProjectId);
   const selectProject = useUi((s) => s.selectProject);
   const fileTreeOpen = useUi((s) => s.fileTreeOpen);
   const aggregateOpen = useUi((s) => s.aggregateOpen);
+  const imageEditorPath = useUi((s) => s.imageEditorPath);
 
   const { data: settings } = useSettings();
   useAutoFetch(); // 옵트인 자동 fetch (기본 OFF)
@@ -95,9 +100,15 @@ export default function App() {
           </div>
           <Toasts />
           <ConfirmHost />
+          <PromptHost />
           <SettingsDialog />
           <MemoDialog />
           <ConnectionDialog />
+          {imageEditorPath && (
+            <Suspense fallback={null}>
+              <ImageEditor />
+            </Suspense>
+          )}
         </GitGate>
       </div>
     </div>

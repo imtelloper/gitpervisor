@@ -687,6 +687,53 @@ export function useWriteFile(projectId: string) {
   });
 }
 
+/** 새 폴더 생성 — 성공 시 트리(dir)·상태 무효화 + 토스트. */
+export function useCreateDir(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (relPath: string) => ipc.createDir(projectId, relPath),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["dir"] });
+      void qc.invalidateQueries({ queryKey: ["statuses"] });
+      useUi.getState().pushToast("success", "폴더를 만들었습니다");
+    },
+    onError: (e) => useUi.getState().pushToast("error", errorMessage(e)),
+  });
+}
+
+/** 파일/폴더 삭제(파괴적) — 성공 시 트리·상태·diff 무효화 + 토스트. */
+export function useDeletePath(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (relPath: string) => ipc.deletePath(projectId, relPath),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["dir"] });
+      void qc.invalidateQueries({ queryKey: ["statuses"] });
+      void qc.invalidateQueries({ queryKey: ["diff"] });
+      useUi.getState().pushToast("success", "삭제했습니다");
+    },
+    onError: (e) => useUi.getState().pushToast("error", errorMessage(e)),
+  });
+}
+
+/**
+ * 이미지 변환·편집 저장 — base64 바이트를 디스크에 쓰고 트리·상태·diff·이미지 캐시 무효화.
+ * 오류 토스트는 호출 측(에디터/변환)에서 처리한다 — 인코딩 단계 오류와 합쳐 한 번만 띄우기 위함.
+ */
+export function useSaveImage(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { relPath: string; base64: string; overwrite: boolean }) =>
+      ipc.writeFileBytes(projectId, v.relPath, v.base64, v.overwrite),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["dir"] });
+      void qc.invalidateQueries({ queryKey: ["statuses"] });
+      void qc.invalidateQueries({ queryKey: ["diff"] });
+      void qc.invalidateQueries({ queryKey: ["file-image"] });
+    },
+  });
+}
+
 export function useCommit(projectId: string) {
   const qc = useQueryClient();
   return useMutation({

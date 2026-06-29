@@ -51,7 +51,8 @@ serde_urlencoded = "0.7"
 base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_System_Performance"] }
+# Win32_UI_Shell: 파일트리 실행 파일 더블클릭을 ShellExecuteW로 띄운다(cmd 셸 파싱 우회 — 인젝션 차단).
+windows-sys = { version = "0.59", features = ["Win32_System_Performance", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Foundation"] }
 clipboard-win = "5"
 
 [dev-dependencies]

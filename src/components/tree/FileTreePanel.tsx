@@ -1,16 +1,46 @@
-import { ChevronDown, ChevronRight, Copy, Link, Type } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  FolderPlus,
+  ImageDown,
+  Link,
+  Pencil,
+  Trash2,
+  Type,
+} from "lucide-react";
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
   useState,
 } from "react";
 
+import { useQueryClient } from "@tanstack/react-query";
+
 import { fileIcon, folderIcon } from "../../lib/file-icon";
+import {
+  bytesToBase64,
+  encodeCanvas,
+  extOf,
+  FORMATS,
+  type ImgFormat,
+  loadImage,
+} from "../../lib/image-codec";
+import { errorMessage, ipc, isIpcError } from "../../lib/ipc";
 import type { ChangeKind, DirEntry, FileChange, RepoStatus } from "../../lib/ipc";
+import { isImage } from "../../lib/language-map";
 import { usePanelWidth } from "../../lib/use-panel-width";
-import { useDir, useProjects, useStatus } from "../../queries";
+import {
+  useCreateDir,
+  useDeletePath,
+  useDir,
+  useProjects,
+  useSaveImage,
+  useStatus,
+} from "../../queries";
 import { useUi } from "../../stores/ui";
 import { ResizeHandle } from "../common/ResizeHandle";
 
@@ -74,8 +104,29 @@ interface TreeMenu {
   y: number;
   path: string;
   name: string;
+  isDir: boolean;
+  /** 트리 빈 영역 우클릭(루트 대상) — 메뉴는 "새 폴더"만 표시 */
+  root?: boolean;
 }
 const TreeMenuCtx = createContext<(m: TreeMenu) => void>(() => {});
+
+/** 파일 행 상호작용(멀티선택·더블클릭 실행) — 깊은 트리 노드에 prop 드릴 없이 전달. */
+interface TreeRowApi {
+  /** 멀티선택된 파일 경로 집합 */
+  sel: Set<string>;
+  /** 클릭 — Ctrl/Cmd면 멀티선택 토글, 아니면 단일선택(diff) + 멀티선택 해제 */
+  onClick: (path: string, e: React.MouseEvent) => void;
+  /** 더블클릭 — 실행 파일이면 확인 후 실행 */
+  onDouble: (path: string, name: string) => void;
+}
+const TreeRowCtx = createContext<TreeRowApi | null>(null);
+
+// 더블클릭으로 실행할 수 있는 파일 확장자(주로 Windows 실행 파일). 프론트 1차 게이트.
+const EXEC_EXT = new Set(["exe", "bat", "cmd", "com", "msi"]);
+function isRunnable(name: string): boolean {
+  const dot = name.lastIndexOf(".");
+  return dot >= 0 && EXEC_EXT.has(name.slice(dot + 1).toLowerCase());
+}
 
 function FileRow({
   name,
@@ -89,20 +140,24 @@ function FileRow({
   depth: number;
 }) {
   const selectedDiff = useUi((s) => s.selectedDiff);
-  const selectDiff = useUi((s) => s.selectDiff);
   const ts = useContext(TreeStatusCtx);
   const openMenu = useContext(TreeMenuCtx);
+  const row = useContext(TreeRowCtx);
   const { Icon, color } = fileIcon(name);
-  const selected = selectedDiff?.mode === "file" && selectedDiff.path === path;
+  const multi = row?.sel.has(path) ?? false;
+  const selected =
+    multi || (selectedDiff?.mode === "file" && selectedDiff.path === path);
   const kind = ts?.fileKind.get(path);
   const nameColor = kind ? colorClassOf(kind) : "";
 
   return (
     <div
-      onClick={() => selectDiff({ mode: "file", path })}
+      onClick={(e) => row?.onClick(path, e)}
+      onDoubleClick={() => row?.onDouble(path, name)}
       onContextMenu={(e) => {
         e.preventDefault();
-        openMenu({ x: e.clientX, y: e.clientY, path, name });
+        e.stopPropagation(); // 빈 영역(컨테이너) 핸들러로 버블링 막기
+        openMenu({ x: e.clientX, y: e.clientY, path, name, isDir: false });
       }}
       title={path}
       style={{ paddingLeft: depth * INDENT + 8 }}
@@ -151,7 +206,14 @@ function TreeNode({
         onClick={() => setExpanded((e) => !e)}
         onContextMenu={(e) => {
           e.preventDefault();
-          openMenu({ x: e.clientX, y: e.clientY, path, name: entry.name });
+          e.stopPropagation();
+          openMenu({
+            x: e.clientX,
+            y: e.clientY,
+            path,
+            name: entry.name,
+            isDir: true,
+          });
         }}
         title={path}
         style={{ paddingLeft: depth * INDENT + 8 }}
@@ -186,23 +248,52 @@ function DirChildren({
   depth: number;
 }) {
   const { data, isLoading, error } = useDir(projectId, path);
+  const openMenu = useContext(TreeMenuCtx);
   const pad = { paddingLeft: depth * INDENT + 24 };
+
+  // 펼친 폴더의 빈/로딩/오류 자리 우클릭 → 그 폴더 기준 메뉴(루트로 새지 않게 stopPropagation).
+  const onPlaceholderMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (path)
+      openMenu({
+        x: e.clientX,
+        y: e.clientY,
+        path,
+        name: path.split("/").pop() ?? path,
+        isDir: true,
+      });
+    else
+      openMenu({ x: e.clientX, y: e.clientY, path: "", name: "", isDir: true, root: true });
+  };
 
   if (isLoading)
     return (
-      <div style={pad} className="py-0.5 text-xs text-fg-dim">
+      <div
+        style={pad}
+        onContextMenu={onPlaceholderMenu}
+        className="py-0.5 text-xs text-fg-dim"
+      >
         …
       </div>
     );
   if (error)
     return (
-      <div style={pad} className="py-0.5 text-xs text-fg-dim">
+      <div
+        style={pad}
+        onContextMenu={onPlaceholderMenu}
+        className="py-0.5 text-xs text-fg-dim"
+      >
         불러오지 못함
       </div>
     );
   if (!data || data.length === 0)
     return (
-      <div style={pad} className="py-0.5 text-xs text-fg-dim">
+      <div
+        style={pad}
+        onContextMenu={onPlaceholderMenu}
+        className="py-0.5 text-xs text-fg-dim"
+      >
         비어 있음
       </div>
     );
@@ -226,20 +317,40 @@ function MenuItem({
   icon: Icon,
   label,
   onClick,
+  danger,
 }: {
   icon: typeof Copy;
   label: string;
   onClick: () => void;
+  danger?: boolean;
 }) {
   return (
     <button
       onClick={onClick}
-      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-fg-muted hover:bg-raised hover:text-fg"
+      className={`flex w-full items-center gap-2 px-3 py-1.5 text-left ${
+        danger
+          ? "text-danger hover:bg-danger/15"
+          : "text-fg-muted hover:bg-raised hover:text-fg"
+      }`}
     >
       <Icon size={14} className="shrink-0" />
       {label}
     </button>
   );
+}
+
+/** rel 경로의 부모 디렉토리(없으면 빈 문자열=루트). */
+function parentDir(rel: string): string {
+  const i = rel.lastIndexOf("/");
+  return i >= 0 ? rel.slice(0, i) : "";
+}
+
+/** 폴더/파일 이름 검증 — 경로 구분자·`..` 거부. 통과면 null. */
+function validateName(v: string): string | null {
+  const t = v.trim();
+  if (/[\\/]/.test(t)) return "이름에 경로 구분자를 쓸 수 없습니다";
+  if (t === "." || t === ".." || t.includes("..")) return "잘못된 이름입니다";
+  return null;
 }
 
 /** 선택 프로젝트의 전체 파일 트리 (지연 로딩). 파일 클릭 → 중앙 뷰어에 내용/diff. */
@@ -248,11 +359,30 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
   const { data: status } = useStatus(projectId);
   const { data: projects } = useProjects();
   const pushToast = useUi((s) => s.pushToast);
+  const askConfirm = useUi((s) => s.askConfirm);
+  const askPrompt = useUi((s) => s.askPrompt);
+  const openImageEditor = useUi((s) => s.openImageEditor);
+  const selectDiff = useUi((s) => s.selectDiff);
+  const createDir = useCreateDir(projectId);
+  const deletePath = useDeletePath(projectId);
+  const saveImage = useSaveImage(projectId);
+  const qc = useQueryClient();
+
+  // 이미지 쓰기 후 관련 쿼리를 한 번만 무효화한다 — 일괄 변환에서 N회 무효화(리페치 폭주) 회피.
+  const invalidateImageWrites = useCallback(() => {
+    void qc.invalidateQueries({ queryKey: ["dir"] });
+    void qc.invalidateQueries({ queryKey: ["statuses"] });
+    void qc.invalidateQueries({ queryKey: ["diff"] });
+    void qc.invalidateQueries({ queryKey: ["file-image"] });
+  }, [qc]);
 
   const projectPath = projects?.find((p) => p.id === projectId)?.path ?? "";
   const treeStatus = useMemo(() => buildTreeStatus(status), [status]);
 
   const [menu, setMenu] = useState<TreeMenu | null>(null);
+  // 파일 멀티선택(Ctrl/Cmd 클릭) — 이미지 일괄 변환에 사용. 프로젝트 전환 시 비운다.
+  const [treeSel, setTreeSel] = useState<Set<string>>(new Set());
+  useEffect(() => setTreeSel(new Set()), [projectId]);
 
   // 메뉴 열림 동안 바깥 클릭 / Esc 로 닫는다 (ProjectList와 동일 패턴)
   useEffect(() => {
@@ -281,6 +411,234 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
     setMenu(null);
   }
 
+  // 행 클릭 — Ctrl/Cmd면 멀티선택 토글, 아니면 단일선택(diff) + 멀티선택 해제.
+  // 함수형 setState 라 treeSel 의존이 없어 참조가 안정적(불필요한 재렌더 방지).
+  const onRowClick = useCallback(
+    (path: string, e: React.MouseEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        setTreeSel((prev) => {
+          const next = new Set(prev);
+          if (next.has(path)) next.delete(path);
+          else next.add(path);
+          return next;
+        });
+      } else {
+        setTreeSel((prev) => (prev.size ? new Set() : prev));
+        selectDiff({ mode: "file", path });
+      }
+    },
+    [selectDiff],
+  );
+
+  // 더블클릭 — 실행 파일이면 확인 후 OS로 실행한다.
+  const onDouble = useCallback(
+    (path: string, name: string) => {
+      if (!isRunnable(name)) return;
+      askConfirm({
+        title: "실행 파일 실행",
+        message: `'${name}'을(를) 실행할까요? 신뢰할 수 있는 파일만 실행하세요.`,
+        detail: absOf(path),
+        confirmLabel: "실행",
+        onConfirm: () => {
+          void ipc
+            .runExecutable(projectId, path)
+            .then(() => pushToast("success", `${name} 실행됨`))
+            .catch((err) => pushToast("error", errorMessage(err)));
+        },
+      });
+    },
+    // absOf는 projectPath에 의존 — 프로젝트별로 안정. projectId/askConfirm/pushToast도 안정.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [projectId, projectPath],
+  );
+
+  const rowApi = useMemo<TreeRowApi>(
+    () => ({ sel: treeSel, onClick: onRowClick, onDouble }),
+    [treeSel, onRowClick, onDouble],
+  );
+
+  // 새 폴더 — 대상이 폴더면 그 안에, 파일이면 같은 폴더에 만든다.
+  function newFolder(m: TreeMenu) {
+    const baseDir = m.isDir ? m.path : parentDir(m.path);
+    setMenu(null);
+    askPrompt({
+      title: "새 폴더",
+      label: baseDir ? `${toOsPath(baseDir)} 안에 만듭니다` : "프로젝트 루트에 만듭니다",
+      placeholder: "폴더 이름",
+      confirmLabel: "만들기",
+      validate: validateName,
+      onConfirm: (name) => createDir.mutate(joinPath(baseDir, name)),
+    });
+  }
+
+  // 삭제 — 파괴적이라 확인 다이얼로그를 거친다.
+  function removeEntry(m: TreeMenu) {
+    setMenu(null);
+    askConfirm({
+      title: `${m.isDir ? "폴더" : "파일"} 삭제`,
+      message: `'${m.name}'을(를) 삭제할까요? 되돌릴 수 없습니다.`,
+      detail: absOf(m.path),
+      confirmLabel: "삭제",
+      danger: true,
+      onConfirm: () => deletePath.mutate(m.path),
+    });
+  }
+
+  // 변환 바이트를 디스크에 쓴다 — 기존 파일 충돌 시 덮어쓰기 확인 후 재시도(데이터 손실 방지).
+  // note: 첫 프레임만 변환되는 애니메이션(gif) 등 사용자에게 알릴 꼬리표.
+  function saveConverted(
+    target: string,
+    base64: string,
+    note = "",
+    overwrite = false,
+  ) {
+    saveImage.mutate(
+      { relPath: target, base64, overwrite },
+      {
+        onSuccess: () =>
+          pushToast("success", `변환됨 — ${target.split("/").pop()}${note}`),
+        onError: (e) => {
+          if (isIpcError(e) && e.code === "ALREADY_EXISTS") {
+            askConfirm({
+              title: "덮어쓰기",
+              message: `'${target.split("/").pop()}' 파일이 이미 있습니다. 덮어쓸까요?`,
+              detail: absOf(target),
+              confirmLabel: "덮어쓰기",
+              danger: true,
+              onConfirm: () => saveConverted(target, base64, note, true),
+            });
+          } else {
+            pushToast("error", errorMessage(e));
+          }
+        },
+      },
+    );
+  }
+
+  // 한 이미지를 대상 포맷으로 디코드+인코딩해 {대상경로, base64, 꼬리표}를 만든다(쓰기 직전 단계).
+  async function encodeImageToTarget(relPath: string, fmt: ImgFormat) {
+    const { mime, base64 } = await ipc.readFileBase64(projectId, relPath);
+    const image = await loadImage(`data:${mime};base64,${base64}`);
+    if (!image.naturalWidth || !image.naturalHeight) {
+      throw new Error("이미지 크기를 확인할 수 없습니다");
+    }
+    const c = document.createElement("canvas");
+    c.width = image.naturalWidth;
+    c.height = image.naturalHeight;
+    const ctx = c.getContext("2d");
+    if (!ctx) throw new Error("캔버스 컨텍스트를 얻지 못했습니다");
+    if (fmt === "jpeg") {
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, c.width, c.height);
+    }
+    ctx.drawImage(image, 0, 0);
+    const bytes = await encodeCanvas(c, fmt, 90);
+    const dir = relPath.includes("/")
+      ? relPath.slice(0, relPath.lastIndexOf("/") + 1)
+      : "";
+    const baseName = relPath.split("/").pop() ?? relPath;
+    const dot = baseName.lastIndexOf(".");
+    const stem = dot > 0 ? baseName.slice(0, dot) : baseName;
+    // 애니메이션 gif 는 캔버스가 첫 프레임만 래스터화하므로 사용자에게 알린다.
+    const note = /\.gif$/i.test(relPath) ? " (첫 프레임)" : "";
+    return {
+      target: `${dir}${stem}.${extOf(fmt)}`,
+      base64: bytesToBase64(bytes),
+      note,
+    };
+  }
+
+  // 단일 변환 — 같은 폴더에 형제 파일로 저장(충돌 시 덮어쓰기 확인).
+  async function convert(m: TreeMenu, fmt: ImgFormat) {
+    setMenu(null);
+    try {
+      const { target, base64, note } = await encodeImageToTarget(m.path, fmt);
+      saveConverted(target, base64, note);
+    } catch (e) {
+      pushToast("error", errorMessage(e));
+    }
+  }
+
+  // 일괄 변환 — 선택한 이미지들을 한꺼번에. 기존 파일 충돌은 모아서 한 번에 덮어쓰기 확인하고,
+  // 같은 대상 이름끼리의 배치 내 충돌(예: a.png+a.jpg→a.webp)은 뒤엣것을 건너뛴다(자기덮어쓰기 방지).
+  // 쓰기는 ipc.writeFileBytes 직접 호출 후 끝에 한 번만 무효화한다(리페치 폭주 회피).
+  async function convertBatch(paths: string[], fmt: ImgFormat) {
+    setMenu(null);
+    const conflicts: { target: string; base64: string }[] = [];
+    const seenTargets = new Set<string>();
+    let ok = 0;
+    let fail = 0;
+    let dup = 0;
+    for (const p of paths) {
+      try {
+        const { target, base64 } = await encodeImageToTarget(p, fmt);
+        if (seenTargets.has(target)) {
+          dup++; // 이 배치가 이미 같은 이름으로 변환함 — 자기 자신을 덮어쓰지 않게 건너뜀
+          continue;
+        }
+        seenTargets.add(target);
+        try {
+          await ipc.writeFileBytes(projectId, target, base64, false);
+          ok++;
+        } catch (e) {
+          if (isIpcError(e) && e.code === "ALREADY_EXISTS")
+            conflicts.push({ target, base64 });
+          else fail++;
+        }
+      } catch {
+        fail++; // 디코드/인코드 실패(손상·미지원) — 건너뛴다
+      }
+    }
+    if (ok) invalidateImageWrites();
+    const dupNote = dup ? `, 이름 충돌 ${dup}개 건너뜀` : "";
+    const tail = fail ? `, 실패 ${fail}` : "";
+    if (conflicts.length) {
+      pushToast(
+        "info",
+        `변환 ${ok}개 완료 · 기존 파일 ${conflicts.length}개 보류${dupNote}${tail}`,
+      );
+      askConfirm({
+        title: "덮어쓰기",
+        message: `이미 있는 파일 ${conflicts.length}개를 모두 덮어쓸까요?`,
+        confirmLabel: "모두 덮어쓰기",
+        danger: true,
+        onConfirm: () => {
+          void (async () => {
+            let ok2 = 0;
+            for (const c of conflicts) {
+              try {
+                await ipc.writeFileBytes(projectId, c.target, c.base64, true);
+                ok2++;
+              } catch {
+                /* 개별 실패는 무시 */
+              }
+            }
+            if (ok2) invalidateImageWrites();
+            pushToast("success", `덮어쓰기 ${ok2}개 완료`);
+          })();
+        },
+      });
+    } else {
+      pushToast(fail ? "error" : "success", `변환 ${ok}개 완료${dupNote}${tail}`);
+    }
+  }
+
+  // 이미지 변환/편집 대상은 캔버스가 안정적으로 래스터화하는 파일만 — SVG(벡터·무내재크기)는 제외.
+  const menuIsImage = menu
+    ? !menu.isDir && isImage(menu.name) && !/\.svg$/i.test(menu.name)
+    : false;
+  // 멀티선택된 변환 가능 이미지들 — 우클릭 대상이 선택에 포함되면 일괄 변환 메뉴를 띄운다.
+  const selImages = useMemo(
+    () => [...treeSel].filter((p) => isImage(p) && !/\.svg$/i.test(p)),
+    [treeSel],
+  );
+  const showBatch =
+    !!menu &&
+    !menu.isDir &&
+    !menu.root &&
+    selImages.length >= 2 &&
+    treeSel.has(menu.path);
+
   return (
     <div
       style={{ width }}
@@ -288,42 +646,135 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
     >
       <div className="flex items-center gap-2 border-b border-edge px-3 py-2">
         <span className="font-semibold">Files</span>
+        <div className="flex-1" />
+        <button
+          title="새 폴더 (루트)"
+          onClick={() =>
+            newFolder({ x: 0, y: 0, name: "", path: "", isDir: true })
+          }
+          className="rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
+        >
+          <FolderPlus size={14} />
+        </button>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto py-1 text-[13px]">
+      <div
+        className="min-h-0 flex-1 overflow-auto py-1 text-[13px]"
+        onContextMenu={(e) => {
+          // 빈 영역 우클릭 → 루트 새 폴더 메뉴 (행은 stopPropagation으로 여기 안 온다).
+          e.preventDefault();
+          setMenu({
+            x: e.clientX,
+            y: e.clientY,
+            path: "",
+            name: "",
+            isDir: true,
+            root: true,
+          });
+        }}
+      >
         <TreeStatusCtx.Provider value={treeStatus}>
-          <TreeMenuCtx.Provider value={setMenu}>
-            <div key={projectId} className="w-max min-w-full">
-              <DirChildren projectId={projectId} path="" depth={0} />
-            </div>
-          </TreeMenuCtx.Provider>
+          <TreeRowCtx.Provider value={rowApi}>
+            <TreeMenuCtx.Provider value={setMenu}>
+              <div key={projectId} className="w-max min-w-full">
+                <DirChildren projectId={projectId} path="" depth={0} />
+              </div>
+            </TreeMenuCtx.Provider>
+          </TreeRowCtx.Provider>
         </TreeStatusCtx.Provider>
       </div>
       <ResizeHandle onMouseDown={startResize} />
 
       {menu && (
         <div
-          className="fixed z-50 min-w-48 rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl"
-          style={{
-            left: Math.min(menu.x, window.innerWidth - 200),
-            top: Math.min(menu.y, window.innerHeight - 110),
-          }}
+          className="fixed z-50 max-h-[80vh] min-w-52 overflow-y-auto rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl"
+          style={
+            // 아래쪽 절반에서 열면 메뉴를 위로 펼쳐(커서에 하단 고정) 화면 밖으로 잘리지 않게 한다.
+            menu.y > window.innerHeight / 2
+              ? {
+                  left: Math.min(menu.x, window.innerWidth - 220),
+                  bottom: window.innerHeight - menu.y,
+                }
+              : {
+                  left: Math.min(menu.x, window.innerWidth - 220),
+                  top: menu.y,
+                }
+          }
           onClick={(e) => e.stopPropagation()}
         >
-          <MenuItem
-            icon={Copy}
-            label="경로 복사"
-            onClick={() => copy(absOf(menu.path), "경로를 복사했습니다")}
-          />
-          <MenuItem
-            icon={Link}
-            label="상대 경로 복사"
-            onClick={() => copy(toOsPath(menu.path), "상대 경로를 복사했습니다")}
-          />
-          <MenuItem
-            icon={Type}
-            label="이름 복사"
-            onClick={() => copy(menu.name, "파일 이름을 복사했습니다")}
-          />
+          {menu.root ? (
+            <MenuItem
+              icon={FolderPlus}
+              label="새 폴더"
+              onClick={() => newFolder(menu)}
+            />
+          ) : (
+            <>
+              {showBatch && (
+                <>
+                  <div className="px-3 py-1 text-[11px] text-fg-dim">
+                    선택한 이미지 {selImages.length}개
+                  </div>
+                  {FORMATS.map((f) => (
+                    <MenuItem
+                      key={`batch-${f.id}`}
+                      icon={ImageDown}
+                      label={`${f.label}(으)로 일괄 변환`}
+                      onClick={() => void convertBatch(selImages, f.id)}
+                    />
+                  ))}
+                  <div className="my-1 border-t border-edge/60" />
+                </>
+              )}
+              {menuIsImage && (
+                <>
+                  <MenuItem
+                    icon={Pencil}
+                    label="이미지 편집"
+                    onClick={() => {
+                      openImageEditor(menu.path);
+                      setMenu(null);
+                    }}
+                  />
+                  {FORMATS.map((f) => (
+                    <MenuItem
+                      key={f.id}
+                      icon={ImageDown}
+                      label={`${f.label}(으)로 변환`}
+                      onClick={() => void convert(menu, f.id)}
+                    />
+                  ))}
+                  <div className="my-1 border-t border-edge/60" />
+                </>
+              )}
+              <MenuItem
+                icon={FolderPlus}
+                label="새 폴더"
+                onClick={() => newFolder(menu)}
+              />
+              <MenuItem
+                icon={Trash2}
+                label="삭제"
+                danger
+                onClick={() => removeEntry(menu)}
+              />
+              <div className="my-1 border-t border-edge/60" />
+              <MenuItem
+                icon={Copy}
+                label="경로 복사"
+                onClick={() => copy(absOf(menu.path), "경로를 복사했습니다")}
+              />
+              <MenuItem
+                icon={Link}
+                label="상대 경로 복사"
+                onClick={() => copy(toOsPath(menu.path), "상대 경로를 복사했습니다")}
+              />
+              <MenuItem
+                icon={Type}
+                label="이름 복사"
+                onClick={() => copy(menu.name, "파일 이름을 복사했습니다")}
+              />
+            </>
+          )}
         </div>
       )}
     </div>

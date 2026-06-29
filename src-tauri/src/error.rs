@@ -14,6 +14,8 @@ pub enum ErrorCode {
     OpInProgress,
     AuthFailed,
     Io,
+    /// 대상이 이미 존재함 (새 폴더·이미지 변환 저장 충돌). 프론트는 이 코드로 덮어쓰기 확인을 띄운다.
+    AlreadyExists,
     // API 클라이언트 HTTP 엔진 (DOCS/api-client-design.md §4.8)
     Network,
     DnsFailure,

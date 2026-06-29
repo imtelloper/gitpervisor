@@ -17,6 +17,17 @@ export interface ConfirmRequest {
   onConfirm: () => void;
 }
 
+export interface PromptRequest {
+  title: string;
+  label?: string;
+  placeholder?: string;
+  defaultValue?: string;
+  confirmLabel?: string;
+  /** 입력값 검증 — 오류 메시지를 반환하면 확인이 막힌다(null이면 통과). */
+  validate?: (value: string) => string | null;
+  onConfirm: (value: string) => void;
+}
+
 interface UiState {
   selectedProjectId: string | null;
   /** 중앙 뷰어가 표시할 diff 대상 — Changes(worktree/index) 또는 Log(commit)에서 설정 */
@@ -39,8 +50,11 @@ interface UiState {
   fileTreeOpen: boolean;
   /** PROJECTS: 변경/활동 있는 프로젝트를 위로 정렬 (localStorage 영속) */
   projectSortByChanges: boolean;
+  /** 이미지 편집기 대상(레포 상대 경로) — 열려 있으면 모달 표시 */
+  imageEditorPath: string | null;
   toasts: Toast[];
   confirm: ConfirmRequest | null;
+  prompt: PromptRequest | null;
   selectProject: (id: string | null) => void;
   selectDiff: (target: DiffTarget | null) => void;
   toggleLog: () => void;
@@ -56,6 +70,10 @@ interface UiState {
   dismissToast: (id: number) => void;
   askConfirm: (req: ConfirmRequest) => void;
   closeConfirm: () => void;
+  askPrompt: (req: PromptRequest) => void;
+  closePrompt: () => void;
+  openImageEditor: (path: string) => void;
+  closeImageEditor: () => void;
 }
 
 let toastSeq = 0;
@@ -77,8 +95,10 @@ export const useUi = create<UiState>((set) => ({
   // 파일 트리는 기본 열림 — 사용자가 명시적으로 닫은 경우("0")만 닫힌 채 복원
   fileTreeOpen: localStorage.getItem("gp:filetree-open") !== "0",
   projectSortByChanges: localStorage.getItem("gp:project-sort-changes") === "1",
+  imageEditorPath: null,
   toasts: [],
   confirm: null,
+  prompt: null,
   // 프로젝트 전환 시 diff·커밋 선택은 초기화하되 Log 패널 펼침 상태는 유지
   selectProject: (id) => {
     if (id) localStorage.setItem("gp:selected-project", id);
@@ -88,6 +108,8 @@ export const useUi = create<UiState>((set) => ({
       selectedDiff: null,
       selectedCommitSha: null,
       memoOpen: false,
+      // 이미지 편집기는 프로젝트별 상대 경로라 프로젝트가 바뀌면 닫는다(엉뚱한 프로젝트에 쓰기 방지).
+      imageEditorPath: null,
     });
   },
   selectDiff: (target) => set({ selectedDiff: target }),
@@ -124,4 +146,8 @@ export const useUi = create<UiState>((set) => ({
     set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
   askConfirm: (req) => set({ confirm: req }),
   closeConfirm: () => set({ confirm: null }),
+  askPrompt: (req) => set({ prompt: req }),
+  closePrompt: () => set({ prompt: null }),
+  openImageEditor: (path) => set({ imageEditorPath: path }),
+  closeImageEditor: () => set({ imageEditorPath: null }),
 }));

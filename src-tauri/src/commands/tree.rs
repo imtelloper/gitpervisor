@@ -1,7 +1,10 @@
 use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine as _;
 use serde::Serialize;
 use tauri::State;
 
@@ -33,23 +36,107 @@ pub async fn write_file(
     content: String,
 ) -> Result<(), IpcError> {
     let repo = project_path(&state, &project_id)?;
-    validate_rel_file(&rel_path)?;
-    let target = repo.join(&rel_path);
-    // 상위 디렉토리가 실제로 존재해야 한다(편집 대상의 폴더). 새 트리 생성은 하지 않는다.
-    match target.parent() {
-        Some(parent) if parent.is_dir() => {}
-        _ => {
-            return Err(IpcError::new(
-                ErrorCode::NotFound,
-                "상위 디렉토리를 찾을 수 없습니다",
-            ))
+    // 상위 디렉토리를 정규화해 레포 안임을 보장(루트/드라이브 상대·정션 탈출 차단). 새 트리는 안 만든다.
+    let target = resolve_in_repo(&repo, &rel_path)?;
+    // 최종 경로 메타는 링크를 따라가지 않고 본다 — 기존 심볼릭/정션으로 레포 밖에 쓰지 못하게.
+    if let Ok(meta) = tokio::fs::symlink_metadata(&target).await {
+        if meta.file_type().is_symlink() {
+            return Err(IpcError::new(ErrorCode::Io, "심볼릭 링크에는 쓸 수 없습니다"));
+        }
+        if meta.is_dir() {
+            return Err(IpcError::new(ErrorCode::Io, "디렉토리에는 쓸 수 없습니다"));
         }
     }
-    // 기존 경로가 디렉토리면 거부(파일만 쓴다).
-    if target.is_dir() {
-        return Err(IpcError::new(ErrorCode::Io, "디렉토리에는 쓸 수 없습니다"));
-    }
     tokio::fs::write(&target, content)
+        .await
+        .map_err(|e| IpcError::new(ErrorCode::Io, format!("파일 저장 실패: {e}")))
+}
+
+/// 새 폴더 생성 — `rel_path`는 레포 루트 기준 상대 경로(만들 폴더 자신).
+/// 상위 디렉토리가 존재해야 하고 같은 이름이 이미 있으면 거부한다.
+/// 경로 탈출(빈 경로·절대경로·`..`·`.git`)을 막는다.
+#[tauri::command]
+pub async fn create_dir(
+    state: State<'_, AppState>,
+    project_id: String,
+    rel_path: String,
+) -> Result<(), IpcError> {
+    let repo = project_path(&state, &project_id)?;
+    let target = resolve_in_repo(&repo, &rel_path)?;
+    if target.exists() {
+        return Err(IpcError::new(
+            ErrorCode::AlreadyExists,
+            "같은 이름이 이미 있습니다",
+        ));
+    }
+    tokio::fs::create_dir(&target)
+        .await
+        .map_err(|e| IpcError::new(ErrorCode::Io, format!("폴더 생성 실패: {e}")))
+}
+
+/// 파일/폴더 삭제 — **파괴적**. 프론트의 확인 다이얼로그를 거친 뒤에만 호출된다.
+/// 디렉토리는 재귀 삭제한다. 심볼릭 링크는 따라가지 않고 링크 자체만 지운다.
+/// 루트(빈 경로)·`.git`·절대경로·`..`는 거부한다.
+#[tauri::command]
+pub async fn delete_path(
+    state: State<'_, AppState>,
+    project_id: String,
+    rel_path: String,
+) -> Result<(), IpcError> {
+    let repo = project_path(&state, &project_id)?;
+    // 상위 디렉토리를 정규화해 레포 안임을 보장(중간 정션/심볼릭으로 레포 밖 삭제 차단).
+    let target = resolve_in_repo(&repo, &rel_path)?;
+    // 링크를 따라가지 않는 메타데이터 — 링크된 디렉토리를 remove_dir_all로 따라 들어가지 않게.
+    let meta = match tokio::fs::symlink_metadata(&target).await {
+        Ok(m) => m,
+        Err(_) => return Err(IpcError::new(ErrorCode::NotFound, "대상을 찾을 수 없습니다")),
+    };
+    let result = if meta.is_dir() {
+        tokio::fs::remove_dir_all(&target).await
+    } else {
+        tokio::fs::remove_file(&target).await
+    };
+    result.map_err(|e| IpcError::new(ErrorCode::Io, format!("삭제 실패: {e}")))
+}
+
+/// 바이너리 파일 쓰기 — base64 바이트를 디스크에 쓴다(이미지 변환·편집 저장용).
+/// 새 파일 생성을 허용하되(상위 디렉토리는 존재해야 함), 기존 디렉토리에는 쓰지 않는다.
+/// 경로 탈출(빈 경로·절대경로·`..`·`.git`)을 막는다.
+#[tauri::command]
+pub async fn write_file_bytes(
+    state: State<'_, AppState>,
+    project_id: String,
+    rel_path: String,
+    base64: String,
+    overwrite: bool,
+) -> Result<(), IpcError> {
+    let repo = project_path(&state, &project_id)?;
+    let target = resolve_in_repo(&repo, &rel_path)?;
+    // 최종 경로 메타는 링크를 따라가지 않고 본다 — 기존 심볼릭/정션으로 레포 밖에 쓰지 못하게.
+    if let Ok(meta) = tokio::fs::symlink_metadata(&target).await {
+        if meta.file_type().is_symlink() {
+            return Err(IpcError::new(ErrorCode::Io, "심볼릭 링크에는 쓸 수 없습니다"));
+        }
+        if meta.is_dir() {
+            return Err(IpcError::new(ErrorCode::Io, "디렉토리에는 쓸 수 없습니다"));
+        }
+    }
+    // 덮어쓰기 미허용이면 기존 파일을 보호한다 — 변환/다른 이름 저장의 의도치 않은 데이터 손실 방지.
+    if !overwrite && target.exists() {
+        return Err(IpcError::new(
+            ErrorCode::AlreadyExists,
+            "이미 같은 이름의 파일이 있습니다",
+        ));
+    }
+    let bytes = B64
+        .decode(base64.as_bytes())
+        .map_err(|e| IpcError::new(ErrorCode::Io, format!("이미지 디코딩 실패: {e}")))?;
+    // base64 IPC 전송 상한 — 과대 파일로 WebView가 멈추지 않게 (이미지 변환·저장 전제).
+    const MAX_WRITE_BYTES: usize = 64 * 1024 * 1024;
+    if bytes.len() > MAX_WRITE_BYTES {
+        return Err(IpcError::new(ErrorCode::Io, "파일이 너무 큽니다 (64MB 초과)"));
+    }
+    tokio::fs::write(&target, bytes)
         .await
         .map_err(|e| IpcError::new(ErrorCode::Io, format!("파일 저장 실패: {e}")))
 }
@@ -215,10 +302,17 @@ async fn check_ignored(repo: &Path, rel_path: &str, items: &[(String, bool)]) ->
     }
 }
 
-/// 레포 밖 접근 차단 — 절대경로·`..` 거부. 빈 문자열(루트)은 허용.
+/// 레포 밖 접근 차단 — 절대경로·루트/드라이브 상대(`\`·`C:`)·`..` 거부. 빈 문자열(루트)은 허용.
 fn validate_rel_dir(rel: &str) -> Result<(), IpcError> {
     let p = Path::new(rel);
-    if p.is_absolute() || p.components().any(|c| matches!(c, Component::ParentDir)) {
+    if p.is_absolute()
+        || p.components().any(|c| {
+            matches!(
+                c,
+                Component::Prefix(_) | Component::RootDir | Component::ParentDir
+            )
+        })
+    {
         return Err(IpcError::new(ErrorCode::Io, "잘못된 경로입니다"));
     }
     Ok(())
@@ -420,20 +514,59 @@ fn extract_signature(repo: &Path, rel: &str, line_no: u32, fallback: &str) -> St
     }
 }
 
-/// 파일 쓰기용 경로 검증 — 빈 경로·절대경로·`..`·`.git` 진입 거부.
+/// 한 경로 컴포넌트가 Windows 정규화 후 `.git` 으로 귀결되는지 — CVE-2019-1352/1353 류 우회 차단.
+/// Win32 는 컴포넌트 끝의 '.'·' ' 를 떼고 ADS(`:`) 이후를 무시하므로 `.git.`·`.git `·
+/// `.git::$INDEX_ALLOCATION` 가 실제 `.git` 으로 해석된다. 8.3 단축명 `git~1` 류도 막는다.
+fn is_dotgit_component(os: &OsStr) -> bool {
+    let s = os.to_string_lossy();
+    let s = s.split(':').next().unwrap_or(""); // ADS 제거
+    let s = s.trim_end_matches(|c| c == '.' || c == ' '); // 끝의 점·공백 제거
+    if s.eq_ignore_ascii_case(".git") {
+        return true;
+    }
+    // `git~1`, `GIT~2` … (NTFS 8.3 단축명) — Git의 is_ntfs_dotgit 와 동일한 방어.
+    let lower = s.to_ascii_lowercase();
+    lower
+        .strip_prefix("git~")
+        .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// 파일/폴더 작업용 경로 검증 — 빈 경로·절대경로·`..`·(모든 컴포넌트의) `.git` 진입 거부.
+/// 컨테인먼트(레포 밖 탈출)는 정규화로 별도 검증한다([resolve_in_repo]).
 fn validate_rel_file(rel: &str) -> Result<(), IpcError> {
     let p = Path::new(rel);
-    let first_is_git = p
-        .components()
-        .next()
-        .map(|c| c.as_os_str().eq_ignore_ascii_case(".git"))
-        .unwrap_or(false);
     if rel.is_empty()
         || p.is_absolute()
-        || p.components().any(|c| matches!(c, Component::ParentDir))
-        || first_is_git
+        // Prefix(`C:`)·RootDir(`\`)는 join 시 레포 루트를 통째로 대체한다 — 루트/드라이브 상대 거부.
+        || p.components().any(|c| match c {
+            Component::Prefix(_) | Component::RootDir | Component::ParentDir => true,
+            Component::Normal(os) => is_dotgit_component(os),
+            _ => false,
+        })
     {
         return Err(IpcError::new(ErrorCode::Io, "잘못된 경로입니다"));
     }
     Ok(())
+}
+
+/// 경로 탈출 방어 — 렉시컬 검증(`validate_rel_file`) 후, 대상의 **상위 디렉토리**를 정규화해
+/// (심볼릭 링크·정션 따라가서) 레포 루트 안에 있음을 단언한다. 최종 경로(상위정규화 + 파일명)를
+/// 돌려준다. 최종 컴포넌트 자체는 따라가지 않으므로(symlink), 호출 측이 링크를 안전히 다룰 수 있다.
+pub(crate) fn resolve_in_repo(repo: &Path, rel: &str) -> Result<PathBuf, IpcError> {
+    validate_rel_file(rel)?;
+    let target = repo.join(rel);
+    let parent = target
+        .parent()
+        .ok_or_else(|| IpcError::new(ErrorCode::NotFound, "상위 디렉토리를 찾을 수 없습니다"))?;
+    let parent_canon = dunce::canonicalize(parent)
+        .map_err(|_| IpcError::new(ErrorCode::NotFound, "상위 디렉토리를 찾을 수 없습니다"))?;
+    let repo_canon = dunce::canonicalize(repo)
+        .map_err(|e| IpcError::new(ErrorCode::Io, format!("레포 경로 확인 실패: {e}")))?;
+    if !parent_canon.starts_with(&repo_canon) {
+        return Err(IpcError::new(ErrorCode::Io, "레포 밖 경로입니다"));
+    }
+    let name = target
+        .file_name()
+        .ok_or_else(|| IpcError::new(ErrorCode::Io, "잘못된 경로입니다"))?;
+    Ok(parent_canon.join(name))
 }

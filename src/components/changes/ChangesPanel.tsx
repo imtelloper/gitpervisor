@@ -1,5 +1,13 @@
-import { ChevronDown, ChevronRight, Undo2 } from "lucide-react";
-import { useState } from "react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  Plus,
+  RotateCcw,
+  Undo2,
+  X,
+} from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 
 import type { DiffTarget, FileChange } from "../../lib/ipc";
 import { KIND_BADGE } from "../../lib/change-kind";
@@ -23,15 +31,50 @@ interface RowActions {
   onDiscard: (change: FileChange) => void;
 }
 
+/** 한 변경 행을 가리키는 안정 키 (스테이지/언스테이지 인스턴스를 구분). */
+function rowKeyOf(c: FileChange): string {
+  return `${c.staged ? "s" : "w"}:${c.path}`;
+}
+
+function MenuBtn({
+  icon: Icon,
+  label,
+  onClick,
+  danger,
+}: {
+  icon: typeof Copy;
+  label: string;
+  onClick: () => void;
+  danger?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex w-full items-center gap-2 px-3 py-1.5 text-left ${
+        danger
+          ? "text-danger hover:bg-danger/15"
+          : "text-fg-muted hover:bg-raised hover:text-fg"
+      }`}
+    >
+      <Icon size={14} className="shrink-0" />
+      {label}
+    </button>
+  );
+}
+
 function ChangeRow({
   change,
   selected,
-  onSelect,
+  multiSelected,
+  onActivate,
+  onContextMenu,
   actions,
 }: {
   change: FileChange;
   selected: boolean;
-  onSelect: () => void;
+  multiSelected: boolean;
+  onActivate: (e: React.MouseEvent) => void;
+  onContextMenu: (e: React.MouseEvent) => void;
   actions: RowActions;
 }) {
   const { dir, base } = splitPath(change.path);
@@ -42,10 +85,15 @@ function ChangeRow({
 
   return (
     <div
-      onClick={onSelect}
+      onClick={onActivate}
+      onContextMenu={onContextMenu}
       title={change.origPath ? `${change.origPath} → ${change.path}` : change.path}
       className={`group relative flex cursor-pointer items-center gap-2 overflow-hidden px-3 py-1 ${
-        selected ? "bg-selection" : "hover:bg-raised"
+        selected
+          ? "bg-selection"
+          : multiSelected
+            ? "bg-accent/15"
+            : "hover:bg-raised"
       }`}
     >
       {stageable ? (
@@ -95,8 +143,12 @@ function Group({
   accent,
   mode,
   selectedDiff,
-  onSelect,
+  selKeys,
+  onRowClick,
+  onRowContextMenu,
   actions,
+  collapsed,
+  onToggleCollapse,
 }: {
   title: string;
   changes: FileChange[];
@@ -104,17 +156,20 @@ function Group({
   /** 이 그룹의 파일을 클릭했을 때의 diff 모드: staged는 index(HEAD↔인덱스), 나머지는 worktree */
   mode: "worktree" | "index";
   selectedDiff: DiffTarget | null;
-  onSelect: (target: DiffTarget) => void;
+  selKeys: Set<string>;
+  onRowClick: (key: string, e: React.MouseEvent) => void;
+  onRowContextMenu: (key: string, e: React.MouseEvent) => void;
   actions: RowActions;
+  // 접힘 상태는 부모(ChangesPanel)가 관리한다 — 범위 선택이 보이는 행만 대상으로 하도록.
+  collapsed: boolean;
+  onToggleCollapse: () => void;
 }) {
-  const [collapsed, setCollapsed] = useState(false);
-
   if (changes.length === 0) return null;
 
   return (
     <div>
       <button
-        onClick={() => setCollapsed((c) => !c)}
+        onClick={onToggleCollapse}
         className="flex w-full items-center gap-1 px-2 py-1.5 text-[11px] font-semibold tracking-wide text-fg-muted hover:text-fg"
       >
         {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
@@ -123,18 +178,17 @@ function Group({
       </button>
       {!collapsed &&
         changes.map((c) => {
-          const target: DiffTarget =
-            mode === "index"
-              ? { mode: "index", path: c.path }
-              : { mode: "worktree", path: c.path };
+          const key = rowKeyOf(c);
           const selected =
             selectedDiff?.mode === mode && selectedDiff.path === c.path;
           return (
             <ChangeRow
-              key={`${c.staged ? "s" : "w"}:${c.path}`}
+              key={key}
               change={c}
               selected={selected}
-              onSelect={() => onSelect(target)}
+              multiSelected={selKeys.has(key)}
+              onActivate={(e) => onRowClick(key, e)}
+              onContextMenu={(e) => onRowContextMenu(key, e)}
               actions={actions}
             />
           );
@@ -147,6 +201,7 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
   const { data: status } = useStatus(projectId);
   const selectedDiff = useUi((s) => s.selectedDiff);
   const selectDiff = useUi((s) => s.selectDiff);
+  const pushToast = useUi((s) => s.pushToast);
   const stage = useStageFiles(projectId);
   const unstage = useUnstageFiles(projectId);
   const discard = useDiscardFiles(projectId);
@@ -154,12 +209,195 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
   usePrefetchDiffs(projectId); // 클릭 전에 diff를 미리 적재 (§12)
   const { width, startResize } = usePanelWidth("gp:changes-width", 288, 220, 680);
 
-  const total = status
-    ? status.conflicted.length +
-      status.unstaged.length +
-      status.staged.length +
-      status.untracked.length
-    : 0;
+  // 멀티선택(Ctrl/Cmd 토글, Shift 범위) — 한꺼번에 롤백/스테이지. 프로젝트 전환 시 비운다.
+  const [selKeys, setSelKeys] = useState<Set<string>>(new Set());
+  const lastKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    setSelKeys(new Set());
+    lastKeyRef.current = null;
+  }, [projectId]);
+
+  // 우클릭 컨텍스트 메뉴 (롤백/스테이지/언스테이지/복사). 바깥 클릭·Esc로 닫는다.
+  const [menu, setMenu] = useState<{ x: number; y: number; key: string } | null>(
+    null,
+  );
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setMenu(null);
+    window.addEventListener("click", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [menu]);
+
+  // 접힘 상태(그룹 제목 집합) — 부모가 관리해 평탄화/범위선택이 접힌 그룹을 제외하게 한다.
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const toggleCollapse = (title: string) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(title)) next.delete(title);
+      else next.add(title);
+      return next;
+    });
+
+  // 그룹 정의(표시 순서) — diff 모드·강조 포함.
+  const groups = status
+    ? [
+        { title: "Conflicts", changes: status.conflicted, mode: "worktree" as const, accent: true },
+        { title: "Unstaged", changes: status.unstaged, mode: "worktree" as const, accent: false },
+        { title: "Staged", changes: status.staged, mode: "index" as const, accent: false },
+        { title: "Untracked", changes: status.untracked, mode: "worktree" as const, accent: false },
+      ]
+    : [];
+
+  const total = groups.reduce((n, g) => n + g.changes.length, 0);
+
+  // 평탄화 — **펼쳐진** 그룹의 행만(범위 선택이 숨은 행을 휩쓸어 의도치 않게 롤백하는 것 방지).
+  const flatRows = groups.flatMap((g) =>
+    collapsed.has(g.title)
+      ? []
+      : g.changes.map((c) => ({ key: rowKeyOf(c), change: c, mode: g.mode })),
+  );
+
+  const onRowClick = (key: string, e: React.MouseEvent) => {
+    if (e.ctrlKey || e.metaKey) {
+      setSelKeys((prev) => {
+        const next = new Set(prev);
+        if (next.has(key)) next.delete(key);
+        else next.add(key);
+        return next;
+      });
+      lastKeyRef.current = key;
+    } else if (e.shiftKey && lastKeyRef.current) {
+      const a = flatRows.findIndex((r) => r.key === lastKeyRef.current);
+      const b = flatRows.findIndex((r) => r.key === key);
+      if (a >= 0 && b >= 0) {
+        const [lo, hi] = a < b ? [a, b] : [b, a];
+        setSelKeys((prev) => {
+          const next = new Set(prev);
+          for (let i = lo; i <= hi; i++) next.add(flatRows[i].key);
+          return next;
+        });
+      }
+    } else {
+      setSelKeys((prev) => (prev.size ? new Set() : prev));
+      lastKeyRef.current = key;
+      const row = flatRows.find((r) => r.key === key);
+      if (row) {
+        const target: DiffTarget =
+          row.mode === "index"
+            ? { mode: "index", path: row.change.path }
+            : { mode: "worktree", path: row.change.path };
+        selectDiff(target);
+      }
+    }
+  };
+
+  const clearSel = () => {
+    setSelKeys(new Set());
+    lastKeyRef.current = null;
+  };
+
+  const selectedRows = flatRows.filter((r) => selKeys.has(r.key));
+
+  // 우클릭 메뉴 대상 행: 우클릭한 행이 멀티선택에 포함되면 **선택 전체**, 아니면 그 행만.
+  const menuRows = menu
+    ? selKeys.has(menu.key)
+      ? selectedRows
+      : flatRows.filter((r) => r.key === menu.key)
+    : [];
+  const menuChange = menu
+    ? flatRows.find((r) => r.key === menu.key)?.change ?? null
+    : null;
+
+  type Row = (typeof flatRows)[number];
+  // 스테이지는 충돌 행 제외(충돌에 add는 미해결 채로 resolved 표시됨). 언스테이지는 실제로 스테이지된
+  // 행만 — untracked 등 인덱스에 없는 경로가 섞이면 git restore --staged 가 통째로 실패한다.
+  const stagePathsOf = (rows: Row[]) => [
+    ...new Set(
+      rows.filter((r) => r.change.kind !== "conflicted").map((r) => r.change.path),
+    ),
+  ];
+  const unstagePathsOf = (rows: Row[]) => [
+    ...new Set(rows.filter((r) => r.change.staged).map((r) => r.change.path)),
+  ];
+  // 롤백 대상: 스테이지·충돌 제외(워크트리 변경만). untracked는 삭제, 그 외는 워크트리 복원.
+  const discardPartsOf = (rows: Row[]) => {
+    const d = rows.filter(
+      (r) => !r.change.staged && r.change.kind !== "conflicted",
+    );
+    return {
+      tracked: [
+        ...new Set(
+          d.filter((r) => r.change.kind !== "untracked").map((r) => r.change.path),
+        ),
+      ],
+      untracked: [
+        ...new Set(
+          d.filter((r) => r.change.kind === "untracked").map((r) => r.change.path),
+        ),
+      ],
+    };
+  };
+
+  // 여러 행의 워크트리 변경을 한꺼번에 롤백(확인 다이얼로그 경유). 액션바·우클릭 메뉴 공용.
+  const discardRows = (rows: Row[]) => {
+    const { tracked, untracked } = discardPartsOf(rows);
+    if (tracked.length === 0 && untracked.length === 0) {
+      pushToast("info", "되돌릴 항목이 없습니다 (스테이지·충돌 제외)");
+      return;
+    }
+    const run = () => {
+      discard.mutate({ tracked, untracked });
+      clearSel();
+    };
+    if (settings?.confirmDiscard === false) {
+      run();
+      return;
+    }
+    useUi.getState().askConfirm({
+      title: "선택 롤백",
+      message: `선택한 ${tracked.length + untracked.length}개 항목의 변경을 되돌립니다. 복구할 수 없습니다.`,
+      detail: [...tracked, ...untracked].join("\n"),
+      confirmLabel: "롤백",
+      danger: true,
+      onConfirm: run,
+    });
+  };
+
+  // 액션바용(현재 멀티선택 기준)
+  const stagePaths = stagePathsOf(selectedRows);
+  const unstagePaths = unstagePathsOf(selectedRows);
+
+  const onRowContextMenu = (key: string, e: React.MouseEvent) => {
+    e.preventDefault();
+    setMenu({ x: e.clientX, y: e.clientY, key });
+  };
+
+  const copyText = (text: string, ok: string) => {
+    void navigator.clipboard
+      .writeText(text)
+      .then(() => pushToast("success", ok))
+      .catch(() => pushToast("error", "복사에 실패했습니다"));
+    setMenu(null);
+  };
+
+  // 메뉴 대상에서 각 작업 가능한 경로 집합(빈 작업은 메뉴에 표시 안 함).
+  // 스테이지는 아직 스테이지 안 된 비충돌 행만(이미 스테이지된 건 의미 없음).
+  const menuStagePaths = [
+    ...new Set(
+      menuRows
+        .filter((r) => !r.change.staged && r.change.kind !== "conflicted")
+        .map((r) => r.change.path),
+    ),
+  ];
+  const menuUnstagePaths = unstagePathsOf(menuRows);
+  const menuDiscParts = discardPartsOf(menuRows);
+  const menuCanDiscard =
+    menuDiscParts.tracked.length > 0 || menuDiscParts.untracked.length > 0;
 
   const actions: RowActions = {
     onToggleStage: (change) => {
@@ -203,6 +441,49 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
         </span>
       </div>
 
+      {/* 멀티선택 액션 바 — 실제 존재하는 선택 행이 있을 때만(상태 갱신으로 사라진 키는 무시). */}
+      {selectedRows.length > 0 && (
+        <div className="flex items-center gap-1.5 border-b border-edge bg-raised/60 px-3 py-1.5 text-xs">
+          <span className="text-fg-muted">{selectedRows.length}개 선택</span>
+          <div className="flex-1" />
+          <button
+            onClick={() => {
+              stage.mutate(stagePaths);
+              clearSel();
+            }}
+            disabled={stagePaths.length === 0}
+            className="rounded px-2 py-0.5 text-fg-muted hover:bg-edge hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent"
+          >
+            스테이지
+          </button>
+          <button
+            onClick={() => {
+              unstage.mutate(unstagePaths);
+              clearSel();
+            }}
+            disabled={unstagePaths.length === 0}
+            className="rounded px-2 py-0.5 text-fg-muted hover:bg-edge hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent"
+          >
+            언스테이지
+          </button>
+          <button
+            onClick={() => discardRows(selectedRows)}
+            title="선택 항목의 워크트리 변경 되돌리기"
+            className="flex items-center gap-1 rounded bg-danger/15 px-2 py-0.5 text-danger hover:bg-danger/25"
+          >
+            <RotateCcw size={12} />
+            롤백
+          </button>
+          <button
+            onClick={clearSel}
+            title="선택 해제"
+            className="rounded p-0.5 text-fg-dim hover:bg-edge hover:text-fg"
+          >
+            <X size={13} />
+          </button>
+        </div>
+      )}
+
       <div className="min-h-0 flex-1 overflow-y-auto py-1">
         {status?.error ? (
           <div className="px-3 py-3 text-xs leading-5 text-fg-dim">
@@ -214,45 +495,103 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
           </div>
         ) : status ? (
           <>
-            <Group
-              title="Conflicts"
-              changes={status.conflicted}
-              accent
-              mode="worktree"
-              selectedDiff={selectedDiff}
-              onSelect={selectDiff}
-              actions={actions}
-            />
-            <Group
-              title="Unstaged"
-              changes={status.unstaged}
-              mode="worktree"
-              selectedDiff={selectedDiff}
-              onSelect={selectDiff}
-              actions={actions}
-            />
-            <Group
-              title="Staged"
-              changes={status.staged}
-              mode="index"
-              selectedDiff={selectedDiff}
-              onSelect={selectDiff}
-              actions={actions}
-            />
-            <Group
-              title="Untracked"
-              changes={status.untracked}
-              mode="worktree"
-              selectedDiff={selectedDiff}
-              onSelect={selectDiff}
-              actions={actions}
-            />
+            {groups.map((g) => (
+              <Group
+                key={g.title}
+                title={g.title}
+                changes={g.changes}
+                accent={g.accent}
+                mode={g.mode}
+                selectedDiff={selectedDiff}
+                selKeys={selKeys}
+                onRowClick={onRowClick}
+                onRowContextMenu={onRowContextMenu}
+                actions={actions}
+                collapsed={collapsed.has(g.title)}
+                onToggleCollapse={() => toggleCollapse(g.title)}
+              />
+            ))}
           </>
         ) : null}
       </div>
 
       <CommitForm projectId={projectId} />
       <ResizeHandle onMouseDown={startResize} />
+
+      {menu && menuChange && (
+        <div
+          className="fixed z-50 max-h-[80vh] min-w-44 overflow-y-auto rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl"
+          style={
+            menu.y > window.innerHeight / 2
+              ? {
+                  left: Math.min(menu.x, window.innerWidth - 200),
+                  bottom: window.innerHeight - menu.y,
+                }
+              : {
+                  left: Math.min(menu.x, window.innerWidth - 200),
+                  top: menu.y,
+                }
+          }
+          onClick={(e) => e.stopPropagation()}
+        >
+          {menuRows.length > 1 && (
+            <div className="px-3 py-1 text-[11px] text-fg-dim">
+              {menuRows.length}개 선택
+            </div>
+          )}
+          {menuCanDiscard ? (
+            <MenuBtn
+              icon={RotateCcw}
+              label={menuRows.length > 1 ? "선택 롤백" : "롤백 (되돌리기)"}
+              danger
+              onClick={() => {
+                discardRows(menuRows);
+                setMenu(null);
+              }}
+            />
+          ) : (
+            <div className="px-3 py-1.5 text-fg-dim">롤백할 변경 없음</div>
+          )}
+          {menuStagePaths.length > 0 && (
+            <MenuBtn
+              icon={Plus}
+              label="스테이지"
+              onClick={() => {
+                stage.mutate(menuStagePaths);
+                clearSel();
+                setMenu(null);
+              }}
+            />
+          )}
+          {menuUnstagePaths.length > 0 && (
+            <MenuBtn
+              icon={Undo2}
+              label="스테이지 해제"
+              onClick={() => {
+                unstage.mutate(menuUnstagePaths);
+                clearSel();
+                setMenu(null);
+              }}
+            />
+          )}
+          <div className="my-1 border-t border-edge/60" />
+          <MenuBtn
+            icon={Copy}
+            label="경로 복사"
+            onClick={() => copyText(menuChange.path, "경로를 복사했습니다")}
+          />
+          <MenuBtn
+            icon={Copy}
+            label="이름 복사"
+            onClick={() =>
+              copyText(
+                menuChange.path.split("/").pop() ?? menuChange.path,
+                "파일 이름을 복사했습니다",
+              )
+            }
+          />
+        </div>
+      )}
     </div>
   );
 }
