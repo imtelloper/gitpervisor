@@ -196,6 +196,11 @@ pub fn run() {
                 .drag_and_drop(false)
                 .background_color(tauri::window::Color(30, 31, 34, 255))
                 .additional_browser_args(&browser_args())
+                // 창/작업표시줄 아이콘을 런타임에 새 로고로 명시 설정 — Windows 아이콘 캐시나
+                // exe 리소스 임베드 상태와 무관하게 살아 있는 창에 즉시 반영(dev·설치본 공통).
+                .icon(tauri::image::Image::from_bytes(include_bytes!(
+                    "../icons/128x128.png"
+                ))?)?
                 .build()?;
 
             let projects = state::load_projects(app.handle());

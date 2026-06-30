@@ -21,7 +21,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 # 임베디드 브라우저 탭은 Window::add_child(자식 webview)를 쓰며, 이는 desktop+unstable feature 게이트다.
-tauri = { version = "=2.11.2", features = ["unstable"] }
+# image-png: 런타임에 창/작업표시줄 아이콘을 PNG에서 설정(Image::from_bytes)하기 위함.
+tauri = { version = "=2.11.2", features = ["unstable", "image-png"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri-plugin-dialog = "2.7.1"
