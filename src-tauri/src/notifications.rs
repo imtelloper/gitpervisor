@@ -116,14 +116,13 @@ mod win_toast {
     // 토스트 앱 로고용 PNG를 바이너리에 박아 둔다(설치본도 동일 경로 보장). 128px이면 토스트에 충분.
     const ICON_BYTES: &[u8] = include_bytes!("../icons/128x128.png");
 
-    /// 아이콘 PNG를 안정 경로(app_local_data_dir)에 1회 기록하고 절대경로를 돌려준다.
+    /// 아이콘 PNG를 안정 경로(app_local_data_dir)에 기록하고 절대경로를 돌려준다.
+    /// 매번 덮어쓴다 — 로고가 바뀌면(빌드에 박힌 ICON_BYTES) 캐시 파일도 같이 갱신되도록.
     fn icon_path(app: &AppHandle) -> Option<PathBuf> {
         let dir = app.path().app_local_data_dir().ok()?;
         let _ = std::fs::create_dir_all(&dir);
         let p = dir.join("notify-icon.png");
-        if !p.exists() {
-            std::fs::write(&p, ICON_BYTES).ok()?;
-        }
+        std::fs::write(&p, ICON_BYTES).ok()?;
         Some(p)
     }
 
