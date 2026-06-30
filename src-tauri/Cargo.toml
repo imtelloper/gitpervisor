@@ -46,6 +46,8 @@ tiberius = { version = "0.12", default-features = false, features = ["tds73", "n
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-native-tls", "any", "postgres", "mysql", "sqlite"] }
 # 이메일(SMTP) 알림 — tokio + native-tls(implicit 465 / STARTTLS 587).
 lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1-native-tls", "hostname"] }
+# Redis(키-값) 드라이버 — tokio 비동기 + 자동 재연결 ConnectionManager + native-tls(rediss://).
+redis = { version = "0.27", default-features = false, features = ["tokio-comp", "connection-manager", "tokio-native-tls-comp"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 rust_decimal = "1"
 # API 클라이언트 HTTP 엔진 (DOCS/api-client-design.md §4.6). tauri가 이미 0.13.4를 트리에 가지므로
@@ -59,6 +61,10 @@ base64 = "0.22"
 # Win32_UI_Shell: 파일트리 실행 파일 더블클릭을 ShellExecuteW로 띄운다(cmd 셸 파싱 우회 — 인젝션 차단).
 windows-sys = { version = "0.59", features = ["Win32_System_Performance", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Foundation"] }
 clipboard-win = "5"
+# AI 완료 OS 토스트를 앱 AUMID로 직접 띄운다 — 알림 플러그인은 dev(target/debug)에서 app_id를
+# 안 붙여 PowerShell 명의로 뜨므로, 직접 토스트 + AUMID(DisplayName/Icon) 레지스트리 등록으로 대체.
+tauri-winrt-notification = "0.7"
+windows-registry = "0.6"
 
 [dev-dependencies]
 tempfile = "3.27.0"

@@ -305,6 +305,7 @@ pub fn run() {
             notifications::notify_has_secret,
             notifications::notify_external,
             notifications::notify_test,
+            notifications::notify_os,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {

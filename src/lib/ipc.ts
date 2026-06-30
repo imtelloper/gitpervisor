@@ -156,7 +156,20 @@ export type NotifySecret = "slack" | "smtp";
 export type OpenTarget = "explorer" | "terminal";
 
 // ---- DB 탐색기 (M6 §17) ----
-export type DbEngine = "mongodb" | "postgres" | "mysql" | "sqlite" | "mssql";
+export type DbEngine =
+  | "mongodb"
+  | "postgres"
+  | "mysql"
+  | "sqlite"
+  | "mssql"
+  | "redis";
+
+/** SQL 계열 엔진 — 편집기 언어(sql)·셀 편집·테이블 메타(컬럼/키/인덱스)·실행계획 대상.
+ *  mongodb/redis는 비-SQL(문서·키값) — 쿼리 콘솔만 제공. */
+export const SQL_ENGINES: DbEngine[] = ["mssql", "postgres", "mysql", "sqlite"];
+export function isSqlEngine(e: DbEngine | null | undefined): boolean {
+  return !!e && SQL_ENGINES.includes(e);
+}
 export interface DbConnection {
   id: string;
   name: string;
@@ -788,6 +801,10 @@ export const ipc = {
   // working→done 엣지에서 활성 외부 채널(Slack/email)로 팬아웃. 실패는 호출 측이 무시한다.
   notifyExternal: (title: string, body: string) =>
     callMutating<void>("notify_external", { title, body }, 30_000),
+  // Windows 전용 OS 토스트 — 앱 AUMID로 직접 띄워 gitpervisor 아이콘이 보이게 한다(플러그인은
+  // dev에서 PowerShell 명의로 뜸). 비-Windows에선 호출하지 않는다.
+  notifyOs: (title: string, body: string) =>
+    callMutating<void>("notify_os", { title, body }, 10_000),
 
   // ---- macOS 격리 도구 (commands/quarantine.rs, macOS 전용) ----
   // brew cask로 깐 CLI에 박힌 com.apple.quarantine을 스캔/해제한다.

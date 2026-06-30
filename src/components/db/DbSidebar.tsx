@@ -18,6 +18,7 @@ import {
 import { useState } from "react";
 
 import type { DbConnection, DbEngine } from "../../lib/ipc";
+import { isSqlEngine } from "../../lib/ipc";
 import { usePanelWidth } from "../../lib/use-panel-width";
 import {
   useDbConnections,
@@ -32,6 +33,8 @@ import { ResizeHandle } from "../common/ResizeHandle";
 function EngineIcon({ engine }: { engine: DbEngine }) {
   if (engine === "mongodb")
     return <Leaf size={13} className="shrink-0 text-add" />;
+  if (engine === "redis")
+    return <KeyRound size={13} className="shrink-0 text-danger" />;
   return <Database size={13} className="shrink-0 text-mod" />;
 }
 
@@ -268,8 +271,8 @@ function CollNode({
   engine: DbEngine;
 }) {
   const openCollection = useDb((s) => s.openCollection);
-  // SQL 엔진은 테이블을 펼쳐 컬럼/키/인덱스 표시. Mongo는 단순 리프(클릭=쿼리).
-  if (engine !== "mongodb") {
+  // SQL 엔진은 테이블을 펼쳐 컬럼/키/인덱스 표시. Mongo 컬렉션·Redis 키는 단순 리프(클릭=미리보기).
+  if (isSqlEngine(engine)) {
     return (
       <SqlTableNode
         connId={connId}
@@ -336,7 +339,7 @@ function DatabaseNode({
             />
           ))
         ))}
-      {expanded && engine !== "mongodb" && (
+      {expanded && isSqlEngine(engine) && (
         <ProceduresGroup connId={connId} database={database} />
       )}
     </>

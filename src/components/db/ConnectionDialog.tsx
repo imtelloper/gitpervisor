@@ -12,6 +12,7 @@ const ENGINES: { value: DbEngine; label: string; port: number }[] = [
   { value: "mysql", label: "MySQL", port: 3306 },
   { value: "mssql", label: "SQL Server", port: 1433 },
   { value: "sqlite", label: "SQLite", port: 0 },
+  { value: "redis", label: "Redis", port: 6379 },
 ];
 
 const inputCls =
@@ -257,10 +258,13 @@ export function ConnectionDialog() {
                 </div>
               </div>
 
-              <Field label="기본 DB (선택)">
+              <Field
+                label={form.engine === "redis" ? "DB 번호 (0-15)" : "기본 DB (선택)"}
+              >
                 <input
                   value={form.database ?? ""}
                   onChange={(e) => update("database", e.target.value)}
+                  placeholder={form.engine === "redis" ? "0" : undefined}
                   className={`${inputCls} font-mono`}
                 />
               </Field>

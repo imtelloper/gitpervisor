@@ -26,7 +26,19 @@ function ensurePermission(): Promise<boolean> {
   return permPromise;
 }
 
+// Windows는 앱 AUMID로 직접 토스트를 띄운다(플러그인은 dev에서 PowerShell 명의로 떠 아이콘이
+// 안 보임 — desktop.rs:201). 그 외 플랫폼은 플러그인 sendNotification을 그대로 쓴다.
+const IS_WINDOWS = /Windows/i.test(navigator.userAgent);
+
 async function fire(title: string, body: string) {
+  if (IS_WINDOWS) {
+    try {
+      await ipc.notifyOs(title, body);
+      return;
+    } catch {
+      /* 실패하면 아래 플러그인 경로로 폴백 */
+    }
+  }
   if (!(await ensurePermission())) return;
   try {
     sendNotification({ title, body });

@@ -106,6 +106,58 @@ export async function run({ cdp, report: r, fix }) {
   }
   await cdp.invoke("db_delete_connection", { id: SQLITE_ID });
 
+  // ── Redis 실통합 (로컬 6379 가용 시 — 키는 gpv:e2e:* 네임스페이스 후 정리) ──
+  if (await portOpen(6379)) {
+    const RID = "gpv-e2e-redis";
+    const rconn = {
+      id: RID, name: "e2e-redis", engine: "redis",
+      host: "127.0.0.1", port: 6379, database: "0", username: "", options: null,
+      readOnly: false, color: null,
+    };
+    await cdp.invoke("db_save_connection", { payload: { connection: rconn, password: null } });
+    const rc = await cdp.try("db_connect", { id: RID }, { timeoutMs: 9000 });
+    r.check("redis: db_connect(PING)", rc.ok, rc.code || rc.message?.slice(0, 60) || "");
+    if (rc.ok) {
+      const RQ = (query) => ({ id: RID, database: "0", query, limit: 100 });
+      const set = await cdp.try("db_query", RQ('SET gpv:e2e:k "hello"'), { timeoutMs: 9000 });
+      r.check("redis: SET(쓰기)", set.ok, set.code || "");
+      const get = await cdp.try("db_query", RQ("GET gpv:e2e:k"), { timeoutMs: 9000 });
+      r.check("redis: GET 결과", get.ok && get.r?.rows?.[0]?.[0] === "hello", JSON.stringify(get.r?.rows));
+      const prev = await cdp.try("db_query", RQ("gpv:e2e:k"), { timeoutMs: 9000 });
+      r.check("redis: 키 미리보기(타입 자동)", prev.ok && prev.r?.rows?.[0]?.[0] === "hello", JSON.stringify(prev.r?.rows));
+      await cdp.try("db_query", RQ("HSET gpv:e2e:h f1 v1 f2 v2"), { timeoutMs: 9000 });
+      const hprev = await cdp.try("db_query", RQ("gpv:e2e:h"), { timeoutMs: 9000 });
+      r.check(
+        "redis: 해시 미리보기(field/value)",
+        hprev.ok && (hprev.r?.columns || []).some((c) => c.name === "field") && hprev.r.rows.length === 2,
+        JSON.stringify(hprev.r?.rows),
+      );
+      const keys = await cdp.try("db_tables", { id: RID, database: "0" }, { timeoutMs: 9000 });
+      r.check("redis: db_tables(SCAN) 키 포함", keys.ok && (keys.r || []).includes("gpv:e2e:k"), JSON.stringify((keys.r || []).slice(0, 5)));
+      const dbs = await cdp.try("db_databases", { id: RID }, { timeoutMs: 9000 });
+      r.check("redis: db_databases(0..N)", dbs.ok && (dbs.r || []).includes("0"), JSON.stringify((dbs.r || []).slice(0, 3)));
+      const meta = await cdp.try("db_table_meta", { id: RID, database: "0", table: "x" }, { timeoutMs: 9000 });
+      r.check("redis: db_table_meta → 미지원 오류", !meta.ok, meta.code || meta.message?.slice(0, 40) || "");
+      // 정리
+      await cdp.try("db_query", RQ("DEL gpv:e2e:k gpv:e2e:h"), { timeoutMs: 9000 });
+      await cdp.try("db_disconnect", { id: RID });
+    }
+    await cdp.invoke("db_delete_connection", { id: RID });
+
+    // 읽기 전용 → 쓰기 차단
+    const ROID = "gpv-e2e-redis-ro";
+    await cdp.invoke("db_save_connection", { payload: { connection: { ...rconn, id: ROID, name: "e2e-redis-ro", readOnly: true }, password: null } });
+    const roc = await cdp.try("db_connect", { id: ROID }, { timeoutMs: 9000 });
+    if (roc.ok) {
+      const w = await cdp.try("db_query", { id: ROID, database: "0", query: "SET gpv:e2e:ro x", limit: 10 }, { timeoutMs: 9000 });
+      r.check("redis: 읽기전용 쓰기 차단(SET)", !w.ok, w.code || w.message?.slice(0, 40) || "(ok?)");
+      await cdp.try("db_disconnect", { id: ROID });
+    }
+    await cdp.invoke("db_delete_connection", { id: ROID });
+  } else {
+    r.skip("redis 실통합", "127.0.0.1:6379 미응답 — 서버 없음");
+  }
+
   // ── 선택: 로컬 DB 서버가 있으면 connect→databases 추가 검증 ──
   const mongoUp = await portOpen(27017);
   if (mongoUp) {

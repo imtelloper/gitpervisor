@@ -80,6 +80,82 @@ pub async fn notify_external(
     }
 }
 
+/// AI 작업 완료 OS 토스트 — **Windows 전용**. 앱 AUMID로 직접 토스트를 띄워 앱 이름·아이콘이
+/// 보이게 한다(알림 플러그인은 dev에서 app_id를 안 붙여 "Windows PowerShell"로 떴다 — desktop.rs:201).
+/// 비-Windows에선 프론트가 플러그인 sendNotification을 그대로 쓰므로 이 커맨드를 호출하지 않는다.
+#[tauri::command]
+pub fn notify_os(
+    app: tauri::AppHandle,
+    title: String,
+    body: String,
+) -> Result<(), IpcError> {
+    #[cfg(windows)]
+    {
+        win_toast::show(&app, &title, &body)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, title, body);
+        Err(err("이 플랫폼은 플러그인 알림을 사용합니다"))
+    }
+}
+
+/// Windows 토스트 직접 표시 + AUMID(앱 이름/아이콘) 레지스트리 등록.
+/// dev·설치본 모두에서 토스트가 gitpervisor 아이콘으로 뜨게 하는 핵심 경로.
+#[cfg(windows)]
+mod win_toast {
+    use std::path::PathBuf;
+    use std::sync::Once;
+
+    use tauri::{AppHandle, Manager};
+
+    use super::err;
+    use crate::error::IpcError;
+
+    const APP_ID: &str = "com.greathoon.gitpervisor";
+    // 토스트 앱 로고용 PNG를 바이너리에 박아 둔다(설치본도 동일 경로 보장). 128px이면 토스트에 충분.
+    const ICON_BYTES: &[u8] = include_bytes!("../icons/128x128.png");
+
+    /// 아이콘 PNG를 안정 경로(app_local_data_dir)에 1회 기록하고 절대경로를 돌려준다.
+    fn icon_path(app: &AppHandle) -> Option<PathBuf> {
+        let dir = app.path().app_local_data_dir().ok()?;
+        let _ = std::fs::create_dir_all(&dir);
+        let p = dir.join("notify-icon.png");
+        if !p.exists() {
+            std::fs::write(&p, ICON_BYTES).ok()?;
+        }
+        Some(p)
+    }
+
+    /// HKCU\Software\Classes\AppUserModelId\<APP_ID> 에 DisplayName + IconUri 등록 —
+    /// Windows가 이 AUMID 토스트를 "Gitpervisor" 이름 + 아이콘으로 표시하게 한다. 프로세스당 1회.
+    fn ensure_registered(app: &AppHandle) {
+        static ONCE: Once = Once::new();
+        ONCE.call_once(|| {
+            if let Ok(key) = windows_registry::CURRENT_USER
+                .create(format!("Software\\Classes\\AppUserModelId\\{APP_ID}"))
+            {
+                let _ = key.set_string("DisplayName", "Gitpervisor");
+                if let Some(p) = icon_path(app) {
+                    let _ = key.set_string("IconUri", p.to_string_lossy());
+                }
+            }
+        });
+    }
+
+    pub fn show(app: &AppHandle, title: &str, body: &str) -> Result<(), IpcError> {
+        use tauri_winrt_notification::{IconCrop, Toast};
+        ensure_registered(app);
+        let mut toast = Toast::new(APP_ID).title(title).text1(body);
+        if let Some(p) = icon_path(app) {
+            toast = toast.icon(&p, IconCrop::Square, "Gitpervisor");
+        }
+        toast
+            .show()
+            .map_err(|e| err(format!("알림 표시 실패: {e}")))
+    }
+}
+
 /// 설정 화면 "테스트 전송" — 한 채널로 샘플 알림을 보낸다.
 #[tauri::command]
 pub async fn notify_test(state: State<'_, AppState>, channel: String) -> Result<(), IpcError> {

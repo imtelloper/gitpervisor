@@ -28,6 +28,8 @@ enum DbClient {
     Mongo(Client),
     Mssql(Arc<tokio::sync::Mutex<MssqlClient>>),
     Sql(sqlx::AnyPool, DbEngine),
+    /// Redis(키-값) — ConnectionManager는 Clone 가능(내부 Arc, 자동 재연결).
+    Redis(redis::aio::ConnectionManager),
 }
 
 const CONN_FILE: &str = "connections.json";
@@ -43,6 +45,7 @@ pub enum DbEngine {
     Mysql,
     Sqlite,
     Mssql,
+    Redis,
 }
 
 /// 연결 메타 — 비밀번호는 포함하지 않는다(OS 키체인 저장).
@@ -294,6 +297,15 @@ pub async fn db_connect(state: State<'_, DbState>, id: String) -> Result<(), Ipc
                 .map_err(|e| err(format!("연결 확인 실패: {e}")))?;
             DbClient::Sql(pool, conn.engine)
         }
+        DbEngine::Redis => {
+            let mut cm = build_redis_client(&conn, password).await?;
+            // 연결 확인 — PING.
+            redis::cmd("PING")
+                .query_async::<String>(&mut cm)
+                .await
+                .map_err(|e| err(format!("연결 확인 실패(PING): {e}")))?;
+            DbClient::Redis(cm)
+        }
     };
 
     state.clients.lock().unwrap().insert(id, client);
@@ -317,6 +329,7 @@ pub async fn db_databases(
             .map_err(|e| err(format!("DB 목록 조회 실패: {e}"))),
         DbClient::Mssql(c) => mssql_databases(&c).await,
         DbClient::Sql(pool, engine) => sql_databases(&pool, engine).await,
+        DbClient::Redis(mut cm) => redis_databases(&mut cm).await,
     }
 }
 
@@ -334,6 +347,7 @@ pub async fn db_tables(
             .map_err(|e| err(format!("컬렉션 목록 조회 실패: {e}"))),
         DbClient::Mssql(c) => mssql_tables(&c, &database).await,
         DbClient::Sql(pool, engine) => sql_tables(&pool, engine, &database).await,
+        DbClient::Redis(mut cm) => redis_tables(&mut cm, &database).await,
     }
 }
 
@@ -361,6 +375,9 @@ pub async fn db_query(
         DbClient::Sql(pool, engine) => {
             sql_query(&pool, engine, &query, limit, read_only).await
         }
+        DbClient::Redis(mut cm) => {
+            redis_query(&mut cm, &database, &query, limit, read_only).await
+        }
     }
 }
 
@@ -376,6 +393,7 @@ pub async fn db_table_meta(
         DbClient::Mssql(c) => mssql_table_meta(&c, &database, &table).await,
         DbClient::Sql(pool, engine) => sql_table_meta(&pool, engine, &table).await,
         DbClient::Mongo(_) => Err(err("컬럼/키/인덱스는 SQL 엔진만 지원합니다")),
+        DbClient::Redis(_) => Err(err("Redis는 컬럼/키/인덱스 메타가 없습니다")),
     }
 }
 
@@ -391,6 +409,7 @@ pub async fn db_explain(
         DbClient::Mssql(c) => mssql_explain(&c, &database, &query).await,
         DbClient::Sql(pool, engine) => sql_explain(&pool, engine, &query).await,
         DbClient::Mongo(_) => Err(err("실행 계획은 SQL 엔진만 지원합니다")),
+        DbClient::Redis(_) => Err(err("Redis는 실행 계획을 지원하지 않습니다")),
     }
 }
 
@@ -434,6 +453,7 @@ pub async fn db_update_cell(
             sql_update_cell(&pool, engine, &table, &pk, &set_col, &set_value).await
         }
         DbClient::Mongo(_) => Err(err("셀 편집은 SQL 엔진만 지원합니다")),
+        DbClient::Redis(_) => Err(err("Redis는 그리드 편집을 지원하지 않습니다 — 쿼리 콘솔을 쓰세요")),
     }
 }
 
@@ -456,6 +476,7 @@ pub async fn db_delete_row(
         DbClient::Mssql(c) => mssql_delete_row(&c, &database, &table, &pk).await,
         DbClient::Sql(pool, engine) => sql_delete_row(&pool, engine, &table, &pk).await,
         DbClient::Mongo(_) => Err(err("행 삭제는 SQL 엔진만 지원합니다")),
+        DbClient::Redis(_) => Err(err("Redis는 그리드 삭제를 지원하지 않습니다 — DEL 명령을 쓰세요")),
     }
 }
 
@@ -478,6 +499,7 @@ pub async fn db_insert_row(
         DbClient::Mssql(c) => mssql_insert_row(&c, &database, &table, &values).await,
         DbClient::Sql(pool, engine) => sql_insert_row(&pool, engine, &table, &values).await,
         DbClient::Mongo(_) => Err(err("행 삽입은 SQL 엔진만 지원합니다")),
+        DbClient::Redis(_) => Err(err("Redis는 그리드 삽입을 지원하지 않습니다 — SET/HSET 명령을 쓰세요")),
     }
 }
 
@@ -500,7 +522,7 @@ pub async fn db_procedures(
     match client_of(&state, &id)? {
         DbClient::Mssql(c) => mssql_procedures(&c, &database).await,
         // PG/MySQL/SQLite 프로시저 탐색은 v1 범위 밖 — 빈 목록(테이블/쿼리 기능엔 영향 없음).
-        DbClient::Sql(_, _) => Ok(Vec::new()),
+        DbClient::Sql(_, _) | DbClient::Redis(_) => Ok(Vec::new()),
         DbClient::Mongo(_) => Err(err("저장 프로시저는 SQL 엔진만 지원합니다")),
     }
 }
@@ -515,7 +537,7 @@ pub async fn db_proc_params(
 ) -> Result<Vec<ProcParam>, IpcError> {
     match client_of(&state, &id)? {
         DbClient::Mssql(c) => mssql_proc_params(&c, &database, &proc).await,
-        DbClient::Sql(_, _) => Ok(Vec::new()),
+        DbClient::Sql(_, _) | DbClient::Redis(_) => Ok(Vec::new()),
         DbClient::Mongo(_) => Err(err("저장 프로시저는 SQL 엔진만 지원합니다")),
     }
 }
@@ -2098,6 +2120,359 @@ async fn mysql_table_meta(pool: &sqlx::AnyPool, table: &str) -> Result<TableMeta
         constraints: Vec::new(),
         triggers: Vec::new(),
     })
+}
+
+// ============================================================================
+// Redis (키-값) — redis 크레이트 + ConnectionManager
+//
+// 관계형 모델이 아니므로: databases=0..N, tables=키 SCAN 샘플, query=쿼리 콘솔(원시 명령).
+// 컬럼/키/인덱스·실행계획·그리드 편집은 없다(쿼리 콘솔의 명령으로 대체). db 전환은 각 op 앞에
+// SELECT n(연결이 단일 멀티플렉스라 탐색기 순차 사용에선 안전).
+// ============================================================================
+
+async fn build_redis_client(
+    conn: &DbConnection,
+    password: Option<String>,
+) -> Result<redis::aio::ConnectionManager, IpcError> {
+    let pw = password.filter(|p| !p.is_empty());
+    let opts = conn.options.as_deref().unwrap_or("").to_ascii_lowercase();
+    let scheme = if opts.contains("tls=true") || opts.contains("ssl=true") {
+        "rediss"
+    } else {
+        "redis"
+    };
+    let mut url = format!("{scheme}://");
+    // Redis 6 ACL 사용자명(있으면) + 비번. 사용자명 없이 비번만이면 requirepass 형식(:pass@).
+    if !conn.username.trim().is_empty() {
+        url.push_str(&pct(conn.username.trim()));
+        if let Some(p) = &pw {
+            url.push(':');
+            url.push_str(&pct(p));
+        }
+        url.push('@');
+    } else if let Some(p) = &pw {
+        url.push(':');
+        url.push_str(&pct(p));
+        url.push('@');
+    }
+    url.push_str(&conn.host);
+    url.push(':');
+    url.push_str(&conn.port.to_string());
+    let dbnum: i64 = conn
+        .database
+        .as_deref()
+        .map(str::trim)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    url.push('/');
+    url.push_str(&dbnum.to_string());
+    let client = redis::Client::open(url).map_err(|e| err(format!("연결 문자열 오류: {e}")))?;
+    redis::aio::ConnectionManager::new(client)
+        .await
+        .map_err(|e| err(format!("연결 실패: {e}")))
+}
+
+type Cm = redis::aio::ConnectionManager;
+
+fn rcol(name: &str) -> Column {
+    Column {
+        name: name.to_string(),
+        type_name: None,
+    }
+}
+fn redis_one(name: &str, v: Json) -> DbResult {
+    DbResult {
+        columns: vec![rcol(name)],
+        rows: vec![vec![v]],
+        row_count: 1,
+    }
+}
+
+async fn redis_databases(cm: &mut Cm) -> Result<Vec<String>, IpcError> {
+    // CONFIG GET databases → 개수(기본 16). CONFIG 비활성 서버는 16으로 폴백.
+    let n: i64 = match redis::cmd("CONFIG")
+        .arg("GET")
+        .arg("databases")
+        .query_async::<(String, String)>(cm)
+        .await
+    {
+        Ok((_, v)) => v.parse().unwrap_or(16),
+        Err(_) => 16,
+    };
+    Ok((0..n.max(1)).map(|i| i.to_string()).collect())
+}
+
+async fn redis_select(cm: &mut Cm, database: &str) -> Result<(), IpcError> {
+    let db: i64 = database.trim().parse().unwrap_or(0);
+    redis::cmd("SELECT")
+        .arg(db)
+        .query_async::<()>(cm)
+        .await
+        .map_err(|e| err(format!("DB 선택 실패: {e}")))
+}
+
+async fn redis_tables(cm: &mut Cm, database: &str) -> Result<Vec<String>, IpcError> {
+    redis_select(cm, database).await?;
+    const CAP: usize = 1000;
+    let mut keys: Vec<String> = Vec::new();
+    let mut cursor: u64 = 0;
+    loop {
+        let (next, batch): (u64, Vec<String>) = redis::cmd("SCAN")
+            .arg(cursor)
+            .arg("COUNT")
+            .arg(300)
+            .query_async(cm)
+            .await
+            .map_err(|e| err(format!("키 조회 실패: {e}")))?;
+        keys.extend(batch);
+        cursor = next;
+        if cursor == 0 || keys.len() >= CAP {
+            break;
+        }
+    }
+    keys.truncate(CAP);
+    keys.sort();
+    Ok(keys)
+}
+
+async fn redis_query(
+    cm: &mut Cm,
+    database: &str,
+    query: &str,
+    limit: i64,
+    read_only: bool,
+) -> Result<DbResult, IpcError> {
+    redis_select(cm, database).await?;
+    let tokens = tokenize_redis(query)?;
+    if tokens.is_empty() {
+        return Err(err("명령을 입력하세요 (예: GET key, HGETALL key)"));
+    }
+    // 단일 토큰이고 알려진 명령이 아니면 → 키 미리보기(타입 자동 감지).
+    if tokens.len() == 1 && !is_known_redis_cmd(&tokens[0]) {
+        return redis_key_preview(cm, &tokens[0], limit).await;
+    }
+    let upper = tokens[0].to_ascii_uppercase();
+    if read_only && is_write_redis(&upper) {
+        return Err(err(
+            "읽기 전용 연결입니다 — 쓰기 명령은 차단됩니다 (연결 편집에서 해제 가능)",
+        ));
+    }
+    // SELECT/SWAPDB 등 연결 상태를 바꾸는 명령은 탐색기 일관성을 위해 막는다(트리에서 DB 선택).
+    if matches!(upper.as_str(), "SELECT" | "SWAPDB") {
+        return Err(err("DB 전환은 왼쪽 트리에서 선택하세요"));
+    }
+    let mut cmd = redis::cmd(&tokens[0]);
+    for a in &tokens[1..] {
+        cmd.arg(a);
+    }
+    let v: redis::Value = cmd
+        .query_async(cm)
+        .await
+        .map_err(|e| err(format!("명령 실패: {e}")))?;
+    Ok(redis_value_to_result(v, limit))
+}
+
+/// 키 1개를 타입에 맞춰 읽어 그리드로 — string=value, hash=field/value, list/set=value, zset=member/score.
+async fn redis_key_preview(cm: &mut Cm, key: &str, limit: i64) -> Result<DbResult, IpcError> {
+    use serde_json::json;
+    let lim = limit.max(1) as usize;
+    let ty: String = redis::cmd("TYPE")
+        .arg(key)
+        .query_async(cm)
+        .await
+        .map_err(|e| err(format!("TYPE 실패: {e}")))?;
+    let e = |x: redis::RedisError| err(format!("읽기 실패: {x}"));
+    match ty.as_str() {
+        "string" => {
+            let v: Option<String> = redis::cmd("GET").arg(key).query_async(cm).await.map_err(e)?;
+            Ok(redis_one("value", v.map(Json::String).unwrap_or(Json::Null)))
+        }
+        "hash" => {
+            let pairs: Vec<(String, String)> =
+                redis::cmd("HGETALL").arg(key).query_async(cm).await.map_err(e)?;
+            let rows = pairs
+                .into_iter()
+                .take(lim)
+                .map(|(f, val)| vec![json!(f), json!(val)])
+                .collect::<Vec<_>>();
+            let row_count = rows.len();
+            Ok(DbResult { columns: vec![rcol("field"), rcol("value")], rows, row_count })
+        }
+        "list" => {
+            let items: Vec<String> = redis::cmd("LRANGE")
+                .arg(key)
+                .arg(0)
+                .arg(lim as i64 - 1)
+                .query_async(cm)
+                .await
+                .map_err(e)?;
+            let rows = items.into_iter().map(|x| vec![json!(x)]).collect::<Vec<_>>();
+            let row_count = rows.len();
+            Ok(DbResult { columns: vec![rcol("value")], rows, row_count })
+        }
+        "set" => {
+            let items: Vec<String> =
+                redis::cmd("SMEMBERS").arg(key).query_async(cm).await.map_err(e)?;
+            let rows = items.into_iter().take(lim).map(|x| vec![json!(x)]).collect::<Vec<_>>();
+            let row_count = rows.len();
+            Ok(DbResult { columns: vec![rcol("member")], rows, row_count })
+        }
+        "zset" => {
+            let items: Vec<(String, f64)> = redis::cmd("ZRANGE")
+                .arg(key)
+                .arg(0)
+                .arg(lim as i64 - 1)
+                .arg("WITHSCORES")
+                .query_async(cm)
+                .await
+                .map_err(e)?;
+            let rows = items
+                .into_iter()
+                .map(|(m, s)| vec![json!(m), json!(s)])
+                .collect::<Vec<_>>();
+            let row_count = rows.len();
+            Ok(DbResult { columns: vec![rcol("member"), rcol("score")], rows, row_count })
+        }
+        "none" => Ok(redis_one("value", Json::Null)), // 키 없음
+        other => Ok(redis_one(
+            "info",
+            json!(format!("({other}) 타입 미리보기 미지원 — 쿼리 콘솔에서 명령을 입력하세요")),
+        )),
+    }
+}
+
+/// Redis 명령 reply(Value) → DbResult. 배열/맵은 행으로 펼친다.
+fn redis_value_to_result(v: redis::Value, limit: i64) -> DbResult {
+    use redis::Value;
+    use serde_json::json;
+    let lim = limit.max(1) as usize;
+    let rows: Vec<Vec<Json>> = match v {
+        Value::Nil => vec![vec![Json::Null]],
+        Value::Int(i) => vec![vec![json!(i)]],
+        Value::SimpleString(s) => vec![vec![json!(s)]],
+        Value::Okay => vec![vec![json!("OK")]],
+        Value::BulkString(b) => vec![vec![json!(String::from_utf8_lossy(&b).into_owned())]],
+        Value::Double(d) => vec![vec![json!(d)]],
+        Value::Boolean(b) => vec![vec![json!(b)]],
+        Value::Array(items) | Value::Set(items) => items
+            .into_iter()
+            .take(lim)
+            .map(|it| vec![redis_scalar(it)])
+            .collect(),
+        Value::Map(pairs) => pairs
+            .into_iter()
+            .take(lim)
+            .map(|(k, vv)| vec![redis_scalar(k), redis_scalar(vv)])
+            .collect(),
+        other => vec![vec![json!(format!("{other:?}"))]],
+    };
+    let ncols = rows.iter().map(|r| r.len()).max().unwrap_or(1);
+    let columns = if ncols >= 2 {
+        vec![rcol("key"), rcol("value")]
+    } else {
+        vec![rcol("value")]
+    };
+    let row_count = rows.len();
+    DbResult {
+        columns,
+        rows,
+        row_count,
+    }
+}
+
+fn redis_scalar(v: redis::Value) -> Json {
+    use redis::Value;
+    use serde_json::json;
+    match v {
+        Value::Nil => Json::Null,
+        Value::Int(i) => json!(i),
+        Value::SimpleString(s) => json!(s),
+        Value::Okay => json!("OK"),
+        Value::BulkString(b) => json!(String::from_utf8_lossy(&b).into_owned()),
+        Value::Double(d) => json!(d),
+        Value::Boolean(b) => json!(b),
+        Value::Array(a) | Value::Set(a) => {
+            json!(a.into_iter().map(redis_scalar).collect::<Vec<_>>())
+        }
+        other => json!(format!("{other:?}")),
+    }
+}
+
+/// 쉘 유사 토크나이저 — 큰따옴표 그룹 + 백슬래시 이스케이프. 따옴표 미닫힘은 오류.
+fn tokenize_redis(s: &str) -> Result<Vec<String>, IpcError> {
+    let mut toks = Vec::new();
+    let mut cur = String::new();
+    let mut in_q = false;
+    let mut started = false;
+    let mut it = s.trim().chars().peekable();
+    while let Some(c) = it.next() {
+        if in_q {
+            match c {
+                '"' => in_q = false,
+                '\\' => {
+                    if let Some(n) = it.next() {
+                        cur.push(n);
+                    }
+                }
+                _ => cur.push(c),
+            }
+        } else if c == '"' {
+            in_q = true;
+            started = true;
+        } else if c.is_whitespace() {
+            if started {
+                toks.push(std::mem::take(&mut cur));
+                started = false;
+            }
+        } else {
+            cur.push(c);
+            started = true;
+        }
+    }
+    if in_q {
+        return Err(err("따옴표가 닫히지 않았습니다"));
+    }
+    if started {
+        toks.push(cur);
+    }
+    Ok(toks)
+}
+
+/// 단일 토큰을 "키"가 아니라 "명령"으로 볼지 — 흔한 Redis 명령 집합(대소문자 무시).
+fn is_known_redis_cmd(t: &str) -> bool {
+    const CMDS: &[&str] = &[
+        "GET", "SET", "SETEX", "SETNX", "GETSET", "GETDEL", "GETEX", "APPEND", "STRLEN", "INCR",
+        "INCRBY", "INCRBYFLOAT", "DECR", "DECRBY", "MGET", "MSET", "MSETNX", "DEL", "UNLINK",
+        "EXISTS", "EXPIRE", "PEXPIRE", "EXPIREAT", "TTL", "PTTL", "PERSIST", "TYPE", "KEYS", "SCAN",
+        "RENAME", "RENAMENX", "RANDOMKEY", "DUMP", "RESTORE", "COPY", "MOVE", "OBJECT", "HGET",
+        "HSET", "HSETNX", "HMSET", "HMGET", "HGETALL", "HDEL", "HKEYS", "HVALS", "HLEN", "HEXISTS",
+        "HINCRBY", "HINCRBYFLOAT", "HSCAN", "LPUSH", "RPUSH", "LPUSHX", "RPUSHX", "LPOP", "RPOP",
+        "LRANGE", "LLEN", "LINDEX", "LSET", "LREM", "LTRIM", "LINSERT", "SADD", "SREM", "SMEMBERS",
+        "SCARD", "SISMEMBER", "SPOP", "SRANDMEMBER", "SMOVE", "SINTER", "SUNION", "SDIFF", "SSCAN",
+        "ZADD", "ZREM", "ZRANGE", "ZREVRANGE", "ZRANGEBYSCORE", "ZSCORE", "ZCARD", "ZRANK",
+        "ZREVRANK", "ZINCRBY", "ZCOUNT", "ZSCAN", "PING", "ECHO", "DBSIZE", "INFO", "SELECT",
+        "SWAPDB", "FLUSHDB", "FLUSHALL", "CONFIG", "COMMAND", "CLIENT", "MEMORY", "TIME",
+        "LASTSAVE", "SETRANGE", "GETRANGE", "SETBIT", "GETBIT", "BITCOUNT", "SUBSTR", "XADD",
+        "XRANGE", "XREVRANGE", "XLEN", "XINFO", "XREAD",
+    ];
+    let u = t.to_ascii_uppercase();
+    CMDS.contains(&u.as_str())
+}
+
+/// 쓰기/파괴 명령(대문자) — read_only 연결에서 차단.
+fn is_write_redis(cmd_upper: &str) -> bool {
+    const W: &[&str] = &[
+        "SET", "SETEX", "SETNX", "PSETEX", "GETSET", "GETDEL", "GETEX", "APPEND", "INCR", "INCRBY",
+        "INCRBYFLOAT", "DECR", "DECRBY", "MSET", "MSETNX", "DEL", "UNLINK", "EXPIRE", "PEXPIRE",
+        "EXPIREAT", "PEXPIREAT", "PERSIST", "RENAME", "RENAMENX", "RESTORE", "COPY", "MOVE",
+        "HSET", "HSETNX", "HMSET", "HDEL", "HINCRBY", "HINCRBYFLOAT", "LPUSH", "RPUSH", "LPUSHX",
+        "RPUSHX", "LPOP", "RPOP", "LSET", "LREM", "LTRIM", "LINSERT", "RPOPLPUSH", "LMOVE",
+        "BLPOP", "BRPOP", "SADD", "SREM", "SPOP", "SMOVE", "SINTERSTORE", "SUNIONSTORE",
+        "SDIFFSTORE", "ZADD", "ZREM", "ZINCRBY", "ZPOPMIN", "ZPOPMAX", "ZREMRANGEBYRANK",
+        "ZREMRANGEBYSCORE", "SETRANGE", "SETBIT", "BITOP", "FLUSHDB", "FLUSHALL", "SWAPDB",
+        "XADD", "XDEL", "XTRIM", "XSETID", "XGROUP",
+    ];
+    W.contains(&cmd_upper)
 }
 
 /// 첫 키워드가 쓰기/DDL인지 — read_only 연결의 안전망(완벽한 SQL 파서는 아님).

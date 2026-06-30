@@ -4,6 +4,7 @@ import { Editor } from "@monaco-editor/react";
 import { Play, Plus, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
+import { isSqlEngine } from "../../lib/ipc";
 import { useDbConnections, useSettings, useTableMeta } from "../../queries";
 import { LIMIT_OPTIONS, useDb } from "../../stores/db";
 import { useUi } from "../../stores/ui";
@@ -19,8 +20,9 @@ function QueryEditor() {
   const setLimit = useDb((s) => s.setLimit);
   const activeDatabase = useDb((s) => s.activeDatabase);
   const activeEngine = useDb((s) => s.activeEngine);
-  const lang = activeEngine === "mssql" ? "sql" : "javascript";
-  const dialect = activeEngine === "mssql" ? "sql" : "mongo-js";
+  const sql = isSqlEngine(activeEngine);
+  const lang = sql ? "sql" : activeEngine === "redis" ? "plaintext" : "javascript";
+  const dialect = sql ? "sql" : activeEngine === "redis" ? "redis" : "mongo-js";
   const { data: settings } = useSettings();
   const theme =
     settings?.theme === "monokai" ? "gitpervisor-monokai" : "gitpervisor-dark";
@@ -245,7 +247,7 @@ function ResultGrid() {
   // 편집 가능: SQL 테이블 미리보기 + PK 존재 + 읽기전용 아님
   const conn = connections?.find((c) => c.id === activeConnId);
   const editable =
-    activeEngine === "mssql" &&
+    isSqlEngine(activeEngine) &&
     !!editTable &&
     !!editPk &&
     editPk.length > 0 &&
