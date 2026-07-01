@@ -193,7 +193,7 @@ pub fn run() {
                 // OS 레벨 드래그-드롭을 끈다 — Windows(WebView2)에서 이게 켜져 있으면 OS 핸들러가
                 // 웹뷰 안의 HTML5 drag&drop 이벤트를 가로채, PROJECTS 사이드바 드래그 정렬이 안 먹는다.
                 // 앱은 OS 파일 드롭을 쓰지 않으므로(전부 다이얼로그/클릭) 꺼도 잃는 기능이 없다.
-                .drag_and_drop(false)
+                .disable_drag_drop_handler()
                 .background_color(tauri::window::Color(30, 31, 34, 255))
                 .additional_browser_args(&browser_args())
                 // 창/작업표시줄 아이콘을 런타임에 새 로고로 명시 설정 — Windows 아이콘 캐시나

@@ -16,6 +16,8 @@ dist-ssr
 installers
 # tauri build 후 프로젝트 루트로 복사하는 설치파일 (사용자 선호 위치)
 gitpervisor-installer.exe
+/Gitpervisor.app
+/Gitpervisor_*.dmg
 
 # Editor directories and files
 .vscode/*
