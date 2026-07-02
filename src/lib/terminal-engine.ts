@@ -27,6 +27,26 @@ const isWebKitGtk = /Linux/.test(navigator.userAgent);
 // 흘러나가 조합이 깨진다("이거"→"ㅇ거"). compositionend로만 확정 문자열을 송출하도록 가로챈다.
 const isMacWebKit = /Mac/i.test(navigator.userAgent);
 
+// macOS 한글 IME 입력 미러링용 순수 헬퍼 (원인·설계: DOCS/TROUBLESHOOTING.md §3).
+// prev(미러) → next(목표 ta.value)로 가는 최소 PTY 델타: "코드포인트" 공통 접두 이후, prev의
+// 남은 코드포인트 수만큼 \x7f(DEL) + next의 남은 접미. NFC 한글 1음절 = 1 코드포인트 = 셸
+// readline의 1삭제 단위라 Array.from이 곧 음절 단위 카운트가 된다. (기존 "\x7f"+data 는 "직전
+// 1자만 삭제"를 가정 → IME가 자모를 새 음절로 옮기는 빠른 타이핑에서 이미 확정된 앞 음절을
+// 지웠다: 어떡하냐 → 어떡냐. 상세: DOCS/TROUBLESHOOTING.md §3)
+function imeLineDelta(prev: string, next: string): string {
+  const a = Array.from(prev);
+  const b = Array.from(next);
+  let p = 0;
+  while (p < a.length && p < b.length && a[p] === b[p]) p++;
+  return "\x7f".repeat(a.length - p) + b.slice(p).join("");
+}
+
+// data가 전부 ASCII면 xterm 기본 input 경로(검증된 영문/숫자/기호/space 처리)에 그대로 맡긴다.
+function isAsciiStr(s: string): boolean {
+  for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) > 0x7f) return false;
+  return true;
+}
+
 function readTheme(): ITheme {
   const css = getComputedStyle(document.documentElement);
   const v = (name: string, fallback: string) =>
@@ -90,6 +110,18 @@ export function createTerminalImpl(opts: {
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
+
+  // macOS WKWebView 한글 IME 미러 상태(인스턴스별). imeSent = 지금 셸 입력 라인에서 "이번 한글
+  // 조합 런"이 반영해 둔 꼬리 문자열(마지막으로 diff한 ta.value). ASCII/Enter/방향키 등 조합 런
+  // 밖의 입력에서 리셋되어 다음 조합이 실제 라인 끝에서 새로 시작한다. keydown 핸들러가 아래에서
+  // resetImeMirror를 참조하므로 attachCustomKeyEventHandler 앞에 선언한다. macOS에서만 실사용.
+  let imeSent = "";
+  const resetImeMirror = () => {
+    imeSent = "";
+    // macOS에서만 호출된다 — Linux ta.value를 지우면 WebKitGTK composition 경로가 깨진다.
+    if (term.textarea) term.textarea.value = "";
+  };
+
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== "keydown") return true;
     const k = e.key.toLowerCase();
@@ -100,6 +132,7 @@ export function createTerminalImpl(opts: {
     // 막고 Tab→\t / Shift+Tab→\x1b[Z 를 PTY로 보낸다(xterm은 Shift+Tab에 cancel을 안 거는 버그).
     if (e.code === "Tab" && !e.ctrlKey && !e.altKey && !e.metaKey) {
       e.preventDefault();
+      if (isMacWebKit) resetImeMirror(); // 탭 완성/백탭이 라인을 다시 쓰므로 IME 미러 리셋
       void invoke("term_write", {
         termId: opts.id,
         data: e.shiftKey ? "\x1b[Z" : "\t",
@@ -132,6 +165,26 @@ export function createTerminalImpl(opts: {
       e.key.charCodeAt(0) > 0x7f
     ) {
       return false;
+    }
+
+    // macOS IME(§3): 여기 도달한 keydown은 조합키(kc229/Process/Unidentified, 위에서 return)도
+    // 단일 비-ASCII IME 라우팅(바로 위 return)도 아니다. 그중 "조합 런 밖에서 라인을 바꾸거나
+    // 소비/커서이동하는 키"에서만 미러를 리셋한다. 맨수식키(Shift/Ctrl/Alt/Meta 단독)와 평범한
+    // 인쇄 ASCII는 제외 — 후자는 input(insertText) 경로에서 리셋되고, 전자를 리셋하면 Shift+ㄱ(ㄲ)
+    // 조합 도중 미러가 지워진다.
+    if (isMacWebKit) {
+      const rk =
+        e.key === "Enter" ||
+        e.key === "Backspace" ||
+        e.key === "Delete" ||
+        e.key === "Escape" ||
+        e.key === "Home" ||
+        e.key === "End" ||
+        e.key === "PageUp" ||
+        e.key === "PageDown" ||
+        e.key.startsWith("Arrow") ||
+        ((e.ctrlKey || e.metaKey || e.altKey) && e.key.length === 1);
+      if (rk) resetImeMirror();
     }
 
     // 앱 단축키(터미널 토글 Ctrl+`, 분할 Ctrl+Shift+D/E, 닫기 Ctrl+Shift+W)는
@@ -209,12 +262,18 @@ export function createTerminalImpl(opts: {
   }
 
   // WebKit 계열(Linux WebKitGTK / macOS WKWebView) 한글(IME 조합) 입력 우회.
-  // 두 플랫폼이 같은 WebKit이지만 IME 이벤트 모델이 다르다 — 둘 다 케이스별로 처리한다.
-  // (자세한 진단/원인은 DOCS/TROUBLESHOOTING.md §3 참고)
+  // 두 플랫폼이 같은 WebKit이지만 IME 이벤트 모델이 다르다(진단: DOCS/TROUBLESHOOTING.md §3).
+  //  - Linux WebKitGTK: 표준 composition* 발화 → compositionend 확정 문자열만 송출(기존 방식 유지).
+  //  - macOS WKWebView: 한글 IME가 composition* 을 발화하지 않고 textarea input 이벤트
+  //    (insertText=새 음절 / insertReplacementText=현재 음절 갱신)로만 상태를 흘린다. 이벤트별
+  //    "\x7f"+data(직전 1자 삭제 가정)는 빠른 타이핑에서 이미 확정된 앞 음절을 지운다(어떡하냐→
+  //    어떡냐). 근본 해결: 캡처 단계에서 읽는 ta.value(=누적된 전체 조합 라인)를 미러(imeSent)와
+  //    grapheme-diff 하여 "정확한 백스페이스 수 + 추가분"만 보낸다. 음절 경계를 추측하지 않으므로
+  //    IME 재분할에도 정확. ASCII는 xterm 기본 경로에 그대로 맡겨(영문 회귀 위험 최소화) 미러만 리셋.
   if ((isWebKitGtk || isMacWebKit) && term.textarea) {
     const ta = term.textarea;
-    // Linux WebKitGTK: composition* 이벤트로 들어옴 — xterm 기본 처리를 가로채고
-    // 확정 문자(compositionend.data)만 PTY로 보낸다(매 자모마다 누적 송출되는 버그 우회).
+    // Linux WebKitGTK: composition* 이벤트로 조합이 들어온다 — 기본 처리를 가로채고 확정
+    // 문자(compositionend.data)만 PTY로 보낸다. macOS는 이 이벤트를 발화하지 않으므로 no-op.
     ta.addEventListener("compositionstart", (e) => e.stopImmediatePropagation(), true);
     ta.addEventListener("compositionupdate", (e) => e.stopImmediatePropagation(), true);
     ta.addEventListener(
@@ -227,34 +286,50 @@ export function createTerminalImpl(opts: {
       },
       true,
     );
-    // input 이벤트 처리:
-    // - Linux WebKitGTK: 조합 중/insertCompositionText는 위 compositionend가 처리하므로 차단.
-    // - macOS WKWebView: 한글 IME가 compositionstart/end를 발화하지 않고, 음절이 바뀔 때마다
-    //   inputType=insertReplacementText로 textarea 내용을 갈아끼운다. xterm 기본 핸들러는
-    //   insertText만 PTY로 보내므로 insertReplacementText는 누락 → 첫 자모만 PTY에 남고 나머지 손실
-    //   ("이거 실행해봐" → "ㅇ거 ㅅ해ㅎ보"). 해결: insertReplacementText를 가로채서
-    //   "직전 1자 삭제(\x7f) + 새 데이터"를 PTY로 보낸다 — 셸 readline이 \x7f를 받으면
-    //   입력 라인의 직전 한 글자(한글 1음절 포함)를 지운다.
     ta.addEventListener(
       "input",
       (e) => {
         const ie = e as InputEvent;
+        // Linux WebKitGTK: 조합 input은 위 compositionend가 확정 처리 → 여기서 차단(누적 방지).
+        // macOS 한글 insertReplacementText/insertText는 isComposing=false로 온다(현재 동작으로 검증됨).
         if (ie.isComposing || ie.inputType === "insertCompositionText") {
           e.stopImmediatePropagation();
           ta.value = "";
           return;
         }
-        if (isMacWebKit && ie.inputType === "insertReplacementText") {
+        if (!isMacWebKit) return; // Linux 비조합 입력은 keydown(WebKitGTK 경로)에서 처리됨
+
+        // ── macOS WKWebView 한글 IME (compositionstart/update/end 미발화) ──
+        // ASCII(영문·숫자·기호·space)는 stop하지 않아 xterm 기본 경로가 ev.data를 onData로 보낸다.
+        // 단 xterm 6은 일반 ASCII insertText에서 textarea를 비우지 않는다(blur/Enter/Ctrl-C에서만).
+        // imeSent만 비우면 ta.value에 직전 한글 런이 남아, 다음 한글이 diff 기준선 불일치로 그 런을
+        // 통째로 재전송한다("이거 실행"→"이거 이거 실행"). resetImeMirror로 ta.value+imeSent를 함께
+        // 비워 기준선을 맞춘다(xterm _inputEvent는 ev.data를 보내므로 ta.value를 비워도 이 ASCII
+        // 문자는 정상 전달됨).
+        if (ie.inputType === "insertText" && ie.data && isAsciiStr(ie.data)) {
+          resetImeMirror();
+          return;
+        }
+        // 한글(비-ASCII) 새 음절(insertText) 또는 현재 음절 갱신(insertReplacementText):
+        // 가로채야(stop) xterm이 textarea를 비우지 않아 ta.value가 조합 런 전체를 누적한다 → 전체
+        // 라인 diff 성립. ta.value와 미러를 diff해 정확한 델타만 PTY로 보낸다(data가 null/""인
+        // decommit이어도 ta.value로 판단하므로 안전).
+        if (
+          ie.inputType === "insertText" ||
+          ie.inputType === "insertReplacementText"
+        ) {
           e.stopImmediatePropagation();
-          const data = ie.data ?? "";
-          void invoke("term_write", {
-            termId: opts.id,
-            data: "\x7f" + data,
-          }).catch(() => {});
+          const next = ta.value; // 캡처 단계 → xterm 처리 전, 누적된 전체 조합 라인
+          const delta = imeLineDelta(imeSent, next);
+          imeSent = next;
+          if (delta)
+            void invoke("term_write", { termId: opts.id, data: delta }).catch(() => {});
         }
       },
       true,
     );
+    // macOS: 포커스 상실 시 조합 문맥이 사라지므로 미러 리셋(다음 포커스+입력이 깨끗이 시작).
+    if (isMacWebKit) ta.addEventListener("blur", () => resetImeMirror(), true);
   }
 
   const inst: TermInstance = {
@@ -297,6 +372,10 @@ export function createTerminalImpl(opts: {
 
   // 입력 → PTY stdin
   term.onData((data) => {
+    // macOS: 제어 시퀀스(Enter \r, Backspace \x7f, 방향키 \x1b[.., Ctrl-C \x03 등)가 onData로
+    // 흐르면 조합 런 밖에서 라인이 바뀐 것 → IME 미러 리셋(keydown 목록 보조 안전망). 인쇄 문자는
+    // 매칭 안 되고, 한글 조합 델타는 invoke로 직접 보내 onData로 오지 않는다.
+    if (isMacWebKit && /[\x00-\x1f\x7f]/.test(data)) resetImeMirror();
     void invoke("term_write", { termId: opts.id, data }).catch(() => {});
   });
   // 리사이즈 → ConPTY

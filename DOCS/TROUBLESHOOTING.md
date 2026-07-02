@@ -154,6 +154,30 @@ if (e.isComposing || e.keyCode === 229 || e.key === "Process" || e.key === "Unid
 - IME 디버깅은 추측보다 **textarea의 모든 keydown/input/composition* 이벤트를 backend stderr로 흘려 dev 로그에서 관측**하는 게 가장 빠르다. xterm 내부의 `onData`도 같이 찍어 "어떤 글자가 PTY에 실제로 갔는지"를 함께 보면 누락 지점이 즉시 드러난다.
 - 셸 readline의 `\x7f`(DEL) 한 글자 삭제는 한글 1음절도 한 단위로 삭제한다 — IME의 replacement를 "백스페이스 + 새 데이터"로 PTY에 모사할 때 활용.
 
+### 3.6 후속: 빠르게 치면 글자가 씹힌다 (§3.3 방식의 근본 한계 → 전체 라인 미러로 재설계)
+
+**증상**: §3.3 수정 후에도 macOS에서 **빠르게** 한글을 치면 글자가 사라진다("글자 씹힘"). 예: `어떡하냐`를 빨리 → 화면 `어떡냐`(하 누락).
+
+**근본 원인**: §3.3의 `"\x7f"+data`는 "insertReplacementText는 **직전 1음절**을 교체한다"고 가정한다. 느리게 치면 IME가 음절마다 확정(commit)해 맞다. 그러나 빠르게 치면 IME가 확정을 미루다가, 자모를 **새 음절로 넘길 때**(하 + ㄴㅕ → 하냐)도 `insertReplacementText "냐"`로 보고한다. 그러면 코드가 무조건 붙인 `\x7f`가 **이미 확정된 앞 음절 "하"를 지운다** → `어떡하` + `\x7f냐` = `어떡냐`.
+
+**진단 방법**: `term_write`에 발신 순번(seq)·스레드·바이트를 실어 dev stderr로 관측. 확인된 사실:
+- PTY 전송은 **단일 스레드 순서 보장**(재정렬 아님) — 순서 문제 가설 기각.
+- 실측 바이트: 빠른 `어떡하냐` → `어떡하` 누적 후 `\x7f냐` → 셸에 `어떡냐`. 원인 확정.
+- (부수 관측) TUI(Claude Code 등)가 커서 위치를 초당 수십~수백 번 질의 → xterm이 응답(`\x1b[?..R`)을 매번 개별 `term_write`로 쏘는 홍수가 있으나, 씹힘의 직접 원인은 아님(순서 보장됨).
+
+**해결**: 이벤트별 `\x7f` 개수를 추측하지 않는다. **캡처 단계에서 읽는 `ta.value`(= 누적된 전체 조합 라인)를 미러(`imeSent`)와 코드포인트 diff** 하여 "정확한 백스페이스 수 + 추가분"만 보낸다(`src/lib/terminal-engine.ts`의 `imeLineDelta`). `어떡하`→`어떡하냐`면 공통 접두 `[어,떡,하]`가 보존되고 `냐`만 추가(=`\x7f` 0개) → `하`가 안 지워진다. NFC 한글 1음절 = 1 코드포인트 = 셸의 1삭제 단위라 `Array.from`이 곧 음절 단위 카운트.
+
+- 한글(비-ASCII) `insertText`/`insertReplacementText`는 `stopImmediatePropagation`으로 가로채야 xterm이 textarea를 비우지 않아 `ta.value`가 조합 런 전체를 누적한다 → 전체 라인 diff 성립.
+- **ASCII(영문·숫자·기호·공백)는 xterm 기본 경로에 그대로 맡긴다**(영문 회귀 위험 최소화). 단 조합 런이 끝나므로 미러를 리셋한다 — 여기서 함정: **xterm 6은 일반 ASCII `insertText`에서 textarea를 비우지 않는다**(blur/Enter/Ctrl-C에서만). `imeSent`만 비우면 `ta.value`에 직전 한글 런이 남아, 다음 한글이 그 전체를 재전송해 **중복**된다(`이거 실행`→`이거 이거 실행`). 그래서 ASCII 분기에서 `resetImeMirror()`로 `ta.value`까지 비워 diff 기준선을 맞춘다.
+- 조합 런 밖에서 라인을 바꾸는 키(Enter/Backspace/방향키/Tab/단축키)와 blur, onData 제어바이트에서 미러를 리셋한다. 맨 Shift 등 수식키 단독은 제외(`가+Shift+ㄱ→가까` 조합 중 미러가 지워지지 않도록).
+
+**교훈**:
+- 이벤트 단위 `\x7f` diffing은 IME의 **음절 경계가 흔들리는 빠른 타이핑**을 못 따라간다. 정답은 **textarea 값 자체를 셸 라인의 미러로 보고 전체를 diff** 하는 것(xterm이 Chromium에서 composition 이벤트로 하는 일을, 이벤트를 안 쏘는 WKWebView에서 손으로 재현).
+- **xterm 6은 평범한 ASCII `input`에서 textarea를 비우지 않는다**(blur/Enter/Ctrl-C만). `ta.value`를 미러로 읽으려면 리셋을 직접 해야 한다.
+- (미해결/후속 여지) 커서 위치 응답 홍수는 `term_write` 배치(coalesce)로 IPC를 줄일 수 있으나 별개 과제.
+
+> 상태: 타입체크·빌드 통과, 코드리뷰(적대적) 완료. **macOS 실측 검증 대기** — 아래 §3.6 체크리스트는 커밋 메시지/PR에 동봉.
+
 ---
 
 ## 4. 터미널에서 Shift+Tab이 포커스를 다른 요소로 옮긴다 (Claude Code 모드 전환 안 됨)
