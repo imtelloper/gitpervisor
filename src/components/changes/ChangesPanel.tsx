@@ -2,6 +2,8 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
+  FolderGit2,
+  GitBranch,
   Plus,
   RotateCcw,
   Undo2,
@@ -9,7 +11,7 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
-import type { DiffTarget, FileChange } from "../../lib/ipc";
+import type { DiffTarget, FileChange, RepoStatus } from "../../lib/ipc";
 import { KIND_BADGE } from "../../lib/change-kind";
 import { fileIcon } from "../../lib/file-icon";
 import { splitPath } from "../../lib/format";
@@ -20,6 +22,7 @@ import {
   useSettings,
   useStageFiles,
   useStatus,
+  useStatuses,
   useUnstageFiles,
 } from "../../queries";
 import { useUi } from "../../stores/ui";
@@ -29,6 +32,16 @@ import { CommitForm } from "./CommitForm";
 interface RowActions {
   onToggleStage: (change: FileChange) => void;
   onDiscard: (change: FileChange) => void;
+}
+
+/** 한 저장소의 작업트리 변경 개수(staged+unstaged+untracked+conflicted). */
+function changeCount(s: RepoStatus): number {
+  return (
+    s.staged.length +
+    s.unstaged.length +
+    s.untracked.length +
+    s.conflicted.length
+  );
 }
 
 /** 한 변경 행을 가리키는 안정 키 (스테이지/언스테이지 인스턴스를 구분). */
@@ -160,7 +173,7 @@ function Group({
   onRowClick: (key: string, e: React.MouseEvent) => void;
   onRowContextMenu: (key: string, e: React.MouseEvent) => void;
   actions: RowActions;
-  // 접힘 상태는 부모(ChangesPanel)가 관리한다 — 범위 선택이 보이는 행만 대상으로 하도록.
+  // 접힘 상태는 부모(RepoChanges)가 관리한다 — 범위 선택이 보이는 행만 대상으로 하도록.
   collapsed: boolean;
   onToggleCollapse: () => void;
 }) {
@@ -197,9 +210,24 @@ function Group({
   );
 }
 
-export function ChangesPanel({ projectId }: { projectId: string }) {
+/**
+ * 한 저장소(최상위 프로젝트 또는 임베디드 저장소)의 변경 목록 — 그룹 렌더 + 멀티선택 +
+ * 우클릭 메뉴 + 스테이지/언스테이지/롤백. projectId 하나로 모든 조작이 그 저장소에 라우팅된다
+ * (임베디드 저장소는 합성 id `<outer>::<rel>` — project_path가 중첩 경로로 되풂).
+ *
+ * outerProjectId: 현재 선택된 최상위 프로젝트 id. diff 하이라이트가 "이 저장소가 지금 보고 있는
+ * diff의 저장소인가"를 판정하는 데 쓴다(중첩·최상위가 같은 상대경로 파일을 가질 때 오하이라이트 방지).
+ */
+function RepoChanges({
+  projectId,
+  outerProjectId,
+}: {
+  projectId: string;
+  outerProjectId: string;
+}) {
   const { data: status } = useStatus(projectId);
   const selectedDiff = useUi((s) => s.selectedDiff);
+  const selectedDiffRepoId = useUi((s) => s.selectedDiffRepoId);
   const selectDiff = useUi((s) => s.selectDiff);
   const pushToast = useUi((s) => s.pushToast);
   const stage = useStageFiles(projectId);
@@ -207,9 +235,8 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
   const discard = useDiscardFiles(projectId);
   const { data: settings } = useSettings();
   usePrefetchDiffs(projectId); // 클릭 전에 diff를 미리 적재 (§12)
-  const { width, startResize } = usePanelWidth("gp:changes-width", 288, 220, 680);
 
-  // 멀티선택(Ctrl/Cmd 토글, Shift 범위) — 한꺼번에 롤백/스테이지. 프로젝트 전환 시 비운다.
+  // 멀티선택(Ctrl/Cmd 토글, Shift 범위). 저장소(projectId) 전환 시 비운다.
   const [selKeys, setSelKeys] = useState<Set<string>>(new Set());
   const lastKeyRef = useRef<string | null>(null);
   useEffect(() => {
@@ -232,8 +259,16 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
       window.removeEventListener("keydown", onKey);
     };
   }, [menu]);
+  // 여러 저장소 섹션(outer + 중첩)이 동시에 떠 있으므로, 한 섹션에서 메뉴를 열면 다른 섹션의
+  // 열린 메뉴를 닫는다 — right-click은 'click'을 발생시키지 않아 위 close 리스너로는 안 닫힌다.
+  useEffect(() => {
+    const onClose = () => setMenu(null);
+    window.addEventListener("gitpervisor:changes-closemenus", onClose);
+    return () =>
+      window.removeEventListener("gitpervisor:changes-closemenus", onClose);
+  }, []);
 
-  // 접힘 상태(그룹 제목 집합) — 부모가 관리해 평탄화/범위선택이 접힌 그룹을 제외하게 한다.
+  // 접힘 상태(그룹 제목 집합) — 평탄화/범위선택이 접힌 그룹을 제외하게 한다.
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const toggleCollapse = (title: string) =>
     setCollapsed((prev) => {
@@ -253,7 +288,10 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
       ]
     : [];
 
-  const total = groups.reduce((n, g) => n + g.changes.length, 0);
+  // 이 저장소가 지금 뷰어에 뜬 diff의 대상 저장소일 때만 행을 선택 표시한다.
+  // (diff repo가 지정 안 됐으면 outer로 간주 — 트리/로그에서 연 diff의 하이라이트 유지.)
+  const activeDiff =
+    (selectedDiffRepoId ?? outerProjectId) === projectId ? selectedDiff : null;
 
   // 평탄화 — **펼쳐진** 그룹의 행만(범위 선택이 숨은 행을 휩쓸어 의도치 않게 롤백하는 것 방지).
   const flatRows = groups.flatMap((g) =>
@@ -291,7 +329,8 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
           row.mode === "index"
             ? { mode: "index", path: row.change.path }
             : { mode: "worktree", path: row.change.path };
-        selectDiff(target);
+        // 이 저장소(projectId)를 diff 대상으로 지정 — 임베디드면 그 저장소로 라우팅.
+        selectDiff(target, projectId);
       }
     }
   };
@@ -316,11 +355,6 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
   type Row = (typeof flatRows)[number];
   // 스테이지는 충돌 행 제외(충돌에 add는 미해결 채로 resolved 표시됨). 언스테이지는 실제로 스테이지된
   // 행만 — untracked 등 인덱스에 없는 경로가 섞이면 git restore --staged 가 통째로 실패한다.
-  const stagePathsOf = (rows: Row[]) => [
-    ...new Set(
-      rows.filter((r) => r.change.kind !== "conflicted").map((r) => r.change.path),
-    ),
-  ];
   const unstagePathsOf = (rows: Row[]) => [
     ...new Set(rows.filter((r) => r.change.staged).map((r) => r.change.path)),
   ];
@@ -369,11 +403,19 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
   };
 
   // 액션바용(현재 멀티선택 기준)
-  const stagePaths = stagePathsOf(selectedRows);
+  const stagePaths = [
+    ...new Set(
+      selectedRows
+        .filter((r) => r.change.kind !== "conflicted")
+        .map((r) => r.change.path),
+    ),
+  ];
   const unstagePaths = unstagePathsOf(selectedRows);
 
   const onRowContextMenu = (key: string, e: React.MouseEvent) => {
     e.preventDefault();
+    // 다른 저장소 섹션의 열린 메뉴를 먼저 닫는다(동시에 두 메뉴가 뜨지 않게 — 단일 메뉴 유지).
+    window.dispatchEvent(new CustomEvent("gitpervisor:changes-closemenus"));
     setMenu({ x: e.clientX, y: e.clientY, key });
   };
 
@@ -386,7 +428,6 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
   };
 
   // 메뉴 대상에서 각 작업 가능한 경로 집합(빈 작업은 메뉴에 표시 안 함).
-  // 스테이지는 아직 스테이지 안 된 비충돌 행만(이미 스테이지된 건 의미 없음).
   const menuStagePaths = [
     ...new Set(
       menuRows
@@ -430,20 +471,10 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
   };
 
   return (
-    <div
-      style={{ width }}
-      className="relative flex h-full shrink-0 flex-col border-r border-edge bg-panel"
-    >
-      <div className="flex items-center gap-2 border-b border-edge px-3 py-2">
-        <span className="font-semibold">Changes</span>
-        <span className="text-xs text-fg-dim">
-          {status ? `${total} files` : "…"}
-        </span>
-      </div>
-
+    <>
       {/* 멀티선택 액션 바 — 실제 존재하는 선택 행이 있을 때만(상태 갱신으로 사라진 키는 무시). */}
       {selectedRows.length > 0 && (
-        <div className="flex items-center gap-1.5 border-b border-edge bg-raised/60 px-3 py-1.5 text-xs">
+        <div className="sticky top-0 z-10 flex items-center gap-1.5 border-b border-edge bg-raised px-3 py-1.5 text-xs">
           <span className="text-fg-muted">{selectedRows.length}개 선택</span>
           <div className="flex-1" />
           <button
@@ -484,39 +515,22 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-y-auto py-1">
-        {status?.error ? (
-          <div className="px-3 py-3 text-xs leading-5 text-fg-dim">
-            {status.error}
-          </div>
-        ) : status && total === 0 ? (
-          <div className="px-3 py-3 text-xs text-fg-dim">
-            변경 없음 — 워킹 트리가 깨끗합니다 ✨
-          </div>
-        ) : status ? (
-          <>
-            {groups.map((g) => (
-              <Group
-                key={g.title}
-                title={g.title}
-                changes={g.changes}
-                accent={g.accent}
-                mode={g.mode}
-                selectedDiff={selectedDiff}
-                selKeys={selKeys}
-                onRowClick={onRowClick}
-                onRowContextMenu={onRowContextMenu}
-                actions={actions}
-                collapsed={collapsed.has(g.title)}
-                onToggleCollapse={() => toggleCollapse(g.title)}
-              />
-            ))}
-          </>
-        ) : null}
-      </div>
-
-      <CommitForm projectId={projectId} />
-      <ResizeHandle onMouseDown={startResize} />
+      {groups.map((g) => (
+        <Group
+          key={g.title}
+          title={g.title}
+          changes={g.changes}
+          accent={g.accent}
+          mode={g.mode}
+          selectedDiff={activeDiff}
+          selKeys={selKeys}
+          onRowClick={onRowClick}
+          onRowContextMenu={onRowContextMenu}
+          actions={actions}
+          collapsed={collapsed.has(g.title)}
+          onToggleCollapse={() => toggleCollapse(g.title)}
+        />
+      ))}
 
       {menu && menuChange && (
         <div
@@ -592,6 +606,133 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
           />
         </div>
       )}
+    </>
+  );
+}
+
+/**
+ * 임베디드(중첩) 저장소 섹션 — 폴더 경로 + 자체 branch 뱃지 헤더 + 접기. 펼치면 그 저장소의
+ * 변경 목록(RepoChanges)과 전용 커밋 폼(CommitForm)을 보여준다. 조작은 모두 합성 id로 그
+ * 저장소에 라우팅된다. 변경이 없는 임베디드 저장소는 기본 접힘(정보만 노출, 잡음 최소화).
+ */
+function NestedRepoSection({
+  nested,
+  outerProjectId,
+}: {
+  nested: RepoStatus;
+  outerProjectId: string;
+}) {
+  const count = changeCount(nested);
+  const hasChanges = count > 0;
+  const [open, setOpen] = useState(hasChanges);
+  // 처음엔 깨끗해서 접혀 있던 섹션도 이후 변경이 생기면 자동으로 펼친다(useState 초기값은 마운트
+  // 시 1회만 적용되므로). count>0 전이에만 반응하므로, 사용자가 수동으로 접은 건 그대로 존중된다.
+  useEffect(() => {
+    if (hasChanges) setOpen(true);
+  }, [hasChanges]);
+  const label = nested.relPath ?? nested.projectId;
+  const branch =
+    nested.branch ?? (nested.detachedSha ? `@ ${nested.detachedSha}` : null);
+
+  return (
+    <div className="border-t border-edge/60">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        title={label}
+        className="flex w-full items-center gap-1.5 bg-raised/40 px-2 py-1.5 text-left hover:bg-raised"
+      >
+        {open ? (
+          <ChevronDown size={12} className="shrink-0 text-fg-dim" />
+        ) : (
+          <ChevronRight size={12} className="shrink-0 text-fg-dim" />
+        )}
+        <FolderGit2 size={13} className="shrink-0 text-accent" />
+        <span className="truncate text-[12px] font-medium text-fg">{label}</span>
+        {branch && (
+          <span className="flex shrink-0 items-center gap-1 rounded bg-base px-1.5 py-0.5 text-[10px] text-fg-muted">
+            <GitBranch size={9} />
+            {branch}
+          </span>
+        )}
+        <span className="ml-auto shrink-0 pr-1 text-[11px] text-fg-dim">
+          {nested.error ? "오류" : count > 0 ? `${count}` : "깨끗함"}
+        </span>
+      </button>
+      {open &&
+        (nested.error ? (
+          <div className="px-3 py-2 text-xs leading-5 text-fg-dim">
+            {nested.error}
+          </div>
+        ) : count === 0 ? (
+          <div className="px-3 py-2 text-xs text-fg-dim">
+            변경 없음 — 워킹 트리가 깨끗합니다
+          </div>
+        ) : (
+          <>
+            <RepoChanges
+              projectId={nested.projectId}
+              outerProjectId={outerProjectId}
+            />
+            <CommitForm projectId={nested.projectId} bindShortcut={false} />
+          </>
+        ))}
+    </div>
+  );
+}
+
+export function ChangesPanel({ projectId }: { projectId: string }) {
+  const { data: statuses } = useStatuses();
+  const status = statuses?.find((s) => s.projectId === projectId);
+  // 이 프로젝트에 속한 임베디드 저장소들 — 상대경로 순으로 안정 정렬.
+  const nested = (statuses ?? [])
+    .filter((s) => s.parentId === projectId)
+    .sort((a, b) => (a.relPath ?? "").localeCompare(b.relPath ?? ""));
+
+  const { width, startResize } = usePanelWidth("gp:changes-width", 288, 220, 680);
+
+  const outerTotal = status ? changeCount(status) : 0;
+  const nestedTotal = nested.reduce((n, s) => n + changeCount(s), 0);
+  const total = outerTotal + nestedTotal;
+  // 최상위·임베디드 모두 변경이 없고 임베디드 저장소 자체도 없을 때만 "변경 없음".
+  const isEmpty = status && !status.error && total === 0 && nested.length === 0;
+
+  return (
+    <div
+      style={{ width }}
+      className="relative flex h-full shrink-0 flex-col border-r border-edge bg-panel"
+    >
+      <div className="flex items-center gap-2 border-b border-edge px-3 py-2">
+        <span className="font-semibold">Changes</span>
+        <span className="text-xs text-fg-dim">
+          {status ? `${total} files` : "…"}
+        </span>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto py-1">
+        {status?.error ? (
+          <div className="px-3 py-3 text-xs leading-5 text-fg-dim">
+            {status.error}
+          </div>
+        ) : isEmpty ? (
+          <div className="px-3 py-3 text-xs text-fg-dim">
+            변경 없음 — 워킹 트리가 깨끗합니다 ✨
+          </div>
+        ) : status ? (
+          <>
+            <RepoChanges projectId={projectId} outerProjectId={projectId} />
+            {nested.map((n) => (
+              <NestedRepoSection
+                key={n.projectId}
+                nested={n}
+                outerProjectId={projectId}
+              />
+            ))}
+          </>
+        ) : null}
+      </div>
+
+      <CommitForm projectId={projectId} />
+      <ResizeHandle onMouseDown={startResize} />
     </div>
   );
 }

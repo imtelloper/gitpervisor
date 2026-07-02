@@ -44,6 +44,12 @@ export interface RepoStatus {
   untracked: FileChange[];
   conflicted: FileChange[];
   error: string | null;
+  /** 임베디드(중첩) 저장소면 부모 프로젝트 id — Changes 패널이 이 항목을 별도 섹션으로 렌더. */
+  parentId: string | null;
+  /** 임베디드 저장소의 부모 루트 기준 상대 경로(예: "APPLICATION/nexus-application"). */
+  relPath: string | null;
+  /** 이 프로젝트 하위 임베디드 저장소들의 변경 총합(사이드바 표시용). */
+  nestedChanges: number;
 }
 
 export interface FileDiff {

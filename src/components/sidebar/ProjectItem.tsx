@@ -2,6 +2,7 @@ import {
   ArrowDown,
   ArrowUp,
   CircleCheck,
+  FolderGit2,
   GitBranch,
   HardDrive,
   Loader2,
@@ -62,9 +63,16 @@ export const ProjectItem = memo(function ProjectItem({
         conflicted: status.conflicted.length,
       }
     : null;
+  // 이 프로젝트 안 임베디드(중첩) 저장소들의 변경 총합 — 별도 뱃지로 표시.
+  const nestedChanges = status?.nestedChanges ?? 0;
   const hasChanges =
     !!counts &&
-    counts.unstaged + counts.staged + counts.untracked + counts.conflicted > 0;
+    counts.unstaged +
+      counts.staged +
+      counts.untracked +
+      counts.conflicted +
+      nestedChanges >
+      0;
 
   return (
     <div
@@ -177,6 +185,15 @@ export const ProjectItem = memo(function ProjectItem({
             )}
             {counts.untracked > 0 && (
               <span className="text-untrk">?{counts.untracked}</span>
+            )}
+            {nestedChanges > 0 && (
+              <span
+                className="flex items-center gap-0.5 text-fg-muted"
+                title="중첩 저장소 변경"
+              >
+                <FolderGit2 size={11} />
+                {nestedChanges}
+              </span>
             )}
           </>
         ) : status ? (

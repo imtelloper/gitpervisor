@@ -126,7 +126,10 @@ export function registerGotoDefinition() {
       } else {
         line = Number(new URLSearchParams(resource.query).get("l")) || 1;
       }
-      useUi.getState().selectDiff({ mode: "file", path, line });
+      // 정의 검색은 현재 파일의 저장소(ctx.projectId) 안에서 이뤄지고 반환 경로도 그 저장소
+      // 기준 상대경로다 — 임베디드 저장소면 합성 id를 diff repo로 전달해야 엉뚱한(outer) 저장소의
+      // 동일 상대경로 파일로 점프하지 않는다.
+      useUi.getState().selectDiff({ mode: "file", path, line }, ctx?.projectId);
       return true;
     },
   });

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 
 use tauri::{AppHandle, State};
 
@@ -7,16 +7,68 @@ use crate::git::runner;
 use crate::git::types::Project;
 use crate::state::{self, AppState};
 
+/// 프로젝트 id → 저장소 경로.
+///
+/// 임베디드(중첩) 저장소는 `<outer_id>::<rel>` 형태의 합성 id를 쓴다(status.rs 참조).
+/// `::`가 있으면 outer 프로젝트 경로에 상대경로를 이어 붙여 중첩 저장소 경로를 돌려준다 —
+/// 이 덕분에 stage/unstage/discard/commit/diff/log 등 모든 git 커맨드가 별도 코드 없이
+/// 중첩 저장소를 대상으로 동작한다. 프로젝트 id(uuid)는 `::`를 포함하지 않으므로 첫 `::`로 가른다.
 pub(crate) fn project_path(
     state: &State<'_, AppState>,
     project_id: &str,
 ) -> Result<PathBuf, IpcError> {
+    if let Some((outer_id, rel)) = project_id.split_once("::") {
+        let base = lookup_path(state, outer_id)?;
+        return resolve_nested(&base, rel);
+    }
+    lookup_path(state, project_id)
+}
+
+fn lookup_path(state: &State<'_, AppState>, project_id: &str) -> Result<PathBuf, IpcError> {
     let projects = state.projects.read().unwrap();
     projects
         .iter()
         .find(|p| p.id == project_id)
         .map(|p| PathBuf::from(&p.path))
         .ok_or_else(|| IpcError::new(ErrorCode::NotFound, "프로젝트를 찾을 수 없습니다"))
+}
+
+/// 중첩 저장소 경로 해석 + 컨테인먼트 가드. rel은 우리 자신의 git status 출력에서 오지만,
+/// 방어적으로 절대경로·`..` 이탈을 막고 정규화 후 base 안에 있는지 확인한다.
+fn resolve_nested(base: &Path, rel: &str) -> Result<PathBuf, IpcError> {
+    let relp = Path::new(rel);
+    // RootDir까지 막는다 — Windows에서 "/x"는 is_absolute()가 false지만 join 시 드라이브 루트로
+    // 튀어 컨테인먼트를 우회할 수 있다(Component::RootDir로 확실히 차단).
+    if rel.is_empty()
+        || relp.is_absolute()
+        || relp.components().any(|c| {
+            matches!(
+                c,
+                Component::ParentDir | Component::Prefix(_) | Component::RootDir
+            )
+        })
+    {
+        return Err(IpcError::new(
+            ErrorCode::NotFound,
+            "잘못된 중첩 저장소 경로입니다",
+        ));
+    }
+    let joined = base.join(relp);
+    // 존재하면 정규화해 base 컨테인먼트를 확인한다. 정규화 실패(경로 없음 등)면 렉시컬 결과를
+    // 그대로 쓴다 — 위에서 `..`/절대경로를 이미 배제해 base 밖으로 나갈 수 없다.
+    match (dunce::canonicalize(&joined), dunce::canonicalize(base)) {
+        (Ok(j), Ok(b)) => {
+            if j.starts_with(&b) {
+                Ok(j)
+            } else {
+                Err(IpcError::new(
+                    ErrorCode::NotFound,
+                    "저장소 경계를 벗어난 경로입니다",
+                ))
+            }
+        }
+        _ => Ok(joined),
+    }
 }
 
 #[tauri::command]
@@ -144,4 +196,29 @@ pub fn remove_project(
         let _ = state::save_notes(&app, &snapshot);
     }
     state::save_projects(&app, &state.projects.read().unwrap())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_nested_rejects_traversal() {
+        let base = Path::new("/repo");
+        assert!(resolve_nested(base, "").is_err(), "빈 경로 거부");
+        assert!(resolve_nested(base, "../evil").is_err(), ".. 이탈 거부");
+        assert!(resolve_nested(base, "a/../../b").is_err(), "중간 .. 거부");
+        assert!(resolve_nested(base, "/etc/passwd").is_err(), "루트 경로 거부");
+    }
+
+    #[test]
+    fn resolve_nested_joins_subpath() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        let sub = base.join("a").join("b");
+        std::fs::create_dir_all(&sub).unwrap();
+        // 슬래시 상대경로가 base 안 하위경로로 해석돼야 한다.
+        let got = resolve_nested(base, "a/b").unwrap();
+        assert_eq!(got, dunce::canonicalize(&sub).unwrap());
+    }
 }

@@ -32,6 +32,12 @@ interface UiState {
   selectedProjectId: string | null;
   /** 중앙 뷰어가 표시할 diff 대상 — Changes(worktree/index) 또는 Log(commit)에서 설정 */
   selectedDiff: DiffTarget | null;
+  /**
+   * selectedDiff를 조회할 저장소 id. 임베디드(중첩) 저장소의 파일을 클릭하면 그 저장소의
+   * 합성 id(`<outer>::<rel>`)가 들어와 diff/편집이 중첩 저장소를 대상으로 라우팅된다.
+   * null이면 현재 선택 프로젝트(outer)를 쓴다.
+   */
+  selectedDiffRepoId: string | null;
   /** 하단 Log 패널 펼침 여부 */
   logOpen: boolean;
   /** 하단 Log 패널 펼침 높이(px) — 드래그로 조절, localStorage 영속 */
@@ -56,7 +62,7 @@ interface UiState {
   confirm: ConfirmRequest | null;
   prompt: PromptRequest | null;
   selectProject: (id: string | null) => void;
-  selectDiff: (target: DiffTarget | null) => void;
+  selectDiff: (target: DiffTarget | null, repoId?: string | null) => void;
   toggleLog: () => void;
   setLogHeight: (h: number) => void;
   setAggregateOpen: (open: boolean) => void;
@@ -82,6 +88,7 @@ export const useUi = create<UiState>((set) => ({
   // 마지막 선택 프로젝트를 복원한다 — 재시작 시 그 프로젝트(+복구된 터미널 탭)로 바로 진입
   selectedProjectId: localStorage.getItem("gp:selected-project"),
   selectedDiff: null,
+  selectedDiffRepoId: null,
   logOpen: false,
   logHeight: (() => {
     const raw = Number(localStorage.getItem("gp:log-height"));
@@ -106,13 +113,16 @@ export const useUi = create<UiState>((set) => ({
     set({
       selectedProjectId: id,
       selectedDiff: null,
+      selectedDiffRepoId: null,
       selectedCommitSha: null,
       memoOpen: false,
       // 이미지 편집기는 프로젝트별 상대 경로라 프로젝트가 바뀌면 닫는다(엉뚱한 프로젝트에 쓰기 방지).
       imageEditorPath: null,
     });
   },
-  selectDiff: (target) => set({ selectedDiff: target }),
+  // repoId: 임베디드 저장소 파일이면 그 저장소의 합성 id, 아니면 생략(outer로 라우팅).
+  selectDiff: (target, repoId) =>
+    set({ selectedDiff: target, selectedDiffRepoId: repoId ?? null }),
   toggleLog: () => set((s) => ({ logOpen: !s.logOpen })),
   setLogHeight: (h) => {
     const v = Math.max(120, Math.min(h, window.innerHeight - 200));

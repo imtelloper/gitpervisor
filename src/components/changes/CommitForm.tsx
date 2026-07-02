@@ -3,7 +3,17 @@ import { useEffect, useRef, useState } from "react";
 import { useCommit, usePushFlow, useStatus } from "../../queries";
 import { useOps } from "../../stores/ops";
 
-export function CommitForm({ projectId }: { projectId: string }) {
+export function CommitForm({
+  projectId,
+  bindShortcut = true,
+}: {
+  projectId: string;
+  /**
+   * Ctrl+K 전역 커밋 단축키에 반응할지 여부. 임베디드 저장소용 커밋 폼이 여러 개
+   * 동시에 뜨므로, 전역 단축키는 최상위(pinned) 폼 하나만 처리하게 한다(중복 커밋 방지).
+   */
+  bindShortcut?: boolean;
+}) {
   const { data: status } = useStatus(projectId);
   const [message, setMessage] = useState("");
   const [amend, setAmend] = useState(false);
@@ -37,10 +47,11 @@ export function CommitForm({ projectId }: { projectId: string }) {
     if (canCommit) doCommit(false);
   };
   useEffect(() => {
+    if (!bindShortcut) return;
     const handler = () => commitRef.current();
     window.addEventListener("gitpervisor:commit", handler);
     return () => window.removeEventListener("gitpervisor:commit", handler);
-  }, []);
+  }, [bindShortcut]);
 
   return (
     <div className="border-t border-edge p-3">

@@ -57,6 +57,13 @@ pub struct RepoStatus {
     pub conflicted: Vec<FileChange>,
     /// 경로 소실·git 실패 등 — 값이 있으면 사이드바에서 회색(오류) 상태로 표시한다.
     pub error: Option<String>,
+    /// 이 status가 임베디드(중첩) 저장소면 그 부모 프로젝트 id. 최상위 프로젝트는 None.
+    /// 프론트는 배치에서 parent_id == 선택 프로젝트 인 항목을 Changes 패널에 별도 섹션으로 렌더한다.
+    pub parent_id: Option<String>,
+    /// 임베디드 저장소의 부모 루트 기준 상대 경로(예: "APPLICATION/nexus-application"). 최상위는 None.
+    pub rel_path: Option<String>,
+    /// 이 프로젝트에 속한 (모든 깊이의) 임베디드 저장소들의 변경 총합 — 사이드바 뱃지/점 표시용.
+    pub nested_changes: u32,
 }
 
 impl RepoStatus {
@@ -74,6 +81,9 @@ impl RepoStatus {
             untracked: Vec::new(),
             conflicted: Vec::new(),
             error: None,
+            parent_id: None,
+            rel_path: None,
+            nested_changes: 0,
         }
     }
 

@@ -88,7 +88,8 @@ export function ProjectList() {
         s.staged.length +
         s.unstaged.length +
         s.untracked.length +
-        s.conflicted.length
+        s.conflicted.length +
+        s.nestedChanges
       );
     };
     const rank = (p: Project) => {

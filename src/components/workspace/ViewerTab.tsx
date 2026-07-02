@@ -10,6 +10,8 @@ const DiffViewer = lazy(() => import("../diff/DiffViewer"));
 /** Viewer 탭 — 선택된 파일의 diff/내용 또는 빈 상태. */
 export function ViewerTab({ projectId }: { projectId: string }) {
   const selectedDiff = useUi((s) => s.selectedDiff);
+  // 임베디드 저장소 파일이면 그 저장소의 합성 id로 diff/편집을 라우팅한다(없으면 outer).
+  const diffRepoId = useUi((s) => s.selectedDiffRepoId);
 
   if (!selectedDiff) {
     return (
@@ -23,7 +25,7 @@ export function ViewerTab({ projectId }: { projectId: string }) {
 
   return (
     <Suspense fallback={<EmptyState title="diff 뷰어 로딩 중…" />}>
-      <DiffViewer projectId={projectId} target={selectedDiff} />
+      <DiffViewer projectId={diffRepoId ?? projectId} target={selectedDiff} />
     </Suspense>
   );
 }

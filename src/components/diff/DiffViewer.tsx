@@ -259,7 +259,7 @@ export default function DiffViewer({
         )}
         {canEditFromDiff && (
           <button
-            onClick={() => selectDiff({ mode: "file", path })}
+            onClick={() => selectDiff({ mode: "file", path }, projectId)}
             title="이 파일을 편집 가능한 뷰로 열기"
             className="flex shrink-0 items-center gap-1 rounded px-2 py-0.5 text-xs text-fg-dim hover:bg-raised hover:text-fg"
           >
