@@ -1,12 +1,16 @@
 import { CircleCheck, LayoutGrid, Loader2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { isMac, modLabel } from "../lib/platform";
 import { attachTerminal, createTerminal, fitTerminal } from "../lib/terminal";
 import { useProjects, useSettings } from "../queries";
 import { useAgentActivity } from "../stores/agentActivity";
 import { collectByContent, useTerminals } from "../stores/terminals";
 import { useUi } from "../stores/ui";
 import { EmptyState } from "./common/EmptyState";
+
+// 모아보기 토글 단축키 라벨 — mac은 심볼 관례(⌘⇧A), 그 외는 Ctrl+Shift+A
+const hotkeyLabel = isMac ? `${modLabel}⇧A` : `${modLabel}+Shift+A`;
 
 interface TermMeta {
   paneId: string;
@@ -123,7 +127,7 @@ export function AggregateTerminals() {
         </div>
         <button
           onClick={() => setAggregateOpen(false)}
-          title="모아보기 닫기"
+          title={`모아보기 닫기 (${hotkeyLabel})`}
           className="ml-1 flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs text-fg-muted hover:bg-raised hover:text-fg"
         >
           <X size={14} /> 닫기

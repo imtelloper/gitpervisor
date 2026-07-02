@@ -9,7 +9,7 @@ import { ConnectionDialog } from "./components/db/ConnectionDialog";
 import { EmptyState } from "./components/common/EmptyState";
 import { Toasts } from "./components/common/Toast";
 import { GitGate } from "./components/GitGate";
-import { KeyboardShortcuts } from "./components/KeyboardShortcuts";
+import { GlobalShortcuts, KeyboardShortcuts } from "./components/KeyboardShortcuts";
 import { LogPanel } from "./components/log/LogPanel";
 import { MemoDialog } from "./components/memo/MemoDialog";
 import { SettingsDialog } from "./components/settings/SettingsDialog";
@@ -117,6 +117,8 @@ export default function App() {
             </div>
 
             <StatusBar project={selected} />
+            {/* 모아보기 토글 등 — 조건 분기 바깥에 상시 마운트(모아보기 중에도 닫기 동작) */}
+            <GlobalShortcuts />
           </div>
           <Toasts />
           <ConfirmHost />

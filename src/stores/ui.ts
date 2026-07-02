@@ -66,6 +66,7 @@ interface UiState {
   toggleLog: () => void;
   setLogHeight: (h: number) => void;
   setAggregateOpen: (open: boolean) => void;
+  toggleAggregate: () => void;
   selectCommit: (sha: string | null) => void;
   setSettingsOpen: (open: boolean) => void;
   setMemoOpen: (open: boolean) => void;
@@ -130,6 +131,7 @@ export const useUi = create<UiState>((set) => ({
     set({ logHeight: v });
   },
   setAggregateOpen: (open) => set({ aggregateOpen: open }),
+  toggleAggregate: () => set((s) => ({ aggregateOpen: !s.aggregateOpen })),
   selectCommit: (sha) => set({ selectedCommitSha: sha }),
   setSettingsOpen: (open) => set({ settingsOpen: open }),
   setMemoOpen: (open) => set({ memoOpen: open }),

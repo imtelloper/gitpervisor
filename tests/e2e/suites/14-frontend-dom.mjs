@@ -8,7 +8,7 @@ import { unlinkSync } from "node:fs";
 import { join } from "node:path";
 
 export const name =
-  "프론트 DOM 기능 (사이드바 이동 / 이미지뷰어 / 그리드분할 / Ctrl+W / 모아보기 / Log 리사이즈)";
+  "프론트 DOM 기능 (사이드바 이동 / 이미지뷰어 / 그리드분할 / Ctrl+W / 모아보기·단축키 / Log 리사이즈)";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const PNG_B64 =
@@ -158,6 +158,29 @@ export async function run({ cdp, report: r, fix }) {
     })()`);
     await poll(() => uGet("aggregateOpen"), (v) => v === false, 12, 300);
     r.check("모아보기 닫기 → 워크스페이스 복귀", (await uGet("aggregateOpen")) === false);
+
+    // ── #11b 모아보기 토글 단축키 (Ctrl+Shift+A — GlobalShortcuts + xterm 화이트리스트) ──
+    await cdp.eval(
+      `window.dispatchEvent(new KeyboardEvent('keydown',{key:'A',ctrlKey:true,shiftKey:true,bubbles:true,cancelable:true}))`,
+    );
+    const hkOpen = await poll(() => uGet("aggregateOpen"), (v) => v === true, 12, 300);
+    const hkHeader = await cdp.eval(`document.body.innerText.includes('터미널 모아보기')`);
+    r.check("Ctrl+Shift+A: 모아보기 열림", hkOpen === true && hkHeader);
+    // 터미널(xterm) 포커스 상태에서도 토글돼야 한다 — 엔진 화이트리스트 통과 검증(Ctrl+W 패턴 미러)
+    await poll(
+      () => cdp.eval(`!!document.querySelector('.xterm-helper-textarea')`),
+      (v) => v === true,
+      12,
+      300,
+    );
+    await cdp.eval(`(()=>{
+      const ta = document.querySelector('.xterm-helper-textarea');
+      const target = ta || window;
+      if (ta) ta.focus();
+      target.dispatchEvent(new KeyboardEvent('keydown',{key:'A',ctrlKey:true,shiftKey:true,bubbles:true,cancelable:true}));
+    })()`);
+    const hkClosed = await poll(() => uGet("aggregateOpen"), (v) => v === false, 12, 300);
+    r.check("Ctrl+Shift+A(터미널 포커스): 모아보기 닫힘", hkClosed === false);
 
     // 터미널 탭 닫기 — 이후 Log 핸들이 패널 divider(.cursor-row-resize)와 안 헷갈리게.
     await cdp.eval(`window.__gpv.terminals.getState().closeTab(${J(tabId)})`);

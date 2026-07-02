@@ -6,6 +6,7 @@ import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 
 import { collectPanes, useTerminals } from "../stores/terminals";
+import { isMod } from "./platform";
 import {
   ensureExitListener,
   pasteIntoTerminal,
@@ -124,6 +125,8 @@ export function createTerminalImpl(opts: {
     // 프로젝트 위/아래 이동(Ctrl+Shift+↑/↓)도 PTY로 보내지 않고 window 핸들러로 흘려보낸다.
     if (e.ctrlKey && e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown"))
       return false;
+    // 모아보기 토글(mod+Shift+A) — 모아보기 그리드는 전부 터미널이라 이 통과가 닫기 경로에 필수.
+    if (isMod(e) && e.shiftKey && k === "a") return false;
     // Ctrl+W: 포커스된(=이 키를 받은) 이 터미널 패널을 닫는다(Shift 없이 — Ctrl+Shift+W는
     // 기존대로 활성 패널 닫기). dispose를 키 이벤트 도중 하지 않도록 마이크로태스크로 미뤄,
     // 처리 중인 xterm을 그 자리에서 파괴하는 걸 피한다.
