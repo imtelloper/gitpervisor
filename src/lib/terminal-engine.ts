@@ -286,50 +286,71 @@ export function createTerminalImpl(opts: {
       },
       true,
     );
+    // Linux WebKitGTK: 조합 input은 위 compositionend가 확정 처리 → 여기서 차단(누적 방지).
+    // (macOS 처리는 아래 host 캡처 리스너 — 이 textarea 리스너는 xterm 것보다 늦게 등록돼
+    //  같은 타깃에서 등록 순서상 xterm 뒤에 실행되므로, macOS 가로채기에 쓰면 xterm의 자체
+    //  insertText 전송을 못 막아 한글이 이중 전송된다: ㅇ→"ㅇㅇ", 이어 \x7f야→"ㅇ야".)
     ta.addEventListener(
       "input",
       (e) => {
         const ie = e as InputEvent;
-        // Linux WebKitGTK: 조합 input은 위 compositionend가 확정 처리 → 여기서 차단(누적 방지).
-        // macOS 한글 insertReplacementText/insertText는 isComposing=false로 온다(현재 동작으로 검증됨).
         if (ie.isComposing || ie.inputType === "insertCompositionText") {
           e.stopImmediatePropagation();
           ta.value = "";
-          return;
-        }
-        if (!isMacWebKit) return; // Linux 비조합 입력은 keydown(WebKitGTK 경로)에서 처리됨
-
-        // ── macOS WKWebView 한글 IME (compositionstart/update/end 미발화) ──
-        // ASCII(영문·숫자·기호·space)는 stop하지 않아 xterm 기본 경로가 ev.data를 onData로 보낸다.
-        // 단 xterm 6은 일반 ASCII insertText에서 textarea를 비우지 않는다(blur/Enter/Ctrl-C에서만).
-        // imeSent만 비우면 ta.value에 직전 한글 런이 남아, 다음 한글이 diff 기준선 불일치로 그 런을
-        // 통째로 재전송한다("이거 실행"→"이거 이거 실행"). resetImeMirror로 ta.value+imeSent를 함께
-        // 비워 기준선을 맞춘다(xterm _inputEvent는 ev.data를 보내므로 ta.value를 비워도 이 ASCII
-        // 문자는 정상 전달됨).
-        if (ie.inputType === "insertText" && ie.data && isAsciiStr(ie.data)) {
-          resetImeMirror();
-          return;
-        }
-        // 한글(비-ASCII) 새 음절(insertText) 또는 현재 음절 갱신(insertReplacementText):
-        // 가로채야(stop) xterm이 textarea를 비우지 않아 ta.value가 조합 런 전체를 누적한다 → 전체
-        // 라인 diff 성립. ta.value와 미러를 diff해 정확한 델타만 PTY로 보낸다(data가 null/""인
-        // decommit이어도 ta.value로 판단하므로 안전).
-        if (
-          ie.inputType === "insertText" ||
-          ie.inputType === "insertReplacementText"
-        ) {
-          e.stopImmediatePropagation();
-          const next = ta.value; // 캡처 단계 → xterm 처리 전, 누적된 전체 조합 라인
-          const delta = imeLineDelta(imeSent, next);
-          imeSent = next;
-          if (delta)
-            void invoke("term_write", { termId: opts.id, data: delta }).catch(() => {});
         }
       },
       true,
     );
-    // macOS: 포커스 상실 시 조합 문맥이 사라지므로 미러 리셋(다음 포커스+입력이 깨끗이 시작).
-    if (isMacWebKit) ta.addEventListener("blur", () => resetImeMirror(), true);
+
+    // ── macOS WKWebView 한글 IME (compositionstart/update/end 미발화) ──
+    // 반드시 host(조상) "캡처" 리스너로 가로챈다: 조상의 캡처 리스너는 타깃(textarea)의 어떤
+    // 리스너보다도 항상 먼저 실행됨이 스펙으로 보장된다(등록 순서 무관). 여기서 stopPropagation
+    // 하면 xterm의 textarea input 핸들러가 아예 호출되지 않아, xterm 가드
+    // (!e.composed||!_keyDownSeen)를 통과하는 한글 insertText의 자체 전송(이중 전송 원인)을
+    // 원천 차단한다.
+    if (isMacWebKit) {
+      host.addEventListener(
+        "input",
+        (e) => {
+          const ie = e as InputEvent;
+          if (ie.target !== term.textarea) return;
+          // 진짜 composition 이벤트를 쓰는 IME(일본어 등) 안전망 — 한글은 여기 안 옴(§3).
+          if (ie.isComposing || ie.inputType === "insertCompositionText") {
+            e.stopPropagation();
+            if (term.textarea) term.textarea.value = "";
+            imeSent = "";
+            return;
+          }
+          // ASCII(영문·숫자·기호·space)는 stop하지 않아 xterm 기본 경로가 ev.data를 보낸다.
+          // 단 xterm 6은 일반 ASCII insertText에서 textarea를 비우지 않으므로(blur/Enter/Ctrl-C만)
+          // resetImeMirror로 ta.value+imeSent를 함께 비워 diff 기준선을 맞춘다 — 안 하면 다음
+          // 한글이 직전 런을 통째로 재전송한다("이거 실행"→"이거 이거 실행"). xterm _inputEvent는
+          // ev.data를 읽으므로 ta.value를 비워도 이 ASCII 문자는 정상 전달된다.
+          if (ie.inputType === "insertText" && ie.data && isAsciiStr(ie.data)) {
+            resetImeMirror();
+            return;
+          }
+          // 한글(비-ASCII) 새 음절(insertText) 또는 현재 음절 갱신(insertReplacementText):
+          // stopPropagation으로 xterm 도달을 차단(이중 전송·textarea 클리어 방지) → ta.value가
+          // 조합 런 전체를 누적 → 미러와 diff해 정확한 델타만 PTY로 보낸다(data가 null/""인
+          // decommit이어도 ta.value로 판단하므로 안전).
+          if (
+            ie.inputType === "insertText" ||
+            ie.inputType === "insertReplacementText"
+          ) {
+            e.stopPropagation();
+            const next = (ie.target as HTMLTextAreaElement).value;
+            const delta = imeLineDelta(imeSent, next);
+            imeSent = next;
+            if (delta)
+              void invoke("term_write", { termId: opts.id, data: delta }).catch(() => {});
+          }
+        },
+        true,
+      );
+      // 포커스 상실 시 조합 문맥이 사라지므로 미러 리셋(다음 포커스+입력이 깨끗이 시작).
+      ta.addEventListener("blur", () => resetImeMirror(), true);
+    }
   }
 
   const inst: TermInstance = {
@@ -371,11 +392,11 @@ export function createTerminalImpl(opts: {
   });
 
   // 입력 → PTY stdin
+  // 주의: 여기서 IME 미러를 리셋하면 안 된다 — onData에는 키 입력만 아니라 xterm의 "자동응답"
+  // (커서위치 \x1b[?..R, DA, 포커스 \x1b[I/O, 마우스 리포트)이 상시 흐른다(TUI/프롬프트가 초당
+  // 수십 회 질의). 제어바이트 매칭으로 리셋하면 한글 조합 도중 미러+textarea가 계속 지워져
+  // 입력이 깨진다(자모 파편·중복). 리셋은 keydown 목록/ASCII input/blur가 담당한다.
   term.onData((data) => {
-    // macOS: 제어 시퀀스(Enter \r, Backspace \x7f, 방향키 \x1b[.., Ctrl-C \x03 등)가 onData로
-    // 흐르면 조합 런 밖에서 라인이 바뀐 것 → IME 미러 리셋(keydown 목록 보조 안전망). 인쇄 문자는
-    // 매칭 안 되고, 한글 조합 델타는 invoke로 직접 보내 onData로 오지 않는다.
-    if (isMacWebKit && /[\x00-\x1f\x7f]/.test(data)) resetImeMirror();
     void invoke("term_write", { termId: opts.id, data }).catch(() => {});
   });
   // 리사이즈 → ConPTY

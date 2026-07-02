@@ -167,16 +167,18 @@ if (e.isComposing || e.keyCode === 229 || e.key === "Process" || e.key === "Unid
 
 **해결**: 이벤트별 `\x7f` 개수를 추측하지 않는다. **캡처 단계에서 읽는 `ta.value`(= 누적된 전체 조합 라인)를 미러(`imeSent`)와 코드포인트 diff** 하여 "정확한 백스페이스 수 + 추가분"만 보낸다(`src/lib/terminal-engine.ts`의 `imeLineDelta`). `어떡하`→`어떡하냐`면 공통 접두 `[어,떡,하]`가 보존되고 `냐`만 추가(=`\x7f` 0개) → `하`가 안 지워진다. NFC 한글 1음절 = 1 코드포인트 = 셸의 1삭제 단위라 `Array.from`이 곧 음절 단위 카운트.
 
-- 한글(비-ASCII) `insertText`/`insertReplacementText`는 `stopImmediatePropagation`으로 가로채야 xterm이 textarea를 비우지 않아 `ta.value`가 조합 런 전체를 누적한다 → 전체 라인 diff 성립.
+- 한글(비-ASCII) `insertText`/`insertReplacementText` 가로채기는 **반드시 host(조상) 캡처 리스너**로 한다. textarea에 직접 붙이면(1차 구현 실패) xterm이 자기 input 리스너를 먼저 등록해둬서 — 같은 타깃에서는 등록 순서대로 실행 — 우리 `stopImmediatePropagation`이 xterm을 못 막는다. xterm 가드(`!e.composed||!_keyDownSeen`)가 WKWebView 한글 insertText를 통과시켜 **xterm도 보내고 우리도 보내는 이중 전송**이 된다(`ㅇ`→`ㅇㅇ`, 이어 `\x7f야`→`ㅇ야`). 조상의 캡처 리스너는 타깃의 어떤 리스너보다 먼저 실행이 스펙으로 보장되므로 `stopPropagation`으로 xterm 도달을 원천 차단할 수 있고, 그래야 xterm이 textarea를 비우지 않아 `ta.value`가 조합 런 전체를 누적한다 → 전체 라인 diff 성립.
 - **ASCII(영문·숫자·기호·공백)는 xterm 기본 경로에 그대로 맡긴다**(영문 회귀 위험 최소화). 단 조합 런이 끝나므로 미러를 리셋한다 — 여기서 함정: **xterm 6은 일반 ASCII `insertText`에서 textarea를 비우지 않는다**(blur/Enter/Ctrl-C에서만). `imeSent`만 비우면 `ta.value`에 직전 한글 런이 남아, 다음 한글이 그 전체를 재전송해 **중복**된다(`이거 실행`→`이거 이거 실행`). 그래서 ASCII 분기에서 `resetImeMirror()`로 `ta.value`까지 비워 diff 기준선을 맞춘다.
-- 조합 런 밖에서 라인을 바꾸는 키(Enter/Backspace/방향키/Tab/단축키)와 blur, onData 제어바이트에서 미러를 리셋한다. 맨 Shift 등 수식키 단독은 제외(`가+Shift+ㄱ→가까` 조합 중 미러가 지워지지 않도록).
+- 조합 런 밖에서 라인을 바꾸는 키(Enter/Backspace/방향키/Tab/단축키)와 blur에서 미러를 리셋한다. 맨 Shift 등 수식키 단독은 제외(`가+Shift+ㄱ→가까` 조합 중 미러가 지워지지 않도록). **`term.onData`에서 제어바이트를 보고 리셋하면 절대 안 된다**(1차 구현 실패 #2): onData에는 키 입력만 아니라 xterm의 **자동응답**(커서위치 `\x1b[?..R`, DA, 포커스 `\x1b[I/O`, 마우스 리포트)이 상시 흐른다 — 프롬프트(starship/p10k)·TUI가 초당 수십 회 질의한다. 여기서 리셋하면 한글 조합 도중 미러+textarea가 계속 지워져 입력이 자모 파편·중복으로 깨진다.
 
 **교훈**:
 - 이벤트 단위 `\x7f` diffing은 IME의 **음절 경계가 흔들리는 빠른 타이핑**을 못 따라간다. 정답은 **textarea 값 자체를 셸 라인의 미러로 보고 전체를 diff** 하는 것(xterm이 Chromium에서 composition 이벤트로 하는 일을, 이벤트를 안 쏘는 WKWebView에서 손으로 재현).
+- 같은 요소에 나중에 등록한 리스너로는 앞선 리스너를 못 막는다(`stopImmediatePropagation` 무효 — at-target은 등록 순서). **서드파티(xterm)가 소유한 요소의 이벤트를 가로채려면 조상 캡처**가 유일하게 순서가 보장되는 방법.
 - **xterm 6은 평범한 ASCII `input`에서 textarea를 비우지 않는다**(blur/Enter/Ctrl-C만). `ta.value`를 미러로 읽으려면 리셋을 직접 해야 한다.
+- `term.onData`는 "사용자 키 입력"이 아니라 "터미널이 앱에 응답하는 모든 바이트"다 — 자동응답이 상시 섞이므로 여기에 상태 리셋 같은 부수효과를 걸면 안 된다.
 - (미해결/후속 여지) 커서 위치 응답 홍수는 `term_write` 배치(coalesce)로 IPC를 줄일 수 있으나 별개 과제.
 
-> 상태: 타입체크·빌드 통과, 코드리뷰(적대적) 완료. **macOS 실측 검증 대기** — 아래 §3.6 체크리스트는 커밋 메시지/PR에 동봉.
+> 상태: macOS 실측 검증 **완료** — 빠른 한글(`어떡하냐`, `야 이제 잘 좀 하자`), 한/영 혼합(`안a녕`), 겹자음(`가까`), 느린 입력 회귀 모두 정상.
 
 ---
 
