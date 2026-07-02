@@ -30,6 +30,7 @@ const SUITES = [
   "./suites/16-browser-session.mjs",
   "./suites/17-remote-freshness.mjs",
   "./suites/18-sysmon.mjs",
+  "./suites/19-themes.mjs",
 ];
 
 const report = createReport();

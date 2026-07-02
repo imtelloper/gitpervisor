@@ -202,7 +202,8 @@ pub struct Settings {
     pub remote_refresh_minutes: u32,
     pub diff_font_size: u32,
     pub confirm_discard: bool,
-    /// UI 테마 이름 ("darcula" | "monokai"). 검증·렌더는 프론트가 담당.
+    /// UI 테마 이름 ("darcula" | "monokai" | "light" | "dracula" | "nord" | "solarized-light").
+    /// 자유 문자열 통과 — 검증·렌더는 프론트(themes.ts, 미지 id는 darcula 폴백)가 담당.
     pub theme: String,
     /// 임베디드 터미널 셸 (null/빈값 = 자동: pwsh→powershell→cmd / $SHELL)
     pub terminal_shell: Option<String>,

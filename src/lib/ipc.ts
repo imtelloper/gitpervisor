@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 
+import type { ThemeName } from "./themes";
+
 export interface Project {
   id: string;
   name: string;
@@ -133,7 +135,9 @@ export interface LogPage {
 }
 
 // ---- M4: 설정 ----
-export type ThemeName = "darcula" | "monokai";
+// 테마 유니온의 원천은 themes.ts(레지스트리) — 여기선 재노출만 한다.
+// (themes.ts는 ipc를 import하지 않으므로 순환 없음)
+export type { ThemeName };
 
 /** AI 완료 알림 모드 — off=끔, project-inactive=프로젝트 단위·창 비활성 시만,
  *  terminal=터미널 단위 매번, always=항상. */

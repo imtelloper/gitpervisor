@@ -69,6 +69,15 @@ export async function createTerminal(opts: {
   return createTerminalImpl(opts);
 }
 
+/** 열린 모든 터미널에 현재 테마(CSS 변수 + themes.ts 보정)를 재적용한다.
+ *  테마는 Terminal 생성 시 1회만 적용되므로, 전환 시 App/SettingsDialog가 호출한다.
+ *  레지스트리가 비면(= 엔진 미로드 포함) no-op — 엔진을 불필요하게 로드하지 않는다. */
+export function refreshTerminalThemes(): void {
+  if (registry.size === 0) return;
+  // 레지스트리에 인스턴스가 있다 = 엔진이 이미 로드됨 → import는 모듈 캐시에서 즉시 해소.
+  void import("./terminal-engine").then((m) => m.refreshTerminalThemesImpl());
+}
+
 /** host를 컨테이너에 붙이고 맞춘다. 탭 활성화 시 호출. */
 export function attachTerminal(id: string, container: HTMLElement) {
   const inst = registry.get(id);

@@ -21,6 +21,7 @@ import { FileTreePanel } from "./components/tree/FileTreePanel";
 import { WorkspaceTabs } from "./components/workspace/WorkspaceTabs";
 import { useAgentNotifications } from "./lib/agent-notify";
 import { ipc } from "./lib/ipc";
+import { refreshTerminalThemes } from "./lib/terminal";
 import {
   useProjectRootsPrefetch,
   useProjects,
@@ -47,7 +48,16 @@ export default function App() {
 
   // 선택 테마를 <html data-theme>로 적용 — CSS 변수 오버라이드가 전체 팔레트를 바꾼다
   useEffect(() => {
-    document.documentElement.dataset.theme = settings?.theme ?? "darcula";
+    const theme = settings?.theme ?? "darcula";
+    document.documentElement.dataset.theme = theme;
+    // 다음 실행의 첫 페인트용 캐시 — main.tsx가 렌더 전에 선적용해 시작 플래시를 없앤다
+    try {
+      localStorage.setItem("gp:theme", theme);
+    } catch {
+      /* localStorage 불가 환경 무시 */
+    }
+    // 이미 열린 xterm은 생성 시 테마가 박제되므로 즉시 재적용 (CSSOM 반영은 동기라 안전)
+    refreshTerminalThemes();
   }, [settings?.theme]);
 
   // 이전 실행에서 크래시가 있었으면(패닉 로그가 남았으면) 1회 알린다. 같은 크래시(파일 mtime)는

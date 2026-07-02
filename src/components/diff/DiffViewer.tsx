@@ -18,15 +18,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { errorMessage } from "../../lib/ipc";
 import type { DiffTarget } from "../../lib/ipc";
 import { isImage, languageOf } from "../../lib/language-map";
+import { monacoThemeOf } from "../../lib/themes";
 import { useDiff, useSettings, useWriteFile } from "../../queries";
 import { useUi } from "../../stores/ui";
 import { EmptyState } from "../common/EmptyState";
 import ImageView from "./ImageView";
 import MarkdownView from "./MarkdownView";
-
-function monacoThemeOf(theme: string | undefined): string {
-  return theme === "monokai" ? "gitpervisor-monokai" : "gitpervisor-dark";
-}
 
 function modeLabel(target: DiffTarget): string {
   switch (target.mode) {

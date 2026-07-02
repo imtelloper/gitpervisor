@@ -5,7 +5,12 @@ import { useEffect, useState } from "react";
 import { FloatTitleBar } from "./components/FloatTitleBar";
 import { PaneTreeRoot } from "./components/workspace/PaneTree";
 import { ipc } from "./lib/ipc";
-import { createTerminal, disposeTerminal } from "./lib/terminal";
+import {
+  createTerminal,
+  disposeTerminal,
+  refreshTerminalThemes,
+} from "./lib/terminal";
+import { useSettings } from "./queries";
 import { collectPanes, useTerminals } from "./stores/terminals";
 
 const FONT = 13;
@@ -18,6 +23,15 @@ const FONT = 13;
 export function FloatingTerminal({ paneId }: { paneId: string }) {
   const [tabId, setTabId] = useState<string | null>(null);
   const [projectId, setProjectId] = useState("");
+  const { data: settings } = useSettings();
+
+  // 이 창에도 저장된 테마 적용 — 로드 전엔 main.tsx의 localStorage 선적용 값이 유지된다.
+  // (창이 열린 뒤 메인 창에서 바꾼 테마의 실시간 브로드캐스트는 후속 — 창이 단명이라 저빈도)
+  useEffect(() => {
+    if (!settings?.theme) return;
+    document.documentElement.dataset.theme = settings.theme;
+    refreshTerminalThemes(); // attach된 xterm은 생성 시 테마가 박제 — 확정값으로 재적용
+  }, [settings?.theme]);
 
   useEffect(() => {
     let cancelled = false;

@@ -12,8 +12,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { clearBrowserData } from "../../lib/browser";
 import { formatBytes } from "../../lib/format";
-import type { LogStatus, NotifySecret, Settings } from "../../lib/ipc";
+import type { LogStatus, NotifySecret, Settings, ThemeName } from "../../lib/ipc";
 import { errorMessage, ipc } from "../../lib/ipc";
+import { refreshTerminalThemes } from "../../lib/terminal";
+import { THEMES } from "../../lib/themes";
 import {
   useClearQuarantine,
   useGitCheck,
@@ -311,7 +313,7 @@ function DiagnosticsSection() {
   );
 }
 
-/** 설정 모달 호스트 — 툴바 ⚙ 버튼으로 연다 (설계 F12). 테마는 후속 보류. */
+/** 설정 모달 호스트 — 툴바 ⚙ 버튼으로 연다 (설계 F12). */
 export function SettingsDialog() {
   const open = useUi((s) => s.settingsOpen);
   const setOpen = useUi((s) => s.setSettingsOpen);
@@ -341,6 +343,25 @@ export function SettingsDialog() {
 
   const update = <K extends keyof Settings>(key: K, value: Settings[K]) =>
     setForm((f) => (f ? { ...f, [key]: value } : f));
+
+  // 테마 라이브 프리뷰 — 클릭 즉시 화면 전체에 반영한다. App의 테마 effect는 "저장된"
+  // settings에 의존하므로 저장 전에는 직접 dataset.theme + 열린 터미널 재적용이 필요하다.
+  const previewTheme = (id: ThemeName) => {
+    update("theme", id);
+    document.documentElement.dataset.theme = id;
+    refreshTerminalThemes();
+  };
+
+  // 저장 없이 닫기 — 프리뷰로 바꾼 테마를 저장값으로 명시 복원(App effect는 settings 의존이라
+  // 자동 복원되지 않는다). 저장 후 닫기는 handleSave 경로(프리뷰 = 저장값이라 복원 불요).
+  const closeWithoutSave = () => {
+    const saved = settings?.theme ?? "darcula";
+    if (document.documentElement.dataset.theme !== saved) {
+      document.documentElement.dataset.theme = saved;
+      refreshTerminalThemes();
+    }
+    setOpen(false);
+  };
 
   function buildCleaned(f: Settings): Settings {
     return {
@@ -408,7 +429,7 @@ export function SettingsDialog() {
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-      onClick={() => setOpen(false)}
+      onClick={closeWithoutSave}
     >
       <div
         className="flex max-h-[85vh] w-[500px] flex-col rounded-lg border border-edge bg-panel p-5 shadow-xl"
@@ -419,7 +440,7 @@ export function SettingsDialog() {
           <span className="font-semibold">설정</span>
           <div className="flex-1" />
           <button
-            onClick={() => setOpen(false)}
+            onClick={closeWithoutSave}
             className="rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
           >
             <X size={15} />
@@ -427,19 +448,32 @@ export function SettingsDialog() {
         </div>
 
         <div className="mt-4 flex-1 space-y-4 overflow-y-auto pr-1 text-[13px]">
-          <Field label="테마">
-            <div className="flex gap-2">
-              {(["darcula", "monokai"] as const).map((t) => (
+          <Field label="테마" hint="클릭 즉시 미리보기 — 저장하지 않고 닫으면 원래 테마로 돌아갑니다">
+            <div className="grid grid-cols-2 gap-2">
+              {THEMES.map((t) => (
                 <button
-                  key={t}
-                  onClick={() => update("theme", t)}
-                  className={`flex-1 rounded border px-3 py-1.5 ${
-                    form.theme === t
+                  key={t.id}
+                  onClick={() => previewTheme(t.id)}
+                  className={`flex items-center gap-2 rounded border px-2.5 py-1.5 text-left ${
+                    form.theme === t.id
                       ? "border-accent bg-accent/15 text-fg"
                       : "border-edge text-fg-muted hover:bg-raised"
                   }`}
                 >
-                  {t === "darcula" ? "다크 (Darcula)" : "Monokai"}
+                  {/* 스와치 — base 바탕 위 accent/add/danger 점 3개 (테마 톤 미리보기) */}
+                  <span
+                    className="flex h-5 w-9 shrink-0 items-center justify-center gap-[3px] rounded border border-edge"
+                    style={{ backgroundColor: t.swatch[0] }}
+                  >
+                    {t.swatch.slice(1).map((c, i) => (
+                      <span
+                        key={i}
+                        className="h-2 w-2 rounded-full"
+                        style={{ backgroundColor: c }}
+                      />
+                    ))}
+                  </span>
+                  <span className="truncate">{t.label}</span>
                 </button>
               ))}
             </div>
@@ -677,7 +711,7 @@ export function SettingsDialog() {
 
         <div className="mt-5 flex justify-end gap-2">
           <button
-            onClick={() => setOpen(false)}
+            onClick={closeWithoutSave}
             className="rounded px-3 py-1.5 text-fg-muted hover:bg-raised"
           >
             취소

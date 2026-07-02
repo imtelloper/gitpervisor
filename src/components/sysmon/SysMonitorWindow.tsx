@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { formatBytes } from "../../lib/format";
 import type { ProcSortKey, ProcessSample } from "../../lib/ipc";
-import { useProcessSnapshot } from "../../queries";
+import { useProcessSnapshot, useSettings } from "../../queries";
 import { FloatTitleBar } from "../FloatTitleBar";
 import { loadSysmonPrefs, saveSysmonPrefs } from "./prefs";
 
@@ -131,6 +131,13 @@ function Row({ p, grouped }: { p: ProcessSample; grouped: boolean }) {
  * 폴링은 틱당 sys_process_snapshot 1개(totals 포함 배치) — useProcessSnapshot이 담당.
  */
 export function SysMonitorWindow() {
+  // 이 창에도 저장된 테마 적용(FloatingTerminal과 동일 패턴) — 로드 전엔 main.tsx의
+  // localStorage 선적용 값이 유지된다.
+  const { data: settings } = useSettings();
+  useEffect(() => {
+    if (settings?.theme) document.documentElement.dataset.theme = settings.theme;
+  }, [settings?.theme]);
+
   // 부팅 시 1회 localStorage에서 초기값을 읽는다 — 타이틀바가 클릭 직전 써둔 sortBy 핸드오프.
   const [prefs] = useState(loadSysmonPrefs);
   const [sortBy, setSortBy] = useState<ProcSortKey>(prefs.sortBy);

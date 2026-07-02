@@ -13,6 +13,7 @@ import {
   registry,
   type TermInstance,
 } from "./terminal";
+import { themeOf } from "./themes";
 
 // 이 모듈은 **무거운 xterm 엔진**이다(@xterm/xterm + addon-fit + addon-webgl + css ≈ 441kB).
 // 경량 코어(./terminal)에서 첫 터미널 탭이 열릴 때만 동적 import되어, 콜드 스타트 번들에서
@@ -31,7 +32,7 @@ function readTheme(): ITheme {
   const v = (name: string, fallback: string) =>
     css.getPropertyValue(name).trim() || fallback;
   const fg = v("--color-fg", "#dfe1e5");
-  return {
+  const base: ITheme = {
     background: v("--color-base", "#1e1f22"),
     foreground: fg,
     cursor: fg,
@@ -42,6 +43,21 @@ function readTheme(): ITheme {
     green: v("--color-add", "#62b543"),
     cyan: v("--color-accent", "#3574f0"),
   };
+  // CSS 파생만으론 부족한 테마별 보정(라이트 ANSI 16색 등)을 레지스트리에서 병합.
+  // 겹치는 키는 보정이 이긴다 — 다크 테마는 보정이 없어 기존 파생 그대로.
+  const fix = themeOf(document.documentElement.dataset.theme).xterm;
+  return fix ? { ...base, ...fix } : base;
+}
+
+/** 열린 모든 터미널에 현재 CSS 변수 기반 테마 재적용 — 테마 전환 시 코어가 호출한다.
+ *  xterm 6은 options.theme 참조 비교로 리렌더를 판단하므로 "새 객체" 대입이 필수
+ *  (readTheme가 매번 새 객체를 반환해 충족). */
+export function refreshTerminalThemesImpl(): void {
+  const theme = readTheme();
+  for (const inst of registry.values()) {
+    // 인스턴스 간 객체 공유는 무해(xterm이 내부 복사) — 참조만 새 것이면 된다.
+    inst.term.options.theme = { ...theme };
+  }
 }
 
 /** xterm 인스턴스를 만들고 PTY를 띄운다. 이미 있으면 기존 것을 반환(멱등).
