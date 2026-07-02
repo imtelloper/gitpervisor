@@ -1,5 +1,6 @@
 import {
   FolderOpen,
+  Globe,
   RefreshCw,
   ScrollText,
   Send,
@@ -9,6 +10,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { clearBrowserData } from "../../lib/browser";
 import { formatBytes } from "../../lib/format";
 import type { LogStatus, NotifySecret, Settings } from "../../lib/ipc";
 import { errorMessage, ipc } from "../../lib/ipc";
@@ -158,6 +160,53 @@ function QuarantineSection() {
           </button>
         </>
       )}
+    </>
+  );
+}
+
+/**
+ * 브라우저 데이터 섹션 — 임베디드 브라우저(공유 프로필)의 로그인/쿠키를 지운다.
+ * 북마크·방문기록은 우리 store의 별개 데이터라 유지 — 일반 브라우저의
+ * "쿠키 삭제 ≠ 방문기록 삭제" 관행과 동일.
+ */
+function BrowserDataSection() {
+  const [busy, setBusy] = useState(false);
+  const toast = (kind: "error" | "success", m: string) =>
+    useUi.getState().pushToast(kind, m);
+
+  const confirmClear = () =>
+    useUi.getState().askConfirm({
+      title: "브라우저 데이터 초기화",
+      message:
+        "임베디드 브라우저의 모든 로그인 세션·쿠키·사이트 데이터를 지웁니다. 모든 사이트에서 로그아웃됩니다.",
+      confirmLabel: "초기화",
+      danger: true,
+      onConfirm: () => {
+        setBusy(true);
+        void clearBrowserData()
+          .then(() => toast("success", "브라우저 로그인/쿠키 데이터를 지웠습니다"))
+          .catch((e) => toast("error", errorMessage(e)))
+          .finally(() => setBusy(false));
+      },
+    });
+
+  return (
+    <>
+      <div className="border-t border-edge pt-3 text-[11px] font-semibold tracking-widest text-fg-dim">
+        브라우저
+      </div>
+      <div className="text-[11px] leading-5 text-fg-muted">
+        임베디드 브라우저 탭·팝업이 공유하는 로그인 세션과 쿠키를 지웁니다.
+        북마크와 방문 기록은 유지됩니다.
+      </div>
+      <button
+        disabled={busy}
+        onClick={confirmClear}
+        className="flex items-center gap-1.5 rounded border border-edge px-2.5 py-1 text-danger hover:bg-danger/15 disabled:opacity-50"
+      >
+        <Globe size={12} />
+        {busy ? "초기화 중…" : "브라우저 데이터 초기화"}
+      </button>
     </>
   );
 }
@@ -618,6 +667,8 @@ export function SettingsDialog() {
               </button>
             </div>
           )}
+
+          <BrowserDataSection />
 
           <DiagnosticsSection />
 

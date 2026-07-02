@@ -289,6 +289,7 @@ pub fn run() {
             commands::browser_blur,
             commands::browser_close,
             commands::browser_scan_dev_ports,
+            commands::browser_clear_data,
             commands::http_request,
             commands::http_cancel,
             commands::get_target_sizes,

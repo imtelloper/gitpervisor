@@ -27,6 +27,7 @@ const SUITES = [
   "./suites/13-float-window.mjs",
   "./suites/14-frontend-dom.mjs",
   "./suites/15-tree-fileops.mjs",
+  "./suites/16-browser-session.mjs",
 ];
 
 const report = createReport();

@@ -15,8 +15,9 @@
 //! 쿠키/세션은 `data_directory`로 특권 main webview와 분리한다(팝업도 같은 프로필).
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Once;
 
 use serde::{Deserialize, Serialize};
 use tauri::webview::{
@@ -94,13 +95,40 @@ fn parse_url(s: &str) -> Result<Url, IpcError> {
 }
 
 /// 모든 브라우저 webview가 공유하는 분리된 데이터 폴더 — 특권 main webview의 쿠키/세션과 격리.
-/// (브라우저 탭끼리는 로그인 세션을 공유한다.)
-fn browser_data_dir(app: &AppHandle) -> PathBuf {
-    let base = app
-        .path()
-        .app_local_data_dir()
-        .unwrap_or_else(|_| std::env::temp_dir());
-    base.join("browser-session")
+/// (브라우저 탭·팝업 창끼리는 로그인 세션을 공유한다.) temp 폴백 금지 — 조용히 임시 프로필로
+/// 새어 세션이 증발하느니 browser_open이 에러를 반환하는 게 낫다(07 F1).
+fn browser_data_dir(app: &AppHandle) -> Result<PathBuf, IpcError> {
+    let base = app.path().app_local_data_dir().map_err(|e| {
+        IpcError::new(ErrorCode::Io, format!("앱 데이터 폴더를 찾을 수 없습니다: {e}"))
+    })?;
+    Ok(base.join("browser-session"))
+}
+
+/// 지연 삭제 marker 경로 — 프로필 폴더의 형제 파일(폴더 안에 두면 삭제와 함께 사라진다).
+fn clear_marker_path(dir: &Path) -> PathBuf {
+    let mut s = dir.as_os_str().to_owned();
+    s.push(".clear-pending");
+    PathBuf::from(s)
+}
+
+/// browser_clear_data 시점에 프로필이 파일 락으로 안 지워졌으면 marker가 남아 있다 —
+/// 다음 시작 시 첫 webview 생성 전(프로필 파일 락이 없는 유일한 시점)에 여기서 지운다.
+static PENDING_CLEAR_CHECK: Once = Once::new();
+fn process_pending_clear(app: &AppHandle) {
+    PENDING_CLEAR_CHECK.call_once(|| {
+        let Ok(dir) = browser_data_dir(app) else { return };
+        let marker = clear_marker_path(&dir);
+        if !marker.exists() {
+            return;
+        }
+        if !dir.exists() || std::fs::remove_dir_all(&dir).is_ok() {
+            let _ = std::fs::remove_file(&marker);
+            log::info!("브라우저 프로필 지연 삭제 완료");
+        } else {
+            // 여전히 실패 — marker를 남겨 다음 시작에 재시도(best-effort).
+            log::warn!("브라우저 프로필 지연 삭제 실패 — 다음 시작 시 재시도");
+        }
+    });
 }
 
 /// 최상위 네비게이션 게이트: http(s)/about:blank만 허용, file:/tauri:/javascript:/data: 등 차단.
@@ -252,9 +280,12 @@ pub async fn browser_open(
         .get_window("main")
         .ok_or_else(|| IpcError::new(ErrorCode::NotFound, "메인 창을 찾을 수 없습니다"))?;
 
+    // 프로필 지연 삭제가 예약돼 있으면 첫 webview 생성 전에 처리(파일 락 없는 유일한 시점).
+    process_pending_clear(&app);
+
     let builder = WebviewBuilder::new(&label, WebviewUrl::External(target))
         // 특권 main과 쿠키/세션 분리 (적대적 외부 콘텐츠 격리).
-        .data_directory(browser_data_dir(&app))
+        .data_directory(browser_data_dir(&app)?)
         .on_navigation(navigation_gate)
         // window.open/target=_blank/OAuth 팝업 → 플로팅 팝업 창으로 승격(06).
         // 스킴 밖·한도 초과·생성 실패는 handle_new_window가 Deny/OS 위임으로 처리한다.
@@ -434,6 +465,67 @@ pub async fn browser_scan_dev_ports(ports: Option<Vec<u16>>) -> Result<Vec<u16>,
     });
     let results = futures::future::join_all(checks).await;
     Ok(results.into_iter().filter(|(_, ok)| *ok).map(|(p, _)| p).collect())
+}
+
+/// 브라우저 프로필의 쿠키·스토리지 전부 삭제 — 북마크/방문기록(main webview의 store)은 별개
+/// 데이터라 유지한다(일반 브라우저의 "쿠키 삭제 ≠ 방문기록 삭제" 관행). 살아있는 브라우저
+/// webview(탭 child·팝업 창 — 같은 프로필)가 있으면 라이브 API로 지우고 전부 reload, 없으면
+/// 폴더를 지운다. 폴더가 파일 락으로 안 지워지면 marker를 남겨 다음 시작 시 지연 삭제한다.
+#[tauri::command]
+pub async fn browser_clear_data(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), IpcError> {
+    // 탭 child는 레지스트리(단일 진실)에서, 팝업 창은 라벨 스캔으로 수집.
+    let ids: Vec<String> = state
+        .browser
+        .lock()
+        .unwrap()
+        .last_bounds
+        .keys()
+        .cloned()
+        .collect();
+    let mut webviews: Vec<Webview> = ids
+        .iter()
+        .filter_map(|id| app.get_webview(&label_of(id)))
+        .collect();
+    for (label, wv) in app.webviews() {
+        if label.starts_with(POPUP_LABEL_PREFIX) {
+            webviews.push(wv);
+        }
+    }
+
+    if let Some(first) = webviews.first() {
+        // Windows에선 프로필 전체 삭제(ICoreWebView2Profile2::ClearBrowsingDataAll).
+        // 완료가 비동기라 직후 reload의 첫 요청은 옛 쿠키를 볼 수 있으나 곧 수렴한다.
+        first.clear_all_browsing_data().map_err(map_err)?;
+        for wv in &webviews {
+            let _ = wv.reload();
+        }
+        return Ok(());
+    }
+
+    let dir = browser_data_dir(&app)?;
+    let marker = clear_marker_path(&dir);
+    if !dir.exists() {
+        let _ = std::fs::remove_file(&marker);
+        return Ok(());
+    }
+    match std::fs::remove_dir_all(&dir) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&marker);
+            Ok(())
+        }
+        Err(e) => {
+            // WebView2 브라우저 프로세스가 프로필 파일을 아직 잡고 있는 경우 — 지금은 못
+            // 지우니 marker를 남기고 성공 처리한다(다음 시작 시 확정 삭제).
+            log::warn!("브라우저 프로필 즉시 삭제 실패({e}) — 다음 시작 시 지연 삭제 예약");
+            std::fs::write(&marker, b"").map_err(|e2| {
+                IpcError::new(ErrorCode::Io, format!("지연 삭제 예약 실패: {e2}"))
+            })?;
+            Ok(())
+        }
+    }
 }
 
 /// 창이 닫힐 때 살아있는 모든 브라우저 webview를 정리(누수 방지). lib.rs Destroyed 훅에서 호출.
