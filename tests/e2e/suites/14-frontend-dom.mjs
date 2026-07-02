@@ -8,7 +8,7 @@ import { unlinkSync } from "node:fs";
 import { join } from "node:path";
 
 export const name =
-  "프론트 DOM 기능 (사이드바 이동 / 이미지뷰어 / 그리드분할 / Ctrl+W / 모아보기·단축키 / Log 리사이즈)";
+  "프론트 DOM 기능 (사이드바 이동 / 이미지뷰어 / 그리드분할 / Ctrl+W / 모아보기·단축키·새터미널 / Log 리사이즈)";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const PNG_B64 =
@@ -45,6 +45,8 @@ export async function run({ cdp, report: r, fix }) {
   const origLogHeight = await uGet("logHeight");
   let tabId = null;
   let tabClosed = false;
+  let newTabId = null; // #11c 새 터미널 버튼이 만든 탭 — 정리 대상
+  let newTabClosed = false;
 
   try {
     // ── 셋업: 픽스처는 원시 invoke로 추가돼 UI 캐시에 없을 수 있다 → projects 쿼리 갱신 후 선택.
@@ -102,8 +104,9 @@ export async function run({ cdp, report: r, fix }) {
     }
 
     // ── #2 그리드 분할 (우클릭 → 4분할) ──
+    // openTerminal은 { tabId, paneId }를 반환한다 — 여기선 탭 전환/정리용 tabId만 쓴다.
     tabId = await cdp.eval(
-      `window.__gpv.terminals.getState().openTerminal(${J(fix.projectId)})`,
+      `window.__gpv.terminals.getState().openTerminal(${J(fix.projectId)}).tabId`,
     );
     await cdp.eval(
       `window.__gpv.terminals.getState().setActiveTab(${J(fix.projectId)}, ${J(tabId)})`,
@@ -182,6 +185,75 @@ export async function run({ cdp, report: r, fix }) {
     const hkClosed = await poll(() => uGet("aggregateOpen"), (v) => v === false, 12, 300);
     r.check("Ctrl+Shift+A(터미널 포커스): 모아보기 닫힘", hkClosed === false);
 
+    // ── #11c 모아보기 헤더 '새 터미널' 버튼 → 그리드에 셀 즉시 등장 ──
+    await cdp.eval(`window.__gpv.ui.getState().setAggregateOpen(true)`);
+    await poll(() => uGet("aggregateOpen"), (v) => v === true, 12, 300);
+    const tabsBefore = await cdp.eval(
+      `window.__gpv.terminals.getState().terminals.map(t=>t.id)`,
+    );
+    const gridCount = () =>
+      cdp.eval(
+        `(()=>{ const g=document.querySelector('[style*="grid-template-columns"]'); return g?g.querySelectorAll('.xterm').length:0; })()`,
+      );
+    // 재진입 직후엔 기존 셀들의 xterm attach가 진행 중일 수 있다 — 카운트가 멈출 때까지 대기
+    let gridBefore = await gridCount();
+    for (let i = 0; i < 20; i++) {
+      await sleep(350);
+      const nx = await gridCount();
+      if (nx === gridBefore && nx >= 1) break;
+      gridBefore = nx;
+    }
+    const plusBtn = await cdp.eval(`(()=>{
+      const b = Array.from(document.querySelectorAll('button')).find(x => /새 터미널/.test(x.textContent||''));
+      if (b) { b.click(); return true; } return false;
+    })()`);
+    await sleep(350);
+    // 프로젝트 2개 이상이면 드롭다운이 뜬다 — 선택 프로젝트(=픽스처)가 맨 위라 첫 항목 클릭.
+    // 1개뿐이면 드롭다운 생략 즉시 생성(지름길) — 이미 탭이 늘었으므로 클릭 생략.
+    const grewNow = await cdp.eval(
+      `window.__gpv.terminals.getState().terminals.length > ${tabsBefore.length}`,
+    );
+    if (!grewNow) {
+      await cdp.eval(`(()=>{
+        const m = document.querySelector('div.fixed.z-50');
+        const b = m && m.querySelector('button');
+        if (b) b.click();
+      })()`);
+    }
+    newTabId = await poll(
+      () =>
+        cdp.eval(
+          `window.__gpv.terminals.getState().terminals.map(t=>t.id).find(id=>!${J(tabsBefore)}.includes(id)) || null`,
+        ),
+      (v) => !!v,
+      12,
+      300,
+    );
+    const newTabProj = newTabId
+      ? await cdp.eval(
+          `(window.__gpv.terminals.getState().terminals.find(t=>t.id===${J(newTabId)})||{}).projectId || null`,
+        )
+      : null;
+    r.check(
+      "새 터미널 버튼 → 픽스처 프로젝트에 탭 생성",
+      plusBtn && !!newTabId && newTabProj === fix.projectId,
+      `tab=${String(newTabId).slice(0, 8)}`,
+    );
+    const gridAfter = await poll(gridCount, (n) => n > gridBefore, 28, 350);
+    r.check(
+      "새 터미널: 모아보기 그리드에 셀 등장",
+      gridAfter > gridBefore,
+      `grid ${gridBefore}→${gridAfter}`,
+    );
+    // 모아보기 닫고 새 탭 정리 — 이후 검증이 원래 상태에서 돌게.
+    await cdp.eval(`window.__gpv.ui.getState().setAggregateOpen(false)`);
+    await poll(() => uGet("aggregateOpen"), (v) => v === false, 12, 300);
+    if (newTabId) {
+      await cdp.eval(`window.__gpv.terminals.getState().closeTab(${J(newTabId)})`);
+      newTabClosed = true;
+      await sleep(300);
+    }
+
     // 터미널 탭 닫기 — 이후 Log 핸들이 패널 divider(.cursor-row-resize)와 안 헷갈리게.
     await cdp.eval(`window.__gpv.terminals.getState().closeTab(${J(tabId)})`);
     tabClosed = true;
@@ -223,6 +295,8 @@ export async function run({ cdp, report: r, fix }) {
     await cdp.eval(`window.__gpv.ui.getState().selectDiff(null)`).catch(() => {});
     if (tabId && !tabClosed)
       await cdp.eval(`window.__gpv.terminals.getState().closeTab(${J(tabId)})`).catch(() => {});
+    if (newTabId && !newTabClosed)
+      await cdp.eval(`window.__gpv.terminals.getState().closeTab(${J(newTabId)})`).catch(() => {});
     await cdp
       .eval(`window.__gpv.ui.getState().setLogHeight(${Number(origLogHeight) || 288})`)
       .catch(() => {});

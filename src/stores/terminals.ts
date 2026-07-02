@@ -161,7 +161,8 @@ interface TerminalsState {
   /** 프로젝트별 활성 탭 ("viewer" 또는 tabId) */
   activeTab: Record<string, string>;
   paneStatus: Record<string, PaneStatus>;
-  openTerminal: (projectId: string) => string;
+  /** 새 터미널 탭(단일 리프)을 연다 — 신규 pane을 바로 다루도록 paneId까지 반환 */
+  openTerminal: (projectId: string) => { tabId: string; paneId: string };
   closeTab: (tabId: string) => void;
   closeProjectTerminals: (projectId: string) => void;
   setActiveTab: (projectId: string, tab: string) => void;
@@ -273,7 +274,7 @@ export const useTerminals = create<TerminalsState>((set, get) => ({
       activeTab: { ...s.activeTab, [projectId]: tabId },
       paneStatus: { ...s.paneStatus, [paneId]: "live" },
     }));
-    return tabId;
+    return { tabId, paneId };
   },
 
   closeTab: (tabId) => {
