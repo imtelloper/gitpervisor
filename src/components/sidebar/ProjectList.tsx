@@ -5,6 +5,7 @@ import {
   FolderOpen,
   HardDrive,
   Plus,
+  RefreshCw,
   StickyNote,
   Terminal,
   Trash2,
@@ -276,6 +277,15 @@ export function ProjectList() {
     setMenu(null);
   }
 
+  // 이 레포 1개의 원격 새로고침 — 백엔드가 즉시 반환하고 배경 fetch(레이트리밋 무시,
+  // in-flight면 no-op). 결과는 watcher/remote-freshness 이벤트가 배지로 반영한다.
+  function handleRefreshRemote(project: Project) {
+    void ipc
+      .refreshRemotes([project.id], true)
+      .catch((e) => useUi.getState().pushToast("error", errorMessage(e)));
+    setMenu(null);
+  }
+
   return (
     <aside
       style={{ width }}
@@ -367,6 +377,11 @@ export function ProjectList() {
             icon={Copy}
             label="프로젝트 경로 복사"
             onClick={() => handleCopyPath(menu.project)}
+          />
+          <MenuItem
+            icon={RefreshCw}
+            label="원격 새로고침"
+            onClick={() => handleRefreshRemote(menu.project)}
           />
           <MenuItem
             icon={HardDrive}

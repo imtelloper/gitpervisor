@@ -6,6 +6,7 @@ use tauri_plugin_store::StoreExt;
 
 use crate::commands::{BrowserReg, HttpReg, TerminalSession};
 use crate::error::{ErrorCode, IpcError};
+use crate::fetch_scheduler::RemoteFreshness;
 use crate::git::types::{Memo, Project, Settings};
 use crate::monitor::Monitor;
 use crate::watcher::RepoWatcher;
@@ -35,6 +36,9 @@ pub struct AppState {
     pub browser: Mutex<BrowserReg>,
     /// API 클라이언트 in-flight HTTP 요청 레지스트리 (requestId → AbortHandle). http.rs §4.9.
     pub http: Mutex<HttpReg>,
+    /// 배경 fetch 결과 (projectId → freshness) — fetch_scheduler가 갱신하고
+    /// get_statuses가 조인해 RepoStatus에 실어 보낸다 (태스크 04 §3.5).
+    pub freshness: RwLock<HashMap<String, RemoteFreshness>>,
 }
 
 impl AppState {
@@ -49,6 +53,7 @@ impl AppState {
             notes: RwLock::new(notes),
             browser: Mutex::new(BrowserReg::default()),
             http: Mutex::new(HttpReg::default()),
+            freshness: RwLock::new(HashMap::new()),
         }
     }
 
@@ -108,7 +113,19 @@ pub fn load_settings(app: &AppHandle) -> Settings {
     let Some(value) = store.get(SETTINGS_KEY) else {
         return Settings::default();
     };
-    serde_json::from_value(value).unwrap_or_default()
+    let mut settings: Settings = serde_json::from_value(value.clone()).unwrap_or_default();
+    // 1회 마이그레이션(태스크 04 §3.7): 구 autoFetchMinutes(>0)를 신 remoteRefreshMinutes로 승계.
+    // 신 키가 이미 저장돼 있으면 사용자가 만진 값이므로 건드리지 않는다. 의미 변환(0의 뜻이
+    // "만진 적 없음"→"명시적 끔"으로 바뀜)이라 serde(alias)로는 불가 — 로드 후 코드로 처리.
+    // 다음 set_settings 저장이 전체 객체를 교체해 구 키는 자연 소멸한다(그전까지는 멱등 재적용).
+    if value.get("remoteRefreshMinutes").is_none() {
+        if let Some(old) = value.get("autoFetchMinutes").and_then(|v| v.as_u64()) {
+            if old > 0 {
+                settings.remote_refresh_minutes = old as u32;
+            }
+        }
+    }
+    settings
 }
 
 pub fn save_settings(app: &AppHandle, settings: &Settings) -> Result<(), IpcError> {

@@ -346,7 +346,7 @@ export function SettingsDialog() {
     return {
       ...f,
       gitPath: f.gitPath && f.gitPath.trim() ? f.gitPath.trim() : null,
-      autoFetchMinutes: Math.max(0, Math.floor(f.autoFetchMinutes || 0)),
+      remoteRefreshMinutes: Math.max(0, Math.floor(f.remoteRefreshMinutes || 0)),
       diffFontSize: Math.min(24, Math.max(10, Math.floor(f.diffFontSize || 13))),
       terminalShell:
         f.terminalShell && f.terminalShell.trim()
@@ -457,15 +457,15 @@ export function SettingsDialog() {
           </Field>
 
           <Field
-            label="자동 fetch 주기 (분)"
-            hint="0 = 끔. 켜면 모든 프로젝트를 주기적으로 fetch합니다 (기본 OFF)"
+            label="원격 새로고침 주기 (분)"
+            hint="0 = 끔 · 기본 5분. 배경 fetch로 pull 받을 커밋(↓)을 자동 감지합니다"
           >
             <input
               type="number"
               min={0}
-              value={form.autoFetchMinutes}
+              value={form.remoteRefreshMinutes}
               onChange={(e) =>
-                update("autoFetchMinutes", Number(e.target.value))
+                update("remoteRefreshMinutes", Number(e.target.value))
               }
               className={inputCls}
             />

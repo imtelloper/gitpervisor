@@ -574,26 +574,8 @@ export function useSetSettings() {
   });
 }
 
-/**
- * 옵트인 자동 fetch (설계 §9 — 기본 OFF). autoFetchMinutes>0이면 전 프로젝트를
- * 주기적으로 fetch한다. op-finished 이벤트가 상태를 무효화해 ahead/behind가 갱신된다.
- */
-export function useAutoFetch() {
-  const { data: settings } = useSettings();
-  const { data: projects } = useProjects();
-  const mins = settings?.autoFetchMinutes ?? 0;
-
-  useEffect(() => {
-    if (!mins || !projects || projects.length === 0) return;
-    const id = window.setInterval(
-      () => {
-        for (const p of projects) void ipc.fetch(p.id).catch(() => {});
-      },
-      mins * 60_000,
-    );
-    return () => window.clearInterval(id);
-  }, [mins, projects]);
-}
+// (구 useAutoFetch 제거 — 자동 fetch는 Rust 스케줄러(fetch_scheduler.rs)가 담당한다.
+//  프로젝트별 개별 invoke 남발이 배치 커맨드 패턴과 충돌하던 구현, 태스크 04 §3.1)
 
 export function useAddProject() {
   const qc = useQueryClient();

@@ -1,6 +1,7 @@
 mod commands;
 mod db;
 mod error;
+mod fetch_scheduler;
 mod git;
 mod monitor;
 mod notifications;
@@ -231,6 +232,8 @@ pub fn run() {
                     watcher::register(&watch_handle, project);
                 }
             });
+            // 원격 최신상태 배경 fetch 스케줄러 — 주기 실행에 invoke가 없다 (태스크 04 §3.1).
+            fetch_scheduler::spawn(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -253,6 +256,7 @@ pub fn run() {
             commands::push,
             commands::pull,
             commands::fetch,
+            fetch_scheduler::refresh_remotes,
             commands::get_settings,
             commands::set_settings,
             commands::open_in,

@@ -39,11 +39,23 @@ pub async fn get_statuses(
     });
 
     // 각 프로젝트는 자기 status + (있으면) 임베디드 저장소 status들을 반환한다 — 평탄화해 한 배열로.
-    let statuses: Vec<RepoStatus> = futures::future::join_all(futures)
+    let mut statuses: Vec<RepoStatus> = futures::future::join_all(futures)
         .await
         .into_iter()
         .flatten()
         .collect();
+
+    // 배경 fetch freshness 조인(태스크 04 §3.5) — 별도 조회 invoke 없이 배치에 실어 보낸다.
+    // 스케줄 대상은 최상위뿐이라 중첩(합성 id) status는 자연히 None으로 남는다.
+    {
+        let freshness = state.freshness.read().unwrap();
+        for s in statuses.iter_mut() {
+            if let Some(f) = freshness.get(&s.project_id) {
+                s.last_fetch_at = f.last_checked_at.clone();
+                s.fetch_error = f.error.clone();
+            }
+        }
+    }
     Ok(statuses)
 }
 

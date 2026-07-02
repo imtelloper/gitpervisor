@@ -28,6 +28,7 @@ const SUITES = [
   "./suites/14-frontend-dom.mjs",
   "./suites/15-tree-fileops.mjs",
   "./suites/16-browser-session.mjs",
+  "./suites/17-remote-freshness.mjs",
 ];
 
 const report = createReport();

@@ -22,7 +22,6 @@ import { WorkspaceTabs } from "./components/workspace/WorkspaceTabs";
 import { useAgentNotifications } from "./lib/agent-notify";
 import { ipc } from "./lib/ipc";
 import {
-  useAutoFetch,
   useProjectRootsPrefetch,
   useProjects,
   useSettings,
@@ -41,7 +40,8 @@ export default function App() {
   const imageEditorPath = useUi((s) => s.imageEditorPath);
 
   const { data: settings } = useSettings();
-  useAutoFetch(); // 옵트인 자동 fetch (기본 OFF)
+  // 자동 fetch는 Rust 스케줄러(fetch_scheduler.rs)가 담당 — 포커스 복귀 트리거는
+  // events.ts의 focusManager 연결부에서 함께 배선된다(태스크 04).
   useProjectRootsPrefetch(); // 전 프로젝트 루트 병렬 프리페치 → 트리 즉시 표시
   useAgentNotifications(); // AI 작업 완료 OS 알림 (메인 창 1회 — 설정 모드별)
 

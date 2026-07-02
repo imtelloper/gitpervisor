@@ -64,6 +64,10 @@ pub struct RepoStatus {
     pub rel_path: Option<String>,
     /// 이 프로젝트에 속한 (모든 깊이의) 임베디드 저장소들의 변경 총합 — 사이드바 뱃지/점 표시용.
     pub nested_changes: u32,
+    /// 배경/수동 fetch 마지막 성공 시각(ISO 8601) — get_statuses가 freshness 맵을 조인해 채운다.
+    pub last_fetch_at: Option<String>,
+    /// 마지막 배경 fetch 실패 사유 — 조용한 배지(CloudOff)용. None=정상.
+    pub fetch_error: Option<String>,
 }
 
 impl RepoStatus {
@@ -84,6 +88,8 @@ impl RepoStatus {
             parent_id: None,
             rel_path: None,
             nested_changes: 0,
+            last_fetch_at: None,
+            fetch_error: None,
         }
     }
 
@@ -191,8 +197,9 @@ pub struct CommitDetail {
 pub struct Settings {
     /// null/빈 문자열 = PATH 자동 탐색
     pub git_path: Option<String>,
-    /// 0 = 자동 fetch 끔
-    pub auto_fetch_minutes: u32,
+    /// 원격 새로고침(배경 fetch) 주기 — 0 = 끔, 기본 5분. 구 auto_fetch_minutes를 대체하며
+    /// 저장값에 이 키가 없으면 로드 시 1회 마이그레이션한다(state.rs, 태스크 04 §3.7).
+    pub remote_refresh_minutes: u32,
     pub diff_font_size: u32,
     pub confirm_discard: bool,
     /// UI 테마 이름 ("darcula" | "monokai"). 검증·렌더는 프론트가 담당.
@@ -219,7 +226,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             git_path: None,
-            auto_fetch_minutes: 0,
+            remote_refresh_minutes: 5,
             diff_font_size: 13,
             confirm_discard: true,
             theme: "darcula".to_string(),

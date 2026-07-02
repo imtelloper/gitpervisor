@@ -50,6 +50,10 @@ export interface RepoStatus {
   relPath: string | null;
   /** 이 프로젝트 하위 임베디드 저장소들의 변경 총합(사이드바 표시용). */
   nestedChanges: number;
+  /** 배경/수동 fetch 마지막 성공 시각(ISO 8601) — behind 배지 툴팁의 "마지막 확인" 표기용. */
+  lastFetchAt: string | null;
+  /** 마지막 배경 fetch 실패 사유 — 조용한 CloudOff 배지용. null=정상. */
+  fetchError: string | null;
 }
 
 export interface FileDiff {
@@ -137,7 +141,7 @@ export type NotifyMode = "off" | "project-inactive" | "terminal" | "always";
 
 export interface Settings {
   gitPath: string | null; // null/빈값 = PATH 자동 탐색
-  autoFetchMinutes: number; // 0 = 끔
+  remoteRefreshMinutes: number; // 원격 새로고침(배경 fetch) 주기 — 0 = 끔, 기본 5분
   diffFontSize: number;
   confirmDiscard: boolean;
   theme: ThemeName;
@@ -744,6 +748,10 @@ export const ipc = {
     callMutating<void>("push", { projectId, setUpstream }),
   pull: (projectId: string) => callMutating<void>("pull", { projectId }),
   fetch: (projectId: string) => callMutating<void>("fetch", { projectId }),
+  // 원격 새로고침(배경 fetch) 트리거 — 백엔드가 즉시 반환하고 백그라운드로 진행한다.
+  // projectIds 비면 전체, force=false면 60초 스로틀(백엔드 판정). 결과는 이벤트/statuses로.
+  refreshRemotes: (projectIds: string[], force = false) =>
+    callMutating<void>("refresh_remotes", { projectIds, force }),
 
   // ---- API 클라이언트 (commands/http.rs) ----
   // 비멱등 네트워크 호출 — callMutating(재시도 금지). requestId는 프론트 UUID라
