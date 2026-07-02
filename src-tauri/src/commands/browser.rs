@@ -6,25 +6,37 @@
 //! - terminal.rs와 같은 "백엔드가 자원의 단일 진실" 패턴: webview 수명은 Rust가 소유하고,
 //!   프론트는 bounds/show-hide/navigate만 동기화한다. id는 프론트가 만들어 넘긴다.
 //! - 탭마다 webview 1개(라벨 `gpv-browser-<id>`), lazy 생성, 활성 탭만 show. 무제한 탭.
+//! - window.open/target=_blank는 플로팅 팝업 창(`gpv-popup-<seq>`)으로 승격한다 — 오프너
+//!   environment를 상속해 탭과 세션을 공유하고 opener/postMessage 관계를 유지한다(OAuth).
 //!
 //! 보안(격리): 자식 webview는 `WebviewUrl::External`이라 Tauri IPC 브리지가 주입되지 않고,
 //! 어떤 capability에도 매칭되지 않아 **권한 0**(원격 페이지의 invoke 표면 없음)이다. geometry/
 //! visibility는 전부 이 모듈의 **커스텀 커맨드**로만 처리하므로 core:webview 권한도 불필요하다.
-//! 쿠키/세션은 `data_directory`로 특권 main webview와 분리한다.
+//! 쿠키/세션은 `data_directory`로 특권 main webview와 분리한다(팝업도 같은 프로필).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
-use tauri::webview::{DownloadEvent, NewWindowResponse, PageLoadEvent, WebviewBuilder};
+use tauri::webview::{
+    DownloadEvent, NewWindowFeatures, NewWindowResponse, PageLoadEvent, WebviewBuilder,
+};
 use tauri::{
-    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State, Url, WebviewUrl,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State, Url, Webview, WebviewUrl,
+    WebviewWindow, WebviewWindowBuilder, Wry,
 };
 
 use crate::error::{ErrorCode, IpcError};
 use crate::state::AppState;
 
 const LABEL_PREFIX: &str = "gpv-browser-";
+/// 팝업 플로팅 창 라벨 — 어떤 capability에도 매칭되지 않아 child와 동일하게 권한 0.
+const POPUP_LABEL_PREFIX: &str = "gpv-popup-";
+/// 팝업 폭탄 방어 상한 — 초과분은 OS 위임으로도 넘기지 않는다(브라우저 스팸 방지).
+const MAX_POPUPS: usize = 8;
+/// 동시 다중 팝업의 라벨 충돌 방지용 시퀀스.
+static POPUP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// 활성 탭 콘텐츠 영역의 위치·크기 (CSS=Logical 픽셀 계약 — DPR을 곱하지 않는다).
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
@@ -97,10 +109,10 @@ fn navigation_gate(target: &Url) -> bool {
     matches!(target.scheme(), "http" | "https") || target.as_str() == "about:blank"
 }
 
-/// URL을 OS 기본 브라우저로 연다 — window.open/target=_blank/OAuth 팝업 위임용.
+/// URL을 OS 기본 브라우저로 연다 — 다운로드 위임·팝업 생성 실패 폴백·main 창 window.open용.
 /// (tauri-plugin-opener는 이 repo의 Rust 의존성이 아니므로 open.rs처럼 raw Command 사용.)
 #[cfg(windows)]
-fn open_external(url: &str) {
+pub(crate) fn open_external(url: &str) {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let _ = std::process::Command::new("cmd")
@@ -109,12 +121,109 @@ fn open_external(url: &str) {
         .spawn();
 }
 #[cfg(target_os = "macos")]
-fn open_external(url: &str) {
+pub(crate) fn open_external(url: &str) {
     let _ = std::process::Command::new("open").arg(url).spawn();
 }
 #[cfg(all(unix, not(target_os = "macos")))]
-fn open_external(url: &str) {
+pub(crate) fn open_external(url: &str) {
     let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+}
+
+/// 다운로드 정책 — child·popup 공용. 인앱 다운로드는 항상 취소(특권 앱 옆 drive-by-write 방지),
+/// http(s)는 OS 기본 브라우저로 위임해 사용자 동의·다운로드 폴더로 받게 한다.
+fn handle_download(webview: &Webview, event: DownloadEvent<'_>) -> bool {
+    if let DownloadEvent::Requested { url, .. } = event {
+        let delegated = matches!(url.scheme(), "http" | "https");
+        if delegated {
+            open_external(url.as_str());
+        }
+        let _ = webview.emit(
+            "browser://download",
+            DownloadInfo {
+                url: url.to_string(),
+                delegated,
+            },
+        );
+    }
+    false // 인앱 다운로드 취소
+}
+
+/// window.open/target=_blank/OAuth 팝업 공용 정책 — child·popup 빌더 양쪽 .on_new_window 본문(재귀).
+/// http(s) 외 스킴·한도 초과는 Deny, 창 생성 성공 시에만 Create.
+/// ⚠ build 실패 후 Create 반환 금지 — tauri-runtime-wry가 창의 첫 webview를 unwrap 체인으로
+/// 꺼내다 앱이 패닉한다(06 설계 §2.5 R2). 실패는 open_external + Deny 폴백.
+fn handle_new_window(app: &AppHandle, url: Url, features: NewWindowFeatures) -> NewWindowResponse<Wry> {
+    if !matches!(url.scheme(), "http" | "https") {
+        return NewWindowResponse::Deny;
+    }
+    let alive = app
+        .webview_windows()
+        .keys()
+        .filter(|l| l.starts_with(POPUP_LABEL_PREFIX))
+        .count();
+    if alive >= MAX_POPUPS {
+        log::warn!("팝업 한도({MAX_POPUPS}) 초과 — 요청 거부: {url}");
+        return NewWindowResponse::Deny;
+    }
+    match build_popup_window(app, features) {
+        Ok(window) => NewWindowResponse::Create { window },
+        Err(e) => {
+            log::warn!("팝업 창 생성 실패 — OS 브라우저로 위임: {e}");
+            open_external(url.as_str());
+            NewWindowResponse::Deny
+        }
+    }
+}
+
+/// 팝업 플로팅 창 생성. `window_features`가 오프너 environment(=browser-session 프로필)·크기·
+/// 위치를 자동 배선하므로 data_directory/additional_browser_args를 다시 지정하지 않는다
+/// (환경은 이미 오프너 것으로 고정 — 07 세션 공유 계약). 콘텐츠는 WebView2가 SetNewWindow로
+/// 채우므로 about:blank로 시작하고, decorations는 기본(true) — 원격 페이지라 커스텀 크롬 불가.
+/// wry가 NewWindowRequested를 메인 메시지 루프에 재디스패치한 뒤 이 핸들러를 부르므로
+/// 동기 build()가 올바른 패턴이다(IPC 커맨드의 run_on_main_thread 우회와 다른 경로).
+fn build_popup_window(
+    app: &AppHandle,
+    features: NewWindowFeatures,
+) -> tauri::Result<WebviewWindow<Wry>> {
+    let label = format!(
+        "{POPUP_LABEL_PREFIX}{}",
+        POPUP_SEQ.fetch_add(1, Ordering::Relaxed)
+    );
+    let has_size = features.size().is_some();
+    let has_pos = features.position().is_some();
+    let mut builder = WebviewWindowBuilder::new(
+        app,
+        &label,
+        WebviewUrl::External(Url::parse("about:blank").expect("정적 URL")),
+    )
+    .window_features(features)
+    .on_navigation(navigation_gate)
+    // 팝업이 또 팝업을 열 수 있다 — 동일 정책 재귀 부착(한도 카운트가 폭주를 막는다).
+    .on_new_window({
+        let app = app.clone();
+        move |url, features| handle_new_window(&app, url, features)
+    })
+    .on_download(|webview, event| handle_download(&webview, event))
+    .on_document_title_changed(|window, title| {
+        let _ = window.set_title(&title);
+    });
+    if !has_size {
+        builder = builder.inner_size(900.0, 700.0);
+        if !has_pos {
+            builder = builder.center();
+        }
+    }
+    builder.build()
+}
+
+/// main 창 Destroyed 시 모든 팝업 창 정리 — 팝업만 남아 앱이 안 죽는 상태 방지.
+/// lib.rs Destroyed 훅에서 호출. 개별 팝업 닫힘은 정리할 자원이 없어 별도 훅 불필요.
+pub fn popup_kill_all(app: &AppHandle) {
+    for (label, win) in app.webview_windows() {
+        if label.starts_with(POPUP_LABEL_PREFIX) {
+            let _ = win.close();
+        }
+    }
 }
 
 /// 자식 webview를 만든다(없을 때만). 있으면 navigate로 멱등 처리.
@@ -147,32 +256,13 @@ pub async fn browser_open(
         // 특권 main과 쿠키/세션 분리 (적대적 외부 콘텐츠 격리).
         .data_directory(browser_data_dir(&app))
         .on_navigation(navigation_gate)
-        // window.open/target=_blank/OAuth 팝업 → 새 webview를 만들지 않고 OS 브라우저로 위임.
-        // (단일 webview 불변식 유지 + github "새 탭" 링크·외부 로그인 깨짐 방지.)
-        .on_new_window(|url, _features| {
-            if matches!(url.scheme(), "http" | "https") {
-                open_external(url.as_str());
-            }
-            NewWindowResponse::Deny
+        // window.open/target=_blank/OAuth 팝업 → 플로팅 팝업 창으로 승격(06).
+        // 스킴 밖·한도 초과·생성 실패는 handle_new_window가 Deny/OS 위임으로 처리한다.
+        .on_new_window({
+            let app = app.clone();
+            move |url, features| handle_new_window(&app, url, features)
         })
-        // 다운로드 정책: 인앱 다운로드는 항상 취소(특권 앱 옆 drive-by-write 방지).
-        // http(s)는 OS 기본 브라우저로 위임해 사용자 동의·다운로드 폴더로 받게 한다.
-        .on_download(|webview, event| {
-            if let DownloadEvent::Requested { url, .. } = event {
-                let delegated = matches!(url.scheme(), "http" | "https");
-                if delegated {
-                    open_external(url.as_str());
-                }
-                let _ = webview.emit(
-                    "browser://download",
-                    DownloadInfo {
-                        url: url.to_string(),
-                        delegated,
-                    },
-                );
-            }
-            false // 인앱 다운로드 취소
-        })
+        .on_download(|webview, event| handle_download(&webview, event))
         .on_page_load(|webview, payload| {
             let loading = matches!(payload.event(), PageLoadEvent::Started);
             let _ = webview.emit(

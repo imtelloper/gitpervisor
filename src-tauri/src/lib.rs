@@ -196,6 +196,16 @@ pub fn run() {
                 .drag_and_drop(false)
                 .background_color(tauri::window::Color(30, 31, 34, 255))
                 .additional_browser_args(&browser_args())
+                // main webview의 window.open(localhost 프리뷰 iframe 포함) — wry 기본은 침묵
+                // 차단이라 아무 반응이 없다 → 명시적 OS 위임으로 개선. 플로팅 승격은 금지:
+                // 오프너 environment가 특권 프로필이라 팝업이 임의 사이트로 가면 특권 쿠키를
+                // 공유하는 원격 창이 된다(06 설계 §3.2 — 별도 프로필 검토 후 후속).
+                .on_new_window(|url, _features| {
+                    if matches!(url.scheme(), "http" | "https") {
+                        commands::open_external(url.as_str());
+                    }
+                    tauri::webview::NewWindowResponse::Deny
+                })
                 // 창/작업표시줄 아이콘을 런타임에 새 로고로 명시 설정 — Windows 아이콘 캐시나
                 // exe 리소스 임베드 상태와 무관하게 살아 있는 창에 즉시 반영(dev·설치본 공통).
                 .icon(tauri::image::Image::from_bytes(include_bytes!(
@@ -320,6 +330,8 @@ pub fn run() {
                     let state = window.state::<AppState>();
                     commands::kill_all(state.inner());
                     commands::browser_kill_all(window.app_handle(), state.inner());
+                    // 팝업만 남아 앱이 안 죽는 상태 방지 — gpv-popup-* 전 창 close.
+                    commands::popup_kill_all(window.app_handle());
                 } else if let Some(term_id) = label.strip_prefix("float-") {
                     // 플로팅 터미널 창이 닫히면 그 세션의 PTY만 종료한다(나머지는 메인이 유지).
                     let state = window.state::<AppState>();
