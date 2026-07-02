@@ -1,7 +1,29 @@
 import { useEffect, useRef } from "react";
 
+import { isMod } from "../lib/platform";
 import { usePushFlow, useRefreshAll, useSyncOp } from "../queries";
 import { useTerminals } from "../stores/terminals";
+import { useUi } from "../stores/ui";
+
+/**
+ * 항상-마운트 전역 단축키 — KeyboardShortcuts는 모아보기가 열리거나 프로젝트 미선택이면
+ * 언마운트되므로(App), 그 상태에서도 동작해야 하는 키는 여기 등록한다.
+ * mod+Shift+A: 터미널 모아보기 토글(mac=Cmd, 그 외=Ctrl). 최신 상태는 getState()로 참조.
+ */
+export function GlobalShortcuts() {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (isMod(e) && e.shiftKey && !e.altKey && e.key.toLowerCase() === "a") {
+        e.preventDefault();
+        useUi.getState().toggleAggregate();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  return null;
+}
 
 /**
  * 전역 키보드 단축키 (설계 §5.3):

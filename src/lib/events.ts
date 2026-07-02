@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useOps } from "../stores/ops";
 import { useUi } from "../stores/ui";
 import type { SyncOp } from "../stores/ops";
+import { ipc } from "./ipc";
 
 interface RepoChanged {
   projectId: string;
@@ -32,7 +33,12 @@ export function attachRepoEvents(qc: QueryClient) {
   // v5 기본은 visibilitychange만 본다 — 데스크톱 창은 항상 visible이라
   // 실제 포커스 복귀 갱신(설계 §9)을 위해 window focus 이벤트에 연결한다.
   focusManager.setEventListener((handleFocus) => {
-    const onFocus = () => handleFocus(true);
+    const onFocus = () => {
+      handleFocus(true);
+      // 포커스 복귀 시 원격 새로고침 1회 트리거 — 스로틀(60초)은 백엔드 소관이라
+      // 여기서는 그냥 쏜다(태스크 04 §3.1). 실패는 조용히 무시(freshness 배지가 진실).
+      void ipc.refreshRemotes([], false).catch(() => {});
+    };
     const onBlur = () => handleFocus(false);
     window.addEventListener("focus", onFocus);
     window.addEventListener("blur", onBlur);
@@ -53,6 +59,12 @@ export function attachRepoEvents(qc: QueryClient) {
       void qc.invalidateQueries({ queryKey: ["log"] });
       void qc.invalidateQueries({ queryKey: ["branches"] });
     }, 250);
+  });
+
+  // 배경 fetch 오류 발생/해소 "전이" 신호(태스크 04 §3.5) — statuses만 재조회해
+  // fetchError/lastFetchAt 배지를 갱신한다. 정상 갱신은 refs 변경 → repo://changed 경로.
+  void listen<RepoChanged>("repo://remote-freshness", () => {
+    void qc.invalidateQueries({ queryKey: ["statuses"] });
   });
 
   void listen<OpProgress>("repo://op-progress", (e) => {

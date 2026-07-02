@@ -6,11 +6,12 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 import type {
   DiffTarget,
   NotesMap,
+  ProcSortKey,
   Project,
   ProjectSize,
   RepoStatus,
@@ -53,6 +54,8 @@ export const keys = {
   dir: (projectId: string, relPath: string) =>
     ["dir", projectId, relPath] as const,
   sysMetrics: ["sys-metrics"] as const,
+  processSnapshot: (sortBy: ProcSortKey, groupByName: boolean) =>
+    ["process-snapshot", sortBy, groupByName] as const,
   notes: ["notes"] as const,
   targetSizes: (projectIds: string[]) => ["target-sizes", projectIds] as const,
   projectSizes: (projectIds: string[]) =>
@@ -224,6 +227,36 @@ export function useSysMetrics() {
     refetchIntervalInBackground: false,
     staleTime: 0,
     gcTime: 4000,
+    placeholderData: keepPreviousData,
+  });
+}
+
+/** 리소스 모니터 팝업의 Top-N 행 수 (태스크 05 §1 — 기본 20). */
+const PROC_SNAPSHOT_LIMIT = 20;
+
+/**
+ * 리소스 모니터 팝업 — 프로세스 스냅샷 2초 폴링(틱당 커맨드 1개, totals 포함 배치).
+ * 모니터 창은 비포커스 상태로 곁눈질하는 게 기본 자세라 refetchIntervalInBackground:true —
+ * 대신 document.visibilityState(최소화 시 hidden)로 게이트해 "보일 때만" 폴링한다 (§3.2).
+ */
+export function useProcessSnapshot(sortBy: ProcSortKey, groupByName: boolean) {
+  const [visible, setVisible] = useState(
+    document.visibilityState === "visible",
+  );
+  useEffect(() => {
+    const onChange = () => setVisible(document.visibilityState === "visible");
+    document.addEventListener("visibilitychange", onChange);
+    return () => document.removeEventListener("visibilitychange", onChange);
+  }, []);
+  return useQuery({
+    queryKey: keys.processSnapshot(sortBy, groupByName),
+    queryFn: () =>
+      ipc.sysProcessSnapshot(sortBy, PROC_SNAPSHOT_LIMIT, groupByName),
+    refetchInterval: visible ? 2000 : false,
+    refetchIntervalInBackground: true,
+    staleTime: 0,
+    gcTime: 4000,
+    // 정렬/그룹 전환·첫 틱(CPU 0%)에도 직전 데이터를 유지해 깜빡임을 없앤다.
     placeholderData: keepPreviousData,
   });
 }
@@ -574,26 +607,8 @@ export function useSetSettings() {
   });
 }
 
-/**
- * 옵트인 자동 fetch (설계 §9 — 기본 OFF). autoFetchMinutes>0이면 전 프로젝트를
- * 주기적으로 fetch한다. op-finished 이벤트가 상태를 무효화해 ahead/behind가 갱신된다.
- */
-export function useAutoFetch() {
-  const { data: settings } = useSettings();
-  const { data: projects } = useProjects();
-  const mins = settings?.autoFetchMinutes ?? 0;
-
-  useEffect(() => {
-    if (!mins || !projects || projects.length === 0) return;
-    const id = window.setInterval(
-      () => {
-        for (const p of projects) void ipc.fetch(p.id).catch(() => {});
-      },
-      mins * 60_000,
-    );
-    return () => window.clearInterval(id);
-  }, [mins, projects]);
-}
+// (구 useAutoFetch 제거 — 자동 fetch는 Rust 스케줄러(fetch_scheduler.rs)가 담당한다.
+//  프로젝트별 개별 invoke 남발이 배치 커맨드 패턴과 충돌하던 구현, 태스크 04 §3.1)
 
 export function useAddProject() {
   const qc = useQueryClient();

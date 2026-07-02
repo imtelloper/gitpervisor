@@ -1,5 +1,6 @@
 import {
   FolderOpen,
+  Globe,
   RefreshCw,
   ScrollText,
   Send,
@@ -9,9 +10,12 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { clearBrowserData } from "../../lib/browser";
 import { formatBytes } from "../../lib/format";
-import type { LogStatus, NotifySecret, Settings } from "../../lib/ipc";
+import type { LogStatus, NotifySecret, Settings, ThemeName } from "../../lib/ipc";
 import { errorMessage, ipc } from "../../lib/ipc";
+import { refreshTerminalThemes } from "../../lib/terminal";
+import { THEMES } from "../../lib/themes";
 import {
   useClearQuarantine,
   useGitCheck,
@@ -163,6 +167,53 @@ function QuarantineSection() {
 }
 
 /**
+ * 브라우저 데이터 섹션 — 임베디드 브라우저(공유 프로필)의 로그인/쿠키를 지운다.
+ * 북마크·방문기록은 우리 store의 별개 데이터라 유지 — 일반 브라우저의
+ * "쿠키 삭제 ≠ 방문기록 삭제" 관행과 동일.
+ */
+function BrowserDataSection() {
+  const [busy, setBusy] = useState(false);
+  const toast = (kind: "error" | "success", m: string) =>
+    useUi.getState().pushToast(kind, m);
+
+  const confirmClear = () =>
+    useUi.getState().askConfirm({
+      title: "브라우저 데이터 초기화",
+      message:
+        "임베디드 브라우저의 모든 로그인 세션·쿠키·사이트 데이터를 지웁니다. 모든 사이트에서 로그아웃됩니다.",
+      confirmLabel: "초기화",
+      danger: true,
+      onConfirm: () => {
+        setBusy(true);
+        void clearBrowserData()
+          .then(() => toast("success", "브라우저 로그인/쿠키 데이터를 지웠습니다"))
+          .catch((e) => toast("error", errorMessage(e)))
+          .finally(() => setBusy(false));
+      },
+    });
+
+  return (
+    <>
+      <div className="border-t border-edge pt-3 text-[11px] font-semibold tracking-widest text-fg-dim">
+        브라우저
+      </div>
+      <div className="text-[11px] leading-5 text-fg-muted">
+        임베디드 브라우저 탭·팝업이 공유하는 로그인 세션과 쿠키를 지웁니다.
+        북마크와 방문 기록은 유지됩니다.
+      </div>
+      <button
+        disabled={busy}
+        onClick={confirmClear}
+        className="flex items-center gap-1.5 rounded border border-edge px-2.5 py-1 text-danger hover:bg-danger/15 disabled:opacity-50"
+      >
+        <Globe size={12} />
+        {busy ? "초기화 중…" : "브라우저 데이터 초기화"}
+      </button>
+    </>
+  );
+}
+
+/**
  * 진단/로그 섹션 — 패닉 로그(panic.log)를 열고·보고·비운다.
  * 앱이 비정상 종료해도 원인+백트레이스가 로그 폴더에 남으므로, 사용자가 이를 찾아 디버깅할 수 있게 한다.
  */
@@ -262,7 +313,7 @@ function DiagnosticsSection() {
   );
 }
 
-/** 설정 모달 호스트 — 툴바 ⚙ 버튼으로 연다 (설계 F12). 테마는 후속 보류. */
+/** 설정 모달 호스트 — 툴바 ⚙ 버튼으로 연다 (설계 F12). */
 export function SettingsDialog() {
   const open = useUi((s) => s.settingsOpen);
   const setOpen = useUi((s) => s.setSettingsOpen);
@@ -293,11 +344,30 @@ export function SettingsDialog() {
   const update = <K extends keyof Settings>(key: K, value: Settings[K]) =>
     setForm((f) => (f ? { ...f, [key]: value } : f));
 
+  // 테마 라이브 프리뷰 — 클릭 즉시 화면 전체에 반영한다. App의 테마 effect는 "저장된"
+  // settings에 의존하므로 저장 전에는 직접 dataset.theme + 열린 터미널 재적용이 필요하다.
+  const previewTheme = (id: ThemeName) => {
+    update("theme", id);
+    document.documentElement.dataset.theme = id;
+    refreshTerminalThemes();
+  };
+
+  // 저장 없이 닫기 — 프리뷰로 바꾼 테마를 저장값으로 명시 복원(App effect는 settings 의존이라
+  // 자동 복원되지 않는다). 저장 후 닫기는 handleSave 경로(프리뷰 = 저장값이라 복원 불요).
+  const closeWithoutSave = () => {
+    const saved = settings?.theme ?? "darcula";
+    if (document.documentElement.dataset.theme !== saved) {
+      document.documentElement.dataset.theme = saved;
+      refreshTerminalThemes();
+    }
+    setOpen(false);
+  };
+
   function buildCleaned(f: Settings): Settings {
     return {
       ...f,
       gitPath: f.gitPath && f.gitPath.trim() ? f.gitPath.trim() : null,
-      autoFetchMinutes: Math.max(0, Math.floor(f.autoFetchMinutes || 0)),
+      remoteRefreshMinutes: Math.max(0, Math.floor(f.remoteRefreshMinutes || 0)),
       diffFontSize: Math.min(24, Math.max(10, Math.floor(f.diffFontSize || 13))),
       terminalShell:
         f.terminalShell && f.terminalShell.trim()
@@ -359,7 +429,7 @@ export function SettingsDialog() {
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-      onClick={() => setOpen(false)}
+      onClick={closeWithoutSave}
     >
       <div
         className="flex max-h-[85vh] w-[500px] flex-col rounded-lg border border-edge bg-panel p-5 shadow-xl"
@@ -370,7 +440,7 @@ export function SettingsDialog() {
           <span className="font-semibold">설정</span>
           <div className="flex-1" />
           <button
-            onClick={() => setOpen(false)}
+            onClick={closeWithoutSave}
             className="rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
           >
             <X size={15} />
@@ -378,19 +448,32 @@ export function SettingsDialog() {
         </div>
 
         <div className="mt-4 flex-1 space-y-4 overflow-y-auto pr-1 text-[13px]">
-          <Field label="테마">
-            <div className="flex gap-2">
-              {(["darcula", "monokai"] as const).map((t) => (
+          <Field label="테마" hint="클릭 즉시 미리보기 — 저장하지 않고 닫으면 원래 테마로 돌아갑니다">
+            <div className="grid grid-cols-2 gap-2">
+              {THEMES.map((t) => (
                 <button
-                  key={t}
-                  onClick={() => update("theme", t)}
-                  className={`flex-1 rounded border px-3 py-1.5 ${
-                    form.theme === t
+                  key={t.id}
+                  onClick={() => previewTheme(t.id)}
+                  className={`flex items-center gap-2 rounded border px-2.5 py-1.5 text-left ${
+                    form.theme === t.id
                       ? "border-accent bg-accent/15 text-fg"
                       : "border-edge text-fg-muted hover:bg-raised"
                   }`}
                 >
-                  {t === "darcula" ? "다크 (Darcula)" : "Monokai"}
+                  {/* 스와치 — base 바탕 위 accent/add/danger 점 3개 (테마 톤 미리보기) */}
+                  <span
+                    className="flex h-5 w-9 shrink-0 items-center justify-center gap-[3px] rounded border border-edge"
+                    style={{ backgroundColor: t.swatch[0] }}
+                  >
+                    {t.swatch.slice(1).map((c, i) => (
+                      <span
+                        key={i}
+                        className="h-2 w-2 rounded-full"
+                        style={{ backgroundColor: c }}
+                      />
+                    ))}
+                  </span>
+                  <span className="truncate">{t.label}</span>
                 </button>
               ))}
             </div>
@@ -408,15 +491,15 @@ export function SettingsDialog() {
           </Field>
 
           <Field
-            label="자동 fetch 주기 (분)"
-            hint="0 = 끔. 켜면 모든 프로젝트를 주기적으로 fetch합니다 (기본 OFF)"
+            label="원격 새로고침 주기 (분)"
+            hint="0 = 끔 · 기본 5분. 배경 fetch로 pull 받을 커밋(↓)을 자동 감지합니다"
           >
             <input
               type="number"
               min={0}
-              value={form.autoFetchMinutes}
+              value={form.remoteRefreshMinutes}
               onChange={(e) =>
-                update("autoFetchMinutes", Number(e.target.value))
+                update("remoteRefreshMinutes", Number(e.target.value))
               }
               className={inputCls}
             />
@@ -619,6 +702,8 @@ export function SettingsDialog() {
             </div>
           )}
 
+          <BrowserDataSection />
+
           <DiagnosticsSection />
 
           {isMacOS && <QuarantineSection />}
@@ -626,7 +711,7 @@ export function SettingsDialog() {
 
         <div className="mt-5 flex justify-end gap-2">
           <button
-            onClick={() => setOpen(false)}
+            onClick={closeWithoutSave}
             className="rounded px-3 py-1.5 text-fg-muted hover:bg-raised"
           >
             취소

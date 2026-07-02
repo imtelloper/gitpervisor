@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 
 import type { Project } from "../lib/ipc";
 import { relativeTime } from "../lib/format";
+import { isMac, modLabel } from "../lib/platform";
 import { useProjects, useStatus } from "../queries";
 import { useAgentActivity } from "../stores/agentActivity";
 import { useTerminals } from "../stores/terminals";
@@ -46,6 +47,9 @@ export function StatusBar({ project }: { project: Project | null }) {
   );
 }
 
+// 모아보기 토글 단축키 라벨 — mac은 심볼 관례(⌘⇧A), 그 외는 Ctrl+Shift+A
+const hotkeyLabel = isMac ? `${modLabel}⇧A` : `${modLabel}+Shift+A`;
+
 /** 터미널 모아보기 진입 버튼 — 열린 터미널이 하나라도 있을 때만 표시. */
 function AggregateButton() {
   const setAggregateOpen = useUi((s) => s.setAggregateOpen);
@@ -54,7 +58,7 @@ function AggregateButton() {
   return (
     <button
       onClick={() => setAggregateOpen(true)}
-      title="터미널 모아보기 — 여러 터미널을 한 화면에 분할로"
+      title={`터미널 모아보기 — 여러 터미널을 한 화면에 분할로 (${hotkeyLabel})`}
       className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-fg-muted hover:bg-raised hover:text-fg"
     >
       <LayoutGrid size={11} /> 모아보기

@@ -5,6 +5,7 @@ import ReactDOM from "react-dom/client";
 
 import App from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { SysMonitorWindow } from "./components/sysmon/SysMonitorWindow";
 import { FloatingTerminal } from "./FloatingTerminal";
 import { attachRepoEvents } from "./lib/events";
 import { setupErrorLogging } from "./lib/logging";
@@ -13,6 +14,16 @@ import { useUi } from "./stores/ui";
 import "./styles.css";
 
 const root = ReactDOM.createRoot(document.getElementById("root")!);
+
+// 시작 플래시 제거 — settings 로드 전 첫 페인트가 항상 darcula(기본값)였던 문제.
+// App effect가 저장 시점에 캐시해 둔 테마 id를 렌더 "전"에 선적용한다(이후 settings가
+// 로드되면 각 창의 테마 effect가 확정값으로 덮는다). 미지 id는 CSS 매칭 실패로 기본 유지.
+try {
+  const cachedTheme = localStorage.getItem("gp:theme");
+  if (cachedTheme) document.documentElement.dataset.theme = cachedTheme;
+} catch {
+  /* localStorage 불가 환경 무시 */
+}
 
 // 미처리 에러/프라미스 거부를 Rust 로그 파일로 보낸다 — 메인·플로팅 창 모두 1회.
 setupErrorLogging();
@@ -39,7 +50,19 @@ const floatPaneId = label.startsWith("float-")
   ? label.slice("float-".length)
   : null;
 
-if (floatPaneId) {
+if (label === "sysmon") {
+  // 리소스 모니터 팝업 창(태스크 05) — 플로팅 터미널 분기와 대칭, 자체 QueryClient.
+  const sysmonQc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  root.render(
+    <React.StrictMode>
+      <QueryClientProvider client={sysmonQc}>
+        <ErrorBoundary>
+          <SysMonitorWindow />
+        </ErrorBoundary>
+      </QueryClientProvider>
+    </React.StrictMode>,
+  );
+} else if (floatPaneId) {
   // 플로팅 창도 QueryClientProvider로 감싼다 — 분할 패널 컴포넌트가 쿼리를 쓰더라도 안전하게.
   const floatQc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   root.render(

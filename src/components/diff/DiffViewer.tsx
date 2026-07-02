@@ -18,15 +18,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { errorMessage } from "../../lib/ipc";
 import type { DiffTarget } from "../../lib/ipc";
 import { isImage, languageOf } from "../../lib/language-map";
+import { monacoThemeOf } from "../../lib/themes";
 import { useDiff, useSettings, useWriteFile } from "../../queries";
 import { useUi } from "../../stores/ui";
 import { EmptyState } from "../common/EmptyState";
 import ImageView from "./ImageView";
 import MarkdownView from "./MarkdownView";
-
-function monacoThemeOf(theme: string | undefined): string {
-  return theme === "monokai" ? "gitpervisor-monokai" : "gitpervisor-dark";
-}
 
 function modeLabel(target: DiffTarget): string {
   switch (target.mode) {
@@ -259,7 +256,7 @@ export default function DiffViewer({
         )}
         {canEditFromDiff && (
           <button
-            onClick={() => selectDiff({ mode: "file", path })}
+            onClick={() => selectDiff({ mode: "file", path }, projectId)}
             title="이 파일을 편집 가능한 뷰로 열기"
             className="flex shrink-0 items-center gap-1 rounded px-2 py-0.5 text-xs text-fg-dim hover:bg-raised hover:text-fg"
           >

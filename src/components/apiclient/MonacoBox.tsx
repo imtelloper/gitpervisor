@@ -4,12 +4,13 @@ import { Editor } from "@monaco-editor/react";
 import { useRef } from "react";
 import type { editor } from "monaco-editor";
 
+import { monacoThemeOf } from "../../lib/themes";
 import { useSettings } from "../../queries";
 
 /**
  * @monaco-editor/react 얇은 래퍼(§8.5). DbWorkspace QueryEditor(:72-93)의 옵션을 재사용한다.
  * - readOnly 모드(응답 Pretty 뷰), 편집 모드(json 바디) 공용.
- * - theme는 settings(monokai↔dark)로 자동 추종.
+ * - theme는 settings.theme → monacoThemeOf(테마 레지스트리)로 자동 추종.
  * - onMountEditor로 외부에서 editor 인스턴스를 잡아 format-document(Ctrl+Shift+F)에 쓴다.
  */
 export function MonacoBox({
@@ -27,8 +28,7 @@ export function MonacoBox({
 }) {
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
   const { data: settings } = useSettings();
-  const theme =
-    settings?.theme === "monokai" ? "gitpervisor-monokai" : "gitpervisor-dark";
+  const theme = monacoThemeOf(settings?.theme);
 
   return (
     <Editor

@@ -1,6 +1,7 @@
 mod commands;
 mod db;
 mod error;
+mod fetch_scheduler;
 mod git;
 mod monitor;
 mod notifications;
@@ -125,6 +126,37 @@ async fn open_float_window(
     Ok(())
 }
 
+/// 리소스 모니터 팝업 창(태스크 05) — open_float_window와 같은 검증된 레시피를 그대로 미러:
+/// async 커맨드 + run_on_main_thread + WebviewUrl::External(origin) + browser_args() 일치.
+/// 라벨 "sysmon" 싱글턴 — 이미 떠 있으면 새로 만들지 않고 포커스만 준다. Destroyed 핸들러는
+/// main/float-* 전용이라 이 창은 정리 코드가 필요 없다(그 외 라벨 no-op).
+#[tauri::command]
+async fn open_sysmon_window(app: tauri::AppHandle, origin: String) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("sysmon") {
+        let _ = win.set_focus();
+        return Ok(());
+    }
+    let url = tauri::Url::parse(&origin).map_err(|e| format!("잘못된 origin: {e}"))?;
+    let app2 = app.clone();
+    app.run_on_main_thread(move || {
+        let r = WebviewWindowBuilder::new(&app2, "sysmon", WebviewUrl::External(url))
+            .title("리소스 모니터")
+            .inner_size(560.0, 640.0)
+            .min_inner_size(420.0, 360.0)
+            .center()
+            // OS 기본 타이틀바 제거 — 프론트의 커스텀 FloatTitleBar로 대체 (리사이즈 유지)
+            .decorations(false)
+            .background_color(tauri::window::Color(30, 31, 34, 255))
+            .additional_browser_args(&browser_args())
+            .build();
+        if let Err(e) = r {
+            log::error!("리소스 모니터 창 생성 실패: {e}");
+        }
+    })
+    .map_err(|e| format!("리소스 모니터 창 예약 실패: {e}"))?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // IME 보정 (Linux/X11): GNOME 메뉴·세션에서 앱을 띄우면 GTK_IM_MODULE 가 비어 있어
@@ -196,6 +228,16 @@ pub fn run() {
                 .disable_drag_drop_handler()
                 .background_color(tauri::window::Color(30, 31, 34, 255))
                 .additional_browser_args(&browser_args())
+                // main webview의 window.open(localhost 프리뷰 iframe 포함) — wry 기본은 침묵
+                // 차단이라 아무 반응이 없다 → 명시적 OS 위임으로 개선. 플로팅 승격은 금지:
+                // 오프너 environment가 특권 프로필이라 팝업이 임의 사이트로 가면 특권 쿠키를
+                // 공유하는 원격 창이 된다(06 설계 §3.2 — 별도 프로필 검토 후 후속).
+                .on_new_window(|url, _features| {
+                    if matches!(url.scheme(), "http" | "https") {
+                        commands::open_external(url.as_str());
+                    }
+                    tauri::webview::NewWindowResponse::Deny
+                })
                 // 창/작업표시줄 아이콘을 런타임에 새 로고로 명시 설정 — Windows 아이콘 캐시나
                 // exe 리소스 임베드 상태와 무관하게 살아 있는 창에 즉시 반영(dev·설치본 공통).
                 .icon(tauri::image::Image::from_bytes(include_bytes!(
@@ -221,6 +263,8 @@ pub fn run() {
                     watcher::register(&watch_handle, project);
                 }
             });
+            // 원격 최신상태 배경 fetch 스케줄러 — 주기 실행에 invoke가 없다 (태스크 04 §3.1).
+            fetch_scheduler::spawn(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -243,6 +287,7 @@ pub fn run() {
             commands::push,
             commands::pull,
             commands::fetch,
+            fetch_scheduler::refresh_remotes,
             commands::get_settings,
             commands::set_settings,
             commands::open_in,
@@ -260,6 +305,7 @@ pub fn run() {
             commands::update_memo,
             commands::delete_memo,
             open_float_window,
+            open_sysmon_window,
             commands::term_open,
             commands::term_attach,
             commands::term_project,
@@ -279,6 +325,7 @@ pub fn run() {
             commands::browser_blur,
             commands::browser_close,
             commands::browser_scan_dev_ports,
+            commands::browser_clear_data,
             commands::http_request,
             commands::http_cancel,
             commands::get_target_sizes,
@@ -291,6 +338,7 @@ pub fn run() {
             commands::read_crash_log,
             commands::clear_crash_log,
             monitor::sys_metrics,
+            monitor::sys_process_snapshot,
             db::db_list_connections,
             db::db_save_connection,
             db::db_delete_connection,
@@ -320,6 +368,8 @@ pub fn run() {
                     let state = window.state::<AppState>();
                     commands::kill_all(state.inner());
                     commands::browser_kill_all(window.app_handle(), state.inner());
+                    // 팝업만 남아 앱이 안 죽는 상태 방지 — gpv-popup-* 전 창 close.
+                    commands::popup_kill_all(window.app_handle());
                 } else if let Some(term_id) = label.strip_prefix("float-") {
                     // 플로팅 터미널 창이 닫히면 그 세션의 PTY만 종료한다(나머지는 메인이 유지).
                     let state = window.state::<AppState>();

@@ -2,6 +2,8 @@ import {
   ArrowDown,
   ArrowUp,
   CircleCheck,
+  CloudOff,
+  FolderGit2,
   GitBranch,
   HardDrive,
   Loader2,
@@ -11,7 +13,7 @@ import {
 
 import { memo } from "react";
 
-import { formatBytes } from "../../lib/format";
+import { formatBytes, relativeTime } from "../../lib/format";
 import type { Project } from "../../lib/ipc";
 import { errorMessage } from "../../lib/ipc";
 import { useNotes, useProjectSize, useStatus } from "../../queries";
@@ -54,6 +56,14 @@ export const ProjectItem = memo(function ProjectItem({
     status?.branch ??
     (status?.detachedSha ? `@ ${status.detachedSha}` : undefined);
 
+  // 배경 fetch 마지막 성공 시각의 상대 표기 — behind 배지 툴팁 "마지막 확인 M분 전"용.
+  const lastFetchMs = status?.lastFetchAt
+    ? new Date(status.lastFetchAt).getTime()
+    : NaN;
+  const lastFetchLabel = Number.isNaN(lastFetchMs)
+    ? null
+    : relativeTime(lastFetchMs);
+
   const counts = status
     ? {
         unstaged: status.unstaged.length,
@@ -62,9 +72,16 @@ export const ProjectItem = memo(function ProjectItem({
         conflicted: status.conflicted.length,
       }
     : null;
+  // 이 프로젝트 안 임베디드(중첩) 저장소들의 변경 총합 — 별도 뱃지로 표시.
+  const nestedChanges = status?.nestedChanges ?? 0;
   const hasChanges =
     !!counts &&
-    counts.unstaged + counts.staged + counts.untracked + counts.conflicted > 0;
+    counts.unstaged +
+      counts.staged +
+      counts.untracked +
+      counts.conflicted +
+      nestedChanges >
+      0;
 
   return (
     <div
@@ -143,9 +160,24 @@ export const ProjectItem = memo(function ProjectItem({
           </span>
         )}
         {!!status?.behind && (
-          <span className="flex shrink-0 items-center text-mod">
+          <span
+            className="flex shrink-0 items-center text-mod"
+            title={`원격에 새 커밋 ${status.behind}개${
+              lastFetchLabel ? ` — 마지막 확인 ${lastFetchLabel}` : ""
+            }`}
+          >
             <ArrowDown size={11} />
             {status.behind}
+          </span>
+        )}
+        {status?.fetchError && (
+          // 배경 fetch 실패 — 토스트/모달 없이 조용한 흐린 아이콘 + 툴팁만(태스크 04 §3.6).
+          <span title={status.fetchError} className="flex shrink-0">
+            <CloudOff
+              size={11}
+              className="text-fg-dim"
+              aria-label="원격 확인 실패"
+            />
           </span>
         )}
         {size && !size.error && size.bytes > 0 && (
@@ -177,6 +209,15 @@ export const ProjectItem = memo(function ProjectItem({
             )}
             {counts.untracked > 0 && (
               <span className="text-untrk">?{counts.untracked}</span>
+            )}
+            {nestedChanges > 0 && (
+              <span
+                className="flex items-center gap-0.5 text-fg-muted"
+                title="중첩 저장소 변경"
+              >
+                <FolderGit2 size={11} />
+                {nestedChanges}
+              </span>
             )}
           </>
         ) : status ? (

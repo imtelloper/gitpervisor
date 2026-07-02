@@ -110,6 +110,17 @@ pub async fn run_git(
     args: &[&str],
     timeout_secs: u64,
 ) -> Result<GitOutput, IpcError> {
+    run_git_env(cwd, args, &[], timeout_secs).await
+}
+
+/// 추가 환경변수를 주입하는 변형 (배경 fetch의 자격증명 프롬프트 억제 등, 태스크 04 §3.2).
+/// 기존 run_git과 같은 단일 관문 — run_git이 빈 env로 이 함수에 위임한다.
+pub async fn run_git_env(
+    cwd: Option<&Path>,
+    args: &[&str],
+    extra_env: &[(&str, &str)],
+    timeout_secs: u64,
+) -> Result<GitOutput, IpcError> {
     let git = git_path().ok_or_else(|| {
         IpcError::new(
             ErrorCode::GitNotFound,
@@ -126,6 +137,9 @@ pub async fn run_git(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
+    for (k, v) in extra_env {
+        cmd.env(k, v);
+    }
     if let Some(cwd) = cwd {
         cmd.current_dir(cwd);
     }

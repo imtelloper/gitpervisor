@@ -14,6 +14,7 @@ export function dotStateOf(
     status.staged.length > 0 ||
     status.unstaged.length > 0 ||
     status.untracked.length > 0 ||
+    status.nestedChanges > 0 ||
     status.ahead > 0 ||
     status.behind > 0
   )

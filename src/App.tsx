@@ -9,7 +9,7 @@ import { ConnectionDialog } from "./components/db/ConnectionDialog";
 import { EmptyState } from "./components/common/EmptyState";
 import { Toasts } from "./components/common/Toast";
 import { GitGate } from "./components/GitGate";
-import { KeyboardShortcuts } from "./components/KeyboardShortcuts";
+import { GlobalShortcuts, KeyboardShortcuts } from "./components/KeyboardShortcuts";
 import { LogPanel } from "./components/log/LogPanel";
 import { MemoDialog } from "./components/memo/MemoDialog";
 import { SettingsDialog } from "./components/settings/SettingsDialog";
@@ -21,8 +21,8 @@ import { FileTreePanel } from "./components/tree/FileTreePanel";
 import { WorkspaceTabs } from "./components/workspace/WorkspaceTabs";
 import { useAgentNotifications } from "./lib/agent-notify";
 import { ipc } from "./lib/ipc";
+import { refreshTerminalThemes } from "./lib/terminal";
 import {
-  useAutoFetch,
   useProjectRootsPrefetch,
   useProjects,
   useSettings,
@@ -41,13 +41,23 @@ export default function App() {
   const imageEditorPath = useUi((s) => s.imageEditorPath);
 
   const { data: settings } = useSettings();
-  useAutoFetch(); // 옵트인 자동 fetch (기본 OFF)
+  // 자동 fetch는 Rust 스케줄러(fetch_scheduler.rs)가 담당 — 포커스 복귀 트리거는
+  // events.ts의 focusManager 연결부에서 함께 배선된다(태스크 04).
   useProjectRootsPrefetch(); // 전 프로젝트 루트 병렬 프리페치 → 트리 즉시 표시
   useAgentNotifications(); // AI 작업 완료 OS 알림 (메인 창 1회 — 설정 모드별)
 
   // 선택 테마를 <html data-theme>로 적용 — CSS 변수 오버라이드가 전체 팔레트를 바꾼다
   useEffect(() => {
-    document.documentElement.dataset.theme = settings?.theme ?? "darcula";
+    const theme = settings?.theme ?? "darcula";
+    document.documentElement.dataset.theme = theme;
+    // 다음 실행의 첫 페인트용 캐시 — main.tsx가 렌더 전에 선적용해 시작 플래시를 없앤다
+    try {
+      localStorage.setItem("gp:theme", theme);
+    } catch {
+      /* localStorage 불가 환경 무시 */
+    }
+    // 이미 열린 xterm은 생성 시 테마가 박제되므로 즉시 재적용 (CSSOM 반영은 동기라 안전)
+    refreshTerminalThemes();
   }, [settings?.theme]);
 
   // 이전 실행에서 크래시가 있었으면(패닉 로그가 남았으면) 1회 알린다. 같은 크래시(파일 mtime)는
@@ -117,6 +127,8 @@ export default function App() {
             </div>
 
             <StatusBar project={selected} />
+            {/* 모아보기 토글 등 — 조건 분기 바깥에 상시 마운트(모아보기 중에도 닫기 동작) */}
+            <GlobalShortcuts />
           </div>
           <Toasts />
           <ConfirmHost />

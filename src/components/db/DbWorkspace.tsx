@@ -5,6 +5,7 @@ import { Play, Plus, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { isSqlEngine } from "../../lib/ipc";
+import { monacoThemeOf } from "../../lib/themes";
 import { useDbConnections, useSettings, useTableMeta } from "../../queries";
 import { LIMIT_OPTIONS, useDb } from "../../stores/db";
 import { useUi } from "../../stores/ui";
@@ -24,8 +25,7 @@ function QueryEditor() {
   const lang = sql ? "sql" : activeEngine === "redis" ? "plaintext" : "javascript";
   const dialect = sql ? "sql" : activeEngine === "redis" ? "redis" : "mongo-js";
   const { data: settings } = useSettings();
-  const theme =
-    settings?.theme === "monokai" ? "gitpervisor-monokai" : "gitpervisor-dark";
+  const theme = monacoThemeOf(settings?.theme);
 
   return (
     <div className="flex h-[210px] shrink-0 flex-col border-b border-edge">

@@ -57,6 +57,17 @@ pub struct RepoStatus {
     pub conflicted: Vec<FileChange>,
     /// 경로 소실·git 실패 등 — 값이 있으면 사이드바에서 회색(오류) 상태로 표시한다.
     pub error: Option<String>,
+    /// 이 status가 임베디드(중첩) 저장소면 그 부모 프로젝트 id. 최상위 프로젝트는 None.
+    /// 프론트는 배치에서 parent_id == 선택 프로젝트 인 항목을 Changes 패널에 별도 섹션으로 렌더한다.
+    pub parent_id: Option<String>,
+    /// 임베디드 저장소의 부모 루트 기준 상대 경로(예: "APPLICATION/nexus-application"). 최상위는 None.
+    pub rel_path: Option<String>,
+    /// 이 프로젝트에 속한 (모든 깊이의) 임베디드 저장소들의 변경 총합 — 사이드바 뱃지/점 표시용.
+    pub nested_changes: u32,
+    /// 배경/수동 fetch 마지막 성공 시각(ISO 8601) — get_statuses가 freshness 맵을 조인해 채운다.
+    pub last_fetch_at: Option<String>,
+    /// 마지막 배경 fetch 실패 사유 — 조용한 배지(CloudOff)용. None=정상.
+    pub fetch_error: Option<String>,
 }
 
 impl RepoStatus {
@@ -74,6 +85,11 @@ impl RepoStatus {
             untracked: Vec::new(),
             conflicted: Vec::new(),
             error: None,
+            parent_id: None,
+            rel_path: None,
+            nested_changes: 0,
+            last_fetch_at: None,
+            fetch_error: None,
         }
     }
 
@@ -181,11 +197,13 @@ pub struct CommitDetail {
 pub struct Settings {
     /// null/빈 문자열 = PATH 자동 탐색
     pub git_path: Option<String>,
-    /// 0 = 자동 fetch 끔
-    pub auto_fetch_minutes: u32,
+    /// 원격 새로고침(배경 fetch) 주기 — 0 = 끔, 기본 5분. 구 auto_fetch_minutes를 대체하며
+    /// 저장값에 이 키가 없으면 로드 시 1회 마이그레이션한다(state.rs, 태스크 04 §3.7).
+    pub remote_refresh_minutes: u32,
     pub diff_font_size: u32,
     pub confirm_discard: bool,
-    /// UI 테마 이름 ("darcula" | "monokai"). 검증·렌더는 프론트가 담당.
+    /// UI 테마 이름 ("darcula" | "monokai" | "light" | "dracula" | "nord" | "solarized-light").
+    /// 자유 문자열 통과 — 검증·렌더는 프론트(themes.ts, 미지 id는 darcula 폴백)가 담당.
     pub theme: String,
     /// 임베디드 터미널 셸 (null/빈값 = 자동: pwsh→powershell→cmd / $SHELL)
     pub terminal_shell: Option<String>,
@@ -209,7 +227,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             git_path: None,
-            auto_fetch_minutes: 0,
+            remote_refresh_minutes: 5,
             diff_font_size: 13,
             confirm_discard: true,
             theme: "darcula".to_string(),

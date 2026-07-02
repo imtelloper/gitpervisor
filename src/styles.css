@@ -63,6 +63,109 @@
   --color-untrk: #e8a447;
 }
 
+/* Dracula — 공식 스펙(draculatheme.com): background/foreground/8색이 고정 정의. */
+:root[data-theme="dracula"] {
+  --color-base: #282a36; /* 공식 background */
+  --color-panel: #21222c; /* background 한 단계 어둡힘 — 공식 에디터 포팅의 사이드바 톤 */
+  --color-raised: #343746;
+  --color-selection: #44475a; /* 공식 selection/current line */
+  --color-edge: #343746;
+  --color-accent: #bd93f9; /* 공식 purple */
+  --color-accent-hover: #caa8fa;
+  --color-on-accent: #282a36; /* 밝은 퍼플 accent 위엔 어두운 텍스트 */
+
+  --color-fg: #f8f8f2; /* 공식 foreground */
+  --color-fg-muted: #b8bfdd;
+  --color-fg-dim: #8894c4; /* 공식 comment(#6272a4)는 3.0:1 — WCAG AA(4.8:1)까지 밝힘 */
+
+  --color-ok: #50fa7b; /* 공식 green */
+  --color-warn: #f1fa8c; /* 공식 yellow */
+  --color-danger: #ff5555; /* 공식 red */
+
+  --color-mod: #8be9fd; /* 공식 cyan — 팔레트에 파랑이 없어 수정 상태에 차용 */
+  --color-add: #50fa7b;
+  --color-del: #8894c4; /* fg-dim 동률 — AA 확보(4.8:1) */
+  --color-untrk: #ffb86c; /* 공식 orange — danger(red)와 구분 */
+}
+
+/* Nord — 공식 팔레트 nord0-15 (nordtheme.com). 한색 계열로 웜톤 darcula와 차별화. */
+:root[data-theme="nord"] {
+  --color-base: #2e3440; /* nord0 (Polar Night) */
+  --color-panel: #3b4252; /* nord1 */
+  --color-raised: #434c5e; /* nord2 */
+  --color-selection: #4c566a; /* nord3 — 공식 selection 계열 */
+  --color-edge: #3b4252;
+  --color-accent: #88c0d0; /* nord8 — 공식 프라이머리 액센트(Frost) */
+  --color-accent-hover: #9bcfdd;
+  --color-on-accent: #2e3440; /* 밝은 시안 accent 위엔 어두운 텍스트(nord0) */
+
+  --color-fg: #eceff4; /* nord6 (Snow Storm) */
+  --color-fg-muted: #d8dee9; /* nord4 */
+  --color-fg-dim: #90a0bc; /* 공식 nord3(#4c566a)은 1.9:1 — WCAG AA(4.7:1)까지 밝힘 */
+
+  --color-ok: #a3be8c; /* nord14 green */
+  --color-warn: #ebcb8b; /* nord13 yellow */
+  --color-danger: #bf616a; /* nord11 red */
+
+  --color-mod: #81a1c1; /* nord9 blue */
+  --color-add: #a3be8c; /* nord14 */
+  --color-del: #90a0bc; /* fg-dim 동률 — AA 확보(4.7:1) */
+  --color-untrk: #d08770; /* nord12 orange */
+}
+
+/* 라이트 — IntelliJ Light 계열. 명도 방향이 다크와 반대(raised·hover가 base보다 어두움).
+ * VCS 상태색은 IntelliJ Light 컨벤션(수정 파랑 · 추가 초록)을 따른다. */
+:root[data-theme="light"] {
+  --color-base: #f7f8fa;
+  --color-panel: #ffffff; /* 라이트에선 패널(다이얼로그·헤더)이 흰색으로 떠 보이게 */
+  --color-raised: #e6e8ee; /* hover/칩 — base보다 어둡게 */
+  --color-selection: #d4e2ff; /* IntelliJ Light selection */
+  --color-edge: #d3d5db;
+  --color-accent: #3574f0; /* JetBrains 블루 — 라이트에서도 동일 브랜드 톤 */
+  --color-accent-hover: #2b63d9; /* 라이트의 hover는 어두워지는 방향 */
+  --color-on-accent: #ffffff;
+
+  --color-fg: #222429;
+  --color-fg-muted: #55585f;
+  --color-fg-dim: #6d7076; /* WCAG AA 충족(4.7:1) — 힌트 텍스트 가독성 */
+
+  --color-ok: #368c3c;
+  --color-warn: #9e6a00; /* 노랑은 어두운 앰버로 — 밝은 바탕에서 소실 방지 */
+  --color-danger: #c7222d; /* WCAG AA 충족(5.3:1) */
+
+  --color-mod: #116cd6; /* IntelliJ Light VCS modified */
+  --color-add: #067d17; /* IntelliJ Light VCS added */
+  --color-del: #6e7178; /* 삭제 회색 — WCAG AA 충족(4.6:1) */
+  --color-untrk: #c7222d;
+}
+
+/* Solarized Light — 공식 16색(base03–base3 + accent 8색, ethanschoonover.com/solarized).
+ * 저대비가 특징이지만 텍스트 3단은 공식 권장(base00 본문)에서 한 단계씩 올려
+ * (base02/base01/base00) 코드 도구에 필요한 가독성을 확보한다. */
+:root[data-theme="solarized-light"] {
+  --color-base: #fdf6e3; /* base3 */
+  --color-panel: #eee8d5; /* base2 — 공식 background highlights */
+  --color-raised: #e4dcc4; /* base2 어둡힘 파생 — hover 구분 */
+  --color-selection: #d3e1ec; /* blue(#268bd2) 저채도 파생 — panel(base2)과 구분되는 선택색 */
+  --color-edge: #ddd6c1;
+  --color-accent: #268bd2; /* 공식 blue */
+  --color-accent-hover: #1f78b7;
+  --color-on-accent: #ffffff;
+
+  --color-fg: #073642; /* base02 — 공식 본문색 base00은 4.1:1로 저대비라 승급 */
+  --color-fg-muted: #586e75; /* base01 — WCAG AA 충족(5.0:1) */
+  --color-fg-dim: #657b83; /* base00 — 4.1:1, AA 근접(저대비 테마 특성 유지) */
+
+  --color-ok: #859900; /* 공식 green */
+  --color-warn: #b58900; /* 공식 yellow */
+  --color-danger: #dc322f; /* 공식 red */
+
+  --color-mod: #268bd2; /* 공식 blue */
+  --color-add: #667600; /* 공식 green(#859900, 3.0:1)을 텍스트 AA(4.7:1)까지 어둡힘 */
+  --color-del: #657b83; /* base00 — 삭제 회색 */
+  --color-untrk: #cb4b16; /* 공식 orange */
+}
+
 html,
 body,
 #root {
@@ -85,7 +188,8 @@ textarea {
   height: 10px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #44464b;
+  /* 테마 추종 — raised에 fg 7%를 섞으면 darcula에서 기존 하드코딩(#44464b)과 근사(#45464b) */
+  background: color-mix(in srgb, var(--color-raised) 93%, var(--color-fg) 7%);
   border-radius: 5px;
   border: 2px solid transparent;
   background-clip: padding-box;
@@ -307,6 +411,33 @@ textarea {
     ai-working-glow 2.6s ease-in-out infinite;
 }
 
+/* 라이트 테마 보정 — 다크 전제의 알파 0.26 무지개·글로우는 밝은 바탕에서 과광이라
+ * 저알파 그라데이션 + 저감 글로우로 교체한다(색상 계열은 유지). */
+@keyframes ai-working-glow-light {
+  0%,
+  100% {
+    box-shadow: inset 0 0 22px -10px rgba(53, 116, 240, 0.28);
+  }
+  50% {
+    box-shadow: inset 0 0 26px -8px rgba(140, 100, 220, 0.34);
+  }
+}
+:root[data-theme="light"] .ai-working,
+:root[data-theme="solarized-light"] .ai-working {
+  background-image: linear-gradient(
+    90deg,
+    rgba(225, 60, 100, 0.13),
+    rgba(220, 140, 40, 0.13),
+    rgba(60, 165, 80, 0.13),
+    rgba(40, 135, 205, 0.13),
+    rgba(125, 90, 215, 0.13),
+    rgba(225, 60, 100, 0.13)
+  );
+  animation:
+    ai-rainbow-flow 4.5s linear infinite,
+    ai-working-glow-light 2.6s ease-in-out infinite;
+}
+
 /* 완료: 차분한 초록빛이 왼쪽에서 은은히 — 끝난 프로젝트를 한눈에 (애니메이션 없음). */
 .ai-done {
   background-image: linear-gradient(
@@ -317,21 +448,26 @@ textarea {
 }
 
 /* 모션 최소화 환경에선 깜빡이는 글로우 펄스는 빼되, 흐르는 무지개는 더 느리게 유지
- * (작업 중 표시는 의도된 핵심 큐라 완전히 끄지 않는다). */
+ * (작업 중 표시는 의도된 핵심 큐라 완전히 끄지 않는다).
+ * 라이트 오버라이드가 특이도(data-theme 셀렉터)로 이기므로 같은 셀렉터로 함께 덮는다. */
 @media (prefers-reduced-motion: reduce) {
-  .ai-working {
+  .ai-working,
+  :root[data-theme="light"] .ai-working,
+  :root[data-theme="solarized-light"] .ai-working {
     animation: ai-rainbow-flow 6s linear infinite;
   }
 }
 
-/* 이미지 뷰어 배경 — 투명 PNG/SVG의 알파를 드러내는 체커보드. */
+/* 이미지 뷰어 배경 — 투명 PNG/SVG의 알파를 드러내는 체커보드.
+ * 테마 추종: 바탕은 panel(darcula에서 기존 #2b2d31 ≈ panel #2b2d30), 격자선은 fg 파생 —
+ * 흰색 5% 고정은 라이트 바탕에서 소실되지만 fg 파생은 어느 테마에서든 드러난다. */
 .checkerboard {
-  background-color: #2b2d31;
+  background-color: var(--color-panel);
   background-image:
-    linear-gradient(45deg, rgba(255, 255, 255, 0.05) 25%, transparent 25%),
-    linear-gradient(-45deg, rgba(255, 255, 255, 0.05) 25%, transparent 25%),
-    linear-gradient(45deg, transparent 75%, rgba(255, 255, 255, 0.05) 75%),
-    linear-gradient(-45deg, transparent 75%, rgba(255, 255, 255, 0.05) 75%);
+    linear-gradient(45deg, color-mix(in srgb, var(--color-fg) 5%, transparent) 25%, transparent 25%),
+    linear-gradient(-45deg, color-mix(in srgb, var(--color-fg) 5%, transparent) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, color-mix(in srgb, var(--color-fg) 5%, transparent) 75%),
+    linear-gradient(-45deg, transparent 75%, color-mix(in srgb, var(--color-fg) 5%, transparent) 75%);
   background-size: 20px 20px;
   background-position:
     0 0,

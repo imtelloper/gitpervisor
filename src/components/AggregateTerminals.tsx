@@ -1,12 +1,17 @@
-import { CircleCheck, LayoutGrid, Loader2, X } from "lucide-react";
+import { CircleCheck, LayoutGrid, Loader2, Plus, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import type { Project } from "../lib/ipc";
+import { isMac, modLabel } from "../lib/platform";
 import { attachTerminal, createTerminal, fitTerminal } from "../lib/terminal";
 import { useProjects, useSettings } from "../queries";
 import { useAgentActivity } from "../stores/agentActivity";
 import { collectByContent, useTerminals } from "../stores/terminals";
 import { useUi } from "../stores/ui";
 import { EmptyState } from "./common/EmptyState";
+
+// 모아보기 토글 단축키 라벨 — mac은 심볼 관례(⌘⇧A), 그 외는 Ctrl+Shift+A
+const hotkeyLabel = isMac ? `${modLabel}⇧A` : `${modLabel}+Shift+A`;
 
 interface TermMeta {
   paneId: string;
@@ -28,6 +33,7 @@ export function AggregateTerminals() {
   const { data: settings } = useSettings();
   const fontSize = settings?.terminalFontSize ?? 13;
   const terminals = useTerminals((s) => s.terminals);
+  const openTerminal = useTerminals((s) => s.openTerminal);
   const byTerminal = useAgentActivity((s) => s.byTerminal);
 
   // 모든 터미널 패널 메타 (스토어 기준 — 반응형). 브라우저 패널은 제외.
@@ -79,6 +85,15 @@ export function AggregateTerminals() {
       return next;
     });
 
+  // 새 터미널 생성 + 즉시 그리드 편입. initedRef 선행 — 터미널 0개에서 첫 생성 시
+  // 초기 자동선택 효과가 뒤늦게 selected를 덮어쓰는 경합 차단. 스토어 갱신은 동기라
+  // 신규 paneId만 selected에 넣으면 셀 마운트→PTY spawn→attach는 기존 경로로 완결된다.
+  const addTerminal = (projectId: string) => {
+    initedRef.current = true;
+    const { paneId } = openTerminal(projectId);
+    setSelected((prev) => new Set(prev).add(paneId));
+  };
+
   const shown = all.filter((t) => selected.has(t.paneId));
   const n = shown.length;
   const cols = n <= 1 ? 1 : n <= 4 ? 2 : n <= 9 ? 3 : 4;
@@ -121,9 +136,10 @@ export function AggregateTerminals() {
             );
           })}
         </div>
+        <NewTerminalButton projects={projects} onCreate={addTerminal} />
         <button
           onClick={() => setAggregateOpen(false)}
-          title="모아보기 닫기"
+          title={`모아보기 닫기 (${hotkeyLabel})`}
           className="ml-1 flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs text-fg-muted hover:bg-raised hover:text-fg"
         >
           <X size={14} /> 닫기
@@ -138,7 +154,7 @@ export function AggregateTerminals() {
           desc={
             all.length
               ? "위 칩에서 보고 싶은 터미널을 고르면 여기에 분할로 표시됩니다"
-              : "프로젝트에서 터미널을 연 뒤 다시 열어보세요"
+              : "위의 + 새 터미널 버튼으로 바로 열 수 있습니다"
           }
         />
       ) : (
@@ -159,6 +175,82 @@ export function AggregateTerminals() {
         </div>
       )}
     </div>
+  );
+}
+
+/** 새 터미널 추가 — 프로젝트 드롭다운에서 골라 생성. 1개면 드롭다운 생략 즉시 생성,
+ *  0개(또는 로딩 전)면 비활성. 메뉴는 NewTabControls(WorkspaceTabs)와 같은
+ *  버튼 rect 기준 fixed 위치 + 백드롭 패턴 — 헤더(h-10) 밖으로 넘칠 때 클리핑을 벗어난다. */
+function NewTerminalButton({
+  projects,
+  onCreate,
+}: {
+  projects: Project[] | undefined;
+  onCreate: (projectId: string) => void;
+}) {
+  const selectedProjectId = useUi((s) => s.selectedProjectId);
+  // 버튼이 헤더 우측 끝이라 좌측 기준(left)이면 메뉴가 창 밖으로 잘린다 — 우측 모서리 정렬
+  const [menu, setMenu] = useState<{ right: number; y: number } | null>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+
+  const list = projects ?? [];
+  // 마지막 선택 프로젝트를 맨 위로 — 나머지는 목록 순서 유지
+  const ordered = [
+    ...list.filter((p) => p.id === selectedProjectId),
+    ...list.filter((p) => p.id !== selectedProjectId),
+  ];
+
+  const onClick = () => {
+    if (menu) {
+      setMenu(null);
+      return;
+    }
+    if (ordered.length === 1) {
+      onCreate(ordered[0].id); // 모호성 없음 — 드롭다운 생략
+      return;
+    }
+    const r = btnRef.current?.getBoundingClientRect();
+    if (r) setMenu({ right: window.innerWidth - r.right, y: r.bottom + 4 });
+  };
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        onClick={onClick}
+        disabled={list.length === 0}
+        title={
+          list.length === 0
+            ? "프로젝트를 추가하면 새 터미널을 열 수 있습니다"
+            : "새 터미널 — 프로젝트를 골라 이 화면에 바로 연다"
+        }
+        className="ml-1 flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs text-fg-muted hover:bg-raised hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+      >
+        <Plus size={14} /> 새 터미널
+      </button>
+      {menu && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setMenu(null)} />
+          <div
+            className="fixed z-50 max-h-80 min-w-40 overflow-auto rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl"
+            style={{ right: menu.right, top: menu.y }}
+          >
+            {ordered.map((p) => (
+              <button
+                key={p.id}
+                onClick={() => {
+                  onCreate(p.id);
+                  setMenu(null);
+                }}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-fg-muted hover:bg-raised hover:text-fg"
+              >
+                <span className="truncate">{p.name}</span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </>
   );
 }
 

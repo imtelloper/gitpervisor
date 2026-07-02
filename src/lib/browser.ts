@@ -138,6 +138,14 @@ export async function scanDevPorts(): Promise<number[]> {
   }
 }
 
+/**
+ * 브라우저 프로필(쿠키/로그인 세션/사이트 데이터) 전체 삭제 — 북마크·방문기록 store는 별개라
+ * 유지된다. 설정의 명시적 액션이므로 실패를 삼키지 않고 throw(호출부가 토스트로 표면화).
+ */
+export async function clearBrowserData(): Promise<void> {
+  await invoke("browser_clear_data");
+}
+
 // ---- 백엔드 이벤트 → 스토어 (events.ts 철학: 이벤트는 신호, 스토어가 갱신) ----
 let eventsReady = false;
 export function ensureBrowserEvents(): void {

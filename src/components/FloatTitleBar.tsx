@@ -3,8 +3,15 @@ import { useEffect, useState } from "react";
 
 const win = getCurrentWindow();
 
-/** 플로팅 터미널 창의 커스텀 타이틀바 — 드래그 영역 + 창 컨트롤(최소화/최대화/닫기). */
-export function FloatTitleBar({ title }: { title: string }) {
+/** 플로팅 창의 커스텀 타이틀바 — 드래그 영역 + 창 컨트롤(최소화/최대화/닫기).
+ *  badge는 창 종류 표시(기본 "터미널" — 기존 사용처 무영향, 리소스 모니터는 "모니터"). */
+export function FloatTitleBar({
+  title,
+  badge = "터미널",
+}: {
+  title: string;
+  badge?: string;
+}) {
   return (
     <header
       data-tauri-drag-region
@@ -21,7 +28,7 @@ export function FloatTitleBar({ title }: { title: string }) {
           {title}
         </span>
         <span className="rounded bg-raised px-1.5 py-0.5 text-[10px] text-fg-dim">
-          터미널
+          {badge}
         </span>
       </div>
 
