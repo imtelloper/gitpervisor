@@ -29,6 +29,7 @@ const SUITES = [
   "./suites/15-tree-fileops.mjs",
   "./suites/16-browser-session.mjs",
   "./suites/17-remote-freshness.mjs",
+  "./suites/18-sysmon.mjs",
 ];
 
 const report = createReport();

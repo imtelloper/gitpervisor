@@ -6,11 +6,12 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 import type {
   DiffTarget,
   NotesMap,
+  ProcSortKey,
   Project,
   ProjectSize,
   RepoStatus,
@@ -53,6 +54,8 @@ export const keys = {
   dir: (projectId: string, relPath: string) =>
     ["dir", projectId, relPath] as const,
   sysMetrics: ["sys-metrics"] as const,
+  processSnapshot: (sortBy: ProcSortKey, groupByName: boolean) =>
+    ["process-snapshot", sortBy, groupByName] as const,
   notes: ["notes"] as const,
   targetSizes: (projectIds: string[]) => ["target-sizes", projectIds] as const,
   projectSizes: (projectIds: string[]) =>
@@ -224,6 +227,36 @@ export function useSysMetrics() {
     refetchIntervalInBackground: false,
     staleTime: 0,
     gcTime: 4000,
+    placeholderData: keepPreviousData,
+  });
+}
+
+/** 리소스 모니터 팝업의 Top-N 행 수 (태스크 05 §1 — 기본 20). */
+const PROC_SNAPSHOT_LIMIT = 20;
+
+/**
+ * 리소스 모니터 팝업 — 프로세스 스냅샷 2초 폴링(틱당 커맨드 1개, totals 포함 배치).
+ * 모니터 창은 비포커스 상태로 곁눈질하는 게 기본 자세라 refetchIntervalInBackground:true —
+ * 대신 document.visibilityState(최소화 시 hidden)로 게이트해 "보일 때만" 폴링한다 (§3.2).
+ */
+export function useProcessSnapshot(sortBy: ProcSortKey, groupByName: boolean) {
+  const [visible, setVisible] = useState(
+    document.visibilityState === "visible",
+  );
+  useEffect(() => {
+    const onChange = () => setVisible(document.visibilityState === "visible");
+    document.addEventListener("visibilitychange", onChange);
+    return () => document.removeEventListener("visibilitychange", onChange);
+  }, []);
+  return useQuery({
+    queryKey: keys.processSnapshot(sortBy, groupByName),
+    queryFn: () =>
+      ipc.sysProcessSnapshot(sortBy, PROC_SNAPSHOT_LIMIT, groupByName),
+    refetchInterval: visible ? 2000 : false,
+    refetchIntervalInBackground: true,
+    staleTime: 0,
+    gcTime: 4000,
+    // 정렬/그룹 전환·첫 틱(CPU 0%)에도 직전 데이터를 유지해 깜빡임을 없앤다.
     placeholderData: keepPreviousData,
   });
 }

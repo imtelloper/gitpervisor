@@ -269,6 +269,22 @@ export interface SysMetrics {
   storageTotal: number;
 }
 
+// ---- 리소스 모니터 팝업 (sys_process_snapshot, 태스크 05) ----
+export interface ProcessSample {
+  pid: number;
+  name: string; // 실행 파일명 (예: "chrome.exe")
+  cpu: number; // 0-100 — 코어수로 나눈 전역 스케일
+  ram: number; // bytes
+  gpu: number | null; // Windows PDH 3D 엔진 pid 집계, 그 외/비대상 null
+  groupCount: number | null; // 프로그램별 합산 행이면 묶인 프로세스 수
+}
+export interface ProcessSnapshot {
+  totals: SysMetrics; // 팝업 헤더 게이지 — 별도 sys_metrics 호출 불필요(배치)
+  processes: ProcessSample[]; // 정렬·Top-N 절단 완료
+  totalCount: number; // 절단 전 행 수 ("… 외 N개")
+}
+export type ProcSortKey = "cpu" | "ram" | "gpu";
+
 // ---- 파일 트리 ----
 export interface DirEntry {
   name: string;
@@ -734,6 +750,21 @@ export const ipc = {
       attempts: 1,
       timeoutMs: 4000,
     }),
+  // 리소스 모니터 팝업 폴링 — 틱당 커맨드 1개(totals 포함 배치, 동시 invoke 유실 회피).
+  // sysMetrics와 동일 규약: background 레인, 재시도 없음(다음 틱이 자기치유), 짧은 타임아웃.
+  sysProcessSnapshot: (
+    sortBy: ProcSortKey,
+    limit: number,
+    groupByName: boolean,
+  ) =>
+    call<ProcessSnapshot>(
+      "sys_process_snapshot",
+      { sortBy, limit, groupByName },
+      { lane: "background", attempts: 1, timeoutMs: 4000 },
+    ),
+  // 리소스 모니터 팝업 창(싱글턴 라벨 "sysmon") — origin 전달은 floating.ts 전례와 동일.
+  openSysmonWindow: () =>
+    invoke<void>("open_sysmon_window", { origin: window.location.origin }),
 
   // ---- 변경 커맨드 (재시도 없음) ----
   stageFiles: (projectId: string, paths: string[]) =>

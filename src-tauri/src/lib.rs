@@ -126,6 +126,37 @@ async fn open_float_window(
     Ok(())
 }
 
+/// 리소스 모니터 팝업 창(태스크 05) — open_float_window와 같은 검증된 레시피를 그대로 미러:
+/// async 커맨드 + run_on_main_thread + WebviewUrl::External(origin) + browser_args() 일치.
+/// 라벨 "sysmon" 싱글턴 — 이미 떠 있으면 새로 만들지 않고 포커스만 준다. Destroyed 핸들러는
+/// main/float-* 전용이라 이 창은 정리 코드가 필요 없다(그 외 라벨 no-op).
+#[tauri::command]
+async fn open_sysmon_window(app: tauri::AppHandle, origin: String) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("sysmon") {
+        let _ = win.set_focus();
+        return Ok(());
+    }
+    let url = tauri::Url::parse(&origin).map_err(|e| format!("잘못된 origin: {e}"))?;
+    let app2 = app.clone();
+    app.run_on_main_thread(move || {
+        let r = WebviewWindowBuilder::new(&app2, "sysmon", WebviewUrl::External(url))
+            .title("리소스 모니터")
+            .inner_size(560.0, 640.0)
+            .min_inner_size(420.0, 360.0)
+            .center()
+            // OS 기본 타이틀바 제거 — 프론트의 커스텀 FloatTitleBar로 대체 (리사이즈 유지)
+            .decorations(false)
+            .background_color(tauri::window::Color(30, 31, 34, 255))
+            .additional_browser_args(&browser_args())
+            .build();
+        if let Err(e) = r {
+            log::error!("리소스 모니터 창 생성 실패: {e}");
+        }
+    })
+    .map_err(|e| format!("리소스 모니터 창 예약 실패: {e}"))?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // IME 보정 (Linux/X11): GNOME 메뉴·세션에서 앱을 띄우면 GTK_IM_MODULE 가 비어 있어
@@ -274,6 +305,7 @@ pub fn run() {
             commands::update_memo,
             commands::delete_memo,
             open_float_window,
+            open_sysmon_window,
             commands::term_open,
             commands::term_attach,
             commands::term_project,
@@ -306,6 +338,7 @@ pub fn run() {
             commands::read_crash_log,
             commands::clear_crash_log,
             monitor::sys_metrics,
+            monitor::sys_process_snapshot,
             db::db_list_connections,
             db::db_save_connection,
             db::db_delete_connection,

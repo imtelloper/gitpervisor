@@ -5,6 +5,7 @@ import ReactDOM from "react-dom/client";
 
 import App from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { SysMonitorWindow } from "./components/sysmon/SysMonitorWindow";
 import { FloatingTerminal } from "./FloatingTerminal";
 import { attachRepoEvents } from "./lib/events";
 import { setupErrorLogging } from "./lib/logging";
@@ -39,7 +40,19 @@ const floatPaneId = label.startsWith("float-")
   ? label.slice("float-".length)
   : null;
 
-if (floatPaneId) {
+if (label === "sysmon") {
+  // 리소스 모니터 팝업 창(태스크 05) — 플로팅 터미널 분기와 대칭, 자체 QueryClient.
+  const sysmonQc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  root.render(
+    <React.StrictMode>
+      <QueryClientProvider client={sysmonQc}>
+        <ErrorBoundary>
+          <SysMonitorWindow />
+        </ErrorBoundary>
+      </QueryClientProvider>
+    </React.StrictMode>,
+  );
+} else if (floatPaneId) {
   // 플로팅 창도 QueryClientProvider로 감싼다 — 분할 패널 컴포넌트가 쿼리를 쓰더라도 안전하게.
   const floatQc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   root.render(
