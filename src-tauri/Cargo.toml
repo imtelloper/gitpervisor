@@ -57,6 +57,12 @@ rust_decimal = "1"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "charset", "gzip", "brotli", "deflate", "zstd", "json", "query", "multipart", "stream", "cookies"] }
 serde_urlencoded = "0.7"
 base64 = "0.22"
+# LSP 서버 앱 내 다운로드(태스크 17 M2 획득 자동화) — npm tgz 해제 + sha512 무결성.
+# node 런타임 다운로드(PATH에 node 없을 때): win=zip, unix=tar.gz(flate2+tar), 무결성=SHASUMS256(sha256).
+flate2 = "1"
+tar = "0.4"
+sha2 = "0.10"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]
 # Win32_UI_Shell: 파일트리 실행 파일 더블클릭을 ShellExecuteW로 띄운다(cmd 셸 파싱 우회 — 인젝션 차단).

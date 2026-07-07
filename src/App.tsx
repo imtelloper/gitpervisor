@@ -10,6 +10,10 @@ import { EmptyState } from "./components/common/EmptyState";
 import { Toasts } from "./components/common/Toast";
 import { GitGate } from "./components/GitGate";
 import { GlobalShortcuts, KeyboardShortcuts } from "./components/KeyboardShortcuts";
+import { QuickOpenHost } from "./components/quickopen/QuickOpenHost";
+import { SearchPanel } from "./components/search/SearchPanel";
+import { SymbolSearch } from "./components/symbolsearch/SymbolSearch";
+import { useSearch } from "./stores/search";
 import { LogPanel } from "./components/log/LogPanel";
 import { MemoDialog } from "./components/memo/MemoDialog";
 import { SettingsDialog } from "./components/settings/SettingsDialog";
@@ -39,6 +43,7 @@ export default function App() {
   const fileTreeOpen = useUi((s) => s.fileTreeOpen);
   const aggregateOpen = useUi((s) => s.aggregateOpen);
   const imageEditorPath = useUi((s) => s.imageEditorPath);
+  const searchOpen = useSearch((s) => s.open);
 
   const { data: settings } = useSettings();
   // 자동 fetch는 Rust 스케줄러(fetch_scheduler.rs)가 담당 — 포커스 복귀 트리거는
@@ -113,6 +118,7 @@ export default function App() {
                       <ChangesPanel projectId={selected.id} />
                       <WorkspaceTabs projectId={selected.id} />
                     </div>
+                    {searchOpen && <SearchPanel projectId={selected.id} />}
                     <LogPanel projectId={selected.id} />
                     <KeyboardShortcuts projectId={selected.id} />
                   </>
@@ -133,6 +139,8 @@ export default function App() {
           <Toasts />
           <ConfirmHost />
           <PromptHost />
+          <QuickOpenHost />
+          <SymbolSearch />
           <SettingsDialog />
           <MemoDialog />
           <ConnectionDialog />

@@ -23,6 +23,8 @@ pub enum ErrorCode {
     TlsError,
     Cancelled,
     InvalidUrl,
+    // 외부 도구(ruff/biome 등) 미설치 — 프론트는 설치 안내 토스트를 띄운다(태스크 15/16).
+    ToolNotFound,
 }
 
 /// 모든 IPC 커맨드의 공통 오류 형태. 프론트엔드는 code로 분기하고 stderr를 상세로 노출한다.

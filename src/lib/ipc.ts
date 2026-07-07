@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 
 import type { ThemeName } from "./themes";
 
@@ -77,7 +77,7 @@ export type DiffTarget =
   | { mode: "worktree"; path: string } // 인덱스(없으면 HEAD) ↔ 워크트리
   | { mode: "index"; path: string } // HEAD ↔ 인덱스 (staged 검토)
   | { mode: "commit"; sha: string; path: string } // 부모 ↔ 해당 커밋
-  | { mode: "file"; path: string; line?: number }; // 단일 파일 보기 (line=점프 대상 줄)
+  | { mode: "file"; path: string; line?: number; column?: number }; // 단일 파일 보기 (line/column=점프 도착 심볼 위치)
 
 /** Go-to-Definition 후보 (commands/tree.rs find_definition). */
 export interface DefMatch {
@@ -85,6 +85,49 @@ export interface DefMatch {
   line: number; // 1-based
   column: number; // 1-based
   signature: string; // 데코레이터 + 정의줄 + 파라미터
+  doc?: string; // 정의 문서(py 독스트링/JSDoc/`///`) — 백엔드가 skip_serializing이라 없으면 undefined
+}
+
+/** Go to Symbol 후보 (commands/tree.rs find_symbols). */
+export interface SymbolMatch {
+  name: string;
+  path: string;
+  line: number;
+  column: number;
+  signature: string;
+}
+
+/** 참조 찾기 결과 (commands/tree.rs find_references). */
+export interface RefMatch {
+  path: string;
+  line: number;
+  column: number;
+}
+export interface RefsResult {
+  matches: RefMatch[];
+  truncated: boolean;
+}
+
+/** Find in Files 결과 (commands/search.rs search_in_project). */
+export interface SearchMatch {
+  line: number;
+  column: number;
+  text: string;
+}
+export interface SearchFileHit {
+  path: string;
+  matches: SearchMatch[];
+}
+export interface SearchResult {
+  files: SearchFileHit[];
+  totalMatches: number;
+  truncated: boolean;
+}
+export interface SearchOpts {
+  regex: boolean;
+  caseSensitive: boolean;
+  wholeWord: boolean;
+  include: string[];
 }
 
 // ---- M3: 히스토리 ----
@@ -162,6 +205,58 @@ export interface Settings {
   smtpFrom: string | null;
   smtpTo: string | null;
   smtpTls: boolean; // true=암호화(465 implicit / 587 STARTTLS), false=평문
+  // 포매터/린터 (태스크 15/16)
+  formatterRuffPath: string | null;
+  formatterBiomePath: string | null;
+  formatterProjectLocal: boolean; // 프로젝트 로컬 바이너리 허용 — 기본 false(공급망)
+  formatOnSave: boolean;
+  // LSP (태스크 17)
+  lspEnabledProjects: string[]; // 옵트인 프로젝트 id 목록 — 기본 빈(전부 OFF)
+  lspWorkspaceTsserver: boolean; // 워크스페이스 node_modules/typescript 사용 — 기본 false(공급망)
+}
+
+/** 포맷 결과 (commands/format.rs format_source). */
+export interface FormatResult {
+  formatted: string | null;
+  changed: boolean;
+  tool: string;
+}
+export interface FormatToolStatus {
+  tool: string;
+  found: boolean;
+  path: string | null;
+  source: string | null;
+  version: string | null;
+}
+
+/** 린트 진단 (commands/lint.rs lint_file). */
+export interface LintDiag {
+  line: number;
+  column: number;
+  endLine: number;
+  endColumn: number;
+  code: string | null;
+  message: string;
+  severity: "error" | "warning" | "info" | "hint";
+  url: string | null;
+}
+export interface LintReport {
+  tool: "ruff" | "biome" | null; // null = 비대상/미설치/실패 → 프론트 no-op
+  diags: LintDiag[];
+  truncated: boolean;
+}
+
+/** LSP 서버 획득 결과 (commands/lsp.rs lsp_ensure). */
+export interface LspEnsureResult {
+  ready: boolean; // 서버 전부 설치 + node 발견
+  nodeFound: boolean;
+  installed: string[];
+  missing: string[]; // 다운로드 실패 패키지
+}
+export interface LspEnsureProgress {
+  name: string;
+  phase: "download" | "done" | "error";
+  message?: string;
 }
 
 /** 외부 알림 시크릿 종류 — 키링 계정 키. */
@@ -302,6 +397,14 @@ export interface ProjectRoot {
   error: string | null;
 }
 
+/** Quick Open 파일 목록 (commands/tree.rs list_repo_files). */
+export interface RepoFileList {
+  projectId: string;
+  files: string[]; // 저장소 루트 기준 상대 경로(forward-slash)
+  truncated: boolean;
+  error: string | null;
+}
+
 export interface GitCheck {
   found: boolean;
   version: string | null;
@@ -361,7 +464,8 @@ export type ErrorCode =
   | "CONNECTION_REFUSED"
   | "TLS_ERROR"
   | "CANCELLED"
-  | "INVALID_URL";
+  | "INVALID_URL"
+  | "TOOL_NOT_FOUND";
 
 // ---- API 클라이언트 전송 계약 (commands/http.rs §4.9 / §5.1) ----
 // 백엔드 HttpRequest의 camelCase serde와 1:1 정합. lib/apiclient.ts에서 조립한
@@ -676,8 +780,68 @@ export const ipc = {
       60_000,
     ),
   // Go-to-Definition — 심볼 정의 후보를 휴리스틱 검색(ripgrep). 읽기 레인.
-  findDefinition: (projectId: string, symbol: string, ext: string) =>
-    call<DefMatch[]>("find_definition", { projectId, symbol, ext }),
+  // lane: 예열(prefetch)은 background — 사용자 클릭/호버(interactive)에 슬롯을 양보한다.
+  findDefinition: (
+    projectId: string,
+    symbol: string,
+    ext: string,
+    lane: "interactive" | "background" = "interactive",
+  ) => call<DefMatch[]>("find_definition", { projectId, symbol, ext }, { lane }),
+  // Go to Symbol — 프로젝트 전체 심볼 부분일치. interactive 레인, 재시도 없음(낡은 쿼리
+  // 재시도는 슬롯 낭비 — 다음 키 입력이 새 요청을 만들고 프론트가 seq로 무효화).
+  findSymbols: (projectId: string, query: string, extHint: string | null) =>
+    call<SymbolMatch[]>(
+      "find_symbols",
+      { projectId, query, extHint },
+      { lane: "interactive", attempts: 1 },
+    ),
+  // 참조 찾기 — interactive 레인(Shift+F12 직결).
+  findReferences: (projectId: string, symbol: string, ext: string) =>
+    call<RefsResult>("find_references", { projectId, symbol, ext }, { lane: "interactive" }),
+  // Find in Files — 재시도 없음(무거운 검색 자동 재실행 방지). 백엔드 10s + 여유.
+  searchInProject: (projectId: string, query: string, opts: SearchOpts) =>
+    call<SearchResult>(
+      "search_in_project",
+      { projectId, query, ...opts },
+      { timeoutMs: 15_000, attempts: 1 },
+    ),
+  // 포맷 — 프로세스 스폰이라 재시도 없음(이중 스폰 방지), 백엔드 10s + 여유.
+  formatSource: (projectId: string, relPath: string, content: string) =>
+    call<FormatResult>(
+      "format_source",
+      { projectId, relPath, content },
+      { timeoutMs: 20_000, attempts: 1 },
+    ),
+  formatToolStatus: (projectId: string) =>
+    call<FormatToolStatus[]>("format_tool_status", { projectId }, {
+      attempts: 1,
+      lane: "background",
+    }),
+  // LSP 서버 획득(태스크 17 M2) — 없으면 다운로드+검증+설치. 진행률은 Channel 콜백으로.
+  lspEnsure: (
+    lang: "py" | "ts" | "cpp" | "rust" | "lua" | "go",
+    onProgress?: (msg: LspEnsureProgress) => void,
+  ) => {
+    const ch = new Channel<string>();
+    if (onProgress) {
+      ch.onmessage = (raw) => {
+        try {
+          onProgress(JSON.parse(raw) as LspEnsureProgress);
+        } catch {
+          /* 형식 오류 무시 */
+        }
+      };
+    }
+    return invoke<LspEnsureResult>("lsp_ensure", { lang, onProgress: ch });
+  },
+  // 린트 — 마커는 배경 장식이라 background lane, 재시도 없음(다음 트리거가 자기치유).
+  // content 있으면 ruff는 stdin으로 저장 전 버퍼를 실시간 린트(on-type). biome는 디스크 파일.
+  lintFile: (projectId: string, relPath: string, content?: string) =>
+    call<LintReport>("lint_file", { projectId, relPath, content: content ?? null }, {
+      lane: "background",
+      attempts: 1,
+      timeoutMs: 15_000,
+    }),
   // 배치: 전 프로젝트 루트를 한 invoke로 병렬 읽기 (응답 유실 회피, §12).
   // background 레인 — 시작 프리페치가 사용자 폴더 클릭(list_dir)보다 슬롯을 양보한다.
   listProjectRoots: (projectIds: string[]) =>
@@ -685,6 +849,10 @@ export const ipc = {
       timeoutMs: 20000,
       lane: "background",
     }),
+  // Quick Open — 저장소들의 전체 파일 목록(추적+미추적, .gitignore 제외) 배치 수집.
+  // 모달 진입 경로라 interactive 레인(기본). 합성 id(임베디드) 포함 가능.
+  listRepoFiles: (projectIds: string[]) =>
+    call<RepoFileList[]>("list_repo_files", { projectIds }, { timeoutMs: 20000 }),
   // ---- DB 탐색기 ----
   dbListConnections: () => call<DbConnection[]>("db_list_connections"),
   dbSaveConnection: (connection: DbConnection, password: string | null) =>

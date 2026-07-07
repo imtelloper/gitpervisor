@@ -238,6 +238,96 @@ pub async fn list_project_roots(
     Ok(results)
 }
 
+/// Quick Open(파일 퍼지 검색)용 — 저장소들의 전체 파일 목록(추적+미추적, .gitignore 제외)을
+/// invoke 1개로 배치 수집한다. `git ls-files --cached --others --exclude-standard`가 무시 경로를
+/// git 시맨틱 그대로 제외(전역 excludes·`.git/info/exclude` 포함). 합성 id(`outer::rel`)도
+/// project_path가 중첩 저장소로 해석하므로 임베디드 저장소 파일도 별도 요청으로 검색된다.
+/// 사용자 입력이 git 인자로 들어가지 않아 인젝션 표면 0. 저장소별 오류 격리(배치 전체 미중단).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoFileList {
+    pub project_id: String,     // 요청 id 에코(합성 id 포함)
+    pub files: Vec<String>,     // 저장소 루트 기준 상대 경로, forward-slash
+    pub truncated: bool,        // MAX_FILES 초과로 절단됨
+    pub error: Option<String>,  // 저장소별 오류(경로 소실 등)
+}
+
+const MAX_REPO_FILES: usize = 50_000;
+
+#[tauri::command]
+pub async fn list_repo_files(
+    state: State<'_, AppState>,
+    project_ids: Vec<String>,
+) -> Result<Vec<RepoFileList>, IpcError> {
+    // 경로 해석(합성 id 포함)은 락 안에서 끝내고, git 실행은 락 밖에서 동시.
+    let targets: Vec<(String, Option<PathBuf>)> = project_ids
+        .into_iter()
+        .map(|id| {
+            let path = project_path(&state, &id).ok();
+            (id, path)
+        })
+        .collect();
+
+    use futures::stream::StreamExt;
+    const CONCURRENCY: usize = 4;
+
+    let results: Vec<RepoFileList> = futures::stream::iter(targets)
+        .map(|(id, path)| async move {
+            let Some(p) = path else {
+                return RepoFileList {
+                    project_id: id,
+                    files: Vec::new(),
+                    truncated: false,
+                    error: Some("프로젝트 경로를 찾을 수 없습니다".to_string()),
+                };
+            };
+            match runner::run_git(
+                Some(&p),
+                &["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+                runner::READ_TIMEOUT_SECS,
+            )
+            .await
+            {
+                Ok(out) => {
+                    let mut files: Vec<String> = Vec::new();
+                    let mut truncated = false;
+                    for raw in out.stdout.split(|&b| b == 0) {
+                        if raw.is_empty() {
+                            continue;
+                        }
+                        let rel = String::from_utf8_lossy(raw).replace('\\', "/");
+                        // 임베디드 저장소 디렉토리(후행 '/')는 파일이 아니므로 제외
+                        if rel.ends_with('/') {
+                            continue;
+                        }
+                        if files.len() >= MAX_REPO_FILES {
+                            truncated = true;
+                            break;
+                        }
+                        files.push(rel);
+                    }
+                    RepoFileList {
+                        project_id: id,
+                        files,
+                        truncated,
+                        error: None,
+                    }
+                }
+                Err(e) => RepoFileList {
+                    project_id: id,
+                    files: Vec::new(),
+                    truncated: false,
+                    error: Some(e.message),
+                },
+            }
+        })
+        .buffer_unordered(CONCURRENCY)
+        .collect()
+        .await;
+
+    Ok(results)
+}
+
 /// 한 디렉토리의 항목을 읽어 정렬한다 (list_dir·배치 프리페치 공통).
 async fn read_dir_entries(repo: &Path, rel_path: &str) -> Result<Vec<DirEntry>, IpcError> {
     validate_rel_dir(rel_path)?;
@@ -355,6 +445,9 @@ pub struct DefMatch {
     pub line: u32,         // 1-based
     pub column: u32,       // 1-based
     pub signature: String, // 데코레이터/속성 + 정의줄 + 파라미터
+    /// 정의 문서 블록(py 독스트링/JSDoc/`///`) — 정제 텍스트, 12줄·800자 캡. 없으면 필드 생략.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
 }
 
 /// 심볼의 정의 위치를 휴리스틱으로 찾는다(LSP 없이 언어별 "정의 패턴"을 ripgrep으로 검색).
@@ -375,7 +468,8 @@ pub async fn find_definition(
     {
         return Ok(Vec::new());
     }
-    let (patterns, exts) = def_query(&ext, &symbol);
+    // 정확일치: 리터럴을 이스케이프(`$`만)해 심볼 자리에 넣는다.
+    let (patterns, exts) = def_query(&ext, &symbol.replace('$', "\\$"));
     if patterns.is_empty() {
         return Ok(Vec::new());
     }
@@ -383,12 +477,21 @@ pub async fn find_definition(
     // git grep -P(PCRE, `\b` 지원)으로 정의 패턴 검색. ripgrep은 앱 프로세스 PATH에 없을 수
     // 있지만 git은 항상 가용(코어 의존, 설정된 경로 사용). --untracked로 추적 안 된 새 파일의
     // 정의도 포함. 매치 없으면 exit 1(정상) → run_git이 Ok+빈 stdout를 주므로 빈 결과가 된다.
+    // 확장자 pathspec으로 대상 언어 파일만 스캔한다 — 거대 레포(데이터·미디어 포함)에서
+    // 사후 필터 대비 수 배 빠르다(실측 nqvm-ais 1.4s → 0.2s). 언어 미상(exts 비면)은 전체.
+    let ext_globs: Vec<String> = exts.iter().map(|e| format!("*{e}")).collect();
     let mut args: Vec<&str> = vec![
         "grep", "-P", "-n", "--column", "--no-color", "-I", "--untracked",
     ];
     for p in &patterns {
         args.push("-e");
         args.push(p);
+    }
+    if !ext_globs.is_empty() {
+        args.push("--");
+        for g in &ext_globs {
+            args.push(g);
+        }
     }
     let out = match runner::run_git(Some(&repo), &args, runner::READ_TIMEOUT_SECS).await {
         Ok(o) => o,
@@ -397,6 +500,7 @@ pub async fn find_definition(
     let stdout = String::from_utf8_lossy(&out.stdout);
 
     let mut matches: Vec<DefMatch> = Vec::new();
+    let mut weak: Vec<DefMatch> = Vec::new(); // 대입문 매치 — 정의문(def/class 등)보다 후순위
     for line in stdout.lines() {
         // 형식: <path>:<line>:<col>:<text> (상대경로는 ':'를 안 가짐)
         let mut it = line.splitn(4, ':');
@@ -413,29 +517,461 @@ pub async fn find_definition(
             continue;
         }
         let rel = path.replace('\\', "/");
-        let signature = extract_signature(&repo, &rel, line_no, text);
-        matches.push(DefMatch {
+        // grep --column은 패턴 매치 시작(export/def 같은 키워드)을 가리킨다 — 점프 후 커서를
+        // 심볼 위에 놓을 수 있게 줄 안의 심볼 시작 열(1-based, 문자 단위)로 보정한다.
+        let col_no = text
+            .find(symbol.as_str())
+            .map(|b| text[..b].chars().count() as u32 + 1)
+            .unwrap_or(col_no);
+        let (signature, doc) = extract_sig_doc(&repo, &rel, line_no, text);
+        let dm = DefMatch {
             path: rel,
             line: line_no,
             column: col_no,
             signature,
-        });
-        if matches.len() >= 12 {
+            doc,
+        };
+        // git grep은 결과를 파일 순서로 주므로, 심볼로 시작하는 줄(=대입 폴백 매치)이
+        // def/class 같은 진짜 정의를 가리지 않게 뒤로 미룬다.
+        if text.starts_with(symbol.as_str()) {
+            weak.push(dm);
+        } else {
+            matches.push(dm);
+        }
+        if matches.len() + weak.len() >= 12 {
             break;
         }
+    }
+    matches.extend(weak);
+    // 패턴 정의가 없으면 "모듈 파일" 폴백 — `import threading`처럼 심볼이 레포 파일명과
+    // 일치하면 그 파일로 점프한다(py의 pkg/__init__.py, ts/js의 dir/index.* 포함).
+    // 언어 미상(exts 비어 있음)은 오탐이 많아 건너뛴다.
+    if matches.is_empty() && !exts.is_empty() {
+        matches = find_module_files(&repo, &symbol, &exts).await;
     }
     Ok(matches)
 }
 
-/// (정규식 패턴들, 확장자들) — 확장자별 "정의" 패턴. 심볼의 `$`만 정규식 이스케이프.
-fn def_query(ext: &str, symbol: &str) -> (Vec<String>, Vec<String>) {
-    let s = symbol.replace('$', "\\$");
+// ===== Go to Symbol (프로젝트 전체 심볼 부분일치 검색) =====
+
+/// 심볼 검색 후보 1건.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SymbolMatch {
+    pub name: String,      // 매치된 심볼 식별자(하이라이트용)
+    pub path: String,      // 레포 상대 경로(forward slash)
+    pub line: u32,         // 1-based
+    pub column: u32,       // 1-based, 심볼 시작 열
+    pub signature: String, // 정의 줄 시그니처(extract 재사용, doc 없음)
+}
+
+/// 심볼명 부분일치로 정의 후보를 프로젝트 전체에서 찾는다(전 언어 def 패턴 합집합 + pathspec).
+/// 쿼리 검증(2..=64자 식별자 문자만) 실패·git 오류·타임아웃은 조용히 빈 결과(find_definition 관례).
+/// 랭킹(정확>접두>부분 → 정의강도 → ext 힌트 → 얕은 경로) 후 캡 100. ext_hint는 랭킹 부스트 전용.
+#[tauri::command]
+pub async fn find_symbols(
+    state: State<'_, AppState>,
+    project_id: String,
+    query: String,
+    ext_hint: Option<String>,
+) -> Result<Vec<SymbolMatch>, IpcError> {
+    let repo = project_path(&state, &project_id)?;
+    // 2..=64자 식별자만 — 1자는 과검색, 특수문자는 인젝션.
+    if query.len() < 2
+        || query.len() > 64
+        || !query.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '$')
+    {
+        return Ok(Vec::new());
+    }
+    let q_esc = query.replace('$', "\\$");
+    let sym_pat = format!("[\\w$]*{q_esc}[\\w$]*");
+    let smart_case = query.chars().all(|c| !c.is_uppercase());
+
+    // 전 언어 def 패턴 + 확장자 pathspec 합집합.
+    let mut patterns: Vec<String> = Vec::new();
+    let mut exts: Vec<String> = Vec::new();
+    for lang in ["py", "ts", "rs", "go", "java", "rb"] {
+        let (pats, es) = def_query(lang, &sym_pat);
+        for p in pats {
+            if !patterns.contains(&p) {
+                patterns.push(p);
+            }
+        }
+        for e in es {
+            if !exts.contains(&e) {
+                exts.push(e);
+            }
+        }
+    }
+
+    let mut args: Vec<&str> = vec!["grep", "-P", "-n", "--column", "--no-color", "-I", "--untracked"];
+    if smart_case {
+        args.push("-i");
+    }
+    for p in &patterns {
+        args.push("-e");
+        args.push(p);
+    }
+    let ext_globs: Vec<String> = exts.iter().map(|e| format!("*{e}")).collect();
+    if !ext_globs.is_empty() {
+        args.push("--");
+        for g in &ext_globs {
+            args.push(g);
+        }
+    }
+    let out = match runner::run_git(Some(&repo), &args, runner::READ_TIMEOUT_SECS).await {
+        Ok(o) => o,
+        Err(_) => return Ok(Vec::new()),
+    };
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    let q_lower = query.to_lowercase();
+    let hint = ext_hint.as_deref().unwrap_or("").to_lowercase();
+    struct Raw {
+        name: String,
+        path: String,
+        line: u32,
+        column: u32,
+        tier: u8,   // 0=정확, 1=접두, 2=부분
+        weak: bool, // 대입 폴백(정의문보다 후순위)
+        ext_boost: bool,
+        depth: usize,
+    }
+    let mut raws: Vec<Raw> = Vec::new();
+    let mut seen: HashSet<(String, u32)> = HashSet::new();
+    for line in stdout.lines() {
+        // 원시 매치 상한 — 흔한 쿼리의 파싱 폭주 방지
+        if seen.len() >= 1000 {
+            break;
+        }
+        let mut it = line.splitn(4, ':');
+        let (Some(path), Some(ln), Some(_col), Some(text)) =
+            (it.next(), it.next(), it.next(), it.next())
+        else {
+            continue;
+        };
+        let Ok(line_no) = ln.parse::<u32>() else {
+            continue;
+        };
+        if !exts.is_empty() && !exts.iter().any(|e| path.ends_with(e.as_str())) {
+            continue;
+        }
+        // 쿼리를 포함하는 식별자를 찾아 name·열을 추출
+        let Some((name, byte_col)) = find_matching_ident(text, &q_lower) else {
+            continue;
+        };
+        let rel = path.replace('\\', "/");
+        if !seen.insert((rel.clone(), line_no)) {
+            continue;
+        }
+        let name_lower = name.to_lowercase();
+        let tier = if name_lower == q_lower {
+            0
+        } else if name_lower.starts_with(&q_lower) {
+            1
+        } else {
+            2
+        };
+        let column = text[..byte_col].chars().count() as u32 + 1;
+        let weak = text.trim_start().starts_with(&name);
+        let ext_boost = !hint.is_empty() && rel.rsplit('.').next().unwrap_or("") == hint;
+        let depth = rel.matches('/').count();
+        raws.push(Raw {
+            name,
+            depth,
+            path: rel,
+            line: line_no,
+            column,
+            tier,
+            weak,
+            ext_boost,
+        });
+    }
+
+    // 랭킹: 정확>접두>부분 → 정의강도 → ext 힌트 → 얕은 경로 → 경로·라인
+    raws.sort_by(|a, b| {
+        a.tier
+            .cmp(&b.tier)
+            .then(a.weak.cmp(&b.weak))
+            .then(b.ext_boost.cmp(&a.ext_boost))
+            .then(a.depth.cmp(&b.depth))
+            .then(a.path.cmp(&b.path))
+            .then(a.line.cmp(&b.line))
+    });
+    raws.truncate(100);
+
+    // 시그니처는 캡 후에만 — 파일 내용 캐시로 중복 읽기 제거.
+    let mut contents: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let results: Vec<SymbolMatch> = raws
+        .into_iter()
+        .map(|r| {
+            let content = contents
+                .entry(r.path.clone())
+                .or_insert_with(|| std::fs::read_to_string(repo.join(&r.path)).unwrap_or_default());
+            let signature = sig_from_content(content, r.line, &r.name);
+            SymbolMatch {
+                name: r.name,
+                path: r.path,
+                line: r.line,
+                column: r.column,
+                signature,
+            }
+        })
+        .collect();
+    Ok(results)
+}
+
+/// 매치 텍스트에서 쿼리(소문자)를 포함하는 첫 식별자를 찾아 (이름, 바이트 시작 위치)를 돌려준다.
+fn find_matching_ident(text: &str, q_lower: &str) -> Option<(String, usize)> {
+    let bytes = text.as_bytes();
+    let is_ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'$';
+    let mut i = 0;
+    while i < bytes.len() {
+        if is_ident(bytes[i]) && (i == 0 || !is_ident(bytes[i - 1])) {
+            let start = i;
+            while i < bytes.len() && is_ident(bytes[i]) {
+                i += 1;
+            }
+            let ident = &text[start..i];
+            if ident.to_lowercase().contains(q_lower) {
+                return Some((ident.to_string(), start));
+            }
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+/// 정의 줄 시그니처만 추출(extract_sig_doc의 시그니처 부분 — 캐시된 내용에서 계산, doc 없음).
+fn sig_from_content(content: &str, line_no: u32, fallback: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let idx = (line_no as usize).saturating_sub(1);
+    if idx >= lines.len() {
+        return fallback.trim().to_string();
+    }
+    let mut top = idx;
+    while top > 0 {
+        let prev = lines[top - 1].trim_start();
+        if prev.starts_with('@') || prev.starts_with("#[") {
+            top -= 1;
+        } else {
+            break;
+        }
+    }
+    let mut out: Vec<String> = Vec::new();
+    for l in &lines[top..idx] {
+        out.push((*l).to_string());
+    }
+    let mut j = idx;
+    let mut taken = 0;
+    while j < lines.len() && taken < 8 {
+        let l = lines[j];
+        out.push(l.to_string());
+        taken += 1;
+        let t = l.trim_end();
+        if t.ends_with(':') || t.ends_with('{') || t.ends_with(';') || t.ends_with('}') {
+            break;
+        }
+        j += 1;
+    }
+    let sig = out.join("\n");
+    if sig.len() > 1200 {
+        format!("{}…", sig.chars().take(1200).collect::<String>())
+    } else {
+        sig
+    }
+}
+
+// ===== Find References (참조 찾기) =====
+
+/// 참조 매치 1건.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefMatch {
+    pub path: String,
+    pub line: u32,
+    pub column: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefsResult {
+    pub matches: Vec<RefMatch>,
+    pub truncated: bool,
+}
+
+/// 언어 확장자 목록(pathspec 소스) — 참조 검색은 정의 패턴 없이 확장자만 필요하다.
+fn lang_exts(ext: &str) -> Vec<String> {
+    let g = |arr: &[&str]| arr.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    match ext.to_lowercase().as_str() {
+        "py" | "pyi" => g(&[".py", ".pyi"]),
+        "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" => {
+            g(&[".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"])
+        }
+        "rs" => g(&[".rs"]),
+        "go" => g(&[".go"]),
+        "java" | "kt" | "kts" => g(&[".java", ".kt", ".kts"]),
+        "rb" => g(&[".rb"]),
+        _ => Vec::new(),
+    }
+}
+
+/// 심볼의 사용처(참조)를 `git grep -F -w`(고정 문자열 + 단어 경계)로 찾는다. 정규식 해석이
+/// 없어 인젝션 표면 0. 확장자 pathspec으로 같은 언어 계열만 스캔. 매치 200/파일 30 캡.
+/// 심볼 검증·매치 없음·타임아웃은 find_definition 관례(조용히 빈 결과).
+#[tauri::command]
+pub async fn find_references(
+    state: State<'_, AppState>,
+    project_id: String,
+    symbol: String,
+    ext: String,
+) -> Result<RefsResult, IpcError> {
+    let repo = project_path(&state, &project_id)?;
+    if symbol.is_empty()
+        || symbol.len() > 128
+        || !symbol.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '$')
+    {
+        return Ok(RefsResult {
+            matches: Vec::new(),
+            truncated: false,
+        });
+    }
+    let ext_globs: Vec<String> = lang_exts(&ext).iter().map(|e| format!("*{e}")).collect();
+    let mut args: Vec<&str> = vec![
+        "grep", "-F", "-w", "-n", "--column", "--no-color", "-I", "--untracked", "-e", &symbol,
+    ];
+    if !ext_globs.is_empty() {
+        args.push("--");
+        for g in &ext_globs {
+            args.push(g);
+        }
+    }
+    let out = match runner::run_git(Some(&repo), &args, runner::READ_TIMEOUT_SECS).await {
+        Ok(o) => o,
+        Err(_) => {
+            return Ok(RefsResult {
+                matches: Vec::new(),
+                truncated: false,
+            })
+        }
+    };
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut matches: Vec<RefMatch> = Vec::new();
+    let mut files: HashSet<String> = HashSet::new();
+    let mut truncated = false;
+    for line in stdout.lines() {
+        if matches.len() >= 200 {
+            truncated = true;
+            break;
+        }
+        let mut it = line.splitn(4, ':');
+        let (Some(path), Some(ln), Some(col), Some(text)) =
+            (it.next(), it.next(), it.next(), it.next())
+        else {
+            continue;
+        };
+        let (Ok(line_no), Ok(col_no)) = (ln.parse::<u32>(), col.parse::<u32>()) else {
+            continue;
+        };
+        let rel = path.replace('\\', "/");
+        if !files.contains(&rel) {
+            if files.len() >= 30 {
+                truncated = true;
+                break;
+            }
+            files.insert(rel.clone());
+        }
+        // grep --column은 바이트 열 — 심볼 시작 문자 열로 보정(멀티바이트 안전).
+        let byte_off = (col_no.saturating_sub(1)) as usize;
+        let column = if byte_off <= text.len() && text.is_char_boundary(byte_off) {
+            text[..byte_off].chars().count() as u32 + 1
+        } else {
+            col_no
+        };
+        matches.push(RefMatch {
+            path: rel,
+            line: line_no,
+            column,
+        });
+    }
+    Ok(RefsResult { matches, truncated })
+}
+
+/// `git ls-files`(추적 + 미추적, .gitignore 제외)에서 심볼과 같은 이름의 모듈 파일을 찾는다.
+/// 얕은 경로 우선 정렬(루트 근처 모듈이 보통 의도한 대상) 후 최대 5건.
+async fn find_module_files(repo: &Path, symbol: &str, exts: &[String]) -> Vec<DefMatch> {
+    // 후보 이름을 미리 만든다 — `foo.py`류(basename)와 `foo/__init__.py`·`foo/index.ts`류(디렉터리 모듈).
+    let base_names: Vec<String> = exts.iter().map(|e| format!("{symbol}{e}")).collect();
+    let mut dir_modules: Vec<String> =
+        exts.iter().map(|e| format!("{symbol}/index{e}")).collect();
+    dir_modules.push(format!("{symbol}/__init__.py"));
+    // pathspec으로 git이 후보만 나열하게 한다(전체 목록 출력·순회 회피 — 거대 레포 가속).
+    // 루트(`foo.py`)와 하위(`*/foo.py`) 두 형태 모두 필요하다.
+    let mut specs: Vec<String> = Vec::new();
+    for n in &base_names {
+        specs.push(n.clone());
+        specs.push(format!("*/{n}"));
+    }
+    for m in &dir_modules {
+        specs.push(m.clone());
+        specs.push(format!("*/{m}"));
+    }
+    let mut args: Vec<&str> = vec!["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--"];
+    for s in &specs {
+        args.push(s);
+    }
+    let out = match runner::run_git(Some(repo), &args, runner::READ_TIMEOUT_SECS).await {
+        Ok(o) => o,
+        Err(_) => return Vec::new(),
+    };
+    // 접두 경로가 있는 경우 경계를 지켜 매칭한다(`mysymbol/…` 오탐 방지 — `/` 포함 접미사).
+    let dir_suffixes: Vec<String> = dir_modules.iter().map(|m| format!("/{m}")).collect();
+
+    let mut found: Vec<String> = Vec::new();
+    for raw in out.stdout.split(|&b| b == 0) {
+        if raw.is_empty() {
+            continue;
+        }
+        let rel = String::from_utf8_lossy(raw).replace('\\', "/");
+        let base = rel.rsplit('/').next().unwrap_or(&rel);
+        let is_module = base_names.iter().any(|n| base == n.as_str())
+            || dir_modules.iter().any(|m| rel == *m)
+            || dir_suffixes.iter().any(|s| rel.ends_with(s.as_str()));
+        if is_module {
+            found.push(rel);
+        }
+    }
+    found.sort_by_key(|p| (p.matches('/').count(), p.clone()));
+    found
+        .into_iter()
+        .take(5)
+        .map(|rel| {
+            // 모듈 파일 폴백은 문서 미추출(폴백 시그니처가 이미 첫 8줄을 보여줌 — §3.5).
+            let (signature, _) = extract_sig_doc(repo, &rel, 1, &rel);
+            DefMatch {
+                path: rel,
+                line: 1,
+                column: 1,
+                signature,
+                doc: None,
+            }
+        })
+        .collect()
+}
+
+/// (정규식 패턴들, 확장자들) — 확장자별 "정의" 패턴. `s`는 심볼 자리에 끼울 **정규식 조각**이다:
+/// find_definition은 이스케이프된 리터럴(정확일치)을, find_symbols는 `[\w$]*q[\w$]*`(부분일치)를 넣는다.
+fn def_query(ext: &str, s: &str) -> (Vec<String>, Vec<String>) {
     let g = |arr: &[&str]| arr.iter().map(|x| x.to_string()).collect::<Vec<_>>();
     match ext.to_lowercase().as_str() {
         "py" | "pyi" => (
             vec![
                 format!(r"^\s*(async\s+)?def\s+{s}\b"),
                 format!(r"^\s*class\s+{s}\b"),
+                // 모듈 레벨 대입(들여쓰기 0) — 싱글턴 인스턴스/상수(`client = Client()`)도
+                // 정의로 인정. `==` 비교·`+=` 증감은 [^=] 가드로 제외. 정렬에서 def/class보다 후순위.
+                format!(r"^{s}\s*(:[^=\n]*)?=[^=]"),
             ],
             g(&[".py", ".pyi"]),
         ),
@@ -493,52 +1029,223 @@ fn def_query(ext: &str, symbol: &str) -> (Vec<String>, Vec<String>) {
     }
 }
 
-/// 매치 줄 주변에서 시그니처 블록을 추출한다 — 위로 데코레이터(@)/속성(#[..]) 연속,
-/// 아래로 정의가 닫힐 때까지(`:`/`{`/`;`/`}` 또는 8줄). 읽기 실패 시 매치 줄 자체를 쓴다.
-fn extract_signature(repo: &Path, rel: &str, line_no: u32, fallback: &str) -> String {
+/// 매치 줄 주변에서 시그니처 블록과 문서 블록을 추출한다.
+/// 시그니처: 위로 데코레이터(@)/속성(#[..]) 연속, 아래로 정의가 닫힐 때까지(`:`/`{`/`;`/`}` 또는 8줄).
+/// 문서(언어별): py=정의 아래 독스트링(`:` 종결 시), ts/js=정의 위 `/**…*/`, rs=정의 위 `///` 연속.
+/// 읽기 실패 시 (매치 줄, None).
+fn extract_sig_doc(
+    repo: &Path,
+    rel: &str,
+    line_no: u32,
+    fallback: &str,
+) -> (String, Option<String>) {
     let content = match std::fs::read_to_string(repo.join(rel)) {
         Ok(c) => c,
-        Err(_) => return fallback.trim().to_string(),
+        Err(_) => return (fallback.trim().to_string(), None),
     };
     let lines: Vec<&str> = content.lines().collect();
     let idx = (line_no as usize).saturating_sub(1);
     if idx >= lines.len() {
-        return fallback.trim().to_string();
+        return (fallback.trim().to_string(), None);
     }
-    let mut out: Vec<String> = Vec::new();
-    // 위로: 연속 데코레이터/속성
-    let mut i = idx;
-    let mut deco: Vec<String> = Vec::new();
-    while i > 0 {
-        let prev = lines[i - 1].trim_start();
+    // 위로: 연속 데코레이터/속성 → top = 포함된 최상단 인덱스
+    let mut top = idx;
+    while top > 0 {
+        let prev = lines[top - 1].trim_start();
         if prev.starts_with('@') || prev.starts_with("#[") {
-            deco.push(lines[i - 1].to_string());
-            i -= 1;
+            top -= 1;
         } else {
             break;
         }
     }
-    deco.reverse();
-    out.extend(deco);
+    let mut out: Vec<String> = Vec::new();
+    for l in &lines[top..idx] {
+        out.push((*l).to_string());
+    }
     // 정의줄 + 아래로
     let mut j = idx;
     let mut taken = 0;
+    let mut colon_terminated = false;
     while j < lines.len() && taken < 8 {
         let l = lines[j];
         out.push(l.to_string());
         taken += 1;
         let t = l.trim_end();
         if t.ends_with(':') || t.ends_with('{') || t.ends_with(';') || t.ends_with('}') {
+            colon_terminated = t.ends_with(':');
             break;
         }
         j += 1;
     }
-    let sig = out.join("\n");
-    if sig.len() > 1200 {
-        format!("{}…", sig.chars().take(1200).collect::<String>())
+    let sig_raw = out.join("\n");
+    let signature = if sig_raw.len() > 1200 {
+        format!("{}…", sig_raw.chars().take(1200).collect::<String>())
     } else {
-        sig
+        sig_raw
+    };
+
+    let ext = rel.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    let doc = match ext.as_str() {
+        "py" | "pyi" => extract_py_docstring(&lines, j, colon_terminated),
+        "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" => extract_up_block(&lines, top, false),
+        "rs" => extract_up_block(&lines, top, true),
+        _ => None,
+    };
+    (signature, doc)
+}
+
+/// 파이썬 독스트링 — 시그니처 종결(`:`) 다음 첫 실질 줄이 삼중따옴표면 닫힘까지 수집.
+/// 삼중따옴표만 인정(한 줄 `"..."` 문자열은 오탐 방지로 제외).
+fn extract_py_docstring(lines: &[&str], sig_end: usize, colon_terminated: bool) -> Option<String> {
+    if !colon_terminated {
+        return None;
     }
+    let mut k = sig_end + 1;
+    // 공백/주석 줄을 최대 2줄만 관대하게 스킵
+    let mut skipped = 0;
+    while k < lines.len() && (lines[k].trim().is_empty() || lines[k].trim_start().starts_with('#')) {
+        skipped += 1;
+        if skipped > 2 {
+            return None;
+        }
+        k += 1;
+    }
+    if k >= lines.len() {
+        return None;
+    }
+    let first = lines[k].trim_start();
+    let after_prefix =
+        first.trim_start_matches(|c| matches!(c, 'r' | 'R' | 'u' | 'U' | 'b' | 'B' | 'f' | 'F'));
+    let delim = if after_prefix.starts_with("\"\"\"") {
+        "\"\"\""
+    } else if after_prefix.starts_with("'''") {
+        "'''"
+    } else {
+        return None;
+    };
+    let open_pos = first.find(delim).unwrap();
+    let rest = &first[open_pos + delim.len()..];
+    let mut body: Vec<String> = Vec::new();
+    // 한 줄 독스트링(같은 줄에서 닫힘)
+    if let Some(close) = rest.find(delim) {
+        body.push(rest[..close].to_string());
+        return finalize_doc(body);
+    }
+    body.push(rest.to_string());
+    let mut kk = k + 1;
+    let mut count = 0;
+    while kk < lines.len() && count < 40 {
+        count += 1;
+        if let Some(close) = lines[kk].find(delim) {
+            body.push(lines[kk][..close].to_string());
+            break;
+        }
+        body.push(lines[kk].to_string());
+        kk += 1;
+    }
+    finalize_doc(body)
+}
+
+/// 정의 위의 문서 블록 — rust_doc=true면 `///` 연속, 아니면 `/**…*/` JSDoc.
+/// top(데코레이터 포함 최상단)의 바로 윗줄부터 위로 스캔(사이 공백 불허 — 무관 주석 오귀속 방지).
+fn extract_up_block(lines: &[&str], top: usize, rust_doc: bool) -> Option<String> {
+    if top == 0 {
+        return None;
+    }
+    if rust_doc {
+        let mut k = top;
+        let mut collected: Vec<String> = Vec::new();
+        while k > 0 {
+            let t = lines[k - 1].trim_start();
+            if let Some(r) = t.strip_prefix("///") {
+                collected.push(r.strip_prefix(' ').unwrap_or(r).to_string());
+                k -= 1;
+            } else {
+                break;
+            }
+        }
+        collected.reverse();
+        finalize_doc(collected)
+    } else {
+        let above = lines[top - 1].trim_end();
+        if !above.ends_with("*/") {
+            return None;
+        }
+        // 위로 `/**` 시작줄까지 블록 인덱스 수집
+        let mut k = top - 1;
+        let mut block: Vec<usize> = Vec::new();
+        loop {
+            block.push(k);
+            if lines[k].trim_start().starts_with("/**") {
+                break;
+            }
+            if k == 0 {
+                return None; // `/**` 없이 `*/`만 → JSDoc 아님
+            }
+            k -= 1;
+        }
+        block.reverse();
+        let mut collected: Vec<String> = Vec::new();
+        for &bi in &block {
+            let mut s = lines[bi].trim().to_string();
+            if let Some(r) = s.strip_prefix("/**") {
+                s = r.to_string();
+            }
+            if let Some(p) = s.rfind("*/") {
+                s = s[..p].to_string();
+            }
+            let st = s.trim_start();
+            s = match st.strip_prefix('*') {
+                Some(r) => r.strip_prefix(' ').unwrap_or(r).to_string(),
+                None => st.to_string(),
+            };
+            collected.push(s.trim_end().to_string());
+        }
+        finalize_doc(collected)
+    }
+}
+
+/// 문서 줄들을 정제 — 앞뒤 공백줄 제거, 공통 들여쓰기 제거, 12줄/800자 캡.
+fn finalize_doc(raw: Vec<String>) -> Option<String> {
+    let mut lines = raw;
+    while lines.first().is_some_and(|l| l.trim().is_empty()) {
+        lines.remove(0);
+    }
+    while lines.last().is_some_and(|l| l.trim().is_empty()) {
+        lines.pop();
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    let indent = lines
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.len() - l.trim_start().len())
+        .min()
+        .unwrap_or(0);
+    let mut out: Vec<String> = lines
+        .iter()
+        .map(|l| {
+            if l.trim().is_empty() {
+                String::new()
+            } else if l.len() >= indent {
+                l[indent..].to_string()
+            } else {
+                l.trim_start().to_string()
+            }
+        })
+        .collect();
+    let mut truncated = out.len() > 12;
+    out.truncate(12);
+    let mut doc = out.join("\n");
+    if doc.chars().count() > 800 {
+        doc = doc.chars().take(800).collect::<String>();
+        truncated = true;
+    }
+    if truncated {
+        doc.push('…');
+    }
+    Some(doc)
 }
 
 /// 한 경로 컴포넌트가 Windows 정규화 후 `.git` 으로 귀결되는지 — CVE-2019-1352/1353 류 우회 차단.

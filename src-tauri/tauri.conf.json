@@ -18,6 +18,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": {
+      "resources/tools/*": "tools"
+    },
     "publisher": "imtelloper <newtype9556@gmail.com>",
     "copyright": "Copyright © 2026 imtelloper",
     "category": "DeveloperTool",

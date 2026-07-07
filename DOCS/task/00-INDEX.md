@@ -46,3 +46,73 @@
 - **플로팅 창**: async 커맨드 + `run_on_main_thread` + `WebviewUrl::External`, `browser_args` 전 창 일치 — 05·06이 기존 레시피 재사용.
 - **경로 안전**: 신규 FS 접근 커맨드는 `resolve_in_repo` + `.git` 컴포넌트 가드 필수(이번 7건 중 신규 FS 커맨드 없음).
 - 각 문서의 "(검증 필요)" 표기는 로컬 소스로 확정 못 한 외부 동작 — 구현 단계에서 실측으로 해소할 것.
+
+---
+
+## 4. 에디터 업그레이드 태스크 (08~17) — 2026-07-06
+
+> 목표: 뷰어/에디터를 Python은 PyCharm급, TS·웹은 WebStorm급으로 (근거 로드맵: 세션 논의 2026-07-06).
+> 근거: 태스크별 코드 실측(2026-07-06) + 2렌즈 적대 검증(①키바인딩·공유계약·IPC 규약 정합 ②§2 인용 120여 건 코드 대조) — 지적 13건 반영 완료.
+> 선행 완성 인프라(01~07 이후 추가): go-to-definition(별칭 해석·미리보기 모델·예열 캐시·pathspec 5배 가속 실측), 뷰어 파일 탭, revealTarget 심볼 착지, TS 워커 진단 OFF(가짜 마커 150건 실측).
+>
+> **구현 상태(2026-07-07)**: **08~17 열 개 태스크 전부 구현·검증 완료**(각 실행 중 앱에 CDP로 동작 확인 + E2E 스위트 20~28 신설). 08~16 보강: **ruff/biome 번들 폴백**(runner discover ④ + fetch-tools.mjs pin·해시 다운로드 + tauri bundle.resources — 실제 포맷·린트 변환까지 E2E 검증 완료), **파이썬 on-type 린트**(ruff stdin — 미저장 버퍼 구문 오류 실시간 빨간 밑줄, DOM 검증), biome 파서 좌표 수정(location.start/end 실측 구조).
+> 17(LSP)은 **완료 — M1+M2(venv+획득자동화)+M3+M4, provider 7종(2026-07-07)** — 파이썬(basedpyright) + TypeScript/JS(typescript-language-server+tsserver). **completion·hover·definition·references·signatureHelp·rename·inlayHints** 전부. 실앱 검증: py·ts 타입 인지 자동완성·정의·참조·시그니처·진단·rename(다중 파일)·inlayHint·**앱 내 서버 다운로드**(sha512 검증+원자 설치)·프로세스 누수 0(E2E 28). de-risk 실측 기반. **앱 내 완전 획득**(4방식): npm+node(py/ts) · **네이티브 다운로드**(clangd/rust-analyzer/lua-language-server — GitHub 바이너리, sha256 pin, ArchiveKind 3종) · **PATH 발견**(gopls) · node 런타임. 데이터 기반 `NativeSpec`으로 언어 추가는 항목 하나. **지원: 파이썬·TS/JS·C/C++·Rust·Lua·Go**(실앱 검증), PHP 등 저비용 확장. 신규 crate: flate2·tar·sha2·zip. **태스크 17 완료.**
+
+| # | 태스크 | 문서 | 규모 | 핵심 판단 | 주요 위험 |
+|---|--------|------|------|-----------|-----------|
+| 8 | 전역 코드 검색 (Find in Files) | [08-find-in-files.md](08-find-in-files.md) | **M** | 신규 `search_in_project`(git grep, `-F` 리터럴/`-P` 정규식, 3중 캡) + 하단 결과 패널(Log 패널 미러). 점프는 기존 `selectDiff`/revealTarget 재사용, 연타는 seq 스테일 드롭 | 흔한 단어 과대 출력(git `-m` 버전 검증 필요), PCRE↔JS 정규식 차로 하이라이트 누락 가능, gitignore·중첩 저장소 미검색(v1 수용) |
+| 9 | 빠른 파일 열기 (Quick Open) | [09-quick-open.md](09-quick-open.md) | **M** | `mod+P` → 배치 `list_repo_files`(outer+임베디드 합성 id, 10k 파일 ~150ms 실측) + 프론트 퍼지 자체구현(최근 파일 가중). **QuickPick 프리미티브를 공유 계약으로 정의 — 13이 재사용** | mod+P가 WebView2 인쇄와 겹칠 가능성(실기 스모크, 실패 시 mod+E 재배정), 50k 캡 절단 |
+| 10 | 파이썬 아웃라인 (DocumentSymbol) | [10-python-outline.md](10-python-outline.md) | **S~M** | 정규식+들여쓰기 파서 provider 하나로 스티키 스크롤 정확도·내장 quickOutline 팝업(`mod+Shift+O`)·diff 브레드크럼이 전부 활성(monaco 0.55 번들 실측). 상단 브레드크럼 바는 standalone 미포함 확정 → 범위 제외 | 정규식 파서 엣지케이스(탭/스페이스 혼용), quickInput 위젯 테마 보정 필요 |
+| 11 | 참조 찾기 (Find Usages) | [11-find-references.md](11-find-references.md) | **M** | Shift+F12는 Monaco 내장 — `find_references`(git grep `-F -w`, 캡 200/30) + ReferenceProvider 등록만. peek 미리보기는 `ensurePreviewModel` 선생성 재사용, **TS 워커 references를 꺼야 중복 그룹 없음** | 흔한 심볼 폭주(캡+타임아웃), 미리보기 모델 FIFO 40 경합, WebView2 Shift+F12 도달 미검증(컨텍스트 메뉴 폴백) |
+| 12 | 같은 심볼 하이라이트 | [12-occurrence-highlight.md](12-occurrence-highlight.md) | **S** | **전제 수정: monaco 0.55 내장 텍스트 폴백('*')으로 파이썬 하이라이트 이미 동작**(CDP 런타임 실측). 잔여 작업 = 테마 6종 wordHighlight 색 정의 + 회귀 감지 E2E뿐 | monaco 업그레이드 시 내장 폴백 소실 위험(E2E 앵커 + ~20줄 폴백 provider 예약) |
+| 13 | 전역 심볼 검색 (Go to Symbol) | [13-symbol-search.md](13-symbol-search.md) | **M** | `find_symbols` — `def_query`를 부분일치 패턴으로 일반화해 전 언어 21패턴 1패스 grep + 백엔드 랭킹(정확>접두>부분→정의강도→ext 부스트) 캡 100. UI는 09 QuickPick 재사용, 키 `mod+Alt+N`(Ctrl+N·Ctrl+T 기각 근거 명시) | 짧은 쿼리 부하(2자 하한+디바운스+스트리밍 중단), `def_query` 변경이 find_definition 회귀 가능(10-codenav E2E 선행 가드) |
+| 14 | 호버 독스트링/JSDoc | [14-hover-docstring.md](14-hover-docstring.md) | **S** | `extract_signature`→`extract_sig_doc` 확장, `DefMatch.doc` 분리 신설(py 독스트링/ts·js JSDoc/rs `///`), 호버 3-엔트리(시그니처 코드블록+문서 본문+힌트). 신규 커맨드 0 | 무관 주석 오귀속(공백줄 불허+`/**` 한정으로 완화) |
+| 15 | 포매터 (ruff format / biome) | [15-formatter.md](15-formatter.md) | **M** | 웹은 biome 채택(단일 바이너리·stdin — prettier는 node 의존이라 후속), py는 ruff format. Shift+Alt+F는 Monaco 내장 — FormattingEditProvider 등록만. **외부 도구 러너 계약(`tools/runner.rs`) 정의 — 16이 재사용** | **공급망**: 프로젝트 로컬 바이너리(node_modules/.bin·venv)는 옵트인 기본 꺼짐(전역 PATH만), json/css 워커 기본 포맷과 등록 경합 |
+| 16 | 실전 린트 마커 (ruff/biome) | [16-lint-markers.md](16-lint-markers.md) | **M** | TS 워커 진단 OFF로 비워진 마커 채널을 `lint_file`(15 러너 재사용)로 채움 — owner 'ruff'/'biome' 분리, 열람+저장 후+외부 변경 3트리거. 파일 전환 마커 잔존은 모델 dispose로 구조 해소(실측) | 열람=자동 실행이라 공급망 정책이 15보다 엄격해야, ruff/biome CLI JSON 스키마 미설치라 (검증 필요) — 구현 1단계에서 픽스처 고정 |
+| 17 | LSP 통합 (아키텍처 **v2**) | [17-lsp-integration.md](17-lsp-integration.md) | **L** | basedpyright(npm tarball 5.8MB·deps 0 실측)+**typescript-language-server**(vtsls는 tarball 단독 실행 불가 실측으로 기각). **획득 계층 신설**: 발견 우선 + 관리형 다운로드 폴백(node≥20 포함, pin+코드 고정 해시 — fetch-tools 관례의 런타임화). **진단 v1 포함**(owner "lsp" — 16 마커 인프라 합류). 브리지는 Channel 다운스트림 + fire-and-forget `lsp_send`. 수제 어댑터(0.55 공개 API 실측). lspActive 게이트 상호배타. 옵트인 OFF+유휴 10분+상한 4. M1 스파이크→M2 획득→M3 TS·진단→M4 리네임·인레이 | 서버 메모리 폭주(17.6GB급 레포), 다운로드 공급망(pin 해시로 완화), 진단 겹침 노이즈(ruff+pyright — M4 실측 조정), --stdio·venv 키 등 잔여 (검증 필요)는 M1/M2 게이트 |
+
+### 4.1 권장 구현 순서
+
+```
+12 → 14 → 10        (S군 즉효 — 자기완결, 12는 사실상 테마 색 정의만)
+   → 09 → 13        (QuickPick 계약 순방향 의존)
+   → 08 · 11        (grep 백엔드 확장 — 병행 가능, find_definition 관례 공유)
+   → 15 → 16        (러너 계약 순방향 의존 — 공급망 정책 공유)
+   → 17             (LSP — M1 스파이크가 게이트, 08~16과 독립)
+```
+
+- **09→13**: 13의 UI는 09 QuickPick 프리미티브(비동기 소스+로딩 상태 포함) 그대로 — 계약 변경 시 두 문서 동기.
+- **15→16**: 16은 15의 `tools/runner.rs` 계약(발견 순서·stdin 실행·타임아웃·미설치 UX)에 전면 의존. 16이 자동 트리거(열람)라 프로젝트 로컬 바이너리 옵트인 정책은 15 §6과 교차 명시됨.
+- **13의 선행 가드**: `def_query` 시그니처 일반화 전에 기존 10-codenav E2E 통과를 회귀 기준선으로 고정.
+- **17은 대체가 아니라 상위 호환**: LSP 활성 시 11(참조)·13(심볼)·14(문서)는 게이트로 물러나고 폴백 유지, 08(텍스트 검색)·09(파일 열기)는 LSP와 무관하게 존속.
+
+### 4.2 사용자 결정이 필요한 열린 질문
+
+| 태스크 | 질문 | 설계 기본값(미응답 시) |
+|--------|------|------------------------|
+| 08 | 검색 실행: Enter 명시 실행 vs 라이브 디바운스 | Enter 실행(17.6GB 레포 키스트로크당 git spawn 방지) |
+| 08 | 결과 패널 위치: 하단 접이식 vs 사이드바 | 하단(Log 패널 전례 — 전폭·뷰어 동시 표시) |
+| 09 | mod+P 인쇄 억제 실기 확인 실패 시 mod+E 재배정 수용 여부 | 수용(키 상수 1곳 국소화로 재배정 저비용) |
+| 10 | 구조 팝업: Monaco 내장 quickAccess vs 자체 QuickPick 팝업 | 내장(UI 0줄, 테마 색만 보정) |
+| 11 | peek 목록에 정의줄 포함 여부 | 포함(Monaco includeDeclaration 관례) |
+| 12 | 테마 6종에 조화색 정의 vs 기본 회색 | 조화색 정의(이중 데코 실효 알파 ~0.92 실측 — 기본 회색은 선택색을 가림) |
+| 13 | 검색 스코프: 현재 프로젝트만(v1) | 현재 프로젝트만(전 프로젝트 횡단·중첩 repo는 후속) |
+| 15 | 프로젝트 로컬 바이너리 실행 옵트인 기본 꺼짐 동의 여부 | 꺼짐(전역 PATH+명시 경로만 — 공급망 방어) |
+| 15 | 웹 포매터 biome 단독 채택(prettier 프로젝트는 스타일 불일치 감수) | biome(prettier 러너는 후속) |
+| 16 | 린터 미설치 시 완전 침묵 vs 발견성 뱃지 | 침묵(도구 상태는 15 설정 UI에 위임) |
+| 17 | ~~LSP 진단(빨간 밑줄)을 v1에서 완전 제외~~ | **해소(v2)**: v1 포함으로 개정 — 16 마커 인프라 실존 + 실사용 요구("빨간 밑줄") 확인. 17 §3.7 |
+| 17 | LSP 다운로드 동의 UX: 토글 시 다이얼로그 1회(크기 명시) 수용 여부 | 수용(VS Code Pylance 관례 — 미동의 시 휴리스틱 유지) |
+
+### 4.3 공통 준수 사항 (08~17)
+
+- **키 예약표(충돌 검증 완료)**: 08=`mod+Shift+F` · 09=`mod+P`(폴백 mod+E) · 10=`mod+Shift+O`(Monaco 내장 동일 키) · 11=`Shift+F12`(내장) · 13=`mod+Alt+N` · 15=`Shift+Alt+F`(내장). 기존 앱 키·Monaco 기본 키와 무충돌 실측(검증자 확인). 신규 전역 키는 terminal-engine 화이트리스트 필요성을 각 문서가 개별 판정(09는 의도적 비통과 — C-p readline 보호).
+- **공유 계약**: QuickPick 프리미티브(09 §4)·외부 도구 러너(15 §3.2)는 단일 정의 — 소비 문서(13·16)는 링크만.
+- **grep류 IPC 관례**: find_definition 준수(입력 검증·확장자 pathspec·결과 캡·forward-slash 상대경로) — 08·11·13 공통.
+- **공급망 원칙(2026-07-07 개정)**: ~~자동 바이너리 다운로드 전면 비채택~~ → **"발견 우선 + 검증된 폴백"**으로 개정. 15/16은 빌드 시 번들 폴백(fetch-tools.mjs — 버전 pin+게시자 해시 검증, 구현 완료), 17은 런타임 관리형 다운로드(동의 1회+pin+**코드 고정 해시** — 17 §3.3). 공통 불변: 사용자·프로젝트 설치본이 항상 우선(버전 드리프트 방지), 프로젝트 로컬 실행파일(node_modules/.bin·.venv)은 옵트인 기본 꺼짐(17은 v1 탐지 제외).
+- **WebView2 규약**: 동시 invoke 응답 유실 대응(배치·단일비행·lane) 준수 — 09(배치 1회 수집)·17(Channel 다운스트림 + fire-and-forget)이 핵심 적용례.
+
+## 5. UI/UX 태스크 (18~) — 2026-07-07
+
+| # | 태스크 | 문서 | 규모 | 핵심 판단 | 주요 위험 |
+|---|--------|------|------|-----------|-----------|
+| 18 | 설정 모달 UX 재설계 | [18-settings-ux.md](18-settings-ux.md) | **M** · **구현·검증 완료(2026-07-07)** | 단일 스크롤 컬럼(8섹션·22필드) → **좌 사이드바 6카테고리 + 정적 인덱스 검색**(w-860 분할 셸). 저장 모델 불변(전역 폼+단일 저장), 카테고리는 뷰 필터, 섹션 6파일+shared.tsx 분해(860→365줄). 검색 하이라이트(HlField)·자동전환·조건렌더 부모토글 폴백·dirty 정규화 비교·Esc 2단계·유지보수 hidden 마운트. **실앱 검증**: 편집값 유지·검색/하이라이트·테마 프리뷰+Esc 복원·저장·C3 폴백·완전성 가드(22키 커버) E2E 29 | (해소) 검증 15건 반영 — 완전성 가드는 getSettings 런타임 키 대조로 구현 |

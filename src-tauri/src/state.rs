@@ -39,6 +39,8 @@ pub struct AppState {
     /// 배경 fetch 결과 (projectId → freshness) — fetch_scheduler가 갱신하고
     /// get_statuses가 조인해 RepoStatus에 실어 보낸다 (태스크 04 §3.5).
     pub freshness: RwLock<HashMap<String, RemoteFreshness>>,
+    /// LSP 세션 레지스트리 ("{projectId}:{lang}" → 서버) — 장수 child, 태스크 17.
+    pub lsp: Mutex<HashMap<String, crate::commands::LspSession>>,
 }
 
 impl AppState {
@@ -54,6 +56,7 @@ impl AppState {
             browser: Mutex::new(BrowserReg::default()),
             http: Mutex::new(HttpReg::default()),
             freshness: RwLock::new(HashMap::new()),
+            lsp: Mutex::new(HashMap::new()),
         }
     }
 

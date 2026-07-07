@@ -2,8 +2,9 @@ import { useEffect, useRef } from "react";
 
 import { isMod } from "../lib/platform";
 import { usePushFlow, useRefreshAll, useSyncOp } from "../queries";
+import { useSearch } from "../stores/search";
 import { useTerminals } from "../stores/terminals";
-import { useUi } from "../stores/ui";
+import { useUi, viewerTabKey } from "../stores/ui";
 
 /**
  * 항상-마운트 전역 단축키 — KeyboardShortcuts는 모아보기가 열리거나 프로젝트 미선택이면
@@ -52,6 +53,28 @@ export function KeyboardShortcuts({ projectId }: { projectId: string }) {
         actions.refreshAll();
         return;
       }
+      // mod+P: Quick Open 토글 — ctrlKey 게이트 앞에서 isMod로 검사(mac Cmd 통과).
+      // 마운트 조건(프로젝트 선택+모아보기 아님)이 곧 활성 조건이라 별도 가드 불필요.
+      // preventDefault로 WebView2 인쇄 액셀러레이터 억제(Chromium 관례).
+      if (isMod(e) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "p") {
+        e.preventDefault();
+        const ui = useUi.getState();
+        ui.setQuickOpenOpen(!ui.quickOpenOpen);
+        return;
+      }
+      // mod+Alt+N: Go to Symbol 토글 (전역 심볼 검색). ctrlKey 게이트 앞 — isMod로 mac 통과.
+      if (isMod(e) && e.altKey && !e.shiftKey && e.key.toLowerCase() === "n") {
+        e.preventDefault();
+        const ui = useUi.getState();
+        ui.setSymbolSearchOpen(!ui.symbolSearchOpen);
+        return;
+      }
+      // mod+Shift+F: Find in Files 패널 토글/재포커스.
+      if (isMod(e) && e.shiftKey && !e.altKey && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        useSearch.getState().setOpen(true);
+        return;
+      }
       if (!e.ctrlKey) return;
       const k = e.key.toLowerCase();
       // Ctrl+Shift+D/E/W: 터미널 패널 분할/닫기 — 어느 탭(Viewer/DB 등)을 보고 있어도 동작.
@@ -75,6 +98,21 @@ export function KeyboardShortcuts({ projectId }: { projectId: string }) {
         if (k === "d") ts.splitPane(tab.id, tab.activePaneId, "row", false);
         else if (k === "e") ts.splitPane(tab.id, tab.activePaneId, "col", false);
         else ts.closePane(tab.id, tab.activePaneId);
+        return;
+      }
+      // Ctrl+W(Shift 없음): 뷰어에서 현재 보고 있는 파일 탭 닫기. 터미널을 보고 있을 때는
+      // activeTab이 viewer가 아니므로 건너뛴다(터미널 포커스의 Ctrl+W는 xterm 엔진이
+      // 직접 소비해 패널을 닫는다 — terminal-engine.ts).
+      if (k === "w" && !e.shiftKey && !e.altKey) {
+        const pid = pidRef.current;
+        const ts = useTerminals.getState();
+        if ((ts.activeTab[pid] ?? "viewer") !== "viewer") return;
+        const ui = useUi.getState();
+        if (!ui.selectedDiff) return; // 열린 파일 없음 — 조용히 무시
+        e.preventDefault();
+        const key = viewerTabKey(ui.selectedDiff, ui.selectedDiffRepoId, pid);
+        if (ui.viewerTabs.some((t) => t.key === key)) ui.closeViewerTab(key);
+        else ui.selectDiff(null); // 탭 없이 열린 선택(엣지) — 선택만 해제
         return;
       }
       if (k === "k") {

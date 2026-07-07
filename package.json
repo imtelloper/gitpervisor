@@ -18,7 +18,9 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "build:mac": "npm run tauri build && bash scripts/build-mac-dmg.sh",
-    "test:e2e": "node tests/e2e/run.mjs"
+    "test:e2e": "node tests/e2e/run.mjs",
+    "fetch-tools": "node scripts/fetch-tools.mjs",
+    "fetch-lsp": "node scripts/fetch-lsp.mjs"
   },
   "dependencies": {
     "@jsquash/avif": "^2.1.1",

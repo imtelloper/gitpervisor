@@ -15,11 +15,18 @@ const hotkeyLabel = isMac ? `${modLabel}⇧A` : `${modLabel}+Shift+A`;
 
 interface TermMeta {
   paneId: string;
+  tabId: string;
   projectId: string;
   projName: string;
   tabTitle: string;
   status: "working" | "done" | undefined;
 }
+
+// 트랙(열/행) 최소 크기(px) — 이보다 작으면 터미널이 못 읽힐 정도라 드래그 하한으로 막는다.
+const MIN_W = 240;
+const MIN_H = 160;
+// 그리드 간격/패딩(px) — Tailwind gap-1.5 / p-1.5 = 6px와 맞춘다(트랙 px 환산용).
+const GAP = 6;
 
 /**
  * 터미널 모아보기 — 여러 프로젝트/탭에 흩어진 터미널을 한 화면에 분할해 동시에 본다.
@@ -34,7 +41,11 @@ export function AggregateTerminals() {
   const fontSize = settings?.terminalFontSize ?? 13;
   const terminals = useTerminals((s) => s.terminals);
   const openTerminal = useTerminals((s) => s.openTerminal);
+  const closePane = useTerminals((s) => s.closePane);
   const byTerminal = useAgentActivity((s) => s.byTerminal);
+  // 드래그로 조절한 그리드 트랙(shape별 fr 배열) — ui 스토어에 영속돼 여닫아도 유지된다.
+  const aggregateTracks = useUi((s) => s.aggregateTracks);
+  const setAggregateTracks = useUi((s) => s.setAggregateTracks);
 
   // 모든 터미널 패널 메타 (스토어 기준 — 반응형). 브라우저 패널은 제외.
   const all = useMemo<TermMeta[]>(() => {
@@ -43,6 +54,7 @@ export function AggregateTerminals() {
       for (const paneId of collectByContent(tab.layout, "terminal")) {
         out.push({
           paneId,
+          tabId: tab.id,
           projectId: tab.projectId,
           projName: projects?.find((p) => p.id === tab.projectId)?.name ?? "프로젝트",
           tabTitle: tab.title,
@@ -94,9 +106,91 @@ export function AggregateTerminals() {
     setSelected((prev) => new Set(prev).add(paneId));
   };
 
+  const gridRef = useRef<HTMLDivElement>(null);
+
   const shown = all.filter((t) => selected.has(t.paneId));
   const n = shown.length;
   const cols = n <= 1 ? 1 : n <= 4 ? 2 : n <= 9 ? 3 : 4;
+  const rows = Math.max(1, Math.ceil(n / cols));
+
+  // 행 단위로 자른 셀 목록 — 폭은 "행마다 독립"이라 행이 레이아웃의 기본 단위다.
+  const rowsOfCells: TermMeta[][] = [];
+  for (let i = 0; i < shown.length; i += cols)
+    rowsOfCells.push(shown.slice(i, i + cols));
+
+  // 현재 배치의 트랙 크기 — 행 높이(rowFr[r])와 행별 셀 폭(cellFr[r][c], fr 배열).
+  // 가로 드래그는 같은 행의 이웃과만 재분배하므로 위/아래 행 폭에 영향이 없다.
+  // 재분배(총합 불변)라 그리드가 항상 컨테이너를 정확히 채운다 → 셀이 밖으로 밀려나
+  // 사라질 수 없다. 키는 n — 마지막 행 셀 수까지 n이 결정하므로 모양 충돌이 없다.
+  const shape = `n${n}`;
+  const rowLens = rowsOfCells.map((r) => r.length);
+  const saved = aggregateTracks[shape];
+  const rowFr: number[] =
+    saved && Array.isArray(saved.rows) && saved.rows.length === rows
+      ? saved.rows
+      : Array(rows).fill(1);
+  const cellFr: number[][] =
+    saved &&
+    Array.isArray(saved.cols) &&
+    saved.cols.length === rows &&
+    saved.cols.every((a, r) => Array.isArray(a) && a.length === rowLens[r])
+      ? saved.cols
+      : rowLens.map((len) => Array(len).fill(1));
+
+  // 경계 드래그 — 가로는 r행 안에서 셀 c↔c+1, 세로는 행 r↔r+1 사이 공간 재분배.
+  // 드래그 시작 시 fr을 px로 환산해 기준으로 삼고, 매 이동마다 두 트랙 합을 유지한 채 나눈다.
+  const startResize = (
+    e: React.PointerEvent,
+    r: number,
+    c: number,
+    axis: "x" | "y" | "both",
+  ) => {
+    const el = gridRef.current;
+    if (!el) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const rowLen = rowLens[r];
+    const availW = el.clientWidth - GAP * 2 - (rowLen - 1) * GAP;
+    const availH = el.clientHeight - GAP * 2 - (rows - 1) * GAP;
+    const sumC = cellFr[r].reduce((a, b) => a + b, 0);
+    const sumR = rowFr.reduce((a, b) => a + b, 0);
+    const colPx = cellFr[r].map((f) => (f / sumC) * availW);
+    const rowPx = rowFr.map((f) => (f / sumR) * availH);
+    const sx = e.clientX;
+    const sy = e.clientY;
+    const onMove = (ev: PointerEvent) => {
+      const nextRowCells = [...colPx];
+      const nextRows = [...rowPx];
+      if (axis !== "y" && c < rowLen - 1) {
+        const pair = colPx[c] + colPx[c + 1];
+        const lo = Math.min(MIN_W, pair / 2); // 둘 다 최소 미만이면 중앙까지만
+        const w = Math.min(Math.max(colPx[c] + (ev.clientX - sx), lo), pair - lo);
+        nextRowCells[c] = w;
+        nextRowCells[c + 1] = pair - w;
+      }
+      if (axis !== "x" && r < rows - 1) {
+        const pair = rowPx[r] + rowPx[r + 1];
+        const lo = Math.min(MIN_H, pair / 2);
+        const h = Math.min(Math.max(rowPx[r] + (ev.clientY - sy), lo), pair - lo);
+        nextRows[r] = h;
+        nextRows[r + 1] = pair - h;
+      }
+      // r행의 폭만 교체, 다른 행 배열은 그대로 — 행별 fr은 독립 정규화라 단위가 섞여도 무관.
+      // px 값을 fr로 그대로 저장 — fr은 상대값이라 창 크기가 바뀌어도 비율이 유지된다.
+      setAggregateTracks(shape, {
+        rows: nextRows,
+        cols: cellFr.map((arr, i) => (i === r ? nextRowCells : arr)),
+      });
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      document.body.style.userSelect = "";
+    };
+    document.body.style.userSelect = "none"; // 드래그 중 텍스트 선택 방지
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
 
   return (
     <div className="flex h-full min-w-0 flex-col bg-base">
@@ -159,18 +253,38 @@ export function AggregateTerminals() {
         />
       ) : (
         <div
-          className="grid min-h-0 flex-1 gap-1.5 overflow-auto p-1.5"
+          ref={gridRef}
+          className="grid min-h-0 flex-1 gap-1.5 p-1.5"
           style={{
-            gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
-            gridAutoRows: "minmax(200px, 1fr)",
+            // 외부는 행 트랙만(1열). grid-template-columns는 e2e가 그리드를 찾는 표식이라 유지.
+            gridTemplateColumns: "minmax(0, 1fr)",
+            gridTemplateRows: rowFr.map((f) => `minmax(0, ${f}fr)`).join(" "),
           }}
         >
-          {shown.map((t) => (
-            <AggregateCell
-              key={t.paneId}
-              meta={t}
-              fontSize={fontSize}
-            />
+          {rowsOfCells.map((rowCells, r) => (
+            <div
+              key={rowCells[0].paneId}
+              className="grid min-h-0 min-w-0 gap-1.5"
+              style={{
+                // 행마다 독립적인 셀 폭 — 이 행의 드래그는 이 배열만 바꾼다
+                gridTemplateColumns: cellFr[r]
+                  .map((f) => `minmax(0, ${f}fr)`)
+                  .join(" "),
+              }}
+            >
+              {rowCells.map((t, c) => (
+                <AggregateCell
+                  key={t.paneId}
+                  meta={t}
+                  fontSize={fontSize}
+                  // 경계가 컨테이너 가장자리면 재분배할 이웃이 없다 — 핸들 생략
+                  canRight={c < rowCells.length - 1}
+                  canBottom={r < rowsOfCells.length - 1}
+                  onResizeStart={(e, axis) => startResize(e, r, c, axis)}
+                  onClose={() => closePane(t.tabId, t.paneId)}
+                />
+              ))}
+            </div>
           ))}
         </div>
       )}
@@ -254,8 +368,23 @@ function NewTerminalButton({
   );
 }
 
-/** 그리드 한 칸 — 라벨 헤더 + 실제 xterm(레지스트리에서 호스트를 붙인다). */
-function AggregateCell({ meta, fontSize }: { meta: TermMeta; fontSize: number }) {
+/** 그리드 한 칸 — 라벨 헤더 + 실제 xterm(레지스트리에서 호스트를 붙인다).
+ *  변/모서리 핸들 드래그는 그리드 트랙 경계를 움직인다(이웃과 재분배). 헤더 X로 닫는다. */
+function AggregateCell({
+  meta,
+  fontSize,
+  canRight,
+  canBottom,
+  onResizeStart,
+  onClose,
+}: {
+  meta: TermMeta;
+  fontSize: number;
+  canRight: boolean;
+  canBottom: boolean;
+  onResizeStart: (e: React.PointerEvent, axis: "x" | "y" | "both") => void;
+  onClose: () => void;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   const status = useAgentActivity((s) => s.byTerminal[meta.paneId]);
 
@@ -281,7 +410,7 @@ function AggregateCell({ meta, fontSize }: { meta: TermMeta; fontSize: number })
 
   return (
     <div
-      className={`group/cell relative flex min-h-0 flex-col overflow-hidden rounded border border-edge ${
+      className={`group/cell relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded border border-edge ${
         status === "working"
           ? "ai-working"
           : status === "done"
@@ -291,10 +420,39 @@ function AggregateCell({ meta, fontSize }: { meta: TermMeta; fontSize: number })
     >
       <div className="flex h-6 shrink-0 items-center gap-1.5 border-b border-edge bg-panel px-2 text-[11px] text-fg-muted">
         <StatusIcon status={status} />
-        <span className="truncate font-medium text-fg">{meta.projName}</span>
-        <span className="truncate text-fg-dim">· {meta.tabTitle}</span>
+        <span className="min-w-0 flex-1 truncate">
+          <span className="font-medium text-fg">{meta.projName}</span>
+          <span className="text-fg-dim"> · {meta.tabTitle}</span>
+        </span>
+        <button
+          onClick={onClose}
+          title="터미널 닫기 (프로세스 종료)"
+          className="-mr-1 shrink-0 rounded p-0.5 text-fg-dim hover:bg-raised hover:text-danger"
+        >
+          <X size={12} />
+        </button>
       </div>
       <div ref={ref} className="min-h-0 flex-1" />
+      {/* 트랙 경계 핸들 — 오른쪽 변(열 경계), 아래 변(행 경계), 모서리(양쪽). 이웃이 없는
+          가장자리엔 안 그린다. 오른쪽 변은 헤더(h-6) 아래부터 — 닫기 버튼을 가리지 않게. */}
+      {canRight && (
+        <div
+          onPointerDown={(e) => onResizeStart(e, "x")}
+          className="absolute bottom-0 right-0 top-6 z-10 w-1.5 cursor-col-resize hover:bg-accent/50"
+        />
+      )}
+      {canBottom && (
+        <div
+          onPointerDown={(e) => onResizeStart(e, "y")}
+          className="absolute bottom-0 left-0 z-10 h-1.5 w-full cursor-row-resize hover:bg-accent/50"
+        />
+      )}
+      {canRight && canBottom && (
+        <div
+          onPointerDown={(e) => onResizeStart(e, "both")}
+          className="absolute bottom-0 right-0 z-20 size-3 cursor-nwse-resize bg-accent/0 group-hover/cell:bg-accent/40"
+        />
+      )}
     </div>
   );
 }

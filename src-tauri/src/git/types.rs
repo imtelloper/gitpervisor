@@ -221,6 +221,20 @@ pub struct Settings {
     pub smtp_to: Option<String>,
     /// true = 암호화(465 implicit TLS / 587 STARTTLS), false = 평문
     pub smtp_tls: bool,
+    // ---- 포매터/린터 외부 도구 (태스크 15/16) ----
+    /// ruff/biome 명시 경로 (null/빈값 = 자동 발견: PATH). 지정 시 그것만 사용(폴백 금지).
+    pub formatter_ruff_path: Option<String>,
+    pub formatter_biome_path: Option<String>,
+    /// 프로젝트 로컬 바이너리(node_modules/.bin·.venv) 실행 허용 — 기본 false(공급망 위험).
+    /// 이 옵트인은 린트(파일 열람만으로 자동 실행)에도 적용된다 — 열람=실행으로 위험 확대.
+    pub formatter_project_local: bool,
+    /// 저장 시 자동 포맷 — 기본 false.
+    pub format_on_save: bool,
+    /// LSP 활성 프로젝트 id 목록 — 옵트인 기본 빈(전부 OFF). 태스크 17 §3.4.
+    pub lsp_enabled_projects: Vec<String>,
+    /// 워크스페이스 node_modules/typescript를 tsserver로 쓰기(옵트인 기본 false — 레포 공급 코드
+    /// 실행 공급망 표면, §3.2). false면 관리 사본 typescript 사용.
+    pub lsp_workspace_tsserver: bool,
 }
 
 impl Default for Settings {
@@ -242,6 +256,12 @@ impl Default for Settings {
             smtp_from: None,
             smtp_to: None,
             smtp_tls: true,
+            formatter_ruff_path: None,
+            formatter_biome_path: None,
+            formatter_project_local: false,
+            format_on_save: false,
+            lsp_enabled_projects: Vec::new(),
+            lsp_workspace_tsserver: false,
         }
     }
 }

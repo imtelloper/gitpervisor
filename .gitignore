@@ -32,3 +32,7 @@ gitpervisor-installer.exe
 
 # Claude Code 로컬 캐시
 .claude/
+
+# 번들 도구 바이너리(재현: npm run fetch-tools) — git에 커밋하지 않음
+src-tauri/resources/tools/ruff*
+src-tauri/resources/tools/biome*

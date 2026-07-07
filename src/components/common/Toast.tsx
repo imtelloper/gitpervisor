@@ -25,6 +25,17 @@ export function Toasts() {
           <span className="select-text break-all text-[13px] leading-5">
             {t.message}
           </span>
+          {t.action && (
+            <button
+              onClick={() => {
+                t.action?.run();
+                dismissToast(t.id);
+              }}
+              className="ml-1 mt-0.5 shrink-0 rounded bg-accent/20 px-1.5 py-0.5 text-[11px] font-medium text-accent hover:bg-accent/30"
+            >
+              {t.action.label}
+            </button>
+          )}
           <button
             onClick={() => dismissToast(t.id)}
             className="ml-1 mt-0.5 shrink-0 text-fg-dim hover:text-fg"

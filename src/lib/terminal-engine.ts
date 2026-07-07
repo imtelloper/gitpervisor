@@ -196,6 +196,10 @@ export function createTerminalImpl(opts: {
       return false;
     // 모아보기 토글(mod+Shift+A) — 모아보기 그리드는 전부 터미널이라 이 통과가 닫기 경로에 필수.
     if (isMod(e) && e.shiftKey && k === "a") return false;
+    // Go to Symbol(mod+Alt+N) — 터미널 포커스 중에도 window 핸들러로 흘려보낸다.
+    if (isMod(e) && e.altKey && k === "n") return false;
+    // Find in Files(mod+Shift+F) — 터미널 포커스 중에도 window로 버블.
+    if (isMod(e) && e.shiftKey && k === "f") return false;
     // Ctrl+W: 포커스된(=이 키를 받은) 이 터미널 패널을 닫는다(Shift 없이 — Ctrl+Shift+W는
     // 기존대로 활성 패널 닫기). dispose를 키 이벤트 도중 하지 않도록 마이크로태스크로 미뤄,
     // 처리 중인 xterm을 그 자리에서 파괴하는 걸 피한다.

@@ -3,9 +3,11 @@ mod db;
 mod error;
 mod fetch_scheduler;
 mod git;
+mod lsp;
 mod monitor;
 mod notifications;
 mod state;
+mod tools;
 mod watcher;
 
 use std::path::PathBuf;
@@ -251,6 +253,8 @@ pub fn run() {
             // 저장된 git 경로를 부팅 시 적용 (이후 set_settings로 갱신)
             git::runner::set_git_override(settings.git_path.as_ref().map(PathBuf::from));
             app.manage(AppState::new(projects.clone(), settings, notes));
+            // LSP 유휴 서버 리퍼 — 10분 방치된 언어 서버 종료(태스크 17 §3.4).
+            commands::lsp_spawn_idle_reaper(app.handle().clone());
             // DB 탐색기 — 연결 메타 로드 + 활성 연결 상태 (M6 §17)
             let db_conns = db::load_connections(app.handle());
             app.manage(db::DbState::new(db_conns));
@@ -294,12 +298,23 @@ pub fn run() {
             commands::run_executable,
             commands::list_dir,
             commands::list_project_roots,
+            commands::list_repo_files,
             commands::write_file,
             commands::create_dir,
             commands::create_file,
             commands::delete_path,
             commands::write_file_bytes,
             commands::find_definition,
+            commands::find_symbols,
+            commands::find_references,
+            commands::search_in_project,
+            commands::format_source,
+            commands::format_tool_status,
+            commands::lint_file,
+            commands::lsp_start,
+            commands::lsp_send,
+            commands::lsp_stop,
+            commands::lsp_ensure,
             commands::get_notes,
             commands::add_memo,
             commands::update_memo,
@@ -367,6 +382,7 @@ pub fn run() {
                     // 메인 창이 닫히면 열린 PTY 자식을 모두 정리한다 (좀비 셸 방지, 설계 §16.8).
                     let state = window.state::<AppState>();
                     commands::kill_all(state.inner());
+                    commands::lsp_kill_all(state.inner()); // LSP 서버 좀비 방지(태스크 17)
                     commands::browser_kill_all(window.app_handle(), state.inner());
                     // 팝업만 남아 앱이 안 죽는 상태 방지 — gpv-popup-* 전 창 close.
                     commands::popup_kill_all(window.app_handle());

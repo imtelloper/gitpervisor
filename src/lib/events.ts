@@ -58,6 +58,7 @@ export function attachRepoEvents(qc: QueryClient) {
       void qc.invalidateQueries({ queryKey: ["diff"] });
       void qc.invalidateQueries({ queryKey: ["log"] });
       void qc.invalidateQueries({ queryKey: ["branches"] });
+      void qc.invalidateQueries({ queryKey: ["repo-files"] }); // Quick Open 파일 목록
     }, 250);
   });
 

@@ -31,6 +31,16 @@ const SUITES = [
   "./suites/17-remote-freshness.mjs",
   "./suites/18-sysmon.mjs",
   "./suites/19-themes.mjs",
+  "./suites/20-occurrence-highlight.mjs",
+  "./suites/21-python-outline.mjs",
+  "./suites/22-quick-open.mjs",
+  "./suites/23-symbol-search.mjs",
+  "./suites/24-find-in-files.mjs",
+  "./suites/25-find-references.mjs",
+  "./suites/26-formatter.mjs",
+  "./suites/27-lint.mjs",
+  "./suites/28-lsp.mjs",
+  "./suites/29-settings-ux.mjs",
 ];
 
 const report = createReport();
