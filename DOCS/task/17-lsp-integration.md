@@ -42,11 +42,20 @@
 > - **네이티브 다운로드**(GitHub 릴리스 바이너리, node 불필요): clangd(C/C++)·**rust-analyzer(Rust)**·
 >   **lua-language-server(Lua)**. 아카이브 3종(zip·gz단일·tar.gz) `ArchiveKind`로 처리, sha256 pin.
 > - **PATH 발견**(툴체인 제공, 프리빌트 없음): **gopls(Go)** — `gopls serve`, ~/go/bin·GOBIN·GOPATH 탐색.
-> - **npm+node**: intelephense(PHP) 등은 동일 패턴으로 추가 가능(미구현).
 > **실앱 검증**: rust(`r.`→멤버·정의, 단 첫 로딩 ~10-30s), lua(`M.`→멤버), go(PATH 발견 정상 — 미설치 감지).
-> jdtls(Java)는 복잡한 런처(JRE+config+data dir)라 후속. 확장 언어 프로세스 누수 0.
 >
-> **→ 태스크 17 완료.** provider 7종 · **파이썬·TS/JS·C/C++·Rust·Lua·Go**(+PHP 등 저비용 확장 여지).
+> **추가 5개 언어(2026-07-08)** — 병렬 리서치(실다운로드+실행 실측) 후 기존 3패턴에 항목 추가로 완결:
+> - **npm+node**(deps 웹팩 번들 0-install): **intelephense(PHP)** 1.18.5 — `node lib/intelephense.js
+>   --stdio`, sha512 pin. basedpyright와 동일 구조. **네이티브 다운로드**: **zls(Zig)** 0.16.0 —
+>   win=zip(flat, zls.exe)/unix=tar.xz(신규 `ArchiveKind::TarXz` — 시스템 tar로 해제), stdio 무인자.
+> - **PATH 발견**(프리빌트 없음 — 툴체인 설치본): **ruby-lsp(Ruby)**·**csharp-ls(C#, ~/.dotnet/tools)**·
+>   **jdtls(Java)**. jdtls 앱 내 다운로드는 JRE21+launcher jar glob+config/data 특수처리라 보류하고,
+>   PATH 발견으로 편입(brew/mason 설치본 — gopls/ruby/csharp와 동일 티어).
+> - Zig는 Monaco 내장 언어가 아니라 monaco-setup에 `register`+monarch 토크나이저로 직접 등록.
+> **실앱 검증**: php(`$r->`→w/h/area, intelephense 다운로드 1.8s)·zig(`r.`→멤버, zls 다운로드 0.9s, Zig
+> 툴체인 없이 로컬 구조체 분석)·ruby/csharp/java(PATH 발견 정상 — 툴체인 미설치 감지). 누수 0.
+>
+> **→ 태스크 17 완료.** provider 7종 · **파이썬·TS/JS·C/C++·Rust·Lua·Go·PHP·Zig·Ruby·C#·Java(11개 언어군)**.
 > 앱 내 완전 획득(node·npm 서버·네이티브 바이너리·PATH 발견 4방식). 알려진 한계: rust-analyzer는 Cargo
 > 프로젝트+cargo 툴체인 필요(첫 로딩 느림), 시스템 헤더·deps 없는 프로젝트는 외부 import 미해결(환경 문제).
 > 근거: 코드 실측 2026-07-07(**08~16 구현 완료 상태** 기준) + 외부 배포 실측(npm 레지스트리·nodejs.org·GitHub 릴리스 — 전부 실제 HTTP 호출·tarball 해부로 확인, §2.9)

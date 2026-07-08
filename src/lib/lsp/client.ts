@@ -4,7 +4,18 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-export type LspLang = "py" | "ts" | "cpp" | "rust" | "lua" | "go";
+export type LspLang =
+  | "py"
+  | "ts"
+  | "cpp"
+  | "rust"
+  | "lua"
+  | "go"
+  | "php"
+  | "zig"
+  | "ruby"
+  | "csharp"
+  | "java";
 
 interface Pending {
   resolve: (result: unknown) => void;
@@ -288,6 +299,11 @@ export function extToLang(ext: string): LspLang | null {
   if (e === "rs") return "rust";
   if (e === "lua") return "lua";
   if (e === "go") return "go";
+  if (e === "php") return "php";
+  if (e === "zig") return "zig";
+  if (e === "rb") return "ruby";
+  if (e === "cs") return "csharp";
+  if (e === "java") return "java";
   return null;
 }
 

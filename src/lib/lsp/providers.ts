@@ -13,7 +13,21 @@ const COMPLETION_TIMEOUT = 3_000; // 늦은 완성은 무가치(§3.5)
 let registered = false;
 
 /** 등록 언어 — python·typescript/javascript·cpp/c(clangd). 1회 가드(goto-definition 관례). */
-const LSP_LANGS = ["python", "typescript", "javascript", "cpp", "c", "rust", "lua", "go"];
+const LSP_LANGS = [
+  "python",
+  "typescript",
+  "javascript",
+  "cpp",
+  "c",
+  "rust",
+  "lua",
+  "go",
+  "php",
+  "csharp",
+  "java",
+  "ruby",
+  "zig",
+];
 
 export function registerLspProviders(): void {
   if (registered) return;

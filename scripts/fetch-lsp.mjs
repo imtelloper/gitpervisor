@@ -29,6 +29,11 @@ const SERVERS = {
     integrity: "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==",
     tarball: "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz",
   },
+  intelephense: {
+    version: "1.18.5",
+    integrity: "sha512-dqCH1YNCRlHGBLND+iUFjBJlGwM4pPimX2jm8AaP/6K2WZNM2K2+E8dOWCD3ZYMP2zC2ICBD9Soe2oxKtU9d9A==",
+    tarball: "https://registry.npmjs.org/intelephense/-/intelephense-1.18.5.tgz",
+  },
 };
 
 // 네이티브 서버(npm 아님 — GitHub 릴리스 바이너리). Rust ensure_native와 버전·해시 동기.
@@ -58,6 +63,15 @@ const NATIVE = {
     sha256: { win32: "a4439a8f5e8e9e6505c11f045a7bf45db602124a1e246371c1dbe34924f3cf71" },
     kind: process.platform === "win32" ? "zip" : "targz",
   },
+  zls: {
+    version: "0.16.0",
+    url: (v) =>
+      `https://github.com/zigtools/zls/releases/download/${v}/zls-${plat("zls")}.${process.platform === "win32" ? "zip" : "tar.xz"}`,
+    inner: null, // flat(zls.exe / zls)
+    exe: () => (process.platform === "win32" ? "zls.exe" : "zls"),
+    sha256: { win32: "35cbb7163224e8cf92d21099c1b1391f2aba927f25d389f021b13a21d40b96dd" },
+    kind: process.platform === "win32" ? "zip" : "tarxz",
+  },
 };
 
 function plat(name) {
@@ -65,6 +79,10 @@ function plat(name) {
   if (name === "clangd") return process.platform === "win32" ? "windows" : process.platform === "darwin" ? "mac" : "linux";
   if (name === "rust-analyzer") {
     const os = process.platform === "win32" ? "pc-windows-msvc" : process.platform === "darwin" ? "apple-darwin" : "unknown-linux-gnu";
+    return `${process.arch === "arm64" ? "aarch64" : "x86_64"}-${os}`;
+  }
+  if (name === "zls") {
+    const os = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux";
     return `${process.arch === "arm64" ? "aarch64" : "x86_64"}-${os}`;
   }
   // lua-language-server

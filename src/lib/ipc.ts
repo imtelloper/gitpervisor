@@ -819,7 +819,7 @@ export const ipc = {
     }),
   // LSP 서버 획득(태스크 17 M2) — 없으면 다운로드+검증+설치. 진행률은 Channel 콜백으로.
   lspEnsure: (
-    lang: "py" | "ts" | "cpp" | "rust" | "lua" | "go",
+    lang: "py" | "ts" | "cpp" | "rust" | "lua" | "go" | "php" | "zig" | "ruby" | "csharp" | "java",
     onProgress?: (msg: LspEnsureProgress) => void,
   ) => {
     const ch = new Channel<string>();

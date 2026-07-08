@@ -39,11 +39,20 @@ const LUA_LS_SHA256: Option<&str> =
 #[cfg(not(all(windows, target_arch = "x86_64")))]
 const LUA_LS_SHA256: Option<&str> = None;
 
+const INTELEPHENSE_VERSION: &str = "1.18.5"; // npm(intelephense) — deps 웹팩 번들, node로 실행(무료 stdio).
+const ZLS_VERSION: &str = "0.16.0"; // zigtools/zls(네이티브). 완전한 기능은 같은 버전대 Zig 툴체인 필요.
+#[cfg(all(windows, target_arch = "x86_64"))]
+const ZLS_SHA256: Option<&str> =
+    Some("35cbb7163224e8cf92d21099c1b1391f2aba927f25d389f021b13a21d40b96dd");
+#[cfg(not(all(windows, target_arch = "x86_64")))]
+const ZLS_SHA256: Option<&str> = None;
+
 #[derive(Clone, Copy)]
 enum ArchiveKind {
-    Zip,      // clangd(전 플랫폼)·rust-analyzer(win)·lua(win)
+    Zip,      // clangd(전 플랫폼)·rust-analyzer(win)·lua(win)·zls(win)
     GzSingle, // rust-analyzer(mac/linux) — gzip 단일 바이너리
     TarGz,    // lua(mac/linux) — 다중 파일 tar.gz
+    TarXz,    // zls(mac/linux) — tar.xz(시스템 tar로 해제, in-process xz 디코더 없음)
 }
 
 pub struct ResolvedServer {
@@ -77,8 +86,8 @@ pub fn resolve(
             "언어 서버가 설치되지 않았습니다 — 설정에서 언어 서버 다운로드 후 다시 시도하세요".to_string(),
         )
     };
-    // py/ts는 node 위에서 도는 js 서버, cpp(clangd)는 네이티브 바이너리라 node가 필요 없다.
-    let need_node = matches!(lang, "py" | "ts");
+    // py/ts/php는 node 위에서 도는 js 서버, cpp(clangd) 등 네이티브는 node가 필요 없다.
+    let need_node = matches!(lang, "py" | "ts" | "php");
     let node = if need_node {
         resolve_node(app).ok_or_else(|| {
             IpcError::new(
@@ -131,7 +140,22 @@ pub fn resolve(
                 tsserver: Some(tsserver.to_string_lossy().into_owned()),
             })
         }
-        // 네이티브 서버(clangd·rust-analyzer) — stdio 기본, node 불필요.
+        "php" => {
+            // intelephense — deps 웹팩 번들이라 node로 lib/intelephense.js 직접 실행(무료 stdio).
+            let dir = lsp_root.join(format!("intelephense-{INTELEPHENSE_VERSION}"));
+            let server = dir.join("lib").join("intelephense.js");
+            if !dir.join(".ok").is_file() || !server.is_file() {
+                return Err(not_found());
+            }
+            Ok(ResolvedServer {
+                program: node,
+                args: vec![server.to_string_lossy().into_owned(), "--stdio".into()],
+                label: format!("intelephense {INTELEPHENSE_VERSION}"),
+                version: Some(INTELEPHENSE_VERSION.to_string()),
+                tsserver: None,
+            })
+        }
+        // 네이티브 서버(clangd·rust-analyzer·zls) — stdio 기본, node 불필요.
         lang if native_server_for(lang).is_some() => {
             let server = native_server_for(lang).unwrap();
             let program = managed_native(&lsp_root, server).ok_or_else(not_found)?;
@@ -179,6 +203,7 @@ fn native_server_for(lang: &str) -> Option<&'static str> {
         "cpp" => Some("clangd"),
         "rust" => Some("rust-analyzer"),
         "lua" => Some("lua-language-server"),
+        "zig" => Some("zls"),
         _ => None,
     }
 }
@@ -191,6 +216,21 @@ fn path_server_for(lang: &str) -> Option<(&'static str, Vec<String>, &'static st
             vec!["serve".into()],
             "go install golang.org/x/tools/gopls@latest",
         )),
+        "ruby" => Some((
+            "ruby-lsp",
+            vec![], // stdio 기본. 프로젝트 Ruby 환경(버전매니저 shim)에서 기동돼야 의존성 인식.
+            "gem install ruby-lsp",
+        )),
+        "csharp" => Some((
+            "csharp-ls",
+            vec![], // stdio 기본. .NET SDK 6+ 필요.
+            "dotnet tool install --global csharp-ls",
+        )),
+        "java" => Some((
+            "jdtls",
+            vec![], // jdtls 런처가 JRE·launcher jar·config/data를 자체 처리(stdio 기본). JRE 21+ 필요.
+            "brew install jdtls (또는 mason/패키지 매니저)",
+        )),
         _ => None,
     }
 }
@@ -200,6 +240,7 @@ fn find_path_server(bin: &str) -> Option<PathBuf> {
     if let Some(p) = find_bin_on_path(bin) {
         return Some(p);
     }
+    let home = || std::env::var(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).ok();
     if bin == "gopls" {
         // GOBIN → GOPATH/bin → ~/go/bin
         let exe = if cfg!(windows) { "gopls.exe" } else { "gopls" };
@@ -209,10 +250,19 @@ fn find_path_server(bin: &str) -> Option<PathBuf> {
                 return Some(p);
             }
         }
-        let home = std::env::var(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).ok();
         let gopath = std::env::var("GOPATH").ok().map(PathBuf::from);
-        for base in [gopath, home.map(|h| PathBuf::from(h).join("go"))].into_iter().flatten() {
+        for base in [gopath, home().map(|h| PathBuf::from(h).join("go"))].into_iter().flatten() {
             let p = base.join("bin").join(exe);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+    }
+    if bin == "csharp-ls" {
+        // dotnet global tools 고정 경로(~/.dotnet/tools) — PATH에 없을 수 있어 직접 확인.
+        let exe = if cfg!(windows) { "csharp-ls.exe" } else { "csharp-ls" };
+        if let Some(h) = home() {
+            let p = PathBuf::from(h).join(".dotnet").join("tools").join(exe);
             if p.is_file() {
                 return Some(p);
             }
@@ -358,6 +408,33 @@ fn native_spec(name: &str) -> Option<NativeSpec> {
                 kind,
             })
         }
+        "zls" => {
+            // win=zip(flat, zls.exe), mac·linux=tar.xz(flat, zls). stdio 기본(무인자).
+            #[cfg(target_arch = "x86_64")]
+            let arch = "x86_64";
+            #[cfg(target_arch = "aarch64")]
+            let arch = "aarch64";
+            #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+            let arch = "x86_64"; // 폴백
+            let (os, ext, kind, exe) = if cfg!(windows) {
+                ("windows", "zip", ArchiveKind::Zip, "zls.exe")
+            } else if cfg!(target_os = "macos") {
+                ("macos", "tar.xz", ArchiveKind::TarXz, "zls")
+            } else {
+                ("linux", "tar.xz", ArchiveKind::TarXz, "zls")
+            };
+            Some(NativeSpec {
+                name: "zls",
+                version: ZLS_VERSION,
+                url: format!(
+                    "https://github.com/zigtools/zls/releases/download/{ZLS_VERSION}/zls-{arch}-{os}.{ext}"
+                ),
+                sha256: ZLS_SHA256,
+                inner_dir: None, // flat
+                exe_rel: exe.to_string(),
+                kind,
+            })
+        }
         _ => None,
     }
 }
@@ -407,6 +484,14 @@ fn packages_for(lang: &str) -> Vec<(&'static str, Pkg)> {
                 },
             ),
         ],
+        "php" => vec![(
+            "intelephense",
+            Pkg {
+                version: INTELEPHENSE_VERSION,
+                integrity: "sha512-dqCH1YNCRlHGBLND+iUFjBJlGwM4pPimX2jm8AaP/6K2WZNM2K2+E8dOWCD3ZYMP2zC2ICBD9Soe2oxKtU9d9A==",
+                tarball: "https://registry.npmjs.org/intelephense/-/intelephense-1.18.5.tgz",
+            },
+        )],
         _ => vec![],
     }
 }
@@ -717,17 +802,37 @@ async fn ensure_native(
             std::fs::write(dest.join(&spec.exe_rel), &out)
                 .map_err(|e| io(format!("바이너리 쓰기 실패: {e}")))?;
         }
-        ArchiveKind::Zip | ArchiveKind::TarGz => {
-            if matches!(spec.kind, ArchiveKind::Zip) {
-                extract_zip(&bytes, &temp)?;
-            } else {
-                let mut buf = Vec::new();
-                flate2::read::GzDecoder::new(&bytes[..])
-                    .read_to_end(&mut buf)
-                    .map_err(|e| io(format!("gunzip 실패: {e}")))?;
-                tar::Archive::new(&buf[..])
-                    .unpack(&temp)
-                    .map_err(|e| io(format!("tar 해제 실패: {e}")))?;
+        ArchiveKind::Zip | ArchiveKind::TarGz | ArchiveKind::TarXz => {
+            match spec.kind {
+                ArchiveKind::Zip => extract_zip(&bytes, &temp)?,
+                ArchiveKind::TarGz => {
+                    let mut buf = Vec::new();
+                    flate2::read::GzDecoder::new(&bytes[..])
+                        .read_to_end(&mut buf)
+                        .map_err(|e| io(format!("gunzip 실패: {e}")))?;
+                    tar::Archive::new(&buf[..])
+                        .unpack(&temp)
+                        .map_err(|e| io(format!("tar 해제 실패: {e}")))?;
+                }
+                _ => {
+                    // TarXz(zls unix) — in-process xz 디코더가 없어 시스템 tar로 해제.
+                    // 유닉스 tar는 .tar.xz를 투명 처리한다(Windows는 zls가 zip 자산이라 미도달).
+                    let arc = lsp_root.join(format!(".tmp-{}-arc.tar.xz", spec.name));
+                    std::fs::write(&arc, &bytes)
+                        .map_err(|e| io(format!("아카이브 쓰기 실패: {e}")))?;
+                    let ok = std::process::Command::new("tar")
+                        .arg("-xf")
+                        .arg(&arc)
+                        .arg("-C")
+                        .arg(&temp)
+                        .status()
+                        .map(|s| s.success())
+                        .unwrap_or(false);
+                    std::fs::remove_file(&arc).ok();
+                    if !ok {
+                        return Err(io(format!("{name} tar.xz 해제 실패 — 시스템 tar 필요")));
+                    }
+                }
             }
             // inner_dir 있으면 그 하위를, 없으면 temp 전체를 dest로.
             let src = match &spec.inner_dir {

@@ -217,12 +217,13 @@ export function SettingsDialog() {
     try {
       const failed: string[] = [];
       let noNode = false;
-      for (const lang of ["py", "ts", "cpp", "rust", "lua"] as const) {
+      // 앱 내 다운로드 가능한 서버만(php=npm, zig=네이티브). ruby/csharp/java/go는 PATH 발견 — 툴체인 설치본 사용.
+      for (const lang of ["py", "ts", "php", "cpp", "rust", "lua", "zig"] as const) {
         const res = await ipc.lspEnsure(lang, (p) => {
           const ph = p.phase === "download" ? "받는 중" : p.phase === "done" ? "완료" : "실패";
           setLspStatus(`${p.name}: ${ph}${p.message ? ` (${p.message})` : ""}`);
         });
-        if (!res.nodeFound && (lang === "py" || lang === "ts")) noNode = true;
+        if (!res.nodeFound && (lang === "py" || lang === "ts" || lang === "php")) noNode = true;
         failed.push(...res.missing);
       }
       if (noNode) setLspStatus("⚠ Node.js를 찾지 못했습니다(파이썬·TS 서버에 필요)");

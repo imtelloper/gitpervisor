@@ -21,6 +21,7 @@ const EXT_LANG: Record<string, string> = {
   go: "go",
   rb: "ruby",
   php: "php",
+  zig: "zig",
   swift: "swift",
   json: "json",
   html: "html",

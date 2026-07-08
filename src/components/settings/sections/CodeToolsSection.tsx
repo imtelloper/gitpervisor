@@ -75,9 +75,10 @@ export function CodeToolsSection({
 
       <div className={`border-t border-edge pt-3 ${subHeading}`}>LSP (타입 인지 · 실험적)</div>
       <div className="text-[11px] text-fg-dim">
-        켠 프로젝트만 언어 서버(파이썬=basedpyright · TS/JS=typescript-language-server · C/C++=clangd ·
-        Rust=rust-analyzer · Lua=lua-language-server · Go=gopls)를 기동해 타입 인지 자동완성·정의·참조·
-        시그니처·진단을 제공합니다. 끄면 기존 휴리스틱으로 동작.
+        켠 프로젝트만 언어 서버를 기동해 타입 인지 자동완성·정의·참조·시그니처·진단을 제공합니다.
+        앱 내 다운로드: 파이썬(basedpyright)·TS/JS(typescript-language-server)·PHP(intelephense)·
+        C/C++(clangd)·Rust(rust-analyzer)·Lua(lua-language-server)·Zig(zls). PATH 발견(툴체인 설치본):
+        Go(gopls)·Ruby(ruby-lsp)·C#(csharp-ls)·Java(jdtls). 끄면 기존 휴리스틱으로 동작.
       </div>
       <Hl id="lspDownload" hl={hl}>
         <div className="flex items-center gap-2">

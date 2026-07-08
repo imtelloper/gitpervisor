@@ -492,6 +492,70 @@ monaco.languages.onLanguage("python", () =>
   monaco.languages.setMonarchTokensProvider("python", patchedPython),
 );
 
+// Zig — Monaco 내장 언어가 아니라 직접 등록(id + monarch + 설정). zls LSP가 이 언어 id로 붙는다.
+monaco.languages.register({ id: "zig", extensions: [".zig", ".zon"], aliases: ["Zig", "zig"] });
+monaco.languages.setLanguageConfiguration("zig", {
+  comments: { lineComment: "//" },
+  brackets: [
+    ["{", "}"],
+    ["[", "]"],
+    ["(", ")"],
+  ],
+  autoClosingPairs: [
+    { open: "{", close: "}" },
+    { open: "[", close: "]" },
+    { open: "(", close: ")" },
+    { open: '"', close: '"' },
+  ],
+  surroundingPairs: [
+    { open: "{", close: "}" },
+    { open: "[", close: "]" },
+    { open: "(", close: ")" },
+    { open: '"', close: '"' },
+  ],
+});
+monaco.languages.setMonarchTokensProvider("zig", {
+  defaultToken: "",
+  keywords: [
+    "const", "var", "fn", "pub", "return", "if", "else", "while", "for", "switch",
+    "defer", "errdefer", "try", "catch", "break", "continue", "comptime", "inline",
+    "struct", "enum", "union", "error", "test", "and", "or", "orelse", "unreachable",
+    "async", "await", "suspend", "resume", "nosuspend", "export", "extern", "packed",
+    "align", "threadlocal", "usingnamespace", "asm", "volatile", "allowzero", "noalias",
+    "anytype", "anyframe", "opaque", "linksection", "callconv", "null", "undefined",
+    "true", "false", "noreturn",
+  ],
+  typeKeywords: [
+    "void", "bool", "type", "anyerror", "comptime_int", "comptime_float", "isize", "usize",
+    "u8", "u16", "u32", "u64", "u128", "i8", "i16", "i32", "i64", "i128",
+    "f16", "f32", "f64", "f80", "f128", "c_int", "c_uint", "c_long", "c_char",
+  ],
+  tokenizer: {
+    root: [
+      [/@[a-zA-Z_]\w*/, "keyword.builtin"], // @import, @This 등
+      [
+        /[a-zA-Z_]\w*/,
+        { cases: { "@keywords": "keyword", "@typeKeywords": "type", "@default": "identifier" } },
+      ],
+      [/\/\/.*$/, "comment"],
+      [/\\\\.*$/, "string"], // 멀티라인 문자열(\\로 시작하는 줄)
+      [/"/, { token: "string.quote", next: "@string" }],
+      [/'(\\.|[^'\\])'/, "string"],
+      [/0[xX][0-9a-fA-F_]+/, "number.hex"],
+      [/0[bB][01_]+/, "number.binary"],
+      [/0[oO][0-7_]+/, "number.octal"],
+      [/\d[\d_]*\.?[\d_]*([eE][-+]?\d+)?/, "number"],
+      [/[{}()[\]]/, "@brackets"],
+      [/[-+*/%=<>!&|^~?:.]+/, "operator"],
+    ],
+    string: [
+      [/[^"\\]+/, "string"],
+      [/\\./, "string.escape"],
+      [/"/, { token: "string.quote", next: "@pop" }],
+    ],
+  },
+});
+
 // E2E·디버그용 — dev 빌드에서만 monaco 인스턴스를 노출한다(CDP 진단·프론트 e2e가
 // 에디터/모델/액션을 직접 구동). release에는 포함되지 않는다(main.tsx __gpv 패턴).
 if (import.meta.env.DEV) {
