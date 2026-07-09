@@ -838,6 +838,35 @@ export function useSyncOp(projectId: string, op: SyncOp) {
   });
 }
 
+/**
+ * 컨텍스트 메뉴용 — 임의 projectId에 pull/push. useSyncOp은 projectId에 묶인 훅이라 우클릭 메뉴의
+ * 동적 대상(선택 프로젝트가 아닐 수 있음)엔 못 쓴다. 호출 시점에 projectId를 받아 동일 인프라
+ * (ops 스토어 진행상태·완료 토스트·레포 데이터 무효화)를 재사용한다.
+ */
+export function useProjectGitOps() {
+  const qc = useQueryClient();
+  const run = async (projectId: string, op: SyncOp, setUpstream = false) => {
+    const ops = useOps.getState();
+    if (ops.running[projectId]) return; // 이미 진행 중이면 무시(중복 방지)
+    ops.start(projectId, op);
+    try {
+      if (op === "push") await ipc.push(projectId, setUpstream);
+      else if (op === "pull") await ipc.pull(projectId);
+      else await ipc.fetch(projectId);
+      ops.finish(projectId);
+      useUi.getState().pushToast("success", `${op} 완료`);
+    } catch (e) {
+      ops.finish(projectId);
+      useUi.getState().pushToast("error", errorMessage(e));
+    }
+    invalidateRepoData(qc);
+  };
+  return {
+    pull: (projectId: string) => void run(projectId, "pull"),
+    push: (projectId: string, setUpstream: boolean) => void run(projectId, "push", setUpstream),
+  };
+}
+
 /** Push 진입점: detached 차단, 업스트림 없으면 -u 확인 다이얼로그 (설계 §10) */
 export function usePushFlow(projectId: string) {
   const { data: status } = useStatus(projectId);

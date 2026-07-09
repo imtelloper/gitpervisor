@@ -41,5 +41,8 @@ export function usePanelWidth(
     window.addEventListener("mouseup", onUp);
   };
 
-  return { width, startResize };
+  /** 폭을 특정 px로 설정(min/max 클램프) — 핸들 더블클릭 자동맞춤 등에 사용. */
+  const resizeTo = (px: number) => setWidth(Math.min(max, Math.max(min, Math.round(px))));
+
+  return { width, startResize, resizeTo };
 }

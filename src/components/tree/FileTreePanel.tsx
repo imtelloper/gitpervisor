@@ -164,6 +164,7 @@ function FileRow({
         openMenu({ x: e.clientX, y: e.clientY, path, name, isDir: false });
       }}
       title={path}
+      data-tree-row
       style={{ paddingLeft: depth * INDENT + 8 }}
       className={`flex cursor-pointer items-center gap-1.5 whitespace-nowrap py-0.5 pr-3 ${
         selected ? "bg-selection" : "hover:bg-raised"
@@ -220,6 +221,7 @@ function TreeNode({
           });
         }}
         title={path}
+        data-tree-row
         style={{ paddingLeft: depth * INDENT + 8 }}
         className={`flex cursor-pointer items-center gap-1.5 whitespace-nowrap py-0.5 pr-3 hover:bg-raised ${
           entry.isIgnored ? "italic text-fg-dim" : ""
@@ -360,7 +362,7 @@ function validateName(v: string): string | null {
 
 /** 선택 프로젝트의 전체 파일 트리 (지연 로딩). 파일 클릭 → 중앙 뷰어에 내용/diff. */
 export function FileTreePanel({ projectId }: { projectId: string }) {
-  const { width, startResize } = usePanelWidth("gp:filetree-width", 260, 180, 520);
+  const { width, startResize, resizeTo } = usePanelWidth("gp:filetree-width", 260, 180, 520);
   const { data: status } = useStatus(projectId);
   const { data: projects } = useProjects();
   const pushToast = useUi((s) => s.pushToast);
@@ -391,6 +393,26 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
   // Shift 범위 선택의 기준(앵커) 파일 경로 + 트리 컨테이너 ref(DOM 순서로 범위 계산).
   const anchorRef = useRef<string | null>(null);
   const treeRef = useRef<HTMLDivElement | null>(null);
+
+  // 핸들 더블클릭 — 현재 펼쳐진 행들의 최장 자연 폭에 맞춰 패널 폭 자동 조절(grow/shrink 모두).
+  // 행은 whitespace-nowrap(잘림 없음)이라 각 행 이름 span의 자연 우측 끝을 측정한다(스크롤 위치 보정).
+  const fitToContent = () => {
+    const cont = treeRef.current;
+    if (!cont) return;
+    const rows = cont.querySelectorAll<HTMLElement>("[data-tree-row]");
+    if (!rows.length) return;
+    const contLeft = cont.getBoundingClientRect().left;
+    const scrollLeft = cont.scrollLeft;
+    let maxRight = 0;
+    for (const row of rows) {
+      const last = row.lastElementChild; // 이름 span(파일·폴더 공통 마지막 자식)
+      if (!last) continue;
+      const right = last.getBoundingClientRect().right - contLeft + scrollLeft;
+      if (right > maxRight) maxRight = right;
+    }
+    // pr-3(12px) + 여유(12px) + 세로 스크롤바(약 12px). resizeTo가 min/max로 클램프.
+    if (maxRight > 0) resizeTo(maxRight + 36);
+  };
   useEffect(() => {
     setTreeSel(new Set());
     anchorRef.current = null;
@@ -742,7 +764,7 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
           </TreeRowCtx.Provider>
         </TreeStatusCtx.Provider>
       </div>
-      <ResizeHandle onMouseDown={startResize} />
+      <ResizeHandle onMouseDown={startResize} onDoubleClick={fitToContent} />
 
       {menu && (
         <div

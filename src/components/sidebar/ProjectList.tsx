@@ -2,6 +2,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import {
   ArrowDownUp,
   Copy,
+  Download,
   FolderOpen,
   HardDrive,
   Plus,
@@ -9,6 +10,7 @@ import {
   StickyNote,
   Terminal,
   Trash2,
+  Upload,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -19,6 +21,7 @@ import {
   useAddProject,
   useProjects,
   useRefreshProjectSizes,
+  useProjectGitOps,
   useRemoveProject,
   useReorderProjects,
   useStatuses,
@@ -70,6 +73,11 @@ export function ProjectList() {
   const sortByChanges = useUi((s) => s.projectSortByChanges);
   const toggleProjectSort = useUi((s) => s.toggleProjectSort);
   const { width, startResize } = usePanelWidth("gp:projects-width", 240, 170, 440);
+  const gitOps = useProjectGitOps();
+  const statusById = useMemo(
+    () => new Map((statuses ?? []).map((s) => [s.projectId, s])),
+    [statuses],
+  );
 
   // 터미널의 Claude Code 작업중/완료 상태를 주기 스캔(1회 마운트)
   useAgentScanner();
@@ -286,6 +294,32 @@ export function ProjectList() {
     setMenu(null);
   }
 
+  function handlePull(project: Project) {
+    setMenu(null);
+    gitOps.pull(project.id);
+  }
+
+  // usePushFlow와 동일 로직(detached 차단, 업스트림 없으면 -u 확인) — 메뉴는 임의 프로젝트라
+  // 배치 status에서 조회. status를 모르면 그냥 시도(백엔드가 검증).
+  function handlePush(project: Project) {
+    setMenu(null);
+    const status = statusById.get(project.id);
+    if (status && !status.branch) {
+      useUi.getState().pushToast("error", "detached HEAD 상태에서는 푸시할 수 없습니다");
+      return;
+    }
+    if (status && !status.upstream) {
+      useUi.getState().askConfirm({
+        title: "업스트림 설정",
+        message: `'${status.branch}' 브랜치에 업스트림이 없습니다. origin에 브랜치를 만들고 푸시할까요?`,
+        confirmLabel: "푸시",
+        onConfirm: () => gitOps.push(project.id, true),
+      });
+      return;
+    }
+    gitOps.push(project.id, false);
+  }
+
   return (
     <aside
       style={{ width }}
@@ -353,10 +387,21 @@ export function ProjectList() {
           className="fixed z-50 min-w-44 rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl"
           style={{
             left: Math.min(menu.x, window.innerWidth - 190),
-            top: Math.min(menu.y, window.innerHeight - 130),
+            top: Math.min(menu.y, window.innerHeight - 300),
           }}
           onClick={(e) => e.stopPropagation()}
         >
+          <MenuItem
+            icon={Download}
+            label="git pull"
+            onClick={() => handlePull(menu.project)}
+          />
+          <MenuItem
+            icon={Upload}
+            label="git push"
+            onClick={() => handlePush(menu.project)}
+          />
+          <div className="my-1 border-t border-edge" />
           <MenuItem
             icon={StickyNote}
             label="메모"

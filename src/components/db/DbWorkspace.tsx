@@ -29,14 +29,13 @@ function QueryEditor() {
 
   return (
     <div className="flex h-[210px] shrink-0 flex-col border-b border-edge">
-      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-edge px-3">
-        <span className="text-xs text-fg-dim">
+      <div className="flex h-9 shrink-0 items-center gap-2 overflow-hidden border-b border-edge px-3">
+        <span className="min-w-0 flex-1 truncate text-xs text-fg-dim">
           {activeDatabase
             ? `${dialect} · ${activeDatabase}`
             : "왼쪽에서 DB를 선택하세요"}
         </span>
-        <div className="flex-1" />
-        <label className="flex items-center gap-1 text-xs text-fg-dim">
+        <label className="flex shrink-0 items-center gap-1 text-xs text-fg-dim">
           행
           <select
             value={limit}
@@ -56,7 +55,7 @@ function QueryEditor() {
             onClick={() => void runExplain()}
             disabled={running || !activeDatabase}
             title="예상 실행 계획 (쿼리 미실행)"
-            className="rounded border border-edge px-2 py-1 text-xs text-fg-muted hover:bg-raised hover:text-fg disabled:opacity-50"
+            className="shrink-0 rounded border border-edge px-2 py-1 text-xs text-fg-muted hover:bg-raised hover:text-fg disabled:opacity-50"
           >
             실행 계획
           </button>
@@ -64,10 +63,11 @@ function QueryEditor() {
         <button
           onClick={() => void runQuery()}
           disabled={running || !activeDatabase}
-          className="flex items-center gap-1.5 rounded bg-accent px-3 py-1 text-xs font-medium text-on-accent hover:bg-accent-hover disabled:opacity-50"
+          title="쿼리 실행 (Ctrl+Enter)"
+          className="flex shrink-0 items-center gap-1.5 rounded bg-accent px-3 py-1 text-xs font-medium text-on-accent hover:bg-accent-hover disabled:opacity-50"
         >
-          <Play size={12} /> 실행{" "}
-          <span className="font-mono opacity-70">Ctrl+↵</span>
+          <Play size={12} /> 실행
+          <span className="hidden font-mono opacity-70 min-[520px]:inline">Ctrl+↵</span>
         </button>
       </div>
       <div className="min-h-0 flex-1">
@@ -621,13 +621,12 @@ function PlanView() {
   const total = nodes.reduce((m, n) => Math.max(m, parseFloat(n.cost) || 0), 0);
   return (
     <div className="flex h-full flex-col">
-      <div className="flex h-8 shrink-0 items-center gap-2 border-b border-edge px-3 text-xs text-fg-dim">
-        <span>예상 실행 계획</span>
-        <span className="text-[11px]">데이터 흐름: 오른쪽 → 왼쪽</span>
-        <div className="flex-1" />
+      <div className="flex h-8 shrink-0 items-center gap-2 overflow-hidden border-b border-edge px-3 text-xs text-fg-dim">
+        <span className="shrink-0">예상 실행 계획</span>
+        <span className="min-w-0 flex-1 truncate text-[11px]">데이터 흐름: 오른쪽 → 왼쪽</span>
         <button
           onClick={closePlan}
-          className="rounded px-2 py-0.5 hover:bg-raised hover:text-fg"
+          className="shrink-0 rounded px-2 py-0.5 hover:bg-raised hover:text-fg"
         >
           결과로 ✕
         </button>
