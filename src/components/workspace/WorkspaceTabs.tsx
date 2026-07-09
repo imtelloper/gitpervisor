@@ -71,9 +71,17 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
   const { data: settings } = useSettings();
   const fontSize = settings?.terminalFontSize ?? 13;
 
-  // 파일을 선택하면(어디서든) Viewer 탭으로 자동 전환 — "쉽게쉽게" 전환(설계 §16.6)
+  // 파일을 열면(어디서든) Viewer 탭으로 자동 전환 — "쉽게쉽게" 전환(설계 §16.6). 단, 프로젝트
+  // 전환으로 selectedDiff가 "복원"된 경우엔 그 프로젝트의 복원된 워크스페이스 뷰(terminals.activeTab —
+  // 예: db/terminal)를 존중해 강제로 viewer로 덮어쓰지 않는다.
+  const prevProjRef = useRef<string | null>(null); // null = 최초 마운트 전
   useEffect(() => {
-    if (selectedDiff) setActiveTab(projectId, "viewer");
+    const first = prevProjRef.current === null;
+    const switched = !first && prevProjRef.current !== projectId;
+    prevProjRef.current = projectId;
+    // 최초 마운트(재시작 복원)·프로젝트 전환(복원)에서는 강제 전환 안 함 — 복원된 뷰 존중.
+    // 같은 프로젝트에서 파일을 "새로 열" 때만 viewer로 전환.
+    if (selectedDiff && !first && !switched) setActiveTab(projectId, "viewer");
   }, [selectedDiff, projectId, setActiveTab]);
 
   return (

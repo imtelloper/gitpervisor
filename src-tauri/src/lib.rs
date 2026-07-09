@@ -275,6 +275,7 @@ pub fn run() {
             commands::check_git,
             commands::list_projects,
             commands::add_project,
+            commands::create_project_folder,
             commands::remove_project,
             commands::reorder_projects,
             commands::get_statuses,

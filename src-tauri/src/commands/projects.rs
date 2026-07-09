@@ -148,6 +148,55 @@ pub async fn add_project(
     Ok(project)
 }
 
+/// 임의의 부모 디렉토리 아래에 새 프로젝트 폴더를 만든다(옵션으로 git init). 절대경로를 돌려주며,
+/// 프론트가 이어서 add_project로 등록한다(등록·중복·watcher는 add_project가 처리 — DRY).
+#[tauri::command]
+pub async fn create_project_folder(
+    parent_dir: String,
+    name: String,
+    git_init: bool,
+) -> Result<String, IpcError> {
+    // 1) 이름 검증 — 빈 이름·경로 구분자·. / .. 거부(프론트 validateName와 동형).
+    let trimmed = name.trim();
+    if trimmed.is_empty()
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed == "."
+        || trimmed == ".."
+        || trimmed.contains("..")
+    {
+        return Err(IpcError::new(ErrorCode::Io, "잘못된 폴더 이름입니다"));
+    }
+    // 2) 부모 디렉토리 존재 확인.
+    let parent = PathBuf::from(&parent_dir);
+    if !parent.is_dir() {
+        return Err(IpcError::new(ErrorCode::NotFound, "부모 폴더를 찾을 수 없습니다"));
+    }
+    let dir = parent.join(trimmed);
+    // 3) 폴더 생성(create_new 시맨틱 — 이미 있으면 AlreadyExists).
+    match tokio::fs::create_dir(&dir).await {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(IpcError::new(
+                ErrorCode::AlreadyExists,
+                "같은 이름의 폴더가 이미 있습니다",
+            ));
+        }
+        Err(e) => return Err(IpcError::new(ErrorCode::Io, format!("폴더 생성 실패: {e}"))),
+    }
+    // 4) 선택적 git init.
+    if git_init {
+        let out = runner::run_git(Some(&dir), &["init"], runner::ACTION_TIMEOUT_SECS).await?;
+        if out.code != 0 {
+            return Err(IpcError::git("git init 실패".to_string(), out.stderr));
+        }
+    }
+    // 5) 절대경로 반환(프론트가 add_project로 넘김).
+    let canonical = dunce::canonicalize(&dir)
+        .map_err(|e| IpcError::new(ErrorCode::Io, format!("경로 정규화 실패: {e}")))?;
+    Ok(canonical.display().to_string())
+}
+
 /// 사이드바 드래그로 정한 새 순서를 영속화한다 — 주어진 순서대로 order를 0..n 재할당.
 /// 목록에 없는 id는 무시하고, ordered_ids에 빠진 프로젝트는 뒤로 보낸다(기존 상대순서 유지).
 #[tauri::command]

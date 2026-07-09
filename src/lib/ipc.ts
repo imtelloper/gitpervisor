@@ -691,6 +691,9 @@ export const ipc = {
   checkGit: () => call<GitCheck>("check_git"),
   listProjects: () => call<Project[]>("list_projects"),
   addProject: (path: string) => call<Project>("add_project", { path }),
+  /** 부모 폴더 아래 새 프로젝트 폴더 생성(옵션 git init) → 절대경로 반환(이어서 addProject). */
+  createProjectFolder: (parentDir: string, name: string, gitInit: boolean) =>
+    call<string>("create_project_folder", { parentDir, name, gitInit }),
   removeProject: (id: string) => call<void>("remove_project", { id }),
   // 사이드바 드래그 순서 영속화 — 새 id 순서대로 order 재할당. 재시도 금지.
   reorderProjects: (orderedIds: string[]) =>

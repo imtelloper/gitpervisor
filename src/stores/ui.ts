@@ -1,3 +1,4 @@
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { create } from "zustand";
 
 import type { DiffTarget } from "../lib/ipc";
@@ -65,6 +66,11 @@ interface UiState {
    * 점프해도 이전 파일이 탭으로 남아 되돌아갈 수 있다. 프로젝트별로 필터해 표시(outerId).
    */
   viewerTabs: ViewerFileTab[];
+  /**
+   * 프로젝트별 "마지막 활성 파일" — 프로젝트를 오갈 때 보던 파일로 복원한다(selectedDiff는
+   * 전역 단일값이라 전환 시 리셋되므로). selectDiff에서 갱신, selectProject에서 복원.
+   */
+  activeDiffByProject: Record<string, { target: DiffTarget; repoId: string | null }>;
   /** 하단 Log 패널 펼침 여부 */
   logOpen: boolean;
   /** 하단 Log 패널 펼침 높이(px) — 드래그로 조절, localStorage 영속 */
@@ -103,6 +109,8 @@ interface UiState {
   selectDiff: (target: DiffTarget | null, repoId?: string | null) => void;
   /** 뷰어 파일 탭 닫기 — 활성 탭이었으면 이웃 탭으로 전환(없으면 선택 해제). */
   closeViewerTab: (key: string) => void;
+  /** 프로젝트 제거 시 그 프로젝트의 뷰어 탭·활성 파일 정리(고아 방지). */
+  closeProjectViewerTabs: (projectId: string) => void;
   toggleLog: () => void;
   setLogHeight: (h: number) => void;
   setAggregateOpen: (open: boolean) => void;
@@ -136,12 +144,43 @@ interface UiState {
 
 let toastSeq = 0;
 
+// 뷰어 탭 + 프로젝트별 활성 파일 영속(재시작 후 복원). 프로젝트 전환 시엔 store가 그대로 유지되고,
+// 재시작 시 이 loader가 localStorage에서 복원한다. worktree/index 대상은 재시작 후 stale일 수 있으나
+// DiffViewer가 없는/안 바뀐 파일을 무해하게 처리한다(사용자가 닫으면 됨).
+const VIEWER_KEY = "gp:viewer-tabs";
+function loadPersistedViewer(): {
+  viewerTabs: ViewerFileTab[];
+  activeDiffByProject: UiState["activeDiffByProject"];
+} {
+  try {
+    const raw = localStorage.getItem(VIEWER_KEY);
+    const p = raw ? JSON.parse(raw) : null;
+    if (!p || typeof p !== "object") return { viewerTabs: [], activeDiffByProject: {} };
+    return {
+      viewerTabs: Array.isArray(p.viewerTabs) ? p.viewerTabs : [],
+      activeDiffByProject:
+        p.activeDiffByProject && typeof p.activeDiffByProject === "object"
+          ? p.activeDiffByProject
+          : {},
+    };
+  } catch {
+    return { viewerTabs: [], activeDiffByProject: {} };
+  }
+}
+const persistedViewer = loadPersistedViewer();
+// 재시작 시 초기 선택 프로젝트의 마지막 활성 파일도 복원(전환 복원과 동일 경험).
+const initialProjectId = localStorage.getItem("gp:selected-project");
+const initialActive = initialProjectId
+  ? persistedViewer.activeDiffByProject[initialProjectId]
+  : null;
+
 export const useUi = create<UiState>((set) => ({
   // 마지막 선택 프로젝트를 복원한다 — 재시작 시 그 프로젝트(+복구된 터미널 탭)로 바로 진입
-  selectedProjectId: localStorage.getItem("gp:selected-project"),
-  selectedDiff: null,
-  selectedDiffRepoId: null,
-  viewerTabs: [],
+  selectedProjectId: initialProjectId,
+  selectedDiff: initialActive?.target ?? null,
+  selectedDiffRepoId: initialActive?.repoId ?? null,
+  viewerTabs: persistedViewer.viewerTabs,
+  activeDiffByProject: persistedViewer.activeDiffByProject,
   logOpen: false,
   logHeight: (() => {
     const raw = Number(localStorage.getItem("gp:log-height"));
@@ -179,14 +218,19 @@ export const useUi = create<UiState>((set) => ({
   selectProject: (id) => {
     if (id) localStorage.setItem("gp:selected-project", id);
     else localStorage.removeItem("gp:selected-project");
-    set({
-      selectedProjectId: id,
-      selectedDiff: null,
-      selectedDiffRepoId: null,
-      selectedCommitSha: null,
-      memoOpen: false,
-      // 이미지 편집기는 프로젝트별 상대 경로라 프로젝트가 바뀌면 닫는다(엉뚱한 프로젝트에 쓰기 방지).
-      imageEditorPath: null,
+    set((s) => {
+      // 이 프로젝트에서 마지막에 보던 파일로 복원(없으면 null). 전역 selectedDiff가 프로젝트별로
+      // 기억되는 효과. 워크스페이스 뷰(viewer/db/terminal)는 terminals.activeTab이 별도로 복원.
+      const restored = id ? s.activeDiffByProject[id] : null;
+      return {
+        selectedProjectId: id,
+        selectedDiff: restored?.target ?? null,
+        selectedDiffRepoId: restored?.repoId ?? null,
+        selectedCommitSha: null,
+        memoOpen: false,
+        // 이미지 편집기는 프로젝트별 상대 경로라 프로젝트가 바뀌면 닫는다(엉뚱한 프로젝트에 쓰기 방지).
+        imageEditorPath: null,
+      };
     });
   },
   // repoId: 임베디드 저장소 파일이면 그 저장소의 합성 id, 아니면 생략(outer로 라우팅).
@@ -204,6 +248,11 @@ export const useUi = create<UiState>((set) => ({
       return {
         selectedDiff: target,
         selectedDiffRepoId: repoId ?? null,
+        // 프로젝트별 "마지막 활성 파일" 갱신 — 전환 후 복귀 시 이 파일로 돌아온다.
+        activeDiffByProject: {
+          ...s.activeDiffByProject,
+          [outerId]: { target, repoId: repoId ?? null },
+        },
         viewerTabs:
           idx >= 0
             ? s.viewerTabs.map((t, i) => (i === idx ? tab : t))
@@ -225,10 +274,24 @@ export const useUi = create<UiState>((set) => ({
       const sibIdx = sibsBefore.findIndex((t) => t.key === key);
       const sibs = sibsBefore.filter((t) => t.key !== key);
       const next = sibs[Math.min(sibIdx, sibs.length - 1)] ?? null;
+      // 프로젝트별 활성 파일도 이웃 탭으로(마지막 탭이면 제거) — 복원 값이 닫힌 탭을 가리키지 않게.
+      const activeDiffByProject = { ...s.activeDiffByProject };
+      if (next) activeDiffByProject[closing.outerId] = { target: next.target, repoId: next.repoId };
+      else delete activeDiffByProject[closing.outerId];
       return {
         viewerTabs,
         selectedDiff: next?.target ?? null,
         selectedDiffRepoId: next?.repoId ?? null,
+        activeDiffByProject,
+      };
+    }),
+  closeProjectViewerTabs: (projectId) =>
+    set((s) => {
+      const activeDiffByProject = { ...s.activeDiffByProject };
+      delete activeDiffByProject[projectId];
+      return {
+        viewerTabs: s.viewerTabs.filter((t) => t.outerId !== projectId),
+        activeDiffByProject,
       };
     }),
   toggleLog: () => set((s) => ({ logOpen: !s.logOpen })),
@@ -282,3 +345,30 @@ export const useUi = create<UiState>((set) => ({
   openImageEditor: (path) => set({ imageEditorPath: path }),
   closeImageEditor: () => set({ imageEditorPath: null }),
 }));
+
+// 뷰어 탭 + 프로젝트별 활성 파일 영속 — 두 슬라이스가 바뀔 때만 기록(참조 비교로 잦은 UI 변화 무시).
+// 플로팅 창은 뷰어가 없어 스킵(메인 창 상태를 덮어쓰지 않게).
+const IS_FLOAT_UI = (() => {
+  try {
+    return getCurrentWebviewWindow().label.startsWith("float-");
+  } catch {
+    return false;
+  }
+})();
+if (!IS_FLOAT_UI) {
+  let prevTabs = persistedViewer.viewerTabs;
+  let prevActive = persistedViewer.activeDiffByProject;
+  useUi.subscribe((s) => {
+    if (s.viewerTabs === prevTabs && s.activeDiffByProject === prevActive) return;
+    prevTabs = s.viewerTabs;
+    prevActive = s.activeDiffByProject;
+    try {
+      localStorage.setItem(
+        VIEWER_KEY,
+        JSON.stringify({ viewerTabs: s.viewerTabs, activeDiffByProject: s.activeDiffByProject }),
+      );
+    } catch {
+      /* localStorage 불가 환경 무시 */
+    }
+  });
+}

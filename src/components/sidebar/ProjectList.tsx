@@ -4,6 +4,7 @@ import {
   Copy,
   Download,
   FolderOpen,
+  FolderPlus,
   HardDrive,
   Plus,
   RefreshCw,
@@ -28,6 +29,7 @@ import {
 } from "../../queries";
 import { useAgentScanner } from "../../stores/agentActivity";
 import { useTerminals } from "../../stores/terminals";
+import { useTreeState } from "../../stores/treeState";
 import { useUi } from "../../stores/ui";
 import { ResizeHandle } from "../common/ResizeHandle";
 import { ProjectItem } from "./ProjectItem";
@@ -237,6 +239,35 @@ export function ProjectList() {
     }
   }
 
+  // 새 프로젝트 폴더 만들기 — 위치 선택 → 이름 입력 → 폴더 생성 + git init → 기존 addProject로 등록.
+  async function handleCreateFolder() {
+    const parent = await open({
+      directory: true,
+      multiple: false,
+      title: "새 프로젝트를 만들 위치 선택",
+    });
+    if (!parent || Array.isArray(parent)) return;
+    useUi.getState().askPrompt({
+      title: "새 프로젝트 폴더",
+      label: `${parent} 안에 만듭니다 (git init 포함)`,
+      placeholder: "폴더 이름",
+      confirmLabel: "만들기",
+      validate: (v) => {
+        const t = v.trim();
+        if (!t) return "이름을 입력하세요";
+        if (/[\\/]/.test(t) || t.includes("..") || t === "." || t === "..")
+          return "폴더 이름에 경로 구분자나 '..'는 쓸 수 없습니다";
+        return null;
+      },
+      onConfirm: (name) => {
+        void ipc
+          .createProjectFolder(parent, name.trim(), true)
+          .then((path) => addProject.mutateAsync(path))
+          .catch((e) => useUi.getState().pushToast("error", errorMessage(e)));
+      },
+    });
+  }
+
   // 안정 참조 콜백 — ProjectItem(memo)이 부모 로컬 상태 변화에 재렌더되지 않게 한다.
   // removeProject(useMutation 결과)는 매 렌더 새 객체라 dep로 쓰면 콜백이 매번 새로 생겨
   // memo가 무력화된다 — v5에서 안정 참조인 .mutate만 dep로 잡는다.
@@ -245,6 +276,9 @@ export function ProjectList() {
     (id: string) => {
       // 제거되는 프로젝트의 열린 터미널 PTY를 정리한다 (설계 §16.8)
       useTerminals.getState().closeProjectTerminals(id);
+      // 뷰어 탭·활성 파일·트리 펼침 상태도 정리(고아 방지).
+      useUi.getState().closeProjectViewerTabs(id);
+      useTreeState.getState().clearProject(id);
       removeMutate(id, {
         onSuccess: () => {
           if (useUi.getState().selectedProjectId === id) selectProject(null);
@@ -373,14 +407,25 @@ export function ProjectList() {
         )}
       </div>
 
-      <button
-        onClick={handleAdd}
-        disabled={addProject.isPending}
-        className="flex items-center gap-2 border-t border-edge px-3 py-2.5 text-[13px] text-fg-muted hover:bg-raised hover:text-fg disabled:opacity-50"
-      >
-        <Plus size={14} />
-        {addProject.isPending ? "추가하는 중…" : "프로젝트 추가"}
-      </button>
+      <div className="flex flex-col border-t border-edge">
+        <button
+          onClick={handleAdd}
+          disabled={addProject.isPending}
+          title="기존 git 레포 폴더를 프로젝트로 추가"
+          className="flex items-center gap-2 px-3 py-2 text-[13px] text-fg-muted hover:bg-raised hover:text-fg disabled:opacity-50"
+        >
+          <Plus size={14} />
+          {addProject.isPending ? "추가하는 중…" : "프로젝트 추가"}
+        </button>
+        <button
+          onClick={() => void handleCreateFolder()}
+          title="새 폴더를 만들고 git init 후 프로젝트로 등록"
+          className="flex items-center gap-2 border-t border-edge px-3 py-2 text-[13px] text-fg-muted hover:bg-raised hover:text-fg"
+        >
+          <FolderPlus size={14} />
+          새 프로젝트 폴더 만들기
+        </button>
+      </div>
 
       {menu && (
         <div

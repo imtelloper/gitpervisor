@@ -44,6 +44,7 @@ import {
   useSaveImage,
   useStatus,
 } from "../../queries";
+import { useTreeState } from "../../stores/treeState";
 import { useUi } from "../../stores/ui";
 import { ResizeHandle } from "../common/ResizeHandle";
 
@@ -188,7 +189,9 @@ function TreeNode({
   path: string;
   depth: number;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  // 펼침 상태는 프로젝트별 영속 스토어에서(전환·재시작 후 복원). 로컬 state였다면 리마운트로 소실.
+  const expanded = useTreeState((s) => (s.expanded[projectId] ?? []).includes(path));
+  const toggleFolder = useTreeState((s) => s.toggle);
   const ts = useContext(TreeStatusCtx);
   const openMenu = useContext(TreeMenuCtx);
 
@@ -208,7 +211,7 @@ function TreeNode({
   return (
     <>
       <div
-        onClick={() => setExpanded((e) => !e)}
+        onClick={() => toggleFolder(projectId, path)}
         onContextMenu={(e) => {
           e.preventDefault();
           e.stopPropagation();
