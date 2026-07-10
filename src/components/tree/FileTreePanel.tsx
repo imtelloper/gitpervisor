@@ -10,6 +10,7 @@ import {
   Trash2,
   Type,
 } from "lucide-react";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import {
   createContext,
   useCallback,
@@ -441,8 +442,7 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
     projectPath ? `${projectPath}${sep}${toOsPath(rel)}` : toOsPath(rel);
 
   function copy(text: string, ok: string) {
-    void navigator.clipboard
-      .writeText(text)
+    void writeText(text)
       .then(() => pushToast("success", ok))
       .catch(() => pushToast("error", "복사에 실패했습니다"));
     setMenu(null);

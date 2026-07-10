@@ -1,3 +1,4 @@
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { GitCommitHorizontal } from "lucide-react";
 import { useEffect, useState } from "react";
 
@@ -16,8 +17,7 @@ interface CommitMenu {
 
 function copyText(text: string, ok: string) {
   const pushToast = useUi.getState().pushToast;
-  void navigator.clipboard
-    .writeText(text)
+  void writeText(text)
     .then(() => pushToast("success", ok))
     .catch(() => pushToast("error", "복사에 실패했습니다"));
 }

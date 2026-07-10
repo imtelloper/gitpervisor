@@ -200,6 +200,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
             // 크래시 로그 경로 확정(패닉 훅이 여기에 남긴다) + 시작 로그.
             if let Ok(dir) = app.path().app_log_dir() {

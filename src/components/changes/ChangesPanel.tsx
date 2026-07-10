@@ -9,6 +9,7 @@ import {
   Undo2,
   X,
 } from "lucide-react";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { useEffect, useRef, useState } from "react";
 
 import type { DiffTarget, FileChange, RepoStatus } from "../../lib/ipc";
@@ -420,8 +421,7 @@ function RepoChanges({
   };
 
   const copyText = (text: string, ok: string) => {
-    void navigator.clipboard
-      .writeText(text)
+    void writeText(text)
       .then(() => pushToast("success", ok))
       .catch(() => pushToast("error", "복사에 실패했습니다"));
     setMenu(null);

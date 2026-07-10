@@ -13,6 +13,8 @@
     "core:window:allow-close",
     "core:window:allow-set-focus",
     "core:webview:allow-create-webview-window",
+    "clipboard-manager:allow-write-text",
+    "clipboard-manager:allow-read-text",
     "dialog:default",
     "store:default",
     "notification:default",

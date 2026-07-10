@@ -4,6 +4,7 @@ import type { FitAddon } from "@xterm/addon-fit";
 import type { Terminal } from "@xterm/xterm";
 
 import { useUi } from "../stores/ui";
+import { copyText, readClipboardText } from "./clipboard";
 
 // PTY 세션은 Rust가 수명의 단일 진실 — xterm 인스턴스/스크롤백은 dispose 전까지 살려둔다.
 // 탭/프로젝트 전환은 host(div)를 컨테이너에 붙였다 떼는 것뿐 (설계 §16.5).
@@ -107,13 +108,15 @@ export function fitTerminal(id: string) {
   }
 }
 
-/** 스마트 붙여넣기 — 백엔드가 클립보드를 판별(파일/이미지→경로, 그 외 텍스트)한 텍스트를 넣는다.
+/** 스마트 붙여넣기 — 백엔드(term_paste, 3플랫폼 실구현)가 클립보드를 판별(파일/이미지→경로,
+ *  그 외 텍스트)한 텍스트를 넣는다. 빈 값이면 플러그인 readText로 한 번 더 시도(보조 안전망).
  *  PTY에 직접 쓰지 않고 term.paste()를 경유한다: xterm이 개행 정규화(\n→\r)와 bracketed
  *  paste(ESC[200~) 래핑을 처리해, 멀티라인 붙여넣기가 셸에서 줄마다 즉시 실행되는 사고를 막는다
  *  (최종 전송은 어차피 onData → term_write 경로). */
 export async function pasteIntoTerminal(id: string) {
   try {
-    const text = await invoke<string>("term_paste");
+    let text = await invoke<string>("term_paste");
+    if (!text) text = await readClipboardText();
     const inst = getTerminal(id);
     if (text && inst) inst.term.paste(text);
     inst?.term.focus();
@@ -122,13 +125,13 @@ export async function pasteIntoTerminal(id: string) {
   }
 }
 
-/** 선택 영역을 클립보드로 복사. 실패는 무음이 아니라 토스트로 알린다 —
- *  WebKitGTK/WKWebView의 클립보드 쓰기는 사용자 제스처 조건이 붙어 조용히 거부될 수 있다. */
+/** 선택 영역을 클립보드로 복사 — 네이티브 플러그인 경로(WKWebView의 한글 MacRoman 깨짐 회피).
+ *  실패는 무음이 아니라 토스트로 알린다. */
 export function copyTerminalSelection(id: string) {
   const sel = registry.get(id)?.term.getSelection();
   if (sel)
-    void navigator.clipboard.writeText(sel).catch(() => {
-      useUi.getState().pushToast("error", "복사에 실패했습니다");
+    void copyText(sel).then((ok) => {
+      if (!ok) useUi.getState().pushToast("error", "복사에 실패했습니다");
     });
 }
 

@@ -1,3 +1,4 @@
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   ArrowDownUp,
@@ -310,8 +311,7 @@ export function ProjectList() {
   }
 
   function handleCopyPath(project: Project) {
-    void navigator.clipboard
-      .writeText(project.path)
+    void writeText(project.path)
       .then(() =>
         useUi.getState().pushToast("success", "프로젝트 경로를 복사했습니다"),
       )

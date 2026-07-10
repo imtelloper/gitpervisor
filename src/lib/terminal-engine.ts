@@ -7,6 +7,7 @@ import "@xterm/xterm/css/xterm.css";
 
 import { collectPanes, useTerminals } from "../stores/terminals";
 import { useUi } from "../stores/ui";
+import { copyText } from "./clipboard";
 import { isMod } from "./platform";
 import {
   ensureExitListener,
@@ -221,9 +222,10 @@ export function createTerminalImpl(opts: {
     if (e.ctrlKey && k === "c" && (e.shiftKey || term.hasSelection())) {
       const sel = term.getSelection();
       if (sel)
-        void navigator.clipboard.writeText(sel).then(
-          () => term.clearSelection(),
-          () => useUi.getState().pushToast("error", "복사에 실패했습니다"),
+        void copyText(sel).then((ok) =>
+          ok
+            ? term.clearSelection()
+            : useUi.getState().pushToast("error", "복사에 실패했습니다"),
         );
       e.preventDefault();
       return false;

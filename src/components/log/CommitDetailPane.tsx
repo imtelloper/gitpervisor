@@ -1,3 +1,4 @@
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { Copy } from "lucide-react";
 
 import { KIND_BADGE } from "../../lib/change-kind";
@@ -10,8 +11,7 @@ import { ResizeHandle } from "../common/ResizeHandle";
 /** 클립보드 복사 + 토스트 (커밋 메시지·해시). */
 function copyText(text: string, ok: string) {
   const pushToast = useUi.getState().pushToast;
-  void navigator.clipboard
-    .writeText(text)
+  void writeText(text)
     .then(() => pushToast("success", ok))
     .catch(() => pushToast("error", "복사에 실패했습니다"));
 }
