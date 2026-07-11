@@ -237,3 +237,35 @@ WebKitGTK의 **웹뷰 렌더러 프로세스(WebKitWebProcess)가 크래시**한
 
 - WebKitGTK(Linux)의 **WebGL/하드웨어 가속 렌더링은 GPU 드라이버 조합에 매우 취약**하다 — Chromium(WebView2)에서 멀쩡한 GPU 기능이 WebKitGTK에선 렌더러를 죽인다. GPU 가속 기능은 플랫폼별로 분기하라.
 - "메인은 살아있는데 화면만 까맣다" = 거의 항상 **웹뷰 렌더러 프로세스 크래시**. `pstree`로 WebKitWebProcess 생존 여부 + `/var/crash`를 먼저 본다.
+
+---
+
+## 6. Linux에서 터미널 붙여넣기가 완전히 안 된다 (macOS는 정상)
+
+### 6.1 증상
+
+우분투에서 임베디드 터미널에 붙여넣기가 **어떤 방법으로도** 안 된다 — Ctrl+V, Ctrl+Shift+V, 우클릭 메뉴의 '붙여넣기' 전부 무반응(에러도 토스트도 없음). macOS에서는 Cmd+V가 정상 동작. 유일하게 `Shift+Insert`만 동작했다(진단 단서 — 아래 참고).
+
+### 6.2 근본 원인 — Windows 전용 `term_paste` + 전 경로 인터셉트
+
+두 결함의 합작. 어느 한쪽만이었으면 부분적으로라도 동작했다.
+
+1. **백엔드가 Windows 전용**: 스마트 붙여넣기(`term_paste`)가 `#[cfg(windows)]` + `clipboard-win`으로만 구현돼 있었고, `#[cfg(not(windows))]`는 **빈 문자열을 돌려주는 스텁**이었다. 프론트의 `if (text)` 가드가 빈 문자열을 걸러 무음 no-op.
+2. **프론트가 모든 경로를 그리로 보냄**: `terminal-engine.ts`의 키 핸들러가 `e.ctrlKey && k === "v"`로 Ctrl+V/Ctrl+Shift+V를 **둘 다** `preventDefault()` 후 `term_paste` 경로로 보낸다. 이 preventDefault가 WebKitGTK의 네이티브 Paste 키바인딩(권한 불필요, DOM paste 이벤트 → xterm 기본 처리)까지 차단. 우클릭도 커스텀 메뉴가 네이티브 메뉴를 대체하며 같은 경로.
+
+macOS가 "됐던" 건 우연: Cmd+V는 metaKey라 인터셉트에 안 걸리고 WKWebView 네이티브 붙여넣기가 xterm 기본 경로로 동작했다. 죽은 코드가 macOS에선 실행조차 안 됐던 것. `Shift+Insert`가 됐던 이유도 같다 — 인터셉트 안 걸리는 유일한 키라 WebKitGTK 네이티브 경로를 탔다.
+
+참고(수정 방식 선택에 영향): JS 쪽 `navigator.clipboard.readText()`는 대안이 못 된다 — wry(WebKitGTK 백엔드)가 `permission-request` 시그널을 연결하지 않아 WebKitClipboardPermissionRequest가 **항상 자동 거부**된다(외부 앱에서 복사한 내용은 무조건 NotAllowedError).
+
+### 6.3 해결
+
+1. **unix `term_paste` 실구현** (`terminal.rs`): `arboard`로 이미지(스크린샷)→임시 PNG 경로, 그 외 텍스트 — Windows 스마트 붙여넣기와 동급. 반드시 **`#[tauri::command(async)]`**: 동기 커맨드는 GTK 메인루프에서 돌아, 웹뷰 자신이 클립보드 소유자일 때(X11은 소유자 응답 모델) 자기 자신을 기다리는 데드락이 된다(tauri plugins-workspace#2267과 동일 기전). 워커 스레드 + 2초 타임아웃으로 최악에도 UI가 안 매달리게 했다. arboard의 `wayland-data-control` feature는 끔 — GNOME엔 그 프로토콜이 없어 깨지는 사례(tauri#8515)가 있고 XWayland 경유 X11 경로가 안정적.
+2. **붙여넣기를 `term.paste()` 경유로** (`terminal.ts`): PTY 직접 write는 bracketed paste(ESC[200~)를 우회해 멀티라인이 줄마다 즉시 실행됐다. xterm을 거치면 개행 정규화와 래핑을 xterm이 처리한다.
+3. **복사 실패 무음 제거**: `writeText(...).catch(() => {})`가 실패를 삼키고 선택까지 해제해 "복사가 안 된다"로 체감됐다. 성공 시에만 선택 해제, 실패 시 토스트.
+4. **e2e 왕복 검증**: 기존 검사는 `typeof === "string"`이라 빈 문자열 스텁도 통과했다. 호스트에서 클립보드를 심고(xclip/pbcopy/Set-Clipboard) 내용 일치까지 확인하도록 보강.
+
+### 6.4 교훈
+
+- **`#[cfg(...)]` 플랫폼 분기의 "나머지" 갈래에 스텁을 넣을 거면 컴파일 에러나 로그라도 남겨라.** 조용한 빈 값 스텁 + 프론트의 falsy 가드 + `.catch(() => {})` 3중 무음이 겹치면, 기능이 통째로 죽어 있어도 어떤 로그에도 안 남는다.
+- **한 플랫폼에서만 검증한 기능이 "다른 플랫폼에서 되는 것"도 의심하라** — macOS 붙여넣기는 구현이 돼서가 아니라 인터셉트를 비껴가서 됐다. 그 우연이 리눅스 증상 파악을 늦춘다.
+- e2e에서 **타입/성공 여부만 확인하는 검사는 회귀 그물이 아니다** — 내용 왕복까지 확인해야 잡힌다.

@@ -6,6 +6,7 @@ import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 
 import { collectPanes, useTerminals } from "../stores/terminals";
+import { useUi } from "../stores/ui";
 import { isMod } from "./platform";
 import {
   ensureExitListener,
@@ -215,14 +216,22 @@ export function createTerminalImpl(opts: {
     }
 
     // 복사: Ctrl+Shift+C, 또는 선택영역이 있을 때 Ctrl+C (없으면 통과 → SIGINT)
+    // 성공 시에만 선택을 해제한다 — 실패 시 선택을 유지하고 토스트로 알린다(무음+선택 해제면
+    // 사용자는 복사가 된 줄 알고, SIGINT도 안 나가서 "복사가 안 된다"로만 체감된다).
     if (e.ctrlKey && k === "c" && (e.shiftKey || term.hasSelection())) {
       const sel = term.getSelection();
-      if (sel) void navigator.clipboard.writeText(sel).catch(() => {});
-      term.clearSelection();
+      if (sel)
+        void navigator.clipboard.writeText(sel).then(
+          () => term.clearSelection(),
+          () => useUi.getState().pushToast("error", "복사에 실패했습니다"),
+        );
       e.preventDefault();
       return false;
     }
-    // 붙여넣기: Ctrl+V / Ctrl+Shift+V — 스마트(파일·이미지→경로) 붙여넣기로 대체
+    // 붙여넣기: Ctrl+V / Ctrl+Shift+V — 스마트(파일·이미지→경로) 붙여넣기로 대체.
+    // Cmd+V(macOS, metaKey)는 의도적으로 안 잡는다 — WKWebView 네이티브 붙여넣기 → xterm
+    // 기본 paste 경로가 이미 동작한다. term_paste는 세 플랫폼 모두 실구현이다(win: clipboard-win,
+    // unix: arboard — DOCS/TROUBLESHOOTING.md §6).
     if (e.ctrlKey && k === "v") {
       e.preventDefault();
       void pasteIntoTerminal(opts.id);

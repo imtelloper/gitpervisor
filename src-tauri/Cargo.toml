@@ -64,6 +64,16 @@ tar = "0.4"
 sha2 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
+[target.'cfg(not(windows))'.dependencies]
+# 터미널 스마트 붙여넣기(term_paste)의 Linux(X11)/macOS 클립보드 읽기 — Windows의 clipboard-win 대응.
+# wayland-data-control은 의도적으로 끈다: GNOME 등 wlr-data-control 미지원 컴포지터에서 초기화가
+# 깨지는 사례(tauri#8515)가 있고, XWayland 브리지 경유 X11 경로가 GNOME/KDE에서 안정적이다.
+# image-data: 클립보드 이미지(스크린샷)→RGBA 디코드(내부적으로 image 크레이트의 png 디코더 사용).
+arboard = { version = "3", default-features = false, features = ["image-data"] }
+# 클립보드 이미지 RGBA→PNG 파일 인코딩(임시 파일 경로 붙여넣기). tauri image-png가 이미 트리에
+# 같은 0.25를 가지므로 추가 컴파일 비용 최소.
+image = { version = "0.25", default-features = false, features = ["png"] }
+
 [target.'cfg(windows)'.dependencies]
 # Win32_UI_Shell: 파일트리 실행 파일 더블클릭을 ShellExecuteW로 띄운다(cmd 셸 파싱 우회 — 인젝션 차단).
 windows-sys = { version = "0.59", features = ["Win32_System_Performance", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Foundation"] }

@@ -281,13 +281,58 @@ pub fn term_paste() -> String {
     get_clipboard(formats::Unicode).unwrap_or_default()
 }
 
+/// Linux(X11/XWayland)·macOS: arboard로 이미지→임시 PNG 경로, 그 외 텍스트.
+/// (파일 목록(text/uri-list)은 arboard 미지원 — 파일 매니저 복사는 대부분 텍스트 폴백으로 경로가 온다.)
+///
+/// 반드시 async 커맨드로 메인 스레드 밖에서 실행한다: 동기 커맨드는 GTK 메인루프에서 돌고,
+/// X11 클립보드는 "소유자가 요청에 응답"하는 모델이라 웹뷰(이 앱 자신)가 복사 주체일 때
+/// 메인루프가 막혀 있으면 자기 자신을 기다리는 데드락이 된다(tauri plugins-workspace#2267과 동일 기전).
+/// 여기에 더해 소유자가 끝내 응답하지 않는 경우를 대비해 워커 스레드 + 2초 타임아웃으로 감싼다
+/// — 실패 시 빈 문자열(붙여넣기 no-op)로 강등되며 UI는 절대 매달리지 않는다.
 #[cfg(not(windows))]
-#[tauri::command]
+#[tauri::command(async)]
 pub fn term_paste() -> String {
-    String::new()
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(read_clipboard_unix());
+    });
+    rx.recv_timeout(std::time::Duration::from_millis(2000))
+        .unwrap_or_default()
 }
 
-#[cfg(windows)]
+#[cfg(not(windows))]
+fn read_clipboard_unix() -> String {
+    let mut cb = match arboard::Clipboard::new() {
+        Ok(cb) => cb,
+        Err(_) => return String::new(),
+    };
+    // Windows 구현과 같은 우선순위: 이미지(스크린샷) 먼저, 아니면 텍스트.
+    if let Ok(img) = cb.get_image() {
+        if let Some(path) = save_temp_png(&img) {
+            return shell_quote(&path);
+        }
+    }
+    cb.get_text().unwrap_or_default()
+}
+
+/// 클립보드 RGBA 이미지를 임시 PNG로 저장하고 경로를 돌려준다 (Windows save_temp_image의 unix 대응).
+#[cfg(not(windows))]
+fn save_temp_png(img: &arboard::ImageData<'_>) -> Option<String> {
+    let buf = image::RgbaImage::from_raw(
+        u32::try_from(img.width).ok()?,
+        u32::try_from(img.height).ok()?,
+        img.bytes.clone().into_owned(),
+    )?;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    let mut path = std::env::temp_dir();
+    path.push(format!("gitpervisor-paste-{nanos}.png"));
+    buf.save(&path).ok()?;
+    Some(path.to_string_lossy().into_owned())
+}
+
 fn shell_quote(p: &str) -> String {
     if p.chars().any(|c| c.is_whitespace()) {
         format!("\"{p}\"")
