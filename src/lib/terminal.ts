@@ -112,7 +112,11 @@ export function fitTerminal(id: string) {
  *  그 외 텍스트)한 텍스트를 넣는다. 빈 값이면 플러그인 readText로 한 번 더 시도(보조 안전망).
  *  PTY에 직접 쓰지 않고 term.paste()를 경유한다: xterm이 개행 정규화(\n→\r)와 bracketed
  *  paste(ESC[200~) 래핑을 처리해, 멀티라인 붙여넣기가 셸에서 줄마다 즉시 실행되는 사고를 막는다
- *  (최종 전송은 어차피 onData → term_write 경로). */
+ *  (최종 전송은 어차피 onData → term_write 경로).
+ *  한계: 플로팅 분리/재도킹으로 새로 만든 xterm(attach)은 이전 출력의 \x1b[?2004h를 못 봐
+ *  모드 플래그가 꺼진 채 시작한다 — 그 창의 첫 멀티라인 붙여넣기는 비브래킷으로 나갈 수 있다
+ *  (zsh는 다음 프롬프트에서 재설정, Claude Code류 TUI는 세션 내 지속). 근본 해결은 Rust가
+ *  세션별 2004 모드를 추적해 attach 시 프론트 파서에 되살리는 것 — 후속 과제. */
 export async function pasteIntoTerminal(id: string) {
   try {
     let text = await invoke<string>("term_paste");

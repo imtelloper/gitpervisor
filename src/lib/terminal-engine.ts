@@ -231,13 +231,35 @@ export function createTerminalImpl(opts: {
       return false;
     }
     // 붙여넣기: Ctrl+V / Ctrl+Shift+V — 스마트(파일·이미지→경로) 붙여넣기로 대체.
-    // Cmd+V(macOS, metaKey)는 의도적으로 안 잡는다 — WKWebView 네이티브 붙여넣기 → xterm
-    // 기본 paste 경로가 이미 동작한다. term_paste는 세 플랫폼 모두 실구현이다(win: clipboard-win,
-    // unix: arboard — DOCS/TROUBLESHOOTING.md §6).
+    // term_paste는 세 플랫폼 모두 실구현이다(win: clipboard-win, unix: arboard —
+    // DOCS/TROUBLESHOOTING.md §6).
     if (e.ctrlKey && k === "v") {
       e.preventDefault();
       void pasteIntoTerminal(opts.id);
       return false;
+    }
+    // macOS Cmd+C/Cmd+V: WKWebView 네이티브 copy/paste 커맨드의 클립보드 "쓰기"가 비-ASCII
+    // (한글)를 UTF-8→MacRoman 이중인코딩으로 깨뜨린다(§7) — 가로채서 네이티브 플러그인
+    // 경로(clipboard.ts)로 보낸다. Cmd+V도 잡는 이유: 읽기까지 네이티브로 통일 + 스마트
+    // 붙여넣기(이미지→PNG 경로)가 macOS에서도 동작하게. Cmd+C는 선택 있을 때만(없으면 통과 —
+    // 터미널에선 무해). preventDefault가 웹뷰 기본 커맨드(=깨지는 경로) 실행을 차단한다.
+    if (isMacWebKit && e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (k === "c" && term.hasSelection()) {
+        const sel = term.getSelection();
+        if (sel)
+          void copyText(sel).then((ok) =>
+            ok
+              ? term.clearSelection()
+              : useUi.getState().pushToast("error", "복사에 실패했습니다"),
+          );
+        e.preventDefault();
+        return false;
+      }
+      if (k === "v") {
+        e.preventDefault();
+        void pasteIntoTerminal(opts.id);
+        return false;
+      }
     }
 
     // WebKitGTK IME 누적 버그 우회(영문/비조합): 조합 중이 아닌 단일 인쇄 문자는 깨진
@@ -365,6 +387,31 @@ export function createTerminalImpl(opts: {
       );
       // 포커스 상실 시 조합 문맥이 사라지므로 미러 리셋(다음 포커스+입력이 깨끗이 시작).
       ta.addEventListener("blur", () => resetImeMirror(), true);
+
+      // Cmd+C/V 키다운 가로채기의 보조 안전망 — 메뉴(Edit→복사/붙여넣기) 등 키다운을 거치지
+      // 않는 경로도 copy/paste "이벤트"는 발화한다. 조상(host) 캡처는 타깃(xterm textarea)의
+      // 리스너·웹뷰 기본 동작보다 먼저 개입이 보장되므로, 여기서 깨지는 WebKit 클립보드 경로를
+      // 차단하고 네이티브 플러그인 경로로 대체한다.
+      host.addEventListener(
+        "copy",
+        (e) => {
+          const sel = term.getSelection();
+          if (!sel) return; // 선택 없으면 기본 동작(사실상 no-op)에 맡긴다
+          e.preventDefault();
+          e.stopPropagation();
+          void copyText(sel);
+        },
+        true,
+      );
+      host.addEventListener(
+        "paste",
+        (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          void pasteIntoTerminal(opts.id);
+        },
+        true,
+      );
     }
   }
 

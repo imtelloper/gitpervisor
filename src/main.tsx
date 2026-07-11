@@ -7,6 +7,7 @@ import App from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { SysMonitorWindow } from "./components/sysmon/SysMonitorWindow";
 import { FloatingTerminal } from "./FloatingTerminal";
+import { installMacCopyInterceptor } from "./lib/clipboard";
 import { attachRepoEvents } from "./lib/events";
 import { setupErrorLogging } from "./lib/logging";
 import { useTerminals } from "./stores/terminals";
@@ -27,6 +28,9 @@ try {
 
 // 미처리 에러/프라미스 거부를 Rust 로그 파일로 보낸다 — 메인·플로팅 창 모두 1회.
 setupErrorLogging();
+
+// macOS: Cmd+C/메뉴 복사의 WebKit 기본 경로가 한글을 깨뜨린다 — 전역에서 네이티브로 대체.
+installMacCopyInterceptor();
 
 // E2E·디버그용 — dev 빌드에서만 핵심 스토어를 노출한다(프론트 기능 e2e가 상태를 구동/단언).
 // release 빌드에는 포함되지 않는다(import.meta.env.DEV).
