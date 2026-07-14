@@ -59,9 +59,12 @@ export const useAgentActivity = create<AgentActivityStore>((set) => ({
     }),
 }));
 
-// Claude Code는 한 턴을 처리하는 동안 하단 상태줄에 "esc to interrupt"를 표시한다.
-// 이 마커가 보이면 작업 중, 사라지면 직전 턴이 끝난 것으로 본다(완료).
-const WORKING_RE = /esc to interrupt/i;
+// Claude Code는 한 턴을 처리하는 동안 하단 스피너에 작업 표시를 그린다. 버전에 따라 형태가 다르다:
+//  - 구버전: "esc to interrupt"
+//  - v2.1.x: "Perambulating… (19m 42s · ↓ 65.9k tokens)" — esc 문구 없이 경과시간 + 토큰 카운터(↑/↓)
+// 둘 중 하나라도 보이면 작업 중. 토큰 카운터(화살표+숫자+tokens)는 idle 상태엔 없어 신뢰 마커.
+// 사라지면 직전 턴이 끝난 것으로 본다(완료).
+const WORKING_RE = /esc to interrupt|[↑↓]\s?[\d.,]+\s?k?\s?tokens/i;
 
 // 현재 화면(뷰포트)에 그려진 모든 줄을 읽는다. Claude Code는 "esc to interrupt"를 입력
 // 커서 '아래' 푸터(plan mode 줄 등)에 그리기도 해서 커서 위쪽만 보면 놓친다. 또 새 터미널은
@@ -101,3 +104,4 @@ export function useAgentScanner() {
     return () => window.clearInterval(id);
   }, []);
 }
+
