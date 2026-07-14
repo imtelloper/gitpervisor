@@ -8,7 +8,7 @@ import "@xterm/xterm/css/xterm.css";
 import { collectPanes, useTerminals } from "../stores/terminals";
 import { useUi } from "../stores/ui";
 import { copyText } from "./clipboard";
-import { isMod } from "./platform";
+import { isMod, isWindows } from "./platform";
 import {
   ensureExitListener,
   pasteIntoTerminal,
@@ -108,6 +108,11 @@ export function createTerminalImpl(opts: {
       '"Cascadia Code", Consolas, "D2Coding", "Noto Sans Mono CJK KR", "Nanum Gothic Coding", monospace',
     cursorBlink: true,
     scrollback: 5000,
+    // Windows 백엔드는 ConPTY(portable_pty native) — xterm에 이를 알려 ConPTY 전용 워크어라운드를
+    // 켠다: ① 행 증가 시 스크롤백을 뷰포트로 끌어오지 않고 빈 행 처리(ConPTY 실제 동작) ② 리플로우
+    // 비활성 + "마지막 문자가 공백 아니면 wrap" 휴리스틱. 이걸 안 켜면 리사이즈 시 ConPTY 재방출과
+    // xterm 기본 리플로우가 충돌해 TUI(Claude Code 등) 출력이 우측에 유령 텍스트로 깨진다.
+    ...(isWindows ? { windowsPty: { backend: "conpty" as const } } : {}),
     theme: readTheme(),
   });
   const fit = new FitAddon();

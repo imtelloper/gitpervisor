@@ -3,6 +3,7 @@
 // UA 스니핑의 단일 출처가 된다(기존 코드 이행은 후속).
 export const isMac = /Mac/i.test(navigator.userAgent);
 export const isLinux = /Linux/.test(navigator.userAgent);
+export const isWindows = /Windows/i.test(navigator.userAgent);
 
 /** 플랫폼 표준 모디파이어 — mac=metaKey(Cmd), 그 외=ctrlKey(Ctrl) */
 export function isMod(e: KeyboardEvent): boolean {
