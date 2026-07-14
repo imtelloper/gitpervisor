@@ -363,21 +363,38 @@ export function ProjectList() {
         <span className="text-[11px] font-semibold tracking-widest text-fg-dim">
           PROJECTS
         </span>
-        <button
-          onClick={toggleProjectSort}
-          title={
-            sortByChanges
-              ? "변경 우선 정렬 끄기 (등록 순서로)"
-              : "변경/활동 있는 프로젝트 먼저 보기"
-          }
-          className={`shrink-0 rounded p-1 ${
-            sortByChanges
-              ? "text-accent"
-              : "text-fg-dim hover:bg-raised hover:text-fg"
-          }`}
-        >
-          <ArrowDownUp size={13} />
-        </button>
+        <div className="flex items-center gap-0.5">
+          <button
+            onClick={handleAdd}
+            disabled={addProject.isPending}
+            title="기존 git 레포 폴더를 프로젝트로 추가"
+            className="shrink-0 rounded p-1 text-fg-dim hover:bg-raised hover:text-fg disabled:opacity-50"
+          >
+            <Plus size={14} />
+          </button>
+          <button
+            onClick={() => void handleCreateFolder()}
+            title="새 프로젝트 폴더 만들기 (git init 포함)"
+            className="shrink-0 rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
+          >
+            <FolderPlus size={13} />
+          </button>
+          <button
+            onClick={toggleProjectSort}
+            title={
+              sortByChanges
+                ? "변경 우선 정렬 끄기 (등록 순서로)"
+                : "변경/활동 있는 프로젝트 먼저 보기"
+            }
+            className={`shrink-0 rounded p-1 ${
+              sortByChanges
+                ? "text-accent"
+                : "text-fg-dim hover:bg-raised hover:text-fg"
+            }`}
+          >
+            <ArrowDownUp size={13} />
+          </button>
+        </div>
       </div>
 
       <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto">
@@ -402,29 +419,10 @@ export function ProjectList() {
           <div className="px-3 py-4 text-xs leading-5 text-fg-dim">
             아직 프로젝트가 없습니다.
             <br />
-            아래 버튼으로 git 레포 폴더를 추가하세요.
+            위 <Plus size={11} className="inline" /> 버튼으로 기존 폴더를 추가하거나{" "}
+            <FolderPlus size={11} className="inline" /> 버튼으로 새로 만드세요.
           </div>
         )}
-      </div>
-
-      <div className="flex flex-col border-t border-edge">
-        <button
-          onClick={handleAdd}
-          disabled={addProject.isPending}
-          title="기존 git 레포 폴더를 프로젝트로 추가"
-          className="flex items-center gap-2 px-3 py-2 text-[13px] text-fg-muted hover:bg-raised hover:text-fg disabled:opacity-50"
-        >
-          <Plus size={14} />
-          {addProject.isPending ? "추가하는 중…" : "프로젝트 추가"}
-        </button>
-        <button
-          onClick={() => void handleCreateFolder()}
-          title="새 폴더를 만들고 git init 후 프로젝트로 등록"
-          className="flex items-center gap-2 border-t border-edge px-3 py-2 text-[13px] text-fg-muted hover:bg-raised hover:text-fg"
-        >
-          <FolderPlus size={14} />
-          새 프로젝트 폴더 만들기
-        </button>
       </div>
 
       {menu && (
