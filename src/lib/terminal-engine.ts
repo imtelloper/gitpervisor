@@ -293,14 +293,30 @@ export function createTerminalImpl(opts: {
   // 까맣게 먹통된다(분할로 터미널을 여럿 띄우면 더 잘 터짐 — 컨텍스트 다수). 그래서 WebGL이
   // 안정적인 WebView2(Windows)/WKWebView(macOS)에서만 켜고, WebKitGTK에서는 안정적인 기본 DOM
   // 렌더러를 쓴다. loadAddon은 반드시 open() 이후라야 한다.
+  // 컨텍스트 손실 복구: 장시간 방치·절전 복귀·GPU 드라이버 리셋 시 WebView2가 WebGL 컨텍스트를
+  // 회수하면 글리프 아틀라스 잔해(색 블록·흩어진 글자)만 화면에 남는다. dispose만 하고 끝내면
+  // 복구가 없으므로 애드온을 재생성해 새 컨텍스트로 살리고, 60초 내 반복 손실이면(살아있는
+  // 터미널 누적으로 Chromium 컨텍스트 상한 ~16개 초과 → 서로 밀어내는 캐스케이드) DOM 렌더러로
+  // 확정한다 — VS Code 내장 터미널과 동일 전략.
   if (!isWebKitGtk) {
-    try {
-      const webgl = new WebglAddon();
-      webgl.onContextLoss(() => webgl.dispose());
-      term.loadAddon(webgl);
-    } catch {
-      /* WebGL 불가 — xterm 기본 DOM 렌더러로 동작 */
-    }
+    let lostAt: number[] = [];
+    const loadWebgl = () => {
+      try {
+        const webgl = new WebglAddon();
+        webgl.onContextLoss(() => {
+          webgl.dispose();
+          const now = Date.now();
+          lostAt = [...lostAt.filter((t) => now - t < 60_000), now];
+          if (lostAt.length <= 3) setTimeout(loadWebgl, 300);
+          else term.refresh(0, term.rows - 1); // DOM 렌더러로 잔상 지우기
+        });
+        term.loadAddon(webgl);
+        term.refresh(0, term.rows - 1);
+      } catch {
+        /* WebGL 불가 — xterm 기본 DOM 렌더러로 동작 */
+      }
+    };
+    loadWebgl();
   }
 
   // WebKit 계열(Linux WebKitGTK / macOS WKWebView) 한글(IME 조합) 입력 우회.
