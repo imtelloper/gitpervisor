@@ -1,8 +1,10 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { ShieldAlert } from "lucide-react";
+import { LayoutGrid, ShieldAlert } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import { isMac, modLabel } from "../lib/platform";
 import { useProjects, useQuarantinedTools } from "../queries";
+import { useTerminals } from "../stores/terminals";
 import { useUi } from "../stores/ui";
 import { SysMonitor } from "./SysMonitor";
 
@@ -55,7 +57,8 @@ export function TitleBar() {
       {/* 가운데: 드래그 영역 */}
       <div data-tauri-drag-region className="h-full flex-1" />
 
-      {/* 우: 시스템 모니터 */}
+      {/* 우: 모아보기 토글 + 시스템 모니터 */}
+      <AggregateButton />
       <SysMonitor />
 
       {/* 우: macOS 격리 도구 배지 (차단 항목 있을 때만) */}
@@ -76,6 +79,30 @@ export function TitleBar() {
         </CtlButton>
       </div>
     </header>
+  );
+}
+
+// 모아보기 토글 단축키 라벨 — mac은 심볼 관례(⌘⇧A), 그 외는 Ctrl+Shift+A
+const hotkeyLabel = isMac ? `${modLabel}⇧A` : `${modLabel}+Shift+A`;
+
+/** 터미널 모아보기 토글 버튼 — 열린 터미널이 하나라도 있을 때만 표시. 클릭할 때마다 열림/닫힘. */
+function AggregateButton() {
+  const aggregateOpen = useUi((s) => s.aggregateOpen);
+  const toggleAggregate = useUi((s) => s.toggleAggregate);
+  const hasTerminals = useTerminals((s) => s.terminals.length > 0);
+  if (!hasTerminals) return null;
+  return (
+    <button
+      onClick={toggleAggregate}
+      title={`터미널 모아보기 — 여러 터미널을 한 화면에 분할로 (${hotkeyLabel})`}
+      className={`mr-2.5 flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] ${
+        aggregateOpen
+          ? "bg-raised text-accent"
+          : "text-fg-muted hover:bg-raised hover:text-fg"
+      }`}
+    >
+      <LayoutGrid size={11} /> 모아보기
+    </button>
   );
 }
 
