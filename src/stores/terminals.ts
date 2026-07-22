@@ -282,8 +282,14 @@ export const useTerminals = create<TerminalsState>((set, get) => ({
     if (tab) collectPanes(tab.layout).forEach((p) => disposeTerminal(p));
     set((s) => {
       const activeTab = { ...s.activeTab };
-      if (tab && activeTab[tab.projectId] === tabId)
-        activeTab[tab.projectId] = "viewer";
+      if (tab && activeTab[tab.projectId] === tabId) {
+        // 활성 터미널 탭을 닫으면 왼쪽(이전) 터미널 탭으로 순차 포커스 이동한다 — 없으면 오른쪽
+        // 이웃, 남은 터미널이 없으면 viewer로. (s.terminals는 아직 닫는 탭을 포함한 상태)
+        const sibs = s.terminals.filter((t) => t.projectId === tab.projectId);
+        const idx = sibs.findIndex((t) => t.id === tabId);
+        const next = sibs[idx - 1] ?? sibs[idx + 1] ?? null;
+        activeTab[tab.projectId] = next ? next.id : "viewer";
+      }
       const paneStatus = { ...s.paneStatus };
       if (tab) collectPanes(tab.layout).forEach((p) => delete paneStatus[p]);
       return {
