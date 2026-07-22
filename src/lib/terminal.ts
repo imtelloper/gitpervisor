@@ -5,6 +5,7 @@ import type { Terminal } from "@xterm/xterm";
 
 import { useUi } from "../stores/ui";
 import { copyText, readClipboardText } from "./clipboard";
+import { isMac } from "./platform";
 
 // PTY 세션은 Rust가 수명의 단일 진실 — xterm 인스턴스/스크롤백은 dispose 전까지 살려둔다.
 // 탭/프로젝트 전환은 host(div)를 컨테이너에 붙였다 떼는 것뿐 (설계 §16.5).
@@ -106,6 +107,44 @@ export function fitTerminal(id: string) {
   } catch {
     /* noop */
   }
+}
+
+/**
+ * 전역 Ctrl+C(mac=Cmd+C) 복사 폴백 — 터미널에 선택이 있는데 그 터미널 textarea에 포커스가
+ * 없을 때(선택 드래그 끝점이 밖·alt-tab 복귀 등) Ctrl+C가 복사를 못 하는 문제를 메운다.
+ * xterm은 WebGL 캔버스라 DOM 선택이 없어, 포커스가 터미널 밖이면 브라우저 기본 복사가 빈 값을
+ * 복사한다. 포커스된 터미널은 각 인스턴스의 attachCustomKeyEventHandler가 이미 처리하므로 건너뛰고,
+ * 편집 요소(input/textarea/Monaco/contenteditable)에 포커스면 그쪽 복사를 존중한다. main.tsx 1회 설치.
+ */
+let terminalCopyFallbackReady = false;
+export function installTerminalCopyFallback(): void {
+  if (terminalCopyFallbackReady) return;
+  terminalCopyFallbackReady = true;
+  window.addEventListener("keydown", (e) => {
+    if (e.key.toLowerCase() !== "c" || e.altKey) return;
+    if (!(isMac ? e.metaKey : e.ctrlKey)) return;
+    const active = document.activeElement as HTMLElement | null;
+    // 편집 요소(터미널 자신·Monaco·입력창·contenteditable)에 포커스면 그 복사 경로를 존중 → 건너뜀.
+    if (
+      active &&
+      (active.closest(".xterm, .monaco-editor") ||
+        active.tagName === "INPUT" ||
+        active.tagName === "TEXTAREA" ||
+        active.isContentEditable)
+    )
+      return;
+    // 포커스가 비-편집 요소일 때: 선택이 있는 터미널을 찾아 복사.
+    const withSel = listTerminals().find(
+      (t) => t.status === "live" && t.term.hasSelection(),
+    );
+    const sel = withSel?.term.getSelection();
+    if (!withSel || !sel) return;
+    e.preventDefault();
+    void copyText(sel).then((ok) => {
+      if (ok) withSel.term.clearSelection();
+      else useUi.getState().pushToast("error", "복사에 실패했습니다");
+    });
+  });
 }
 
 /** 스마트 붙여넣기 — 백엔드(term_paste, 3플랫폼 실구현)가 클립보드를 판별(파일/이미지→경로,

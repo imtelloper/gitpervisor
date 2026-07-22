@@ -10,6 +10,7 @@ import { FloatingTerminal } from "./FloatingTerminal";
 import { installMacCopyInterceptor } from "./lib/clipboard";
 import { attachRepoEvents } from "./lib/events";
 import { setupErrorLogging } from "./lib/logging";
+import { installTerminalCopyFallback } from "./lib/terminal";
 import { useTerminals } from "./stores/terminals";
 import { useUi } from "./stores/ui";
 import "./styles.css";
@@ -31,6 +32,8 @@ setupErrorLogging();
 
 // macOS: Cmd+C/메뉴 복사의 WebKit 기본 경로가 한글을 깨뜨린다 — 전역에서 네이티브로 대체.
 installMacCopyInterceptor();
+// 터미널 밖 포커스에서 Ctrl+C 눌러도 선택된 터미널 내용이 복사되게 하는 전역 폴백.
+installTerminalCopyFallback();
 
 // E2E·디버그용 — dev 빌드에서만 핵심 스토어를 노출한다(프론트 기능 e2e가 상태를 구동/단언).
 // release 빌드에는 포함되지 않는다(import.meta.env.DEV).
