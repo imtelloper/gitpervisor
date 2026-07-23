@@ -167,8 +167,9 @@ function Group({
   title: string;
   changes: FileChange[];
   accent?: boolean;
-  /** 이 그룹의 파일을 클릭했을 때의 diff 모드: staged는 index(HEAD↔인덱스), 나머지는 worktree */
-  mode: "worktree" | "index";
+  /** 이 그룹의 파일을 클릭했을 때의 diff 모드: staged는 index(HEAD↔인덱스),
+   *  untracked는 file(내용만), 나머지는 worktree */
+  mode: "worktree" | "index" | "file";
   selectedDiff: DiffTarget | null;
   selKeys: Set<string>;
   onRowClick: (key: string, e: React.MouseEvent) => void;
@@ -285,7 +286,8 @@ function RepoChanges({
         { title: "Conflicts", changes: status.conflicted, mode: "worktree" as const, accent: true },
         { title: "Unstaged", changes: status.unstaged, mode: "worktree" as const, accent: false },
         { title: "Staged", changes: status.staged, mode: "index" as const, accent: false },
-        { title: "Untracked", changes: status.untracked, mode: "worktree" as const, accent: false },
+        // Untracked는 이전 버전이 없어 diff가 통째로 all-green이라 무의미 — 파일 내용만 그대로 보여준다.
+        { title: "Untracked", changes: status.untracked, mode: "file" as const, accent: false },
       ]
     : [];
 
@@ -329,7 +331,9 @@ function RepoChanges({
         const target: DiffTarget =
           row.mode === "index"
             ? { mode: "index", path: row.change.path }
-            : { mode: "worktree", path: row.change.path };
+            : row.mode === "file"
+              ? { mode: "file", path: row.change.path }
+              : { mode: "worktree", path: row.change.path };
         // 이 저장소(projectId)를 diff 대상으로 지정 — 임베디드면 그 저장소로 라우팅.
         selectDiff(target, projectId);
       }
