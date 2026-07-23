@@ -18,6 +18,7 @@ installers
 gitpervisor-installer.exe
 /Gitpervisor.app
 /Gitpervisor_*.dmg
+/Gitpervisor_*.deb
 
 # Editor directories and files
 .vscode/*

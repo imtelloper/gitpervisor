@@ -60,6 +60,9 @@ rust_decimal = "1"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "charset", "gzip", "brotli", "deflate", "zstd", "json", "query", "multipart", "stream", "cookies"] }
 serde_urlencoded = "0.7"
 base64 = "0.22"
+# native-tls(tiberius/sqlx/lettre/redis)가 링크하는 시스템 openssl 대신 소스에서 openssl을 빌드한다.
+# 빌드 호스트에 libssl-dev가 없어도(패키지 미설치·권한 없음) 빌드가 통과하도록 이식성 확보.
+openssl-sys = { version = "0.9", features = ["vendored"] }
 # LSP 서버 앱 내 다운로드(태스크 17 M2 획득 자동화) — npm tgz 해제 + sha512 무결성.
 # node 런타임 다운로드(PATH에 node 없을 때): win=zip, unix=tar.gz(flate2+tar), 무결성=SHASUMS256(sha256).
 flate2 = "1"
