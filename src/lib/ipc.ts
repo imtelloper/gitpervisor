@@ -981,6 +981,13 @@ export const ipc = {
       {},
       { lane: "background", attempts: 1, timeoutMs: 3000 },
     ),
+  // 작업 완료 알림 본문용 — 프로젝트 최신 세션 트랜스크립트의 마지막 AI 텍스트(없으면 null).
+  lastAgentMessage: (projectPath: string) =>
+    call<string | null>(
+      "last_agent_message",
+      { projectPath },
+      { lane: "background", attempts: 1, timeoutMs: 3000 },
+    ),
 
   // ---- 변경 커맨드 (재시도 없음) ----
   stageFiles: (projectId: string, paths: string[]) =>

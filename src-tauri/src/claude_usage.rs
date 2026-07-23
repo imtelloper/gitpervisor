@@ -77,3 +77,77 @@ pub fn claude_usage() -> Option<ClaudeUsage> {
         updated_at: file.updated_at,
     })
 }
+
+// ── 작업 완료 알림 본문: 마지막 AI 메시지 ─────────────────────────────────────
+
+/// 프로젝트 cwd → Claude Code 트랜스크립트 디렉토리명(경로 구분자·콜론·점을 `-`로).
+/// 예: `C:\Users\a\proj` → `C--Users-a-proj` (Claude Code 규약).
+fn encode_project_dir(path: &str) -> String {
+    path.chars()
+        .map(|c| if matches!(c, '/' | '\\' | ':' | '.') { '-' } else { c })
+        .collect()
+}
+
+/// 알림 본문용 요약 — 앞부분(약 220자)만 잘라 말줄임. 줄 끝 공백은 정리.
+fn snippet(s: &str) -> String {
+    let collapsed = s
+        .split('\n')
+        .map(|l| l.trim_end())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut out: String = collapsed.chars().take(220).collect();
+    if collapsed.chars().count() > 220 {
+        out.push('…');
+    }
+    out
+}
+
+/// 프로젝트의 마지막 AI(assistant) 텍스트 메시지 — 작업 완료 알림 본문용. 최신 세션 트랜스크립트
+/// (`~/.claude/projects/<encoded>/<newest>.jsonl`)의 끝에서부터 첫 assistant 텍스트를 뽑아 요약한다.
+/// 트랜스크립트 없음·파싱 실패면 None(알림은 기본 문구로 폴백).
+#[tauri::command]
+pub fn last_agent_message(project_path: String) -> Option<String> {
+    let dir = home_dir()?
+        .join(".claude")
+        .join("projects")
+        .join(encode_project_dir(&project_path));
+    // 이 프로젝트의 세션 중 가장 최근에 수정된 트랜스크립트(방금 끝난 세션).
+    let newest = std::fs::read_dir(&dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map_or(false, |x| x == "jsonl"))
+        .max_by_key(|e| e.metadata().ok().and_then(|m| m.modified().ok()))?
+        .path();
+    let content = std::fs::read_to_string(&newest).ok()?;
+    for line in content.lines().rev() {
+        let v: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if v.get("type").and_then(|t| t.as_str()) != Some("assistant") {
+            continue;
+        }
+        let text = v
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|b| {
+                        if b.get("type").and_then(|t| t.as_str()) == Some("text") {
+                            b.get("text").and_then(|t| t.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default();
+        let text = text.trim();
+        if !text.is_empty() {
+            return Some(snippet(text));
+        }
+    }
+    None
+}

@@ -82,6 +82,8 @@ export function useAgentNotifications() {
 
   const projectName = (pid: string | undefined) =>
     (pid && projRef.current?.find((p) => p.id === pid)?.name) || "프로젝트";
+  const projectPath = (pid: string | undefined) =>
+    pid ? projRef.current?.find((p) => p.id === pid)?.path : undefined;
 
   // OS 토스트에 더해 Slack/email로도 보낸다(설정에 켜졌을 때만). 실패는 무시(OS 토스트가 폴백).
   const fireExternal = (title: string, body: string, key: string) => {
@@ -93,6 +95,28 @@ export function useAgentNotifications() {
     void ipc.notifyExternal(title, body).catch(() => {});
   };
 
+  // 완료 알림 발사 — 본문에 마지막 AI 메시지(작업 결과 내용)를 싣는다. 트랜스크립트를 못 읽으면
+  // 기본 문구로 폴백. 제목은 "프로젝트명 — 작업 완료".
+  const fireDone = async (
+    pid: string | undefined,
+    key: string,
+    fallback: string,
+  ) => {
+    const title = `${projectName(pid)} — 작업 완료`;
+    let body = fallback;
+    const path = projectPath(pid);
+    if (path) {
+      try {
+        const msg = await ipc.lastAgentMessage(path);
+        if (msg && msg.trim()) body = msg.trim();
+      } catch {
+        /* 트랜스크립트 못 읽음 — 기본 문구 유지 */
+      }
+    }
+    void fire(title, body);
+    fireExternal(title, body, key);
+  };
+
   // 프로젝트 단위 엣지 (project-inactive / always)
   useEffect(() => {
     const m = modeRef.current;
@@ -101,9 +125,7 @@ export function useAgentNotifications() {
       for (const [pid, st] of Object.entries(byProject)) {
         if (st === "done" && prev[pid] === "working") {
           if (m === "project-inactive" && document.hasFocus()) continue;
-          const body = `${projectName(pid)} — 작업이 끝났습니다`;
-          void fire("AI 작업 완료", body);
-          fireExternal("AI 작업 완료", body, `p:${pid}`);
+          void fireDone(pid, `p:${pid}`, "작업이 끝났습니다");
         }
       }
     }
@@ -118,9 +140,7 @@ export function useAgentNotifications() {
       for (const [tid, st] of Object.entries(byTerminal)) {
         if (st === "done" && prev[tid] === "working") {
           const pid = listTerminals().find((t) => t.id === tid)?.projectId;
-          const body = `${projectName(pid)} — 터미널 작업이 끝났습니다`;
-          void fire("AI 작업 완료", body);
-          fireExternal("AI 작업 완료", body, `t:${tid}`);
+          void fireDone(pid, `t:${tid}`, "터미널 작업이 끝났습니다");
         }
       }
     }

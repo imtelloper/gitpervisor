@@ -363,6 +363,7 @@ pub fn run() {
             monitor::kill_processes,
             proc_icons::get_process_icons,
             claude_usage::claude_usage,
+            claude_usage::last_agent_message,
             db::db_list_connections,
             db::db_save_connection,
             db::db_delete_connection,
