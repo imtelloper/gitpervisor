@@ -1,3 +1,4 @@
+mod claude_usage;
 mod commands;
 mod db;
 mod error;
@@ -361,6 +362,7 @@ pub fn run() {
             monitor::sys_process_snapshot,
             monitor::kill_processes,
             proc_icons::get_process_icons,
+            claude_usage::claude_usage,
             db::db_list_connections,
             db::db_save_connection,
             db::db_delete_connection,

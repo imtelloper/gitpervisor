@@ -337,6 +337,18 @@ export function useStatus(projectId: string | null) {
   };
 }
 
+/** Claude 사용량(rate_limits) — statusline.js가 떨군 파일을 읽어 좌측 하단 바에 표시.
+ *  파일은 Claude Code가 statusline을 갱신할 때마다 바뀌므로 60초 폴링이면 충분. */
+export function useClaudeUsage() {
+  return useQuery({
+    queryKey: ["claude-usage"],
+    queryFn: ipc.claudeUsage,
+    refetchInterval: 60_000,
+    staleTime: 30_000,
+    retry: false,
+  });
+}
+
 // ---- Rust target 용량 관리 (commands/disk.rs) ----
 
 /**

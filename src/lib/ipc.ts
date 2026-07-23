@@ -392,6 +392,17 @@ export interface KillOutcome {
   failed: number[];
 }
 
+// ---- Claude 사용량(rate_limits) — 좌측 하단 usage 바 ----
+export interface UsageWindow {
+  key: string; // five_hour / seven_day / seven_day_opus …
+  usedPercentage: number;
+  resetsAt: number | null; // epoch초 — 리셋까지 시간 계산용
+}
+export interface ClaudeUsage {
+  windows: UsageWindow[];
+  updatedAt: number; // 파일 마지막 갱신 epoch초 (오래되면 숨김)
+}
+
 // ---- 파일 트리 ----
 export interface DirEntry {
   name: string;
@@ -963,6 +974,13 @@ export const ipc = {
     callMutating<KillOutcome>("kill_processes", { pids }),
   // 파일 위치 열기 — 탐색기에서 폴더 열고 그 파일 선택(리소스 모니터).
   revealPath: (path: string) => callMutating<void>("reveal_path", { path }),
+  // Claude 사용량 — statusline.js가 떨군 ~/.claude/gitpervisor-usage.json을 읽어 반환(없으면 null).
+  claudeUsage: () =>
+    call<ClaudeUsage | null>(
+      "claude_usage",
+      {},
+      { lane: "background", attempts: 1, timeoutMs: 3000 },
+    ),
 
   // ---- 변경 커맨드 (재시도 없음) ----
   stageFiles: (projectId: string, paths: string[]) =>
