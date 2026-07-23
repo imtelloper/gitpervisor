@@ -3,9 +3,10 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use sysinfo::{Disks, ProcessRefreshKind, ProcessesToUpdate, System};
+use sysinfo::{Disks, Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use tauri::State;
 
+use crate::error::{ErrorCode, IpcError};
 use crate::state::AppState;
 
 /// 타이틀바 시스템 모니터 페이로드 (퍼센트 + 절대값 툴팁용).
@@ -38,6 +39,15 @@ pub struct ProcessSample {
     pub gpu: Option<f32>,
     /// 프로그램별 합산 행이면 묶인 프로세스 수, 개별 모드에선 null
     pub group_count: Option<u32>,
+    /// exe 절대경로 — 아이콘 캐시 키 + "파일 위치 열기". 못 읽으면(시스템 프로세스 등) None.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exe_path: Option<String>,
+    /// 이번 collect 간격의 디스크 read+write 바이트/초. 측정 불가면 None.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disk_bps: Option<u64>,
+    /// 그룹 모드에서만 — 묶인 멤버 pid 전체("작업 끝내기"가 앱 전체를 종료).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_pids: Option<Vec<u32>>,
 }
 
 /// 팝업이 틱당 커맨드 1개만 폴링하도록 totals까지 실어 보내는 배치 응답 (§3.3).
@@ -60,6 +70,16 @@ pub enum ProcSortKey {
     Ram,
     /// Gpu 정렬 시 None(측정 대상 아님)은 항상 뒤로
     Gpu,
+    /// Disk(read+write bps) 정렬 — None은 뒤로
+    Disk,
+}
+
+/// 작업 끝내기 결과 — 종료 성공 수 + 실패(권한 부족·이미 종료 등) pid 목록.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KillOutcome {
+    pub killed: u32,
+    pub failed: Vec<u32>,
 }
 
 /// 근접 폴링(타이틀바 2s + 팝업 2s) 시 PDH·CPU 델타 표본이 겹치지 않게 하는 스로틀 —
@@ -163,14 +183,23 @@ impl Monitor {
         {
             return;
         }
+        // 디스크 바이트/초 환산용 실측 간격 — 직전 refresh_procs와의 경과 시간.
+        let secs = self
+            .last_proc_collect
+            .map_or(0.0, |t| t.elapsed().as_secs_f64())
+            .max(0.001);
         self.last_proc_collect = Some(Instant::now());
 
-        // 최소 갱신(CPU·메모리만)으로 수백 프로세스 열거 비용을 줄인다. remove_dead=true —
+        // CPU·메모리에 더해 exe 경로(불변이라 1회만)와 디스크 I/O를 갱신한다. remove_dead=true —
         // 죽은 프로세스를 목록에서 정리해 다음 표본에 유령이 남지 않게 한다.
         self.sys.refresh_processes_specifics(
             ProcessesToUpdate::All,
             true,
-            ProcessRefreshKind::nothing().with_cpu().with_memory(),
+            ProcessRefreshKind::nothing()
+                .with_cpu()
+                .with_memory()
+                .with_exe(UpdateKind::OnlyIfNotSet)
+                .with_disk_usage(),
         );
 
         // Process::cpu_usage()는 코어 1개 기준 %(멀티코어에서 100 초과 가능) —
@@ -179,6 +208,9 @@ impl Monitor {
         let mut out = Vec::with_capacity(self.sys.processes().len());
         for (pid, p) in self.sys.processes() {
             let pid = pid.as_u32();
+            // 이번 간격의 read+written(누적이 아닌 델타)을 초당으로 환산.
+            let du = p.disk_usage();
+            let bytes = du.read_bytes + du.written_bytes;
             out.push(ProcessSample {
                 pid,
                 name: p.name().to_string_lossy().into_owned(),
@@ -187,9 +219,31 @@ impl Monitor {
                 // GPU를 안 쓴 프로세스는 PDH 인스턴스 자체가 없다 → None
                 gpu: self.gpu_by_pid.get(&pid).copied(),
                 group_count: None,
+                exe_path: p.exe().map(|e| e.display().to_string()),
+                disk_bps: Some((bytes as f64 / secs) as u64),
+                group_pids: None,
             });
         }
         self.procs = out;
+    }
+
+    /// pid 목록을 종료한다(작업 끝내기). 권한 부족·이미 종료 등 실패한 pid는 그대로 돌려준다.
+    /// 목록이 stale해 pid가 안 잡히면 실패로 본다(사용자가 새로고침 후 재시도).
+    pub fn kill(&mut self, pids: &[u32]) -> KillOutcome {
+        let mut killed = 0u32;
+        let mut failed = Vec::new();
+        for &pid in pids {
+            let ok = self
+                .sys
+                .process(Pid::from_u32(pid))
+                .map_or(false, |p| p.kill());
+            if ok {
+                killed += 1;
+            } else {
+                failed.push(pid);
+            }
+        }
+        KillOutcome { killed, failed }
     }
 
     /// 팝업용 프로세스 스냅샷 — Rust에서 그룹 합산·정렬·Top-N 절단까지 끝내 보낸다 (§3.3).
@@ -218,12 +272,13 @@ impl Monitor {
     }
 }
 
-/// 정렬 기준 지표값 — Gpu에서 None은 항상 최소(뒤로).
+/// 정렬 기준 지표값 — Gpu/Disk에서 None은 항상 최소(뒤로).
 fn metric(r: &ProcessSample, key: ProcSortKey) -> f64 {
     match key {
         ProcSortKey::Cpu => r.cpu as f64,
         ProcSortKey::Ram => r.ram as f64,
         ProcSortKey::Gpu => r.gpu.map_or(-1.0, |g| g as f64),
+        ProcSortKey::Disk => r.disk_bps.map_or(-1.0, |d| d as f64),
     }
 }
 
@@ -238,14 +293,17 @@ fn sort_samples(rows: &mut [ProcessSample], key: ProcSortKey) {
             (None, Some(_)) => std::cmp::Ordering::Greater,
             (None, None) => std::cmp::Ordering::Equal,
         },
+        ProcSortKey::Disk => b.disk_bps.cmp(&a.disk_bps),
     });
 }
 
-/// 같은 이름 프로세스 합산("프로그램별" 보기) — cpu·ram·gpu는 합(gpu는 100 캡),
-/// pid는 정렬 기준 값이 가장 큰 최대 기여자, group_count는 묶인 프로세스 수 (§4.1).
+/// 같은 이름 프로세스 합산("프로그램별" 보기) — cpu·ram·gpu·disk는 합(gpu는 100 캡),
+/// pid는 정렬 기준 값이 가장 큰 최대 기여자, group_count는 묶인 프로세스 수, group_pids는
+/// 묶인 pid 전체("작업 끝내기"가 앱 전체를 종료) (§4.1).
 fn group_samples(rows: &[ProcessSample], key: ProcSortKey) -> Vec<ProcessSample> {
     struct Acc {
         out: ProcessSample,
+        pids: Vec<u32>,
         /// 최대 기여자 판정용 — 지금까지의 개별(비합산) 최대 지표값.
         best: f64,
     }
@@ -256,25 +314,44 @@ fn group_samples(rows: &[ProcessSample], key: ProcSortKey) -> Vec<ProcessSample>
             None => {
                 let mut out = r.clone();
                 out.group_count = Some(1);
-                by_name.insert(r.name.clone(), Acc { out, best: m });
+                by_name.insert(
+                    r.name.clone(),
+                    Acc {
+                        out,
+                        pids: vec![r.pid],
+                        best: m,
+                    },
+                );
             }
             Some(acc) => {
                 acc.out.cpu += r.cpu;
                 acc.out.ram += r.ram;
+                acc.out.disk_bps = Some(
+                    acc.out.disk_bps.unwrap_or(0) + r.disk_bps.unwrap_or(0),
+                );
                 // 하나라도 측정값이 있으면 합산(100 캡), 전부 None이면 None 유지.
                 acc.out.gpu = match (acc.out.gpu, r.gpu) {
                     (None, None) => None,
                     (a, b) => Some((a.unwrap_or(0.0) + b.unwrap_or(0.0)).min(100.0)),
                 };
                 acc.out.group_count = Some(acc.out.group_count.unwrap_or(1) + 1);
+                acc.pids.push(r.pid);
                 if m > acc.best {
                     acc.best = m;
                     acc.out.pid = r.pid;
+                    // 최대 기여자의 exe 경로를 대표로(아이콘·파일 위치가 그 프로세스 기준).
+                    acc.out.exe_path = r.exe_path.clone();
                 }
             }
         }
     }
-    by_name.into_values().map(|a| a.out).collect()
+    by_name
+        .into_values()
+        .map(|mut a| {
+            a.out.group_pids = Some(a.pids);
+            a.out
+        })
+        .collect()
 }
 
 fn pct(used: u64, total: u64) -> f32 {
@@ -305,6 +382,25 @@ pub fn sys_process_snapshot(
         .lock()
         .unwrap()
         .snapshot(sort_by, limit, group_by_name)
+}
+
+/// 작업 끝내기 — pid 목록을 종료한다. 프론트가 파괴적 확인을 거친 뒤 호출한다.
+/// 실패 pid가 있으면(권한 부족·이미 종료) 그대로 반환해 프론트가 토스트로 안내한다.
+#[tauri::command]
+pub fn kill_processes(
+    state: State<'_, AppState>,
+    pids: Vec<u32>,
+) -> Result<KillOutcome, IpcError> {
+    // 앱 자신은 종료 대상에서 제외 — 실수로 모니터/앱을 죽이지 않게.
+    let self_pid = std::process::id();
+    let targets: Vec<u32> = pids.into_iter().filter(|&p| p != self_pid).collect();
+    if targets.is_empty() {
+        return Err(IpcError::new(
+            ErrorCode::Io,
+            "종료할 프로세스가 없습니다",
+        ));
+    }
+    Ok(state.monitor.lock().unwrap().kill(&targets))
 }
 
 // ---- GPU: Windows PDH "GPU Engine" 사용률(전 어댑터 집계) ----

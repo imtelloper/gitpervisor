@@ -376,13 +376,21 @@ export interface ProcessSample {
   ram: number; // bytes
   gpu: number | null; // Windows PDH 3D 엔진 pid 집계, 그 외/비대상 null
   groupCount: number | null; // 프로그램별 합산 행이면 묶인 프로세스 수
+  exePath?: string; // exe 절대경로 — 아이콘 키·파일 위치 열기. 미해결이면 생략
+  diskBps?: number; // 디스크 read+write 바이트/초. 측정 불가면 생략
+  groupPids?: number[]; // 그룹 모드에서 묶인 멤버 pid 전체(작업 끝내기 대상)
 }
 export interface ProcessSnapshot {
   totals: SysMetrics; // 팝업 헤더 게이지 — 별도 sys_metrics 호출 불필요(배치)
   processes: ProcessSample[]; // 정렬·Top-N 절단 완료
   totalCount: number; // 절단 전 행 수 ("… 외 N개")
 }
-export type ProcSortKey = "cpu" | "ram" | "gpu";
+export type ProcSortKey = "cpu" | "ram" | "gpu" | "disk";
+/** 작업 끝내기 결과 — 종료 성공 수 + 실패(권한 부족·이미 종료) pid. */
+export interface KillOutcome {
+  killed: number;
+  failed: number[];
+}
 
 // ---- 파일 트리 ----
 export interface DirEntry {
@@ -943,6 +951,18 @@ export const ipc = {
   // 리소스 모니터 팝업 창(싱글턴 라벨 "sysmon") — origin 전달은 floating.ts 전례와 동일.
   openSysmonWindow: () =>
     invoke<void>("open_sysmon_window", { origin: window.location.origin }),
+  // 프로세스 아이콘 배치 조회 — 캐시에 없는 exe 경로만 추출(정적이라 세션당 1회). background 레인.
+  getProcessIcons: (paths: string[]) =>
+    call<Record<string, string>>(
+      "get_process_icons",
+      { paths },
+      { lane: "background", attempts: 1, timeoutMs: 6000 },
+    ),
+  // 작업 끝내기 — pid 목록 종료(프론트가 파괴적 확인 후 호출). 실패 pid는 결과로 안내.
+  killProcesses: (pids: number[]) =>
+    callMutating<KillOutcome>("kill_processes", { pids }),
+  // 파일 위치 열기 — 탐색기에서 폴더 열고 그 파일 선택(리소스 모니터).
+  revealPath: (path: string) => callMutating<void>("reveal_path", { path }),
 
   // ---- 변경 커맨드 (재시도 없음) ----
   stageFiles: (projectId: string, paths: string[]) =>

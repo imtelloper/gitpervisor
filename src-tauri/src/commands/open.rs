@@ -40,6 +40,48 @@ fn spawn_err(what: &str, e: std::io::Error) -> IpcError {
     IpcError::new(ErrorCode::Io, format!("{what} 열기 실패: {e}"))
 }
 
+/// 임의 파일을 탐색기에서 "폴더 열고 그 파일 선택"으로 연다 (리소스 모니터 → 파일 위치 열기).
+/// 경로는 우리 프로세스 스냅샷(exePath)에서 오며 임의 사용자 입력이 아니다.
+#[tauri::command]
+pub fn reveal_path(path: String) -> Result<(), IpcError> {
+    let p = Path::new(&path);
+    if !p.exists() {
+        return Err(IpcError::new(ErrorCode::NotFound, "경로를 찾을 수 없습니다"));
+    }
+    reveal(p)
+}
+
+#[cfg(windows)]
+fn reveal(path: &Path) -> Result<(), IpcError> {
+    // explorer /select,<path> — 폴더를 열고 그 파일을 선택 표시한다.
+    Command::new("explorer")
+        .arg(format!("/select,{}", path.display()))
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| spawn_err("탐색기", e))
+}
+
+#[cfg(target_os = "macos")]
+fn reveal(path: &Path) -> Result<(), IpcError> {
+    Command::new("open")
+        .args(["-R"])
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| spawn_err("탐색기", e))
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn reveal(path: &Path) -> Result<(), IpcError> {
+    // 파일 선택 표준이 없어 부모 폴더를 연다.
+    let dir = path.parent().unwrap_or(path);
+    Command::new("xdg-open")
+        .arg(dir)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| spawn_err("탐색기", e))
+}
+
 /// 파일트리에서 실행 파일을 더블클릭 → OS 기본 실행기로 띄운다(탐색기 더블클릭과 동일).
 /// 경로는 resolve_in_repo로 레포 안임을 보장한다(프론트가 실행 가능 확장자만 호출하지만 방어적).
 /// 프론트는 호출 전에 확인 다이얼로그를 띄운다 — 임의 실행 파일 구동의 안전장치.

@@ -79,7 +79,10 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 
 [target.'cfg(windows)'.dependencies]
 # Win32_UI_Shell: 파일트리 실행 파일 더블클릭을 ShellExecuteW로 띄운다(cmd 셸 파싱 우회 — 인젝션 차단).
-windows-sys = { version = "0.59", features = ["Win32_System_Performance", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Foundation"] }
+# Win32_Graphics_Gdi: 리소스 모니터 프로세스 아이콘 추출(HICON→BGRA, GetIconInfo/GetDIBits).
+windows-sys = { version = "0.59", features = ["Win32_System_Performance", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_Foundation"] }
+# 추출한 아이콘 BGRA→PNG 인코딩(리소스 모니터). tauri image-png가 같은 0.25를 트리에 가져 비용 미미.
+image = { version = "0.25", default-features = false, features = ["png"] }
 clipboard-win = "5"
 # AI 완료 OS 토스트를 앱 AUMID로 직접 띄운다 — 알림 플러그인은 dev(target/debug)에서 app_id를
 # 안 붙여 PowerShell 명의로 뜨므로, 직접 토스트 + AUMID(DisplayName/Icon) 레지스트리 등록으로 대체.

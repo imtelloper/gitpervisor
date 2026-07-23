@@ -19,7 +19,9 @@ export function loadSysmonPrefs(): SysmonPrefs {
     if (raw) {
       const p = JSON.parse(raw) as Partial<SysmonPrefs>;
       const sortBy: ProcSortKey =
-        p.sortBy === "ram" || p.sortBy === "gpu" ? p.sortBy : "cpu";
+        p.sortBy === "ram" || p.sortBy === "gpu" || p.sortBy === "disk"
+          ? p.sortBy
+          : "cpu";
       return { sortBy, groupByName: !!p.groupByName };
     }
   } catch {

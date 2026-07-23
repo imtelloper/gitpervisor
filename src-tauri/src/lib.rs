@@ -6,6 +6,7 @@ mod git;
 mod lsp;
 mod monitor;
 mod notifications;
+mod proc_icons;
 mod state;
 mod tools;
 mod watcher;
@@ -299,6 +300,7 @@ pub fn run() {
             commands::set_settings,
             commands::open_in,
             commands::run_executable,
+            commands::reveal_path,
             commands::list_dir,
             commands::list_project_roots,
             commands::list_repo_files,
@@ -357,6 +359,8 @@ pub fn run() {
             commands::clear_crash_log,
             monitor::sys_metrics,
             monitor::sys_process_snapshot,
+            monitor::kill_processes,
+            proc_icons::get_process_icons,
             db::db_list_connections,
             db::db_save_connection,
             db::db_delete_connection,

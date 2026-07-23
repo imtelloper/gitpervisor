@@ -41,6 +41,9 @@ pub struct AppState {
     pub freshness: RwLock<HashMap<String, RemoteFreshness>>,
     /// LSP 세션 레지스트리 ("{projectId}:{lang}" → 서버) — 장수 child, 태스크 17.
     pub lsp: Mutex<HashMap<String, crate::commands::LspSession>>,
+    /// 리소스 모니터 프로세스 아이콘 캐시 (exe 경로 → base64 PNG). 모니터와 별도 뮤텍스라
+    /// 아이콘 추출이 2s 폴링을 막지 않는다.
+    pub icons: crate::proc_icons::IconCache,
 }
 
 impl AppState {
@@ -57,6 +60,7 @@ impl AppState {
             http: Mutex::new(HttpReg::default()),
             freshness: RwLock::new(HashMap::new()),
             lsp: Mutex::new(HashMap::new()),
+            icons: crate::proc_icons::IconCache::default(),
         }
     }
 

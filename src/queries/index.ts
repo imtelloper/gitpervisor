@@ -233,8 +233,8 @@ export function useSysMetrics() {
   });
 }
 
-/** 리소스 모니터 팝업의 Top-N 행 수 (태스크 05 §1 — 기본 20). */
-const PROC_SNAPSHOT_LIMIT = 20;
+/** 리소스 모니터 팝업의 Top-N 행 수 — 작업관리자 수준으로 넉넉히(스크롤+검색으로 소화). */
+const PROC_SNAPSHOT_LIMIT = 200;
 
 /**
  * 리소스 모니터 팝업 — 프로세스 스냅샷 2초 폴링(틱당 커맨드 1개, totals 포함 배치).
