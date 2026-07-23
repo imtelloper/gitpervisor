@@ -77,6 +77,8 @@ jobs:
           tagName: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           releaseName: "Gitpervisor ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
           releaseBody: "See the assets below to download and install."
-          releaseDraft: true
+          # 자동 공개: draft면 /releases/latest API가 404 → 웹사이트 다운로드 버튼이
+          # 릴리스 목록 페이지로 폴백된다. 태그 푸시만으로 설치 파일이 링크되도록 공개.
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
