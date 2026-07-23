@@ -240,12 +240,25 @@ export const useUi = create<UiState>((set) => ({
     set((s) => {
       if (!target) return { selectedDiff: null, selectedDiffRepoId: null };
       const outerId = s.selectedProjectId;
+      // 모아보기 중 파일을 열면(사이드바 트리·퀵오픈·심볼검색·정의 이동) 모아보기를 닫고
+      // 그 프로젝트를 뷰어 탭으로 전환한다 — 안 그러면 연 파일이 모아보기에 가려 안 보인다.
+      // 동적 import: 정적으로 걸면 ui→terminals→lib/terminal→ui 순환이라 시작 시 TDZ 위험.
+      if (s.aggregateOpen && outerId)
+        void import("./terminals").then((m) =>
+          m.useTerminals.getState().setActiveTab(outerId, "viewer"),
+        );
+      const closeAggregate = s.aggregateOpen;
       if (!outerId)
-        return { selectedDiff: target, selectedDiffRepoId: repoId ?? null };
+        return {
+          selectedDiff: target,
+          selectedDiffRepoId: repoId ?? null,
+          ...(closeAggregate && { aggregateOpen: false }),
+        };
       const key = viewerTabKey(target, repoId ?? null, outerId);
       const tab: ViewerFileTab = { key, outerId, repoId: repoId ?? null, target };
       const idx = s.viewerTabs.findIndex((t) => t.key === key);
       return {
+        ...(closeAggregate && { aggregateOpen: false }),
         selectedDiff: target,
         selectedDiffRepoId: repoId ?? null,
         // 프로젝트별 "마지막 활성 파일" 갱신 — 전환 후 복귀 시 이 파일로 돌아온다.
