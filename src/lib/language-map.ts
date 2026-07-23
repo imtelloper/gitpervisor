@@ -39,6 +39,8 @@ const EXT_LANG: Record<string, string> = {
   ini: "ini",
   cfg: "ini",
   conf: "ini",
+  env: "ini", // production.env 등 — KEY=value + # 주석은 ini 토크나이저가 잘 처리
+  properties: "ini",
   xml: "xml",
   svg: "xml",
   sql: "sql",
@@ -53,6 +55,8 @@ const EXT_LANG: Record<string, string> = {
 export function languageOf(path: string): string {
   const base = path.split("/").pop() ?? path;
   if (/^dockerfile$/i.test(base)) return "dockerfile";
+  // .env / .env.local / .env.production … — dotfile이라 확장자 규칙에 안 걸려 별도 처리.
+  if (base === ".env" || base.startsWith(".env.")) return "ini";
   const dot = base.lastIndexOf(".");
   if (dot <= 0) return "plaintext";
   return EXT_LANG[base.slice(dot + 1).toLowerCase()] ?? "plaintext";
