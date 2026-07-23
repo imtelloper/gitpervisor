@@ -42,6 +42,7 @@ export function AggregateTerminals() {
   const terminals = useTerminals((s) => s.terminals);
   const openTerminal = useTerminals((s) => s.openTerminal);
   const closePane = useTerminals((s) => s.closePane);
+  const askConfirm = useUi((s) => s.askConfirm);
   const byTerminal = useAgentActivity((s) => s.byTerminal);
   // 드래그로 조절한 그리드 트랙(shape별 fr 배열) — ui 스토어에 영속돼 여닫아도 유지된다.
   const aggregateTracks = useUi((s) => s.aggregateTracks);
@@ -281,7 +282,15 @@ export function AggregateTerminals() {
                   canRight={c < rowCells.length - 1}
                   canBottom={r < rowsOfCells.length - 1}
                   onResizeStart={(e, axis) => startResize(e, r, c, axis)}
-                  onClose={() => closePane(t.tabId, t.paneId)}
+                  onClose={() =>
+                    askConfirm({
+                      title: "터미널 닫기",
+                      message: `'${t.projName} · ${t.tabTitle}' 터미널을 닫을까요? 실행 중인 프로세스가 종료됩니다.`,
+                      confirmLabel: "닫기",
+                      danger: true,
+                      onConfirm: () => closePane(t.tabId, t.paneId),
+                    })
+                  }
                 />
               ))}
             </div>
