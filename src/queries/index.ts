@@ -6,7 +6,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import type {
   DiffTarget,
@@ -22,6 +22,8 @@ import { errorMessage, ipc, isIpcError } from "../lib/ipc";
 import { useDb } from "../stores/db";
 import type { SyncOp } from "../stores/ops";
 import { useOps } from "../stores/ops";
+import { useTerminals } from "../stores/terminals";
+import { useTreeState } from "../stores/treeState";
 import { useUi } from "../stores/ui";
 
 const LOG_PAGE_SIZE = 200;
@@ -666,6 +668,46 @@ export function useRemoveProject() {
         (old ?? []).filter((p) => p.id !== id),
       );
       void qc.invalidateQueries({ queryKey: keys.projects });
+    },
+    onError: (e) => useUi.getState().pushToast("error", errorMessage(e)),
+  });
+}
+
+/** 프로젝트 제거 + 프론트 상태 정리(터미널 PTY·뷰어 탭·트리 펼침·선택 해제) —
+ *  사이드바(X·우클릭 메뉴)와 경로 소실 복구 화면 공용. */
+export function useRemoveProjectFull() {
+  const removeMutate = useRemoveProject().mutate;
+  return useCallback(
+    (id: string) => {
+      useTerminals.getState().closeProjectTerminals(id); // PTY 정리 (설계 §16.8)
+      useUi.getState().closeProjectViewerTabs(id);
+      useTreeState.getState().clearProject(id);
+      removeMutate(id, {
+        onSuccess: () => {
+          if (useUi.getState().selectedProjectId === id)
+            useUi.getState().selectProject(null);
+        },
+      });
+    },
+    [removeMutate],
+  );
+}
+
+/** 옮긴 프로젝트 폴더의 등록 경로 변경 — 목록 캐시를 즉시 갱신하고 그 프로젝트의
+ *  상태·트리·diff를 재조회한다(경로가 바뀌었으니 전부 새 위치 기준). */
+export function useUpdateProjectPath() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, path }: { id: string; path: string }) =>
+      ipc.updateProjectPath(id, path),
+    onSuccess: (project) => {
+      qc.setQueryData<Project[]>(keys.projects, (old) =>
+        (old ?? []).map((p) => (p.id === project.id ? project : p)),
+      );
+      void qc.invalidateQueries({ queryKey: keys.projects });
+      void qc.invalidateQueries({ queryKey: ["dir"] });
+      invalidateRepoData(qc);
+      useUi.getState().pushToast("success", `경로 변경됨 — ${project.path}`);
     },
     onError: (e) => useUi.getState().pushToast("error", errorMessage(e)),
   });

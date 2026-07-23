@@ -694,6 +694,9 @@ export const ipc = {
   /** 부모 폴더 아래 새 프로젝트 폴더 생성(옵션 git init) → 절대경로 반환(이어서 addProject). */
   createProjectFolder: (parentDir: string, name: string, gitInit: boolean) =>
     call<string>("create_project_folder", { parentDir, name, gitInit }),
+  /** 옮긴 프로젝트 폴더의 등록 경로 변경 — id·순서·메모 유지, 이름은 새 폴더명으로. */
+  updateProjectPath: (id: string, path: string) =>
+    call<Project>("update_project_path", { id, path }),
   removeProject: (id: string) => call<void>("remove_project", { id }),
   // 사이드바 드래그 순서 영속화 — 새 id 순서대로 order 재할당. 재시도 금지.
   reorderProjects: (orderedIds: string[]) =>

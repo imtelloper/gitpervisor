@@ -78,23 +78,18 @@ pub fn list_projects(state: State<'_, AppState>) -> Vec<Project> {
     projects
 }
 
-#[tauri::command]
-pub async fn add_project(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    path: String,
-) -> Result<Project, IpcError> {
-    let dir = PathBuf::from(&path);
+/// 프로젝트 폴더 경로 정규화 — git 레포면 서브디렉토리를 골라도 레포 루트로,
+/// 이어서 canonicalize. 비-git 폴더는 초안 단계로 그대로 허용(사용자가 나중에 `git init`하면
+/// watcher가 .git 생성을 감지해 상태가 자동 갱신된다). (정규화된 경로, 폴더 이름)을 돌려준다.
+/// add_project / update_project_path 공용.
+async fn normalize_project_dir(path: &str) -> Result<(String, String), IpcError> {
+    let dir = PathBuf::from(path);
     if !dir.is_dir() {
         return Err(IpcError::new(
             ErrorCode::NotFound,
             format!("폴더를 찾을 수 없습니다: {path}"),
         ));
     }
-
-    // git 레포면 서브디렉토리를 골라도 레포 루트로 정규화해 등록한다.
-    // 비-git 폴더는 초안 단계로 그대로 허용 — 사용자가 나중에 `git init`하면 watcher가
-    // .git 생성을 감지해 상태가 자동 갱신된다.
     let target = match runner::run_git(
         Some(&dir),
         &["rev-parse", "--show-toplevel"],
@@ -108,11 +103,20 @@ pub async fn add_project(
     let canonical = dunce::canonicalize(&target)
         .map_err(|e| IpcError::new(ErrorCode::Io, format!("경로 정규화 실패: {e}")))?;
     let canonical_str = canonical.display().to_string();
-
     let name = canonical
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| canonical_str.clone());
+    Ok((canonical_str, name))
+}
+
+#[tauri::command]
+pub async fn add_project(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<Project, IpcError> {
+    let (canonical_str, name) = normalize_project_dir(&path).await?;
 
     let project = {
         let mut projects = state.projects.write().unwrap();
@@ -195,6 +199,50 @@ pub async fn create_project_folder(
     let canonical = dunce::canonicalize(&dir)
         .map_err(|e| IpcError::new(ErrorCode::Io, format!("경로 정규화 실패: {e}")))?;
     Ok(canonical.display().to_string())
+}
+
+/// 프로젝트 폴더를 옮긴 뒤 등록 경로를 새 위치로 바꾼다 — id·순서·등록일·메모는 유지되고
+/// 이름은 새 폴더명으로 갱신, watcher는 새 경로로 재등록한다.
+#[tauri::command]
+pub async fn update_project_path(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    path: String,
+) -> Result<Project, IpcError> {
+    let (canonical_str, name) = normalize_project_dir(&path).await?;
+
+    let project = {
+        let mut projects = state.projects.write().unwrap();
+        if projects
+            .iter()
+            .any(|p| p.id != id && p.path.eq_ignore_ascii_case(&canonical_str))
+        {
+            return Err(IpcError::new(
+                ErrorCode::DuplicateProject,
+                format!("이미 등록된 프로젝트입니다: {canonical_str}"),
+            ));
+        }
+        let Some(p) = projects.iter_mut().find(|p| p.id == id) else {
+            return Err(IpcError::new(
+                ErrorCode::NotFound,
+                "프로젝트를 찾을 수 없습니다",
+            ));
+        };
+        p.path = canonical_str;
+        p.name = name;
+        p.clone()
+    };
+
+    state::save_projects(&app, &state.projects.read().unwrap())?;
+    // 옛 경로 감시 해제 후 새 경로로 재등록(add_project와 동일하게 백그라운드로).
+    crate::watcher::unregister(&app, &id);
+    let watch_app = app.clone();
+    let watch_project = project.clone();
+    std::thread::spawn(move || {
+        crate::watcher::register(&watch_app, &watch_project);
+    });
+    Ok(project)
 }
 
 /// 사이드바 드래그로 정한 새 순서를 영속화한다 — 주어진 순서대로 order를 0..n 재할당.

@@ -18,6 +18,7 @@ import { LogPanel } from "./components/log/LogPanel";
 import { MemoDialog } from "./components/memo/MemoDialog";
 import { SettingsDialog } from "./components/settings/SettingsDialog";
 import { ProjectList } from "./components/sidebar/ProjectList";
+import { ProjectPathMissing } from "./components/ProjectPathMissing";
 import { StatusBar } from "./components/StatusBar";
 import { TitleBar } from "./components/TitleBar";
 import { Toolbar } from "./components/toolbar/Toolbar";
@@ -30,6 +31,7 @@ import {
   useProjectRootsPrefetch,
   useProjects,
   useSettings,
+  useStatus,
 } from "./queries";
 import { useUi } from "./stores/ui";
 
@@ -86,6 +88,10 @@ export default function App() {
 
   const selected = projects?.find((p) => p.id === selectedProjectId) ?? null;
 
+  // 선택 프로젝트의 경로 소실(폴더 이동/삭제) 감지 — 문구는 백엔드 status_of와 동일(단일 진실).
+  const { data: selStatus } = useStatus(selectedProjectId);
+  const pathMissing = selStatus?.error === "프로젝트 경로를 찾을 수 없습니다";
+
   // 첫 로드 시 첫 프로젝트 자동 선택, 선택된 프로젝트가 제거되면 선택 정리
   useEffect(() => {
     if (!projects) return;
@@ -111,6 +117,8 @@ export default function App() {
               <main className="flex min-w-0 flex-1 flex-col">
                 {aggregateOpen ? (
                   <AggregateTerminals />
+                ) : selected && pathMissing ? (
+                  <ProjectPathMissing project={selected} />
                 ) : selected ? (
                   <>
                     <Toolbar project={selected} />

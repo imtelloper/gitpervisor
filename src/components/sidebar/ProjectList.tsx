@@ -6,6 +6,7 @@ import {
   Download,
   FolderOpen,
   FolderPlus,
+  FolderSync,
   HardDrive,
   Plus,
   RefreshCw,
@@ -24,13 +25,12 @@ import {
   useProjects,
   useRefreshProjectSizes,
   useProjectGitOps,
-  useRemoveProject,
+  useRemoveProjectFull,
   useReorderProjects,
   useStatuses,
+  useUpdateProjectPath,
 } from "../../queries";
 import { useAgentScanner } from "../../stores/agentActivity";
-import { useTerminals } from "../../stores/terminals";
-import { useTreeState } from "../../stores/treeState";
 import { useUi } from "../../stores/ui";
 import { ResizeHandle } from "../common/ResizeHandle";
 import { ProjectItem } from "./ProjectItem";
@@ -69,7 +69,8 @@ export function ProjectList() {
   const { data: projects } = useProjects();
   const { data: statuses } = useStatuses();
   const addProject = useAddProject();
-  const removeProject = useRemoveProject();
+  const handleRemove = useRemoveProjectFull();
+  const updatePath = useUpdateProjectPath();
   const refreshSizes = useRefreshProjectSizes();
   const selectedProjectId = useUi((s) => s.selectedProjectId);
   const selectProject = useUi((s) => s.selectProject);
@@ -269,25 +270,18 @@ export function ProjectList() {
     });
   }
 
-  // 안정 참조 콜백 — ProjectItem(memo)이 부모 로컬 상태 변화에 재렌더되지 않게 한다.
-  // removeProject(useMutation 결과)는 매 렌더 새 객체라 dep로 쓰면 콜백이 매번 새로 생겨
-  // memo가 무력화된다 — v5에서 안정 참조인 .mutate만 dep로 잡는다.
-  const removeMutate = removeProject.mutate;
-  const handleRemove = useCallback(
-    (id: string) => {
-      // 제거되는 프로젝트의 열린 터미널 PTY를 정리한다 (설계 §16.8)
-      useTerminals.getState().closeProjectTerminals(id);
-      // 뷰어 탭·활성 파일·트리 펼침 상태도 정리(고아 방지).
-      useUi.getState().closeProjectViewerTabs(id);
-      useTreeState.getState().clearProject(id);
-      removeMutate(id, {
-        onSuccess: () => {
-          if (useUi.getState().selectedProjectId === id) selectProject(null);
-        },
-      });
-    },
-    [removeMutate, selectProject],
-  );
+  // 프로젝트 이동 후 경로 수정 — 새 폴더를 고르면 백엔드가 정규화·중복검사 후 경로를 바꾼다.
+  const updatePathMutate = updatePath.mutate;
+  async function handleEditPath(project: Project) {
+    setMenu(null);
+    const picked = await open({
+      directory: true,
+      multiple: false,
+      title: `'${project.name}'의 새 위치 선택`,
+    });
+    if (!picked || Array.isArray(picked)) return;
+    updatePathMutate({ id: project.id, path: picked });
+  }
 
   const handleItemContextMenu = useCallback(
     (e: React.MouseEvent, project: Project) => {
@@ -465,6 +459,11 @@ export function ProjectList() {
             icon={Copy}
             label="프로젝트 경로 복사"
             onClick={() => handleCopyPath(menu.project)}
+          />
+          <MenuItem
+            icon={FolderSync}
+            label="프로젝트 경로 수정"
+            onClick={() => void handleEditPath(menu.project)}
           />
           <MenuItem
             icon={RefreshCw}
