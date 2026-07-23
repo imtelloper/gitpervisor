@@ -144,8 +144,8 @@ async fn open_sysmon_window(app: tauri::AppHandle, origin: String) -> Result<(),
     app.run_on_main_thread(move || {
         let r = WebviewWindowBuilder::new(&app2, "sysmon", WebviewUrl::External(url))
             .title("리소스 모니터")
-            .inner_size(560.0, 640.0)
-            .min_inner_size(420.0, 360.0)
+            .inner_size(660.0, 640.0)
+            .min_inner_size(480.0, 360.0)
             .center()
             // OS 기본 타이틀바 제거 — 프론트의 커스텀 FloatTitleBar로 대체 (리사이즈 유지)
             .decorations(false)

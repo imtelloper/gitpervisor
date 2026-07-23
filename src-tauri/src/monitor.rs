@@ -227,20 +227,37 @@ impl Monitor {
         self.procs = out;
     }
 
-    /// pid 목록을 종료한다(작업 끝내기). 권한 부족·이미 종료 등 실패한 pid는 그대로 돌려준다.
-    /// 목록이 stale해 pid가 안 잡히면 실패로 본다(사용자가 새로고침 후 재시도).
+    /// pid 목록을 종료한다(작업 끝내기). 성공 판정은 kill() 반환값이 아니라 **실제로 사라졌는지**로
+    /// 한다 — 그룹 종료 시 부모를 죽이면 자식이 연쇄 종료돼 개별 kill()이 false를 줘도 목표(프로세스
+    /// 없음)는 달성되기 때문. 최신 핸들로 종료 시도 → 잠깐 정착 대기 → 재조회해 아직 살아있는 것만
+    /// 실패(진짜 권한 부족)로 돌려준다.
     pub fn kill(&mut self, pids: &[u32]) -> KillOutcome {
+        let targets: Vec<Pid> = pids.iter().map(|&p| Pid::from_u32(p)).collect();
+        // 최신 상태(존재·핸들)로 갱신 후, 현재 살아있는 것들만 종료 시도.
+        self.sys.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&targets),
+            true,
+            ProcessRefreshKind::nothing(),
+        );
+        for pid in &targets {
+            if let Some(p) = self.sys.process(*pid) {
+                p.kill();
+            }
+        }
+        // TerminateProcess가 반영되도록 잠깐 대기(사용자 액션이라 드묾 — 80ms 락 점유 무해).
+        std::thread::sleep(Duration::from_millis(80));
+        self.sys.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&targets),
+            true,
+            ProcessRefreshKind::nothing(),
+        );
         let mut killed = 0u32;
         let mut failed = Vec::new();
-        for &pid in pids {
-            let ok = self
-                .sys
-                .process(Pid::from_u32(pid))
-                .map_or(false, |p| p.kill());
-            if ok {
+        for (&raw, pid) in pids.iter().zip(&targets) {
+            if self.sys.process(*pid).is_none() {
                 killed += 1;
             } else {
-                failed.push(pid);
+                failed.push(raw);
             }
         }
         KillOutcome { killed, failed }
