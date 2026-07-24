@@ -679,6 +679,9 @@ mod tests {
             ram,
             gpu,
             group_count: None,
+            exe_path: None,
+            disk_bps: None,
+            group_pids: None,
         }
     }
 
