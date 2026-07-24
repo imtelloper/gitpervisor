@@ -30,7 +30,7 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # tauri-action reads GITHUB_TOKEN from env (below), not git creds,
           # so keep the contents:write token out of .git/config for later steps.
