@@ -585,9 +585,10 @@ async fn build_mongo_client(
         uri.push('?');
         uri.push_str(opts.trim());
     }
+    // 원시 드라이버 에러는 연결 URI(비밀번호 포함)를 에코할 수 있어 고정 문구로 대체(로그 유출 방지).
     Client::with_uri_str(&uri)
         .await
-        .map_err(|e| err(format!("연결 문자열 오류: {e}")))
+        .map_err(|_| err("연결 문자열이 올바르지 않습니다 (호스트·옵션 확인)".to_string()))
 }
 
 /// userinfo용 퍼센트 인코딩 (unreserved 외 인코딩)
@@ -2166,7 +2167,9 @@ async fn build_redis_client(
         .unwrap_or(0);
     url.push('/');
     url.push_str(&dbnum.to_string());
-    let client = redis::Client::open(url).map_err(|e| err(format!("연결 문자열 오류: {e}")))?;
+    // 원시 드라이버 에러는 연결 URL(비밀번호 포함)을 에코할 수 있어 고정 문구로 대체(로그 유출 방지).
+    let client =
+        redis::Client::open(url).map_err(|_| err("연결 문자열이 올바르지 않습니다 (호스트·옵션 확인)".to_string()))?;
     redis::aio::ConnectionManager::new(client)
         .await
         .map_err(|e| err(format!("연결 실패: {e}")))
@@ -2475,10 +2478,10 @@ fn is_write_redis(cmd_upper: &str) -> bool {
     W.contains(&cmd_upper)
 }
 
-/// 첫 키워드가 쓰기/DDL인지 — read_only 연결의 안전망(완벽한 SQL 파서는 아님).
-fn is_write_sql(query: &str) -> bool {
+/// 쓰기/DDL 키워드 1개인지.
+fn is_write_keyword(kw: &str) -> bool {
     matches!(
-        first_keyword(query).as_str(),
+        kw,
         "INSERT"
             | "UPDATE"
             | "DELETE"
@@ -2495,7 +2498,84 @@ fn is_write_sql(query: &str) -> bool {
             | "BACKUP"
             | "RESTORE"
             | "BULK"
+            | "INTO" // SELECT … INTO (MSSQL 테이블 생성)
     )
+}
+
+/// 문자열 리터럴('…', "…", `…`)·대괄호 식별자([…])·주석(--, /* */)을 공백으로 치환한다.
+/// 리터럴/식별자 안의 키워드·세미콜론이 쓰기 판정을 오염시키지 않게 하는 전처리. UTF-8 안전(char 순회).
+fn scrub_sql_literals(q: &str) -> String {
+    let mut out = String::with_capacity(q.len());
+    let mut chars = q.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            // 라인 주석 -- … EOL
+            '-' if chars.peek() == Some(&'-') => {
+                for n in chars.by_ref() {
+                    if n == '\n' {
+                        break;
+                    }
+                }
+            }
+            // 블록 주석 /* … */
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                let mut prev = '\0';
+                for n in chars.by_ref() {
+                    if prev == '*' && n == '/' {
+                        break;
+                    }
+                    prev = n;
+                }
+            }
+            // 문자열/식별자 인용 — 닫힘까지 스킵('' 이스케이프 처리), 자리엔 공백.
+            '\'' | '"' | '`' => {
+                let quote = c;
+                while let Some(n) = chars.next() {
+                    if n == quote {
+                        if chars.peek() == Some(&quote) {
+                            chars.next(); // 이스케이프된 인용부호
+                            continue;
+                        }
+                        break;
+                    }
+                }
+                out.push(' ');
+            }
+            // 대괄호 식별자 [col] (MSSQL) — 안의 키워드가 오탐되지 않게 제거.
+            '[' => {
+                for n in chars.by_ref() {
+                    if n == ']' {
+                        break;
+                    }
+                }
+                out.push(' ');
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// 쓰기/DDL 여부 — read_only 연결의 안전망. **첫 키워드만** 보던 기존 판정은
+/// `SELECT 1; DELETE …`(스택드) 나 `WITH x AS (DELETE …) SELECT …`(CTE)로 우회됐다.
+/// read_only 연결에서만 호출되므로 과차단은 안전(fail-closed): 리터럴·주석을 제거한 뒤
+/// ①추가 문장(내부 세미콜론) ②아무 데나 등장하는 쓰기 키워드를 모두 쓰기로 본다.
+fn is_write_sql(query: &str) -> bool {
+    // 빠른 경로 — 첫 키워드가 쓰기/DDL.
+    if is_write_keyword(&first_keyword(query)) {
+        return true;
+    }
+    let scrubbed = scrub_sql_literals(query);
+    // 스택드 문장 — 내부 세미콜론 뒤에 내용이 있으면 다중 문장(끝의 `;` 하나는 허용).
+    if scrubbed.split(';').skip(1).any(|s| !s.trim().is_empty()) {
+        return true;
+    }
+    // CTE 본문 등에 숨은 쓰기 키워드 — 단어 경계로 토큰화(밑줄 포함 식별자는 한 토큰).
+    scrubbed
+        .to_ascii_uppercase()
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .any(is_write_keyword)
 }
 
 /// 선행 주석(-- , /* */)·공백을 건너뛴 첫 키워드(대문자).
@@ -3125,5 +3205,21 @@ mod tests {
         assert!(!is_write_sql("SELECT * FROM t"));
         assert!(!is_write_sql("  select top 10 * from t"));
         assert!(!is_write_sql("WITH x AS (SELECT 1) SELECT * FROM x"));
+
+        // 우회 차단(회귀 방지):
+        // 스택드 문장 — 첫 키워드는 SELECT지만 뒤에 DELETE.
+        assert!(is_write_sql("SELECT 1; DELETE FROM t"));
+        // 데이터 변경 CTE — 첫 키워드 WITH.
+        assert!(is_write_sql(
+            "WITH x AS (DELETE FROM t RETURNING *) SELECT * FROM x"
+        ));
+        // SELECT … INTO (MSSQL 테이블 생성).
+        assert!(is_write_sql("SELECT * INTO backup FROM t"));
+
+        // 오탐 없음(리터럴·식별자 속 키워드는 무시, 끝 세미콜론 허용):
+        assert!(!is_write_sql("SELECT * FROM t WHERE note = 'please delete row'"));
+        assert!(!is_write_sql("SELECT deleted_at, updated_at FROM t"));
+        assert!(!is_write_sql("SELECT [delete], [update] FROM t")); // 대괄호 식별자
+        assert!(!is_write_sql("SELECT * FROM t;"));
     }
 }
