@@ -138,15 +138,26 @@ fn navigation_gate(target: &Url) -> bool {
 }
 
 /// URL을 OS 기본 브라우저로 연다 — 다운로드 위임·팝업 생성 실패 폴백·main 창 window.open용.
-/// (tauri-plugin-opener는 이 repo의 Rust 의존성이 아니므로 open.rs처럼 raw Command 사용.)
+/// **보안**: `cmd /C start "" <url>` 는 URL 쿼리의 `& | ^ ( )` 를 cmd 메타문자로 해석해,
+/// 인앱 브라우저에서 로드한 원격 페이지가 유발한 다운로드/window.open URL(예:
+/// `https://evil/?x=1&calc.exe`)로 임의 명령이 실행된다(원격 트리거 RCE). ShellExecuteW "open"은
+/// URL을 셸에 그대로(별도 파싱 없이) 넘기므로 이 인젝션이 불가능하다(open.rs run_file와 동일 방식).
 #[cfg(windows)]
 pub(crate) fn open_external(url: &str) {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let _ = std::process::Command::new("cmd")
-        .args(["/C", "start", "", url])
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn();
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let file: Vec<u16> = url.encode_utf16().chain(std::iter::once(0)).collect();
+    let verb: Vec<u16> = "open\0".encode_utf16().collect();
+    unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            verb.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        );
+    }
 }
 #[cfg(target_os = "macos")]
 pub(crate) fn open_external(url: &str) {

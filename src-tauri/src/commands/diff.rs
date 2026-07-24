@@ -152,9 +152,18 @@ fn build_diff(path: String, old_bytes: Option<Vec<u8>>, new_bytes: Option<Vec<u8
 }
 
 /// 경로는 항상 우리 status 출력에서 오지만, 방어적으로 레포 밖 접근을 차단한다.
+/// Prefix(`C:`)·RootDir(`\`)는 join 시 레포 루트를 통째로 대체한다 — 윈도우에서 `\Windows\...`는
+/// is_absolute()==false지만 드라이브 루트로 튀므로 반드시 함께 거부한다(tree.rs의 쓰기 게이트와 동일).
 fn validate_rel_path(path: &str) -> Result<(), IpcError> {
     let p = Path::new(path);
-    if p.is_absolute() || p.components().any(|c| matches!(c, Component::ParentDir)) {
+    if p.is_absolute()
+        || p.components().any(|c| {
+            matches!(
+                c,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
         return Err(IpcError::new(ErrorCode::Io, "잘못된 파일 경로입니다"));
     }
     Ok(())
