@@ -1,0 +1,8 @@
+version: 2
+updates:
+  # SHA-pinned actions in release.yml don't auto-update; let Dependabot bump
+  # the pins (keeping the # vN comment) when upstream ships fixes.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
