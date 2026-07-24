@@ -1,7 +1,7 @@
 {
   "name": "gitpervisor",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "description": "A developer cockpit that supervises all your local projects from one window — Git, diffs, commit/push, an embedded terminal, a DB workspace, and live AI coding-agent activity detection.",
   "license": "MIT",
