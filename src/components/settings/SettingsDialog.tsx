@@ -12,6 +12,7 @@ import { AppearanceSection } from "./sections/AppearanceSection";
 import { CodeToolsSection } from "./sections/CodeToolsSection";
 import { GeneralSection } from "./sections/GeneralSection";
 import { MaintenanceSection } from "./sections/MaintenanceSection";
+import { UpdateSection } from "./sections/UpdateSection";
 import { NotifySection } from "./sections/NotifySection";
 import { TerminalSection } from "./sections/TerminalSection";
 import {
@@ -334,6 +335,7 @@ export function SettingsDialog() {
                 <MaintenanceSection hl={hl} />
               </div>
             )}
+            {category === "update" && <UpdateSection hl={hl} />}
           </div>
         </div>
 

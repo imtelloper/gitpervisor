@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "desktop-capability",
+  "description": "자동 업데이트(확인·다운로드·설치) + 재실행 — 메인 창 전용. 외부 브라우저/팝업 webview에는 부여하지 않아 IPC 격리를 유지한다.",
+  "platforms": ["macOS", "windows", "linux"],
+  "windows": ["main"],
+  "permissions": ["updater:default", "process:default"]
+}

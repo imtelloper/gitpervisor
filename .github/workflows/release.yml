@@ -77,6 +77,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Monaco 번들링이 기본 Node 힙(~2GB)을 넘겨 OOM → 힙 상향
           NODE_OPTIONS: --max-old-space-size=4096
+          # 자동 업데이트 서명 — 이 키가 있으면 tauri-action이 각 설치본을 서명(.sig)하고
+          # latest.json 업데이트 매니페스트를 생성해 릴리스에 업로드한다. 키/비번은 repo Secrets.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           releaseName: "Gitpervisor ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"

@@ -2,6 +2,7 @@
 // 필드 추가 시 SETTINGS_INDEX에 항목 하나 추가 — E2E 29가 Settings 런타임 키 커버리지를 가드한다.
 import type { LucideIcon } from "lucide-react";
 import {
+  ArrowUpCircle,
   Bell,
   Code2,
   Palette,
@@ -18,7 +19,8 @@ export type SettingsCategory =
   | "codetools"
   | "terminal"
   | "notify"
-  | "maintenance";
+  | "maintenance"
+  | "update";
 
 export const CATEGORIES: { id: SettingsCategory; label: string; icon: LucideIcon }[] = [
   { id: "general", label: "일반", icon: SlidersHorizontal },
@@ -27,6 +29,7 @@ export const CATEGORIES: { id: SettingsCategory; label: string; icon: LucideIcon
   { id: "terminal", label: "터미널", icon: TerminalSquare },
   { id: "notify", label: "알림", icon: Bell },
   { id: "maintenance", label: "유지보수", icon: Wrench },
+  { id: "update", label: "업데이트", icon: ArrowUpCircle },
 ];
 
 export interface SettingIndexEntry {
@@ -77,6 +80,9 @@ export const SETTINGS_INDEX: SettingIndexEntry[] = [
   { category: "maintenance", key: null, id: "browserData", label: "브라우저 데이터 초기화", keywords: ["쿠키", "cookie", "로그아웃", "logout", "세션", "브라우저", "browser"] },
   { category: "maintenance", key: null, id: "crashLog", label: "진단 / 크래시 로그", keywords: ["crash", "panic", "로그", "log", "진단"] },
   { category: "maintenance", key: null, id: "quarantine", label: "macOS 격리 도구", keywords: ["quarantine", "격리", "macos", "brew"] },
+  // 업데이트 (즉시 액션 — key null)
+  { category: "update", key: null, id: "appUpdate", label: "앱 업데이트", keywords: ["update", "업데이트", "버전", "version", "새 버전", "설치", "upgrade"] },
+  { category: "update", key: null, id: "autoUpdateCheck", label: "시작 시 자동 확인", keywords: ["auto", "자동", "확인", "check", "업데이트"] },
 ];
 
 /** 질의가 항목에 매칭되나 — 레이블·키워드 부분일치(대소문자 무시). */

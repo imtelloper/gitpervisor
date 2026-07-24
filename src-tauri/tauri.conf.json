@@ -15,9 +15,21 @@
       "csp": "default-src 'self'; script-src 'self' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; style-src-elem 'self' 'unsafe-inline'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; frame-src 'self' http://localhost:* http://127.0.0.1:*; object-src 'none'; base-uri 'self'"
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdBMjI1OEU5NjBEMDAyMEUKUldRT0F0Qmc2VmdpZXZaU1ZvamNjU0RhMVIzbFZqYmZiQml5Yll5a0dKTTRoQVQyMWk0bHN6SjUK",
+      "endpoints": [
+        "https://github.com/imtelloper/gitpervisor/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "resources": {
       "resources/tools/*": "tools"
     },

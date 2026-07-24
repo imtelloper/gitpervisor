@@ -189,6 +189,8 @@ pub fn run() {
     install_panic_hook();
 
     let result = tauri::Builder::default()
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         // 파일 로그(앱 로그 폴더) + stdout. log::error!·패닉·프론트 미처리 에러까지 한 파일에 모인다.
         // 무한 증가 방지: 10MB마다 회전하고 최신 8개 아카이브만 보존(= 활성 + 8 ≈ 최신 90MB).
         // 플러그인이 회전·시작 시점마다 오래된 것부터 지워 항상 "최신 내용"만 남긴다(KeepAll은 무한 누적).
@@ -407,9 +409,7 @@ pub fn run() {
     if let Err(e) = result {
         let when = chrono::Local::now().to_rfc3339();
         log::error!("Tauri 런타임 실행 실패: {e:?}");
-        append_crash_log(&format!(
-            "\n===== RUNTIME FAILURE @ {when} =====\n{e:?}\n"
-        ));
+        append_crash_log(&format!("\n===== RUNTIME FAILURE @ {when} =====\n{e:?}\n"));
         eprintln!("error while running tauri application: {e:?}");
         std::process::exit(1);
     }

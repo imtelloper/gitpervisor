@@ -34,6 +34,7 @@ import {
   useStatus,
 } from "./queries";
 import { useUi } from "./stores/ui";
+import { useUpdater } from "./stores/updater";
 
 // 이미지 편집기는 무겁고(canvas + avif wasm 동적 로드) 자주 안 열리므로 처음 열 때만 로드한다.
 const ImageEditor = lazy(() => import("./components/image/ImageEditor"));
@@ -84,6 +85,14 @@ export default function App() {
           );
       })
       .catch(() => {});
+  }, []);
+
+  // 시작 시 자동 업데이트 확인(옵트인, 기본 켬) — 콜드스타트 IPC 폭주와 안 겹치게 잠깐 지연.
+  // 새 버전이 있으면 updater 스토어가 토스트로 알리고 설정 › 업데이트에 표시한다. 실패는 조용히.
+  useEffect(() => {
+    if (!useUpdater.getState().autoCheck) return;
+    const t = setTimeout(() => void useUpdater.getState().check({ silent: true }), 4000);
+    return () => clearTimeout(t);
   }, []);
 
   const selected = projects?.find((p) => p.id === selectedProjectId) ?? null;
