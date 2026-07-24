@@ -1,4 +1,4 @@
-import { Command, Star } from "lucide-react";
+import { Star } from "lucide-react";
 
 import { GitHubIcon } from "@/components/icons";
 import { GITHUB_URL } from "@/lib/github";
@@ -8,9 +8,7 @@ export function Nav() {
     <header className="fixed inset-x-0 top-0 z-50 border-b border-line bg-base/70 backdrop-blur">
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
         <a href="#top" className="flex items-center gap-2.5">
-          <span className="grid h-8 w-8 place-items-center rounded-lg bg-accent/15">
-            <Command className="h-4 w-4 text-accent" />
-          </span>
+          <img src="/logo.png" alt="" width={28} height={28} className="h-7 w-7 rounded-lg" />
           <span className="font-display font-semibold text-ink">Gitpervisor</span>
         </a>
 

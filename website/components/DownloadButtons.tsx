@@ -64,7 +64,7 @@ export function DownloadButtons({ release }: { release: ReleaseInfo | null }) {
                 "group inline-flex items-center gap-3 rounded-xl px-5 py-3 text-sm font-medium transition",
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-2 focus-visible:ring-offset-base",
                 isPrimary
-                  ? "bg-accent-strong text-white shadow-[0_8px_30px_-6px] shadow-accent/50 hover:brightness-110"
+                  ? "bg-accent-strong text-ink-invert shadow-[0_8px_30px_-6px] shadow-accent/50 hover:brightness-110"
                   : "border border-line bg-card text-ink hover:border-line-2 hover:bg-card-2",
               ].join(" ")}
             >
@@ -74,7 +74,7 @@ export function DownloadButtons({ release }: { release: ReleaseInfo | null }) {
                 <span
                   className={[
                     "font-mono text-[11px]",
-                    isPrimary ? "text-white/90" : "text-muted",
+                    isPrimary ? "text-ink-invert/80" : "text-muted",
                   ].join(" ")}
                 >
                   {ext}
@@ -117,7 +117,7 @@ export function DownloadCta({ release }: { release: ReleaseInfo | null }) {
     <div className="flex flex-wrap items-center justify-center gap-3">
       <a
         href={assetUrl(release, primary.platform)}
-        className="inline-flex items-center gap-2 rounded-xl bg-accent-strong px-6 py-3 text-sm font-medium text-white shadow-[0_8px_30px_-6px] shadow-accent/50 transition hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+        className="inline-flex items-center gap-2 rounded-xl bg-accent-strong px-6 py-3 text-sm font-medium text-ink-invert shadow-[0_8px_30px_-6px] shadow-accent/50 transition hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
       >
         <primary.Icon className="h-5 w-5" />
         Download for Free

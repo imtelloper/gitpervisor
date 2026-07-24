@@ -13,14 +13,14 @@
 
   /* text */
   --color-ink: #fafafa; /* primary text */
+  --color-ink-invert: #09090b; /* dark ink on light-blue solid CTAs (8.45:1 on accent) */
   --color-muted: #a1a1aa; /* secondary text */
   --color-faint: #71717a; /* tertiary / labels */
 
   /* accents */
-  --color-accent: #a855f7; /* purple — primary brand (text/borders/tints on dark) */
-  --color-accent-strong: #9333ea; /* deeper purple for solid button bg (white text meets WCAG AA) */
-  --color-cyan: #06b6d4;
-  --color-pink: #ec4899;
+  --color-accent: #4cb0fc; /* sky blue — primary brand (AAA 8.45:1 on base) */
+  --color-accent-strong: #4cb0fc; /* CTA bg alias — pair with ink-invert text, not white (2.35:1) */
+  --color-cyan: #b8fdfd; /* pale cyan — glows · gradient stops · mockup accents */
   --color-green: #22c55e; /* live / online status */
   --color-yellow: #eab308;
   --color-red: #ef4444;
@@ -50,7 +50,7 @@ body {
 
 /* ── Reusable design utilities ─────────────────────────────────────── */
 .text-gradient {
-  background: linear-gradient(120deg, #fafafa 0%, #d8b4fe 45%, var(--color-accent) 100%);
+  background: linear-gradient(120deg, #fafafa 0%, #b8fdfd 40%, var(--color-accent) 100%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
