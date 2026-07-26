@@ -42,7 +42,7 @@ const PLATFORMS: {
 }[] = [
   { os: "windows", platform: "windows", label: "Windows", ext: ".exe", Icon: WindowsIcon },
   { os: "macos", platform: "macos", label: "macOS", ext: ".dmg · universal", Icon: AppleIcon },
-  { os: "linux", platform: "linux", label: "Linux", ext: ".AppImage", Icon: LinuxIcon },
+  { os: "linux", platform: "linux", label: "Linux", ext: ".deb", Icon: LinuxIcon },
 ];
 
 /* ── Hero download buttons (one per platform, detected OS highlighted) ── */

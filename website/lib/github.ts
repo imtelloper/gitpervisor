@@ -85,7 +85,9 @@ export async function getLatestRelease(): Promise<ReleaseInfo | null> {
           pick(/(aarch64|arm64).*\.dmg$/i) ??
           pick(/(x64|x86_64|intel).*\.dmg$/i) ??
           pick(/\.dmg$/i),
-        linux: pick(/\.appimage$/i) ?? pick(/\.deb$/i),
+        // Debian/Ubuntu is the dominant desktop-Linux target → prefer .deb; fall
+        // back to the portable AppImage for other distros.
+        linux: pick(/\.deb$/i) ?? pick(/\.appimage$/i),
       },
     };
   } catch {
