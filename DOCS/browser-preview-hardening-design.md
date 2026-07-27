@@ -8,7 +8,7 @@
 >
 > 배경: `.html 브라우저로 열기`(로컬 프리뷰)와 `모아보기 브라우저 타일` 구현 후 2라운드 적대적
 > 리뷰로 결함 25건을 수정했다. 이 문서는 그때 **고치지 않고 남긴 3건**의 수정 설계다.
-> 이미 적용된 수정(폴더별 토큰, Referer 토큰 상속, `resolve_request_path` 경로 봉쇄, Range 206,
+> 이미 적용된 수정(폴더별 토큰, Referer 기반 서브리소스 인증, `resolve_request_path` 경로 봉쇄, Range 206,
 > 커넥션 상한, `lastUrl` 리로드 방지, 셀 평탄화, 프리뷰 재발급)은 **전제**이며 재설계 대상이 아니다.
 
 ---
@@ -322,8 +322,10 @@ Content-Security-Policy:
   - [B] 유휴 10분 경과 후 탭 복귀 시 재발급이 실제로 되살리는지
   - [C] CDN을 쓰는 샘플 HTML이 정상 렌더되고 `fetch('https://…')`만 차단되는지
 - 설계·구현 중 직접 확인한 범위는 다음과 같다:
-  - **302 무한 루프 없음** — 리다이렉트 후 쿼리에 토큰이 생겨 `query_ok`가 참이 된다.
-    `?t=wrong` + 유효 Referer 조합도 `t=wrong&t=token`이 되어 `has_token`이 통과시키므로 종료한다.
+  - ~~**302 무한 루프 없음**~~ — **이 경로는 이후 제거됐다.** 실기 테스트에서 서브리소스가 전부 403이 되는
+    버그가 드러나(WebKit이 cross-site iframe에서 Referer를 origin만 남기고 깎는다) 인증을 "Referer 쿼리의
+    토큰"에서 "Referer의 **출처** 일치"로 바꿨고, 토큰을 덧붙이던 302도 함께 없앴다.
+    전말은 `TROUBLESHOOTING.md` §8 참조.
   - **Location 헤더 인젝션 없음** — 요청 라인은 공백 분리라 `path_part`에 raw CR/LF가 들어올 수
     없고, `%0D%0A`는 디코드하지 않은 채 echo되므로 헤더가 쪼개지지 않는다.
 - Windows(WebView2)에서의 CSP·sandbox 동작과 `resolve_request_path`의 경로 특수성은 **실기

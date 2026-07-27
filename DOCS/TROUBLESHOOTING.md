@@ -356,3 +356,61 @@ copy 이벤트의 `clipboardData.setData`, Cmd+C 네이티브 copy 커맨드 공
 - **"dev는 되는데 설치본만 깨짐" = 거의 항상 실행 환경(환경변수) 차이** — 이 저장소만 §1(TERM), §3(GTK_IM_MODULE), §7.7(LC_CTYPE)로 **세 번째** 같은 부류다. **Finder/메뉴 실행 = 셸 환경 없음**을 항상 먼저 의심하라.
 - 클립보드·pasteboard 버그는 반드시 **번들 .app로, `pbpaste | xxd`**로 검증한다. dev green은 이 클래스 버그에 아무 것도 증명 못 한다. 실행 중 프로세스의 실제 환경은 **`ps eww <pid>`**로 본다.
 - "keydown에서 이미 preventDefault 하는데 여전히 동작/깨진다" = 그 동작이 **웹(DOM) 레이어의 문제가 아니라는** 강력한 단서 — 네이티브/환경 쪽을 보라.
+
+---
+
+## 8. 로컬 HTML 프리뷰가 스타일 없이 뜬다 — WebKit이 cross-site iframe에서 Referer를 깎는다
+
+### 8.1 증상
+
+파일트리에서 `.html`을 "브라우저로 열기" 하면 **HTML 텍스트는 나오는데 CSS가 하나도 안 먹은** 날것 페이지가 뜬다
+(세리프 폰트, 파란 밑줄 링크). Safari에서 같은 URL을 직접 열면 **정상**. Chrome에서도 정상.
+
+### 8.2 진단 — 재현 환경이 실제와 달라 두 번 헛짚었다
+
+프리뷰 서버(`preview.rs`)는 최초 문서만 `?t=<토큰>`으로 인증하고, 서브리소스(`./style.css`)는 쿼리에 토큰이 없으니
+**Referer에 실린 원본 URL의 쿼리**에서 토큰을 찾아 통과시키는 구조였다.
+
+처음엔 부모를 `127.0.0.1:8931`, iframe을 `127.0.0.1:8941`로 놓고 Safari에서 재현을 시도했다 — **정상 동작해서
+"iframe·sandbox·WebKit 모두 무죄"라는 틀린 결론**을 냈다. 함정은 여기다:
+
+> **포트가 달라도 호스트가 같으면 same-site다.** `127.0.0.1:8931` ↔ `127.0.0.1:8941`은 origin은 다르지만
+> same-site라 WebKit이 Referer에 **전체 URL(쿼리 포함)** 을 실어준다. 반면 앱은 부모가
+> `tauri://localhost`(dev는 `localhost:*`), 프리뷰가 `127.0.0.1` — **`localhost`와 `127.0.0.1`은 브라우저에게
+> 다른 호스트**라 진짜 cross-site다.
+
+부모를 `localhost`, 콘텐츠를 `127.0.0.1`로 둔 프로브 서버를 만들어 실제 헤더를 찍으니 결론이 나왔다:
+
+```
+/design-system/styles.css
+    Referer: http://127.0.0.1:8941/     ← 경로·쿼리가 잘린 origin만
+    Sec-Fetch-Site: same-origin
+```
+
+**WebKit은 문서가 cross-site iframe 안에 있으면 서브리소스 Referer를 origin만 남기고 깎는다.** 쿼리가 없으니
+토큰 검사가 실패 → 모든 CSS/JS가 **403** → 스타일 없는 페이지.
+
+### 8.3 해결 — Referer의 쿼리가 아니라 **출처(origin)** 로 판정
+
+```rust
+let query_ok = has_token(query, token);                    // 최초 문서(앱이 URL로 전달)
+let self_origin = format!("http://127.0.0.1:{port}/");     // 끝의 '/'까지 비교 — 접두사 위장 차단
+let referer_ok = referer.starts_with(&self_origin);        // 우리가 서빙한 문서가 낸 요청
+```
+
+서브리소스·CSS `@import`·페이지 간 링크가 모두 이 규칙 하나로 통과한다. 토큰을 URL에 덧붙이던 **302 리다이렉트는
+제거**했다(요청 수가 2배가 되고 원본 쿼리스트링을 훼손하던 부작용도 함께 사라짐).
+
+위협 모델은 유지된다 — 원격 페이지는 Referer가 자기 출처라 403이고, 최초 문서는 여전히 토큰이 필요하며,
+dotfile 차단·폴더 단위 스코프·유휴 종료가 노출 면적을 좁힌다. 같은 기계의 다른 프로세스는 Referer를 위조할 수
+있으나 애초에 포트를 자유롭게 탐색할 수 있는 위치라 실익이 없다.
+
+### 8.4 교훈
+
+- **`localhost`와 `127.0.0.1`은 same-site가 아니다.** 루프백이라 같아 보여도 브라우저의 site 판정은 호스트 문자열
+  기준이다. 재현 환경을 만들 때 이걸 맞추지 않으면 **버그가 그냥 사라진다**.
+- **Referer는 인증 수단으로 신뢰할 수 없다.** 브라우저는 cross-site·`Referrer-Policy`·프라이버시 모드에서
+  경로·쿼리를 예고 없이 깎는다. 토큰을 Referer에 실어 나르는 설계는 깨지기 쉽다.
+- 세 번 추측이 빗나갔을 때 결국 답을 준 건 **헤더를 직접 찍는 프로브 서버**였다. 엔진 동작이 의심되면
+  가설을 쌓지 말고 실물을 측정하라.
+- Safari(WKWebView)에서 되는데 앱에서만 깨지면, 엔진이 아니라 **문서가 놓인 컨텍스트**(iframe·site 관계)를 의심하라.

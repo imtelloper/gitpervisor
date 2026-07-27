@@ -15,12 +15,13 @@
 //! 서버 하나를 띄우고 포트를 캐시한다(같은 폴더 재프리뷰는 재사용).
 //!
 //! ## 보안
-//! - `127.0.0.1`에만 바인드, `GET`/`HEAD`만, **폴더별** 토큰(`?t=`) 필수 — 다른 로컬
-//!   프로세스나 원격 페이지가 루프백으로 레포 파일을 읽는 것을 막고, 프리뷰된 페이지가
-//!   자기 토큰을 유출해도 다른 폴더 서버에는 쓰지 못한다.
-//! - 서브리소스(`./style.css` 등)는 쿼리에 토큰이 없다 — same-origin 요청의 `Referer`가
-//!   토큰 포함 전체 URL을 실어오므로 "쿼리 OR Referer" 토큰을 인정한다. 토큰 없는 HTML
-//!   내비게이션(페이지 간 링크)은 302로 토큰을 붙여 재귀적으로 이어지게 한다.
+//! - `127.0.0.1`에만 바인드, `GET`/`HEAD`만, 최초 문서는 **폴더별** 토큰(`?t=`) 필수 —
+//!   원격 페이지가 루프백으로 레포 파일을 읽는 것을 막고, 프리뷰된 페이지가 자기 토큰을
+//!   유출해도 다른 폴더 서버에는 쓰지 못한다.
+//! - 서브리소스(`./style.css` 등)는 쿼리에 토큰이 없다 — **Referer의 출처가 이 서버 자신**
+//!   이면 통과시킨다. 쿼리 토큰을 Referer에서 찾는 방식은 못 쓴다: WebKit은 문서가
+//!   **cross-site iframe** 안에 있으면 Referer를 origin만 남기고 깎는데, 앱이 정확히 그
+//!   구조(부모 `tauri://localhost` → 프리뷰 `127.0.0.1`)라 CSS/JS가 전부 403이 됐다.
 //! - 서빙 루트는 등록된 프로젝트 레포 안의 실제 폴더로만 확정된다(mint 시 정규화+컨테인먼트).
 //! - 요청 경로는 서빙 루트에 join·정규화 후 루트 밖(`..`·심볼릭)이면 거부하고, `.`으로
 //!   시작하는 세그먼트(`.git`/`.env`/`.ssh` 등)는 무조건 404 — 프리뷰된 악성 HTML이
@@ -221,7 +222,7 @@ fn start_server(base: PathBuf, token: String) -> Result<ServerEntry, IpcError> {
                         let _ = std::thread::Builder::new()
                             .name("html-preview-conn".into())
                             .spawn(move || {
-                                let _ = handle_conn(stream, &base, &token, &al, &hit, started);
+                                let _ = handle_conn(stream, &base, &token, port, &al, &hit, started);
                             });
                     }
                     Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -324,6 +325,7 @@ fn handle_conn(
     stream: TcpStream,
     base: &Path,
     token: &str,
+    port: u16,
     alive: &AtomicBool,
     last_hit: &AtomicU64,
     started: Instant,
@@ -387,15 +389,25 @@ fn handle_conn(
         None => (raw_target, ""),
     };
 
-    // 토큰 검증 — 다른 로컬/원격 출처가 토큰 없이 레포 파일을 읽지 못하게.
-    // 서브리소스(./style.css)는 쿼리에 토큰이 없지만, same-origin 요청의 Referer가
-    // "http://127.0.0.1:p/index.html?t=…" 전체 URL을 실어오므로 그 쿼리의 토큰을 인정한다.
-    // 토큰을 모르면 Referer도 위조할 수 없어 위협 모델은 동일하다.
+    // 인증 — 둘 중 하나면 통과.
+    //  (1) 쿼리 토큰: 앱이 URL로 직접 넘긴 최초 문서 로드.
+    //  (2) Referer의 **출처(origin)** 가 이 서버 자신: 우리가 서빙한 문서가 낸 서브리소스
+    //      (css/js/img), CSS의 @import, 페이지 간 링크까지 전부 여기에 해당한다.
+    //
+    // (2)가 쿼리 토큰이 아니라 origin 비교인 이유(실측): WebKit은 문서가 **cross-site
+    // iframe** 안에 있으면 서브리소스의 Referer를 origin만 남기고 깎는다. 앱은 부모가
+    // tauri://localhost(dev는 localhost:*)이고 프리뷰는 127.0.0.1이라 정확히 그 상황이라,
+    // Referer 쿼리에서 토큰을 찾던 이전 방식은 CSS/JS가 전부 403이 되어 스타일 없는 페이지가
+    // 됐다. (부모도 127.0.0.1이면 same-site라 전체 URL이 와서 증상이 안 보인다 — 재현 함정.)
+    //
+    // 위협 모델: 원격 페이지가 루프백을 긁는 경우는 Referer가 자기 출처라 차단된다. 같은
+    // 기계의 다른 프로세스는 Referer를 위조할 수 있으나, 애초에 포트도 자유롭게 탐색할 수
+    // 있는 위치라 실익이 없다. 최초 문서는 여전히 토큰이 필요하고, dotfile 차단·폴더 단위
+    // 스코프·유휴 종료가 함께 노출 면적을 좁힌다.
     let query_ok = has_token(query, token);
-    let referer_ok = referer
-        .split_once('?')
-        .map(|(_, q)| has_token(q, token))
-        .unwrap_or(false);
+    let self_origin = format!("http://127.0.0.1:{port}/");
+    // 끝의 '/'까지 포함해 비교한다 — "…:8941.evil.com/" 같은 접두사 위장을 막는다.
+    let referer_ok = referer.starts_with(&self_origin);
     if !query_ok && !referer_ok {
         return write_status(&mut stream, 403, "Forbidden");
     }
@@ -405,19 +417,6 @@ fn handle_conn(
         Some(p) => p,
         None => return write_status(&mut stream, 404, "Not Found"),
     };
-
-    // 쿼리 토큰 없이 Referer로만 통과한 요청(HTML 페이지 간 링크뿐 아니라 그 페이지가 부른
-    // CSS·ES 모듈이 *다시* 부르는 2단계 서브리소스 포함)은 302로 `?t=`를 붙여, 서빙되는 모든
-    // 리소스의 최종 URL이 토큰을 갖게 한다 → 후손 요청도 Referer로 토큰을 상속해 체인이
-    // 재귀적으로 이어진다. 원래 쿼리스트링은 보존한다(location.search 의존 페이지가 안 깨지게).
-    if !query_ok {
-        let sep = if query.is_empty() { "" } else { "&" };
-        let resp = format!(
-            "HTTP/1.1 302 Found\r\nLocation: {path_part}?{query}{sep}t={token}\r\n\
-             Content-Length: 0\r\nConnection: close\r\n\r\n"
-        );
-        return stream.write_all(resp.as_bytes());
-    }
 
     let mut file = match std::fs::File::open(&resolved) {
         Ok(f) => f,
@@ -604,6 +603,25 @@ mod tests {
         assert_eq!(content_type(Path::new("/a/app.mjs")), "text/javascript; charset=utf-8");
         assert_eq!(content_type(Path::new("/a/logo.svg")), "image/svg+xml");
         assert_eq!(content_type(Path::new("/a/data.bin")), "application/octet-stream");
+    }
+
+    /// 회귀 방지: 서브리소스 인증은 Referer의 **출처**로만 판정해야 한다.
+    /// WebKit이 cross-site iframe에서 Referer를 origin만 남기고 깎기 때문에, 쿼리에서
+    /// 토큰을 찾으려 하면 앱 안에서 CSS/JS가 전부 403이 된다(실제로 겪은 버그).
+    #[test]
+    fn referer_origin_auth_survives_stripped_referer() {
+        let origin = format!("http://127.0.0.1:{}/", 8941u16);
+        // WebKit이 cross-site iframe에서 실제로 보내는 형태 — 경로·쿼리 없음
+        assert!("http://127.0.0.1:8941/".starts_with(&origin));
+        // same-site라 전체 URL이 온 경우도 당연히 통과
+        assert!("http://127.0.0.1:8941/index.html?t=abc".starts_with(&origin));
+        // 다른 포트(=다른 프리뷰 서버)나 원격 출처는 통과하면 안 된다
+        assert!(!"http://127.0.0.1:9999/".starts_with(&origin));
+        assert!(!"https://evil.com/".starts_with(&origin));
+        // 접두사 위장 차단 — 끝의 '/'까지 비교하므로 걸러진다
+        assert!(!"http://127.0.0.1:8941.evil.com/".starts_with(&origin));
+        // Referer 부재(직접 curl 등)도 통과하면 안 된다
+        assert!(!"".starts_with(&origin));
     }
 
     #[test]
