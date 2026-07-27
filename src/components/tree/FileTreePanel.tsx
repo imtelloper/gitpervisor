@@ -4,6 +4,7 @@ import {
   Copy,
   FilePlus,
   FolderPlus,
+  Globe,
   ImageDown,
   Link,
   Pencil,
@@ -34,7 +35,7 @@ import {
 } from "../../lib/image-codec";
 import { errorMessage, ipc, isIpcError } from "../../lib/ipc";
 import type { ChangeKind, DirEntry, FileChange, RepoStatus } from "../../lib/ipc";
-import { isImage } from "../../lib/language-map";
+import { isHtml, isImage } from "../../lib/language-map";
 import { usePanelWidth } from "../../lib/use-panel-width";
 import {
   useCreateDir,
@@ -45,6 +46,9 @@ import {
   useSaveImage,
   useStatus,
 } from "../../queries";
+import { isPreviewUrl, useBrowsers } from "../../stores/browser";
+import { useOccludesWebview } from "../../stores/occlusion";
+import { useTerminals } from "../../stores/terminals";
 import { useTreeState } from "../../stores/treeState";
 import { useUi } from "../../stores/ui";
 import { ResizeHandle } from "../common/ResizeHandle";
@@ -374,6 +378,9 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
   const askPrompt = useUi((s) => s.askPrompt);
   const openImageEditor = useUi((s) => s.openImageEditor);
   const selectDiff = useUi((s) => s.selectDiff);
+  // 로컬 .html을 내장 브라우저 탭으로 열기 위한 스토어 액션.
+  const openBrowserTab = useBrowsers((s) => s.openBrowser);
+  const setBrowserTitle = useBrowsers((s) => s.setTitle);
   const createDir = useCreateDir(projectId);
   const createFile = useCreateFile(projectId);
   const deletePath = useDeletePath(projectId);
@@ -392,6 +399,8 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
   const treeStatus = useMemo(() => buildTreeStatus(status), [status]);
 
   const [menu, setMenu] = useState<TreeMenu | null>(null);
+  // 우클릭 메뉴가 워크스페이스 영역으로 넘어가면 네이티브 webview에 가린다 — 열린 동안 숨긴다.
+  useOccludesWebview(!!menu);
   // 파일 멀티선택(Ctrl/Cmd 토글, Shift 범위) — 이미지 일괄 변환에 사용. 프로젝트 전환 시 비운다.
   const [treeSel, setTreeSel] = useState<Set<string>>(new Set());
   // Shift 범위 선택의 기준(앵커) 파일 경로 + 트리 컨테이너 ref(DOM 순서로 범위 계산).
@@ -623,6 +632,37 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
     };
   }
 
+  // 로컬 .html을 내장 브라우저에서 연다. 백엔드가 루프백 http URL을 만들어 주면(파일의 상위
+  // 폴더가 서버 루트라 상대·루트절대 서브리소스 모두 로드된다) classifyMode가 iframe으로 렌더한다.
+  async function openHtmlInBrowser(m: TreeMenu) {
+    setMenu(null);
+    try {
+      // 같은 파일의 프리뷰 탭이 이미 있으면 재사용한다(중복 탭 방지).
+      const bs = useBrowsers.getState();
+      const existing = bs.tabIds.find((id) => {
+        const p = bs.items[id]?.preview;
+        return p?.projectId === projectId && p?.relPath === m.path;
+      });
+      if (existing) {
+        // 시작 시 재발급이 실패해 URL이 빈(죽은) 탭이면 지금 재발급해 되살린다 —
+        // 안 그러면 매번 빈 탭만 활성화돼 그 파일 프리뷰가 조용히 잠긴다.
+        const cur = bs.items[existing]?.url ?? "";
+        if (!cur || !isPreviewUrl(cur)) {
+          const url = await ipc.previewLocalUrl(projectId, m.path);
+          bs.refreshPreview(existing, url, { projectId, relPath: m.path });
+        }
+        useTerminals.getState().setActiveTab(projectId, existing);
+        return;
+      }
+      const url = await ipc.previewLocalUrl(projectId, m.path); // m.path = 트리 상대(슬래시) 경로
+      // preview 출처를 함께 저장 — 앱 재시작 후에도 이 탭의 URL을 재발급해 되살릴 수 있다.
+      const id = openBrowserTab(projectId, url, { projectId, relPath: m.path });
+      setBrowserTitle(id, m.name); // 없으면 제목이 "127.0.0.1:<port>"로 뜬다
+    } catch (e) {
+      pushToast("error", errorMessage(e));
+    }
+  }
+
   // 단일 변환 — 같은 폴더에 형제 파일로 저장(충돌 시 덮어쓰기 확인).
   async function convert(m: TreeMenu, fmt: ImgFormat) {
     setMenu(null);
@@ -702,6 +742,8 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
   const menuIsImage = menu
     ? !menu.isDir && isImage(menu.name) && !/\.svg$/i.test(menu.name)
     : false;
+  // 브라우저로 열 수 있는 HTML 문서인지 — 파일(디렉토리·루트 아님)이면서 .html류.
+  const menuIsHtml = menu ? !menu.isDir && !menu.root && isHtml(menu.name) : false;
   // 멀티선택된 변환 가능 이미지들 — 우클릭 대상이 선택에 포함되면 일괄 변환 메뉴를 띄운다.
   const selImages = useMemo(
     () => [...treeSel].filter((p) => isImage(p) && !/\.svg$/i.test(p)),
@@ -814,6 +856,16 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
                       onClick={() => void convertBatch(selImages, f.id)}
                     />
                   ))}
+                  <div className="my-1 border-t border-edge/60" />
+                </>
+              )}
+              {menuIsHtml && (
+                <>
+                  <MenuItem
+                    icon={Globe}
+                    label="브라우저로 열기"
+                    onClick={() => openHtmlInBrowser(menu)}
+                  />
                   <div className="my-1 border-t border-edge/60" />
                 </>
               )}

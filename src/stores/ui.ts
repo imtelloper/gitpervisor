@@ -51,7 +51,7 @@ export function viewerTabKey(
   return `${repoId ?? outerId}|${target.mode}|${target.path}|${sha}`;
 }
 
-interface UiState {
+export interface UiState {
   selectedProjectId: string | null;
   /** 중앙 뷰어가 표시할 diff 대상 — Changes(worktree/index) 또는 Log(commit)에서 설정 */
   selectedDiff: DiffTarget | null;
@@ -173,6 +173,24 @@ const initialProjectId = localStorage.getItem("gp:selected-project");
 const initialActive = initialProjectId
   ? persistedViewer.activeDiffByProject[initialProjectId]
   : null;
+
+/**
+ * 화면 전체를 덮는 차단성 모달이 열려 있는가 — 네이티브 자식 webview 점유 판정용
+ * (stores/occlusion.ts가 이것과 useDb.dialog, 로컬 메뉴 카운터를 합쳐 최종 판정한다).
+ *
+ * **계약**: 전체 화면을 덮는 모달 상태를 위에 추가하면 여기에도 넣어라. 안 그러면 그 모달이
+ * 네이티브 webview 뒤에 가려 보이지 않는다(이 목록이 낡아 실제로 발생한 버그다).
+ * **토스트는 넣지 않는다** — 비차단·자동소멸이라 넣으면 배경 에러 토스트마다 페이지가
+ * 깜빡인다(browser-feature-design §4B의 명시적 결정).
+ */
+export const selectBlockingOverlay = (s: UiState): boolean =>
+  s.settingsOpen ||
+  s.memoOpen ||
+  s.quickOpenOpen ||
+  s.symbolSearchOpen ||
+  !!s.imageEditorPath ||
+  !!s.confirm ||
+  !!s.prompt;
 
 export const useUi = create<UiState>((set) => ({
   // 마지막 선택 프로젝트를 복원한다 — 재시작 시 그 프로젝트(+복구된 터미널 탭)로 바로 진입

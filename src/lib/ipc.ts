@@ -366,12 +366,13 @@ export interface SysMetrics {
   ramTotal: number;
   storageUsed: number;
   storageTotal: number;
+  storageMount: string; // 실제 측정한 볼륨의 마운트 지점("C:\\", "/"). 못 찾으면 ""
 }
 
 // ---- 리소스 모니터 팝업 (sys_process_snapshot, 태스크 05) ----
 export interface ProcessSample {
   pid: number;
-  name: string; // 실행 파일명 (예: "chrome.exe")
+  name: string; // 실행 파일명 (Windows "chrome.exe", macOS "Google Chrome Helper" 등)
   cpu: number; // 0-100 — 코어수로 나눈 전역 스케일
   ram: number; // bytes
   gpu: number | null; // Windows PDH 3D 엔진 pid 집계, 그 외/비대상 null
@@ -386,10 +387,11 @@ export interface ProcessSnapshot {
   totalCount: number; // 절단 전 행 수 ("… 외 N개")
 }
 export type ProcSortKey = "cpu" | "ram" | "gpu" | "disk";
-/** 작업 끝내기 결과 — 종료 성공 수 + 실패(권한 부족·이미 종료) pid. */
+/** 작업 끝내기 결과 — 종료 성공 수 + 실패(권한 부족) pid + 자기보호로 건너뛴 pid. */
 export interface KillOutcome {
   killed: number;
   failed: number[];
+  skipped: number[]; // 앱 자신·앱 번들 안 프로세스 — 시도조차 하지 않음
 }
 
 // ---- Claude 사용량(rate_limits) — 좌측 하단 usage 바 ----
@@ -777,6 +779,11 @@ export const ipc = {
   // 파일트리에서 실행 파일 더블클릭 → OS 기본 실행기로 띄운다(프론트가 확인 후 호출).
   runExecutable: (projectId: string, relPath: string) =>
     callMutating<void>("run_executable", { projectId, relPath }),
+  // 로컬 .html을 내장 브라우저에서 열 루프백 URL을 만든다(파일트리 우클릭 → "브라우저로 열기").
+  // 반환된 http://127.0.0.1 URL은 classifyMode가 iframe 경로로 태워 렌더한다.
+  // 폴더별 포트 캐시로 멱등이라 call(타임아웃+재시도)이 안전 — 응답 유실 시 영구 대기 방지.
+  previewLocalUrl: (projectId: string, relPath: string) =>
+    call<string>("preview_local_url", { projectId, relPath }),
   listDir: (projectId: string, relPath: string) =>
     call<DirEntry[]>("list_dir", { projectId, relPath }),
   // Viewer 편집 저장 — 텍스트 파일 내용을 디스크에 쓴다(레포 상대 경로). 재시도 금지.

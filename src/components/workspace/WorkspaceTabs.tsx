@@ -14,6 +14,7 @@ import { useSettings } from "../../queries";
 import { useAgentActivity } from "../../stores/agentActivity";
 import { useApiClient } from "../../stores/apiclient";
 import { useBrowsers } from "../../stores/browser";
+import { useOccludesWebview } from "../../stores/occlusion";
 import { collectPanes, useTerminals } from "../../stores/terminals";
 import { useUi } from "../../stores/ui";
 import { BrowserPane } from "./BrowserPane";
@@ -194,6 +195,8 @@ function NewTabControls({
   onNewApiClient: () => void;
 }) {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  // 탭줄 바로 아래가 곧 브라우저 뷰포트다 — 메뉴가 열린 동안 네이티브 webview를 숨긴다.
+  useOccludesWebview(!!menu);
   const chevronRef = useRef<HTMLButtonElement>(null);
 
   // 탭 줄은 overflow-x-auto라 그 안의 absolute 드롭다운이 세로로 잘린다.

@@ -20,6 +20,7 @@ import {
   fitTerminal,
   pasteIntoTerminal,
 } from "../../lib/terminal";
+import { useOccludesWebview } from "../../stores/occlusion";
 import { useTerminals } from "../../stores/terminals";
 
 /**
@@ -46,6 +47,8 @@ export function TerminalPane({
   );
   const setActivePane = useTerminals((s) => s.setActivePane);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  // 분할 배치에서 이웃 브라우저 pane의 네이티브 webview가 이 메뉴를 덮는다 — 열린 동안 숨긴다.
+  useOccludesWebview(!!menu);
 
   useEffect(() => {
     let cancelled = false;

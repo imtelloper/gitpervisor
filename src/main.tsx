@@ -11,6 +11,7 @@ import { installMacCopyInterceptor } from "./lib/clipboard";
 import { attachRepoEvents } from "./lib/events";
 import { setupErrorLogging } from "./lib/logging";
 import { installTerminalCopyFallback } from "./lib/terminal";
+import { initPreviewRemint } from "./stores/browser";
 import { useTerminals } from "./stores/terminals";
 import { useUi } from "./stores/ui";
 import "./styles.css";
@@ -93,6 +94,10 @@ if (label === "sysmon") {
 
   // watcher·작업 이벤트 구독 (모듈 스코프 — StrictMode 이중 마운트와 무관하게 1회)
   attachRepoEvents(queryClient);
+
+  // 재시작으로 죽은 프리뷰(로컬 HTML) 탭의 루프백 URL을 재발급해 되살린다. 메인 창에서만
+  // 실행한다 — 보조 창이 공유 localStorage(gp:browser)를 스테일 스냅샷으로 덮지 않게.
+  initPreviewRemint();
 
   // E2E용 — dev에서 queryClient도 노출한다(테스트가 프로젝트 목록을 갱신해 픽스처를 인지).
   if (import.meta.env.DEV) {

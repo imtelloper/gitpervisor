@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 
-use crate::commands::{BrowserReg, HttpReg, TerminalSession};
+use crate::commands::{BrowserReg, HttpReg, PreviewServers, TerminalSession};
 use crate::error::{ErrorCode, IpcError};
 use crate::fetch_scheduler::RemoteFreshness;
 use crate::git::types::{Memo, Project, Settings};
@@ -44,6 +44,8 @@ pub struct AppState {
     /// 리소스 모니터 프로세스 아이콘 캐시 (exe 경로 → base64 PNG). 모니터와 별도 뮤텍스라
     /// 아이콘 추출이 2s 폴링을 막지 않는다.
     pub icons: crate::proc_icons::IconCache,
+    /// 로컬 HTML 프리뷰 루프백 서버 레지스트리 (base 폴더 → 포트). preview.rs §.
+    pub preview: Mutex<PreviewServers>,
 }
 
 impl AppState {
@@ -61,6 +63,7 @@ impl AppState {
             freshness: RwLock::new(HashMap::new()),
             lsp: Mutex::new(HashMap::new()),
             icons: crate::proc_icons::IconCache::default(),
+            preview: Mutex::new(PreviewServers::default()),
         }
     }
 

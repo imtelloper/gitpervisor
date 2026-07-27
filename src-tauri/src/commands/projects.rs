@@ -274,9 +274,14 @@ pub fn remove_project(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), IpcError> {
-    {
+    let removed_path = {
         let mut projects = state.projects.write().unwrap();
         let before = projects.len();
+        // 제거 전에 경로를 확보한다 — 아래 프리뷰 서버 폐기가 이 경로를 기준으로 판정한다.
+        let path = projects
+            .iter()
+            .find(|p| p.id == id)
+            .map(|p| PathBuf::from(&p.path));
         projects.retain(|p| p.id != id);
         if projects.len() == before {
             return Err(IpcError::new(
@@ -284,8 +289,16 @@ pub fn remove_project(
                 "프로젝트를 찾을 수 없습니다",
             ));
         }
-    }
+        path
+    };
     crate::watcher::unregister(&app, &id);
+    // 이 레포 하위를 서빙하던 로컬 HTML 프리뷰 서버를 폐기한다 — 안 하면 프로젝트를 제거한
+    // 뒤에도 루프백으로 파일이 계속 노출된다(preview.rs § 보안). 레지스트리 키는 정규화된
+    // 절대경로라 같은 기준으로 맞춰 비교한다.
+    if let Some(p) = removed_path {
+        let root = dunce::canonicalize(&p).unwrap_or(p);
+        state.preview.lock().unwrap().revoke_under(&root);
+    }
     // 메모도 함께 정리 (있을 때만 저장)
     let removed_note = state.notes.write().unwrap().remove(&id).is_some();
     if removed_note {

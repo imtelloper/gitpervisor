@@ -81,3 +81,15 @@ export function isImage(path: string): boolean {
   if (dot <= 0) return false;
   return IMAGE_EXT.has(base.slice(dot + 1).toLowerCase());
 }
+
+// 브라우저로 렌더 가능한 HTML 문서 확장자만. languageOf(path)==="html"은 .vue/.svelte도
+// 잡지만 그건 렌더 가능한 페이지가 아니라 별도로 좁게 판정한다.
+const HTML_EXT = new Set(["html", "htm", "xhtml"]);
+
+/** 내장 브라우저로 열 수 있는 HTML 문서인지 (확장자 기준). */
+export function isHtml(path: string): boolean {
+  const base = path.split("/").pop() ?? path;
+  const dot = base.lastIndexOf(".");
+  if (dot <= 0) return false;
+  return HTML_EXT.has(base.slice(dot + 1).toLowerCase());
+}

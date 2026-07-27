@@ -163,6 +163,21 @@ async fn open_sysmon_window(app: tauri::AppHandle, origin: String) -> Result<(),
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 클립보드 보정 (macOS): Finder/Launchpad로 띄운 .app 은 셸의 로케일(LANG/LC_*)을 물려받지
+    // 못한다(터미널에서 직접 띄울 때만 상속). 그러면 CoreFoundation 의 +[NSString
+    // defaultCStringEncoding] 이 UTF-8 이 아니라 MacRoman 으로 폴백하고, WKWebView 의 네이티브
+    // Cmd+C(copy:)가 선택 텍스트를 그 인코딩으로 pasteboard 에 써 한글이 UTF-8→MacRoman 이중
+    // 인코딩으로 깨진다("이제" → "Ïù¥Ï†ú"). CF/AppKit 이 인코딩을 캐시하기 전에 UTF-8 로케일을
+    // 심어 항상 정상 동작하게 한다(§1 TERM·§3 IME 와 같은 "메뉴/Finder 실행 = 환경변수 없음" 부류).
+    // 실측: 같은 바이너리를 LANG 없이 vs LANG=UTF-8 로 띄워 pbpaste|xxd 로 확인 — DOCS/TROUBLESHOOTING.md §7.
+    #[cfg(target_os = "macos")]
+    {
+        let empty = |k: &str| std::env::var_os(k).map_or(true, |v| v.is_empty());
+        if empty("LANG") && empty("LC_ALL") && empty("LC_CTYPE") {
+            std::env::set_var("LC_CTYPE", "UTF-8");
+        }
+    }
+
     // IME 보정 (Linux/X11): GNOME 메뉴·세션에서 앱을 띄우면 GTK_IM_MODULE 가 비어 있어
     // WebKitGTK 의 한글(IME) 조합이 깨진다(같은 바이너리도 터미널에서 직접 띄우면 정상).
     // GTK init 전에(=Tauri 빌드 전에) 시스템 기본 입력기 ibus 를 명시해 항상 동일 동작하게 한다.
@@ -303,6 +318,7 @@ pub fn run() {
             commands::set_settings,
             commands::open_in,
             commands::run_executable,
+            commands::preview_local_url,
             commands::reveal_path,
             commands::list_dir,
             commands::list_project_roots,
@@ -398,6 +414,11 @@ pub fn run() {
                     commands::browser_kill_all(window.app_handle(), state.inner());
                     // 팝업만 남아 앱이 안 죽는 상태 방지 — gpv-popup-* 전 창 close.
                     commands::popup_kill_all(window.app_handle());
+                    // 리소스 모니터도 같은 이유로 닫는다 — 메인이 사라졌는데 이 창만 남으면
+                    // 앱이 종료되지 않고 창 하나짜리 잔여 상태가 된다(macOS는 Dock에도 남는다).
+                    if let Some(w) = window.app_handle().get_webview_window("sysmon") {
+                        let _ = w.close();
+                    }
                 } else if let Some(term_id) = label.strip_prefix("float-") {
                     // 플로팅 터미널 창이 닫히면 그 세션의 PTY만 종료한다(나머지는 메인이 유지).
                     let state = window.state::<AppState>();

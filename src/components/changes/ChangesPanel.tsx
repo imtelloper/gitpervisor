@@ -26,6 +26,7 @@ import {
   useStatuses,
   useUnstageFiles,
 } from "../../queries";
+import { useOccludesWebview } from "../../stores/occlusion";
 import { useUi } from "../../stores/ui";
 import { ResizeHandle } from "../common/ResizeHandle";
 import { CommitForm } from "./CommitForm";
@@ -250,6 +251,8 @@ function RepoChanges({
   const [menu, setMenu] = useState<{ x: number; y: number; key: string } | null>(
     null,
   );
+  // 메뉴가 워크스페이스 영역으로 넘어가면 네이티브 webview에 가린다 — 열린 동안 숨긴다.
+  useOccludesWebview(!!menu);
   useEffect(() => {
     if (!menu) return;
     const close = () => setMenu(null);

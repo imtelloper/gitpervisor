@@ -22,17 +22,28 @@ export function isBrowserCreated(id: string): boolean {
   return created.has(id);
 }
 
+// id별 마지막으로 알려진 URL — open/navigate 요청과 browser://nav 실적으로 갱신한다.
+// BrowserPane 컴포넌트의 ref는 리마운트(모아보기 여닫기·그리드 재배치)에 증발하므로,
+// 모듈 레벨에 둬야 리마운트 시 같은 URL을 재탐색(=전체 페이지 리로드)하지 않는다.
+const lastUrl = new Map<string, string>();
+export function lastKnownUrl(id: string): string | undefined {
+  return lastUrl.get(id);
+}
+
 /** 자식 webview 보장 — 없으면 생성, 있으면 navigate(백엔드가 멱등). */
 export async function openBrowser(id: string, url: string, bounds: Bounds): Promise<void> {
   created.add(id);
+  lastUrl.set(id, url);
   try {
     await invoke("browser_open", { browserId: id, url, bounds });
   } catch {
     created.delete(id); // 생성 실패 시 다음 시도에서 재생성
+    lastUrl.delete(id);
   }
 }
 
 export function navigate(id: string, url: string): void {
+  lastUrl.set(id, url);
   void invoke("browser_navigate", { browserId: id, url }).catch(() => {});
 }
 export function back(id: string): void {
@@ -57,7 +68,9 @@ export function blurBrowser(): void {
 
 export async function disposeBrowser(id: string): Promise<void> {
   created.delete(id);
+  lastUrl.delete(id);
   boundsFlight.delete(id);
+  visSeq.delete(id);
   try {
     await invoke("browser_close", { browserId: id });
   } catch {
@@ -109,6 +122,14 @@ export function setBounds(id: string, b: Bounds): void {
     });
 }
 
+// id별 setVisible 세대 — 진행 중인 hide 재시도(최대 4회×400ms)가 그 사이 도착한 show를
+// 뒤늦게 덮어써 webview가 숨김으로 고착되는 경합을 막는다(최신 요청만 재시도를 계속한다).
+// 세대값은 전역 단조 증가 — id별로 1부터 리셋하면 dispose 후 재사용된 id(웹→터미널→웹
+// 전환)에서 낡은 hide 루프의 seq에 새 show가 다시 도달해 가드가 뚫린다. 전역 단조면 한 번
+// 쓴 seq는 두 번 나오지 않아 visSeq.delete(재사용 정리)가 있어도 안전하다.
+let visCounter = 0;
+const visSeq = new Map<string, number>();
+
 /**
  * 표시/숨김. hide는 모달 위 "끼임"(정합성 버그)을 막기 위해 per-attempt 타임아웃으로
  * 끊긴(hung) invoke를 차단하고 재시도한다(메모리: 동시 invoke 응답 유실).
@@ -118,8 +139,11 @@ export async function setVisible(
   visible: boolean,
   bounds?: Bounds,
 ): Promise<void> {
+  const seq = ++visCounter;
+  visSeq.set(id, seq);
   const attempts = visible ? 1 : 4;
   for (let i = 0; i < attempts; i++) {
+    if (visSeq.get(id) !== seq) return; // 더 새로운 요청이 대체 — 낡은 재시도 중단
     const ok = await Promise.race([
       invoke("browser_set_visible", { browserId: id, visible, bounds: bounds ?? null })
         .then(() => true)
@@ -152,6 +176,8 @@ export function ensureBrowserEvents(): void {
   if (eventsReady) return;
   eventsReady = true;
   void listen<{ browserId: string; url: string; loading: boolean }>("browser://nav", (e) => {
+    // 페이지가 스스로 이동한 실적도 기록 — 리마운트 시 재탐색 여부 판정의 기준.
+    if (e.payload.url) lastUrl.set(e.payload.browserId, e.payload.url);
     useBrowsers.getState().applyNav(e.payload.browserId, {
       url: e.payload.url,
       loading: e.payload.loading,

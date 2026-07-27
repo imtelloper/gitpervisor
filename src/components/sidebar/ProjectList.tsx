@@ -31,6 +31,7 @@ import {
   useUpdateProjectPath,
 } from "../../queries";
 import { useAgentScanner } from "../../stores/agentActivity";
+import { useOccludesWebview } from "../../stores/occlusion";
 import { useUi } from "../../stores/ui";
 import { ResizeHandle } from "../common/ResizeHandle";
 import { ProjectItem } from "./ProjectItem";
@@ -87,6 +88,8 @@ export function ProjectList() {
   useAgentScanner();
 
   const [menu, setMenu] = useState<MenuState | null>(null);
+  // 우클릭 메뉴가 워크스페이스 영역으로 넘어가면 네이티브 webview에 가린다 — 열린 동안 숨긴다.
+  useOccludesWebview(!!menu);
 
   // 변경/활동 우선 정렬: 작업트리 변경 있는 프로젝트 → push/pull 대기 → 깨끗한 순.
   // 같은 등급 안에서는 변경 수 많은 순, 그 다음 등록 순서(order)로 안정 정렬.

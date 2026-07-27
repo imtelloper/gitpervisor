@@ -60,6 +60,9 @@ rust_decimal = "1"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "charset", "gzip", "brotli", "deflate", "zstd", "json", "query", "multipart", "stream", "cookies"] }
 serde_urlencoded = "0.7"
 base64 = "0.22"
+# 로컬 HTML 프리뷰 루프백 서버의 URL 경로 인코딩/디코딩(공백·#·?·한글). url 크레이트가
+# 이미 트리에 가진 것과 동일 버전이라 추가 컴파일 비용 없음.
+percent-encoding = "2"
 # LSP 서버 앱 내 다운로드(태스크 17 M2 획득 자동화) — npm tgz 해제 + sha512 무결성.
 # node 런타임 다운로드(PATH에 node 없을 때): win=zip, unix=tar.gz(flate2+tar), 무결성=SHASUMS256(sha256).
 flate2 = "1"
@@ -84,6 +87,15 @@ arboard = { version = "3", default-features = false, features = ["image-data"] }
 # 클립보드 이미지 RGBA→PNG 파일 인코딩(임시 파일 경로 붙여넣기). tauri image-png가 이미 트리에
 # 같은 0.25를 가지므로 추가 컴파일 비용 최소.
 image = { version = "0.25", default-features = false, features = ["png"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# term_paste의 파일 목록 읽기 — Finder ⌘C는 public.file-url을 올리지만 arboard는 이를 못 읽고,
+# Finder가 함께 올리는 "파일 아이콘 TIFF"를 get_image()가 먼저 집어삼켜 아이콘 PNG 경로가
+# 붙여넣어졌다. NSPasteboard readObjectsForClasses:[NSURL]로 실제 경로를 먼저 본다.
+# 두 크레이트 모두 tauri(macOS) 의존으로 이미 트리에 있어 추가 컴파일 비용은 없다.
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard", "NSPasteboardItem"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSURL", "NSDictionary", "NSValue"] }
 
 [target.'cfg(windows)'.dependencies]
 # Win32_UI_Shell: 파일트리 실행 파일 더블클릭을 ShellExecuteW로 띄운다(cmd 셸 파싱 우회 — 인젝션 차단).

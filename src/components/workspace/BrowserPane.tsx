@@ -20,6 +20,7 @@ import {
   ensureBrowserEvents,
   forward,
   isBrowserCreated,
+  lastKnownUrl,
   navigate,
   openBrowser,
   releaseBrowser,
@@ -32,11 +33,11 @@ import {
 import {
   type BookmarkEntry,
   type BrowserItem,
+  remintPreview,
   resolveOmnibox,
   useBrowsers,
 } from "../../stores/browser";
-import { useDb } from "../../stores/db";
-import { useUi } from "../../stores/ui";
+import { useOccludesWebview, useWebviewBlocked } from "../../stores/occlusion";
 import { EmptyState } from "../common/EmptyState";
 import { Favicon } from "./Favicon";
 
@@ -78,10 +79,14 @@ export function BrowserPane({
   id,
   active,
   paneControls,
+  layoutKey,
 }: {
   id: string;
   active: boolean;
   paneControls?: React.ReactNode;
+  /** 크기 불변·위치만 변하는 리플로우(모아보기 칩 토글로 셀 이동 등)는 ResizeObserver에
+   *  안 잡힌다 — 호출자가 슬롯 좌표 등을 넣어주면 변경 시 bounds를 재동기화한다. */
+  layoutKey?: string;
 }) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -96,18 +101,19 @@ export function BrowserPane({
   const toggleBookmark = useBrowsers((s) => s.toggleBookmark);
   const isBookmarked = bookmarks.some((b) => b.url === url);
 
-  // 점유(occlusion) 조건 — active(호출자) & 네이티브 & URL 있음 & 차단성 모달 없음
-  const settingsOpen = useUi((s) => s.settingsOpen);
-  const memoOpen = useUi((s) => s.memoOpen);
-  const confirm = useUi((s) => s.confirm);
-  const dbDialog = useDb((s) => s.dialog);
+  // 점유(occlusion) 조건 — active(호출자) & 네이티브 & URL 있음 & 가리는 오버레이 없음.
+  // 오버레이 판정은 stores/occlusion.ts가 단일 진실이다(전역 모달 + DB 다이얼로그 + 로컬
+  // 메뉴 레지스트리). 여기서 플래그를 손으로 나열하면 또 낡는다 — 목록을 늘리지 말 것.
+  const blocked = useWebviewBlocked();
 
-  const shouldShow =
-    active && mode === "native" && !!url && !settingsOpen && !memoOpen && !confirm && !dbDialog;
+  const shouldShow = active && mode === "native" && !!url && !blocked;
 
   // 안정 리스너에서 최신 shouldShow를 읽기 위한 ref
   const shouldShowRef = useRef(shouldShow);
   shouldShowRef.current = shouldShow;
+
+  // iframe 새로고침 세대 — key 교체로 리마운트해 구현(iframe엔 네이티브 reload 경로가 없다)
+  const [iframeGen, setIframeGen] = useState(0);
 
   // 주소창 입력 로컬 상태 (미포커스 시 url을 따라감)
   const [draft, setDraft] = useState(url);
@@ -120,8 +126,10 @@ export function BrowserPane({
 
   // 옴니박스 자동완성 — 북마크(우선) + 방문기록 합쳐 substring 매칭(최대 6)
   const q = draft.trim().toLowerCase();
+  // 주소창을 "실제로 편집 중"인가 — 포커스만으론 부족하다(포커스 시 draft가 현재 url로 채워진다).
+  const editingOmnibox = focused && !!q && q !== url.toLowerCase();
   const matches: Suggestion[] = (() => {
-    if (!focused || !q || q === url.toLowerCase()) return [];
+    if (!editingOmnibox) return [];
     const bm: Suggestion[] = bookmarks.map((b) => ({ ...b, bookmarked: true }));
     const seen = new Set(bm.map((b) => b.url));
     const hist: Suggestion[] = history
@@ -135,6 +143,12 @@ export function BrowserPane({
       .slice(0, 6);
   })();
 
+  // 자동완성 목록은 컨트롤 바 아래(=네이티브 webview 점유 영역)로 펼쳐지므로, 열려 있는 동안
+  // webview를 숨겨야 보인다. 등록 기준은 matches.length가 아니라 editingOmnibox다 — 매치 수는
+  // 타이핑 중 0을 넘나들어(예: "git"→매치, "gitzz"→없음) webview가 show/hide를 반복하며 깜빡인다.
+  // 반대로 focused만 쓰면 주소창 클릭만으로 페이지가 비므로, "현재 URL과 다른 입력"이 맞는 신호다.
+  useOccludesWebview(editingOmnibox);
+
   // 모듈 1회 이벤트 구독
   useEffect(() => {
     ensureBrowserEvents();
@@ -145,16 +159,22 @@ export function BrowserPane({
     return () => releaseBrowser(id);
   }, [id]);
 
-  // 생성/네비게이션 (네이티브 · 활성일 때만 lazy 생성)
-  const prevUrlRef = useRef("");
+  // 프리뷰(로컬 HTML) 탭으로 돌아올 때 URL을 재발급한다 — 프리뷰 서버는 유휴 10분에 스스로
+  // 종료하므로 탭만 열려 있으면 죽은 포트를 가리킨다. 서버가 살아 있으면 같은 URL이 돌아와
+  // iframe 재로드가 없다(멱등).
+  useEffect(() => {
+    if (active) remintPreview(id);
+  }, [active, id]);
+
+  // 생성/네비게이션 (네이티브 · 활성일 때만 lazy 생성). 마지막 URL 비교는 컴포넌트 ref가
+  // 아니라 모듈 레벨(lastKnownUrl) — 리마운트(모아보기 여닫기·그리드 재배치)로 ref가
+  // 초기화돼 이미 그 URL에 있는 webview를 재탐색(=전체 리로드)하는 것을 막는다.
   useEffect(() => {
     if (mode !== "native" || !url || !active) return;
     if (!isBrowserCreated(id)) {
       void openBrowser(id, url, rectOf(viewportRef.current));
-      prevUrlRef.current = url;
-    } else if (prevUrlRef.current !== url) {
+    } else if (lastKnownUrl(id) !== url) {
       navigate(id, url);
-      prevUrlRef.current = url;
     }
   }, [id, mode, url, active]);
 
@@ -180,6 +200,12 @@ export function BrowserPane({
     ro.observe(el);
     return () => ro.disconnect();
   }, [id, mode]);
+
+  // 위치만 변한 리플로우 보정 — layoutKey가 바뀌면(그리드 슬롯 이동) rect를 다시 잰다.
+  useEffect(() => {
+    if (mode === "native" && isBrowserCreated(id))
+      setBounds(id, rectOf(viewportRef.current));
+  }, [layoutKey, id, mode]);
 
   // 창 리사이즈 jank 차단 — 리사이즈 중엔 hide, 멈추면 show+bounds(보일 조건일 때만)
   useEffect(() => {
@@ -214,15 +240,25 @@ export function BrowserPane({
     <div className="flex h-full w-full flex-col bg-base">
       {/* 컨트롤 바 — 항상 React DOM (네이티브 webview bounds는 이 아래 viewport로만 한정) */}
       <div className="flex h-9 shrink-0 items-center gap-1 border-b border-edge px-2">
-        <NavBtn label="뒤로" onClick={() => back(id)} disabled={!hasUrl}>
+        {/* 뒤로/앞으로는 네이티브 전용 — iframe(localhost·프리뷰)은 cross-origin이라
+            contentWindow.history에 접근할 수 없다. 새로고침은 iframe도 key 교체로 지원. */}
+        <NavBtn label="뒤로" onClick={() => back(id)} disabled={!hasUrl || mode === "iframe"}>
           <ArrowLeft size={15} />
         </NavBtn>
-        <NavBtn label="앞으로" onClick={() => forward(id)} disabled={!hasUrl}>
+        <NavBtn
+          label="앞으로"
+          onClick={() => forward(id)}
+          disabled={!hasUrl || mode === "iframe"}
+        >
           <ArrowRight size={15} />
         </NavBtn>
         <NavBtn
           label={loading ? "정지" : "새로고침"}
-          onClick={() => (loading ? stop(id) : reload(id))}
+          onClick={() => {
+            if (mode === "iframe") setIframeGen((g) => g + 1);
+            else if (loading) stop(id);
+            else reload(id);
+          }}
           disabled={!hasUrl}
         >
           {loading ? <X size={15} /> : <RotateCw size={15} />}
@@ -329,10 +365,15 @@ export function BrowserPane({
           <BrowserEmpty onPick={(u) => go(u)} bookmarks={bookmarks} />
         ) : mode === "iframe" ? (
           <iframe
+            key={iframeGen}
             title={item.title}
             src={url}
             className="h-full w-full border-0 bg-white"
-            sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-modals"
+            // allow-same-origin은 유지해야 한다 — 없으면 opaque origin이 되어 페이지가 자기
+            // data.json을 fetch하는 흔한 프리뷰가 CORS로 깨진다. 대신 유출·방해 채널을 줄인다:
+            // allow-popups 제거(window.open 유출 차단), allow-modals 제거(프리뷰의 alert()가
+            // 앱 webview를 블로킹하는 사고 예방), allow-forms 제거(CSP form-action과 이중 방어).
+            sandbox="allow-same-origin allow-scripts"
           />
         ) : (
           // 네이티브 모드: webview가 위를 덮는다. 숨겨질 때 보이는 중립 배경.
@@ -372,6 +413,9 @@ function NavBtn({
 function DevPorts({ onPick }: { onPick: (url: string) => void }) {
   const [ports, setPorts] = useState<number[] | null>(null);
   const [open, setOpen] = useState(false);
+  // 드롭다운이 webview 점유 영역으로 펼쳐진다 — 열린 동안 webview를 숨긴다.
+  // (백드롭 `fixed inset-0`도 webview 위에선 클릭을 못 받으므로 숨김이 필수다.)
+  useOccludesWebview(open);
 
   const scan = async () => {
     setOpen(true);
@@ -427,6 +471,8 @@ function BookmarksMenu({
   onPick: (url: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  // max-h-80(최대 320px)이 webview 점유 영역을 파고든다 — 열린 동안 webview를 숨긴다.
+  useOccludesWebview(open);
   return (
     <div className="relative shrink-0">
       <button

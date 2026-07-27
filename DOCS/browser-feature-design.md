@@ -94,7 +94,16 @@ URL 호스트로 경로를 **자동 분기**한다. 사용자는 경로를 의�
 
 1. 이 브라우저 탭이 활성 탭 (`useTerminals.activeTab[projectId] === tab.id`)
 2. `tab.mode === "native"` (iframe 모드면 React가 그리므로 네이티브는 **항상 hide**)
-3. **차단성 모달 미오픈**: `useUi.settingsOpen` · `useUi.memoOpen` · `useUi.confirm` · **`useDb((s)=>s.dialog)`**(ConnectionDialog는 ui.ts가 아니라 **DB store**에 있음 — `ConnectionDialog.tsx:50` 검증)
+3. **가리는 오버레이 미오픈**: `useWebviewBlocked()`(`src/stores/occlusion.ts`) — **이 훅이 유일한 판정자다.** BrowserPane에 플래그를 나열하지 말 것.
+
+   > 개정 이력: 이 항목은 원래 `settingsOpen · memoOpen · confirm · useDb.dialog` **4개를 하드코딩한 목록**이었다. 이후 추가된 `prompt` · `quickOpenOpen` · `symbolSearchOpen` · `imageEditorPath`가 목록에 반영되지 않아 **그 모달들이 네이티브 webview 뒤에 가려 보이지 않는 버그**가 됐다. 손으로 관리하는 목록은 반드시 낡는다 → 판정을 한 곳으로 모았다. 자세한 근거는 `browser-preview-hardening-design.md` §1.
+   >
+   > 오버레이는 **3계층**에 산재하므로 스토어 셀렉터 하나로는 부족하다:
+   > - 전역 `useUi` 모달 → `selectBlockingOverlay`(ui.ts, 상태 선언과 **콜로케이트**)
+   > - 타 스토어 모달 → `useDb.dialog`
+   > - **컴포넌트 로컬 state 메뉴**(우클릭·버튼 앵커 `fixed` 메뉴) → 셀렉터로 못 잡는다. 해당 컴포넌트가 `useOccludesWebview(!!menu)` **한 줄**로 등록한다.
+   >
+   > 새 전체화면 모달을 추가하면 `selectBlockingOverlay`에, 새 로컬 메뉴를 추가하면 `useOccludesWebview`를 넣어라. 부수 효과로 얻는 것: 메뉴가 열린 동안 webview가 숨으므로 닫기용 백드롭(`fixed inset-0`)이 **webview 위에서 클릭을 못 받는 문제**도 함께 해소된다.
 4. 다른 패널 maximize 등으로 영역 미가림
 5. 컨테이너 rect ≠ 0 (`display:none` 탭이면 rect=0 → hide; (A)의 ResizeObserver 신호와 일치)
 
