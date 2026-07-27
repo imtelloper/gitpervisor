@@ -74,25 +74,33 @@ function SortHeader({
   active,
   onSort,
   className,
+  disabled,
+  disabledTip,
 }: {
   label: string;
   k: ProcSortKey;
   active: boolean;
   onSort: (k: ProcSortKey) => void;
   className?: string;
+  /** 이 지표를 측정할 수 없는 플랫폼 — 정렬해도 무의미하므로 클릭을 막는다 */
+  disabled?: boolean;
+  disabledTip?: string;
 }) {
   return (
     <th className={`px-2 py-1.5 font-medium ${className ?? ""}`}>
       <button
         type="button"
+        disabled={disabled}
         onClick={() => onSort(k)}
-        title={`${label} 기준 정렬`}
-        className={`w-full text-right transition-colors hover:text-fg ${
-          active ? "text-accent" : "text-fg-dim"
+        title={disabled ? (disabledTip ?? `${label} 측정 불가`) : `${label} 기준 정렬`}
+        className={`w-full text-right transition-colors ${
+          disabled
+            ? "cursor-default text-fg-dim/50"
+            : `hover:text-fg ${active ? "text-accent" : "text-fg-dim"}`
         }`}
       >
         {label}
-        {active ? " ▾" : ""}
+        {active && !disabled ? " ▾" : ""}
       </button>
     </th>
   );
@@ -218,16 +226,27 @@ export function SysMonitorWindow() {
 
   const { data, dataUpdatedAt } = useProcessSnapshot(sortBy, groupByName);
 
-  // 첫 틱은 CPU 델타 기준점이라 전부 0% — 두 번째 표본이 올 때까지 "측정 중…"으로 안내한다.
+  const totals = data?.totals;
+  // GPU를 못 읽는 플랫폼(macOS/Linux)에선 전 행이 null이라 GPU 정렬이 무의미하다.
+  const gpuSupported = !totals || totals.gpu != null;
+  // 이전 버전이 localStorage에 눌러앉힌 sortBy:"gpu"를 자가복구한다 — 그대로 두면 재오픈
+  // 때마다 계속 무의미한 정렬로 뜬다.
+  useEffect(() => {
+    if (totals && totals.gpu == null && sortBy === "gpu") setSortBy("cpu");
+  }, [totals, sortBy]);
+
+  // 첫 표본은 CPU 델타 기준점이라 전부 0%다. macOS는 프로세스별 CPU가 3번째 표본에서야
+  // 값이 나온다(실측) — 2틱에서 힌트를 지우면 0.0%뿐인 표를 정상 데이터처럼 보여주게 된다.
+  // 그래서 "실제로 0이 아닌 CPU를 한 번이라도 봤을 때" 또는 3틱 경과 시 힌트를 지운다.
   const ticks = useRef(0);
   const [measuring, setMeasuring] = useState(true);
   useEffect(() => {
     if (!dataUpdatedAt) return;
     ticks.current += 1;
-    if (ticks.current >= 2) setMeasuring(false);
-  }, [dataUpdatedAt]);
+    const sawCpu = (data?.processes ?? []).some((p) => p.cpu > 0);
+    if (sawCpu || ticks.current >= 3) setMeasuring(false);
+  }, [dataUpdatedAt, data]);
 
-  const totals = data?.totals;
   const allRows = useMemo(() => data?.processes ?? [], [data]);
 
   // ── 검색 필터 (프론트, 이름 부분일치) ──
@@ -265,22 +284,36 @@ export function SysMonitorWindow() {
     const pids = p.groupPids ?? [p.pid];
     const label =
       pids.length > 1 ? `${p.name} (${pids.length}개 프로세스)` : p.name;
+    // 그룹 종료는 "같은 실행 파일명"만으로 묶인다. macOS의 공용 XPC 서비스
+    // (com.apple.WebKit.WebContent 등)는 여러 앱이 같은 이름·같은 경로로 돌아 앱 경계를
+    // 넘어 함께 잡힐 수 있다 — 대상 pid를 그대로 보여 사용자가 판단하게 한다.
+    const blast =
+      pids.length > 1
+        ? `\n\n대상 PID: ${pids.slice(0, 12).join(", ")}${
+            pids.length > 12 ? ` 외 ${pids.length - 12}개` : ""
+          }\n같은 이름으로 도는 다른 앱의 프로세스가 함께 포함될 수 있습니다.`
+        : "";
     askConfirm({
       title: "작업 끝내기",
-      message: `'${label}'을(를) 종료할까요? 저장하지 않은 작업이 사라질 수 있습니다.`,
+      message: `'${label}'을(를) 종료할까요? 저장하지 않은 작업이 사라질 수 있습니다.${blast}`,
       confirmLabel: "작업 끝내기",
       danger: true,
       onConfirm: () => {
         void ipc
           .killProcesses(pids)
           .then((r) => {
-            if (r.failed.length === 0) {
-              pushToast("success", `${label} 종료됨`);
+            const skipped = r.skipped.length
+              ? ` · ${r.skipped.length}개 제외(앱 자신)`
+              : "";
+            if (r.failed.length === 0 && r.killed > 0) {
+              pushToast("success", `${label} 종료됨${skipped}`);
             } else if (r.killed > 0) {
               pushToast(
                 "info",
-                `${r.killed}개 종료 · ${r.failed.length}개 실패(권한 부족)`,
+                `${r.killed}개 종료 · ${r.failed.length}개 실패(권한 부족)${skipped}`,
               );
+            } else if (r.skipped.length > 0) {
+              pushToast("info", "앱 자신은 종료하지 않았습니다");
             } else {
               pushToast("error", "종료하지 못했습니다 (권한이 필요할 수 있음)");
             }
@@ -366,7 +399,7 @@ export function SysMonitorWindow() {
         <button
           type="button"
           onClick={() => setGroupByName((v) => !v)}
-          title="같은 이름 프로세스를 합산해 프로그램 단위로 표시 (chrome.exe ×20 등)"
+          title="같은 이름 프로세스를 합산해 프로그램 단위로 표시 (렌더러 20개 등)"
           className={`rounded border px-2 py-1 text-[11px] transition-colors ${
             groupByName
               ? "border-accent bg-accent/15 text-accent"
@@ -413,6 +446,8 @@ export function SysMonitorWindow() {
                 active={sortBy === "gpu"}
                 onSort={setSortBy}
                 className="w-[62px]"
+                disabled={!gpuSupported}
+                disabledTip="이 플랫폼에서는 GPU 사용률을 읽을 수 없습니다"
               />
             </tr>
           </thead>
@@ -434,8 +469,11 @@ export function SysMonitorWindow() {
             측정 중…
           </div>
         ) : rows.length === 0 && query ? (
+          // 검색은 백엔드가 이미 Top-N으로 자른 목록만 훑는다. 전체 프로세스를 뒤진 것처럼
+          // 단정하면 거짓말이 된다(macOS는 1400개 중 200개만 내려온다) — 범위를 밝힌다.
           <div className="px-3 py-6 text-center text-xs text-fg-dim">
-            '{query}'와 일치하는 프로세스가 없습니다
+            상위 {allRows.length}개 중에는 '{query}'와 일치하는 프로세스가 없습니다
+            {rest > 0 ? <div className="mt-1">나머지 {rest}개는 검색 범위 밖입니다</div> : null}
           </div>
         ) : null}
       </div>

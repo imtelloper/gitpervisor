@@ -12,10 +12,15 @@ import { isMac } from "./platform";
 
 /** 텍스트를 클립보드에 쓴다. 성공 여부를 반환한다 — 예외를 삼켜 UI가 죽지 않게 하되,
  *  호출자가 실패 토스트 등 피드백을 줄 수 있게 한다(무음 실패 + 선택 해제면 "복사가 안 된다"로만
- *  체감된다). */
+ *  체감된다).
+ *  macOS belt: 커스텀 메뉴로 Copy/Cut을 빼 네이티브 copy를 없앤 게 근본 수정이지만(§7), 혹시
+ *  어떤 경로로든 WKWebView 네이티브 copy가 우리 쓰기 "뒤" 런루프에서 pasteboard를 덮는 경우를
+ *  대비해, 다음 틱에 한 번 더 써서 arboard가 최종 writer가 되게 한다(마지막 쓰기 승리). 메뉴
+ *  수정이 이미 네이티브 copy를 없앤 경로에선 같은 값의 무해한 중복 쓰기일 뿐. */
 export async function copyText(text: string): Promise<boolean> {
   try {
     await writeText(text);
+    if (isMac) setTimeout(() => void writeText(text).catch(() => {}), 0);
     return true;
   } catch {
     return false;

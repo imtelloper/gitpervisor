@@ -1,9 +1,11 @@
-use std::collections::HashMap;
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use sysinfo::{Disks, Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+use sysinfo::{
+    Disks, Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System, UpdateKind,
+};
 use tauri::State;
 
 use crate::error::{ErrorCode, IpcError};
@@ -22,6 +24,9 @@ pub struct SysMetrics {
     pub ram_total: u64,
     pub storage_used: u64,
     pub storage_total: u64,
+    /// 실제로 측정한 볼륨의 마운트 지점("C:\\", "/" 등) — 툴팁이 드라이브 문자를 지어내지
+    /// 않도록 백엔드가 알려준다. 디스크를 못 찾으면 빈 문자열.
+    pub storage_mount: String,
 }
 
 /// 리소스 모니터 팝업의 프로세스 단위 표본 (태스크 05 §4.1).
@@ -29,7 +34,7 @@ pub struct SysMetrics {
 #[serde(rename_all = "camelCase")]
 pub struct ProcessSample {
     pub pid: u32,
-    /// 실행 파일명 (예: "chrome.exe")
+    /// 실행 파일명 (Windows "chrome.exe", macOS "Google Chrome Helper" 등 — 플랫폼별 basename)
     pub name: String,
     /// 0-100 — cpu_usage()/코어수 정규화(전역 스케일, 작업 관리자 방식)
     pub cpu: f32,
@@ -80,6 +85,9 @@ pub enum ProcSortKey {
 pub struct KillOutcome {
     pub killed: u32,
     pub failed: Vec<u32>,
+    /// 자기보호로 **시도조차 하지 않은** pid — 앱 자신과 앱 번들/설치 폴더 안의 프로세스.
+    /// failed(권한 부족)와 성격이 달라 분리한다(프론트 안내 문구가 갈린다).
+    pub skipped: Vec<u32>,
 }
 
 /// 근접 폴링(타이틀바 2s + 팝업 2s) 시 PDH·CPU 델타 표본이 겹치지 않게 하는 스로틀 —
@@ -100,6 +108,9 @@ pub struct Monitor {
     gpu_by_pid: HashMap<u32, f32>,
     /// 직전 프로세스 표본 캐시(개별, 정렬·그룹 전).
     procs: Vec<ProcessSample>,
+    /// 직전 refresh에서 본 pid 집합 — 이번에 처음 등장한 프로세스의 disk_usage() 델타는
+    /// "생애 누적치"라 초당 환산이 무의미해서(§refresh_procs) 그런 행만 골라내는 데 쓴다.
+    seen_pids: HashSet<u32>,
 }
 
 impl Monitor {
@@ -116,6 +127,7 @@ impl Monitor {
             totals: None,
             gpu_by_pid: HashMap::new(),
             procs: Vec::new(),
+            seen_pids: HashSet::new(),
         }
     }
 
@@ -136,21 +148,41 @@ impl Monitor {
         let cpu = self.sys.global_cpu_usage();
 
         let ram_total = self.sys.total_memory();
-        let ram_used = ram_total.saturating_sub(self.sys.available_memory());
+        // `total - available_memory()`가 아니라 sysinfo의 used_memory()를 쓴다 — macOS의
+        // available_memory()는 사실상 free 페이지(≈0)라 그 뺄셈이 **항상 100%**를 만든다
+        // (실측: total 32.0GB, available 0B). used_memory()는 플랫폼별로 올바른 "사용 중"
+        // 정의를 쓴다 — macOS는 active+wired+compressed(=활성 상태 보기 수치), Windows는
+        // total-available이라 기존 값과 동일하다.
+        let ram_used = self.sys.used_memory().min(ram_total);
         let ram = pct(ram_used, ram_total);
 
-        // 시스템 드라이브(C:) 우선, 없으면 가장 큰 디스크.
+        // 시스템 볼륨을 마운트 지점으로 직접 지목한다(Windows `C:\`, 유닉스 `/`).
+        // "가장 큰 디스크" 단독 폴백은 위험하다 — macOS엔 `C:\`가 없어 항상 폴백을 타는데,
+        // 외장 USB나 마운트된 DMG가 내장 디스크보다 크면 게이지가 조용히 그쪽으로 옮겨간다
+        // (실측: 3.7TB 외장이 뽑혀 4.9%로 표시, 실제 시스템 디스크는 ~91% 사용).
+        // 그래서 폴백도 착탈식(is_removable)을 먼저 제외한다.
         let disks = Disks::new_with_refreshed_list();
+        let root = Path::new(if cfg!(windows) { "C:\\" } else { "/" });
         let disk = disks
             .iter()
-            .find(|d| d.mount_point() == Path::new("C:\\"))
+            .find(|d| d.mount_point() == root)
+            .or_else(|| {
+                disks
+                    .iter()
+                    .filter(|d| !d.is_removable())
+                    .max_by_key(|d| d.total_space())
+            })
             .or_else(|| disks.iter().max_by_key(|d| d.total_space()));
-        let (storage_total, storage_used) = match disk {
+        let (storage_total, storage_used, storage_mount) = match disk {
             Some(d) => {
                 let total = d.total_space();
-                (total, total.saturating_sub(d.available_space()))
+                (
+                    total,
+                    total.saturating_sub(d.available_space()),
+                    d.mount_point().display().to_string(),
+                )
             }
-            None => (0, 0),
+            None => (0, 0, String::new()),
         };
 
         // GPU는 같은 PDH collect에서 전역 max와 pid별 값을 동시 산출한다 (§3.4).
@@ -166,6 +198,7 @@ impl Monitor {
             ram_total,
             storage_used,
             storage_total,
+            storage_mount,
         });
     }
 
@@ -184,6 +217,8 @@ impl Monitor {
             return;
         }
         // 디스크 바이트/초 환산용 실측 간격 — 직전 refresh_procs와의 경과 시간.
+        // 첫 호출은 기준 간격이 없다(=델타가 아니라 생애 누적치) → 이번 틱은 디스크 측정 불가.
+        let first_tick = self.last_proc_collect.is_none();
         let secs = self
             .last_proc_collect
             .map_or(0.0, |t| t.elapsed().as_secs_f64())
@@ -206,11 +241,16 @@ impl Monitor {
         // 코어수로 나눠 전역 스케일(작업 관리자 방식)로 정규화한다.
         let ncores = self.sys.cpus().len().max(1) as f32;
         let mut out = Vec::with_capacity(self.sys.processes().len());
+        let mut now_pids = HashSet::with_capacity(self.sys.processes().len());
         for (pid, p) in self.sys.processes() {
             let pid = pid.as_u32();
+            now_pids.insert(pid);
             // 이번 간격의 read+written(누적이 아닌 델타)을 초당으로 환산.
+            // 단 **이번에 처음 본 프로세스**는 그 델타가 곧 생애 누적 I/O라 초당 환산이
+            // 터무니없어진다(실측: 첫 틱 1.2 PB/s). 그런 행은 다음 틱까지 측정 불가로 둔다.
             let du = p.disk_usage();
             let bytes = du.read_bytes + du.written_bytes;
+            let disk_measurable = !first_tick && self.seen_pids.contains(&pid);
             out.push(ProcessSample {
                 pid,
                 name: p.name().to_string_lossy().into_owned(),
@@ -220,25 +260,66 @@ impl Monitor {
                 gpu: self.gpu_by_pid.get(&pid).copied(),
                 group_count: None,
                 exe_path: p.exe().map(|e| e.display().to_string()),
-                disk_bps: Some((bytes as f64 / secs) as u64),
+                disk_bps: disk_measurable.then(|| (bytes as f64 / secs) as u64),
                 group_pids: None,
             });
         }
         self.procs = out;
+        self.seen_pids = now_pids;
     }
 
     /// pid 목록을 종료한다(작업 끝내기). 성공 판정은 kill() 반환값이 아니라 **실제로 사라졌는지**로
     /// 한다 — 그룹 종료 시 부모를 죽이면 자식이 연쇄 종료돼 개별 kill()이 false를 줘도 목표(프로세스
     /// 없음)는 달성되기 때문. 최신 핸들로 종료 시도 → 잠깐 정착 대기 → 재조회해 아직 살아있는 것만
     /// 실패(진짜 권한 부족)로 돌려준다.
+    /// 자기보호 대상 판정 — 앱 자신의 pid이거나, 실행 파일이 앱 실행 파일과 같은 디렉터리
+    /// (=번들 `Contents/MacOS` · 설치 폴더) 안에 있는 프로세스.
+    ///
+    /// **한계(macOS)**: WKWebView 렌더러는 `/System/Library/Frameworks/WebKit.framework`
+    /// 아래 **공용 XPC 서비스**이고 launchd가 부모(ppid=1)라, 우리 창의 렌더러와 다른 앱의
+    /// 렌더러를 경로로도 부모로도 구분할 수 없다(실측: 우리 것과 남의 것 모두 ppid=1,
+    /// 동일 exe 경로). 따라서 "프로그램별" 그룹 종료가 동명 프로세스를 앱 경계 너머로 함께
+    /// 잡는 것은 여기서 막지 못한다 — 프론트 확인 모달이 대상 pid를 그대로 보여 사용자가
+    /// 판단하게 한다.
+    fn is_self_owned(&self, raw: u32, self_pid: u32, own_dir: Option<&Path>) -> bool {
+        if raw == self_pid {
+            return true;
+        }
+        let Some(dir) = own_dir else { return false };
+        self.sys
+            .process(Pid::from_u32(raw))
+            .and_then(|p| p.exe())
+            .and_then(|e| e.parent())
+            .is_some_and(|d| d == dir)
+    }
+
     pub fn kill(&mut self, pids: &[u32]) -> KillOutcome {
-        let targets: Vec<Pid> = pids.iter().map(|&p| Pid::from_u32(p)).collect();
-        // 최신 상태(존재·핸들)로 갱신 후, 현재 살아있는 것들만 종료 시도.
+        let self_pid = std::process::id();
+        let own_dir: Option<PathBuf> = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(Path::to_path_buf));
+        let all: Vec<Pid> = pids.iter().map(|&p| Pid::from_u32(p)).collect();
+        // 최신 상태(존재·핸들·exe 경로)로 갱신 후 자기보호 대상을 걸러낸다.
+        // exe는 자기보호 판정에 필요하므로 여기서만 함께 읽는다(OnlyIfNotSet — 캐시되면 무비용).
         self.sys.refresh_processes_specifics(
-            ProcessesToUpdate::Some(&targets),
+            ProcessesToUpdate::Some(&all),
             true,
-            ProcessRefreshKind::nothing(),
+            ProcessRefreshKind::nothing().with_exe(UpdateKind::OnlyIfNotSet),
         );
+
+        let mut skipped = Vec::new();
+        let mut targets = Vec::new();
+        let mut raw_targets = Vec::new();
+        for &raw in pids {
+            if self.is_self_owned(raw, self_pid, own_dir.as_deref()) {
+                skipped.push(raw);
+            } else {
+                targets.push(Pid::from_u32(raw));
+                raw_targets.push(raw);
+            }
+        }
+
+        // 현재 살아있는 것들만 종료 시도.
         for pid in &targets {
             if let Some(p) = self.sys.process(*pid) {
                 p.kill();
@@ -253,14 +334,24 @@ impl Monitor {
         );
         let mut killed = 0u32;
         let mut failed = Vec::new();
-        for (&raw, pid) in pids.iter().zip(&targets) {
-            if self.sys.process(*pid).is_none() {
-                killed += 1;
-            } else {
+        for (&raw, pid) in raw_targets.iter().zip(&targets) {
+            // 좀비(<defunct>)는 프로세스 테이블에 남아 있어 "아직 살아있다"로 오판되기 쉽다.
+            // 종료 목적은 달성됐으므로 좀비도 killed로 센다.
+            let alive = self
+                .sys
+                .process(*pid)
+                .is_some_and(|p| p.status() != ProcessStatus::Zombie);
+            if alive {
                 failed.push(raw);
+            } else {
+                killed += 1;
             }
         }
-        KillOutcome { killed, failed }
+        KillOutcome {
+            killed,
+            failed,
+            skipped,
+        }
     }
 
     /// 팝업용 프로세스 스냅샷 — Rust에서 그룹 합산·정렬·Top-N 절단까지 끝내 보낸다 (§3.3).
@@ -300,17 +391,29 @@ fn metric(r: &ProcessSample, key: ProcSortKey) -> f64 {
 }
 
 /// 내림차순 정렬. Gpu 기준일 때 gpu=None(측정 대상 아님)은 항상 뒤로 보낸다.
+///
+/// 동률은 cpu → ram → pid로 확정한다(결정론). 이게 없으면 **GPU 미지원 플랫폼
+/// (macOS/Linux)에서 모든 행의 gpu가 None이라 1차 비교가 전부 Equal**이 되고, 안정 정렬은
+/// 입력 순서 — 즉 sysinfo `processes()`의 HashMap 순회 순서 — 를 그대로 남긴다. 그 상태로
+/// Top-N을 자르면 매 틱 임의의 N개가 뽑혀 목록이 2초마다 무의미하게 뒤바뀐다.
+/// Disk/Gpu의 None끼리도 마찬가지라 같은 폴백이 필요하다.
 fn sort_samples(rows: &mut [ProcessSample], key: ProcSortKey) {
-    rows.sort_by(|a, b| match key {
-        ProcSortKey::Cpu => b.cpu.total_cmp(&a.cpu),
-        ProcSortKey::Ram => b.ram.cmp(&a.ram),
-        ProcSortKey::Gpu => match (a.gpu, b.gpu) {
-            (Some(x), Some(y)) => y.total_cmp(&x),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => std::cmp::Ordering::Equal,
-        },
-        ProcSortKey::Disk => b.disk_bps.cmp(&a.disk_bps),
+    rows.sort_by(|a, b| {
+        let primary = match key {
+            ProcSortKey::Cpu => b.cpu.total_cmp(&a.cpu),
+            ProcSortKey::Ram => b.ram.cmp(&a.ram),
+            ProcSortKey::Gpu => match (a.gpu, b.gpu) {
+                (Some(x), Some(y)) => y.total_cmp(&x),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            },
+            ProcSortKey::Disk => b.disk_bps.cmp(&a.disk_bps),
+        };
+        primary
+            .then_with(|| b.cpu.total_cmp(&a.cpu))
+            .then_with(|| b.ram.cmp(&a.ram))
+            .then_with(|| a.pid.cmp(&b.pid))
     });
 }
 
@@ -408,16 +511,14 @@ pub fn kill_processes(
     state: State<'_, AppState>,
     pids: Vec<u32>,
 ) -> Result<KillOutcome, IpcError> {
-    // 앱 자신은 종료 대상에서 제외 — 실수로 모니터/앱을 죽이지 않게.
-    let self_pid = std::process::id();
-    let targets: Vec<u32> = pids.into_iter().filter(|&p| p != self_pid).collect();
-    if targets.is_empty() {
+    if pids.is_empty() {
         return Err(IpcError::new(
             ErrorCode::Io,
             "종료할 프로세스가 없습니다",
         ));
     }
-    Ok(state.monitor.lock().unwrap().kill(&targets))
+    // 앱 자신·앱 번들 안 프로세스 제외는 Monitor::kill이 exe 경로를 보고 판정한다(skipped).
+    Ok(state.monitor.lock().unwrap().kill(&pids))
 }
 
 // ---- GPU: Windows PDH "GPU Engine" 사용률(전 어댑터 집계) ----
@@ -721,5 +822,40 @@ mod tests {
         sort_samples(&mut rows, ProcSortKey::Gpu);
         let pids: Vec<u32> = rows.iter().map(|r| r.pid).collect();
         assert_eq!(pids, vec![3, 2, 1]);
+    }
+
+    /// GPU 미지원 플랫폼(macOS/Linux) 계약: 전 행 gpu=None이면 1차 비교가 모두 Equal이라
+    /// 입력 순서(sysinfo HashMap 순회 = 매 틱 임의)가 그대로 남으면 안 된다. cpu→ram→pid
+    /// 폴백으로 **입력 순서와 무관하게 같은 결과**가 나와야 Top-N 절단이 안정적이다.
+    #[test]
+    fn sort_samples_gpu_all_none_is_deterministic() {
+        let mk = || {
+            vec![
+                s(30, "c", 1.0, 10, None),
+                s(10, "a", 5.0, 30, None),
+                s(20, "b", 1.0, 20, None),
+            ]
+        };
+        let mut rows = mk();
+        sort_samples(&mut rows, ProcSortKey::Gpu);
+        // cpu 내림차순(5.0) → 동률(1.0)은 ram 내림차순(20 > 10)
+        assert_eq!(rows.iter().map(|r| r.pid).collect::<Vec<_>>(), vec![10, 20, 30]);
+
+        // 입력 순서를 뒤집어도 같은 결과여야 한다.
+        let mut reversed = mk();
+        reversed.reverse();
+        sort_samples(&mut reversed, ProcSortKey::Gpu);
+        assert_eq!(
+            reversed.iter().map(|r| r.pid).collect::<Vec<_>>(),
+            vec![10, 20, 30]
+        );
+    }
+
+    /// cpu·ram까지 완전 동률이면 pid로 확정한다(틱 간 순서 흔들림 방지).
+    #[test]
+    fn sort_samples_full_tie_falls_back_to_pid() {
+        let mut rows = vec![s(9, "x", 0.0, 0, None), s(3, "y", 0.0, 0, None)];
+        sort_samples(&mut rows, ProcSortKey::Cpu);
+        assert_eq!(rows.iter().map(|r| r.pid).collect::<Vec<_>>(), vec![3, 9]);
     }
 }

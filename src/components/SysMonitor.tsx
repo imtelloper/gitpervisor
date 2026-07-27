@@ -79,8 +79,15 @@ export function SysMonitor() {
       <Metric
         label="GPU"
         pct={m?.gpu ?? null}
-        tip={m && m.gpu == null ? "GPU 사용률을 읽을 수 없음" : "GPU 사용률 (전 어댑터)"}
-        sortBy="gpu"
+        tip={
+          m && m.gpu == null
+            ? "이 플랫폼에서는 GPU 사용률을 읽을 수 없습니다"
+            : "GPU 사용률 (전 어댑터)"
+        }
+        // GPU를 못 읽는 플랫폼(macOS/Linux)에선 정렬 핸드오프를 하지 않는다 — 전 행이
+        // null이라 GPU 정렬은 아무 의미가 없고, 그 값이 localStorage에 눌러앉아 이후
+        // 재오픈까지 계속 무의미한 정렬로 뜬다.
+        sortBy={m && m.gpu == null ? undefined : "gpu"}
       />
       <Metric
         label="RAM"
@@ -91,8 +98,15 @@ export function SysMonitor() {
       <Metric
         label="SSD"
         pct={m?.storage ?? null}
+        // 드라이브 문자를 지어내지 않는다 — 백엔드가 실제로 측정한 볼륨의 마운트 지점을
+        // 실어 보낸다(Windows "C:\", macOS "/"). 예전엔 "C:"를 하드코딩해 macOS에서
+        // 엉뚱한 외장 볼륨 수치에 존재하지도 않는 드라이브 문자를 붙였다.
         tip={
-          m ? `저장소 C: ${gb(m.storageUsed)} / ${gb(m.storageTotal)} GB` : "저장소"
+          m
+            ? `저장소${m.storageMount ? ` ${m.storageMount}` : ""} ${gb(
+                m.storageUsed,
+              )} / ${gb(m.storageTotal)} GB`
+            : "저장소"
         }
       />
     </div>

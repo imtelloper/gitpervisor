@@ -326,3 +326,33 @@ copy 이벤트의 `clipboardData.setData`, Cmd+C 네이티브 copy 커맨드 공
 - UTF-8 바이트가 `Ïù¥`/`‚ùØ`처럼 보이면 = **UTF-8 → MacRoman 재해석** 시그니처.
 - 서드파티 에디터(xterm/Monaco)의 숨은 textarea는 각자 의미가 다르다(xterm=IME 버퍼, Monaco=잘린 미러).
   전역 훅을 걸 땐 자체 copy 로직을 가진 컴포넌트를 반드시 제외하고, 그들의 **최종 출력만** 미러링한다.
+
+### 7.7 후속(진짜 원인): 설치본만 복사가 깨진다 — Finder 실행 .app의 로케일 미상속
+
+**증상**: §7.3의 플러그인 일원화 + 인터셉터(Cmd+C keydown/copy 가로채기)를 다 넣었는데도 **릴리스 .app(설치본)에서는 여전히** Cmd+C 복사가 mojibake. dev(`npm run tauri dev`)에선 정상이라 "고쳐졌다" 착각을 반복.
+
+> 참고(막다른 길): 처음엔 "기본 메뉴 Edit>Copy의 performKeyEquivalent가 DOM 밖에서 네이티브 copy를 실행해 preventDefault로 못 막는다"고 추정해 커스텀 메뉴로 Copy/Cut을 뺐으나 — **릴리스에서 그대로 깨졌다.** 메뉴를 없애도 Cmd+C→copy:는 NSResponder 키바인딩으로 여전히 실행되고, 애초에 그 copy:가 "왜" 깨진 인코딩으로 쓰는지가 진짜 질문이었다.
+
+**진짜 원인 — `defaultCStringEncoding` 폴백(로케일 환경변수)**:
+- 실행 중인 설치본 프로세스의 환경을 `ps eww`로 확인 → **`LANG`/`LC_*`가 하나도 없었다.** Finder/Launchpad로 띄운 `.app`은 셸의 로케일을 **물려받지 못한다**(터미널에서 직접 띄울 때만 상속).
+- 로케일이 비면 CoreFoundation의 `+[NSString defaultCStringEncoding]`이 UTF-8이 아니라 **MacRoman(0)으로 폴백**한다. WKWebView의 네이티브 Cmd+C(`copy:`)가 선택 텍스트를 이 인코딩으로 pasteboard에 써 한글 UTF-8 바이트가 MacRoman으로 재해석돼 이중인코딩으로 깨진다("이제" → "Ïù¥Ï†ú").
+- **dev가 됐던 진짜 이유**: `npm run tauri dev`는 **터미널에서 실행**돼 셸의 `LANG=…UTF-8`를 상속 → `defaultCStringEncoding=UTF-8` → 네이티브 copy가 정확. tauri:// vs http, charset 유무가 아니라 **로케일 상속 여부**가 갈랐다. → **dev는 이 버그를 재현조차 못 하는 무효 환경.**
+- **실측 확정**: 같은 릴리스 바이너리를 `LANG`/`LC_CTYPE` 없이 vs `LC_CTYPE=UTF-8`로 띄워 각각 한글 Cmd+C → `pbpaste | xxd`. 없을 때 MacRoman(`c3xx…`), 있을 때 정상 UTF-8(`ec/ed…`). 코드 한 줄 안 바꾸고 로케일만으로 갈림.
+- wry/tao/arboard엔 이 변환 코드 없음(grep 확인) — 손상은 WebKit 내부이고, 그 트리거는 **프로세스 로케일**이다.
+
+**해결(`src-tauri/src/lib.rs`, `run()` 최상단, CF/AppKit 초기화 전)**:
+```rust
+#[cfg(target_os = "macos")]
+{
+    let empty = |k: &str| std::env::var_os(k).map_or(true, |v| v.is_empty());
+    if empty("LANG") && empty("LC_ALL") && empty("LC_CTYPE") {
+        std::env::set_var("LC_CTYPE", "UTF-8"); // macOS Terminal 기본값과 동일. 인코딩만 보정.
+    }
+}
+```
+`LC_CTYPE`만 심어 문자 인코딩(=pasteboard 인코딩)만 UTF-8로 고정하고 날짜·숫자·메시지 로케일은 시스템 설정 그대로 둔다. (막다른 길이던 커스텀 메뉴/`copyText` 지연-belt는 되돌렸다 — 로케일 한 줄로 결정적으로 해결.)
+
+**교훈**:
+- **"dev는 되는데 설치본만 깨짐" = 거의 항상 실행 환경(환경변수) 차이** — 이 저장소만 §1(TERM), §3(GTK_IM_MODULE), §7.7(LC_CTYPE)로 **세 번째** 같은 부류다. **Finder/메뉴 실행 = 셸 환경 없음**을 항상 먼저 의심하라.
+- 클립보드·pasteboard 버그는 반드시 **번들 .app로, `pbpaste | xxd`**로 검증한다. dev green은 이 클래스 버그에 아무 것도 증명 못 한다. 실행 중 프로세스의 실제 환경은 **`ps eww <pid>`**로 본다.
+- "keydown에서 이미 preventDefault 하는데 여전히 동작/깨진다" = 그 동작이 **웹(DOM) 레이어의 문제가 아니라는** 강력한 단서 — 네이티브/환경 쪽을 보라.
