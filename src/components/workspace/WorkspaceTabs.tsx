@@ -1,5 +1,4 @@
 import {
-  ChevronDown,
   Database,
   FileText,
   Globe,
@@ -184,7 +183,9 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
   );
 }
 
-/** 새 탭 — "+"는 빠른 새 터미널, "▾"는 종류 선택(터미널/브라우저). */
+/** 새 탭 — "+" 하나로 종류(터미널/브라우저/API 클라이언트)를 고른다.
+ *  예전엔 "+"(빠른 새 터미널) + "▾"(종류 선택) 두 개였는데, 나란한 두 버튼이 무엇을 하는지
+ *  구분되지 않아 하나로 합쳤다(터미널도 메뉴에서 한 번 더 눌러야 하는 비용은 감수). */
 function NewTabControls({
   onNewTerminal,
   onNewBrowser,
@@ -197,7 +198,7 @@ function NewTabControls({
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   // 탭줄 바로 아래가 곧 브라우저 뷰포트다 — 메뉴가 열린 동안 네이티브 webview를 숨긴다.
   useOccludesWebview(!!menu);
-  const chevronRef = useRef<HTMLButtonElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
 
   // 탭 줄은 overflow-x-auto라 그 안의 absolute 드롭다운이 세로로 잘린다.
   // 버튼 rect 기준 fixed 위치로 띄워 클리핑을 벗어난다(PaneMenu와 동일 패턴).
@@ -206,26 +207,19 @@ function NewTabControls({
       setMenu(null);
       return;
     }
-    const r = chevronRef.current?.getBoundingClientRect();
+    const r = btnRef.current?.getBoundingClientRect();
     if (r) setMenu({ x: r.left, y: r.bottom + 4 });
   };
 
   return (
     <div className="flex shrink-0 items-center">
       <button
-        onClick={onNewTerminal}
-        title="새 터미널"
+        ref={btnRef}
+        onClick={toggle}
+        title="새 탭"
         className="rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
       >
         <Plus size={14} />
-      </button>
-      <button
-        ref={chevronRef}
-        onClick={toggle}
-        title="새 탭"
-        className="rounded p-0.5 text-fg-dim hover:bg-raised hover:text-fg"
-      >
-        <ChevronDown size={12} />
       </button>
       {menu && (
         <>
