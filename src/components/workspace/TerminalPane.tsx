@@ -22,6 +22,7 @@ import {
 } from "../../lib/terminal";
 import { useOccludesWebview } from "../../stores/occlusion";
 import { useTerminals } from "../../stores/terminals";
+import { useUi } from "../../stores/ui";
 
 /**
  * 단일 터미널 패널 — xterm 인스턴스(레지스트리 소유)를 이 컨테이너에 붙인다.
@@ -49,10 +50,17 @@ export function TerminalPane({
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   // 분할 배치에서 이웃 브라우저 pane의 네이티브 webview가 이 메뉴를 덮는다 — 열린 동안 숨긴다.
   useOccludesWebview(!!menu);
+  // 모아보기 별도 창이 이 PTY의 출력을 가져간 상태 — 여기 xterm은 갱신되지 않으므로 "멈춘 화면"을
+  // 보여주는 대신 어디서 보고 있는지 알린다(창을 닫으면 자동으로 되돌아온다).
+  const takenByWindow = useUi((s) => s.aggregateWindowOpen);
 
   useEffect(() => {
     let cancelled = false;
     const el = ref.current;
+    // 모아보기 별도 창이 이 PTY를 보고 있는 동안엔 손대지 않는다 — createTerminal이
+    // "세션 있으면 attach"라서, 여기서 부르면 아직 안 열어본 탭을 클릭하는 순간 출력을
+    // **도로 뺏어와** 저쪽 창의 셀이 죽는다. 창이 닫히면 이 효과가 다시 돌며 이어받는다.
+    if (takenByWindow) return;
     // createTerminal은 무거운 xterm 엔진(~441kB)을 동적 import하므로 async — 로드 후 attach.
     // 첫 터미널 탭에서만 엔진 청크가 로드되고, 이후 생성은 즉시 반환된다.
     void createTerminal({ id: paneId, projectId, fontSize }).then(() => {
@@ -66,7 +74,7 @@ export function TerminalPane({
     };
     // fontSize는 생성 시점에만 쓰인다
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [paneId]);
+  }, [paneId, takenByWindow]);
 
   return (
     <div
@@ -81,6 +89,15 @@ export function TerminalPane({
       }}
     >
       <div ref={ref} className="h-full w-full" />
+      {takenByWindow && (
+        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 bg-base/90 text-xs text-fg-muted">
+          <LayoutGrid size={18} className="text-accent" />
+          <span>모아보기 창에서 표시 중</span>
+          <span className="text-[11px] text-fg-dim">
+            그 창을 닫으면 여기로 돌아옵니다
+          </span>
+        </div>
+      )}
 
       {status === "exited" && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-base/70 text-sm text-fg-muted">

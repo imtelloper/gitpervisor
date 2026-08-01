@@ -77,6 +77,10 @@ export interface UiState {
   logHeight: number;
   /** 터미널 모아보기(여러 터미널 한 화면 분할) 모드 */
   aggregateOpen: boolean;
+  /** 모아보기가 **별도 창**으로 떠 있는가 — 그 창이 PTY 출력을 가져가므로(소비자 1개) 메인 창은
+   *  터미널 패널을 접고 "다른 창에서 표시 중"으로 알린다. 전이 상태, 영속 없음. */
+  aggregateWindowOpen: boolean;
+  setAggregateWindowOpen: (open: boolean) => void;
   /**
    * 모아보기 그리드 트랙 크기 — 셀 개수(n)별로 행 높이(rows)와 "행마다 독립적인" 셀 폭
    * (cols[r] = r행의 fr 배열)을 기억한다. 가로 드래그는 같은 행 이웃과만 재분배하므로
@@ -205,6 +209,7 @@ export const useUi = create<UiState>((set) => ({
     return raw >= 120 ? raw : 288; // 기본 288px(기존 h-72)
   })(),
   aggregateOpen: false,
+  aggregateWindowOpen: false,
   aggregateTracks: (() => {
     try {
       // 구버전(셀별 px — 셀이 그리드 밖으로 밀려나던 방식) 키는 더 안 쓰므로 정리
@@ -332,6 +337,7 @@ export const useUi = create<UiState>((set) => ({
     set({ logHeight: v });
   },
   setAggregateOpen: (open) => set({ aggregateOpen: open }),
+  setAggregateWindowOpen: (open) => set({ aggregateWindowOpen: open }),
   toggleAggregate: () => set((s) => ({ aggregateOpen: !s.aggregateOpen })),
   setAggregateTracks: (shape, tracks) =>
     set((s) => {

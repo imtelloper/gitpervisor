@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { Terminal } from "@xterm/xterm";
@@ -21,6 +21,10 @@ export interface TermInstance {
   fit: FitAddon;
   host: HTMLDivElement;
   status: "live" | "exited";
+  /** 이 인스턴스가 PTY 출력을 받는 채널 — 재연결(reattachAllTerminals)에 다시 쓴다.
+   *  PTY의 출력 소비자는 하나뿐이라(term_attach가 sink를 교체) 다른 창이 가져갔다 돌려줄 때
+   *  같은 채널로 붙여야 기존 xterm이 그대로 이어진다. 엔진이 생성 직후 채운다. */
+  channel?: Channel<number[]>;
 }
 
 /** 살아 있는 터미널 인스턴스 레지스트리 — 엔진이 등록하고, 코어/스캐너가 조회한다. */
@@ -64,13 +68,30 @@ export async function createTerminal(opts: {
   id: string;
   projectId: string;
   fontSize: number;
-  /** true면 새 PTY를 spawn하지 않고 살아있는 세션에 재연결(플로팅 창 — term_attach). */
+  /** 명시하면 그대로 따른다. 생략하면 "살아있는 세션이 있으면 attach, 없으면 open"으로 자동 판정. */
   attach?: boolean;
 }): Promise<TermInstance> {
   const existing = registry.get(opts.id);
   if (existing) return existing;
+  // 이 창의 레지스트리에 없다 = 여기서 처음 그린다. 이때 같은 id의 PTY가 다른 창(모아보기
+  // 별도 창 등)이나 이전 렌더로 이미 살아 있을 수 있다.
+  //
+  // 그 경우 반드시 attach해야 한다 — term_open은 같은 id여도 **무조건 새 PTY를 만들어 세션
+  // 맵을 덮어쓰므로**(commands/terminal.rs) 이전 셸이 미아 프로세스로 샌다. 반대로 세션이
+  // 없는데 attach하면 "터미널 세션을 찾을 수 없습니다"로 실패한다. 그래서 호출부가 아니라
+  // 여기서 한 번에 판정한다(호출부마다 분기하면 빠뜨리는 곳이 생긴다 — 실제로 겪음).
+  const attach = opts.attach ?? (await sessionExists(opts.id));
   const { createTerminalImpl } = await import("./terminal-engine");
-  return createTerminalImpl(opts);
+  return createTerminalImpl({ ...opts, attach });
+}
+
+/** 이 id의 PTY 세션이 백엔드에 살아 있는가 (term_project는 없으면 null을 준다). */
+async function sessionExists(termId: string): Promise<boolean> {
+  try {
+    return (await invoke<string | null>("term_project", { termId })) != null;
+  } catch {
+    return false;
+  }
 }
 
 /** 열린 모든 터미널에 현재 테마(CSS 변수 + themes.ts 보정)를 재적용한다.
@@ -80,6 +101,22 @@ export function refreshTerminalThemes(): void {
   if (registry.size === 0) return;
   // 레지스트리에 인스턴스가 있다 = 엔진이 이미 로드됨 → import는 모듈 캐시에서 즉시 해소.
   void import("./terminal-engine").then((m) => m.refreshTerminalThemesImpl());
+}
+
+/**
+ * 살아있는 모든 터미널의 PTY 출력을 이 창으로 되돌린다.
+ *
+ * PTY 출력 소비자는 하나뿐이라(`term_attach`가 sink를 교체) 모아보기 별도 창이 열리면 이 창의
+ * 터미널은 출력이 끊긴다. 그 창이 닫힐 때 호출해 원래 채널로 다시 붙인다 — xterm 인스턴스와
+ * 스크롤백은 그대로였으므로 화면 손실 없이 이어진다(끊긴 동안의 출력은 저쪽 창이 받았다).
+ */
+export function reattachAllTerminals(): void {
+  for (const inst of registry.values()) {
+    if (inst.status !== "live" || !inst.channel) continue;
+    void invoke("term_attach", { termId: inst.id, onData: inst.channel }).catch(
+      () => {},
+    );
+  }
 }
 
 /** host를 컨테이너에 붙이고 맞춘다. 탭 활성화 시 호출. */

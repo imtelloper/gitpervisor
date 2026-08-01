@@ -4,16 +4,26 @@ import { create } from "zustand";
 import { openFloatingWindow } from "../lib/floating";
 import { detachTerminalKeepPty, disposeTerminal, onTermExit } from "../lib/terminal";
 
-// 플로팅 창(label=float-*)은 메인 창과 같은 origin이라 localStorage(gp:terminals)를 공유한다.
-// 따라서 플로팅 창의 스토어는 빈 상태로 시작하고 영속화하지 않는다(메인 창 탭을 덮어쓰지 않게).
-// 플로팅 창의 초기 탭은 FloatingTerminal이 시드한다.
-const IS_FLOAT = (() => {
+// 보조 창들은 메인 창과 같은 origin이라 localStorage(gp:terminals)를 공유한다. 역할별로
+// "불러오기"와 "저장하기"를 따로 정한다 — 보조 창이 저장하면 메인 창 탭을 스테일 스냅샷으로
+// 덮어쓰기 때문에 **저장은 메인만** 한다.
+//
+//  - main       : 불러옴 + 저장함
+//  - float-*    : 불러오지 않음(FloatingTerminal이 단일 pane을 시드) + 저장 안 함
+//  - aggregate  : **불러옴**(그리드에 메인의 터미널을 그려야 한다) + 저장 안 함.
+//                 메인이 이후 만든 터미널은 storage 이벤트로 따라간다(아래 구독).
+type WindowRole = "main" | "float" | "aggregate";
+const ROLE: WindowRole = (() => {
   try {
-    return getCurrentWebviewWindow().label.startsWith("float-");
+    const label = getCurrentWebviewWindow().label;
+    if (label.startsWith("float-")) return "float";
+    if (label === "aggregate") return "aggregate";
+    return "main";
   } catch {
-    return false;
+    return "main";
   }
 })();
+export const IS_AGGREGATE_WINDOW = ROLE === "aggregate";
 
 export type SplitDir = "row" | "col"; // row=좌우 분할, col=상하 분할
 
@@ -225,9 +235,10 @@ function loadPersistedTerminals(): PersistedTerminals {
   return { terminals: [], activeTab: {}, dbProjects: [] };
 }
 
-const persisted = IS_FLOAT
-  ? { terminals: [], activeTab: {}, dbProjects: [] }
-  : loadPersistedTerminals();
+const persisted =
+  ROLE === "float"
+    ? { terminals: [], activeTab: {}, dbProjects: [] }
+    : loadPersistedTerminals();
 
 export const useTerminals = create<TerminalsState>((set, get) => ({
   terminals: persisted.terminals,
@@ -484,8 +495,8 @@ export const useTerminals = create<TerminalsState>((set, get) => ({
 onTermExit((id) => useTerminals.getState().setPaneStatus(id, "exited"));
 
 // 탭/레이아웃이 바뀔 때마다 localStorage에 저장 — 다음 실행에서 복구한다.
-// 플로팅 창에서는 영속화하지 않는다(메인 창과 공유 키를 덮어쓰지 않게).
-if (!IS_FLOAT)
+// **메인 창만** 저장한다(보조 창이 스테일 스냅샷으로 메인 탭을 덮어쓰지 않게).
+if (ROLE === "main")
   useTerminals.subscribe((s) => {
     try {
       localStorage.setItem(
@@ -498,5 +509,22 @@ if (!IS_FLOAT)
       );
     } catch {
       /* localStorage 불가 환경 무시 */
+    }
+  });
+
+// 모아보기 창은 메인이 저장한 내용을 따라간다 — storage 이벤트는 **다른 창**에서만 발화하므로
+// 메인이 터미널을 새로 열거나 닫으면 이 창의 그리드에도 반영된다(단방향: 메인 → 모아보기).
+if (ROLE === "aggregate")
+  window.addEventListener("storage", (e) => {
+    if (e.key !== PERSIST_KEY || !e.newValue) return;
+    try {
+      const p = JSON.parse(e.newValue) as Partial<PersistedTerminals>;
+      if (!Array.isArray(p.terminals)) return;
+      useTerminals.setState({
+        terminals: p.terminals.map((t) => ({ ...t, layout: migrateLeafContent(t.layout) })),
+        activeTab: p.activeTab && typeof p.activeTab === "object" ? p.activeTab : {},
+      });
+    } catch {
+      /* 손상된 값 무시 */
     }
   });

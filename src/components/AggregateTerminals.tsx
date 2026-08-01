@@ -1,12 +1,14 @@
 import {
   CircleCheck,
+  EyeOff,
   Globe,
   LayoutGrid,
   Loader2,
-  type LucideIcon,
   Plus,
+  Terminal as TerminalIcon,
   X,
 } from "lucide-react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { Project } from "../lib/ipc";
@@ -15,7 +17,12 @@ import { attachTerminal, createTerminal, fitTerminal } from "../lib/terminal";
 import { useProjects, useSettings } from "../queries";
 import { useAgentActivity } from "../stores/agentActivity";
 import { useBrowsers } from "../stores/browser";
-import { collectByContent, useTerminals } from "../stores/terminals";
+import {
+  collectByContent,
+  IS_AGGREGATE_WINDOW,
+  type PaneKind,
+  useTerminals,
+} from "../stores/terminals";
 import { useOccludesWebview } from "../stores/occlusion";
 import { useUi } from "../stores/ui";
 import { EmptyState } from "./common/EmptyState";
@@ -320,23 +327,26 @@ export function AggregateTerminals() {
             );
           })}
         </div>
-        <NewItemButton
-          icon={Plus}
-          label="새 터미널"
-          what="터미널"
-          projects={projects}
-          onCreate={addTerminal}
-        />
-        <NewItemButton
-          icon={Globe}
-          label="새 브라우저"
-          what="브라우저"
-          projects={projects}
-          onCreate={addBrowser}
-        />
+        {/* 별도 창은 "보는 화면"이다 — 터미널을 만들고 닫는 관리는 메인 창에서 한다.
+            (이 창의 스토어는 영속되지 않아 여기서 만든 터미널을 메인이 알 수 없고, 여기서
+            닫으면 메인이 소유한 PTY가 죽는다.) */}
+        {!IS_AGGREGATE_WINDOW && (
+          <NewCellButton
+            projects={projects}
+            onCreateTerminal={addTerminal}
+            onCreateBrowser={addBrowser}
+          />
+        )}
         <button
-          onClick={() => setAggregateOpen(false)}
-          title={`모아보기 닫기 (${hotkeyLabel})`}
+          onClick={() => {
+            if (IS_AGGREGATE_WINDOW) void getCurrentWindow().close();
+            else setAggregateOpen(false);
+          }}
+          title={
+            IS_AGGREGATE_WINDOW
+              ? "창 닫기 — 터미널은 메인 창으로 돌아갑니다"
+              : `모아보기 닫기 (${hotkeyLabel})`
+          }
           className="ml-1 flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs text-fg-muted hover:bg-raised hover:text-fg"
         >
           <X size={14} /> 닫기
@@ -403,6 +413,8 @@ export function AggregateTerminals() {
                         canRight={c < len - 1}
                         canBottom={r < rowsOfCells.length - 1}
                         onResizeStart={(e, axis) => startResize(e, r, c, axis)}
+                        // 숨기기 = 상단 칩 선택 해제와 같다 — 브라우저는 그대로 살아 있다.
+                        onHide={() => toggle(t.id)}
                         // 프로세스가 없으니 확인 없이 닫는다(워크스페이스 패널 X와 동일).
                         onClose={() =>
                           t.tabId ? closePane(t.tabId, t.id) : closeBrowserTab(t.id)
@@ -416,6 +428,8 @@ export function AggregateTerminals() {
                         canRight={c < len - 1}
                         canBottom={r < rowsOfCells.length - 1}
                         onResizeStart={(e, axis) => startResize(e, r, c, axis)}
+                        // 숨기기 = 상단 칩 선택 해제와 같다 — 셸은 계속 돌아간다.
+                        onHide={() => toggle(t.id)}
                         onClose={() =>
                           askConfirm({
                             title: "터미널 닫기",
@@ -438,28 +452,28 @@ export function AggregateTerminals() {
   );
 }
 
-/** 새 터미널/브라우저 추가 — 프로젝트 드롭다운에서 골라 생성. 1개면 드롭다운 생략 즉시 생성,
- *  0개(또는 로딩 전)면 비활성. 메뉴는 NewTabControls(WorkspaceTabs)와 같은
- *  버튼 rect 기준 fixed 위치 + 백드롭 패턴 — 헤더(h-10) 밖으로 넘칠 때 클리핑을 벗어난다. */
-function NewItemButton({
-  icon: Icon,
-  label,
-  what,
+/** 새 셀 추가 — "+" 하나로 종류(터미널/브라우저)를 고르고, 프로젝트가 여러 개면 이어서 고른다.
+ *  탭 스트립의 NewTabControls와 같은 방식으로 통일했다(버튼 두 개는 무엇을 하는지 구분이 안 됐다).
+ *  API 클라이언트는 그리드가 지원하는 셀 종류가 아니라 여기 메뉴엔 없다.
+ *
+ *  프로젝트가 1개면 종류만 고르면 바로 생성한다(모호성 없음). 0개(또는 로딩 전)면 비활성.
+ *  메뉴는 버튼 rect 기준 fixed 위치 + 백드롭 패턴 — 헤더(h-10) 밖으로 넘칠 때 클리핑을 벗어난다. */
+function NewCellButton({
   projects,
-  onCreate,
+  onCreateTerminal,
+  onCreateBrowser,
 }: {
-  icon: LucideIcon;
-  label: string;
-  what: string; // 툴팁 문구용 대상 명사 ("터미널" | "브라우저")
   projects: Project[] | undefined;
-  onCreate: (projectId: string) => void;
+  onCreateTerminal: (projectId: string) => void;
+  onCreateBrowser: (projectId: string) => void;
 }) {
   const selectedProjectId = useUi((s) => s.selectedProjectId);
   // 버튼이 헤더 우측 끝이라 좌측 기준(left)이면 메뉴가 창 밖으로 잘린다 — 우측 모서리 정렬
   const [menu, setMenu] = useState<{ right: number; y: number } | null>(null);
+  // 2단계: null이면 종류 고르는 중, 값이 있으면 그 종류로 프로젝트 고르는 중
+  const [kind, setKind] = useState<PaneKind | null>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
   // 열린 동안 그리드의 모든 네이티브 webview를 숨긴다(점유 레지스트리가 단일 진실).
-  // 두 버튼이 각자 등록하므로 예전의 boolean 공유 desync 문제가 구조적으로 사라진다.
   useOccludesWebview(!!menu);
 
   const list = projects ?? [];
@@ -469,13 +483,24 @@ function NewItemButton({
     ...list.filter((p) => p.id !== selectedProjectId),
   ];
 
+  const close = () => {
+    setMenu(null);
+    setKind(null);
+  };
+  const create = (k: PaneKind, projectId: string) => {
+    if (k === "terminal") onCreateTerminal(projectId);
+    else onCreateBrowser(projectId);
+    close();
+  };
+  // 종류 선택 → 프로젝트가 하나뿐이면 바로 만들고, 여러 개면 프로젝트 목록으로 넘어간다.
+  const pickKind = (k: PaneKind) => {
+    if (ordered.length === 1) create(k, ordered[0].id);
+    else setKind(k);
+  };
+
   const onClick = () => {
     if (menu) {
-      setMenu(null);
-      return;
-    }
-    if (ordered.length === 1) {
-      onCreate(ordered[0].id); // 모호성 없음 — 드롭다운 생략
+      close();
       return;
     }
     const r = btnRef.current?.getBoundingClientRect();
@@ -488,38 +513,92 @@ function NewItemButton({
         ref={btnRef}
         onClick={onClick}
         disabled={list.length === 0}
+        // 텍스트가 없으므로 title이 유일한 설명이다 — e2e도 이 문구로 버튼을 찾는다.
         title={
           list.length === 0
-            ? `프로젝트를 추가하면 새 ${what}를 열 수 있습니다`
-            : `${label} — 프로젝트를 골라 이 화면에 바로 연다`
+            ? "프로젝트를 추가하면 새 터미널·브라우저를 열 수 있습니다"
+            : "새 터미널 · 새 브라우저 — 이 화면에 바로 연다"
         }
-        className="ml-1 flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs text-fg-muted hover:bg-raised hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+        className="ml-1 flex shrink-0 items-center rounded p-1 text-fg-muted hover:bg-raised hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
       >
-        <Icon size={14} /> {label}
+        <Plus size={15} />
       </button>
       {menu && (
         <>
-          <div className="fixed inset-0 z-40" onClick={() => setMenu(null)} />
+          <div className="fixed inset-0 z-40" onClick={close} />
           <div
-            className="fixed z-50 max-h-80 min-w-40 overflow-auto rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl"
+            className="fixed z-50 max-h-80 min-w-44 overflow-auto rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl"
             style={{ right: menu.right, top: menu.y }}
           >
-            {ordered.map((p) => (
-              <button
-                key={p.id}
-                onClick={() => {
-                  onCreate(p.id);
-                  setMenu(null);
-                }}
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-fg-muted hover:bg-raised hover:text-fg"
-              >
-                <span className="truncate">{p.name}</span>
-              </button>
-            ))}
+            {kind === null ? (
+              <>
+                <MenuRow
+                  icon={<TerminalIcon size={14} />}
+                  label="새 터미널"
+                  onClick={() => pickKind("terminal")}
+                />
+                <MenuRow
+                  icon={<Globe size={14} />}
+                  label="새 브라우저"
+                  onClick={() => pickKind("browser")}
+                />
+              </>
+            ) : (
+              <>
+                {/* 어떤 종류를 만드는 중인지 잊지 않게 머리말로 남긴다 */}
+                <div className="px-3 py-1 text-[11px] text-fg-dim">
+                  {kind === "terminal" ? "새 터미널" : "새 브라우저"} — 프로젝트 선택
+                </div>
+                {ordered.map((p) => (
+                  <button
+                    key={p.id}
+                    onClick={() => create(kind, p.id)}
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-fg-muted hover:bg-raised hover:text-fg"
+                  >
+                    <span className="truncate">{p.name}</span>
+                  </button>
+                ))}
+              </>
+            )}
           </div>
         </>
       )}
     </>
+  );
+}
+
+/** 그리드에서만 빼는 버튼 — 프로세스는 그대로 둔다(닫기 X와 구분되는 지점).
+ *  상단 칩을 다시 누르면 돌아오므로, 별도 창에서도 안전해 항상 노출한다. */
+function HideButton({ onClick, what }: { onClick: () => void; what: string }) {
+  return (
+    <button
+      onClick={onClick}
+      title={`숨기기 — 이 화면에서만 빼고 ${what}은 계속 실행됩니다 (상단 칩으로 되돌리기)`}
+      className="shrink-0 rounded p-0.5 text-fg-dim hover:bg-raised hover:text-fg"
+    >
+      <EyeOff size={12} />
+    </button>
+  );
+}
+
+/** 메뉴 한 줄 — 아이콘 + 라벨. */
+function MenuRow({
+  icon,
+  label,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-fg-muted hover:bg-raised hover:text-fg"
+    >
+      <span className="shrink-0 text-fg-dim">{icon}</span>
+      <span className="truncate">{label}</span>
+    </button>
   );
 }
 
@@ -531,6 +610,7 @@ function AggregateCell({
   canRight,
   canBottom,
   onResizeStart,
+  onHide,
   onClose,
 }: {
   meta: TermMeta;
@@ -538,6 +618,7 @@ function AggregateCell({
   canRight: boolean;
   canBottom: boolean;
   onResizeStart: (e: React.PointerEvent, axis: "x" | "y" | "both") => void;
+  onHide: () => void;
   onClose: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -547,6 +628,8 @@ function AggregateCell({
     let cancelled = false;
     const el = ref.current;
     // 아직 렌더된 적 없는 터미널(비활성 탭 복구분)도 여기서 생성(멱등)해 붙인다.
+    // attach 여부는 createTerminal이 판정한다 — 별도 창이면 메인이 만든 살아있는 PTY에
+    // 재연결되고, 아직 PTY가 없는 복구분이면 새로 띄운다.
     void createTerminal({
       id: meta.id,
       projectId: meta.projectId,
@@ -579,13 +662,16 @@ function AggregateCell({
           <span className="font-medium text-fg">{meta.projName}</span>
           <span className="text-fg-dim"> · {meta.title}</span>
         </span>
-        <button
-          onClick={onClose}
-          title="터미널 닫기 (프로세스 종료)"
-          className="-mr-1 shrink-0 rounded p-0.5 text-fg-dim hover:bg-raised hover:text-danger"
-        >
-          <X size={12} />
-        </button>
+        <HideButton onClick={onHide} what="터미널" />
+        {!IS_AGGREGATE_WINDOW && (
+          <button
+            onClick={onClose}
+            title="터미널 닫기 (프로세스 종료)"
+            className="-mr-1 shrink-0 rounded p-0.5 text-fg-dim hover:bg-raised hover:text-danger"
+          >
+            <X size={12} />
+          </button>
+        )}
       </div>
       <div ref={ref} className="min-h-0 flex-1" />
       <CellHandles
@@ -609,6 +695,7 @@ function BrowserCell({
   canRight,
   canBottom,
   onResizeStart,
+  onHide,
   onClose,
 }: {
   meta: BrowserMeta;
@@ -617,6 +704,7 @@ function BrowserCell({
   canRight: boolean;
   canBottom: boolean;
   onResizeStart: (e: React.PointerEvent, axis: "x" | "y" | "both") => void;
+  onHide: () => void;
   onClose: () => void;
 }) {
   const ensurePane = useBrowsers((s) => s.ensurePane);
@@ -633,13 +721,16 @@ function BrowserCell({
           <span className="font-medium text-fg">{meta.projName}</span>
           <span className="text-fg-dim"> · {meta.title}</span>
         </span>
-        <button
-          onClick={onClose}
-          title="브라우저 닫기"
-          className="-mr-1 shrink-0 rounded p-0.5 text-fg-dim hover:bg-raised hover:text-danger"
-        >
-          <X size={12} />
-        </button>
+        <HideButton onClick={onHide} what="브라우저" />
+        {!IS_AGGREGATE_WINDOW && (
+          <button
+            onClick={onClose}
+            title="브라우저 닫기"
+            className="-mr-1 shrink-0 rounded p-0.5 text-fg-dim hover:bg-raised hover:text-danger"
+          >
+            <X size={12} />
+          </button>
+        )}
       </div>
       <div
         className={`min-h-0 flex-1 ${suspended ? "pointer-events-none" : ""}${

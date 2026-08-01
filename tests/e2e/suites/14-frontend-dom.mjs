@@ -203,13 +203,22 @@ export async function run({ cdp, report: r, fix }) {
       if (nx === gridBefore && nx >= 1) break;
       gridBefore = nx;
     }
+    // 헤더의 "+" 버튼 — 텍스트가 없어 title로 찾는다(종류 선택 메뉴를 연다).
     const plusBtn = await cdp.eval(`(()=>{
-      const b = Array.from(document.querySelectorAll('button')).find(x => /새 터미널/.test(x.textContent||''));
+      const b = Array.from(document.querySelectorAll('button')).find(x => /새 터미널/.test(x.title||''));
       if (b) { b.click(); return true; } return false;
     })()`);
     await sleep(350);
-    // 프로젝트 2개 이상이면 드롭다운이 뜬다 — 선택 프로젝트(=픽스처)가 맨 위라 첫 항목 클릭.
-    // 1개뿐이면 드롭다운 생략 즉시 생성(지름길) — 이미 탭이 늘었으므로 클릭 생략.
+    // 1단계: 메뉴에서 '새 터미널' 선택.
+    await cdp.eval(`(()=>{
+      const m = document.querySelector('div.fixed.z-50');
+      if (!m) return false;
+      const b = Array.from(m.querySelectorAll('button')).find(x => /새 터미널/.test(x.textContent||''));
+      if (b) { b.click(); return true; } return false;
+    })()`);
+    await sleep(350);
+    // 2단계: 프로젝트 2개 이상이면 프로젝트 목록이 이어서 뜬다 — 선택 프로젝트(=픽스처)가
+    // 맨 위라 첫 항목 클릭. 1개뿐이면 종류 선택 즉시 생성(지름길)이라 이미 탭이 늘어 클릭 생략.
     const grewNow = await cdp.eval(
       `window.__gpv.terminals.getState().terminals.length > ${tabsBefore.length}`,
     );

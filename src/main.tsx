@@ -3,6 +3,7 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import React from "react";
 import ReactDOM from "react-dom/client";
 
+import { AggregateWindow } from "./AggregateWindow";
 import App from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { SysMonitorWindow } from "./components/sysmon/SysMonitorWindow";
@@ -10,7 +11,8 @@ import { FloatingTerminal } from "./FloatingTerminal";
 import { installMacCopyInterceptor } from "./lib/clipboard";
 import { attachRepoEvents } from "./lib/events";
 import { setupErrorLogging } from "./lib/logging";
-import { installTerminalCopyFallback } from "./lib/terminal";
+import { watchAggregateWindow } from "./lib/aggregate-window";
+import { installTerminalCopyFallback, reattachAllTerminals } from "./lib/terminal";
 import { initPreviewRemint } from "./stores/browser";
 import { useTerminals } from "./stores/terminals";
 import { useUi } from "./stores/ui";
@@ -58,7 +60,19 @@ const floatPaneId = label.startsWith("float-")
   ? label.slice("float-".length)
   : null;
 
-if (label === "sysmon") {
+if (label === "aggregate") {
+  // 터미널 모아보기 전용 창 — 메인의 살아있는 PTY에 재연결해 보여주는 "터미널 벽".
+  const aggQc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  root.render(
+    <React.StrictMode>
+      <QueryClientProvider client={aggQc}>
+        <ErrorBoundary>
+          <AggregateWindow />
+        </ErrorBoundary>
+      </QueryClientProvider>
+    </React.StrictMode>,
+  );
+} else if (label === "sysmon") {
   // 리소스 모니터 팝업 창(태스크 05) — 플로팅 터미널 분기와 대칭, 자체 QueryClient.
   const sysmonQc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   root.render(
@@ -98,6 +112,15 @@ if (label === "sysmon") {
   // 재시작으로 죽은 프리뷰(로컬 HTML) 탭의 루프백 URL을 재발급해 되살린다. 메인 창에서만
   // 실행한다 — 보조 창이 공유 localStorage(gp:browser)를 스테일 스냅샷으로 덮지 않게.
   initPreviewRemint();
+
+  // 모아보기 별도 창의 열림/닫힘 추적 — 그 창이 PTY 출력을 가져가므로(소비자 1개) 열려 있는
+  // 동안 메인은 터미널 패널을 접고, 닫히면 원래 채널로 다시 붙여 이어받는다.
+  watchAggregateWindow((open) => {
+    const ui = useUi.getState();
+    if (ui.aggregateWindowOpen === open) return;
+    ui.setAggregateWindowOpen(open);
+    if (!open) reattachAllTerminals();
+  });
 
   // E2E용 — dev에서 queryClient도 노출한다(테스트가 프로젝트 목록을 갱신해 픽스처를 인지).
   if (import.meta.env.DEV) {

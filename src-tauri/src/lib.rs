@@ -161,6 +161,39 @@ async fn open_sysmon_window(app: tauri::AppHandle, origin: String) -> Result<(),
     Ok(())
 }
 
+/// 터미널 모아보기를 별도 OS 창으로 띄운다(보조 모니터용 터미널 벽). sysmon과 같은 패턴 —
+/// 라벨 "aggregate" 싱글턴, 이미 떠 있으면 포커스만.
+///
+/// 라벨이 `float-`로 시작하지 **않는** 것이 중요하다: Destroyed 핸들러의 float 분기가 PTY를
+/// 종료시키는데, 이 창은 메인이 만든 PTY에 붙기만 하므로 닫혀도 세션이 살아 있어야 한다
+/// (닫으면 메인 창이 다시 이어받는다).
+#[tauri::command]
+async fn open_aggregate_window(app: tauri::AppHandle, origin: String) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("aggregate") {
+        let _ = win.set_focus();
+        return Ok(());
+    }
+    let url = tauri::Url::parse(&origin).map_err(|e| format!("잘못된 origin: {e}"))?;
+    let app2 = app.clone();
+    app.run_on_main_thread(move || {
+        let r = WebviewWindowBuilder::new(&app2, "aggregate", WebviewUrl::External(url))
+            .title("터미널 모아보기")
+            .inner_size(1100.0, 720.0)
+            .min_inner_size(520.0, 320.0)
+            .center()
+            // OS 기본 타이틀바 제거 — 프론트의 FloatTitleBar로 대체 (리사이즈 유지)
+            .decorations(false)
+            .background_color(tauri::window::Color(30, 31, 34, 255))
+            .additional_browser_args(&browser_args())
+            .build();
+        if let Err(e) = r {
+            log::error!("모아보기 창 생성 실패: {e}");
+        }
+    })
+    .map_err(|e| format!("모아보기 창 예약 실패: {e}"))?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 클립보드 보정 (macOS): Finder/Launchpad로 띄운 .app 은 셸의 로케일(LANG/LC_*)을 물려받지
@@ -345,6 +378,7 @@ pub fn run() {
             commands::delete_memo,
             open_float_window,
             open_sysmon_window,
+            open_aggregate_window,
             commands::term_open,
             commands::term_attach,
             commands::term_project,
@@ -417,6 +451,10 @@ pub fn run() {
                     // 리소스 모니터도 같은 이유로 닫는다 — 메인이 사라졌는데 이 창만 남으면
                     // 앱이 종료되지 않고 창 하나짜리 잔여 상태가 된다(macOS는 Dock에도 남는다).
                     if let Some(w) = window.app_handle().get_webview_window("sysmon") {
+                        let _ = w.close();
+                    }
+                    // 모아보기 창도 같은 이유로 닫는다(메인 없이 홀로 남으면 앱이 안 죽는다).
+                    if let Some(w) = window.app_handle().get_webview_window("aggregate") {
                         let _ = w.close();
                     }
                 } else if let Some(term_id) = label.strip_prefix("float-") {

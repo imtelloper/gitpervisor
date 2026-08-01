@@ -7,6 +7,7 @@ import "@xterm/xterm/css/xterm.css";
 
 import { collectPanes, useTerminals } from "../stores/terminals";
 import { useUi } from "../stores/ui";
+import { errorMessage } from "./ipc";
 import { copyText } from "./clipboard";
 import { isMod, isWindows } from "./platform";
 import {
@@ -450,6 +451,7 @@ export function createTerminalImpl(opts: {
   // 플로팅 분리 중(detach 후 term_attach 전)엔 Rust가 잠깐 옛 채널로 보낼 수 있어, 이미 dispose된
   // xterm에 write가 떨어질 수 있다 — try/catch로 그 짧은 공백의 예외를 무시한다.
   const channel = new Channel<number[]>();
+  inst.channel = channel; // 재연결(reattachAllTerminals)이 같은 채널로 다시 붙일 수 있게 보관
   channel.onmessage = (bytes) => {
     try {
       term.write(new Uint8Array(bytes));
@@ -470,8 +472,9 @@ export function createTerminalImpl(opts: {
       });
   void startCmd.catch((e: unknown) => {
     inst.status = "exited";
-    const msg = e instanceof Error ? e.message : String(e);
-    term.writeln(`\r\n\x1b[31m[터미널 연결 실패] ${msg}\x1b[0m`);
+    // errorMessage는 IpcError({code,message,...})까지 푼다 — String(e)로는 "[object Object]"가
+    // 찍혀 원인이 통째로 가려진다(실제로 겪음: term_attach의 "세션을 찾을 수 없습니다"가 묻혔다).
+    term.writeln(`\r\n\x1b[31m[터미널 연결 실패] ${errorMessage(e)}\x1b[0m`);
   });
 
   // 입력 → PTY stdin

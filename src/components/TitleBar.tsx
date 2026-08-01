@@ -2,6 +2,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { LayoutGrid, ShieldAlert } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import { openAggregateWindow } from "../lib/aggregate-window";
 import { isMac, modLabel } from "../lib/platform";
 import { useProjects, useQuarantinedTools } from "../queries";
 import { useTerminals } from "../stores/terminals";
@@ -94,7 +95,13 @@ function AggregateButton() {
   return (
     <button
       onClick={toggleAggregate}
-      title={`터미널 모아보기 — 여러 터미널을 한 화면에 분할로 (${hotkeyLabel})`}
+      // 우클릭 = 별도 창으로. 터미널을 그 창이 가져가고 메인은 "다른 창에서 표시 중"이 된다
+      // (PTY 출력 소비자가 하나뿐이라 — lib/aggregate-window.ts § 소유권 이전).
+      onContextMenu={(e) => {
+        e.preventDefault();
+        openAggregateWindow();
+      }}
+      title={`터미널 모아보기 — 여러 터미널을 한 화면에 분할로 (${hotkeyLabel})\n우클릭: 별도 창으로 띄우기`}
       className={`mr-2.5 flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] ${
         aggregateOpen
           ? "bg-raised text-accent"
