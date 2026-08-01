@@ -290,7 +290,10 @@ export function AggregateTerminals() {
       {/* 헤더: 제목 + 선택 칩 + 닫기 */}
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-edge px-3">
         <LayoutGrid size={15} className="shrink-0 text-accent" />
-        <span className="shrink-0 text-sm font-semibold">터미널 모아보기</span>
+        {/* 별도 창에선 창 타이틀바가 이미 "터미널 모아보기"라 중복이다 — 칩에 폭을 넘긴다 */}
+        {!IS_AGGREGATE_WINDOW && (
+          <span className="shrink-0 text-sm font-semibold">터미널 모아보기</span>
+        )}
         <span className="shrink-0 text-[11px] text-fg-dim">
           {n}/{all.length} 선택
         </span>

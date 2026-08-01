@@ -119,7 +119,13 @@ if (label === "aggregate") {
     const ui = useUi.getState();
     if (ui.aggregateWindowOpen === open) return;
     ui.setAggregateWindowOpen(open);
-    if (!open) reattachAllTerminals();
+    if (open) {
+      // 메인 안의 모아보기는 닫는다 — 같은 터미널을 두 곳에서 그리면 attach를 서로 뺏어
+      // 한쪽이 멈춘 화면이 된다. 벽은 이제 저 창이 담당한다.
+      ui.setAggregateOpen(false);
+    } else {
+      reattachAllTerminals();
+    }
   });
 
   // E2E용 — dev에서 queryClient도 노출한다(테스트가 프로젝트 목록을 갱신해 픽스처를 인지).

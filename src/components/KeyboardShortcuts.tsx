@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 
+import { openAggregateWindow } from "../lib/aggregate-window";
 import { isMod } from "../lib/platform";
 import { usePushFlow, useRefreshAll, useSyncOp } from "../queries";
 import { useSearch } from "../stores/search";
@@ -16,7 +17,10 @@ export function GlobalShortcuts() {
     const onKey = (e: KeyboardEvent) => {
       if (isMod(e) && e.shiftKey && !e.altKey && e.key.toLowerCase() === "a") {
         e.preventDefault();
-        useUi.getState().toggleAggregate();
+        // 별도 창으로 나가 있으면 메인 안에서 또 열지 않는다 — 같은 터미널을 두 곳에서
+        // 그리면 attach를 서로 뺏어 한쪽이 멈춘다. 대신 그 창을 앞으로 가져온다.
+        if (useUi.getState().aggregateWindowOpen) openAggregateWindow();
+        else useUi.getState().toggleAggregate();
       }
     };
     window.addEventListener("keydown", onKey);

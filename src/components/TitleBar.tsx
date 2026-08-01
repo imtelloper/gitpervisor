@@ -90,20 +90,27 @@ const hotkeyLabel = isMac ? `${modLabel}⇧A` : `${modLabel}+Shift+A`;
 function AggregateButton() {
   const aggregateOpen = useUi((s) => s.aggregateOpen);
   const toggleAggregate = useUi((s) => s.toggleAggregate);
+  // 별도 창으로 나가 있으면 메인 안에서는 열지 않는다(두 곳이 같은 터미널을 두고 다툰다)
+  // — 대신 그 창으로 보낸다(백엔드가 싱글턴이라 이미 있으면 포커스만 준다).
+  const windowOpen = useUi((s) => s.aggregateWindowOpen);
   const hasTerminals = useTerminals((s) => s.terminals.length > 0);
   if (!hasTerminals) return null;
   return (
     <button
-      onClick={toggleAggregate}
+      onClick={() => (windowOpen ? openAggregateWindow() : toggleAggregate())}
       // 우클릭 = 별도 창으로. 터미널을 그 창이 가져가고 메인은 "다른 창에서 표시 중"이 된다
       // (PTY 출력 소비자가 하나뿐이라 — lib/aggregate-window.ts § 소유권 이전).
       onContextMenu={(e) => {
         e.preventDefault();
         openAggregateWindow();
       }}
-      title={`터미널 모아보기 — 여러 터미널을 한 화면에 분할로 (${hotkeyLabel})\n우클릭: 별도 창으로 띄우기`}
+      title={
+        windowOpen
+          ? "모아보기가 별도 창에 있습니다 — 클릭하면 그 창으로 이동"
+          : `터미널 모아보기 — 여러 터미널을 한 화면에 분할로 (${hotkeyLabel})\n우클릭: 별도 창으로 띄우기`
+      }
       className={`mr-2.5 flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] ${
-        aggregateOpen
+        aggregateOpen || windowOpen
           ? "bg-raised text-accent"
           : "text-fg-muted hover:bg-raised hover:text-fg"
       }`}

@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window, floating terminal windows, and the sysmon popup",
-  "windows": ["main", "float-*", "sysmon"],
+  "description": "Capability for the main window, floating terminal windows, the sysmon popup, and the aggregate (terminal wall) window",
+  "windows": ["main", "float-*", "sysmon", "aggregate"],
   "permissions": [
     "core:default",
     "core:window:allow-minimize",
