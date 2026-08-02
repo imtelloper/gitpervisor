@@ -84,10 +84,9 @@ pub fn spawn(app: AppHandle) {
             if minutes == 0 {
                 continue; // 0 = 끔 — 다음 틱에 설정을 다시 본다(재시작 불요)
             }
-            let due = LAST_CYCLE
-                .lock()
-                .unwrap()
-                .map_or(true, |t| t.elapsed() >= Duration::from_secs(u64::from(minutes) * 60));
+            let due = LAST_CYCLE.lock().unwrap().map_or(true, |t| {
+                t.elapsed() >= Duration::from_secs(u64::from(minutes) * 60)
+            });
             if due {
                 run_cycle(app.clone(), None, false).await;
             }
@@ -108,6 +107,13 @@ pub async fn refresh_remotes(
         return Ok(());
     }
     if !force {
+        // 사용자가 배경 갱신을 껐으면(0) 포커스 복귀 트리거도 돌면 안 된다. 이 가드가 없으면
+        // 스케줄러만 멈추고 창 포커스마다 60초 스로틀 한도까지 fetch가 돌아, 오히려 5분
+        // 주기보다 잦아진다(시간당 최대 60사이클 × 레포 수). 우클릭 수동 새로고침은
+        // force=true로 오므로 그대로 동작한다.
+        if state.settings.read().unwrap().remote_refresh_minutes == 0 {
+            return Ok(());
+        }
         let recent = LAST_CYCLE
             .lock()
             .unwrap()
@@ -129,7 +135,10 @@ async fn run_cycle(app: AppHandle, only: Option<Vec<String>>, force: bool) {
         let projects = state.projects.read().unwrap();
         projects
             .iter()
-            .filter(|p| only.as_ref().map_or(true, |ids| ids.iter().any(|id| id == &p.id)))
+            .filter(|p| {
+                only.as_ref()
+                    .map_or(true, |ids| ids.iter().any(|id| id == &p.id))
+            })
             .map(|p| (p.id.clone(), PathBuf::from(&p.path)))
             .collect()
     };
@@ -142,8 +151,15 @@ async fn run_cycle(app: AppHandle, only: Option<Vec<String>>, force: bool) {
         *LAST_CYCLE.lock().unwrap() = Some(Instant::now());
         // 제거된 프로젝트의 잔여 항목 정리 — 좀비 백오프/캐시가 남지 않게.
         let live: HashSet<&str> = targets.iter().map(|(id, _)| id.as_str()).collect();
-        state.freshness.write().unwrap().retain(|k, _| live.contains(k.as_str()));
-        sched().lock().unwrap().retain(|k, _| live.contains(k.as_str()));
+        state
+            .freshness
+            .write()
+            .unwrap()
+            .retain(|k, _| live.contains(k.as_str()));
+        sched()
+            .lock()
+            .unwrap()
+            .retain(|k, _| live.contains(k.as_str()));
     }
 
     // 스킵 규칙 판정 — 원격 없음 캐시는 여기서 사이클 카운트를 올린다.
@@ -392,7 +408,11 @@ mod tests {
         assert_eq!(backoff_secs(5, 1), 600, "2^1 × 5분");
         assert_eq!(backoff_secs(5, 2), 1200, "2^2 × 5분");
         assert_eq!(backoff_secs(5, 3), 1800, "2400초 → 상한 30분");
-        assert_eq!(backoff_secs(5, 63), 1800, "큰 streak도 오버플로 없이 상한 유지");
+        assert_eq!(
+            backoff_secs(5, 63),
+            1800,
+            "큰 streak도 오버플로 없이 상한 유지"
+        );
         assert_eq!(backoff_secs(0, 1), 120, "주기 0은 최소 1분으로 계산");
     }
 
@@ -417,13 +437,22 @@ mod tests {
 
     #[test]
     fn force_overrides_all_skips() {
-        assert!(should_attempt(Some(false), 0, 0, None, 5, true), "원격 없음 캐시 무시");
-        assert!(should_attempt(Some(true), 0, 5, Some(0), 5, true), "백오프 무시");
+        assert!(
+            should_attempt(Some(false), 0, 0, None, 5, true),
+            "원격 없음 캐시 무시"
+        );
+        assert!(
+            should_attempt(Some(true), 0, 5, Some(0), 5, true),
+            "백오프 무시"
+        );
     }
 
     #[test]
     fn unknown_or_present_remote_attempts() {
-        assert!(should_attempt(None, 0, 0, None, 5, false), "미확인 원격은 확인 겸 시도");
+        assert!(
+            should_attempt(None, 0, 0, None, 5, false),
+            "미확인 원격은 확인 겸 시도"
+        );
         assert!(should_attempt(Some(true), 0, 0, Some(0), 5, false));
     }
 }

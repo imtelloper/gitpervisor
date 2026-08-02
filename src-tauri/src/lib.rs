@@ -4,6 +4,7 @@ mod db;
 mod error;
 mod fetch_scheduler;
 mod git;
+mod health;
 mod lsp;
 mod monitor;
 mod notifications;
@@ -245,6 +246,17 @@ pub fn run() {
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level(log::LevelFilter::Info)
+                // 의존 크레이트의 연결/핸드셰이크 INFO 노이즈를 잘라낸다. 이게 없으면 알림 1건마다
+                // 6줄씩 쌓이는 zbus SASL 핸드셰이크가 로그를 채워 정작 앱 신호가 묻힌다
+                // — 2026-08 OOM 사건 당시 5주치 로그 160줄 중 84줄(52%)이 zbus였고
+                // 앱 자신의 기록은 "시작 v0.x" 9줄이 전부라 사후 진단이 불가능했다.
+                .level_for("zbus", log::LevelFilter::Warn)
+                .level_for("tracing", log::LevelFilter::Warn)
+                .level_for("hyper", log::LevelFilter::Warn)
+                .level_for("reqwest", log::LevelFilter::Warn)
+                .level_for("rustls", log::LevelFilter::Warn)
+                .level_for("notify", log::LevelFilter::Warn)
+                .level_for("notify_debouncer_full", log::LevelFilter::Warn)
                 .max_file_size(10_000_000)
                 .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(8))
                 .build(),
@@ -267,6 +279,15 @@ pub fn run() {
             #[cfg(windows)]
             set_app_user_model_id("com.greathoon.gitpervisor");
             log::info!("Gitpervisor 시작 v{}", env!("CARGO_PKG_VERSION"));
+            // "갑자기 꺼짐" 조기경보 — 이전 세션이 비정상 종료였는지 먼저 판정하고(하트비트
+            // 센티널), 이번 세션의 감시를 시작한다. systemd-oomd는 SIGKILL이라 종료 훅이
+            // 돌지 않으므로 살아있는 동안 미리 적어 두는 것 말고는 진단할 방법이 없다.
+            health::begin_session(app.handle(), env!("CARGO_PKG_VERSION"));
+            health::spawn_watchdog(
+                app.handle().clone(),
+                env!("CARGO_PKG_VERSION").to_string(),
+                chrono::Local::now().to_rfc3339(),
+            );
 
             // 메인 창을 코드에서 생성한다 — 원격 디버깅 포트(CDP)는 debug 빌드에서만 열고
             // release 빌드에는 노출하지 않기 위함 (정적 config로는 빌드별 분기가 불가).
@@ -436,6 +457,8 @@ pub fn run() {
             notifications::notify_external,
             notifications::notify_test,
             notifications::notify_os,
+            health::health_snapshot,
+            health::health_prev_session,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
@@ -457,6 +480,9 @@ pub fn run() {
                     if let Some(w) = window.app_handle().get_webview_window("aggregate") {
                         let _ = w.close();
                     }
+                    // 정상 종료 표시 — 이게 찍혀야 다음 실행에서 "비정상 종료" 경고를 안 띄운다.
+                    // 반드시 모든 정리가 끝난 뒤에 찍는다.
+                    health::end_session();
                 } else if let Some(term_id) = label.strip_prefix("float-") {
                     // 플로팅 터미널 창이 닫히면 그 세션의 PTY만 종료한다(나머지는 메인이 유지).
                     let state = window.state::<AppState>();

@@ -21,11 +21,11 @@ import { ProjectList } from "./components/sidebar/ProjectList";
 import { ProjectPathMissing } from "./components/ProjectPathMissing";
 import { StatusBar } from "./components/StatusBar";
 import { TitleBar } from "./components/TitleBar";
+import { HealthBanner } from "./components/common/HealthBanner";
 import { Toolbar } from "./components/toolbar/Toolbar";
 import { FileTreePanel } from "./components/tree/FileTreePanel";
 import { WorkspaceTabs } from "./components/workspace/WorkspaceTabs";
 import { useAgentNotifications } from "./lib/agent-notify";
-import { ipc } from "./lib/ipc";
 import { refreshTerminalThemes } from "./lib/terminal";
 import {
   useProjectRootsPrefetch,
@@ -68,25 +68,6 @@ export default function App() {
     refreshTerminalThemes();
   }, [settings?.theme]);
 
-  // 이전 실행에서 크래시가 있었으면(패닉 로그가 남았으면) 1회 알린다. 같은 크래시(파일 mtime)는
-  // localStorage 마커로 중복 표시하지 않는다. 자세한 내용은 설정 › 진단/로그에서 본다.
-  useEffect(() => {
-    void ipc
-      .getLogStatus()
-      .then((s) => {
-        if (!s.lastCrashAt || s.panicLogBytes === 0) return;
-        if (localStorage.getItem("gp:last-crash-seen") === s.lastCrashAt) return;
-        localStorage.setItem("gp:last-crash-seen", s.lastCrashAt);
-        useUi
-          .getState()
-          .pushToast(
-            "error",
-            "이전 실행에서 오류가 감지되었습니다 — 설정 › 진단/로그에서 확인하세요",
-          );
-      })
-      .catch(() => {});
-  }, []);
-
   // 시작 시 자동 업데이트 확인(옵트인, 기본 켬) — 콜드스타트 IPC 폭주와 안 겹치게 잠깐 지연.
   // 새 버전이 있으면 updater 스토어가 토스트로 알리고 설정 › 업데이트에 표시한다. 실패는 조용히.
   useEffect(() => {
@@ -114,6 +95,8 @@ export default function App() {
   return (
     <div className="flex h-screen flex-col overflow-hidden">
       <TitleBar />
+      {/* 강제 종료 경보 / 지난 실행 비정상 종료 안내 — 최상단 고정 */}
+      <HealthBanner />
       <div className="min-h-0 flex-1">
         <GitGate>
           <div className="flex h-full flex-col">

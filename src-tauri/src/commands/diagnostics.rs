@@ -135,6 +135,11 @@ pub fn prune_logs(dir: &Path) {
         if name == PANIC_LOG || name == PANIC_LOG_ROT {
             continue; // 패닉 로그는 보존
         }
+        // 세션 센티널도 보존 — 이 두 파일이 "지난 실행이 왜 사라졌는가"의 유일한 근거다.
+        // systemd-oomd의 SIGKILL은 panic.log를 남기지 않으므로 이게 지워지면 진단이 불가능해진다.
+        if name == crate::health::session::CURRENT || name == crate::health::session::PREVIOUS {
+            continue;
+        }
         if fs::remove_file(&path).is_ok() {
             total = total.saturating_sub(len);
         }

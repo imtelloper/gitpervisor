@@ -461,6 +461,50 @@ export interface LogStatus {
   lastCrashAt: string | null; // panic.log 최종 수정 시각(RFC3339)
 }
 
+// ---- 헬스 조기경보 (health/) ----
+export type HealthLevel = "ok" | "notice" | "warn" | "danger";
+
+export interface HealthSample {
+  anchorFullAvg10: number; // 메모리 압박 %(oomd 판정 입력)
+  anchorSomeAvg10: number;
+  killThreshold: number; // OS가 강제 종료하는 압박 % (기본 50)
+  victimShare: number; // 0~1, 1에 가까울수록 종료 대상 1순위
+  scopeMemBytes: number;
+  scopeMemPct: number;
+  scopeProcs: number; // 앱에 딸린 살아있는 프로세스 수(정상 5~40)
+  memAvailablePct: number;
+  swapUsedPct: number;
+  available: boolean; // false면 이 플랫폼에서 신호를 못 읽음 → 경보 비활성
+}
+
+export interface HealthSnapshot {
+  level: HealthLevel;
+  sample: HealthSample;
+  reasons: string[]; // 이 레벨이 된 이유(사용자에게 그대로 보여준다)
+}
+
+/** health://level 이벤트 페이로드 — 레벨이 바뀔 때만 발행된다. */
+export interface HealthTransition extends HealthSnapshot {
+  prev: HealthLevel;
+}
+
+export interface PrevSessionRecord {
+  pid: number;
+  version: string;
+  startedAt: string;
+  updatedAt: string;
+  cleanExit: boolean;
+  level: HealthLevel;
+  last: HealthSample;
+}
+
+export interface PrevSession {
+  crashed: boolean;
+  verdict: "clean" | "oom" | "panic" | "unknown";
+  message: string;
+  record: PrevSessionRecord | null;
+}
+
 // ---- macOS 격리 도구 (commands/quarantine.rs) ----
 export interface QuarantinedItem {
   path: string; // 격리 속성이 박힌 실행 파일 절대경로
@@ -1062,6 +1106,22 @@ export const ipc = {
       timeoutMs: 10_000,
     }),
   clearCrashLog: () => callMutating<void>("clear_crash_log", {}),
+
+  // ---- 헬스 조기경보 (health/mod.rs) ----
+  // 현재 메모리 압박·프로세스 수 스냅샷. 백그라운드 레인 — 압박 상황에서 UI를 막지 않는다.
+  healthSnapshot: () =>
+    call<HealthSnapshot | null>("health_snapshot", undefined, {
+      lane: "background",
+      attempts: 1,
+      timeoutMs: 6000,
+    }),
+  // 지난 실행이 비정상 종료(OOM 강제 종료 등)였는지 + 그 시점 상태.
+  healthPrevSession: () =>
+    call<PrevSession>("health_prev_session", undefined, {
+      lane: "background",
+      attempts: 1,
+      timeoutMs: 6000,
+    }),
 
   // ---- AI 완료 외부 알림 (commands/notify.rs) ----
   // 시크릿(웹훅 URL·SMTP 비번)을 OS 키링에 저장/제거. 빈 문자열이면 제거.

@@ -145,15 +145,20 @@ pub async fn run_git_env(
     }
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: 콘솔 창 깜빡임 방지
+    #[cfg(unix)]
+    cmd.process_group(0); // 새 프로세스 그룹 리더 — 타임아웃 시 손자까지 killpg로 정리
 
     let child = cmd
         .spawn()
         .map_err(|e| IpcError::new(ErrorCode::Io, format!("git 실행 실패: {e}")))?;
+    let pid = child.id();
 
-    // 타임아웃 시 future drop → kill_on_drop이 프로세스를 정리한다.
+    // 타임아웃 시 future drop → kill_on_drop이 **직계** 프로세스를 정리하고,
+    // kill_group이 살아남은 손자(git-remote-https 등)까지 마저 거둔다.
     let out = tokio::time::timeout(Duration::from_secs(timeout_secs), child.wait_with_output())
         .await
         .map_err(|_| {
+            kill_group(pid);
             IpcError::new(
                 ErrorCode::Timeout,
                 format!(
@@ -199,11 +204,14 @@ pub async fn run_git_with_stdin(
     }
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000);
+    #[cfg(unix)]
+    cmd.process_group(0); // 새 프로세스 그룹 리더 — 타임아웃 시 손자까지 killpg로 정리
 
     let mut child = cmd
         .spawn()
         .map_err(|e| IpcError::new(ErrorCode::Io, format!("git 실행 실패: {e}")))?;
 
+    let pid = child.id();
     let mut stdin = child.stdin.take().expect("stdin piped");
     let data = stdin_data.to_vec();
     let write_stdin = async move {
@@ -217,6 +225,7 @@ pub async fn run_git_with_stdin(
     })
     .await
     .map_err(|_| {
+        kill_group(pid);
         IpcError::new(
             ErrorCode::Timeout,
             format!(
@@ -261,11 +270,14 @@ pub async fn run_git_streaming(
         .kill_on_drop(true);
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000);
+    #[cfg(unix)]
+    cmd.process_group(0); // 새 프로세스 그룹 리더 — 타임아웃 시 손자까지 killpg로 정리
 
     let mut child = cmd
         .spawn()
         .map_err(|e| IpcError::new(ErrorCode::Io, format!("git 실행 실패: {e}")))?;
 
+    let pid = child.id();
     let stderr = child.stderr.take().expect("stderr piped");
     let mut stdout = child.stdout.take().expect("stdout piped");
 
@@ -293,6 +305,7 @@ pub async fn run_git_streaming(
         })
         .await
         .map_err(|_| {
+            kill_group(pid);
             IpcError::new(
                 ErrorCode::Timeout,
                 format!(
@@ -310,4 +323,25 @@ pub async fn run_git_streaming(
         stdout: stdout_buf,
         stderr: err_lines.join("\n"),
     })
+}
+
+/// 타임아웃/취소 시 git 자식의 **프로세스 그룹 전체**를 정리한다.
+///
+/// tokio의 `kill_on_drop`은 직계 PID 하나만 SIGKILL한다(`Kill for Child` →
+/// `std::process::Child::kill()`). 그런데 https 원격의 fetch/push는
+/// `git remote-https` → `git-remote-https` 손자·증손자를 fork하므로, 직계만 죽이면
+/// 그들이 살아남아 앱 cgroup에 영구 잔류한다 — 2026-08 systemd-oomd 강제 종료의
+/// 기여 경로 중 하나였다(6일간 fetch 2만 회 × 타임아웃분).
+/// spawn 시 `process_group(0)`으로 새 그룹을 만들어 두었기에 그룹째 거둘 수 있다.
+#[allow(unused_variables)]
+fn kill_group(pid: Option<u32>) {
+    #[cfg(unix)]
+    if let Some(pid) = pid {
+        if pid > 1 {
+            // 그룹 id == 리더 pid. 리더가 이미 죽었어도 그룹에 멤버가 남아 있으면 유효하다.
+            unsafe {
+                libc::killpg(pid as i32, libc::SIGKILL);
+            }
+        }
+    }
 }

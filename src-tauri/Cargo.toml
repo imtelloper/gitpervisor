@@ -1,6 +1,6 @@
 [package]
 name = "gitpervisor"
-version = "0.3.2"
+version = "0.3.3"
 description = "멀티 레포 Git 상태를 한 화면에서 감시하고 diff·커밋·푸시까지 처리하는 데스크톱 대시보드"
 authors = ["imtelloper <newtype9556@gmail.com>"]
 edition = "2021"
@@ -77,6 +77,12 @@ tauri-plugin-process = "2"
 # Security.framework를 써 openssl이 불필요하므로 여기(Linux)에만 둔다(그쪽에 두면 perl/nasm 소스
 # 빌드를 강제해 로컬 빌드가 깨진다).
 openssl-sys = { version = "0.9", features = ["vendored"] }
+
+[target.'cfg(unix)'.dependencies]
+# PTY 세션을 "셸 하나"가 아니라 "세션 트리 전체"로 종료하기 위해 필요하다(killpg + /proc 세션 스캔).
+# 이게 없으면 터미널 탭을 닫아도 그 안에서 띄운 dev 서버·워처가 앱 cgroup에 고아로 영구 잔류한다
+# — 2026-08 systemd-oomd 강제 종료(387 프로세스)의 주범이었다.
+libc = "0.2"
 
 [target.'cfg(not(windows))'.dependencies]
 # 터미널 스마트 붙여넣기(term_paste)의 Linux(X11)/macOS 클립보드 읽기 — Windows의 clipboard-win 대응.

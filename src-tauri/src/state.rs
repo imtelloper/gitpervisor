@@ -130,9 +130,12 @@ pub fn load_settings(app: &AppHandle) -> Settings {
     // 다음 set_settings 저장이 전체 객체를 교체해 구 키는 자연 소멸한다(그전까지는 멱등 재적용).
     if value.get("remoteRefreshMinutes").is_none() {
         if let Some(old) = value.get("autoFetchMinutes").and_then(|v| v.as_u64()) {
-            if old > 0 {
-                settings.remote_refresh_minutes = old as u32;
-            }
+            // 0(= 사용자가 명시적으로 끔)도 그대로 승계한다. 예전에는 `if old > 0`으로 0을
+            // 떨어뜨려 기본값 5분이 되살아났고, 결과를 저장하지도 않아 매 부팅마다 재적용됐다
+            // — 끈 적 없는 배경 fetch가 6일간 2만 회 돈 원인(2026-08 OOM 사건 P0-4).
+            settings.remote_refresh_minutes = u32::try_from(old).unwrap_or(0);
+            // 마이그레이션 결과를 1회 저장해 구 키 재해석을 끝낸다(멱등 재적용 중단).
+            let _ = save_settings(app, &settings);
         }
     }
     settings
