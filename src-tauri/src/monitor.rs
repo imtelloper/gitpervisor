@@ -4,7 +4,8 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use sysinfo::{
-    Disks, Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System, UpdateKind,
+    DiskRefreshKind, Disks, Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System,
+    UpdateKind,
 };
 use tauri::State;
 
@@ -90,14 +91,41 @@ pub struct KillOutcome {
     pub skipped: Vec<u32>,
 }
 
+/// 종료 1단계가 2단계에 넘기는 계획 — 소유 데이터만 담아 **락을 놓고** 정착 대기를 할 수 있게 한다.
+#[derive(Debug, Clone)]
+pub struct KillPlan {
+    /// 자기보호로 시도조차 하지 않은 pid — 그대로 KillOutcome.skipped가 된다.
+    skipped: Vec<u32>,
+    /// kill()을 쏜 pid — 2단계에서 생존 여부를 재확인할 대상.
+    targets: Vec<u32>,
+}
+
 /// 근접 폴링(타이틀바 2s + 팝업 2s) 시 PDH·CPU 델타 표본이 겹치지 않게 하는 스로틀 —
 /// 이 간격 안의 재호출은 직전 집계 결과를 재사용한다(두 커맨드가 같은 표본 공유,
 /// sysinfo MINIMUM_CPU_UPDATE_INTERVAL 200ms 충족 겸용 — 태스크 05 §3.4).
 const COLLECT_THROTTLE: Duration = Duration::from_millis(500);
 
+/// 마운트 **목록** 재조회 주기. 목록 조회는 /proc/mounts(또는 드라이브 열거) 전수 파싱 +
+/// 마운트마다 statvfs라 폴링(2s)마다 돌리면 네트워크·자동마운트 볼륨에서 수십 ms씩 멎는다.
+/// 마운트 구성이 바뀌는 일은 드무니 목록은 60초에 한 번만 갱신하고, 그 사이에는 실제로
+/// 표시하는 볼륨 1개만 갱신한다(§P1 리소스 모니터 비용).
+const DISK_LIST_TTL: Duration = Duration::from_secs(60);
+
+/// 종료 요청이 실제로 반영될 때까지 주는 정착 시간(Windows TerminateProcess는 비동기).
+/// 이 대기 동안 **Monitor 락을 놓는다** — 예전엔 락을 쥔 채 std::thread::sleep 해서
+/// 타이틀바·팝업 폴링이 통째로 멈췄다.
+const KILL_SETTLE: Duration = Duration::from_millis(80);
+
 pub struct Monitor {
     sys: System,
     gpu: gpu::GpuCounter,
+    /// 마운트 목록 — 매 collect마다 `Disks::new_with_refreshed_list()`로 새로 만들지 않고
+    /// 구조체가 들고 있는다(§DISK_LIST_TTL).
+    disks: Disks,
+    /// 마지막 마운트 목록 재조회 시각.
+    last_disk_list: Option<Instant>,
+    /// 표시 대상 볼륨의 `disks` 내 인덱스 — 목록을 재조회할 때만 다시 고른다.
+    disk_idx: Option<usize>,
     /// 마지막 전역 collect(CPU/RAM/디스크/PDH) 시각 — 스로틀 기준점.
     last_collect: Option<Instant>,
     /// 마지막 프로세스 refresh 시각 — 팝업이 폴링할 때만 갱신(타이틀바 단독이면 비용 0).
@@ -122,6 +150,10 @@ impl Monitor {
         Self {
             sys,
             gpu: gpu::GpuCounter::new(),
+            // 비어 있는 상태로 시작 — 첫 collect가 목록을 채운다(생성자에서 statvfs를 돌지 않는다).
+            disks: Disks::new(),
+            last_disk_list: None,
+            disk_idx: None,
             last_collect: None,
             last_proc_collect: None,
             totals: None,
@@ -156,34 +188,7 @@ impl Monitor {
         let ram_used = self.sys.used_memory().min(ram_total);
         let ram = pct(ram_used, ram_total);
 
-        // 시스템 볼륨을 마운트 지점으로 직접 지목한다(Windows `C:\`, 유닉스 `/`).
-        // "가장 큰 디스크" 단독 폴백은 위험하다 — macOS엔 `C:\`가 없어 항상 폴백을 타는데,
-        // 외장 USB나 마운트된 DMG가 내장 디스크보다 크면 게이지가 조용히 그쪽으로 옮겨간다
-        // (실측: 3.7TB 외장이 뽑혀 4.9%로 표시, 실제 시스템 디스크는 ~91% 사용).
-        // 그래서 폴백도 착탈식(is_removable)을 먼저 제외한다.
-        let disks = Disks::new_with_refreshed_list();
-        let root = Path::new(if cfg!(windows) { "C:\\" } else { "/" });
-        let disk = disks
-            .iter()
-            .find(|d| d.mount_point() == root)
-            .or_else(|| {
-                disks
-                    .iter()
-                    .filter(|d| !d.is_removable())
-                    .max_by_key(|d| d.total_space())
-            })
-            .or_else(|| disks.iter().max_by_key(|d| d.total_space()));
-        let (storage_total, storage_used, storage_mount) = match disk {
-            Some(d) => {
-                let total = d.total_space();
-                (
-                    total,
-                    total.saturating_sub(d.available_space()),
-                    d.mount_point().display().to_string(),
-                )
-            }
-            None => (0, 0, String::new()),
-        };
+        let (storage_total, storage_used, storage_mount) = self.storage();
 
         // GPU는 같은 PDH collect에서 전역 max와 pid별 값을 동시 산출한다 (§3.4).
         let (gpu, gpu_by_pid) = self.gpu.read();
@@ -200,6 +205,43 @@ impl Monitor {
             storage_total,
             storage_mount,
         });
+    }
+
+    /// 표시 대상 볼륨의 (total, used, mount 지점).
+    ///
+    /// 목록 재조회는 DISK_LIST_TTL(60초)에 한 번만 — 그 사이에는 이미 고른 볼륨 **1개만**
+    /// storage 갱신(statvfs 1회)한다. 예전에는 매 collect(=2초 폴링)마다
+    /// `Disks::new_with_refreshed_list()`로 전 마운트를 다시 훑었다.
+    /// 대가: 60초 안에 마운트가 붙거나 빠지면 그만큼 반영이 늦다(게이지 지표라 무해).
+    fn storage(&mut self) -> (u64, u64, String) {
+        let stale = self
+            .last_disk_list
+            .map_or(true, |t| t.elapsed() >= DISK_LIST_TTL);
+        if stale {
+            // 목록 재조회 + 표시 대상 재선정. remove_not_listed_disks=true — 언마운트된
+            // 볼륨이 유령으로 남아 선정 후보가 되지 않게 한다.
+            // kind(HDD/SSD)·io_usage는 쓰지 않으므로 storage만 요청해 비용을 줄인다.
+            self.disks
+                .refresh_specifics(true, DiskRefreshKind::nothing().with_storage());
+            self.last_disk_list = Some(Instant::now());
+            self.disk_idx = pick_disk(&self.disks);
+        } else if let Some(i) = self.disk_idx {
+            // 목록은 그대로 두고 표시 중인 볼륨의 용량만 갱신(statvfs 1회).
+            if let Some(d) = self.disks.list_mut().get_mut(i) {
+                d.refresh_specifics(DiskRefreshKind::nothing().with_storage());
+            }
+        }
+        match self.disk_idx.and_then(|i| self.disks.list().get(i)) {
+            Some(d) => {
+                let total = d.total_space();
+                (
+                    total,
+                    total.saturating_sub(d.available_space()),
+                    d.mount_point().display().to_string(),
+                )
+            }
+            None => (0, 0, String::new()),
+        }
     }
 
     pub fn sample(&mut self) -> SysMetrics {
@@ -268,10 +310,6 @@ impl Monitor {
         self.seen_pids = now_pids;
     }
 
-    /// pid 목록을 종료한다(작업 끝내기). 성공 판정은 kill() 반환값이 아니라 **실제로 사라졌는지**로
-    /// 한다 — 그룹 종료 시 부모를 죽이면 자식이 연쇄 종료돼 개별 kill()이 false를 줘도 목표(프로세스
-    /// 없음)는 달성되기 때문. 최신 핸들로 종료 시도 → 잠깐 정착 대기 → 재조회해 아직 살아있는 것만
-    /// 실패(진짜 권한 부족)로 돌려준다.
     /// 자기보호 대상 판정 — 앱 자신의 pid이거나, 실행 파일이 앱 실행 파일과 같은 디렉터리
     /// (=번들 `Contents/MacOS` · 설치 폴더) 안에 있는 프로세스.
     ///
@@ -293,7 +331,14 @@ impl Monitor {
             .is_some_and(|d| d == dir)
     }
 
-    pub fn kill(&mut self, pids: &[u32]) -> KillOutcome {
+    /// pid 목록을 종료한다(작업 끝내기) — **1단계**. 자기보호 대상을 걸러내고 나머지에 kill()을 쏜다.
+    /// 성공 판정은 kill() 반환값이 아니라 **실제로 사라졌는지**로 한다(→ [`Monitor::kill_finish`]) —
+    /// 그룹 종료 시 부모를 죽이면 자식이 연쇄 종료돼 개별 kill()이 false를 줘도 목표(프로세스 없음)는
+    /// 달성되기 때문.
+    ///
+    /// 1·2단계로 쪼갠 이유: 그 사이의 정착 대기(KILL_SETTLE)를 **락 밖에서** 하기 위해서다.
+    /// 반환하는 KillPlan은 전부 소유 데이터라 락을 놓고 들고 있을 수 있다.
+    pub fn kill_begin(&mut self, pids: &[u32]) -> KillPlan {
         let self_pid = std::process::id();
         let own_dir: Option<PathBuf> = std::env::current_exe()
             .ok()
@@ -309,32 +354,35 @@ impl Monitor {
 
         let mut skipped = Vec::new();
         let mut targets = Vec::new();
-        let mut raw_targets = Vec::new();
         for &raw in pids {
             if self.is_self_owned(raw, self_pid, own_dir.as_deref()) {
                 skipped.push(raw);
             } else {
-                targets.push(Pid::from_u32(raw));
-                raw_targets.push(raw);
+                targets.push(raw);
             }
         }
 
         // 현재 살아있는 것들만 종료 시도.
-        for pid in &targets {
-            if let Some(p) = self.sys.process(*pid) {
+        for &raw in &targets {
+            if let Some(p) = self.sys.process(Pid::from_u32(raw)) {
                 p.kill();
             }
         }
-        // TerminateProcess가 반영되도록 잠깐 대기(사용자 액션이라 드묾 — 80ms 락 점유 무해).
-        std::thread::sleep(Duration::from_millis(80));
+        KillPlan { skipped, targets }
+    }
+
+    /// **2단계** — 정착 대기 뒤 재조회해 아직 살아있는 것만 실패(진짜 권한 부족)로 돌려준다.
+    pub fn kill_finish(&mut self, plan: KillPlan) -> KillOutcome {
+        let KillPlan { skipped, targets } = plan;
+        let pids: Vec<Pid> = targets.iter().map(|&p| Pid::from_u32(p)).collect();
         self.sys.refresh_processes_specifics(
-            ProcessesToUpdate::Some(&targets),
+            ProcessesToUpdate::Some(&pids),
             true,
             ProcessRefreshKind::nothing(),
         );
         let mut killed = 0u32;
         let mut failed = Vec::new();
-        for (&raw, pid) in raw_targets.iter().zip(&targets) {
+        for (&raw, pid) in targets.iter().zip(&pids) {
             // 좀비(<defunct>)는 프로세스 테이블에 남아 있어 "아직 살아있다"로 오판되기 쉽다.
             // 종료 목적은 달성됐으므로 좀비도 killed로 센다.
             let alive = self
@@ -364,17 +412,23 @@ impl Monitor {
         self.collect();
         self.refresh_procs();
         let totals = self.totals.clone().expect("collect가 totals를 채운다");
-        let mut rows = if group_by_name {
-            group_samples(&self.procs, sort_by)
+        let limit = limit as usize;
+        let (processes, total_count) = if group_by_name {
+            // 그룹 모드는 이미 이름 단위로 접혀(수백 → 수십) 있어 그대로 정렬·절단한다.
+            let mut rows = group_samples(&self.procs, sort_by);
+            sort_samples(&mut rows, sort_by);
+            let total = rows.len() as u32;
+            rows.truncate(limit);
+            (rows, total)
         } else {
-            self.procs.clone()
+            // 개별 모드는 전체(수백 개)를 clone 하면 **표시하지도 않을 행**의 String 두 개
+            // (name·exe_path)까지 매 틱(2초) 복제된다 — 프로세스가 많을수록 비싸지는,
+            // 정확히 "관측이 관측 대상을 무겁게 하는" 비용. 인덱스만 정렬해 상위 limit개만 clone.
+            (top_n(&self.procs, sort_by, limit), self.procs.len() as u32)
         };
-        sort_samples(&mut rows, sort_by);
-        let total_count = rows.len() as u32;
-        rows.truncate(limit as usize);
         ProcessSnapshot {
             totals,
-            processes: rows,
+            processes,
             total_count,
         }
     }
@@ -390,31 +444,71 @@ fn metric(r: &ProcessSample, key: ProcSortKey) -> f64 {
     }
 }
 
-/// 내림차순 정렬. Gpu 기준일 때 gpu=None(측정 대상 아님)은 항상 뒤로 보낸다.
+/// 내림차순 비교자. Gpu 기준일 때 gpu=None(측정 대상 아님)은 항상 뒤로 보낸다.
 ///
 /// 동률은 cpu → ram → pid로 확정한다(결정론). 이게 없으면 **GPU 미지원 플랫폼
 /// (macOS/Linux)에서 모든 행의 gpu가 None이라 1차 비교가 전부 Equal**이 되고, 안정 정렬은
 /// 입력 순서 — 즉 sysinfo `processes()`의 HashMap 순회 순서 — 를 그대로 남긴다. 그 상태로
 /// Top-N을 자르면 매 틱 임의의 N개가 뽑혀 목록이 2초마다 무의미하게 뒤바뀐다.
 /// Disk/Gpu의 None끼리도 마찬가지라 같은 폴백이 필요하다.
+///
+/// pid까지 내려가면 전순서(total order)라, 값 정렬이든 인덱스 정렬이든 결과가 같다
+/// (top_n이 sort_samples와 동일한 순서를 내는 근거).
+fn cmp_samples(a: &ProcessSample, b: &ProcessSample, key: ProcSortKey) -> std::cmp::Ordering {
+    let primary = match key {
+        ProcSortKey::Cpu => b.cpu.total_cmp(&a.cpu),
+        ProcSortKey::Ram => b.ram.cmp(&a.ram),
+        ProcSortKey::Gpu => match (a.gpu, b.gpu) {
+            (Some(x), Some(y)) => y.total_cmp(&x),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        },
+        ProcSortKey::Disk => b.disk_bps.cmp(&a.disk_bps),
+    };
+    primary
+        .then_with(|| b.cpu.total_cmp(&a.cpu))
+        .then_with(|| b.ram.cmp(&a.ram))
+        .then_with(|| a.pid.cmp(&b.pid))
+}
+
+/// 제자리 내림차순 정렬(그룹 모드 · 테스트용).
 fn sort_samples(rows: &mut [ProcessSample], key: ProcSortKey) {
-    rows.sort_by(|a, b| {
-        let primary = match key {
-            ProcSortKey::Cpu => b.cpu.total_cmp(&a.cpu),
-            ProcSortKey::Ram => b.ram.cmp(&a.ram),
-            ProcSortKey::Gpu => match (a.gpu, b.gpu) {
-                (Some(x), Some(y)) => y.total_cmp(&x),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => std::cmp::Ordering::Equal,
-            },
-            ProcSortKey::Disk => b.disk_bps.cmp(&a.disk_bps),
-        };
-        primary
-            .then_with(|| b.cpu.total_cmp(&a.cpu))
-            .then_with(|| b.ram.cmp(&a.ram))
-            .then_with(|| a.pid.cmp(&b.pid))
-    });
+    rows.sort_by(|a, b| cmp_samples(a, b, key));
+}
+
+/// 정렬 후 **상위 limit개만** 복제한다 — 전체 Vec을 clone 한 뒤 truncate 하지 않는다.
+/// 인덱스(usize)만 정렬하므로 표시하지 않을 행의 String 복제가 사라진다.
+fn top_n(rows: &[ProcessSample], key: ProcSortKey, limit: usize) -> Vec<ProcessSample> {
+    let mut idx: Vec<usize> = (0..rows.len()).collect();
+    idx.sort_by(|&a, &b| cmp_samples(&rows[a], &rows[b], key));
+    idx.truncate(limit);
+    idx.into_iter().map(|i| rows[i].clone()).collect()
+}
+
+/// 표시 대상 볼륨의 인덱스를 고른다 — 시스템 볼륨을 마운트 지점으로 직접 지목(Windows `C:\`,
+/// 유닉스 `/`). "가장 큰 디스크" 단독 폴백은 위험하다 — macOS엔 `C:\`가 없어 항상 폴백을 타는데,
+/// 외장 USB나 마운트된 DMG가 내장 디스크보다 크면 게이지가 조용히 그쪽으로 옮겨간다
+/// (실측: 3.7TB 외장이 뽑혀 4.9%로 표시, 실제 시스템 디스크는 ~91% 사용).
+/// 그래서 폴백도 착탈식(is_removable)을 먼저 제외한다.
+fn pick_disk(disks: &Disks) -> Option<usize> {
+    let root = Path::new(if cfg!(windows) { "C:\\" } else { "/" });
+    let list = disks.list();
+    list.iter()
+        .position(|d| d.mount_point() == root)
+        .or_else(|| {
+            list.iter()
+                .enumerate()
+                .filter(|(_, d)| !d.is_removable())
+                .max_by_key(|(_, d)| d.total_space())
+                .map(|(i, _)| i)
+        })
+        .or_else(|| {
+            list.iter()
+                .enumerate()
+                .max_by_key(|(_, d)| d.total_space())
+                .map(|(i, _)| i)
+        })
 }
 
 /// 같은 이름 프로세스 합산("프로그램별" 보기) — cpu·ram·gpu·disk는 합(gpu는 100 캡),
@@ -483,14 +577,21 @@ fn pct(used: u64, total: u64) -> f32 {
 }
 
 /// 타이틀바가 ~2초 간격으로 폴링하는 시스템 사용률.
-#[tauri::command]
+///
+/// **`(async)`인 이유**: 동기 `#[tauri::command]`는 UI 이벤트 루프(GTK/Win32 메인 스레드)에서
+/// 실행된다. 이 커맨드는 /proc·statvfs·PDH를 훑으므로 프로세스가 늘수록 비용이 선형으로 커지고,
+/// 그 지연이 그대로 창 렌더 지연이 된다 — 누수를 보려고 켠 창이 누수의 대가를 가장 크게 치르는
+/// 구조였다(2026-08 OOM 사후조치 P1). 시그니처(이름·인자)는 그대로라 invoke_handler·프론트는
+/// 손댈 필요가 없다.
+#[tauri::command(async)]
 pub fn sys_metrics(state: State<'_, AppState>) -> SysMetrics {
     state.monitor.lock().unwrap().sample()
 }
 
 /// 리소스 모니터 팝업이 ~2초 간격으로 폴링하는 프로세스 스냅샷. sys_metrics와 같은
 /// Monitor 뮤텍스를 공유하며, PDH collect·CPU refresh는 500ms 스로틀 캐시로 이중 호출 무해화.
-#[tauri::command]
+/// `(async)` 근거는 sys_metrics와 동일 — 전 PID `/proc` 순회는 UI 스레드에서 돌면 안 된다.
+#[tauri::command(async)]
 pub fn sys_process_snapshot(
     state: State<'_, AppState>,
     sort_by: ProcSortKey,
@@ -506,8 +607,11 @@ pub fn sys_process_snapshot(
 
 /// 작업 끝내기 — pid 목록을 종료한다. 프론트가 파괴적 확인을 거친 뒤 호출한다.
 /// 실패 pid가 있으면(권한 부족·이미 종료) 그대로 반환해 프론트가 토스트로 안내한다.
+///
+/// 정착 대기는 `tokio::time::sleep`으로 **락을 놓고** 기다린다 — 예전엔 UI 스레드에서
+/// `std::thread::sleep(80ms)`을 Monitor 락을 쥔 채 돌려 창 자체가 그동안 멈췄다.
 #[tauri::command]
-pub fn kill_processes(
+pub async fn kill_processes(
     state: State<'_, AppState>,
     pids: Vec<u32>,
 ) -> Result<KillOutcome, IpcError> {
@@ -517,8 +621,19 @@ pub fn kill_processes(
             "종료할 프로세스가 없습니다",
         ));
     }
-    // 앱 자신·앱 번들 안 프로세스 제외는 Monitor::kill이 exe 경로를 보고 판정한다(skipped).
-    Ok(state.monitor.lock().unwrap().kill(&pids))
+    // 앱 자신·앱 번들 안 프로세스 제외는 kill_begin이 exe 경로를 보고 판정한다(skipped).
+    // 락 스코프를 블록으로 명시한다 — MutexGuard가 await를 넘어가면 future가 Send가 아니게 되고
+    // (컴파일 에러), 넘어가지 않더라도 대기 동안 폴링을 막는다.
+    let plan = {
+        let mut mon = state.monitor.lock().unwrap();
+        mon.kill_begin(&pids)
+    };
+    tokio::time::sleep(KILL_SETTLE).await;
+    let outcome = {
+        let mut mon = state.monitor.lock().unwrap();
+        mon.kill_finish(plan)
+    };
+    Ok(outcome)
 }
 
 // ---- GPU: Windows PDH "GPU Engine" 사용률(전 어댑터 집계) ----
@@ -857,5 +972,63 @@ mod tests {
         let mut rows = vec![s(9, "x", 0.0, 0, None), s(3, "y", 0.0, 0, None)];
         sort_samples(&mut rows, ProcSortKey::Cpu);
         assert_eq!(rows.iter().map(|r| r.pid).collect::<Vec<_>>(), vec![3, 9]);
+    }
+
+    /// 전체 clone → 정렬 → truncate 를 "인덱스 정렬 → 상위 N만 clone"으로 바꿨다.
+    /// 결과 순서가 예전 방식과 **모든 정렬 키에서** 같아야 한다(순수 최적화라는 증명).
+    #[test]
+    fn top_n_matches_sort_then_truncate() {
+        let rows = vec![
+            s(1, "a", 3.0, 300, Some(10.0)),
+            s(2, "b", 3.0, 100, None),
+            s(3, "c", 9.0, 200, Some(50.0)),
+            s(4, "d", 0.0, 900, Some(50.0)),
+            s(5, "e", 3.0, 300, None),
+        ];
+        for key in [
+            ProcSortKey::Cpu,
+            ProcSortKey::Ram,
+            ProcSortKey::Gpu,
+            ProcSortKey::Disk,
+        ] {
+            for limit in [0usize, 1, 3, 5, 99] {
+                let mut expect = rows.clone();
+                sort_samples(&mut expect, key);
+                expect.truncate(limit);
+                let got = top_n(&rows, key, limit);
+                assert_eq!(
+                    got.iter().map(|r| r.pid).collect::<Vec<_>>(),
+                    expect.iter().map(|r| r.pid).collect::<Vec<_>>(),
+                    "limit={limit}"
+                );
+            }
+        }
+    }
+
+    /// 디스크 캐시 계약: 첫 호출이 목록을 훑고 볼륨을 고르면, TTL 안의 재호출은
+    /// **목록을 다시 훑지 않으면서도** 같은 볼륨의 값을 준다.
+    /// (인덱스 관리를 틀리면 두 번째 호출이 0/빈 마운트를 돌려주거나 매번 재열거한다.)
+    #[test]
+    fn storage_reuses_disk_list_within_ttl() {
+        let mut m = Monitor::new();
+        let first = m.storage();
+        let listed_at = m.last_disk_list;
+        assert!(listed_at.is_some(), "첫 호출이 목록을 채워야 한다");
+
+        let second = m.storage();
+        assert_eq!(m.last_disk_list, listed_at, "TTL 안인데 목록을 다시 훑었다");
+        assert_eq!(first.2, second.2, "표시 볼륨이 바뀌었다");
+        assert_eq!(first.0, second.0, "총 용량이 바뀌었다");
+    }
+
+    /// Top-N 절단은 표시할 행만 복제한다 — 입력이 몇 개든 결과 길이는 limit 이하.
+    #[test]
+    fn top_n_clones_at_most_limit_rows() {
+        let rows: Vec<ProcessSample> = (0..500)
+            .map(|i| s(i, "p", i as f32, i as u64, None))
+            .collect();
+        assert_eq!(top_n(&rows, ProcSortKey::Cpu, 10).len(), 10);
+        // cpu 내림차순이라 가장 큰 pid부터.
+        assert_eq!(top_n(&rows, ProcSortKey::Cpu, 3)[0].pid, 499);
     }
 }

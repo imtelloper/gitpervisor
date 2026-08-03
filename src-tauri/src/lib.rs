@@ -107,7 +107,7 @@ async fn open_float_window(
     pane_id: String,
     origin: String,
 ) -> Result<(), String> {
-    let label = format!("float-{pane_id}");
+    let label = format!("{FLOAT_LABEL_PREFIX}{pane_id}");
     // 메인 창이 이미 떠 있는 origin을 그대로 로드한다 — dev(localhost devUrl)·prod(tauri://localhost)
     // 모두에서 같은 index를 띄운다. 런타임의 WebviewUrl::App은 dev에서 about:blank로 떨어진다.
     let url = tauri::Url::parse(&origin).map_err(|e| format!("잘못된 origin: {e}"))?;
@@ -193,6 +193,129 @@ async fn open_aggregate_window(app: tauri::AppHandle, origin: String) -> Result<
     })
     .map_err(|e| format!("모아보기 창 예약 실패: {e}"))?;
     Ok(())
+}
+
+/// 플로팅 터미널 창 라벨 접두사 — 라벨이 곧 paneId 전달 통로다(open_float_window 주석 참고).
+const FLOAT_LABEL_PREFIX: &str = "float-";
+
+/// 메인 창과 수명을 같이 하는 보조 창 라벨.
+/// 메인이 사라졌는데 이 창들만 남으면 앱이 종료되지 않고 창 하나짜리 잔여 상태가 된다
+/// (macOS는 Dock에도 남는다). 팝업(`gpv-popup-*`)은 browser.rs의 popup_kill_all이 맡는다.
+const AUX_WINDOW_LABELS: [&str; 2] = ["sysmon", "aggregate"];
+
+/// 메인 창이 사라질 때 같이 닫아야 하는 창인가.
+///
+/// `aggregate`가 `float-`로 시작하지 **않는** 것이 중요하다 — Destroyed 훅의 float 분기가
+/// PTY를 종료시키는데 모아보기 창은 메인이 만든 PTY에 붙기만 하기 때문이다
+/// (open_aggregate_window 주석). 그 불변식을 아래 테스트가 지킨다.
+fn is_secondary_window(label: &str) -> bool {
+    label.starts_with(FLOAT_LABEL_PREFIX) || AUX_WINDOW_LABELS.contains(&label)
+}
+
+/// 종료 정리가 이미 돌았는가 — 종료 경로가 여러 개라 중복 실행을 막는다.
+static SHUTDOWN_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 정리 권한을 딱 한 번만 준다. 두 경로가 동시에 들어와도 CAS에 성공한 쪽만 true를 받는다.
+/// (테스트에서 임의의 플래그를 넘길 수 있게 인자로 받는다.)
+fn claim_shutdown(done: &std::sync::atomic::AtomicBool) -> bool {
+    use std::sync::atomic::Ordering;
+    done.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+}
+
+/// 정리 한 단계를 실행하고 패닉을 여기서 삼킨다.
+///
+/// 한 단계가 패닉하면(예: 다른 스레드가 패닉해 오염된 뮤텍스의 `lock().unwrap()`) 나머지
+/// 단계가 통째로 건너뛰어져 PTY 셸·LSP 서버가 그대로 남는다. 종료 정리는 "가능한 만큼 최대한"이
+/// 목적이므로 단계별로 격리한다. 패닉 내용 자체는 전역 패닉 훅이 crash 로그에 남긴다.
+/// (릴리스 프로필도 panic=unwind라 catch_unwind가 실제로 동작한다 — Cargo.toml 주석 참고.)
+fn shutdown_step(name: &str, f: impl FnOnce()) {
+    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_err() {
+        log::error!("[shutdown] '{name}' 단계 패닉 — 나머지 단계는 계속 진행한다");
+    }
+}
+
+/// 로그용 카운트 — 락을 못 잡았으면 "?"(정리 자체는 그대로 진행한다).
+fn fmt_count(v: Option<usize>) -> String {
+    v.map_or_else(|| "?".to_string(), |n| n.to_string())
+}
+
+/// 앱 종료 시 자식 자원 정리의 **단일 진입점**.
+///
+/// 예전에는 메인 창 `WindowEvent::Destroyed` 훅 하나뿐이었는데, 실제 종료 경로는 최소 셋이다.
+///
+/// 1. 메인 창 닫기 → `Destroyed`
+/// 2. 이벤트 루프 종료 → `RunEvent::Exit`
+/// 3. 업데이터 재시작(`AppHandle::request_restart`) → Destroyed 없이 `RunEvent::Exit`만 지나간다
+///    (tauri-2.11.2 app.rs: 재시작은 `cleanup_before_exit` → `process::restart`이고 창
+///    Destroyed를 emit하지 않는다)
+///
+/// (2)·(3)이 비어 있으면 PTY 셸·LSP 서버가 그대로 남아 다음 실행의 자식과 겹친다 —
+/// 2026-08-01 "프로세스 387개 + systemd-oomd SIGKILL" 사건의 누적 경로 중 하나다.
+/// 어느 입구로 들어오든 같은 순서로 정리하도록 여기 한 곳에 모은다.
+///
+/// **한 번만** 돈다(`SHUTDOWN_DONE`). 여러 경로가 연달아 불러도 두 번째부터는 즉시 반환한다 —
+/// `kill_all`은 자식 종료를 join으로 기다리므로(세션당 최대 300ms) 중복 실행은 종료를 그만큼 늦춘다.
+fn shutdown_children(app: &tauri::AppHandle) {
+    if !claim_shutdown(&SHUTDOWN_DONE) {
+        return;
+    }
+    let t0 = std::time::Instant::now();
+    let mut n_term = None;
+    let mut n_lsp = None;
+    let mut closed = 0usize;
+
+    if let Some(state) = app.try_state::<AppState>() {
+        let state = state.inner();
+        // 규모는 정리 전에 읽어 둔다(로그 전용). try_lock — 여기서 기다리면 종료만 늦어진다.
+        n_term = state.terminals.try_lock().ok().map(|g| g.len());
+        n_lsp = state.lsp.try_lock().ok().map(|g| g.len());
+        // 자식 **프로세스**부터 보낸다(좀비 셸/서버 방지, 설계 §16.8 + 태스크 17).
+        shutdown_step("terminals", || commands::kill_all(state));
+        shutdown_step("lsp", || commands::lsp_kill_all(state));
+        shutdown_step("browser", || commands::browser_kill_all(app, state));
+    } else {
+        // setup 실패 등으로 manage 전에 끝난 경우 — 정리할 자식도 아직 없다.
+        log::warn!("[shutdown] AppState 미등록 — 자식 프로세스 정리 생략");
+    }
+
+    // 그다음 창. 팝업은 전용 헬퍼가, float-*/보조 창은 라벨로 판별해 한 번에 닫는다.
+    // 창 정리는 자식 프로세스 종료 뒤에 해야 한다 — float 창의 Destroyed 훅이 close_session을
+    // 부르는데, kill_all이 이미 레지스트리를 비워서 중복 종료가 no-op이 되기 때문이다.
+    shutdown_step("popups", || commands::popup_kill_all(app));
+    shutdown_step("windows", || {
+        for (label, win) in app.webview_windows() {
+            if is_secondary_window(&label) && win.close().is_ok() {
+                closed += 1;
+            }
+        }
+    });
+
+    // 정상 종료 표시는 **반드시 맨 마지막**. 위 단계 도중에 죽으면 다음 실행이 "비정상 종료"로
+    // 판정해야 한다 — mark_clean이 먼저 찍히면 사후 진단이 통째로 거짓말이 된다.
+    shutdown_step("session", health::end_session);
+
+    log::info!(
+        "[shutdown] 자식 정리 완료 {}ms — 터미널 {} · LSP {} · 창 {}개 닫음",
+        t0.elapsed().as_millis(),
+        fmt_count(n_term),
+        fmt_count(n_lsp),
+        closed,
+    );
+}
+
+/// 업데이터가 재실행하기 직전에 프론트가 await 하는 정리 커맨드(src/stores/updater.ts).
+///
+/// `relaunch()`는 `request_restart()` → 이벤트 루프 종료 → `RunEvent::Exit` → `exec` 순서라
+/// 정리 자체는 아래 RunEvent 경로도 잡는다. 다만 그 시점엔 루프가 이미 내려가는 중이라 창
+/// close 메시지가 펌프되지 않는다. 프론트가 미리 await 하면 정리가 **끝난 것을 확인한 뒤**
+/// 새 프로세스가 뜬다(구·신 프로세스의 PTY·LSP가 겹치는 창이 사라진다).
+///
+/// `async` 필수 — kill_all이 자식 종료를 join으로 기다리므로 동기 커맨드로 두면 그 수백 ms
+/// 동안 GTK 메인 루프가 멈춘다(terminal.rs spawn_terminate와 같은 이유).
+#[tauri::command(async)]
+fn prepare_relaunch(app: tauri::AppHandle) {
+    shutdown_children(&app);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -400,6 +523,7 @@ pub fn run() {
             open_float_window,
             open_sysmon_window,
             open_aggregate_window,
+            prepare_relaunch,
             commands::term_open,
             commands::term_attach,
             commands::term_project,
@@ -464,38 +588,97 @@ pub fn run() {
             if let tauri::WindowEvent::Destroyed = event {
                 let label = window.label();
                 if label == "main" {
-                    // 메인 창이 닫히면 열린 PTY 자식을 모두 정리한다 (좀비 셸 방지, 설계 §16.8).
-                    let state = window.state::<AppState>();
-                    commands::kill_all(state.inner());
-                    commands::lsp_kill_all(state.inner()); // LSP 서버 좀비 방지(태스크 17)
-                    commands::browser_kill_all(window.app_handle(), state.inner());
-                    // 팝업만 남아 앱이 안 죽는 상태 방지 — gpv-popup-* 전 창 close.
-                    commands::popup_kill_all(window.app_handle());
-                    // 리소스 모니터도 같은 이유로 닫는다 — 메인이 사라졌는데 이 창만 남으면
-                    // 앱이 종료되지 않고 창 하나짜리 잔여 상태가 된다(macOS는 Dock에도 남는다).
-                    if let Some(w) = window.app_handle().get_webview_window("sysmon") {
-                        let _ = w.close();
-                    }
-                    // 모아보기 창도 같은 이유로 닫는다(메인 없이 홀로 남으면 앱이 안 죽는다).
-                    if let Some(w) = window.app_handle().get_webview_window("aggregate") {
-                        let _ = w.close();
-                    }
-                    // 정상 종료 표시 — 이게 찍혀야 다음 실행에서 "비정상 종료" 경고를 안 띄운다.
-                    // 반드시 모든 정리가 끝난 뒤에 찍는다.
-                    health::end_session();
-                } else if let Some(term_id) = label.strip_prefix("float-") {
+                    // 메인 창이 닫히면 자식 자원을 전부 정리한다(좀비 셸 방지, 설계 §16.8).
+                    // 순서·재진입 방지는 shutdown_children 한 곳에 모여 있다.
+                    shutdown_children(window.app_handle());
+                } else if let Some(term_id) = label.strip_prefix(FLOAT_LABEL_PREFIX) {
                     // 플로팅 터미널 창이 닫히면 그 세션의 PTY만 종료한다(나머지는 메인이 유지).
                     let state = window.state::<AppState>();
                     commands::close_session(state.inner(), term_id);
                 }
             }
         })
-        .run(tauri::generate_context!());
-    if let Err(e) = result {
-        let when = chrono::Local::now().to_rfc3339();
-        log::error!("Tauri 런타임 실행 실패: {e:?}");
-        append_crash_log(&format!("\n===== RUNTIME FAILURE @ {when} =====\n{e:?}\n"));
-        eprintln!("error while running tauri application: {e:?}");
-        std::process::exit(1);
+        // `.run(context)`는 `build(context)?.run(|_, _| {})`의 축약이라 RunEvent를 못 받는다.
+        // build/run을 갈라 이벤트 루프 종료를 직접 잡는다 — 업데이터 재시작은 창 Destroyed 없이
+        // 여기만 지나가므로(shutdown_children 주석 §3) 이 경로가 없으면 재시작 때 자식이 남는다.
+        // build()가 돌려주는 Err는 예전 `.run()`이 돌려주던 Err와 동일하다(setup 실패는 build가
+        // 아니라 RunEvent::Ready에서 패닉 → 전역 패닉 훅이 crash 로그에 남긴다). 따라서 아래
+        // 실패 처리(append_crash_log + exit 1)는 이전과 정확히 같은 조건에서 돈다.
+        .build(tauri::generate_context!());
+    match result {
+        Ok(app) => app.run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                shutdown_children(app);
+            }
+        }),
+        Err(e) => {
+            let when = chrono::Local::now().to_rfc3339();
+            log::error!("Tauri 런타임 실행 실패: {e:?}");
+            append_crash_log(&format!("\n===== RUNTIME FAILURE @ {when} =====\n{e:?}\n"));
+            eprintln!("error while running tauri application: {e:?}");
+            std::process::exit(1);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+
+    /// 종료 정리는 경로가 여럿이라(창 Destroyed / RunEvent::Exit / 업데이터 커맨드)
+    /// 반드시 한 번만 돌아야 한다 — kill_all이 join으로 기다리므로 중복은 종료 지연이 된다.
+    #[test]
+    fn shutdown_is_claimed_only_once() {
+        let done = AtomicBool::new(false);
+        assert!(claim_shutdown(&done), "첫 호출은 정리를 수행해야 한다");
+        assert!(!claim_shutdown(&done), "두 번째 호출은 건너뛰어야 한다");
+        assert!(!claim_shutdown(&done));
+    }
+
+    /// 두 종료 경로가 동시에 들어와도(예: Destroyed가 다른 스레드에서 처리되는 런타임)
+    /// 정확히 하나만 통과해야 한다. `load`+`store`였다면 여기서 깨진다.
+    #[test]
+    fn concurrent_shutdown_claims_exactly_one_winner() {
+        static DONE: AtomicBool = AtomicBool::new(false);
+        let winners: usize = std::thread::scope(|s| {
+            let hs: Vec<_> = (0..8)
+                .map(|_| s.spawn(|| usize::from(claim_shutdown(&DONE))))
+                .collect();
+            hs.into_iter().map(|h| h.join().unwrap()).sum()
+        });
+        assert_eq!(winners, 1, "정리는 정확히 한 경로만 수행해야 한다");
+    }
+
+    /// 메인이 사라지면 같이 닫아야 하는 창 / 아닌 창.
+    /// 특히 `aggregate`가 float 접두사에 걸리면 Destroyed 훅의 float 분기가 살아있는 PTY를
+    /// 죽인다(모아보기 창은 메인의 PTY에 붙기만 한다) — 라벨을 바꿀 때 여기서 걸린다.
+    #[test]
+    fn secondary_window_labels() {
+        assert!(is_secondary_window("float-abc123"));
+        assert!(is_secondary_window("sysmon"));
+        assert!(is_secondary_window("aggregate"));
+        assert!(!is_secondary_window("main"), "메인은 대상이 아니다");
+        assert!(
+            !is_secondary_window("gpv-popup-1"),
+            "팝업은 popup_kill_all이 맡는다"
+        );
+        assert!(!"aggregate".starts_with(FLOAT_LABEL_PREFIX));
+        assert!(!"sysmon".starts_with(FLOAT_LABEL_PREFIX));
+    }
+
+    /// 한 단계가 패닉해도 나머지 단계가 계속 돌아야 한다(정리는 "가능한 만큼 최대한").
+    #[test]
+    fn shutdown_step_swallows_panic() {
+        let mut after = false;
+        shutdown_step("panicking", || panic!("일부러"));
+        shutdown_step("next", || after = true);
+        assert!(after, "앞 단계 패닉이 뒤 단계를 막으면 안 된다");
+    }
+
+    #[test]
+    fn fmt_count_marks_unknown() {
+        assert_eq!(fmt_count(Some(3)), "3");
+        assert_eq!(fmt_count(None), "?", "락 실패는 0이 아니라 미상으로 남긴다");
     }
 }

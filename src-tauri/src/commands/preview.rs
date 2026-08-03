@@ -108,6 +108,19 @@ impl PreviewServers {
         }
         doomed.len()
     }
+
+    /// 죽은 엔트리(alive=false)를 걷어낸다 — mint 때 1회 훑는다. 반환값은 제거한 수(테스트용).
+    ///
+    /// 유휴 종료·리스너 오류로 끝난 서버의 엔트리는 **아무도 지우지 않는다**: 폴링 스레드는
+    /// 레지스트리 락을 잡지 않는 설계(잡으면 종료 경로가 mint와 교착할 수 있다)라 alive만
+    /// 내리고 사라진다. 그래서 프리뷰한 폴더 수만큼 맵이 단조 증가한다 — 엔트리 하나는
+    /// 작지만(경로+토큰+Arc 2개) 오래 켜 두는 앱에서 회수 안 되는 누적은 그 자체가 결함이다.
+    /// mint는 사용자 우클릭 빈도로만 일어나므로 여기서 전체를 훑는 비용은 무시할 수 있다.
+    fn prune_dead(&mut self) -> usize {
+        let before = self.ports.len();
+        self.ports.retain(|_, e| e.alive.load(Ordering::Relaxed));
+        before - self.ports.len()
+    }
 }
 
 /// 파일트리 우클릭 → `.html`을 내장 브라우저에서 열 URL을 만든다.
@@ -145,8 +158,12 @@ pub fn preview_local_url(
         .to_string();
 
     let mut reg = state.preview.lock().unwrap();
+    // 죽은 엔트리를 먼저 회수한다 — 유휴 종료·리스너 오류로 끝난 서버가 남긴 스테일 엔트리는
+    // 폴더를 옮겨 다닐수록 쌓이기만 한다(§prune_dead).
+    reg.prune_dead();
     // 살아있는 서버만 재사용한다 — 유휴 종료된 서버가 남긴 스테일 엔트리는 없는 것으로 보고
     // 새로 띄운다(자기 치유). 덕분에 종료된 스레드가 레지스트리를 직접 건드릴 필요가 없다.
+    // prune 뒤에도 이 필터는 남긴다 — 폴링 스레드가 prune과 get 사이에 alive를 내릴 수 있다.
     let reusable = reg
         .ports
         .get(&base)
@@ -240,7 +257,17 @@ fn start_server(base: PathBuf, token: String) -> Result<ServerEntry, IpcError> {
                             return;
                         }
                     }
-                    Err(_) => return, // 리스너가 못 쓰게 됨 — 스레드 종료(다음 mint가 재생성)
+                    Err(e) => {
+                        // 리스너가 못 쓰게 됨(fd 고갈·커널 오류 등) — 스레드를 접는다.
+                        // ⚠️ 반드시 alive를 내리고 나가야 한다. 안 내리면 레지스트리 엔트리는
+                        // "살아있음"으로 남아 **다음 mint가 죽은 포트를 그대로 재사용**해 URL을
+                        // 내주고, 브라우저는 연결 거부(빈 탭)를 본다 — 프리뷰가 영구히 고장난
+                        // 것처럼 보이는데 재시작 말고는 복구 수단이 없다. 유휴 종료 경로는 이미
+                        // 같은 이유로 alive를 내리고 있었고 이 경로만 빠져 있었다.
+                        log::warn!("[preview] accept 실패 — 서버를 종료합니다: {e}");
+                        t_alive.store(false, Ordering::Relaxed);
+                        return;
+                    }
                 }
             }
         })
@@ -672,6 +699,40 @@ mod tests {
         assert!(reg.ports.contains_key(&other)); // 엔트리도 남는다
         assert!(reg.ports.contains_key(&sibling));
         assert!(!reg.ports.contains_key(&root)); // 폐기된 것은 즉시 빠져 다음 mint가 새로 띄운다
+    }
+
+    /// 회귀 방지: 죽은 서버 엔트리는 mint 때 회수되고, 재사용 후보로도 잡히면 안 된다.
+    /// (accept 루프가 오류로 죽을 때 alive를 내리지 않으면 여기서 살아있는 것으로 보여
+    /// 다음 mint가 닫힌 포트를 재사용한다 — 브라우저는 연결 거부를 본다.)
+    #[test]
+    fn prune_dead_reclaims_and_blocks_reuse() {
+        let mut reg = PreviewServers::default();
+        let mk = |alive: bool| ServerEntry {
+            port: 1,
+            token: "t".into(),
+            alive: Arc::new(AtomicBool::new(alive)),
+            last_hit: Arc::new(AtomicU64::new(0)),
+            started: Instant::now(),
+        };
+        let live = PathBuf::from("/repos/alpha/docs");
+        let idle_dead = PathBuf::from("/repos/alpha/site"); // 유휴 종료
+        let accept_dead = PathBuf::from("/repos/beta"); // accept 오류로 종료
+        reg.ports.insert(live.clone(), mk(true));
+        reg.ports.insert(idle_dead.clone(), mk(false));
+        reg.ports.insert(accept_dead.clone(), mk(false));
+
+        assert_eq!(reg.prune_dead(), 2, "죽은 엔트리 둘만 회수");
+        assert!(reg.ports.contains_key(&live), "살아있는 서버는 남는다");
+        assert!(!reg.ports.contains_key(&idle_dead));
+        assert!(!reg.ports.contains_key(&accept_dead));
+        // 재사용 후보 조회(mint와 같은 조건)에도 잡히지 않는다 → 새 서버를 띄운다.
+        assert!(reg
+            .ports
+            .get(&accept_dead)
+            .filter(|e| e.alive.load(Ordering::Relaxed))
+            .is_none());
+        // 반복 호출은 아무것도 지우지 않는다(멱등).
+        assert_eq!(reg.prune_dead(), 0);
     }
 
     #[test]

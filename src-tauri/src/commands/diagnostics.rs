@@ -8,6 +8,7 @@ use std::process::Command;
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
+use super::open::spawn_launcher;
 use crate::error::{ErrorCode, IpcError};
 
 const PANIC_LOG: &str = "panic.log";
@@ -147,30 +148,30 @@ pub fn prune_logs(dir: &Path) {
 }
 
 // OS 파일 탐색기로 디렉토리 열기 (open.rs의 탐색기 열기와 동일한 플랫폼별 처리).
+// 실행은 open.rs의 공용 런처를 지난다 — stdio null + 프로세스 그룹 분리 + 자식 회수(좀비 방지),
+// 리눅스는 systemd-run 위임으로 파일 탐색기가 앱 cgroup 밖에서 뜬다.
 #[cfg(windows)]
 fn open_dir(dir: &Path) -> Result<(), IpcError> {
     // explorer는 성공해도 비정상 종료코드를 반환할 수 있어 spawn 성공 여부만 본다.
-    Command::new("explorer")
-        .arg(dir)
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("폴더 열기 실패: {e}")))
+    let mut cmd = Command::new("explorer");
+    cmd.arg(dir);
+    spawn_launcher(cmd, "로그 폴더").map_err(open_err)
 }
 
 #[cfg(target_os = "macos")]
 fn open_dir(dir: &Path) -> Result<(), IpcError> {
-    Command::new("open")
-        .arg(dir)
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("폴더 열기 실패: {e}")))
+    let mut cmd = Command::new("open");
+    cmd.arg(dir);
+    spawn_launcher(cmd, "로그 폴더").map_err(open_err)
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
 fn open_dir(dir: &Path) -> Result<(), IpcError> {
-    Command::new("xdg-open")
-        .arg(dir)
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("폴더 열기 실패: {e}")))
+    let mut cmd = Command::new("xdg-open");
+    cmd.arg(dir);
+    spawn_launcher(cmd, "로그 폴더").map_err(open_err)
+}
+
+fn open_err(e: std::io::Error) -> IpcError {
+    IpcError::new(ErrorCode::Io, format!("폴더 열기 실패: {e}"))
 }

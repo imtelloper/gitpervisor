@@ -1,4 +1,5 @@
 import { getVersion } from "@tauri-apps/api/app";
+import { invoke } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { create } from "zustand";
@@ -116,6 +117,16 @@ export const useUpdater = create<UpdaterState>((set, get) => ({
         }
       });
       set({ status: "installed" });
+      // 재실행 **전에** 자식(PTY 셸·LSP 서버·브라우저 webview·보조 창)을 먼저 정리한다.
+      // relaunch()는 request_restart → 이벤트 루프 종료 → exec 순서라, 앱 쪽 RunEvent::Exit
+      // 훅만 믿으면 이미 루프가 내려가는 중이라 창 close 메시지가 펌프되지 않는다. 여기서
+      // await 하면 정리가 끝난 것을 확인한 뒤 새 프로세스가 떠, 구·신 버전의 자식 프로세스가
+      // 겹쳐 사는 구간이 없어진다(2026-08-01 프로세스 누적 사건의 경로 중 하나).
+      // 실패해도 재실행은 막지 않는다 — Rust의 RunEvent::Exit 경로가 백스톱이고, 정리 실패로
+      // 업데이트가 중단되면 사용자는 "설치됐는데 안 바뀐다" 상태에 갇힌다.
+      await invoke("prepare_relaunch").catch((e) => {
+        console.warn("재실행 전 정리 실패(무시하고 재실행):", e);
+      });
       // 설치 완료 → 새 버전으로 재실행. (Windows perMachine는 설치 중 UAC 승격 프롬프트.)
       await relaunch();
     } catch (e) {

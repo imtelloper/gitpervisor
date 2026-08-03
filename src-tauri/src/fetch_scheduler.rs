@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -63,6 +63,33 @@ fn sched() -> &'static Mutex<HashMap<String, SchedMeta>> {
     SCHED.get_or_init(Default::default)
 }
 
+/// 동시 fetch 상한 세마포어 — **프로세스 전역 1개**.
+///
+/// 사이클마다 새로 만들면 사이클이 겹칠 때(스케줄러 틱 + 창 포커스 복귀 + 수동 새로고침)
+/// 상한이 사이클 수만큼 곱해진다 — 3개 제한이 실제로는 9개, 12개가 되어 git 프로세스가
+/// 한꺼번에 뜬다. 프로세스 폭주 사후조치의 취지대로 상한은 전역이어야 의미가 있다.
+static FETCH_SEM: OnceLock<Semaphore> = OnceLock::new();
+
+fn fetch_sem() -> &'static Semaphore {
+    FETCH_SEM.get_or_init(|| Semaphore::new(MAX_CONCURRENT_FETCHES))
+}
+
+/// 사이클 실행권을 **선점**한다 — `min_interval` 이내에 사이클이 돌았으면 false(스킵),
+/// 아니면 `LAST_CYCLE`을 지금으로 갱신하고 true.
+///
+/// 판정과 갱신을 **한 락 구간**에서 하는 것이 핵심이다. 예전에는 호출부가 락을 잡아 값을 읽고
+/// (락 해제) → `run_cycle`을 spawn → run_cycle이 다시 락을 잡아 갱신하는 구조라, 그 사이에
+/// 들어온 두 번째 트리거(포커스 복귀 vs 스케줄러 틱)가 아직 낡은 `LAST_CYCLE`을 보고 함께
+/// 통과했다. 스로틀이 있는데도 사이클이 두 겹으로 돌아 fetch가 배로 나가던 경로다.
+fn claim_cycle(min_interval: Duration) -> bool {
+    let mut last = LAST_CYCLE.lock().unwrap();
+    if last.is_some_and(|t| t.elapsed() < min_interval) {
+        return false;
+    }
+    *last = Some(Instant::now());
+    true
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FreshnessChanged {
@@ -84,10 +111,9 @@ pub fn spawn(app: AppHandle) {
             if minutes == 0 {
                 continue; // 0 = 끔 — 다음 틱에 설정을 다시 본다(재시작 불요)
             }
-            let due = LAST_CYCLE.lock().unwrap().map_or(true, |t| {
-                t.elapsed() >= Duration::from_secs(u64::from(minutes) * 60)
-            });
-            if due {
+            // 주기 도달 판정과 LAST_CYCLE 갱신을 원자적으로 — 포커스 트리거와 동시에 통과해
+            // 사이클이 두 겹으로 도는 것을 막는다(claim_cycle 주석).
+            if claim_cycle(Duration::from_secs(u64::from(minutes) * 60)) {
                 run_cycle(app.clone(), None, false).await;
             }
         }
@@ -114,11 +140,9 @@ pub async fn refresh_remotes(
         if state.settings.read().unwrap().remote_refresh_minutes == 0 {
             return Ok(());
         }
-        let recent = LAST_CYCLE
-            .lock()
-            .unwrap()
-            .is_some_and(|t| t.elapsed() < Duration::from_secs(FOCUS_RATE_LIMIT_SECS));
-        if recent {
+        // 스로틀 판정과 LAST_CYCLE 갱신을 한 락 구간에서 — 읽고 나서 spawn한 run_cycle이
+        // 갱신하던 예전 구조는 그 틈에 들어온 두 번째 포커스 이벤트가 함께 통과했다.
+        if !claim_cycle(Duration::from_secs(FOCUS_RATE_LIMIT_SECS)) {
             return Ok(());
         }
     }
@@ -148,6 +172,9 @@ async fn run_cycle(app: AppHandle, only: Option<Vec<String>>, force: bool) {
     let period = state.settings.read().unwrap().remote_refresh_minutes;
 
     if only.is_none() {
+        // force 전체 새로고침은 claim_cycle을 거치지 않으므로 여기서 시각을 남긴다 —
+        // 수동 새로고침 직후 스케줄러 틱이 곧바로 또 도는 것을 막는다. 스로틀 경로는 이미
+        // claim_cycle이 찍었고 여기서 한 번 더 찍혀도 사이클 시작 시각으로 갱신될 뿐이다.
         *LAST_CYCLE.lock().unwrap() = Some(Instant::now());
         // 제거된 프로젝트의 잔여 항목 정리 — 좀비 백오프/캐시가 남지 않게.
         let live: HashSet<&str> = targets.iter().map(|(id, _)| id.as_str()).collect();
@@ -189,15 +216,14 @@ async fn run_cycle(app: AppHandle, only: Option<Vec<String>>, force: bool) {
         return;
     }
 
-    let sem = Arc::new(Semaphore::new(MAX_CONCURRENT_FETCHES));
+    // 전역 세마포어로 동시 fetch를 제한한다 — 사이클이 겹쳐도 git 프로세스는 3개를 넘지 않는다.
     let tasks: Vec<_> = planned
         .into_iter()
         .map(|(id, path)| {
-            let sem = Arc::clone(&sem);
             let app = app.clone();
             tauri::async_runtime::spawn(async move {
-                let Ok(_permit) = sem.acquire_owned().await else {
-                    return;
+                let Ok(_permit) = fetch_sem().acquire().await else {
+                    return; // 세마포어가 닫힘(종료 중) — 조용히 양보
                 };
                 fetch_one(&app, &id, &path).await;
             })
@@ -445,6 +471,32 @@ mod tests {
             should_attempt(Some(true), 0, 5, Some(0), 5, true),
             "백오프 무시"
         );
+    }
+
+    /// 회귀 방지(TOCTOU): 동시 트리거가 여럿이어도 사이클을 여는 쪽은 **정확히 하나**여야 한다.
+    /// 판정과 LAST_CYCLE 갱신이 갈라져 있던 예전 구조에서는 전원이 통과해 fetch가 배로 나갔다.
+    ///
+    /// LAST_CYCLE은 전역이라 이 테스트만 손댄다(다른 테스트는 순수 함수만 쓴다).
+    #[test]
+    fn claim_cycle_admits_exactly_one_concurrent_trigger() {
+        use std::sync::atomic::AtomicUsize;
+        *LAST_CYCLE.lock().unwrap() = None; // "아직 사이클 없음" 상태에서 시작
+        let winners = AtomicUsize::new(0);
+        std::thread::scope(|s| {
+            for _ in 0..8 {
+                s.spawn(|| {
+                    if claim_cycle(Duration::from_secs(60)) {
+                        winners.fetch_add(1, Ordering::Relaxed);
+                    }
+                });
+            }
+        });
+        assert_eq!(winners.load(Ordering::Relaxed), 1, "동시 트리거 중 하나만 통과");
+        // 방금 사이클이 돌았으므로 이후 트리거는 스로틀에 걸린다.
+        assert!(!claim_cycle(Duration::from_secs(60)));
+        // 간격 0이면 항상 통과(force 경로가 아니라 "주기가 다 찼다"는 뜻).
+        assert!(claim_cycle(Duration::from_secs(0)));
+        *LAST_CYCLE.lock().unwrap() = None; // 실제 스케줄러에 영향이 남지 않게 복원
     }
 
     #[test]

@@ -34,6 +34,15 @@ interface ServerInfo {
 }
 
 const REQUEST_TIMEOUT = 10_000;
+/** initialize만은 따로 — 서버가 워크스페이스를 훑는 동안 응답하지 않을 수 있다(jdtls·
+ *  rust-analyzer는 대형 레포에서 수십 초). 일반 요청과 같은 10초로 끊으면 멀쩡한 서버를
+ *  버리고 매번 새로 띄우는 콜드 스타트 반복이 된다. */
+const INITIALIZE_TIMEOUT = 60_000;
+/** 열린 문서가 0이 된 뒤 서버를 내리기까지의 유예.
+ *  파일 전환은 didClose→didOpen 순이라 0이 되는 순간 바로 내리면 전환할 때마다 콜드 스타트
+ *  (tsserver·jdtls는 수 초)를 물게 된다. 백엔드 유휴 리퍼(10분)보다 먼저 회수해 아무 파일도
+ *  안 보는 동안 언어 서버가 수백 MB를 붙들고 있는 상태를 줄인다(사후조치 P1 — 세션 상한). */
+const IDLE_DISPOSE_DELAY = 120_000;
 
 type DiagnosticsHandler = (uri: string, diags: unknown[]) => void;
 
@@ -53,6 +62,8 @@ export class LspSession {
   private readonly pending = new Map<number, Pending>();
   private readonly openDocs = new Set<string>(); // uri
   private disposed = false;
+  /** 열린 문서 0 → 서버 정리 예약 타이머. 문서가 다시 열리면 취소된다. */
+  private idleTimer: number | undefined;
   onDiagnostics: DiagnosticsHandler | null = null;
 
   constructor(projectId: string, lang: LspLang) {
@@ -112,14 +123,26 @@ export class LspSession {
           }
         : undefined;
     const rootUri = pathToUri(info.rootPath);
-    const result = (await this.request("initialize", {
-      processId: null,
-      rootUri,
-      workspaceFolders: [{ uri: rootUri, name: "workspace" }],
-      initializationOptions,
-      capabilities: CLIENT_CAPABILITIES,
-    }).catch(() => null)) as { capabilities?: Record<string, unknown> } | null;
-    if (!result || this.disposed) return false;
+    const result = (await this.request(
+      "initialize",
+      {
+        processId: null,
+        rootUri,
+        workspaceFolders: [{ uri: rootUri, name: "workspace" }],
+        initializationOptions,
+        capabilities: CLIENT_CAPABILITIES,
+      },
+      INITIALIZE_TIMEOUT,
+    ).catch(() => null)) as { capabilities?: Record<string, unknown> } | null;
+    if (!result) {
+      // initialize 실패/타임아웃 — **프로세스는 이미 떠 있다**. 여기서 안 내리면 아무도 쓰지
+      // 않는 서버가 유휴 리퍼(10분)까지 수백 MB를 붙들고 남고, start()의 starting 프로미스가
+      // false로 굳어 그 언어는 리로드 전까지 영영 재시도조차 못 한다. dispose가 레지스트리에서도
+      // 빼므로 다음 사용자 조작이 새 세션으로 깨끗이 재시도한다.
+      this.dispose(true);
+      return false;
+    }
+    if (this.disposed) return false;
     this.serverCaps = result.capabilities ?? {};
     this.notify("initialized", {});
     this.ready = true;
@@ -183,8 +206,10 @@ export class LspSession {
     return new Promise((resolve, reject) => {
       const timer = window.setTimeout(() => {
         this.pending.delete(id);
-        // 취소 통지 — 서버가 계산을 멈추게(무가치한 응답 방지)
-        this.notify("$/cancelRequest", { id });
+        // 취소 통지 — 서버가 계산을 멈추게(무가치한 응답 방지).
+        // 사용자 기점이 아니다: 원 요청이 이미 activity로 세어졌고, 우리 타임아웃이 스스로
+        // 쏘는 트래픽까지 activity로 세면 유휴 판정이 흐려진다.
+        this.notify("$/cancelRequest", { id }, false);
         reject(new Error(`lsp timeout: ${method}`));
       }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer, method });
@@ -192,23 +217,32 @@ export class LspSession {
     });
   }
 
-  notify(method: string, params: unknown) {
+  notify(method: string, params: unknown, userInitiated = true) {
     if (this.disposed) return;
-    this.frameSend({ method, params });
+    this.frameSend({ method, params }, userInitiated);
   }
 
   private reply(id: number | string, result: unknown) {
-    this.frameSend({ id, result });
+    // 서버가 먼저 건 요청에 대한 응답 — **사용자 기점이 아니다**. 이걸 activity로 세면
+    // 서버가 주기적으로 말을 거는 것(workspace/configuration·$/progress 재등록 등)만으로
+    // 백엔드 유휴 리퍼가 영원히 발동하지 않아 유휴 서버가 무한 상주한다(사후조치 P1).
+    this.frameSend({ id, result }, false);
   }
 
-  private frameSend(obj: Record<string, unknown>) {
+  private frameSend(obj: Record<string, unknown>, userInitiated = true) {
+    // dispose 이후 새 요청이 나가면 백엔드가 이미 내린 세션을 되살릴 수 있다(그리고 그 서버는
+    // 아무도 응답을 안 받는 유령이 된다). 모든 송신의 단일 관문에서 막는다.
+    if (this.disposed) return;
     const msg = JSON.stringify({ jsonrpc: "2.0", ...obj });
     // fire-and-forget — 재시도 금지(중복 id 오염). 유실은 요청 타임아웃이 자기치유.
-    void invoke("lsp_send", { sessionKey: this.key, msg }).catch(() => {});
+    void invoke("lsp_send", { sessionKey: this.key, msg, userInitiated }).catch(() => {});
   }
 
   // ── 문서 동기화 ──
   didOpen(uri: string, languageId: string, text: string) {
+    // 문서가 다시 열렸다 — 예약된 유휴 정리 취소(파일 전환 시 didClose→didOpen 순서).
+    window.clearTimeout(this.idleTimer);
+    this.idleTimer = undefined;
     if (this.openDocs.has(uri)) return;
     this.openDocs.add(uri);
     this.notify("textDocument/didOpen", {
@@ -234,9 +268,20 @@ export class LspSession {
     if (!this.openDocs.delete(uri)) return;
     this.versions.delete(uri);
     this.notify("textDocument/didClose", { textDocument: { uri } });
+    // 열린 문서가 0 → 서버를 붙잡아 둘 이유가 없다. 곧바로가 아니라 유예 뒤에 내린다.
+    if (!this.hasOpenDocs()) this.armIdleDispose();
   }
   hasOpenDocs() {
     return this.openDocs.size > 0;
+  }
+
+  /** 열린 문서 0 상태가 IDLE_DISPOSE_DELAY 동안 이어지면 서버를 내린다(재무장 가능). */
+  private armIdleDispose() {
+    window.clearTimeout(this.idleTimer);
+    this.idleTimer = window.setTimeout(() => {
+      this.idleTimer = undefined;
+      if (!this.hasOpenDocs()) this.dispose(true);
+    }, IDLE_DISPOSE_DELAY);
   }
 
   /** 서버 종료(lsp://exit) 또는 명시 정리. pending 전부 reject → 휴리스틱 폴백. */
@@ -244,12 +289,17 @@ export class LspSession {
     if (this.disposed) return;
     this.disposed = true;
     this.ready = false;
+    window.clearTimeout(this.idleTimer);
+    this.idleTimer = undefined;
     for (const [, p] of this.pending) {
       window.clearTimeout(p.timer);
       p.reject(new Error("lsp session closed"));
     }
     this.pending.clear();
     this.openDocs.clear();
+    // 레지스트리에서도 뺀다. 남겨 두면 ensureSession이 죽은 세션을 재사용하는데, disposed라
+    // 모든 요청이 즉시 reject돼 그 언어가 영구히 휴리스틱으로 떨어진다(재기동 불가).
+    if (sessions.get(this.key) === this) sessions.delete(this.key);
     if (stopServer) void invoke("lsp_stop", { sessionKey: this.key }).catch(() => {});
   }
 }
@@ -261,12 +311,8 @@ let exitUnlisten: UnlistenFn | null = null;
 async function ensureExitListener() {
   if (exitUnlisten) return;
   exitUnlisten = await listen<{ sessionKey: string }>("lsp://exit", (e) => {
-    const key = e.payload.sessionKey;
-    const s = sessions.get(key);
-    if (s) {
-      s.dispose(false); // 서버는 이미 죽음 — pending reject + 게이트 해제
-      sessions.delete(key);
-    }
+    // 서버는 이미 죽음 — pending reject + 게이트 해제. 레지스트리 제거는 dispose가 한다.
+    sessions.get(e.payload.sessionKey)?.dispose(false);
   });
 }
 

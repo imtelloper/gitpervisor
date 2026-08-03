@@ -159,13 +159,21 @@ pub(crate) fn open_external(url: &str) {
         );
     }
 }
+/// unix 계열은 open.rs의 공용 런처를 지난다 — URL은 argv 배열 원소로만 전달되고(셸 미개입),
+/// 자식은 반드시 회수되며(좀비 방지), 리눅스에서는 systemd-run 위임으로 **기본 브라우저가 앱
+/// cgroup 밖에서** 뜬다. 이 자리는 특히 중요하다: 여기서 뜨는 것은 사용자의 상시 브라우저이고,
+/// 예전엔 그 프로세스 트리 전체가 앱 scope에 얹혀 앱의 메모리 압력으로 계산됐다.
 #[cfg(target_os = "macos")]
 pub(crate) fn open_external(url: &str) {
-    let _ = std::process::Command::new("open").arg(url).spawn();
+    let mut cmd = std::process::Command::new("open");
+    cmd.arg(url);
+    let _ = super::open::spawn_launcher(cmd, "외부 브라우저");
 }
 #[cfg(all(unix, not(target_os = "macos")))]
 pub(crate) fn open_external(url: &str) {
-    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    let mut cmd = std::process::Command::new("xdg-open");
+    cmd.arg(url);
+    let _ = super::open::spawn_launcher(cmd, "외부 브라우저");
 }
 
 /// 다운로드 정책 — child·popup 공용. 인앱 다운로드는 항상 취소(특권 앱 옆 drive-by-write 방지),
