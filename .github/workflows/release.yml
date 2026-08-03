@@ -53,7 +53,7 @@ jobs:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - name: Rust cache
-        uses: swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: "./src-tauri -> target"
           # x86/arm 러너 모두 runner.os가 "Linux"라 캐시 키가 겹칠 수 있다 → 러너 라벨로 분리.
