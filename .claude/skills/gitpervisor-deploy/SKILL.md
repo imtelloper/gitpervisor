@@ -127,13 +127,28 @@ gh release view "v${NEW}" --json assets --jq '[.assets[].name]'
 기대 에셋 **10개** (v0.3.2 실측 기준):
 
 ```
-Gitpervisor-<v>-1.x86_64.rpm          + .sig
-Gitpervisor_<v>_amd64.AppImage        + .sig
-Gitpervisor_<v>_amd64.deb             + .sig
-Gitpervisor_<v>_x64-setup.exe         + .sig
-Gitpervisor_<v>_universal.dmg         ← .sig 없음(정상. macOS는 업데이터 대상에서 빠져 있다)
-latest.json                           ← 자동 업데이트 매니페스트
+Gitpervisor-<v>-1.x86_64.rpm          + .sig      ← ubuntu-22.04
+Gitpervisor_<v>_amd64.AppImage        + .sig      ← ubuntu-22.04
+Gitpervisor_<v>_amd64.deb             + .sig      ← ubuntu-22.04
+Gitpervisor-<v>-1.aarch64.rpm         + .sig      ← ubuntu-22.04-arm
+Gitpervisor_<v>_aarch64.AppImage      + .sig      ← ubuntu-22.04-arm
+Gitpervisor_<v>_arm64.deb             + .sig      ← ubuntu-22.04-arm
+Gitpervisor_<v>_x64-setup.exe         + .sig      ← windows-latest
+Gitpervisor_<v>_universal.dmg                     ← macos (신규 설치용, .sig 없는 게 정상)
+Gitpervisor_<v>_universal.app.tar.gz  + .sig      ← macos (자동 업데이트용)
+latest.json                                       ← 자동 업데이트 매니페스트
 ```
+
+**`latest.json`의 플랫폼 키를 반드시 확인하라** — 에셋 개수만 세면 macOS 누락을 놓친다:
+```bash
+curl -sL "https://github.com/imtelloper/gitpervisor/releases/download/v${NEW}/latest.json" \
+  | python3 -c "import json,sys; print(sorted(json.load(sys.stdin)['platforms']))"
+```
+`darwin-aarch64` / `darwin-x86_64`가 없으면 **macOS 사용자만 자동 업데이트를 못 받는다.**
+원인은 거의 항상 macOS 매트릭스에 `app` 번들이 빠진 것이다 — Tauri 업데이터는 macOS에서
+`.dmg`가 아니라 `.app.tar.gz`를 쓰므로 `--bundles app dmg` 여야 한다.
+(v0.3.2~v0.3.4가 실제로 이 상태였다: 에셋은 멀쩡히 생성됐고 dmg 다운로드도 정상이라
+겉으로는 아무 문제가 없어 보였다.)
 
 `.sig`들과 `latest.json`이 없으면 자동 업데이트가 동작하지 않는다 — CI 로그를 확인한다
 (가장 흔한 원인은 `TAURI_SIGNING_PRIVATE_KEY` 시크릿 누락).
@@ -182,5 +197,6 @@ curl -sI -L "https://github.com/imtelloper/gitpervisor/releases/download/v${NEW}
 | 릴리스는 됐는데 사이트가 옛 버전 | ISR 1시간 캐시 → 빈 커밋으로 사이트 재배포 |
 | 사이트 리눅스 버튼이 AppImage를 가리킴 | `website/lib/github.ts`의 `linux:` 선택 순서 확인(deb 우선이어야 함) |
 | 자동 업데이트가 안 옴 | 릴리스에 `.sig`/`latest.json` 누락 — CI를 거치지 않았을 가능성 |
+| **macOS만** 자동 업데이트가 안 옴 | `latest.json`에 `darwin-*` 키가 없다. macOS 매트릭스에 `app` 번들 누락(`--bundles app dmg` 여야 함). 에셋 개수·dmg 다운로드는 정상이라 겉으로 안 드러난다 |
 | 릴리스가 draft로 남음 | `release.yml`의 `releaseDraft: false` 확인. draft면 `/releases/latest` API가 404라 사이트가 폴백 |
 | `sudo` 비밀번호 요구 | 설치는 사용자가 `! sudo dpkg -i …`로 직접 실행 |

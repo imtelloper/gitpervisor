@@ -20,8 +20,15 @@ jobs:
       matrix:
         include:
           # OS별 안정 번들 포맷만 선택 (msi=WiX·dmg는 CI에서 불안정)
+          #
+          # macOS는 `app`을 반드시 함께 지정해야 한다. Tauri 업데이터는 macOS에서 `.dmg`가
+          # 아니라 **`.app.tar.gz`** 를 내려받아 교체하므로, dmg만 만들면 서명(.sig)과
+          # latest.json의 darwin 항목이 통째로 생성되지 않는다 — v0.3.4까지 실제로 그랬고
+          # (에셋 16개 중 dmg만 .sig 없음, latest.json 플랫폼 10개에 darwin 0개),
+          # 그래서 **macOS 사용자만 앱 내 자동 업데이트를 받지 못했다.**
+          # dmg는 신규 설치용, app(.tar.gz)은 자동 업데이트용으로 둘 다 필요하다.
           - platform: macos-latest
-            args: "--target universal-apple-darwin --bundles dmg --verbose"
+            args: "--target universal-apple-darwin --bundles app dmg --verbose"
           - platform: ubuntu-22.04
             args: "--bundles deb rpm appimage"
           # 라즈베리파이·Ampere 등 arm64 리눅스용. GitHub의 네이티브 ARM64 러너라
