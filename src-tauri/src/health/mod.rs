@@ -319,11 +319,11 @@ fn install_signal_handlers() {}
 /// 종료 신호를 받았을 때의 정리 — 정상 문맥(감시 스레드)에서 실행된다.
 fn shutdown_on_signal(app: &AppHandle) -> ! {
     log::info!("[health] 종료 신호 수신 — 자식 프로세스 정리 후 종료");
-    if let Some(state) = app.try_state::<crate::state::AppState>() {
-        crate::commands::kill_all(state.inner());
-        crate::commands::lsp_kill_all(state.inner());
-    }
-    session::mark_clean();
+    // 창 Destroyed·RunEvent::Exit 와 **같은 정리 경로**를 탄다. 예전엔 여기서 PTY와 LSP만
+    // 직접 죽여 브라우저 자식 웹뷰·팝업·보조 창 정리가 빠졌고, 무엇보다 lib.rs의 재진입
+    // 게이트를 공유하지 않아 창 종료 정리와 겹치면 같은 일을 두 번 했다.
+    // shutdown_children이 마지막에 session::mark_clean()까지 부르므로 여기서 또 부르지 않는다.
+    crate::shutdown_children(app);
     std::process::exit(0);
 }
 

@@ -256,7 +256,7 @@ fn fmt_count(v: Option<usize>) -> String {
 ///
 /// **한 번만** 돈다(`SHUTDOWN_DONE`). 여러 경로가 연달아 불러도 두 번째부터는 즉시 반환한다 —
 /// `kill_all`은 자식 종료를 join으로 기다리므로(세션당 최대 300ms) 중복 실행은 종료를 그만큼 늦춘다.
-fn shutdown_children(app: &tauri::AppHandle) {
+pub(crate) fn shutdown_children(app: &tauri::AppHandle) {
     if !claim_shutdown(&SHUTDOWN_DONE) {
         return;
     }
