@@ -24,6 +24,11 @@ jobs:
             args: "--target universal-apple-darwin --bundles dmg --verbose"
           - platform: ubuntu-22.04
             args: "--bundles deb rpm appimage"
+          # 라즈베리파이·Ampere 등 arm64 리눅스용. GitHub의 네이티브 ARM64 러너라
+          # 크로스컴파일 설정이 필요 없다(퍼블릭 리포는 무료). webkit2gtk를 링크하는
+          # 앱이라 x86 머신에서의 크로스빌드는 multiarch sysroot 지옥 → 네이티브가 정답.
+          - platform: ubuntu-22.04-arm
+            args: "--bundles deb rpm appimage"
           - platform: windows-latest
             args: "--bundles nsis"
 
@@ -51,9 +56,11 @@ jobs:
         uses: swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
           workspaces: "./src-tauri -> target"
+          # x86/arm 러너 모두 runner.os가 "Linux"라 캐시 키가 겹칠 수 있다 → 러너 라벨로 분리.
+          key: ${{ matrix.platform }}
 
       - name: Install Ubuntu system dependencies
-        if: matrix.platform == 'ubuntu-22.04'
+        if: startsWith(matrix.platform, 'ubuntu-')
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -88,5 +95,9 @@ jobs:
           # 자동 공개: draft면 /releases/latest API가 404 → 웹사이트 다운로드 버튼이
           # 릴리스 목록 페이지로 폴백된다. 태그 푸시만으로 설치 파일이 링크되도록 공개.
           releaseDraft: false
-          prerelease: false
+          # 수동 실행(workflow_dispatch)은 리허설용이므로 prerelease로 표시한다.
+          # /releases/latest API가 prerelease를 건너뛰어, 테스트 태그가 웹사이트
+          # 다운로드 버튼이나 앱 자동 업데이트를 가로채지 않는다.
+          # 태그 푸시(진짜 릴리스)는 false → 정식 공개.
+          prerelease: ${{ github.event_name == 'workflow_dispatch' }}
           args: ${{ matrix.args }}

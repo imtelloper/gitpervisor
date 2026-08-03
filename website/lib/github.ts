@@ -17,7 +17,12 @@ export const ISSUES_URL = `${GITHUB_URL}/issues`;
 // Public site URL (used for OG/canonical metadata).
 export const SITE_URL = "https://gitpervisor.aickyway.com";
 
-export type Platform = "windows" | "macos" | "linux";
+/**
+ * A download target, not an OS: Linux ships separate x86_64 and arm64 builds
+ * (see the release workflow's ubuntu-22.04 / ubuntu-22.04-arm matrix), so the
+ * two need distinct assets and distinct buttons.
+ */
+export type Platform = "windows" | "macos" | "linux" | "linux-arm64";
 
 export interface ReleaseAsset {
   name: string;
@@ -66,10 +71,15 @@ export async function getLatestRelease(): Promise<ReleaseInfo | null> {
     };
 
     const assets = data.assets ?? [];
-    const pick = (re: RegExp): ReleaseAsset | undefined => {
-      const a = assets.find((x) => re.test(x.name));
+    /** First asset matching `re`, skipping anything matching `not`. */
+    const pick = (re: RegExp, not?: RegExp): ReleaseAsset | undefined => {
+      const a = assets.find((x) => re.test(x.name) && !not?.test(x.name));
       return a ? { name: a.name, url: a.browser_download_url, size: a.size } : undefined;
     };
+    // Tauri names arm64 Linux bundles `_arm64.deb` / `_aarch64.AppImage`, so a
+    // bare `/\.deb$/` would hand an ARM package to an x86 visitor whenever the
+    // ARM asset happens to sort first. Every Linux match is arch-qualified.
+    const ARM = /(arm64|aarch64)/i;
 
     return {
       version: data.tag_name ?? "latest",
@@ -87,7 +97,9 @@ export async function getLatestRelease(): Promise<ReleaseInfo | null> {
           pick(/\.dmg$/i),
         // Debian/Ubuntu is the dominant desktop-Linux target → prefer .deb; fall
         // back to the portable AppImage for other distros.
-        linux: pick(/\.deb$/i) ?? pick(/\.appimage$/i),
+        linux: pick(/\.deb$/i, ARM) ?? pick(/\.appimage$/i, ARM),
+        "linux-arm64":
+          pick(/(arm64|aarch64).*\.deb$/i) ?? pick(/(arm64|aarch64).*\.appimage$/i),
       },
     };
   } catch {
@@ -104,4 +116,16 @@ export function assetUrl(
   // renders for anonymous visitors even with zero or only-draft releases, so
   // buttons never become dead links.
   return release?.downloads[platform]?.url ?? RELEASES_URL;
+}
+
+/**
+ * Whether the release actually ships an asset for this target. Used to hide
+ * optional targets (arm64 Linux) on releases built before that job existed,
+ * instead of pointing them at a link that can't deliver the file.
+ */
+export function hasAsset(
+  release: ReleaseInfo | null,
+  platform: Platform,
+): boolean {
+  return Boolean(release?.downloads[platform]);
 }

@@ -4,11 +4,16 @@ import { GitHubIcon } from "@/components/icons";
 import {
   assetUrl,
   GITHUB_URL,
+  hasAsset,
   RELEASES_URL,
   type Platform,
   type ReleaseInfo,
 } from "@/lib/github";
-import { useDetectedOS, type DetectedOS } from "@/lib/use-os";
+import {
+  useDetectedPlatform,
+  type DetectedArch,
+  type DetectedOS,
+} from "@/lib/use-os";
 
 /* ── Brand glyphs (lucide has no OS brand icons) ───────────────────── */
 function WindowsIcon({ className }: { className?: string }) {
@@ -34,28 +39,81 @@ function LinuxIcon({ className }: { className?: string }) {
 }
 
 const PLATFORMS: {
-  os: DetectedOS;
   platform: Platform;
   label: string;
   ext: string;
   Icon: (p: { className?: string }) => React.ReactElement;
+  /** Emphasise this button when client-side detection matches the visitor. */
+  matches: (os: DetectedOS, arch: DetectedArch) => boolean;
+  /** Hide when the latest release ships no such asset (pre-arm64 releases). */
+  optional?: boolean;
 }[] = [
-  { os: "windows", platform: "windows", label: "Windows", ext: ".exe", Icon: WindowsIcon },
-  { os: "macos", platform: "macos", label: "macOS", ext: ".dmg · universal", Icon: AppleIcon },
-  { os: "linux", platform: "linux", label: "Linux", ext: ".deb", Icon: LinuxIcon },
+  {
+    platform: "windows",
+    label: "Windows",
+    ext: ".exe",
+    Icon: WindowsIcon,
+    matches: (os) => os === "windows",
+  },
+  {
+    platform: "macos",
+    label: "macOS",
+    ext: ".dmg · universal",
+    Icon: AppleIcon,
+    matches: (os) => os === "macos",
+  },
+  {
+    platform: "linux",
+    label: "Linux",
+    ext: ".deb · x86_64",
+    Icon: LinuxIcon,
+    matches: (os, arch) => os === "linux" && arch !== "arm64",
+  },
+  {
+    platform: "linux-arm64",
+    label: "Linux ARM64",
+    ext: ".deb · arm64",
+    Icon: LinuxIcon,
+    matches: (os, arch) => os === "linux" && arch === "arm64",
+    optional: true,
+  },
 ];
+
+type Target = (typeof PLATFORMS)[number];
+
+/**
+ * Which buttons to render, and which one to emphasise. Optional targets are
+ * dropped when the fetched release has no matching asset; when the release
+ * fetch failed entirely (`null`) everything is shown, since every button then
+ * falls back to the releases index anyway.
+ */
+function useDownloadTargets(release: ReleaseInfo | null): {
+  visible: Target[];
+  primary: Target;
+} {
+  const { os, arch } = useDetectedPlatform();
+  const visible = PLATFORMS.filter(
+    (p) => !p.optional || !release || hasAsset(release, p.platform),
+  );
+  const primary =
+    visible.find((p) => p.matches(os, arch)) ??
+    // ARM visitor, but this release has no ARM build → offer the x86_64 one.
+    (os === "linux" ? visible.find((p) => p.platform === "linux") : undefined) ??
+    // Detection unresolved (SSR / first paint) → Windows, matching the design.
+    visible[0];
+
+  return { visible, primary };
+}
 
 /* ── Hero download buttons (one per platform, detected OS highlighted) ── */
 export function DownloadButtons({ release }: { release: ReleaseInfo | null }) {
-  const detected = useDetectedOS();
-  // Default to highlighting Windows until detection resolves (matches design).
-  const primary: DetectedOS = detected === "unknown" ? "windows" : detected;
+  const { visible, primary } = useDownloadTargets(release);
 
   return (
     <div className="flex flex-col items-center gap-4">
       <div className="flex flex-wrap items-stretch justify-center gap-3">
-        {PLATFORMS.map(({ os, platform, label, ext, Icon }) => {
-          const isPrimary = os === primary;
+        {visible.map(({ platform, label, ext, Icon }) => {
+          const isPrimary = platform === primary.platform;
           return (
             <a
               key={platform}
@@ -96,7 +154,8 @@ export function DownloadButtons({ release }: { release: ReleaseInfo | null }) {
       </div>
 
       <p className="text-xs text-muted">
-        Free &amp; open source · Universal macOS · Windows 10+ · Linux ·{" "}
+        Free &amp; open source · Universal macOS · Windows 10+ · Linux x86_64
+        &amp; ARM64 ·{" "}
         <a
           href={RELEASES_URL}
           className="text-ink underline decoration-line-2 underline-offset-2 hover:text-accent"
@@ -110,8 +169,7 @@ export function DownloadButtons({ release }: { release: ReleaseInfo | null }) {
 
 /* ── Compact CTA: single primary download + GitHub (reused in CTA section) ── */
 export function DownloadCta({ release }: { release: ReleaseInfo | null }) {
-  const detected = useDetectedOS();
-  const primary = PLATFORMS.find((p) => p.os === detected) ?? PLATFORMS[0];
+  const { primary } = useDownloadTargets(release);
 
   return (
     <div className="flex flex-wrap items-center justify-center gap-3">
