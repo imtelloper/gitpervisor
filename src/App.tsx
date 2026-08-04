@@ -1,3 +1,6 @@
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { FolderGit2 } from "lucide-react";
 import { lazy, Suspense, useEffect } from "react";
 
@@ -74,6 +77,24 @@ export default function App() {
     if (!useUpdater.getState().autoCheck) return;
     const t = setTimeout(() => void useUpdater.getState().check({ silent: true }), 4000);
     return () => clearTimeout(t);
+  }, []);
+
+  // 메인 창 닫기 확인 — 백엔드가 살아있는 PTY 세션이 있을 때만 닫기를 막고 이 이벤트를 보낸다.
+  // 확인하면 destroy()로 곧장 닫는다(CloseRequested를 다시 타지 않는다). 취소하면 백엔드 표식을
+  // 되돌려 다음 X에서 다시 묻는다 — 안 되돌리면 그다음 오클릭이 확인 없이 통과한다.
+  useEffect(() => {
+    const un = listen<number>("app://close-requested", (e) => {
+      const n = e.payload;
+      useUi.getState().askConfirm({
+        title: "터미널이 실행 중입니다",
+        message: `실행 중인 터미널 세션이 ${n}개 있습니다. 지금 닫으면 그 안에서 돌고 있는 명령(빌드·개발 서버·에이전트)이 모두 종료됩니다.`,
+        confirmLabel: "닫기",
+        danger: true,
+        onConfirm: () => void getCurrentWindow().destroy(),
+        onCancel: () => void invoke("reset_close_guard").catch(() => {}),
+      });
+    });
+    return () => void un.then((f) => f());
   }, []);
 
   const selected = projects?.find((p) => p.id === selectedProjectId) ?? null;

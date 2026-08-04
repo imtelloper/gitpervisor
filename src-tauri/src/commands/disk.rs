@@ -114,7 +114,7 @@ pub async fn get_target_sizes(
 ) -> Result<Vec<TargetSize>, IpcError> {
     // State 는 스레드로 넘길 수 없으니 경로를 먼저 스냅샷한다.
     let jobs: Vec<(String, PathBuf)> = {
-        let projects = state.projects.read().unwrap();
+        let projects = state.projects.read().unwrap_or_else(|e| e.into_inner());
         project_ids
             .iter()
             .filter_map(|id| {
@@ -170,7 +170,7 @@ pub async fn get_project_sizes(
     project_ids: Vec<String>,
 ) -> Result<Vec<ProjectSize>, IpcError> {
     let jobs: Vec<(String, Option<PathBuf>)> = {
-        let projects = state.projects.read().unwrap();
+        let projects = state.projects.read().unwrap_or_else(|e| e.into_inner());
         project_ids
             .iter()
             .map(|id| {

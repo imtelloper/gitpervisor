@@ -341,7 +341,7 @@ pub async fn browser_open(
     state
         .browser
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .last_bounds
         .insert(browser_id, bounds);
     Ok(())
@@ -368,7 +368,7 @@ pub fn browser_set_bounds(
     bounds: Bounds,
 ) -> Result<(), IpcError> {
     {
-        let mut reg = state.browser.lock().unwrap();
+        let mut reg = state.browser.lock().unwrap_or_else(|e| e.into_inner());
         if reg.last_bounds.get(&browser_id) == Some(&bounds) {
             return Ok(());
         }
@@ -457,7 +457,7 @@ pub fn browser_close(
     state: State<'_, AppState>,
     browser_id: String,
 ) -> Result<(), IpcError> {
-    state.browser.lock().unwrap().last_bounds.remove(&browser_id);
+    state.browser.lock().unwrap_or_else(|e| e.into_inner()).last_bounds.remove(&browser_id);
     if let Some(wv) = app.get_webview(&label_of(&browser_id)) {
         wv.close().map_err(map_err)?;
     }
@@ -499,7 +499,7 @@ pub async fn browser_clear_data(
     let ids: Vec<String> = state
         .browser
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .last_bounds
         .keys()
         .cloned()
@@ -552,7 +552,7 @@ pub fn browser_kill_all(app: &AppHandle, state: &AppState) {
     let ids: Vec<String> = state
         .browser
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .last_bounds
         .keys()
         .cloned()
@@ -562,5 +562,5 @@ pub fn browser_kill_all(app: &AppHandle, state: &AppState) {
             let _ = wv.close();
         }
     }
-    state.browser.lock().unwrap().last_bounds.clear();
+    state.browser.lock().unwrap_or_else(|e| e.into_inner()).last_bounds.clear();
 }

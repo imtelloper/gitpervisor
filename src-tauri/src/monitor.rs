@@ -13,7 +13,10 @@ use crate::error::{ErrorCode, IpcError};
 use crate::state::AppState;
 
 /// 타이틀바 시스템 모니터 페이로드 (퍼센트 + 절대값 툴팁용).
-#[derive(Debug, Clone, Serialize)]
+///
+/// `Default`는 "아직/끝내 수집하지 못함"을 표현하기 위한 것이다 — 수집 실패로 게이지가 0으로
+/// 보이는 편이, 관측 도구가 앱을 죽이는 것보다 낫다(sample()의 unwrap_or_default 참고).
+#[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SysMetrics {
     pub cpu: f32,
@@ -172,7 +175,9 @@ impl Monitor {
         {
             return;
         }
-        self.last_collect = Some(Instant::now());
+        // last_collect는 **성공적으로 끝난 뒤**에 찍는다(함수 끝). 예전에는 여기서 먼저 찍었는데,
+        // 그러면 중간에 한 번 실패했을 때 이후 500ms 동안 스로틀이 재시도를 막고 totals는
+        // None으로 남아, 실패가 스스로를 감추는 상태가 됐다.
 
         self.sys.refresh_cpu_usage();
         self.sys.refresh_memory();
@@ -205,6 +210,7 @@ impl Monitor {
             storage_total,
             storage_mount,
         });
+        self.last_collect = Some(Instant::now());
     }
 
     /// 표시 대상 볼륨의 (total, used, mount 지점).
@@ -246,7 +252,10 @@ impl Monitor {
 
     pub fn sample(&mut self) -> SysMetrics {
         self.collect();
-        self.totals.clone().expect("collect가 totals를 채운다")
+        // 패닉하지 않는다 — 이 커맨드는 타이틀바가 2초마다 부른다. 여기서 터지면 관측 도구가
+        // 앱을 죽이는 꼴이고(프로세스 누수를 보려고 만든 기능이 가장 먼저 눈이 먼다),
+        // 게이지가 잠깐 0으로 보이는 편이 훨씬 낫다.
+        self.totals.clone().unwrap_or_default()
     }
 
     /// 프로세스 표본 수집 — 팝업 폴링 시에만 호출된다. 전역과 별도의 500ms 가드로
@@ -411,7 +420,7 @@ impl Monitor {
     ) -> ProcessSnapshot {
         self.collect();
         self.refresh_procs();
-        let totals = self.totals.clone().expect("collect가 totals를 채운다");
+        let totals = self.totals.clone().unwrap_or_default(); // sample()과 같은 이유
         let limit = limit as usize;
         let (processes, total_count) = if group_by_name {
             // 그룹 모드는 이미 이름 단위로 접혀(수백 → 수십) 있어 그대로 정렬·절단한다.
@@ -585,7 +594,7 @@ fn pct(used: u64, total: u64) -> f32 {
 /// 손댈 필요가 없다.
 #[tauri::command(async)]
 pub fn sys_metrics(state: State<'_, AppState>) -> SysMetrics {
-    state.monitor.lock().unwrap().sample()
+    state.monitor.lock().unwrap_or_else(|e| e.into_inner()).sample()
 }
 
 /// 리소스 모니터 팝업이 ~2초 간격으로 폴링하는 프로세스 스냅샷. sys_metrics와 같은
@@ -601,7 +610,7 @@ pub fn sys_process_snapshot(
     state
         .monitor
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .snapshot(sort_by, limit, group_by_name)
 }
 
@@ -625,12 +634,12 @@ pub async fn kill_processes(
     // 락 스코프를 블록으로 명시한다 — MutexGuard가 await를 넘어가면 future가 Send가 아니게 되고
     // (컴파일 에러), 넘어가지 않더라도 대기 동안 폴링을 막는다.
     let plan = {
-        let mut mon = state.monitor.lock().unwrap();
+        let mut mon = state.monitor.lock().unwrap_or_else(|e| e.into_inner());
         mon.kill_begin(&pids)
     };
     tokio::time::sleep(KILL_SETTLE).await;
     let outcome = {
-        let mut mon = state.monitor.lock().unwrap();
+        let mut mon = state.monitor.lock().unwrap_or_else(|e| e.into_inner());
         mon.kill_finish(plan)
     };
     Ok(outcome)

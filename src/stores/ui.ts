@@ -18,6 +18,8 @@ export interface ConfirmRequest {
   confirmLabel?: string;
   danger?: boolean;
   onConfirm: () => void;
+  /** 취소·배경 클릭으로 닫혔을 때. 확인 시에는 호출되지 않는다. */
+  onCancel?: () => void;
 }
 
 export interface PromptRequest {

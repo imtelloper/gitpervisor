@@ -100,10 +100,10 @@ pub fn lsp_start(
 
     // 멱등 재부착 — 이미 떠 있으면 sink만 교체.
     {
-        let sessions = state.lsp.lock().unwrap();
+        let sessions = state.lsp.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(s) = sessions.get(&key) {
-            *s.sink.lock().unwrap() = on_msg;
-            *s.last_activity.lock().unwrap() = Instant::now();
+            *s.sink.lock().unwrap_or_else(|e| e.into_inner()) = on_msg;
+            *s.last_activity.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
             let repo = project_path(&state, &project_id).ok();
             return Ok(LspServerInfo {
                 binary: "(running)".to_string(),
@@ -120,7 +120,7 @@ pub fn lsp_start(
     }
 
     let repo = project_path(&state, &project_id)?;
-    let workspace_tsserver = state.settings.read().unwrap().lsp_workspace_tsserver;
+    let workspace_tsserver = state.settings.read().unwrap_or_else(|e| e.into_inner()).lsp_workspace_tsserver;
     let resolved = acquire::resolve(&app, &lang, &repo, workspace_tsserver)?;
     let python_path = if lang == "py" {
         acquire::detect_python(&repo)
@@ -195,13 +195,13 @@ pub fn lsp_start(
     // 등록 + 상한 초과분 축출(LRU). 축출 대상은 락 밖에서 종료한다 — 종료 절차는 유예 때문에
     // 최대 GRACEFUL_TIMEOUT이 걸리므로 전역 레지스트리를 쥔 채 돌리면 다른 세션까지 멈춘다.
     let evicted: Vec<LspSession> = {
-        let mut sessions = state.lsp.lock().unwrap();
+        let mut sessions = state.lsp.lock().unwrap_or_else(|e| e.into_inner());
         // 같은 키에 이미 세션이 있었다면(재부착 검사와 spawn 사이의 레이스) 그 놈도 정리 대상이다.
         // 락 안에서 그냥 떨구면 Drop(kill+wait)이 전역 락 아래서 도니 밖으로 들고 나간다.
         let mut out: Vec<LspSession> = sessions.insert(key.clone(), session).into_iter().collect();
         let snapshot: Vec<(String, Instant)> = sessions
             .iter()
-            .map(|(k, s)| (k.clone(), *s.last_activity.lock().unwrap()))
+            .map(|(k, s)| (k.clone(), *s.last_activity.lock().unwrap_or_else(|e| e.into_inner())))
             .collect();
         out.extend(
             lru_victims(&snapshot, &key, MAX_SESSIONS)
@@ -228,7 +228,7 @@ pub fn lsp_start(
 /// 프론트는 재시도 금지(중복 id 오염). 세션이 없으면 조용히 무시(폴백 중 — 다음 상호작용이 재기동).
 ///
 /// `user_initiated`(기본 true)는 유휴 리퍼용 표식이다. 생략하면 기존 동작과 같다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn lsp_send(
     state: State<'_, AppState>,
     session_key: String,
@@ -240,7 +240,7 @@ pub fn lsp_send(
     // 막혀 lsp_stop·유휴 리퍼·앱 종료의 lsp_kill_all까지 전부 물린다 — 시그널을 받아도 자식을
     // 못 거두고 안 죽는 앱이 된다(이번 사건이 딱 그 모양이었다).
     let (stdin, last_activity) = {
-        let sessions = state.lsp.lock().unwrap();
+        let sessions = state.lsp.lock().unwrap_or_else(|e| e.into_inner());
         let Some(s) = sessions.get(&session_key) else {
             return Ok(()); // 폴백 중 — 다음 상호작용이 재기동
         };
@@ -251,9 +251,9 @@ pub fn lsp_send(
     // 타임아웃이 쏘는 $/cancelRequest까지 activity로 세면, 서버가 주기적으로 말을 거는 것만으로
     // 10분 리퍼가 영원히 발동하지 않아 유휴 서버가 무한 상주한다(사후조치 P1).
     if user_initiated.unwrap_or(true) {
-        *last_activity.lock().unwrap() = Instant::now();
+        *last_activity.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
     }
-    let mut stdin = stdin.lock().unwrap();
+    let mut stdin = stdin.lock().unwrap_or_else(|e| e.into_inner());
     write_frame(&mut *stdin, &msg)
         .map_err(|e| IpcError::new(ErrorCode::Io, format!("lsp stdin 쓰기 실패: {e}")))?;
     Ok(())
@@ -283,7 +283,7 @@ pub async fn lsp_ensure(
 #[tauri::command]
 pub fn lsp_stop(state: State<'_, AppState>, session_key: String) -> Result<(), IpcError> {
     // 맵에서 먼저 꺼내고 락을 놓는다(뒤의 spawn_terminate가 락 없이 돈다).
-    let session = state.lsp.lock().unwrap().remove(&session_key);
+    let session = state.lsp.lock().unwrap_or_else(|e| e.into_inner()).remove(&session_key);
     if let Some(s) = session {
         spawn_terminate(s);
     }
@@ -294,7 +294,7 @@ pub fn lsp_stop(state: State<'_, AppState>, session_key: String) -> Result<(), I
 /// **시그니처 고정** — lib.rs·health/mod.rs가 이 형태로 부른다.
 pub fn lsp_kill_all(state: &AppState) {
     let sessions: Vec<LspSession> = {
-        let mut map = state.lsp.lock().unwrap();
+        let mut map = state.lsp.lock().unwrap_or_else(|e| e.into_inner());
         map.drain().map(|(_, s)| s).collect()
     };
     // 여기서는 정리 완료를 보장해야 한다(앱이 곧 사라지므로 스레드를 던져만 두면 유예 중에
@@ -315,17 +315,17 @@ pub fn lsp_spawn_idle_reaper(app: AppHandle) {
         thread::sleep(REAPER_INTERVAL);
         let state = app.state::<AppState>();
         let stale: Vec<String> = {
-            let sessions = state.lsp.lock().unwrap();
+            let sessions = state.lsp.lock().unwrap_or_else(|e| e.into_inner());
             sessions
                 .iter()
-                .filter(|(_, s)| s.last_activity.lock().unwrap().elapsed() > IDLE_TIMEOUT)
+                .filter(|(_, s)| s.last_activity.lock().unwrap_or_else(|e| e.into_inner()).elapsed() > IDLE_TIMEOUT)
                 .map(|(k, _)| k.clone())
                 .collect()
         };
         for k in stale {
             // 맵에서 꺼낸 뒤 **락 밖에서** 종료 — 유예를 전역 락 아래서 돌리면 그동안 모든
             // 세션의 lsp_send가 멈춘다(타자 중 입력 지연).
-            let session = state.lsp.lock().unwrap().remove(&k);
+            let session = state.lsp.lock().unwrap_or_else(|e| e.into_inner()).remove(&k);
             if let Some(s) = session {
                 spawn_terminate(s); // 리더 EOF → lsp://exit
             }
@@ -436,7 +436,7 @@ fn reader_loop(
             Ok(n) => buf.extend_from_slice(&tmp[..n]),
         }
         while let Some(msg) = extract_frame(&mut buf) {
-            if sink.lock().unwrap().send(msg).is_err() {
+            if sink.lock().unwrap_or_else(|e| e.into_inner()).send(msg).is_err() {
                 // 수신 측(웹뷰)이 사라짐 — 세션은 유지(재부착 대비)하되 이 메시지는 버린다.
             }
         }
@@ -452,7 +452,7 @@ fn reader_loop(
     // 레지스트리 락 아래에서 하면 다른 세션의 lsp_send까지 그동안 멈춘다.
     let state = app.state::<AppState>();
     let session = {
-        let mut map = state.lsp.lock().unwrap();
+        let mut map = state.lsp.lock().unwrap_or_else(|e| e.into_inner());
         match map.get(&key) {
             Some(cur) if cur.pid == pid => map.remove(&key),
             // 내 것이 아니다(이미 교체됨) — 아무것도 건드리지 않고 조용히 물러난다.

@@ -7,10 +7,16 @@ export function ConfirmHost() {
 
   if (!confirm) return null;
 
+  // 취소·배경 클릭 — onCancel이 있으면 알린다(닫기 확인은 취소를 알아야 다음 X에서 다시 묻는다).
+  const cancel = () => {
+    confirm.onCancel?.();
+    closeConfirm();
+  };
+
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50"
-      onClick={closeConfirm}
+      onClick={cancel}
     >
       <div
         className="w-100 rounded-lg border border-edge bg-panel p-4 shadow-xl"
@@ -27,7 +33,7 @@ export function ConfirmHost() {
         )}
         <div className="mt-4 flex justify-end gap-2">
           <button
-            onClick={closeConfirm}
+            onClick={cancel}
             className="rounded px-3 py-1.5 text-[13px] text-fg-muted hover:bg-raised"
           >
             취소

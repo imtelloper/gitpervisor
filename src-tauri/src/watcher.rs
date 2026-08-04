@@ -99,7 +99,7 @@ pub fn register(app: &AppHandle, project: &Project) {
     state
         .watchers
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .insert(project.id.clone(), debouncer);
     drop(state);
 
@@ -142,7 +142,7 @@ pub fn register(app: &AppHandle, project: &Project) {
 
             // 락은 inotify 등록(syscall)만 감싼다.
             let state = add_app.state::<AppState>();
-            let mut guard = state.watchers.lock().unwrap();
+            let mut guard = state.watchers.lock().unwrap_or_else(|e| e.into_inner());
             match guard.get_mut(&add_id) {
                 Some(d) => {
                     apply_watches(d, &targets);
@@ -227,7 +227,7 @@ fn under_ignored_dir(path: &Path) -> bool {
 /// 워처 해제 — 드롭이 감시를 중지한다.
 pub fn unregister(app: &AppHandle, project_id: &str) {
     let state = app.state::<AppState>();
-    state.watchers.lock().unwrap().remove(project_id);
+    state.watchers.lock().unwrap_or_else(|e| e.into_inner()).remove(project_id);
 }
 
 /// 빌드/의존성 산출물 디렉토리 — gitignore 대상이라 status에 안 잡히고, 대량 쓰기로

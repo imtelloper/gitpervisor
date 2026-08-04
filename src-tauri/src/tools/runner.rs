@@ -172,7 +172,7 @@ fn cache_usable(hit: &Option<PathBuf>, recorded_ago: Duration) -> bool {
 fn find_on_path(name: &str) -> Option<PathBuf> {
     let cache = PATH_CACHE.get_or_init(Default::default);
     // 읽기 락은 조회에만 — is_real_exe/is_executable의 stat을 락 안에서 돌리지 않는다.
-    let cached = cache.read().unwrap().get(name).cloned();
+    let cached = cache.read().unwrap_or_else(|e| e.into_inner()).get(name).cloned();
     if let Some((hit, at)) = cached {
         if cache_usable(&hit, at.elapsed()) {
             return hit;
@@ -184,7 +184,7 @@ fn find_on_path(name: &str) -> Option<PathBuf> {
     let found = find_in_dirs(&dirs, name);
     cache
         .write()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .insert(name.to_string(), (found.clone(), Instant::now()));
     found
 }

@@ -22,6 +22,29 @@ import { themeOf } from "./themes";
 // 경량 코어(./terminal)에서 첫 터미널 탭이 열릴 때만 동적 import되어, 콜드 스타트 번들에서
 // xterm을 제외한다. 레지스트리·인스턴스 조작·exit 구독은 코어가 소유한다(여기선 import만).
 
+// PTY 입력 송신 — **termId별로 순서를 보장한다.**
+//
+// 백엔드 `term_write`는 `#[tauri::command(async)]`라 호출마다 워커 스레드로 흩어진다. 예전엔
+// 동기 커맨드여서 IPC 스레드 하나가 도착 순서대로 처리하는 것이 **암묵적** 순서 보장이었는데,
+// 패닉 격리를 위해 async로 바꾸면서 그 보장이 사라졌다. 이 파일의 송신은 키 입력·IME 델타·
+// 붙여넣기·xterm 자동응답까지 전부 fire-and-forget이라, 체이닝하지 않으면 빠르게 친 키가
+// 뒤바뀐다("ls" → "sl"). 호출자 입장에선 여전히 fire-and-forget이다(await도 throw도 없다).
+const writeChains = new Map<string, Promise<void>>();
+
+function ptyWrite(termId: string, data: string) {
+  const next = (writeChains.get(termId) ?? Promise.resolve()).then(() =>
+    invoke("term_write", { termId, data }).then(
+      () => {},
+      () => {}, // 실패해도 체인을 끊지 않는다 — 한 번 실패가 이후 입력을 전부 막으면 안 된다
+    ),
+  );
+  writeChains.set(termId, next);
+  // 큐가 비면 항목을 지운다 — 터미널을 오래 여닫아도 맵이 자라지 않는다.
+  void next.then(() => {
+    if (writeChains.get(termId) === next) writeChains.delete(termId);
+  });
+}
+
 // Linux 웹뷰(WebKitGTK)는 인쇄 가능한 키를 입력기(IME) textarea 경로로 흘려보내는데,
 // 이 버퍼가 비워지지 않아 키마다 직전까지의 내용이 통째로 다시 전송된다(중복 누적,
 // Backspace 무력화). Windows(WebView2)/macOS는 정상. 이 플랫폼에서만 우회한다.
@@ -141,10 +164,7 @@ export function createTerminalImpl(opts: {
     if (e.code === "Tab" && !e.ctrlKey && !e.altKey && !e.metaKey) {
       e.preventDefault();
       if (isMacWebKit) resetImeMirror(); // 탭 완성/백탭이 라인을 다시 쓰므로 IME 미러 리셋
-      void invoke("term_write", {
-        termId: opts.id,
-        data: e.shiftKey ? "\x1b[Z" : "\t",
-      }).catch(() => {});
+      ptyWrite(opts.id, e.shiftKey ? "\x1b[Z" : "\t");
       return false;
     }
 
@@ -281,7 +301,7 @@ export function createTerminalImpl(opts: {
       e.key.length === 1
     ) {
       e.preventDefault();
-      void invoke("term_write", { termId: opts.id, data: e.key }).catch(() => {});
+      ptyWrite(opts.id, e.key);
       return false;
     }
     return true;
@@ -340,7 +360,7 @@ export function createTerminalImpl(opts: {
       (e) => {
         e.stopImmediatePropagation();
         const data = (e as CompositionEvent).data;
-        if (data) void invoke("term_write", { termId: opts.id, data }).catch(() => {});
+        if (data) ptyWrite(opts.id, data);
         ta.value = "";
       },
       true,
@@ -401,8 +421,7 @@ export function createTerminalImpl(opts: {
             const next = (ie.target as HTMLTextAreaElement).value;
             const delta = imeLineDelta(imeSent, next);
             imeSent = next;
-            if (delta)
-              void invoke("term_write", { termId: opts.id, data: delta }).catch(() => {});
+            if (delta) ptyWrite(opts.id, delta);
           }
         },
         true,
@@ -482,9 +501,7 @@ export function createTerminalImpl(opts: {
   // (커서위치 \x1b[?..R, DA, 포커스 \x1b[I/O, 마우스 리포트)이 상시 흐른다(TUI/프롬프트가 초당
   // 수십 회 질의). 제어바이트 매칭으로 리셋하면 한글 조합 도중 미러+textarea가 계속 지워져
   // 입력이 깨진다(자모 파편·중복). 리셋은 keydown 목록/ASCII input/blur가 담당한다.
-  term.onData((data) => {
-    void invoke("term_write", { termId: opts.id, data }).catch(() => {});
-  });
+  term.onData((data) => ptyWrite(opts.id, data));
   // 리사이즈 → ConPTY
   term.onResize(({ cols, rows }) => {
     void invoke("term_resize", { termId: opts.id, cols, rows }).catch(() => {});

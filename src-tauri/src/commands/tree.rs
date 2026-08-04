@@ -186,7 +186,7 @@ pub async fn list_project_roots(
 ) -> Result<Vec<ProjectRoot>, IpcError> {
     // 경로 해석은 락 안에서 끝내고, 읽기는 락 밖에서 동시 실행한다.
     let targets: Vec<(String, Option<PathBuf>)> = {
-        let projects = state.projects.read().unwrap();
+        let projects = state.projects.read().unwrap_or_else(|e| e.into_inner());
         project_ids
             .into_iter()
             .map(|id| {

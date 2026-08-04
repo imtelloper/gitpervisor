@@ -157,7 +157,7 @@ pub fn preview_local_url(
         .ok_or_else(|| IpcError::new(ErrorCode::Io, "파일 이름을 읽을 수 없습니다"))?
         .to_string();
 
-    let mut reg = state.preview.lock().unwrap();
+    let mut reg = state.preview.lock().unwrap_or_else(|e| e.into_inner());
     // 죽은 엔트리를 먼저 회수한다 — 유휴 종료·리스너 오류로 끝난 서버가 남긴 스테일 엔트리는
     // 폴더를 옮겨 다닐수록 쌓이기만 한다(§prune_dead).
     reg.prune_dead();

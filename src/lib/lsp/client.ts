@@ -62,6 +62,17 @@ export class LspSession {
   private readonly pending = new Map<number, Pending>();
   private readonly openDocs = new Set<string>(); // uri
   private disposed = false;
+  /**
+   * 송신 직렬화 큐.
+   *
+   * 백엔드 `lsp_send`는 `#[tauri::command(async)]`라 호출마다 워커 스레드로 흩어진다. 예전엔
+   * 동기 커맨드라 IPC 스레드 하나에서 도착 순서대로 처리되는 것이 **암묵적** 순서 보장이었는데,
+   * 그 보장이 사라졌다. 여기서 체이닝하지 않으면 `didChange`가 version 역전으로 도착해
+   * (v2 → v1) 서버가 문서 상태를 잃고 진단·자동완성이 조용히 어긋난다.
+   *
+   * 호출자 입장에선 여전히 fire-and-forget이다(await도 throw도 없다) — 순서만 FIFO로 고정한다.
+   */
+  private sendChain: Promise<void> = Promise.resolve();
   /** 열린 문서 0 → 서버 정리 예약 타이머. 문서가 다시 열리면 취소된다. */
   private idleTimer: number | undefined;
   onDiagnostics: DiagnosticsHandler | null = null;
@@ -235,7 +246,13 @@ export class LspSession {
     if (this.disposed) return;
     const msg = JSON.stringify({ jsonrpc: "2.0", ...obj });
     // fire-and-forget — 재시도 금지(중복 id 오염). 유실은 요청 타임아웃이 자기치유.
-    void invoke("lsp_send", { sessionKey: this.key, msg, userInitiated }).catch(() => {});
+    // 다만 **순서는 지킨다**: 앞 송신이 끝난 뒤 다음을 보낸다(sendChain 주석 참고).
+    this.sendChain = this.sendChain.then(() =>
+      invoke("lsp_send", { sessionKey: this.key, msg, userInitiated }).then(
+        () => {},
+        () => {}, // 실패해도 체인은 끊지 않는다 — 한 번 실패가 이후 송신을 전부 막으면 안 된다
+      ),
+    );
   }
 
   // ── 문서 동기화 ──

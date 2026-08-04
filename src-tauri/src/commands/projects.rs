@@ -25,7 +25,7 @@ pub(crate) fn project_path(
 }
 
 fn lookup_path(state: &State<'_, AppState>, project_id: &str) -> Result<PathBuf, IpcError> {
-    let projects = state.projects.read().unwrap();
+    let projects = state.projects.read().unwrap_or_else(|e| e.into_inner());
     projects
         .iter()
         .find(|p| p.id == project_id)
@@ -71,9 +71,9 @@ fn resolve_nested(base: &Path, rel: &str) -> Result<PathBuf, IpcError> {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_projects(state: State<'_, AppState>) -> Vec<Project> {
-    let mut projects = state.projects.read().unwrap().clone();
+    let mut projects = state.projects.read().unwrap_or_else(|e| e.into_inner()).clone();
     projects.sort_by_key(|p| p.order);
     projects
 }
@@ -119,7 +119,7 @@ pub async fn add_project(
     let (canonical_str, name) = normalize_project_dir(&path).await?;
 
     let project = {
-        let mut projects = state.projects.write().unwrap();
+        let mut projects = state.projects.write().unwrap_or_else(|e| e.into_inner());
         if projects
             .iter()
             .any(|p| p.path.eq_ignore_ascii_case(&canonical_str))
@@ -141,7 +141,7 @@ pub async fn add_project(
         project
     };
 
-    state::save_projects(&app, &state.projects.read().unwrap())?;
+    state::save_projects(&app, &state.projects.read().unwrap_or_else(|e| e.into_inner()))?;
     // 파일 감시 등록을 백그라운드로 — 거대 레포는 재귀 감시 + 캐시 인덱싱이 수 초 걸려
     // 추가 응답이 그만큼 늦어진다. 등록은 미루고 프로젝트를 즉시 반환한다.
     let watch_app = app.clone();
@@ -213,7 +213,7 @@ pub async fn update_project_path(
     let (canonical_str, name) = normalize_project_dir(&path).await?;
 
     let project = {
-        let mut projects = state.projects.write().unwrap();
+        let mut projects = state.projects.write().unwrap_or_else(|e| e.into_inner());
         if projects
             .iter()
             .any(|p| p.id != id && p.path.eq_ignore_ascii_case(&canonical_str))
@@ -234,7 +234,7 @@ pub async fn update_project_path(
         p.clone()
     };
 
-    state::save_projects(&app, &state.projects.read().unwrap())?;
+    state::save_projects(&app, &state.projects.read().unwrap_or_else(|e| e.into_inner()))?;
     // 옛 경로 감시 해제 후 새 경로로 재등록(add_project와 동일하게 백그라운드로).
     crate::watcher::unregister(&app, &id);
     let watch_app = app.clone();
@@ -254,7 +254,7 @@ pub fn reorder_projects(
     ordered_ids: Vec<String>,
 ) -> Result<(), IpcError> {
     {
-        let mut projects = state.projects.write().unwrap();
+        let mut projects = state.projects.write().unwrap_or_else(|e| e.into_inner());
         let rank: std::collections::HashMap<&str, u32> = ordered_ids
             .iter()
             .enumerate()
@@ -265,7 +265,7 @@ pub fn reorder_projects(
             p.order = rank.get(p.id.as_str()).copied().unwrap_or(tail);
         }
     }
-    state::save_projects(&app, &state.projects.read().unwrap())
+    state::save_projects(&app, &state.projects.read().unwrap_or_else(|e| e.into_inner()))
 }
 
 #[tauri::command]
@@ -275,7 +275,7 @@ pub fn remove_project(
     id: String,
 ) -> Result<(), IpcError> {
     let removed_path = {
-        let mut projects = state.projects.write().unwrap();
+        let mut projects = state.projects.write().unwrap_or_else(|e| e.into_inner());
         let before = projects.len();
         // 제거 전에 경로를 확보한다 — 아래 프리뷰 서버 폐기가 이 경로를 기준으로 판정한다.
         let path = projects
@@ -297,15 +297,15 @@ pub fn remove_project(
     // 절대경로라 같은 기준으로 맞춰 비교한다.
     if let Some(p) = removed_path {
         let root = dunce::canonicalize(&p).unwrap_or(p);
-        state.preview.lock().unwrap().revoke_under(&root);
+        state.preview.lock().unwrap_or_else(|e| e.into_inner()).revoke_under(&root);
     }
     // 메모도 함께 정리 (있을 때만 저장)
-    let removed_note = state.notes.write().unwrap().remove(&id).is_some();
+    let removed_note = state.notes.write().unwrap_or_else(|e| e.into_inner()).remove(&id).is_some();
     if removed_note {
-        let snapshot = state.notes.read().unwrap().clone();
+        let snapshot = state.notes.read().unwrap_or_else(|e| e.into_inner()).clone();
         let _ = state::save_notes(&app, &snapshot);
     }
-    state::save_projects(&app, &state.projects.read().unwrap())
+    state::save_projects(&app, &state.projects.read().unwrap_or_else(|e| e.into_inner()))
 }
 
 #[cfg(test)]

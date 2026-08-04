@@ -10,7 +10,6 @@ use serde_json::Value as Json;
 // 로컬 `Column` 구조체와 이름 충돌을 피하면서 AnyRow/AnyColumn의 메서드를 쓰기 위함.
 use sqlx::{Column as _, Row as _, TypeInfo as _, ValueRef as _};
 use tauri::{AppHandle, State};
-use tauri_plugin_store::StoreExt;
 use tiberius::{AuthMethod, Config, EncryptionLevel, QueryItem};
 use tokio::net::TcpStream;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
@@ -162,24 +161,13 @@ impl DbState {
 }
 
 // ---- 영속화 ----
+// 원자적 쓰기 — 이유·설계는 state.rs의 `save_json` 주석 참고(연결 정보도 손실되면 재입력이다).
 pub fn load_connections(app: &AppHandle) -> Vec<DbConnection> {
-    let Ok(store) = app.store(CONN_FILE) else {
-        return Vec::new();
-    };
-    let Some(v) = store.get(CONN_KEY) else {
-        return Vec::new();
-    };
-    serde_json::from_value(v).unwrap_or_default()
+    crate::state::load_json(app, CONN_FILE, CONN_KEY).unwrap_or_default()
 }
 
 fn save_connections(app: &AppHandle, conns: &[DbConnection]) -> Result<(), IpcError> {
-    let store = app
-        .store(CONN_FILE)
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("스토어 열기 실패: {e}")))?;
-    store.set(CONN_KEY, serde_json::json!(conns));
-    store
-        .save()
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("연결 저장 실패: {e}")))
+    crate::state::save_json(app, CONN_FILE, CONN_KEY, &conns, "연결")
 }
 
 // ---- 키체인 ----
@@ -213,7 +201,7 @@ fn err(msg: impl Into<String>) -> IpcError {
 // ---- 커맨드: 연결 관리 ----
 #[tauri::command]
 pub fn db_list_connections(state: State<'_, DbState>) -> Vec<DbConnection> {
-    state.connections.read().unwrap().clone()
+    state.connections.read().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 #[derive(Deserialize)]
@@ -235,16 +223,16 @@ pub fn db_save_connection(
         store_password(&conn.id, &pw)?;
     }
     // 편집 시 기존 활성 클라이언트를 버려 다음 조회가 새 설정/비밀번호로 재연결되게 한다
-    state.clients.lock().unwrap().remove(&conn.id);
+    state.clients.lock().unwrap_or_else(|e| e.into_inner()).remove(&conn.id);
     {
-        let mut conns = state.connections.write().unwrap();
+        let mut conns = state.connections.write().unwrap_or_else(|e| e.into_inner());
         if let Some(existing) = conns.iter_mut().find(|c| c.id == conn.id) {
             *existing = conn.clone();
         } else {
             conns.push(conn.clone());
         }
     }
-    save_connections(&app, &state.connections.read().unwrap())?;
+    save_connections(&app, &state.connections.read().unwrap_or_else(|e| e.into_inner()))?;
     Ok(conn)
 }
 
@@ -254,10 +242,10 @@ pub fn db_delete_connection(
     state: State<'_, DbState>,
     id: String,
 ) -> Result<(), IpcError> {
-    state.connections.write().unwrap().retain(|c| c.id != id);
-    state.clients.lock().unwrap().remove(&id);
+    state.connections.write().unwrap_or_else(|e| e.into_inner()).retain(|c| c.id != id);
+    state.clients.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
     delete_password(&id);
-    save_connections(&app, &state.connections.read().unwrap())
+    save_connections(&app, &state.connections.read().unwrap_or_else(|e| e.into_inner()))
 }
 
 // ---- 커맨드: 연결/조회 ----
@@ -266,7 +254,7 @@ pub async fn db_connect(state: State<'_, DbState>, id: String) -> Result<(), Ipc
     let conn = state
         .connections
         .read()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .iter()
         .find(|c| c.id == id)
         .cloned()
@@ -308,13 +296,13 @@ pub async fn db_connect(state: State<'_, DbState>, id: String) -> Result<(), Ipc
         }
     };
 
-    state.clients.lock().unwrap().insert(id, client);
+    state.clients.lock().unwrap_or_else(|e| e.into_inner()).insert(id, client);
     Ok(())
 }
 
 #[tauri::command]
 pub fn db_disconnect(state: State<'_, DbState>, id: String) {
-    state.clients.lock().unwrap().remove(&id);
+    state.clients.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
 }
 
 #[tauri::command]
@@ -363,7 +351,7 @@ pub async fn db_query(
     let read_only = state
         .connections
         .read()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .iter()
         .find(|c| c.id == id)
         .map(|c| c.read_only)
@@ -434,7 +422,7 @@ pub async fn db_update_cell(
     let read_only = state
         .connections
         .read()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .iter()
         .find(|c| c.id == id)
         .map(|c| c.read_only)
@@ -546,7 +534,7 @@ fn read_only_of(state: &State<'_, DbState>, id: &str) -> bool {
     state
         .connections
         .read()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .iter()
         .find(|c| c.id == id)
         .map(|c| c.read_only)
@@ -557,7 +545,7 @@ fn client_of(state: &State<'_, DbState>, id: &str) -> Result<DbClient, IpcError>
     state
         .clients
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .get(id)
         .cloned()
         .ok_or_else(|| IpcError::new(ErrorCode::NotFound, "연결되어 있지 않습니다 — 먼저 연결하세요"))
@@ -761,6 +749,34 @@ async fn mssql_query(
     })
 }
 
+/// BLOB 셀에서 16진 문자열로 옮길 최대 바이트 수.
+///
+/// 그리드는 셀 하나를 어차피 다 보여주지 못한다. 상한이 없으면 100MB BLOB 한 줄에 200MB
+/// 문자열이 만들어져 IPC 직렬화까지 그대로 흘러간다.
+const MAX_CELL_BYTES: usize = 64 * 1024;
+
+/// 바이트 배열 → `0x...` 16진 셀 문자열.
+///
+/// 예전에는 `v.iter().map(|b| format!("{b:02X}")).collect::<String>()` 였다 — **바이트마다**
+/// String을 하나씩 힙에 할당하고 이어 붙인다. 100MB BLOB이면 할당 1억 회다. 테이블을 더블클릭
+/// 한 번에 앱이 수 분간 완전히 멈추고(그 사이 사용자는 응답 없음으로 보고 강제 종료한다),
+/// 행 상한(1000)은 있었지만 **셀 크기 상한은 없었다.**
+/// 여기서는 한 번만 할당하고, 상한을 넘으면 잘라서 원래 크기를 알린다.
+fn bytes_to_hex_cell(v: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let shown = v.len().min(MAX_CELL_BYTES);
+    let mut s = String::with_capacity(2 + shown * 2 + 40);
+    s.push_str("0x");
+    for &b in &v[..shown] {
+        s.push(HEX[(b >> 4) as usize] as char);
+        s.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    if v.len() > shown {
+        s.push_str(&format!(" …(전체 {}바이트 중 {}바이트만 표시)", v.len(), shown));
+    }
+    s
+}
+
 /// SQL Server 셀 → JSON. 일치하는 첫 타입으로 변환(불일치는 Err라 다음으로 넘어간다).
 fn mssql_cell_to_json(row: &tiberius::Row, i: usize) -> Json {
     use serde_json::json;
@@ -787,10 +803,7 @@ fn mssql_cell_to_json(row: &tiberius::Row, i: usize) -> Json {
     attempt!(chrono::NaiveDate => |v: chrono::NaiveDate| json!(v.to_string()));
     attempt!(chrono::NaiveTime => |v: chrono::NaiveTime| json!(v.to_string()));
     attempt!(uuid::Uuid => |v: uuid::Uuid| json!(v.to_string()));
-    attempt!(&[u8] => |v: &[u8]| json!(format!(
-        "0x{}",
-        v.iter().map(|b| format!("{b:02X}")).collect::<String>()
-    )));
+    attempt!(&[u8] => |v: &[u8]| json!(bytes_to_hex_cell(v)));
     Json::Null
 }
 
@@ -1451,10 +1464,7 @@ fn any_cell_to_json(row: &sqlx::any::AnyRow, i: usize) -> Json {
     attempt!(f64 => |v: f64| json!(v));
     attempt!(bool => |v: bool| json!(v));
     attempt!(String => |v: String| json!(v));
-    attempt!(Vec<u8> => |v: Vec<u8>| json!(format!(
-        "0x{}",
-        v.iter().map(|b| format!("{b:02X}")).collect::<String>()
-    )));
+    attempt!(Vec<u8> => |v: Vec<u8>| json!(bytes_to_hex_cell(&v)));
     Json::Null
 }
 
@@ -3118,6 +3128,28 @@ fn normalize_mongo(input: &str) -> String {
 mod tests {
     use super::*;
     use mongodb::bson::doc;
+
+    /// BLOB 셀은 **상한을 넘으면 자른다.** 상한이 없으면 큰 BLOB 한 줄이 앱을 수 분간 멈춘다.
+    #[test]
+    fn blob_cell_is_capped_and_labeled() {
+        let small = bytes_to_hex_cell(&[0x00, 0xAB, 0xFF]);
+        assert_eq!(small, "0x00ABFF", "작은 값은 그대로 다 보여야 한다");
+
+        let big = vec![0xCDu8; MAX_CELL_BYTES + 500];
+        let out = bytes_to_hex_cell(&big);
+        assert!(out.starts_with("0xCDCD"));
+        // 16진 2글자/바이트 + "0x" + 안내 문구. 원본 길이에 비례해 커지면 안 된다.
+        assert!(
+            out.len() < 2 + MAX_CELL_BYTES * 2 + 100,
+            "상한이 걸리지 않았다: {}자",
+            out.len()
+        );
+        assert!(
+            out.contains(&format!("전체 {}바이트", big.len())),
+            "잘렸다는 사실과 원래 크기를 알려야 한다: {}",
+            &out[out.len().saturating_sub(60)..]
+        );
+    }
 
     #[test]
     fn normalize_objectid_helper() {

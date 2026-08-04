@@ -52,6 +52,40 @@ function modeLabel(target: DiffTarget): string {
   }
 }
 
+// ── 미저장 편집 초안 ──
+//
+// 편집 내용을 담고 있는 곳은 Monaco 모델 하나뿐이고, <Editor>의 key가 바뀌면(파일 전환·프로젝트
+// 전환·커밋 뷰 전환) 모델이 dispose되면서 통째로 사라진다. 저장 전이면 git에도 없어 복구 수단이
+// 0이다. 커밋 메시지는 CommitForm이 이미 같은 이유로 초안을 남기고 있는데(gp:commit-draft:*)
+// 파일 편집만 빠져 있었다. 앱이 어떤 식으로 죽든(패닉·강제 종료·전원 차단) 살아남게 한다.
+const fileDraftKey = (editorKey: string) => `gp:file-draft:${editorKey}`;
+
+function loadFileDraft(editorKey: string): string | null {
+  try {
+    return localStorage.getItem(fileDraftKey(editorKey));
+  } catch {
+    return null;
+  }
+}
+
+/** 디스크 내용(baseline)과 같아지면 지운다 — 되돌린 편집이 초안으로 남지 않게. */
+function saveFileDraft(editorKey: string, content: string, baseline: string) {
+  try {
+    if (content === baseline) localStorage.removeItem(fileDraftKey(editorKey));
+    else localStorage.setItem(fileDraftKey(editorKey), content);
+  } catch {
+    // 초안은 편의 기능이라 저장 실패(용량 초과 등)는 조용히 무시한다 — CommitForm과 동일.
+  }
+}
+
+function clearFileDraft(editorKey: string) {
+  try {
+    localStorage.removeItem(fileDraftKey(editorKey));
+  } catch {
+    /* 위와 동일 */
+  }
+}
+
 /** 단일 파일 보기(트리 클릭)용 — diff 전용 옵션 제외. 편집 가능(readOnly는 동적). */
 const FILE_OPTIONS = {
   automaticLayout: true,
@@ -205,6 +239,28 @@ export default function DiffViewer({
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
   const baselineRef = useRef<string>(""); // 로드(또는 저장) 시 내용 — 변경 판정 기준
   const saveRef = useRef<() => void>(() => {});
+  // 미저장 편집 초안 저장기. onFileMount는 1회 등록 useCallback이라 stale 클로저이므로,
+  // 이 파일의 lintRef/lspChangeRef와 같은 "매 렌더 갱신 ref" 패턴으로 최신 editorKey를 본다.
+  const [recoveredDraft, setRecoveredDraft] = useState(false);
+  const editorKeyRef = useRef(editorKey);
+  editorKeyRef.current = editorKey;
+  const draftTimerRef = useRef<number | undefined>(undefined);
+  const draftSaveRef = useRef<() => void>(() => {});
+  draftSaveRef.current = () => {
+    const ed = editorRef.current;
+    if (!editable || !ed) return;
+    // 키·내용·기준을 **예약 시점에** 캡처한다. 타이머가 도는 300ms 사이에 파일이 바뀌면
+    // editorRef.current는 이미 새 파일의 에디터라, 발화 시점에 읽으면 새 파일 내용을
+    // 옛 파일 키로 쓰게 된다.
+    const key = editorKeyRef.current;
+    const value = ed.getValue();
+    const baseline = baselineRef.current;
+    window.clearTimeout(draftTimerRef.current);
+    draftTimerRef.current = window.setTimeout(
+      () => saveFileDraft(key, value, baseline),
+      300,
+    );
+  };
   // 린트 재실행 — 매 렌더 갱신(saveRef 미러)이라 projectId/path가 항상 최신. 파일뷰만.
   const lintTimerRef = useRef<number | undefined>(undefined);
   const lintRef = useRef<(debounce?: boolean) => void>(() => {});
@@ -263,6 +319,10 @@ export default function DiffViewer({
         await writeFile.mutateAsync({ path, content });
         baselineRef.current = content;
         setDirty(false);
+        // 디스크에 반영됐으니 초안은 역할이 끝났다(대기 중 디바운스도 함께 취소).
+        window.clearTimeout(draftTimerRef.current);
+        clearFileDraft(editorKeyRef.current);
+        setRecoveredDraft(false);
         pushToast("success", "저장됨");
         lintRef.current(true); // 저장 후 린트 재실행(500ms 디바운스)
         const savedModel = ed.getModel();
@@ -273,8 +333,22 @@ export default function DiffViewer({
     })();
   };
 
+  // 초안 버리기 — 디스크 내용으로 되돌리고 저장된 초안을 지운다.
+  const discardDraft = useCallback(() => {
+    window.clearTimeout(draftTimerRef.current);
+    clearFileDraft(editorKeyRef.current);
+    editorRef.current?.setValue(baselineRef.current);
+    setDirty(false);
+    setRecoveredDraft(false);
+  }, []);
+
   // 파일 전환 시 dirty 해제(새 에디터 mount가 baseline을 다시 잡는다).
-  useEffect(() => setDirty(false), [editorKey]);
+  // 복구 배너도 같이 내린다 — 새 파일의 onFileMount가 초안이 있을 때만 다시 올린다
+  // (Monaco 로딩이 비동기라 이 효과보다 onMount가 항상 뒤에 돈다).
+  useEffect(() => {
+    setDirty(false);
+    setRecoveredDraft(false);
+  }, [editorKey]);
 
   // 화면 내용을 실제 데이터와 동기화 — useDiff는 keepPreviousData라 파일 전환 직후엔
   // "이전 파일" 내용이 placeholder로 들어오고, <Editor defaultValue>는 마운트 후 값 변경을
@@ -303,9 +377,19 @@ export default function DiffViewer({
     // 에디터 API로 명시 적용한다(편집 보장).
     editor.updateOptions({ readOnly: false });
     baselineRef.current = editor.getValue();
-    setDirty(false);
+    // 미저장 초안 복구 — 지난번 편집이 남아 있고 디스크 내용과 다르면 그 내용으로 되살린다.
+    // 변경 리스너를 걸기 **전에** setValue 해야 복구 자체가 초안 저장을 다시 트리거하지 않는다.
+    const draft = loadFileDraft(editorKeyRef.current);
+    let recovered = false;
+    if (draft !== null && draft !== baselineRef.current) {
+      editor.setValue(draft);
+      recovered = true;
+    }
+    setDirty(recovered);
+    setRecoveredDraft(recovered);
     editor.onDidChangeModelContent(() => {
       setDirty(editor.getValue() !== baselineRef.current);
+      draftSaveRef.current(); // 미저장 편집 초안(300ms 디바운스)
       // on-type 린트: 파이썬만(ruff는 stdin 버퍼 린트 지원 → 저장 전 실시간 밑줄).
       // biome는 stdin JSON이 안 돼서 저장 시에만 재계산(디스크). 디바운스로 타자 중 폭주 방지.
       if (editor.getModel()?.getLanguageId() === "python") lintRef.current(true);
@@ -324,6 +408,9 @@ export default function DiffViewer({
   // 파일뷰 언마운트 시 마커 정리(모델 dispose가 원 방어 — 이중 방어 + 대기 중 디바운스 취소).
   useEffect(() => {
     return () => {
+      // draftTimerRef는 **일부러 취소하지 않는다.** 그 콜백은 예약 시점에 캡처한 값만 쓰고
+      // localStorage만 건드리므로 언마운트 뒤 발화해도 안전하며, 여기서 취소하면 마지막
+      // 300ms 분량의 편집이 사라진다 — 초안이 막으려는 바로 그 상황이다.
       window.clearTimeout(lintTimerRef.current);
       window.clearTimeout(lspChangeTimerRef.current);
       if (lspModelRef.current) lspCloseDoc(lspModelRef.current); // LSP didClose(전체 언마운트)
@@ -463,6 +550,22 @@ export default function DiffViewer({
           {modeLabel(target)}
         </span>
       </div>
+
+      {recoveredDraft && (
+        <div className="flex h-7 shrink-0 items-center gap-2 border-b border-edge bg-panel px-3 text-[11px]">
+          <FileWarning size={12} className="shrink-0 text-warn" />
+          <span className="flex-1 truncate text-fg-muted">
+            저장하지 않은 편집을 복구했습니다.
+          </span>
+          <button
+            type="button"
+            onClick={discardDraft}
+            className="shrink-0 rounded px-1.5 py-0.5 text-fg-dim hover:bg-raised hover:text-fg"
+          >
+            버리기
+          </button>
+        </div>
+      )}
 
       <div className="min-h-0 flex-1">
         {isImageView ? (

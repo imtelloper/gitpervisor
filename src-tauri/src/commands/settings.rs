@@ -7,9 +7,9 @@ use crate::git::runner;
 use crate::git::types::Settings;
 use crate::state::{self, AppState};
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_settings(state: State<'_, AppState>) -> Settings {
-    state.settings.read().unwrap().clone()
+    state.settings.read().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 /// 설정 저장 + 즉시 반영. git 경로 오버라이드는 다음 git 호출부터 적용된다.
@@ -20,6 +20,6 @@ pub fn set_settings(
     settings: Settings,
 ) -> Result<(), IpcError> {
     runner::set_git_override(settings.git_path.as_ref().map(PathBuf::from));
-    *state.settings.write().unwrap() = settings.clone();
+    *state.settings.write().unwrap_or_else(|e| e.into_inner()) = settings.clone();
     state::save_settings(&app, &settings)
 }

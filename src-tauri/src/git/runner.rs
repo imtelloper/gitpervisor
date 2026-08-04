@@ -33,11 +33,11 @@ static GIT_OVERRIDE: RwLock<Option<PathBuf>> = RwLock::new(None);
 
 /// 설정의 git 경로를 적용한다. 빈 값은 무시(자동 탐색).
 pub fn set_git_override(path: Option<PathBuf>) {
-    *GIT_OVERRIDE.write().unwrap() = path.filter(|p| !p.as_os_str().is_empty());
+    *GIT_OVERRIDE.write().unwrap_or_else(|e| e.into_inner()) = path.filter(|p| !p.as_os_str().is_empty());
 }
 
 pub fn git_path() -> Option<PathBuf> {
-    if let Some(p) = GIT_OVERRIDE.read().unwrap().clone() {
+    if let Some(p) = GIT_OVERRIDE.read().unwrap_or_else(|e| e.into_inner()).clone() {
         return Some(p);
     }
     GIT_PATH.get_or_init(find_git).clone()

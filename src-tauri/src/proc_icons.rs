@@ -77,7 +77,7 @@ pub fn get_process_icons(
     state: State<'_, AppState>,
     paths: Vec<String>,
 ) -> HashMap<String, String> {
-    let mut cache = state.icons.0.lock().unwrap();
+    let mut cache = state.icons.0.lock().unwrap_or_else(|e| e.into_inner());
     collect_icons(&mut cache, paths, extract_icon_data_uri)
 }
 

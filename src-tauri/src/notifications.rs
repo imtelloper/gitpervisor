@@ -61,7 +61,7 @@ pub async fn notify_external(
     title: String,
     body: String,
 ) -> Result<(), IpcError> {
-    let settings = state.settings.read().unwrap().clone();
+    let settings = state.settings.read().unwrap_or_else(|e| e.into_inner()).clone();
     let mut errors = Vec::new();
     if settings.slack_enabled {
         if let Err(e) = send_slack(&title, &body).await {
@@ -158,7 +158,7 @@ mod win_toast {
 /// 설정 화면 "테스트 전송" — 한 채널로 샘플 알림을 보낸다.
 #[tauri::command]
 pub async fn notify_test(state: State<'_, AppState>, channel: String) -> Result<(), IpcError> {
-    let settings = state.settings.read().unwrap().clone();
+    let settings = state.settings.read().unwrap_or_else(|e| e.into_inner()).clone();
     let title = "gitpervisor 테스트 알림";
     let body = "외부 알림이 정상적으로 설정되었습니다.";
     match channel.as_str() {

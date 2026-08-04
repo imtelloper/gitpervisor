@@ -61,7 +61,7 @@ pub async fn lint_file(
         _ => return Ok(empty_report()),
     };
 
-    let settings = state.settings.read().unwrap().clone();
+    let settings = state.settings.read().unwrap_or_else(|e| e.into_inner()).clone();
     let explicit = match tool {
         Tool::Ruff => settings.formatter_ruff_path.as_deref(),
         Tool::Biome => settings.formatter_biome_path.as_deref(),

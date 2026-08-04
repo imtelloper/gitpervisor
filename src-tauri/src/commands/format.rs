@@ -70,7 +70,7 @@ pub async fn format_source(
         });
     };
 
-    let settings = state.settings.read().unwrap().clone();
+    let settings = state.settings.read().unwrap_or_else(|e| e.into_inner()).clone();
     let bundled = runner::bundled_tools_dir(&app);
     let bin = runner::discover(
         tool,
@@ -134,7 +134,7 @@ pub async fn format_tool_status(
     project_id: String,
 ) -> Result<Vec<ToolStatus>, IpcError> {
     let repo = project_path(&state, &project_id)?;
-    let settings = state.settings.read().unwrap().clone();
+    let settings = state.settings.read().unwrap_or_else(|e| e.into_inner()).clone();
     let bundled = runner::bundled_tools_dir(&app);
     let mut out = Vec::new();
     for (tool, name) in [(Tool::Ruff, "ruff"), (Tool::Biome, "biome")] {

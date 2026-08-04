@@ -87,6 +87,39 @@ pub fn begin(log_dir: &Path, version: &str) {
     });
 }
 
+/// 메모리 원인 진단 문구 — **실제로 채워진 신호만** 나열한다.
+///
+/// 예전에는 항상 "프로세스 N개, 메모리 압박 M%"를 찍었는데, Windows에는 압박(PSI) 신호가 없어
+/// 늘 "메모리 압박이 0%였습니다"라는 거짓 문장이 붙었다. 플랫폼별로 읽히는 값이 다르므로
+/// 값이 있는 것만 모아 쓴다.
+fn oom_message(s: &Sample) -> String {
+    // 죽인 주체가 다르다 — 리눅스는 oomd/OOM 킬러가 골라 죽이고, Windows는 그런 주체 없이
+    // 할당 실패·렌더러 크래시로 무너진다. 단정 문구를 플랫폼에 맞춘다.
+    let head = if cfg!(windows) {
+        "메모리가 부족해 종료된 것으로 보입니다."
+    } else {
+        "메모리 부족으로 OS가 앱을 강제 종료한 것으로 보입니다."
+    };
+    let mut bits: Vec<String> = Vec::new();
+    if s.scope_procs > 0 {
+        bits.push(format!("앱에 딸린 프로세스 {}개", s.scope_procs));
+    }
+    if s.anchor_full_avg10 > 0.0 {
+        bits.push(format!("메모리 압박 {:.0}%", s.anchor_full_avg10));
+    }
+    if s.available {
+        bits.push(format!("여유 메모리 {:.0}%", s.mem_available_pct));
+    }
+    if s.swap_used_pct > 0.0 {
+        bits.push(format!("{} {:.0}%", super::SWAP_LABEL, s.swap_used_pct));
+    }
+    if bits.is_empty() {
+        head.to_string()
+    } else {
+        format!("{head} 종료 직전 {}.", bits.join(", "))
+    }
+}
+
 /// 이전 세션 기록으로 비정상 종료 여부와 원인을 판정한다(순수 함수 — 테스트 대상).
 ///
 /// `clean_exit == false`가 유일한 "비정상" 근거다. systemd-oomd나 커널 OOM Killer는 SIGKILL을
@@ -103,24 +136,30 @@ fn classify(prev: Option<&SessionRecord>, panicked: bool) -> PrevSession {
     if rec.clean_exit {
         return clean(());
     }
+    // 죽기 직전 지표가 "메모리 때문"을 가리키는가.
+    //
+    // 예전엔 리눅스 전용 신호(`anchor_full_avg10`)와 프로세스 수만 봤다. Windows에는 PSI가
+    // 없어 그 값이 **항상 0**이었고, 결과적으로 Windows 크래시는 프로세스 폭주가 아닌 한
+    // 전부 "unknown"으로 떨어졌다 — 사후 진단이 유일한 안전망인 플랫폼에서 그게 늘 "모르겠다"고
+    // 답한 것이다. Windows 프로브가 채우는 신호(여유 물리 메모리·커밋 차지)를 함께 본다.
+    // **0.0은 "여유 0%"가 아니라 "측정 못 함"이다.** 이걸 구분하지 않으면 지표가 하나도 없는
+    // 기록(구 버전 세션, 프로브 실패)이 전부 메모리 원인으로 오진된다.
+    let mem = rec.last.mem_available_pct;
+    let mem_measured = rec.last.available && mem > 0.0;
     let pressured = rec.level == "warn"
         || rec.level == "danger"
         || rec.last.anchor_full_avg10 >= 15.0
-        || rec.last.scope_procs >= 120;
+        || rec.last.scope_procs >= 120
+        // 여유 메모리가 경고선(8%) 아래였거나, 빠듯한 채로 커밋/스왑이 위험선을 넘고 있었다.
+        || (mem_measured && mem <= 8.0)
+        || (mem_measured && mem <= 15.0 && rec.last.swap_used_pct >= 85.0);
     let (verdict, message) = if panicked {
         (
             "panic",
             "앱 내부 오류(패닉)로 종료된 것으로 보입니다. 진단 로그를 확인해 주세요.".to_string(),
         )
     } else if pressured {
-        (
-            "oom",
-            format!(
-                "메모리 부족으로 OS가 앱을 강제 종료한 것으로 보입니다. \
-                 종료 직전 앱에 딸린 프로세스가 {}개, 메모리 압박이 {:.0}%였습니다.",
-                rec.last.scope_procs, rec.last.anchor_full_avg10
-            ),
-        )
+        ("oom", oom_message(&rec.last))
     } else {
         (
             "unknown",
@@ -289,5 +328,45 @@ mod tests {
     fn process_explosion_alone_implies_oom() {
         let v = classify(Some(&rec(false, "ok", 200, 0.0)), false);
         assert_eq!(v.verdict, "oom");
+    }
+
+    /// Windows 신호(여유 물리 메모리)만으로도 원인을 짚어야 한다.
+    /// Windows엔 PSI가 없어 예전에는 프로세스 폭주가 아닌 한 전부 "unknown"이었다.
+    #[test]
+    fn low_available_memory_implies_oom_without_psi() {
+        let mut r = rec(false, "ok", 12, 0.0);
+        r.last.mem_available_pct = 3.0; // 여유 3% — 위험선 아래
+        let v = classify(Some(&r), false);
+        assert_eq!(v.verdict, "oom", "{}", v.message);
+        assert!(
+            !v.message.contains("압박"),
+            "측정되지 않은 신호를 문구에 넣으면 안 된다: {}",
+            v.message
+        );
+        assert!(v.message.contains("여유 메모리 3%"), "{}", v.message);
+    }
+
+    /// 커밋(스왑)이 높아도 여유 메모리가 넉넉하면 원인으로 단정하지 않는다.
+    /// Windows는 평상시에도 커밋이 높게 유지되므로 단독 판정하면 상시 오진이 된다.
+    #[test]
+    fn high_commit_alone_is_not_oom() {
+        let mut r = rec(false, "ok", 12, 0.0);
+        r.last.mem_available_pct = 55.0;
+        r.last.swap_used_pct = 92.0;
+        assert_eq!(classify(Some(&r), false).verdict, "unknown");
+    }
+
+    /// 지표가 하나도 없는 기록(구 버전 세션·프로브 실패)은 메모리 원인으로 몰면 안 된다.
+    /// `mem_available_pct == 0.0`은 "여유 0%"가 아니라 "측정 못 함"이다.
+    #[test]
+    fn unmeasured_metrics_are_not_read_as_zero_percent() {
+        let mut r = rec(false, "ok", 3, 0.0);
+        r.last.mem_available_pct = 0.0;
+        r.last.swap_used_pct = 0.0;
+        assert_eq!(
+            classify(Some(&r), false).verdict,
+            "unknown",
+            "측정 안 된 0%를 위험으로 읽었다"
+        );
     }
 }

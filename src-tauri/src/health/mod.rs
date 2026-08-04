@@ -79,7 +79,29 @@ const T_SOME: [f32; 3] = [15.0, 30.0, 45.0];
 const T_MEM_PCT: [f32; 3] = [15.0, 30.0, 45.0]; // 회수 불가 상주분(anon) 기준
 const T_PROCS: [u32; 3] = [60, 120, 200];
 const T_AVAIL_PCT: [f32; 3] = [15.0, 8.0, 4.0];
-const T_SWAP_PCT: [f32; 3] = [60.0, 75.0, 85.0];
+
+/// 커밋/스왑 임계 — **플랫폼마다 평상시 수준이 완전히 다르다.**
+///
+/// - 리눅스: 커널이 콜드 페이지를 스왑에 남기는 게 정상이라 평상시 100%도 흔하다
+///   (2026-08-02 실측). 그래서 아래 `assess()`에 "물리 메모리가 이미 빠듯할 때만" 게이트가 있다.
+/// - Windows: 커밋 차지는 평상시에도 높게 유지된다. 이 머신 실측(2026-08-04, 한가한 상태):
+///   물리 여유 21.5%, 커밋 122.3GB / 한도 142.5GB = **85.9%**. 리눅스 값(60/75/85)을 그대로
+///   쓰면 물리 여유가 15% 아래로 내려가는 순간 즉시 Danger가 떠 늑대소년이 된다.
+///   실측 평상시(86%) 위로 여유를 두고 잡는다.
+const T_SWAP_PCT: [f32; 3] = if cfg!(windows) {
+    [92.0, 96.0, 98.0]
+} else {
+    [60.0, 75.0, 85.0]
+};
+
+/// 같은 자리(`Sample::swap_used_pct`)가 플랫폼마다 다른 것을 담는다 — 리눅스는 스왑 사용률,
+/// Windows는 커밋 차지다. 역할은 같다: 여기가 마르면 할당이 실패하기 시작하는 최종 방어선.
+/// 사용자에게 보이는 문구까지 같으면 오해하므로 이름만 갈라 쓴다.
+const SWAP_LABEL: &str = if cfg!(windows) {
+    "커밋 사용"
+} else {
+    "스왑 사용"
+};
 
 /// 승격에 필요한 연속 충족 횟수. 위험은 짧게 잡는다 — oomd가 20초에 죽이므로
 /// 6초(위험 시 500ms 주기면 1.5초) 안에 판정해야 저장할 시간이 남는다.
@@ -212,7 +234,7 @@ fn assess(s: &Sample) -> (Level, Vec<String>) {
         consider(
             lv,
             format!(
-                "스왑 사용 {:.0}% (여유 메모리 {:.0}%)",
+                "{SWAP_LABEL} {:.0}% (여유 메모리 {:.0}%)",
                 s.swap_used_pct, s.mem_available_pct
             ),
             &mut worst,
@@ -327,6 +349,80 @@ fn shutdown_on_signal(app: &AppHandle) -> ! {
     std::process::exit(0);
 }
 
+/// 감시 한 틱 — 표본 수집 → 레벨 판정 → 전이 알림 → 하트비트/정기 로그.
+///
+/// 루프에서 분리해 둔 이유는 두 가지다. (1) `catch_unwind` 경계가 눈에 보인다. (2) 루프 본문을
+/// 클로저로 감싸면 들여쓰기가 어긋나 읽기 어려워진다.
+fn watchdog_tick(
+    m: &mut Machine,
+    last_beat: &mut Instant,
+    last_diag: &mut Instant,
+    app: &AppHandle,
+    version: &str,
+    started_at: &str,
+) {
+    let prev_level = m.level;
+    let (sample, target, reasons) = m.evaluate();
+    let transition = m.settle(target);
+
+    LEVEL.store(m.level as u8, Ordering::Relaxed);
+    *LATEST.lock().unwrap_or_else(|e| e.into_inner()) = Some(Snapshot {
+        level: m.level,
+        sample: sample.clone(),
+        reasons: reasons.clone(),
+    });
+
+    if let Some(level) = transition {
+        if level > Level::Ok {
+            log::warn!("[health] 레벨 상승 → {} 원인={:?}", level.as_str(), reasons);
+        } else {
+            log::info!("[health] 레벨 정상 복귀");
+        }
+        let _ = app.emit(
+            "health://level",
+            Transition {
+                level,
+                prev: prev_level,
+                sample: sample.clone(),
+                reasons: reasons.clone(),
+            },
+        );
+        // 경고 이상이면 미저장 초안을 즉시 flush하라고 프론트에 알린다.
+        if level >= Level::Warn {
+            let _ = app.emit("health://flush-drafts", ());
+        }
+    }
+
+    // 평시 30초. 경보 중에는 5초로 줄인다 — oomd가 SIGKILL을 날리면 마지막 하트비트가
+    // 그대로 사후 진단의 전부가 되는데, 30초 낡은 스냅샷이면 압박이 한창일 때 죽어도
+    // "한가했다"로 기록돼 원인이 `unknown`으로 떨어진다.
+    let beat_every = if m.level >= Level::Notice { 5 } else { 30 };
+    if last_beat.elapsed() >= Duration::from_secs(beat_every) {
+        *last_beat = Instant::now();
+        session::heartbeat(m.level.as_str(), &sample, version, started_at);
+    }
+    // 5분마다 한 줄. 평시에도 남는 유일한 정기 기록 — 프로세스 수가 23→100→250으로
+    // 가는 궤적이 로그에 그대로 보이게 하는 것이 목적이다(이번 사건의 재발 방지 핵심).
+    if last_diag.elapsed() >= Duration::from_secs(300) {
+        *last_diag = Instant::now();
+        if sample.available {
+            log::info!(
+                "[health] lv={} procs={} mem={:.1}GB({:.0}%) press_full10={:.1}% \
+                 press_some10={:.1}% victim={:.2} avail={:.0}% swap={:.0}%",
+                m.level.as_str(),
+                sample.scope_procs,
+                sample.scope_mem_bytes as f32 / 1_073_741_824.0,
+                sample.scope_mem_pct,
+                sample.anchor_full_avg10,
+                sample.anchor_some_avg10,
+                sample.victim_share,
+                sample.mem_available_pct,
+                sample.swap_used_pct,
+            );
+        }
+    }
+}
+
 /// 감시 스레드 시작. setup에서 1회 호출한다.
 pub fn spawn_watchdog(app: AppHandle, version: String, started_at: String) {
     install_signal_handlers();
@@ -350,65 +446,26 @@ pub fn spawn_watchdog(app: AppHandle, version: String, started_at: String) {
                     slept += 100;
                 }
 
-                let prev_level = m.level;
-                let (sample, target, reasons) = m.evaluate();
-                let transition = m.settle(target);
-
-                LEVEL.store(m.level as u8, Ordering::Relaxed);
-                *LATEST.lock().unwrap() = Some(Snapshot {
-                    level: m.level,
-                    sample: sample.clone(),
-                    reasons: reasons.clone(),
-                });
-
-                if let Some(level) = transition {
-                    if level > Level::Ok {
-                        log::warn!("[health] 레벨 상승 → {} 원인={:?}", level.as_str(), reasons);
-                    } else {
-                        log::info!("[health] 레벨 정상 복귀");
-                    }
-                    let _ = app.emit(
-                        "health://level",
-                        Transition {
-                            level,
-                            prev: prev_level,
-                            sample: sample.clone(),
-                            reasons: reasons.clone(),
-                        },
+                // 한 틱의 실패가 감시 자체를 끝내면 안 된다.
+                //
+                // 이 스레드가 패닉으로 죽으면 `session::heartbeat`가 멈추고 `updated_at`이 그
+                // 시각에 얼어붙는다. 그러면 다음 실행의 `panic_log_near`(±180초)가 어긋나
+                // **진짜 크래시가 "unknown"으로 오분류**된다 — 사후 진단만 있는 Windows에서는
+                // 그게 유일한 단서다. 게다가 spawn 결과를 `.ok()`로 버려서 죽은 것을 알 방법도 없다.
+                // (Windows에선 [health] 정기 로그도 안 남는다 — probe가 available=false라
+                //  조용히 아무것도 안 하기 때문이다.)
+                let tick_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    watchdog_tick(
+                        &mut m,
+                        &mut last_beat,
+                        &mut last_diag,
+                        &app,
+                        &version,
+                        &started_at,
                     );
-                    // 경고 이상이면 미저장 초안을 즉시 flush하라고 프론트에 알린다.
-                    if level >= Level::Warn {
-                        let _ = app.emit("health://flush-drafts", ());
-                    }
-                }
-
-                // 평시 30초. 경보 중에는 5초로 줄인다 — oomd가 SIGKILL을 날리면 마지막 하트비트가
-                // 그대로 사후 진단의 전부가 되는데, 30초 낡은 스냅샷이면 압박이 한창일 때 죽어도
-                // "한가했다"로 기록돼 원인이 `unknown`으로 떨어진다.
-                let beat_every = if m.level >= Level::Notice { 5 } else { 30 };
-                if last_beat.elapsed() >= Duration::from_secs(beat_every) {
-                    last_beat = Instant::now();
-                    session::heartbeat(m.level.as_str(), &sample, &version, &started_at);
-                }
-                // 5분마다 한 줄. 평시에도 남는 유일한 정기 기록 — 프로세스 수가 23→100→250으로
-                // 가는 궤적이 로그에 그대로 보이게 하는 것이 목적이다(이번 사건의 재발 방지 핵심).
-                if last_diag.elapsed() >= Duration::from_secs(300) {
-                    last_diag = Instant::now();
-                    if sample.available {
-                        log::info!(
-                            "[health] lv={} procs={} mem={:.1}GB({:.0}%) press_full10={:.1}% \
-                             press_some10={:.1}% victim={:.2} avail={:.0}% swap={:.0}%",
-                            m.level.as_str(),
-                            sample.scope_procs,
-                            sample.scope_mem_bytes as f32 / 1_073_741_824.0,
-                            sample.scope_mem_pct,
-                            sample.anchor_full_avg10,
-                            sample.anchor_some_avg10,
-                            sample.victim_share,
-                            sample.mem_available_pct,
-                            sample.swap_used_pct,
-                        );
-                    }
+                }));
+                if tick_result.is_err() {
+                    log::error!("[health] 감시 틱 패닉 — 다음 틱은 계속 진행한다");
                 }
             }
         })
@@ -429,7 +486,7 @@ pub fn end_session() {
 
 #[tauri::command(async)]
 pub fn health_snapshot() -> Option<Snapshot> {
-    LATEST.lock().unwrap().clone()
+    LATEST.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 /// 지난 실행이 비정상 종료였는지 + 그 시점 스냅샷. 시작 시 배너가 이걸 읽는다.
@@ -501,6 +558,50 @@ mod tests {
     fn unavailable_never_alarms() {
         let s = Sample::default();
         assert_eq!(assess(&s).0, Level::Ok);
+    }
+
+    /// **Windows 오탐 회귀 방지.**
+    ///
+    /// 이 머신 실측(2026-08-04, 한가한 상태): 여유 물리 20.7%, 커밋 **86.0%**. Windows는 커밋을
+    /// 평상시에도 높게 유지한다. 물리 여유가 경고 구간(15% 이하)으로 내려갔을 때, 그 평상시
+    /// 커밋만으로 Warn 이상이 되면 안 된다 — 리눅스 임계(60/75/85)를 그대로 쓰면 여기서 곧바로
+    /// Danger가 떠서 닫을 수 없는 배너가 상시 뜬다(기능이 통째로 무용지물이 되는 실패 모드).
+    #[cfg(windows)]
+    #[test]
+    fn windows_idle_commit_does_not_cry_wolf() {
+        let mut s = idle_sample();
+        s.mem_available_pct = 14.0; // 경고 구간 진입
+        s.swap_used_pct = 86.0; // 이 머신의 평상시 커밋
+        let (level, reasons) = assess(&s);
+        assert_eq!(
+            level,
+            Level::Notice,
+            "평상시 커밋 수준으로 경보가 올라갔다: {reasons:?}"
+        );
+    }
+
+    /// 반대로 **진짜** 커밋 고갈은 잡아야 한다 — 오탐을 막느라 진짜를 놓치면 안 된다.
+    #[cfg(windows)]
+    #[test]
+    fn windows_real_commit_exhaustion_escalates() {
+        let mut s = idle_sample();
+        s.mem_available_pct = 6.0;
+        s.swap_used_pct = 99.0;
+        let (level, reasons) = assess(&s);
+        assert!(level >= Level::Warn, "{reasons:?}");
+    }
+
+    /// Windows에서 프로브가 채우는 신호만으로도 프로세스 폭주를 잡아야 한다
+    /// (PSI가 없어 압박 신호는 항상 0이다 — 그것 때문에 못 잡으면 Windows는 무방비다).
+    #[test]
+    fn process_explosion_without_psi_escalates() {
+        let mut s = Sample {
+            available: true,
+            mem_available_pct: 40.0,
+            ..Sample::default()
+        };
+        s.scope_procs = 250;
+        assert_eq!(assess(&s).0, Level::Danger);
     }
 
     /// 두 경보 레벨 사이에서 흔들려도 승격이 막히면 안 된다(streak 리셋 버그 회귀 방지).

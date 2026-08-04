@@ -1,6 +1,7 @@
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
@@ -10,6 +11,55 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use super::projects::project_path;
 use crate::error::{ErrorCode, IpcError};
 use crate::state::AppState;
+
+/// PTY 출력 상한(초당 바이트).
+///
+/// 80x24 화면 한 장이 ≈2KB다. 8MB/s면 사람이 읽을 수 있는 양의 수천 배라 정상 사용
+/// (빌드 로그·테스트 출력)에는 절대 걸리지 않는다. `yes`, 크래시 루프에 빠진 dev 서버,
+/// 거대 파일 `cat` 처럼 **끝없이 쏟아내는** 경우에만 발동한다.
+const PTY_BYTES_PER_SEC: usize = 8 * 1024 * 1024;
+
+/// PTY 출력 속도 제한기(토큰 버킷).
+///
+/// Tauri Channel에는 ack가 없어 "프론트가 얼마나 밀렸는지"를 알 방법이 없다. 그래서 **보내는
+/// 쪽에서** 속도를 잡는다. 상한을 넘기면 리더 스레드가 잠깐 자고, 그러면 PTY 버퍼가 차고,
+/// 결국 셸의 write가 막힌다 — 유닉스 흐름 제어 그대로이고 실제 터미널이 하는 일이다.
+/// 출력을 **버리지 않으므로** ANSI 이스케이프 시퀀스가 중간에 잘려 화면이 깨지지 않는다.
+///
+/// 상한이 없으면 무한 출력이 전부 Tauri의 `ChannelDataIpcQueue`에 쌓여 앱이 메모리로 죽는다.
+/// 잠자는 대신 "얼마나 자야 하는지"를 돌려주어 시간 없이 테스트할 수 있게 했다.
+struct Pacer {
+    window_start: Instant,
+    bytes: usize,
+}
+
+impl Pacer {
+    fn new(now: Instant) -> Self {
+        Self {
+            window_start: now,
+            bytes: 0,
+        }
+    }
+
+    /// n바이트를 보냈다고 기록한다. 1초 창의 예산을 넘겼으면 창이 끝날 때까지 잘 시간을 돌려준다.
+    fn take(&mut self, n: usize, now: Instant) -> Option<Duration> {
+        self.bytes = self.bytes.saturating_add(n);
+        let elapsed = now.duration_since(self.window_start);
+        if elapsed >= Duration::from_secs(1) {
+            // 창이 지났다 — 예산 리셋(상한 미만이었으면 그냥 넘어간다).
+            self.window_start = now;
+            self.bytes = 0;
+            return None;
+        }
+        if self.bytes < PTY_BYTES_PER_SEC {
+            return None;
+        }
+        // 예산 초과 — 남은 창 시간만큼 쉬고 다음 창을 연다.
+        self.window_start = now + (Duration::from_secs(1) - elapsed);
+        self.bytes = 0;
+        Some(Duration::from_secs(1) - elapsed)
+    }
+}
 
 /// 열려 있는 PTY 세션. Rust가 수명의 단일 진실 — 프론트 탭/프로젝트 전환과 무관하게 살아있다.
 /// 필드는 같은 모듈(term_write/resize/close)에서만 접근한다.
@@ -49,7 +99,7 @@ struct ShellSpec {
 
 /// 프로젝트 경로에 PTY 셸을 띄우고 출력 스트림(Channel)을 연결한다 (설계 §16.3).
 /// termId는 프론트가 생성해 전달 — 응답이 유실돼도 고아 PTY가 남지 않는다(아는 id로 close).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn term_open(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -124,7 +174,10 @@ pub fn term_open(
         let sink = Arc::clone(&sink);
         let term_id = term_id.clone();
         std::thread::spawn(move || {
-            let mut buf = [0u8; 8192];
+            // 64KB — 예전엔 8KB였다. 읽기는 있는 만큼만 가져오므로 지연은 그대로이고, 출력이
+            // 쏟아질 때 Channel send 횟수(=Tauri ChannelDataIpcQueue 엔트리 수)만 1/8로 준다.
+            let mut buf = [0u8; 65536];
+            let mut pacer = Pacer::new(Instant::now());
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break, // EOF — 셸 종료
@@ -132,8 +185,12 @@ pub fn term_open(
                         // 현재 sink로 전송. 창이 닫혀 send가 실패해도 PTY는 살린다 —
                         // 플로팅 분리 중(detach↔attach 사이)의 짧은 공백을 위해 루프를 끊지 않는다.
                         // 의도적 종료는 sink를 None으로 비워 죽은 Channel에 계속 쏘지 않게 한다.
-                        if let Some(ch) = sink.lock().unwrap().as_ref() {
+                        if let Some(ch) = sink.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
                             let _ = ch.send(buf[..n].to_vec());
+                        }
+                        // 속도 제한(Pacer 주석 참고) — 넘치면 여기서 잠깐 잔다.
+                        if let Some(d) = pacer.take(n, Instant::now()) {
+                            std::thread::sleep(d);
                         }
                     }
                     // EINTR은 정상적인 시그널 인터럽트다. 여기서 루프를 끊으면 아직 살아있는 셸에
@@ -144,14 +201,14 @@ pub fn term_open(
             }
             let code = child
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|e| e.into_inner())
                 .wait()
                 .map(|s| s.exit_code() as i32)
                 .unwrap_or(-1);
             // 셸이 스스로 끝난 경우(exit 입력 등)에도 레지스트리 엔트리가 남아 writer/master fd가
             // 영구 누적됐다 — 자기 엔트리를 회수한다. pid를 대조해 term_open 교체와의 레이스를 피한다.
             if let Some(state) = app.try_state::<AppState>() {
-                let mut terms = state.terminals.lock().unwrap();
+                let mut terms = state.terminals.lock().unwrap_or_else(|e| e.into_inner());
                 if terms.get(&term_id).map(|s| s.pid) == Some(pid) {
                     terms.remove(&term_id);
                 }
@@ -177,7 +234,7 @@ pub fn term_open(
     let old = state
         .terminals
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .insert(term_id.clone(), session);
     if let Some(old) = old {
         spawn_terminate(old);
@@ -186,13 +243,13 @@ pub fn term_open(
 }
 
 /// 키 입력을 PTY stdin에 raw로 전달 — 셸 문자열 조립 없음(인젝션 표면 없음).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn term_write(
     state: State<'_, AppState>,
     term_id: String,
     data: String,
 ) -> Result<(), IpcError> {
-    let mut terms = state.terminals.lock().unwrap();
+    let mut terms = state.terminals.lock().unwrap_or_else(|e| e.into_inner());
     let session = terms
         .get_mut(&term_id)
         .ok_or_else(|| IpcError::new(ErrorCode::NotFound, "터미널 세션을 찾을 수 없습니다"))?;
@@ -211,11 +268,11 @@ pub fn term_attach(
     term_id: String,
     on_data: Channel<Vec<u8>>,
 ) -> Result<(), IpcError> {
-    let terms = state.terminals.lock().unwrap();
+    let terms = state.terminals.lock().unwrap_or_else(|e| e.into_inner());
     let session = terms
         .get(&term_id)
         .ok_or_else(|| IpcError::new(ErrorCode::NotFound, "터미널 세션을 찾을 수 없습니다"))?;
-    *session.sink.lock().unwrap() = Some(on_data);
+    *session.sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(on_data);
     Ok(())
 }
 
@@ -225,20 +282,20 @@ pub fn term_project(state: State<'_, AppState>, term_id: String) -> Option<Strin
     state
         .terminals
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .get(&term_id)
         .map(|s| s.project_id.clone())
 }
 
 /// ConPTY 리사이즈 — xterm fit 결과(cols/rows)를 반영.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn term_resize(
     state: State<'_, AppState>,
     term_id: String,
     cols: u16,
     rows: u16,
 ) -> Result<(), IpcError> {
-    let terms = state.terminals.lock().unwrap();
+    let terms = state.terminals.lock().unwrap_or_else(|e| e.into_inner());
     let session = terms
         .get(&term_id)
         .ok_or_else(|| IpcError::new(ErrorCode::NotFound, "터미널 세션을 찾을 수 없습니다"))?;
@@ -254,7 +311,7 @@ pub fn term_resize(
 }
 
 /// 세션 종료 — child kill 후 레지스트리에서 제거(드롭이 writer·master를 닫는다).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn term_close(state: State<'_, AppState>, term_id: String) -> Result<(), IpcError> {
     close_session(state.inner(), &term_id);
     Ok(())
@@ -264,7 +321,7 @@ pub fn term_close(state: State<'_, AppState>, term_id: String) -> Result<(), Ipc
 pub fn close_session(state: &AppState, term_id: &str) {
     // 맵에서 먼저 꺼내고 락을 놓는다. 예전에는 `if let Some(..) = lock().remove(..)` 형태라
     // 가드가 본문 끝까지 살아 kill을 전역 락 아래에서 돌렸다.
-    let session = state.terminals.lock().unwrap().remove(term_id);
+    let session = state.terminals.lock().unwrap_or_else(|e| e.into_inner()).remove(term_id);
     if let Some(session) = session {
         spawn_terminate(session);
     }
@@ -284,7 +341,7 @@ fn spawn_terminate(session: TerminalSession) {
 /// 앱 종료 시 모든 PTY 세션 트리를 정리한다 (고아 프로세스 방지, 설계 §16.8).
 pub fn kill_all(state: &AppState) {
     let sessions: Vec<TerminalSession> = {
-        let mut terms = state.terminals.lock().unwrap();
+        let mut terms = state.terminals.lock().unwrap_or_else(|e| e.into_inner());
         terms.drain().map(|(_, s)| s).collect()
     };
     // 여기서는 정리 완료를 보장해야 한다(앱이 곧 사라지므로). 다만 순차로 돌리면
@@ -303,7 +360,7 @@ fn terminate(session: &TerminalSession) {
     // 리더가 지연된 term://exit를 쏘지 않게 하고(재시작 레이스 방지),
     // 죽은 Channel로 계속 IPC를 쏘지 않도록 sink를 비운다.
     session.closed.store(true, Ordering::Relaxed);
-    *session.sink.lock().unwrap() = None;
+    *session.sink.lock().unwrap_or_else(|e| e.into_inner()) = None;
 
     #[cfg(unix)]
     if session.pid > 0 {
@@ -556,7 +613,7 @@ fn save_temp_image(bytes: &[u8]) -> Option<String> {
 }
 
 fn resolve_shell(state: &AppState) -> ShellSpec {
-    let configured = state.settings.read().unwrap().terminal_shell.clone();
+    let configured = state.settings.read().unwrap_or_else(|e| e.into_inner()).terminal_shell.clone();
     if let Some(program) = configured.filter(|s| !s.trim().is_empty()) {
         return ShellSpec {
             program,
@@ -697,5 +754,57 @@ mod terminate_tests {
         std::thread::sleep(Duration::from_millis(200));
         assert!(!alive_pid(pid), "좀비를 살아있다고 판정했다");
         let _ = child.wait();
+    }
+}
+
+/// Pacer는 플랫폼 무관 순수 로직이라 위 unix 전용 모듈과 분리한다 —
+/// 안에 넣으면 정작 이 코드를 매일 쓰는 Windows에서 한 번도 검증되지 않는다.
+#[cfg(test)]
+mod pacer_tests {
+    use super::*;
+
+    /// 정상적인 출력량에는 절대 브레이크가 걸리면 안 된다.
+    /// (빌드 로그가 화면에 늦게 뜨면 그게 곧 버그 리포트가 된다.)
+    #[test]
+    fn pacer_never_throttles_normal_output() {
+        let t0 = Instant::now();
+        let mut p = Pacer::new(t0);
+        // 1초 동안 64KB씩 100번 = 6.4MB — 빌드 로그로도 과한 양인데 상한(8MB) 아래다.
+        for i in 0..100 {
+            let now = t0 + Duration::from_millis(i * 10);
+            assert!(
+                p.take(64 * 1024, now).is_none(),
+                "정상 출력에 브레이크가 걸렸다({}번째)",
+                i
+            );
+        }
+    }
+
+    /// 무한 출력(`yes` 등)은 반드시 잡아야 한다 — 안 잡으면 Tauri Channel 큐가 무한히 커진다.
+    #[test]
+    fn pacer_throttles_runaway_output() {
+        let t0 = Instant::now();
+        let mut p = Pacer::new(t0);
+        // 같은 순간에 상한을 넘겨 쏟아붓는다.
+        let mut slept = None;
+        for i in 0..200 {
+            if let Some(d) = p.take(64 * 1024, t0 + Duration::from_millis(i)) {
+                slept = Some(d);
+                break;
+            }
+        }
+        let d = slept.expect("상한을 넘겼는데 브레이크가 안 걸렸다");
+        assert!(d > Duration::ZERO && d <= Duration::from_secs(1), "{d:?}");
+    }
+
+    /// 창이 지나면 예산이 회복돼야 한다 — 한 번 걸린 뒤 영구히 느려지면 안 된다.
+    #[test]
+    fn pacer_budget_recovers_next_window() {
+        let t0 = Instant::now();
+        let mut p = Pacer::new(t0);
+        assert!(p.take(PTY_BYTES_PER_SEC, t0 + Duration::from_millis(10)).is_some());
+        // 다음 창에서는 같은 양을 다시 보낼 수 있어야 한다.
+        let later = t0 + Duration::from_secs(3);
+        assert!(p.take(1024, later).is_none(), "예산이 회복되지 않았다");
     }
 }

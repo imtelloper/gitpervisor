@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
-use tauri::AppHandle;
-use tauri_plugin_store::StoreExt;
+use tauri::{AppHandle, Manager};
 
 use crate::commands::{BrowserReg, HttpReg, PreviewServers, TerminalSession};
 use crate::error::{ErrorCode, IpcError};
@@ -69,7 +69,7 @@ impl AppState {
 
     /// 쓰기 작업 시작. 같은 레포에 이미 진행 중이면 큐잉하지 않고 즉시 거절한다 (설계 §8).
     pub fn try_begin_op(&self, project_id: &str) -> Result<OpGuard, IpcError> {
-        let mut ops = self.ops.lock().unwrap();
+        let mut ops = self.ops.lock().unwrap_or_else(|e| e.into_inner());
         if !ops.insert(project_id.to_string()) {
             return Err(IpcError::new(
                 ErrorCode::OpInProgress,
@@ -91,36 +91,120 @@ pub struct OpGuard {
 
 impl Drop for OpGuard {
     fn drop(&mut self) {
-        self.ops.lock().unwrap().remove(&self.project_id);
+        self.ops.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.project_id);
     }
 }
 
+// ── 사용자 데이터 영속화 ──
+//
+// 예전에는 tauri-plugin-store를 거쳤는데, 그 저장 경로가 `fs::write` **한 방**이다. Windows의
+// CREATE_ALWAYS는 선(先)절단이라 정전·BSOD·Windows Update 강제 재시작이 그 구간에 걸리면 파일이
+// 0바이트나 반쪽으로 남는다. 게다가 로드가 파싱 실패를 조용히 삼켜 기본값을 돌려주므로 앱은
+// **오류 한 줄 없이 빈 상태로 부팅**한다 — 사용자는 프로젝트 목록이 사라진 걸 나중에야 알아채고,
+// 그 상태에서 뭔가 저장하면 잔해까지 덮인다. settings 손상은 특히 나쁘다: 기본값 복귀가
+// `remote_refresh_minutes = 5`를 되살려 사용자가 **명시적으로 끈** 배경 fetch가 말없이 재개된다
+// (그 노브가 6일간 2만 회 돈 것이 2026-08 OOM 사건 P0-4다 — 데이터 손실이 과거 사건을 재점화한다).
+//
+// 그래서 읽기·쓰기를 직접 한다. 파일 위치·포맷(`{"<키>": <값>}`)은 플러그인이 쓰던 것과 동일해
+// 기존 사용자 파일이 그대로 읽힌다. 원자적 쓰기 패턴 자체는 health/session.rs가 먼저 도입했다.
+
+/// 모든 사용자 데이터 쓰기를 직렬화한다. 없으면 같은 파일에 대한 동시 저장이 같은 `.tmp`를
+/// 두 번 쓰고, 한쪽 rename이 다른 쪽의 **덜 쓰인** tmp를 집어갈 수 있다.
+static SAVE_LOCK: Mutex<()> = Mutex::new(());
+
+fn data_path(app: &AppHandle, file: &str) -> Option<PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join(file))
+}
+
+/// 파일 1개에서 키 1개를 읽는다(경로를 직접 받는 순수 코어 — 테스트 대상).
+///
+/// **손상된 파일은 조용히 버리지 않는다.** 파일이 있는데 파싱에 실패하면 `.corrupt`로 옮기고
+/// 에러를 남긴다. 그냥 None을 돌려주면 호출자가 기본값(빈 목록)으로 부팅하고, 사용자가 그 뒤에
+/// 뭐라도 저장하는 순간 남아 있던 잔해까지 덮여 **복구 가능성이 0이 된다.** 옮겨 두면 최소한
+/// 손으로 되살릴 수 있고, 로그에 흔적이 남아 "왜 갑자기 비었나"를 답할 수 있다.
+fn load_json_at<T: serde::de::DeserializeOwned>(path: &Path, key: &str) -> Option<T> {
+    let text = std::fs::read_to_string(path).ok()?; // 파일 없음 = 첫 실행, 정상
+
+    // 손상은 격리하되, "아직 저장된 적 없음"과는 구분한다 — 키가 없는 `{}`는 정상 상태다.
+    let quarantine = |why: &str| {
+        let backup = path.with_extension("corrupt");
+        let moved = std::fs::rename(path, &backup).is_ok();
+        log::error!(
+            "[state] {} 를 읽지 못했습니다({why}). 기본값으로 시작합니다 — 원본 보관: {}",
+            path.display(),
+            if moved {
+                backup.display().to_string()
+            } else {
+                "실패".into()
+            },
+        );
+    };
+
+    let Ok(mut map) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&text)
+    else {
+        quarantine("JSON 파싱 실패");
+        return None;
+    };
+    let value = map.remove(key)?; // 키 없음 = 아직 저장된 적 없음, 정상
+    match serde_json::from_value(value) {
+        Ok(v) => Some(v),
+        Err(_) => {
+            quarantine("스키마 불일치");
+            None
+        }
+    }
+}
+
+/// 파일 1개에 키 1개를 **원자적으로** 쓴다 — tmp에 쓰고 rename.
+/// 쓰기 도중 전원이 나가도 기존 파일은 손상되지 않는다(rename은 일어나거나 일어나지 않거나 둘 뿐).
+fn save_json_at<T: serde::Serialize>(
+    path: &Path,
+    key: &str,
+    value: &T,
+) -> Result<(), std::io::Error> {
+    let json = serde_json::to_vec_pretty(&serde_json::json!({ key: value }))?;
+    let _guard = SAVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, json)?;
+    std::fs::rename(&tmp, path)
+}
+
+/// 사용자 데이터 1건 읽기 — 없거나 손상이면 None(호출자가 기본값을 정한다).
+pub(crate) fn load_json<T: serde::de::DeserializeOwned>(
+    app: &AppHandle,
+    file: &str,
+    key: &str,
+) -> Option<T> {
+    load_json_at(&data_path(app, file)?, key)
+}
+
+/// 사용자 데이터 1건 원자적 저장.
+pub(crate) fn save_json<T: serde::Serialize>(
+    app: &AppHandle,
+    file: &str,
+    key: &str,
+    value: &T,
+    what: &str,
+) -> Result<(), IpcError> {
+    let fail = |e: String| IpcError::new(ErrorCode::Io, format!("{what} 저장 실패: {e}"));
+    let path = data_path(app, file).ok_or_else(|| fail("데이터 폴더를 찾을 수 없습니다".into()))?;
+    save_json_at(&path, key, value).map_err(|e| fail(e.to_string()))
+}
+
 pub fn load_projects(app: &AppHandle) -> Vec<Project> {
-    let Ok(store) = app.store(STORE_FILE) else {
-        return Vec::new();
-    };
-    let Some(value) = store.get(STORE_KEY) else {
-        return Vec::new();
-    };
-    serde_json::from_value(value).unwrap_or_default()
+    load_json(app, STORE_FILE, STORE_KEY).unwrap_or_default()
 }
 
 pub fn save_projects(app: &AppHandle, projects: &[Project]) -> Result<(), IpcError> {
-    let store = app
-        .store(STORE_FILE)
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("스토어 열기 실패: {e}")))?;
-    store.set(STORE_KEY, serde_json::json!(projects));
-    store
-        .save()
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("프로젝트 목록 저장 실패: {e}")))?;
-    Ok(())
+    save_json(app, STORE_FILE, STORE_KEY, &projects, "프로젝트 목록")
 }
 
 pub fn load_settings(app: &AppHandle) -> Settings {
-    let Ok(store) = app.store(SETTINGS_FILE) else {
-        return Settings::default();
-    };
-    let Some(value) = store.get(SETTINGS_KEY) else {
+    // 마이그레이션 판정이 "저장돼 있던 원본 JSON"을 봐야 하므로 Settings가 아니라 Value로 읽는다.
+    let Some(value) = load_json::<serde_json::Value>(app, SETTINGS_FILE, SETTINGS_KEY) else {
         return Settings::default();
     };
     let mut settings: Settings = serde_json::from_value(value.clone()).unwrap_or_default();
@@ -142,33 +226,81 @@ pub fn load_settings(app: &AppHandle) -> Settings {
 }
 
 pub fn save_settings(app: &AppHandle, settings: &Settings) -> Result<(), IpcError> {
-    let store = app
-        .store(SETTINGS_FILE)
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("스토어 열기 실패: {e}")))?;
-    store.set(SETTINGS_KEY, serde_json::json!(settings));
-    store
-        .save()
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("설정 저장 실패: {e}")))?;
-    Ok(())
+    save_json(app, SETTINGS_FILE, SETTINGS_KEY, settings, "설정")
 }
 
 pub fn load_notes(app: &AppHandle) -> Notes {
-    let Ok(store) = app.store(NOTES_FILE) else {
-        return Notes::new();
-    };
-    let Some(value) = store.get(NOTES_KEY) else {
-        return Notes::new();
-    };
-    serde_json::from_value(value).unwrap_or_default()
+    load_json(app, NOTES_FILE, NOTES_KEY).unwrap_or_default()
 }
 
 pub fn save_notes(app: &AppHandle, notes: &Notes) -> Result<(), IpcError> {
-    let store = app
-        .store(NOTES_FILE)
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("스토어 열기 실패: {e}")))?;
-    store.set(NOTES_KEY, serde_json::json!(notes));
-    store
-        .save()
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("메모 저장 실패: {e}")))?;
-    Ok(())
+    save_json(app, NOTES_FILE, NOTES_KEY, notes, "메모")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// tauri-plugin-store가 쓰던 것과 **같은 파일**을 그대로 읽어야 한다.
+    /// 이게 깨지면 업데이트 순간 기존 사용자의 프로젝트·설정·메모가 통째로 사라진다.
+    #[test]
+    fn reads_the_legacy_plugin_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("projects.json");
+        // 실제 사용자 파일에서 그대로 가져온 모양(pretty-printed `{"<키>": <값>}`).
+        std::fs::write(&p, "{\n  \"projects\": [\"a\", \"b\"]\n}").unwrap();
+        let got: Vec<String> = load_json_at(&p, "projects").unwrap();
+        assert_eq!(got, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    /// 저장 → 로드 왕복. 임시 파일을 남기지 않아야 한다(다음 실행에서 쓰레기로 보이면 안 된다).
+    #[test]
+    fn save_then_load_roundtrips_without_leftovers() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("notes.json");
+        save_json_at(&p, "notes", &vec![1u32, 2, 3]).unwrap();
+        assert_eq!(load_json_at::<Vec<u32>>(&p, "notes").unwrap(), vec![1, 2, 3]);
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "임시 파일이 남았다: {leftovers:?}");
+    }
+
+    /// 기존 파일이 있어도 덮어쓰기가 원자적이어야 한다 — rename이 destination을 대체한다.
+    #[test]
+    fn overwrite_replaces_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.json");
+        save_json_at(&p, "settings", &"old").unwrap();
+        save_json_at(&p, "settings", &"new").unwrap();
+        assert_eq!(load_json_at::<String>(&p, "settings").unwrap(), "new");
+    }
+
+    /// 손상 파일은 **격리**한다. 조용히 None을 돌려주면 빈 상태로 부팅하고, 그 뒤 첫 저장이
+    /// 잔해까지 덮어 복구 가능성이 0이 된다.
+    #[test]
+    fn corrupt_file_is_quarantined_not_silently_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("projects.json");
+        std::fs::write(&p, "{\"projects\": [\"a\"").unwrap(); // 쓰기 도중 잘린 모양
+        assert!(load_json_at::<Vec<String>>(&p, "projects").is_none());
+        assert!(
+            p.with_extension("corrupt").exists(),
+            "손상 원본을 보관하지 않았다"
+        );
+    }
+
+    /// 키가 없는 정상 파일(`{}`)은 손상이 아니다 — 격리하면 안 된다.
+    #[test]
+    fn missing_key_is_not_corruption() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("notes.json");
+        std::fs::write(&p, "{}").unwrap();
+        assert!(load_json_at::<Notes>(&p, "notes").is_none());
+        assert!(p.exists(), "정상 파일을 격리했다");
+        assert!(!p.with_extension("corrupt").exists());
+    }
 }

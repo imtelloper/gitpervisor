@@ -105,7 +105,14 @@ export const useUpdater = create<UpdaterState>((set, get) => ({
     try {
       let total = 0;
       let downloaded = 0;
-      await update.downloadAndInstall((ev) => {
+      // 다운로드와 설치를 **갈라서** 부른다. downloadAndInstall로 묶으면 Windows에서
+      // 아래 정리(prepare_relaunch)가 영원히 실행되지 않는다 — 플러그인의 Windows용
+      // install이 설치본을 띄운 직후 `std::process::exit(0)`으로 프로세스를 즉사시켜
+      // 이 await가 반환되지 않기 때문이다(tauri-plugin-updater 2.10.1 updater.rs).
+      // 그 결과 `session::mark_clean()`이 찍히지 않아, **업데이트가 성공할 때마다** 다음
+      // 실행에서 "지난 실행이 비정상 종료되었습니다" 배너가 100% 거짓으로 떴다. 진짜 크래시
+      // 경보를 늑대소년으로 만드는 것이 이 버그의 본체다.
+      await update.download((ev) => {
         if (ev.event === "Started") {
           total = ev.data.contentLength ?? 0;
         } else if (ev.event === "Progress") {
@@ -117,17 +124,21 @@ export const useUpdater = create<UpdaterState>((set, get) => ({
         }
       });
       set({ status: "installed" });
-      // 재실행 **전에** 자식(PTY 셸·LSP 서버·브라우저 webview·보조 창)을 먼저 정리한다.
+      // 설치·재실행 **전에** 자식(PTY 셸·LSP 서버·브라우저 webview·보조 창)을 먼저 정리한다.
       // relaunch()는 request_restart → 이벤트 루프 종료 → exec 순서라, 앱 쪽 RunEvent::Exit
       // 훅만 믿으면 이미 루프가 내려가는 중이라 창 close 메시지가 펌프되지 않는다. 여기서
       // await 하면 정리가 끝난 것을 확인한 뒤 새 프로세스가 떠, 구·신 버전의 자식 프로세스가
       // 겹쳐 사는 구간이 없어진다(2026-08-01 프로세스 누적 사건의 경로 중 하나).
-      // 실패해도 재실행은 막지 않는다 — Rust의 RunEvent::Exit 경로가 백스톱이고, 정리 실패로
+      // shutdown_children이 마지막에 session::mark_clean()까지 찍으므로, Windows처럼 install이
+      // 프로세스를 즉사시키는 플랫폼에서도 "정상 종료" 표식이 남는다(거짓 크래시 배너 방지).
+      // 실패해도 설치는 막지 않는다 — Rust의 RunEvent::Exit 경로가 백스톱이고, 정리 실패로
       // 업데이트가 중단되면 사용자는 "설치됐는데 안 바뀐다" 상태에 갇힌다.
       await invoke("prepare_relaunch").catch((e) => {
-        console.warn("재실행 전 정리 실패(무시하고 재실행):", e);
+        console.warn("설치 전 정리 실패(무시하고 진행):", e);
       });
-      // 설치 완료 → 새 버전으로 재실행. (Windows perMachine는 설치 중 UAC 승격 프롬프트.)
+      // 설치 실행. **Windows에서는 여기서 반환되지 않는다**(플러그인이 process::exit(0)).
+      await update.install();
+      // 여기까지 오면 Windows가 아닌 플랫폼 — 새 버전으로 재실행한다.
       await relaunch();
     } catch (e) {
       set({

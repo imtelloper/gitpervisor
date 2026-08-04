@@ -15,7 +15,7 @@ mod watcher;
 
 use std::path::PathBuf;
 
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use state::AppState;
 
@@ -197,6 +197,25 @@ async fn open_aggregate_window(app: tauri::AppHandle, origin: String) -> Result<
 
 /// 플로팅 터미널 창 라벨 접두사 — 라벨이 곧 paneId 전달 통로다(open_float_window 주석 참고).
 const FLOAT_LABEL_PREFIX: &str = "float-";
+
+/// 메인 창 "닫기 확인"을 이미 띄웠는가.
+///
+/// **두 번째 닫기 요청은 무조건 통과시킨다.** 웹뷰가 굳어 확인 응답이 오지 않으면 앱을 영영
+/// 닫지 못하는 막다른 골목이 생기기 때문이다 — 닫기 확인은 작업을 지키자고 넣는 것인데,
+/// 그것 때문에 앱을 강제 종료(=정리 훅 미실행)하게 만들면 본말이 전도된다.
+/// 사용자가 취소하면 프론트가 `reset_close_guard`로 되돌려 다음 X는 다시 물어본다.
+static CLOSE_ASKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 이번 닫기 요청에서 확인을 띄워야 하는가. false면 **이미 물어봤으므로 그냥 닫는다.**
+fn claim_close_ask() -> bool {
+    !CLOSE_ASKED.swap(true, std::sync::atomic::Ordering::SeqCst)
+}
+
+/// 닫기 확인 다이얼로그가 닫혔다(확인이든 취소든) — 다음 닫기 요청에서 다시 물어보게 되돌린다.
+#[tauri::command(async)]
+fn reset_close_guard() {
+    CLOSE_ASKED.store(false, std::sync::atomic::Ordering::SeqCst);
+}
 
 /// 메인 창과 수명을 같이 하는 보조 창 라벨.
 /// 메인이 사라졌는데 이 창들만 남으면 앱이 종료되지 않고 창 하나짜리 잔여 상태가 된다
@@ -385,6 +404,10 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_dialog::init())
+        // 등록만 되어 있고 이 앱 코드는 더 이상 쓰지 않는다(capabilities/default.json의
+        // "store:default" 때문에 남겨 둔다). **사용자 데이터 저장에 다시 쓰지 마라** —
+        // 이 플러그인의 save는 비원자적 fs::write라 정전 시 파일이 깨진다.
+        // 영속화는 state.rs의 load_json/save_json(tmp+rename)을 쓴다.
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -583,8 +606,36 @@ pub fn run() {
             notifications::notify_os,
             health::health_snapshot,
             health::health_prev_session,
+            reset_close_guard,
         ])
         .on_window_event(|window, event| {
+            // 메인 창을 실수로 닫는 경로가 두 개 있다: 최대화 버튼 옆 X 오클릭, 그리고 Alt+F4.
+            // 둘 다 지금까지는 **확인 없이** 빌드·dev 서버·AI 에이전트가 도는 터미널을 통째로
+            // 종료시켰다. 잃을 게 실제로 있을 때(살아있는 PTY 세션)만 한 번 물어본다.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() != "main" {
+                    return;
+                }
+                // 이미 물어봤으면 그냥 닫는다 — CLOSE_ASKED 주석 참고(막다른 골목 금지).
+                if !claim_close_ask() {
+                    return;
+                }
+                let live = window.try_state::<AppState>().map_or(0, |s| {
+                    s.terminals
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .len()
+                });
+                if live == 0 {
+                    // 물어보지 않았으므로 표식을 되돌린다(다음 X도 정상 판정되게).
+                    CLOSE_ASKED.store(false, std::sync::atomic::Ordering::SeqCst);
+                    return;
+                }
+                api.prevent_close();
+                // 메인 창에만 보낸다 — 플로팅/모아보기 창은 확인 UI(ConfirmHost)가 없다.
+                let _ = window.emit_to("main", "app://close-requested", live);
+                return;
+            }
             if let tauri::WindowEvent::Destroyed = event {
                 let label = window.label();
                 if label == "main" {
@@ -593,8 +644,17 @@ pub fn run() {
                     shutdown_children(window.app_handle());
                 } else if let Some(term_id) = label.strip_prefix(FLOAT_LABEL_PREFIX) {
                     // 플로팅 터미널 창이 닫히면 그 세션의 PTY만 종료한다(나머지는 메인이 유지).
-                    let state = window.state::<AppState>();
-                    commands::close_session(state.inner(), term_id);
+                    //
+                    // 이 훅은 **메인 이벤트 루프 위에서** 돈다. 여기서 패닉이 새면 위쪽 main 분기와
+                    // 달리 감싸는 catch_unwind가 없어 프로세스가 통째로 abort하고, 그러면 메인 창의
+                    // PTY·LSP·브라우저 자식이 전부 고아로 남는다(2026-08-01 누수 경로). main 분기는
+                    // shutdown_children이 내부적으로 shutdown_step으로 격리하는데 이쪽만 빠져 있었다.
+                    // try_state를 쓰는 이유도 같다 — state()는 상태 미등록 시 패닉한다.
+                    shutdown_step("float-close", || {
+                        if let Some(state) = window.try_state::<AppState>() {
+                            commands::close_session(state.inner(), term_id);
+                        }
+                    });
                 }
             }
         })
@@ -667,6 +727,22 @@ mod tests {
         assert!(!"sysmon".starts_with(FLOAT_LABEL_PREFIX));
     }
 
+    /// 닫기 확인은 **한 번만** 묻고, 두 번째 요청은 통과시킨다.
+    ///
+    /// 웹뷰가 굳어 확인 응답이 영영 안 오면 X를 눌러도 앱이 안 닫히는 막다른 골목이 된다 —
+    /// 작업을 지키려고 넣은 확인이 오히려 강제 종료(=정리 훅 미실행)를 부르면 본말전도다.
+    /// 취소 후에는 다시 물어야 한다(안 그러면 그다음 오클릭이 확인 없이 통과한다).
+    #[test]
+    fn close_ask_is_claimed_once_then_lets_through() {
+        use std::sync::atomic::Ordering;
+        CLOSE_ASKED.store(false, Ordering::SeqCst);
+        assert!(claim_close_ask(), "첫 닫기 요청은 물어봐야 한다");
+        assert!(!claim_close_ask(), "두 번째는 그냥 닫아야 한다");
+        reset_close_guard();
+        assert!(claim_close_ask(), "취소 후에는 다시 물어봐야 한다");
+        CLOSE_ASKED.store(false, Ordering::SeqCst); // 다른 테스트에 영향 주지 않게 복원
+    }
+
     /// 한 단계가 패닉해도 나머지 단계가 계속 돌아야 한다(정리는 "가능한 만큼 최대한").
     #[test]
     fn shutdown_step_swallows_panic() {
@@ -680,5 +756,105 @@ mod tests {
     fn fmt_count_marks_unknown() {
         assert_eq!(fmt_count(Some(3)), "3");
         assert_eq!(fmt_count(None), "?", "락 실패는 0이 아니라 미상으로 남긴다");
+    }
+
+    /// `src/` 아래 모든 .rs 경로.
+    fn all_sources() -> Vec<std::path::PathBuf> {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut out);
+        assert!(!out.is_empty(), "소스를 하나도 못 찾았다 — 테스트가 무의미해진다");
+        out
+    }
+
+    /// 뜨거운 IPC 커맨드는 반드시 `#[tauri::command(async)]`여야 한다.
+    ///
+    /// 동기 커맨드는 호출 스레드에서 **인라인** 실행되는데, Windows에서 그 스레드는 WebView2의
+    /// COM 콜백(`extern "system"` = nounwind ABI) 안이다. 거기서 패닉이 새면 unwind가 금지된
+    /// 경계라 Rust가 프로세스를 통째로 abort한다 — 종료 훅이 한 줄도 안 돌아 PTY 셸·LSP 서버·
+    /// 브라우저 자식이 전부 고아로 남는다(2026-08-01 누수 경로와 동일). `(async)`면 tokio 태스크
+    /// 하네스의 catch_unwind가 삼켜 해당 호출만 실패한다.
+    ///
+    /// **Cargo.toml의 "crash 내성" 주석은 async 커맨드에만 성립한다** — 이 목록이 그 보장을
+    /// 실제로 받는 경로다. `(async)`를 떼면 조용히 P0가 되므로 여기서 막는다.
+    #[test]
+    fn hot_commands_stay_async() {
+        const HOT: &[(&str, &str)] = &[
+            ("commands/terminal.rs", "term_open"),
+            ("commands/terminal.rs", "term_write"),
+            ("commands/terminal.rs", "term_resize"),
+            ("commands/terminal.rs", "term_close"),
+            ("commands/lsp.rs", "lsp_send"),
+            ("commands/settings.rs", "get_settings"),
+            ("commands/projects.rs", "list_projects"),
+            ("commands/notes.rs", "get_notes"),
+        ];
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        for (file, name) in HOT {
+            let src = std::fs::read_to_string(root.join(file)).expect(file);
+            let idx = src
+                .find(&format!("pub fn {name}("))
+                .unwrap_or_else(|| panic!("{name} 선언을 못 찾았다 — 이름이 바뀌었나?"));
+            assert!(
+                src[..idx].trim_end().ends_with("#[tauri::command(async)]"),
+                "{name}이 동기 커맨드다. 이 안에서 패닉이 나면 프로세스가 abort한다 — \
+                 #[tauri::command(async)]로 되돌려라",
+            );
+        }
+    }
+
+    /// poison된 락에 `.unwrap()`을 쓰면 안 된다.
+    ///
+    /// 어느 스레드가 락을 쥔 채 패닉하면(그 패닉 자체는 tokio가 조용히 삼킬 수 있다) 뮤텍스가
+    /// 영구 오염되고, 그 뒤 그 락을 잡는 모든 `unwrap()`이 **전부** 패닉한다. 동기 커맨드에서 그
+    /// 패닉은 곧 프로세스 abort다(위 테스트 참고). 원인과 증상이 시간적으로 분리돼 "가끔 그냥
+    /// 사라진다"로만 보이는 최악의 진단성이라, 연쇄 자체를 만들지 않는다.
+    ///
+    /// 대신 `unwrap_or_else(|e| e.into_inner())` — 이 앱의 상태는 오염된 채로 계속 쓰는 편이
+    /// 죽는 것보다 낫다(어차피 사용자 데이터는 별도 파일에 원자적으로 쓴다).
+    #[test]
+    fn no_poison_propagating_unwraps() {
+        // 검사 문자열을 조각내 이어 붙인다 — 리터럴로 쓰면 이 테스트가 자기 자신을 잡는다.
+        // 같은 이유로 주석 줄은 건너뛴다(규칙을 설명하는 주석이 위반으로 잡히면 안 된다).
+        let tail = format!("().un{}", "wrap()");
+        let needles: Vec<String> = ["lock", "read", "write"]
+            .iter()
+            .map(|m| format!(".{m}{tail}"))
+            .collect();
+        let mut hits = Vec::new();
+        for path in all_sources() {
+            let Ok(src) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            // 주석 줄을 걷어낸 뒤 **공백을 전부 접는다.** 줄 단위로만 보면
+            // `.lock()\n    .unwrap()` 처럼 rustfmt가 쪼개 놓은 체인을 놓친다 —
+            // 실제로 그 형태로 17곳이 숨어 있었고, 한 줄짜리만 고친 채 통과했다.
+            let folded: String = src
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .flat_map(|l| l.chars())
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            if needles.iter().any(|n| folded.contains(n.as_str())) {
+                hits.push(path.display().to_string());
+            }
+        }
+        assert!(
+            hits.is_empty(),
+            "락 poison을 전파하는 unwrap이 있다 — unwrap_or_else(|e| e.into_inner())로 바꿔라:\n{}",
+            hits.join("\n"),
+        );
     }
 }

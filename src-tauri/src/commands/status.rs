@@ -18,7 +18,7 @@ pub async fn get_statuses(
     project_ids: Vec<String>,
 ) -> Result<Vec<RepoStatus>, IpcError> {
     let targets: Vec<(String, Option<PathBuf>)> = {
-        let projects = state.projects.read().unwrap();
+        let projects = state.projects.read().unwrap_or_else(|e| e.into_inner());
         project_ids
             .into_iter()
             .map(|id| {
@@ -38,6 +38,20 @@ pub async fn get_statuses(
         }
     });
 
+    // 동시 실행 제한(`buffer_unordered(4)`)을 넣어 봤다가 **효과가 없어서** 되돌렸다.
+    //
+    // 실측(2026-08-04, 이 머신, 프로젝트 21개, watcher 인덱싱이 끝나 정착한 뒤 5회 중앙값):
+    //   - 무제한(현재): 22.5초 (4.5~31.4초)
+    //   - 동시 4개 제한: 27.1초 (22~53초)
+    // 편차가 중앙값 차이보다 훨씬 커서 둘을 구분할 수 없다. 처음엔 무제한이 3.1초로 나와
+    // "제한이 9배 느리다"고 판단했는데, 그 3.1초는 캐시가 유난히 따뜻할 때 잡힌 값이었다
+    // — 이 워크로드에서 A/B를 할 때는 캐시 상태를 반드시 통제해야 한다.
+    //
+    // **진짜 문제는 동시성이 아니라 절대 시간이다**: 21개 프로젝트 status에 20~30초가 걸린다.
+    // 지배 요인은 거대 트리(수천 디렉토리)에 대한 `git status --untracked-files=all`의 IO와,
+    // 레포마다 추가로 도는 `rev-parse --git-dir`(detect_op_state)다. 고치려면 동시성 조절이
+    // 아니라 그쪽(호출 횟수·범위)을 손봐야 한다.
+    //
     // 각 프로젝트는 자기 status + (있으면) 임베디드 저장소 status들을 반환한다 — 평탄화해 한 배열로.
     let mut statuses: Vec<RepoStatus> = futures::future::join_all(futures)
         .await
@@ -48,7 +62,7 @@ pub async fn get_statuses(
     // 배경 fetch freshness 조인(태스크 04 §3.5) — 별도 조회 invoke 없이 배치에 실어 보낸다.
     // 스케줄 대상은 최상위뿐이라 중첩(합성 id) status는 자연히 None으로 남는다.
     {
-        let freshness = state.freshness.read().unwrap();
+        let freshness = state.freshness.read().unwrap_or_else(|e| e.into_inner());
         for s in statuses.iter_mut() {
             if let Some(f) = freshness.get(&s.project_id) {
                 s.last_fetch_at = f.last_checked_at.clone();

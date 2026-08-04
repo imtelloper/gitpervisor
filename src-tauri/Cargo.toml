@@ -106,7 +106,10 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 [target.'cfg(windows)'.dependencies]
 # Win32_UI_Shell: 파일트리 실행 파일 더블클릭을 ShellExecuteW로 띄운다(cmd 셸 파싱 우회 — 인젝션 차단).
 # Win32_Graphics_Gdi: 리소스 모니터 프로세스 아이콘 추출(HICON→BGRA, GetIconInfo/GetDIBits).
-windows-sys = { version = "0.59", features = ["Win32_System_Performance", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_Foundation"] }
+# Win32_System_SystemInformation / _Diagnostics_ToolHelp / _Threading / _ProcessStatus:
+# health 프로브의 Windows 구현(여유 물리 메모리·커밋 차지·자기 프로세스 트리). Linux의 cgroup
+# 파일 읽기에 해당하는 것이 Windows엔 없어 Win32 API로 같은 신호를 만든다(health/probe.rs).
+windows-sys = { version = "0.59", features = ["Win32_System_Performance", "Win32_System_SystemInformation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_System_ProcessStatus", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_Foundation"] }
 # 추출한 아이콘 BGRA→PNG 인코딩(리소스 모니터). tauri image-png가 같은 0.25를 트리에 가져 비용 미미.
 image = { version = "0.25", default-features = false, features = ["png"] }
 clipboard-win = "5"
@@ -125,8 +128,18 @@ tempfile = "3.27.0"
 # 얻고 strip으로 심볼 제거(바이너리 축소). 무거운 의존성 트리(mongodb/tiberius/reqwest/tauri)
 # 때문에 fat LTO(lto=true)는 릴리스 빌드를 15~40분+로 늘리고 RAM도 크게 먹는데, IPC 바운드
 # 앱이라 런타임 이득은 thin 대비 한 자릿수 %에 그쳐 thin이 비용/효과상 낫다. 릴리스 빌드(=설치본)
-# 에만 적용되며 dev/디버그 속도엔 영향이 없다. panic은 unwind 유지 — 커맨드 내부 패닉이 앱
-# 전체를 죽이지 않고 해당 작업만 실패하도록(crash 내성).
+# 에만 적용되며 dev/디버그 속도엔 영향이 없다.
+#
+# **panic은 반드시 unwind로 유지한다** — lib.rs의 `shutdown_step`이 `catch_unwind`로 종료 정리를
+# 단계별로 격리하는데, abort로 바꾸면 그 방어가 통째로 무력해진다.
+#
+# 다만 여기 예전에 적혀 있던 "커맨드 내부 패닉이 앱 전체를 죽이지 않는다(crash 내성)"는
+# **async 커맨드에만 성립한다.** 동기 `#[tauri::command]`는 호출 스레드에서 인라인 실행되는데,
+# Windows에서 그 스레드는 WebView2의 COM 콜백(`extern "system"` = nounwind ABI) 안이라
+# 패닉이 경계 밖으로 새는 순간 unwind 설정과 무관하게 프로세스가 abort한다. 그러면 종료 훅이
+# 한 줄도 안 돌아 PTY 셸·LSP 서버·브라우저 자식이 전부 고아로 남는다(2026-08-01 누수 경로).
+# 그래서 뜨거운 커맨드는 `#[tauri::command(async)]`로 둔다 — tokio 태스크 하네스의
+# `catch_unwind`가 삼켜 해당 호출만 실패한다. lib.rs의 `hot_commands_stay_async` 테스트가 강제한다.
 [profile.release]
 codegen-units = 1
 lto = "thin"

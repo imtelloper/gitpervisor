@@ -5,13 +5,13 @@ use crate::git::types::Memo;
 use crate::state::{self, AppState, Notes};
 
 /// 전체 메모(projectId → 메모 목록) — 시작 시 1회 로드해 캐시.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_notes(state: State<'_, AppState>) -> Notes {
-    state.notes.read().unwrap().clone()
+    state.notes.read().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 fn persist(app: &AppHandle, state: &AppState) -> Result<(), IpcError> {
-    let snapshot = state.notes.read().unwrap().clone();
+    let snapshot = state.notes.read().unwrap_or_else(|e| e.into_inner()).clone();
     state::save_notes(app, &snapshot)
 }
 
@@ -33,7 +33,7 @@ pub fn add_memo(
     state
         .notes
         .write()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .entry(project_id)
         .or_default()
         .push(memo.clone());
@@ -51,7 +51,7 @@ pub fn update_memo(
     text: String,
 ) -> Result<Option<Memo>, IpcError> {
     let result = {
-        let mut notes = state.notes.write().unwrap();
+        let mut notes = state.notes.write().unwrap_or_else(|e| e.into_inner());
         notes.get_mut(&project_id).and_then(|list| {
             list.iter_mut().find(|m| m.id == memo_id).map(|m| {
                 m.text = text;
@@ -73,7 +73,7 @@ pub fn delete_memo(
     memo_id: String,
 ) -> Result<(), IpcError> {
     {
-        let mut notes = state.notes.write().unwrap();
+        let mut notes = state.notes.write().unwrap_or_else(|e| e.into_inner());
         if let Some(list) = notes.get_mut(&project_id) {
             list.retain(|m| m.id != memo_id);
             if list.is_empty() {

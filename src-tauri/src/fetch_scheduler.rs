@@ -82,7 +82,7 @@ fn fetch_sem() -> &'static Semaphore {
 /// 들어온 두 번째 트리거(포커스 복귀 vs 스케줄러 틱)가 아직 낡은 `LAST_CYCLE`을 보고 함께
 /// 통과했다. 스로틀이 있는데도 사이클이 두 겹으로 돌아 fetch가 배로 나가던 경로다.
 fn claim_cycle(min_interval: Duration) -> bool {
-    let mut last = LAST_CYCLE.lock().unwrap();
+    let mut last = LAST_CYCLE.lock().unwrap_or_else(|e| e.into_inner());
     if last.is_some_and(|t| t.elapsed() < min_interval) {
         return false;
     }
@@ -105,7 +105,7 @@ pub fn spawn(app: AppHandle) {
             tick.tick().await;
             let minutes = {
                 let state = app.state::<AppState>();
-                let m = state.settings.read().unwrap().remote_refresh_minutes;
+                let m = state.settings.read().unwrap_or_else(|e| e.into_inner()).remote_refresh_minutes;
                 m
             };
             if minutes == 0 {
@@ -129,7 +129,7 @@ pub async fn refresh_remotes(
     project_ids: Vec<String>,
     force: bool,
 ) -> Result<(), IpcError> {
-    if state.projects.read().unwrap().is_empty() {
+    if state.projects.read().unwrap_or_else(|e| e.into_inner()).is_empty() {
         return Ok(());
     }
     if !force {
@@ -137,7 +137,7 @@ pub async fn refresh_remotes(
         // 스케줄러만 멈추고 창 포커스마다 60초 스로틀 한도까지 fetch가 돌아, 오히려 5분
         // 주기보다 잦아진다(시간당 최대 60사이클 × 레포 수). 우클릭 수동 새로고침은
         // force=true로 오므로 그대로 동작한다.
-        if state.settings.read().unwrap().remote_refresh_minutes == 0 {
+        if state.settings.read().unwrap_or_else(|e| e.into_inner()).remote_refresh_minutes == 0 {
             return Ok(());
         }
         // 스로틀 판정과 LAST_CYCLE 갱신을 한 락 구간에서 — 읽고 나서 spawn한 run_cycle이
@@ -156,7 +156,7 @@ pub async fn refresh_remotes(
 async fn run_cycle(app: AppHandle, only: Option<Vec<String>>, force: bool) {
     let state = app.state::<AppState>();
     let targets: Vec<(String, PathBuf)> = {
-        let projects = state.projects.read().unwrap();
+        let projects = state.projects.read().unwrap_or_else(|e| e.into_inner());
         projects
             .iter()
             .filter(|p| {
@@ -169,31 +169,31 @@ async fn run_cycle(app: AppHandle, only: Option<Vec<String>>, force: bool) {
     if targets.is_empty() {
         return;
     }
-    let period = state.settings.read().unwrap().remote_refresh_minutes;
+    let period = state.settings.read().unwrap_or_else(|e| e.into_inner()).remote_refresh_minutes;
 
     if only.is_none() {
         // force 전체 새로고침은 claim_cycle을 거치지 않으므로 여기서 시각을 남긴다 —
         // 수동 새로고침 직후 스케줄러 틱이 곧바로 또 도는 것을 막는다. 스로틀 경로는 이미
         // claim_cycle이 찍었고 여기서 한 번 더 찍혀도 사이클 시작 시각으로 갱신될 뿐이다.
-        *LAST_CYCLE.lock().unwrap() = Some(Instant::now());
+        *LAST_CYCLE.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
         // 제거된 프로젝트의 잔여 항목 정리 — 좀비 백오프/캐시가 남지 않게.
         let live: HashSet<&str> = targets.iter().map(|(id, _)| id.as_str()).collect();
         state
             .freshness
             .write()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .retain(|k, _| live.contains(k.as_str()));
         sched()
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .retain(|k, _| live.contains(k.as_str()));
     }
 
     // 스킵 규칙 판정 — 원격 없음 캐시는 여기서 사이클 카운트를 올린다.
     let mut planned: Vec<(String, PathBuf)> = Vec::new();
     {
-        let freshness = state.freshness.read().unwrap();
-        let mut sched = sched().lock().unwrap();
+        let freshness = state.freshness.read().unwrap_or_else(|e| e.into_inner());
+        let mut sched = sched().lock().unwrap_or_else(|e| e.into_inner());
         for (id, path) in targets {
             let f = freshness.get(&id);
             let meta = sched.entry(id.clone()).or_default();
@@ -244,7 +244,7 @@ async fn fetch_one(app: &AppHandle, project_id: &str, path: &Path) {
 
     // 시도 시각 기록(성공/실패 무관) — 백오프 대기의 기준점.
     {
-        let mut sched = sched().lock().unwrap();
+        let mut sched = sched().lock().unwrap_or_else(|e| e.into_inner());
         let meta = sched.entry(project_id.to_string()).or_default();
         meta.last_attempt = Some(Instant::now());
         meta.cycles_since_remote_check = 0;
@@ -252,7 +252,7 @@ async fn fetch_one(app: &AppHandle, project_id: &str, path: &Path) {
 
     // 원격 유무 확인 — 미확인이거나 "없음" 캐시의 재확인 시점일 때만 실행.
     let known_remote = {
-        let map = state.freshness.read().unwrap();
+        let map = state.freshness.read().unwrap_or_else(|e| e.into_inner());
         map.get(project_id).and_then(|f| f.has_remote)
     };
     if known_remote != Some(true) {
@@ -317,7 +317,7 @@ fn apply_outcome(app: &AppHandle, project_id: &str, outcome: Outcome) {
     let had_error;
     let now_error;
     {
-        let mut map = state.freshness.write().unwrap();
+        let mut map = state.freshness.write().unwrap_or_else(|e| e.into_inner());
         let entry = map.entry(project_id.to_string()).or_default();
         had_error = entry.error.is_some();
         match outcome {
@@ -480,7 +480,7 @@ mod tests {
     #[test]
     fn claim_cycle_admits_exactly_one_concurrent_trigger() {
         use std::sync::atomic::AtomicUsize;
-        *LAST_CYCLE.lock().unwrap() = None; // "아직 사이클 없음" 상태에서 시작
+        *LAST_CYCLE.lock().unwrap_or_else(|e| e.into_inner()) = None; // "아직 사이클 없음" 상태에서 시작
         let winners = AtomicUsize::new(0);
         std::thread::scope(|s| {
             for _ in 0..8 {
@@ -496,7 +496,7 @@ mod tests {
         assert!(!claim_cycle(Duration::from_secs(60)));
         // 간격 0이면 항상 통과(force 경로가 아니라 "주기가 다 찼다"는 뜻).
         assert!(claim_cycle(Duration::from_secs(0)));
-        *LAST_CYCLE.lock().unwrap() = None; // 실제 스케줄러에 영향이 남지 않게 복원
+        *LAST_CYCLE.lock().unwrap_or_else(|e| e.into_inner()) = None; // 실제 스케줄러에 영향이 남지 않게 복원
     }
 
     #[test]
