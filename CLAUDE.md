@@ -98,6 +98,10 @@ rm -f installers/Gitpervisor_<이전버전>*
   darwin/linux/windows가 다 있어야 한다. v0.3.2~v0.3.4는 에셋도 다 생기고 CI도 success였지만
   **macOS만 자동 업데이트가 죽어 있었다** — macOS 매트릭스에 `app` 번들이 빠져 있었기 때문이다
   (업데이터는 `.dmg`가 아니라 `.app.tar.gz`를 쓴다). 겉으로는 아무 문제가 없어 보이는 유형이다.
+- **Windows Authenticode 서명은 CI가 번들링 중에 한다** (Azure 서명 시크릿 6개 존재 시 —
+  `DOCS/windows-code-signing.md`). 무서명 setup.exe는 AhnLab V3 '앱 격리 검사'·SmartScreen에
+  걸려 설치가 막힌다(v0.3.5 실사례). **릴리스 에셋을 사후 서명하지 마라** — 파일이 바뀌어
+  업데이터 `.sig` 검증이 통째로 깨진다. 이것도 겉으로는 멀쩡해 보이는 유형이다.
 
 ---
 
@@ -135,6 +139,8 @@ rm -f installers/Gitpervisor_<이전버전>*
 | 무엇 | 어디 |
 |---|---|
 | 배포 절차·함정 | `.claude/skills/gitpervisor-deploy/SKILL.md` |
+| Windows 코드서명(유료·구현완료) | `DOCS/windows-code-signing.md` |
+| Windows 코드서명(무료·미구현 설계) | `DOCS/signpath-free-signing-design.md` |
 | OOM 사건 원인·수정 로드맵 | `DOCS/process-leak-postmortem.md` |
 | 조기경보(health) 설계 | `DOCS/health-watchdog-design.md` |
 | 알려진 증상별 해결 | `DOCS/TROUBLESHOOTING.md` |

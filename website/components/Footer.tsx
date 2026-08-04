@@ -1,3 +1,5 @@
+import NextLink from "next/link";
+
 import { GitHubIcon } from "@/components/icons";
 import { GITHUB_URL, RELEASES_URL } from "@/lib/github";
 
@@ -37,6 +39,12 @@ export function Footer() {
           >
             Docs
           </a>
+          <NextLink
+            href="/code-signing-policy"
+            className="text-muted transition hover:text-ink"
+          >
+            Code signing
+          </NextLink>
         </nav>
       </div>
     </footer>

@@ -153,6 +153,15 @@ curl -sL "https://github.com/imtelloper/gitpervisor/releases/download/v${NEW}/la
 `.sig`들과 `latest.json`이 없으면 자동 업데이트가 동작하지 않는다 — CI 로그를 확인한다
 (가장 흔한 원인은 `TAURI_SIGNING_PRIVATE_KEY` 시크릿 누락).
 
+**Windows Authenticode 서명 확인** — 서명 시크릿(`AZURE_SIGN_ACCOUNT` 등 6개,
+`DOCS/windows-code-signing.md`)이 설정된 뒤로는 setup.exe 서명도 확인한다:
+```powershell
+Get-AuthenticodeSignature .\Gitpervisor_<버전>_x64-setup.exe   # Status: Valid 이어야 함
+```
+무서명이면 AhnLab V3 '앱 격리 검사'와 SmartScreen이 설치를 막는다(v0.3.5 실사례).
+**릴리스 에셋을 사후 서명하면 안 된다** — 파일이 바뀌어 `.sig` 검증이 깨진다.
+서명은 반드시 CI 번들링 중 `signCommand` 경로로만 한다.
+
 ### 6. 사이트 반영 — ISR 캐시 주의
 
 사이트는 `getLatestRelease()`가 `next: { revalidate: 3600 }`으로 **1시간 캐시**한다.
@@ -199,4 +208,5 @@ curl -sI -L "https://github.com/imtelloper/gitpervisor/releases/download/v${NEW}
 | 자동 업데이트가 안 옴 | 릴리스에 `.sig`/`latest.json` 누락 — CI를 거치지 않았을 가능성 |
 | **macOS만** 자동 업데이트가 안 옴 | `latest.json`에 `darwin-*` 키가 없다. macOS 매트릭스에 `app` 번들 누락(`--bundles app dmg` 여야 함). 에셋 개수·dmg 다운로드는 정상이라 겉으로 안 드러난다 |
 | 릴리스가 draft로 남음 | `release.yml`의 `releaseDraft: false` 확인. draft면 `/releases/latest` API가 404라 사이트가 폴백 |
+| AhnLab V3 '앱 격리 검사'가 Windows 설치를 막음 | setup.exe 무서명. 서명 시크릿 6개 설정(`DOCS/windows-code-signing.md`). 에셋 사후 서명 금지 — `.sig`가 깨진다 |
 | `sudo` 비밀번호 요구 | 설치는 사용자가 `! sudo dpkg -i …`로 직접 실행 |

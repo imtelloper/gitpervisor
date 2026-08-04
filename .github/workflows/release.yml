@@ -15,6 +15,15 @@ jobs:
   build-tauri:
     permissions:
       contents: write
+    # Windows Authenticode 서명용 (Azure Artifact Signing, 구 Trusted Signing).
+    # 시크릿이 비어 있으면 서명 없이 빌드한다(기존과 동일). 설정법: DOCS/windows-code-signing.md
+    env:
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      AZURE_SIGN_ENDPOINT: ${{ secrets.AZURE_SIGN_ENDPOINT }}
+      AZURE_SIGN_ACCOUNT: ${{ secrets.AZURE_SIGN_ACCOUNT }}
+      AZURE_SIGN_PROFILE: ${{ secrets.AZURE_SIGN_PROFILE }}
     strategy:
       fail-fast: false
       matrix:
@@ -85,6 +94,29 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      # Windows Authenticode 서명 준비 — 무서명 exe는 AhnLab V3 '앱 격리 검사'와 SmartScreen에
+      # 걸려 설치가 막힌다(v0.3.5 실사례). 반드시 번들링 "중"에 signCommand로 서명해야 한다:
+      # Tauri가 앱 exe → NSIS 설치본 순서로 서명한 뒤 업데이터 .sig를 최종 파일 기준으로 만든다.
+      # 릴리스 에셋을 사후 서명하면 파일이 바뀌어 .sig 검증이 통째로 깨진다(자동 업데이트 불능).
+      - name: Prepare Windows code signing
+        if: matrix.platform == 'windows-latest' && env.AZURE_SIGN_ACCOUNT != ''
+        shell: bash
+        run: |
+          cargo install artifact-signing-cli --locked
+          cat > src-tauri/sign.windows.json <<EOF
+          {
+            "bundle": {
+              "windows": {
+                "signCommand": {
+                  "cmd": "artifact-signing-cli",
+                  "args": ["-e", "$AZURE_SIGN_ENDPOINT", "-a", "$AZURE_SIGN_ACCOUNT", "-c", "$AZURE_SIGN_PROFILE", "-d", "Gitpervisor", "%1"]
+                }
+              }
+            }
+          }
+          EOF
+          echo "TAURI_SIGN_ARGS=--config src-tauri/sign.windows.json" >> "$GITHUB_ENV"
+
       - name: Build & release Tauri app
         uses: tauri-apps/tauri-action@fce9c6108b31ea247710505d3aaaa893ee6768d4 # v0
         env:
@@ -107,4 +139,5 @@ jobs:
           # 다운로드 버튼이나 앱 자동 업데이트를 가로채지 않는다.
           # 태그 푸시(진짜 릴리스)는 false → 정식 공개.
           prerelease: ${{ github.event_name == 'workflow_dispatch' }}
-          args: ${{ matrix.args }}
+          # TAURI_SIGN_ARGS: Windows 서명 스텝이 시크릿 존재 시에만 --config 주입(없으면 빈 값)
+          args: ${{ matrix.args }} ${{ env.TAURI_SIGN_ARGS }}

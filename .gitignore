@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# CI가 생성하는 Windows 서명 설정 (계정명 노출 방지)
+src-tauri/sign.windows.json
+
 # 빌드 산출 설치 파일 (배포는 GitHub Releases 사용)
 installers
 # tauri build 후 프로젝트 루트로 복사하는 설치파일 (사용자 선호 위치)
