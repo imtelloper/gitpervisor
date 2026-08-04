@@ -62,6 +62,13 @@ export function languageOf(path: string): string {
   return EXT_LANG[base.slice(dot + 1).toLowerCase()] ?? "plaintext";
 }
 
+// 뷰어가 이미지로 여는 확장자.
+//
+// 동영상과 같은 원칙 — **확장자 목록은 "표시를 시도할 대상"이지 디코드 보장이 아니다.**
+// tiff/heic는 macOS 웹뷰(WKWebView·ImageIO)에선 그려지지만 Windows(WebView2·Chromium)에선
+// 디코드가 실패한다(실측). 그래도 목록에 두는 편이 낫다 — 빼면 "바이너리 파일"이라는 엉뚱한
+// 안내가 나오고, 넣으면 macOS에선 제대로 보이고 Windows에선 ImageView가 형식 미지원임을
+// 알리며 외부 앱으로 넘겨준다.
 const IMAGE_EXT = new Set([
   "png",
   "jpg",
@@ -72,6 +79,10 @@ const IMAGE_EXT = new Set([
   "ico",
   "avif",
   "svg",
+  "tif",
+  "tiff",
+  "heic",
+  "heif",
 ]);
 
 /** 이미지로 렌더할 파일인지 (확장자 기준). svg도 이미지로 본다. */
@@ -80,6 +91,36 @@ export function isImage(path: string): boolean {
   const dot = base.lastIndexOf(".");
   if (dot <= 0) return false;
   return IMAGE_EXT.has(base.slice(dot + 1).toLowerCase());
+}
+
+// 뷰어가 <video>/<audio>로 재생을 시도하는 확장자.
+//
+// **확장자는 컨테이너일 뿐 코덱을 보장하지 않는다.** 재생 가능 여부는 앱이 아니라 각 OS의
+// 웹뷰 엔진이 정한다(macOS WKWebView는 WebM/VP9가 안 될 수 있고, Linux WebKitGTK는 설치된
+// GStreamer 플러그인에 좌우된다). 그래서 이 목록은 "재생을 시도할 대상"이고, 실패는
+// MediaView가 코덱 미지원으로 안내하며 외부 앱 열기로 넘긴다.
+const VIDEO_EXT = new Set(["mp4", "m4v", "mov", "webm", "ogv"]);
+const AUDIO_EXT = new Set(["mp3", "wav", "m4a", "aac", "flac", "oga", "ogg"]);
+
+function extOf(path: string): string {
+  const base = path.split("/").pop() ?? path;
+  const dot = base.lastIndexOf(".");
+  return dot <= 0 ? "" : base.slice(dot + 1).toLowerCase();
+}
+
+/** 뷰어에서 재생할 동영상인가. */
+export function isVideo(path: string): boolean {
+  return VIDEO_EXT.has(extOf(path));
+}
+
+/** 뷰어에서 재생할 오디오인가. */
+export function isAudio(path: string): boolean {
+  return AUDIO_EXT.has(extOf(path));
+}
+
+/** 재생 대상(동영상·오디오) 전체 — 라우팅·diff 게이팅에서 함께 쓴다. */
+export function isPlayable(path: string): boolean {
+  return isVideo(path) || isAudio(path);
 }
 
 // 브라우저로 렌더 가능한 HTML 문서 확장자만. languageOf(path)==="html"은 .vue/.svelte도

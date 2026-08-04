@@ -31,12 +31,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { errorMessage } from "../../lib/ipc";
 import type { DiffTarget } from "../../lib/ipc";
 import { isMod } from "../../lib/platform";
-import { isImage, languageOf } from "../../lib/language-map";
+import { isImage, isPlayable, languageOf } from "../../lib/language-map";
 import { monacoThemeOf } from "../../lib/themes";
 import { useDiff, useSettings, useWriteFile } from "../../queries";
 import { useUi } from "../../stores/ui";
 import { EmptyState } from "../common/EmptyState";
 import ImageView from "./ImageView";
+import MediaView from "./MediaView";
 import MarkdownView from "./MarkdownView";
 
 function modeLabel(target: DiffTarget): string {
@@ -142,10 +143,13 @@ export default function DiffViewer({
   const isFileView = target.mode === "file";
   // 이미지 파일은 모드와 무관하게 워크트리 파일을 이미지로 렌더(텍스트 diff 대신).
   const isImageView = isImage(target.path);
+  // 동영상·오디오도 같은 원칙 — 워크트리 파일을 재생한다(git이 바이너리로 보는 대상이라 diff 무의미).
+  const isMediaView = isPlayable(target.path);
   const isMarkdown =
-    isFileView && !isImageView && languageOf(target.path) === "markdown";
-  // 파일뷰만 직접 편집한다. diff뷰(worktree/index)는 "편집" 버튼으로 파일뷰 전환. 이미지는 편집 불가.
-  const editable = isFileView && !isImageView;
+    isFileView && !isImageView && !isMediaView && languageOf(target.path) === "markdown";
+  // 파일뷰만 직접 편집한다. diff뷰(worktree/index)는 "편집" 버튼으로 파일뷰 전환.
+  // 이미지·미디어는 편집 불가.
+  const editable = isFileView && !isImageView && !isMediaView;
   const fileOptions = useMemo(
     () => ({ ...FILE_OPTIONS, readOnly: !editable, fontSize: settings?.diffFontSize ?? 13 }),
     [settings?.diffFontSize, editable],
@@ -228,10 +232,10 @@ export default function DiffViewer({
   const warmedKeyRef = useRef("");
   useEffect(() => {
     const content = diff?.newContent;
-    if (!content || isImageView || warmedKeyRef.current === editorKey) return;
+    if (!content || isImageView || isMediaView || warmedKeyRef.current === editorKey) return;
     warmedKeyRef.current = editorKey;
     warmDefinitionCache(content);
-  }, [diff, editorKey, isImageView]);
+  }, [diff, editorKey, isImageView, isMediaView]);
 
   // ── 편집/저장 상태 ──
   const writeFile = useWriteFile(projectId);
@@ -473,7 +477,7 @@ export default function DiffViewer({
 
   // diff뷰에서 워킹 파일을 편집 가능한 파일뷰로 여는 버튼 표시 여부.
   const canEditFromDiff =
-    !isImageView && (target.mode === "worktree" || target.mode === "index");
+    !isImageView && !isMediaView && (target.mode === "worktree" || target.mode === "index");
 
   return (
     <div className="flex h-full min-w-0 flex-col bg-base">
@@ -529,7 +533,7 @@ export default function DiffViewer({
             {mdRaw ? <Eye size={14} /> : <Code2 size={14} />}
           </button>
         )}
-        {!isFileView && !isImageView && (
+        {!isFileView && !isImageView && !isMediaView && (
           <button
             onClick={toggleDiffCollapse}
             title={
@@ -570,6 +574,8 @@ export default function DiffViewer({
       <div className="min-h-0 flex-1">
         {isImageView ? (
           <ImageView projectId={projectId} path={path} />
+        ) : isMediaView ? (
+          <MediaView projectId={projectId} path={path} />
         ) : isLoading ? (
           <EmptyState title="diff 불러오는 중…" />
         ) : error ? (

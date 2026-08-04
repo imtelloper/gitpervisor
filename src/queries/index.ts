@@ -19,6 +19,7 @@ import type {
 } from "../lib/ipc";
 import { formatBytes } from "../lib/format";
 import { errorMessage, ipc, isIpcError } from "../lib/ipc";
+import { isImage, isPlayable } from "../lib/language-map";
 import { useDb } from "../stores/db";
 import type { SyncOp } from "../stores/ops";
 import { useOps } from "../stores/ops";
@@ -447,10 +448,13 @@ export function useClearQuarantine() {
 }
 
 export function useDiff(projectId: string | null, target: DiffTarget | null) {
+  // 이미지·동영상·오디오는 뷰어가 diff보다 먼저 분기해 결과를 쓰지 않는다 — 부르면 순수 낭비고,
+  // 동영상은 파일이 GB 단위일 수 있어 git spawn 비용이 더 크다. 아예 끈다.
+  const media = !!target && (isImage(target.path) || isPlayable(target.path));
   return useQuery({
     queryKey: target ? keys.diff(projectId ?? "none", target) : ["diff", "none"],
     queryFn: () => ipc.getDiff(projectId!, target!),
-    enabled: !!projectId && !!target,
+    enabled: !!projectId && !!target && !media,
     // 신선도는 watcher·변경 액션의 invalidate가 책임진다 — 캐시 히트 시 재스폰 없음
     staleTime: Infinity,
     // 파일 전환 시 이전 diff를 유지해 "불러오는 중" 깜빡임을 없앤다

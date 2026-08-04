@@ -280,6 +280,11 @@ fn mime_of(path: &str) -> String {
         "ico" => "image/x-icon",
         "avif" => "image/avif",
         "svg" => "image/svg+xml",
+        // MIME이 틀리면 디코드 가능한 플랫폼에서도 브라우저가 시도조차 하지 않는다.
+        // (language-map.ts의 IMAGE_EXT와 짝 — 한쪽만 늘리면 조용히 깨진다)
+        "tif" | "tiff" => "image/tiff",
+        "heic" => "image/heic",
+        "heif" => "image/heif",
         _ => "application/octet-stream",
     }
     .to_string()
@@ -288,6 +293,32 @@ fn mime_of(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 이미지 뷰어가 여는 확장자는 전부 MIME이 매핑돼야 한다.
+    /// data URL의 MIME이 틀리면 디코드 가능한 플랫폼에서도 브라우저가 시도조차 하지 않는다
+    /// (프론트 `IMAGE_EXT`와 짝 — 한쪽만 늘리면 조용히 깨진다).
+    #[test]
+    fn image_mime_covers_viewer_extensions() {
+        for (name, want) in [
+            ("a.png", "image/png"),
+            ("a.jpg", "image/jpeg"),
+            ("a.jpeg", "image/jpeg"),
+            ("a.gif", "image/gif"),
+            ("a.webp", "image/webp"),
+            ("a.bmp", "image/bmp"),
+            ("a.ico", "image/x-icon"),
+            ("a.avif", "image/avif"),
+            ("a.svg", "image/svg+xml"),
+            ("a.tif", "image/tiff"),
+            ("a.tiff", "image/tiff"),
+            ("a.heic", "image/heic"),
+            ("a.heif", "image/heif"),
+        ] {
+            assert_eq!(mime_of(name), want, "{name}의 MIME이 빠지면 표시가 조용히 실패한다");
+        }
+        // 대소문자 무관
+        assert_eq!(mime_of("A.TIFF"), "image/tiff");
+    }
 
     /// 상한 초과 파일은 **읽지 않고** 걸러야 한다.
     ///

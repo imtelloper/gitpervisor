@@ -576,10 +576,18 @@ fn content_type(path: &Path) -> &'static str {
         "otf" => "font/otf",
         "txt" | "md" => "text/plain; charset=utf-8",
         "xml" => "application/xml; charset=utf-8",
+        // 미디어 — 뷰어의 <video>/<audio>가 이 서버에서 Range로 받아 재생한다.
+        // MIME이 틀리면 nosniff 때문에 브라우저가 아예 디코드를 시도하지 않는다.
         "wav" => "audio/wav",
         "mp3" => "audio/mpeg",
-        "mp4" => "video/mp4",
+        "m4a" => "audio/mp4",
+        "aac" => "audio/aac",
+        "flac" => "audio/flac",
+        "oga" | "ogg" => "audio/ogg",
+        "mp4" | "m4v" => "video/mp4",
+        "mov" => "video/quicktime",
         "webm" => "video/webm",
+        "ogv" => "video/ogg",
         _ => "application/octet-stream",
     }
 }
@@ -630,6 +638,33 @@ mod tests {
         assert_eq!(content_type(Path::new("/a/app.mjs")), "text/javascript; charset=utf-8");
         assert_eq!(content_type(Path::new("/a/logo.svg")), "image/svg+xml");
         assert_eq!(content_type(Path::new("/a/data.bin")), "application/octet-stream");
+    }
+
+    /// 뷰어의 `<video>`/`<audio>`가 여기서 받아 재생한다. MIME이 틀리면 nosniff 때문에
+    /// 브라우저가 디코드를 아예 시도하지 않으므로, 재생 대상 확장자는 전부 매핑되어야 한다
+    /// (language-map.ts의 VIDEO_EXT·AUDIO_EXT와 짝이다 — 한쪽만 늘리면 조용히 깨진다).
+    #[test]
+    fn media_types_cover_playable_extensions() {
+        for (name, want) in [
+            ("clip.mp4", "video/mp4"),
+            ("clip.m4v", "video/mp4"),
+            ("clip.mov", "video/quicktime"),
+            ("clip.webm", "video/webm"),
+            ("clip.ogv", "video/ogg"),
+            ("s.mp3", "audio/mpeg"),
+            ("s.wav", "audio/wav"),
+            ("s.m4a", "audio/mp4"),
+            ("s.aac", "audio/aac"),
+            ("s.flac", "audio/flac"),
+            ("s.oga", "audio/ogg"),
+            ("s.ogg", "audio/ogg"),
+        ] {
+            assert_eq!(
+                content_type(Path::new(&format!("/a/{name}"))),
+                want,
+                "{name}의 MIME이 빠지면 재생이 조용히 실패한다"
+            );
+        }
     }
 
     /// 회귀 방지: 서브리소스 인증은 Referer의 **출처**로만 판정해야 한다.
