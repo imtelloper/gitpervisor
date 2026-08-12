@@ -501,15 +501,39 @@ export function createTerminalImpl(opts: {
     term.writeln(`\r\n\x1b[31m[터미널 연결 실패] ${errorMessage(e)}\x1b[0m`);
   });
 
+  // 입력·리사이즈는 **open 완료 뒤부터** 보낸다. term_open은 셸 spawn이 끝나야 세션을
+  // 등록하는데(Windows ConPTY+PowerShell은 수백 ms), xterm은 분리된 host에서 80x24로 시작하고
+  // fit은 attach 후 다음 프레임에 돌아서 첫 term_resize가 거의 항상 이긴다 — 세션이 없어
+  // "세션을 찾을 수 없습니다"로 조용히 버려지고 재시도가 없어 **PTY가 80x24로 박제**됐다.
+  // 셸 프롬프트는 멀쩡해 보여 못 알아채다가, TUI(claude 등)를 띄우는 순간 화면 좌상단
+  // 80x24 영역에 UI가 통째로 구겨져 그려진다(실사례). 실패(스폰 불가)는 무해 no-op으로 흘린다.
+  const opened = startCmd.then(
+    () => {},
+    () => {},
+  );
+  // 첫 키 입력도 같은 레이스가 가능하므로 쓰기 체인을 open으로 시드한다. 시드가 마지막이면
+  // 지워 맵이 자라지 않게 한다(ptyWrite의 정리 규칙과 동일).
+  writeChains.set(opts.id, opened);
+  void opened.then(() => {
+    if (writeChains.get(opts.id) === opened) writeChains.delete(opts.id);
+  });
+
   // 입력 → PTY stdin
   // 주의: 여기서 IME 미러를 리셋하면 안 된다 — onData에는 키 입력만 아니라 xterm의 "자동응답"
   // (커서위치 \x1b[?..R, DA, 포커스 \x1b[I/O, 마우스 리포트)이 상시 흐른다(TUI/프롬프트가 초당
   // 수십 회 질의). 제어바이트 매칭으로 리셋하면 한글 조합 도중 미러+textarea가 계속 지워져
   // 입력이 깨진다(자모 파편·중복). 리셋은 keydown 목록/ASCII input/blur가 담당한다.
   term.onData((data) => ptyWrite(opts.id, data));
-  // 리사이즈 → ConPTY
+  // 리사이즈 → ConPTY. open 뒤로 + **서로 순서 보장** 체이닝 — term_resize도 async 커맨드라
+  // 연속 리사이즈(드래그)가 워커에서 뒤바뀌면 마지막 크기가 아니라 이전 크기가 남는다.
+  let resizeChain = opened;
   term.onResize(({ cols, rows }) => {
-    void invoke("term_resize", { termId: opts.id, cols, rows }).catch(() => {});
+    resizeChain = resizeChain.then(() =>
+      invoke("term_resize", { termId: opts.id, cols, rows }).then(
+        () => {},
+        () => {}, // 실패해도 체인을 끊지 않는다(ptyWrite와 동일)
+      ),
+    );
   });
 
   return inst;
