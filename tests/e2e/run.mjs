@@ -41,6 +41,7 @@ const SUITES = [
   "./suites/27-lint.mjs",
   "./suites/28-lsp.mjs",
   "./suites/29-settings-ux.mjs",
+  "./suites/30-image-annotate.mjs",
 ];
 
 const report = createReport();

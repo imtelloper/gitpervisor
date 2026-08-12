@@ -1,4 +1,12 @@
-import { ExternalLink, FileWarning, Maximize, Minus, Plus, Scan } from "lucide-react";
+import {
+  ExternalLink,
+  FileWarning,
+  Maximize,
+  Minus,
+  Pencil,
+  Plus,
+  Scan,
+} from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { errorMessage, ipc } from "../../lib/ipc";
@@ -64,6 +72,7 @@ function ZoomableImage({
   path: string;
 }) {
   const pushToast = useUi((s) => s.pushToast);
+  const openImageEditor = useUi((s) => s.openImageEditor);
   // 웹뷰가 디코드하지 못한 형식 — 확장자가 목록에 있어도 엔진이 못 그릴 수 있다
   // (TIFF·HEIC는 macOS WKWebView는 되고 Windows WebView2는 안 된다 — 실측).
   // onError를 안 잡으면 onLoad가 영영 안 와 빈 화면만 남는다.
@@ -214,7 +223,16 @@ function ZoomableImage({
 
   return (
     <div className="flex h-full flex-col bg-base">
-      <div className="flex h-8 shrink-0 items-center justify-end gap-1 border-b border-edge px-3 text-xs text-fg-dim">
+      <div className="flex h-8 shrink-0 items-center gap-1 border-b border-edge px-3 text-xs text-fg-dim">
+        {/* 편집 진입 — projectId 를 함께 넘긴다. 임베디드 저장소면 합성 id 라 이게 정답이다(설계 D1). */}
+        <button
+          onClick={() => openImageEditor(path, projectId)}
+          title="이미지 편집"
+          className="flex items-center gap-1 rounded px-1.5 py-1 hover:bg-raised hover:text-fg"
+        >
+          <Pencil size={13} /> 편집
+        </button>
+        <div className="flex-1" />
         <TBtn label="축소 (−)" onClick={() => zoomCenter(1 / BTN_STEP)}>
           <Minus size={13} />
         </TBtn>

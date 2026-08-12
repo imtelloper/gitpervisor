@@ -108,6 +108,14 @@ export interface UiState {
   projectSortByChanges: boolean;
   /** 이미지 편집기 대상(레포 상대 경로) — 열려 있으면 모달 표시 */
   imageEditorPath: string | null;
+  /**
+   * 이미지 편집기가 읽고 쓸 저장소 id. 임베디드 저장소 파일이면 그 저장소의 합성 id
+   * (`<outerId>::<rel>`), 아니면 null(선택 프로젝트로 라우팅).
+   *
+   * 경로만으로는 어느 레포 기준인지 알 수 없다 — 이게 없으면 중첩 저장소 안 이미지를
+   * **바깥 레포 루트 기준 상대경로로 써서 엉뚱한 파일을 만든다**(설계 D1).
+   */
+  imageEditorRepoId: string | null;
   toasts: Toast[];
   confirm: ConfirmRequest | null;
   prompt: PromptRequest | null;
@@ -149,7 +157,8 @@ export interface UiState {
   closeConfirm: () => void;
   askPrompt: (req: PromptRequest) => void;
   closePrompt: () => void;
-  openImageEditor: (path: string) => void;
+  /** repoId: 임베디드 저장소 파일이면 그 저장소의 합성 id(생략하면 선택 프로젝트로 라우팅). */
+  openImageEditor: (path: string, repoId?: string) => void;
   closeImageEditor: () => void;
 }
 
@@ -241,6 +250,7 @@ export const useUi = create<UiState>((set) => ({
   fileTreeOpen: localStorage.getItem("gp:filetree-open") !== "0",
   projectSortByChanges: localStorage.getItem("gp:project-sort-changes") === "1",
   imageEditorPath: null,
+  imageEditorRepoId: null,
   toasts: [],
   confirm: null,
   prompt: null,
@@ -259,7 +269,9 @@ export const useUi = create<UiState>((set) => ({
         selectedCommitSha: null,
         memoOpen: false,
         // 이미지 편집기는 프로젝트별 상대 경로라 프로젝트가 바뀌면 닫는다(엉뚱한 프로젝트에 쓰기 방지).
+        // repoId도 함께 지운다 — 안 지우면 다음 편집이 스테일 repoId를 물고 간다(설계 §7.2).
         imageEditorPath: null,
+        imageEditorRepoId: null,
       };
     });
   },
@@ -456,8 +468,10 @@ export const useUi = create<UiState>((set) => ({
   closeConfirm: () => set({ confirm: null }),
   askPrompt: (req) => set({ prompt: req }),
   closePrompt: () => set({ prompt: null }),
-  openImageEditor: (path) => set({ imageEditorPath: path }),
-  closeImageEditor: () => set({ imageEditorPath: null }),
+  openImageEditor: (path, repoId) =>
+    set({ imageEditorPath: path, imageEditorRepoId: repoId ?? null }),
+  closeImageEditor: () =>
+    set({ imageEditorPath: null, imageEditorRepoId: null }),
 }));
 
 // 뷰어 탭 + 프로젝트별 활성 파일 영속 — 두 슬라이스가 바뀔 때만 기록(참조 비교로 잦은 UI 변화 무시).

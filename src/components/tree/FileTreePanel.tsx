@@ -918,7 +918,9 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
                     icon={Pencil}
                     label="이미지 편집"
                     onClick={() => {
-                      openImageEditor(menu.path);
+                      // 이 트리가 보고 있는 저장소 id를 함께 넘긴다 — 임베디드 저장소 파일이
+                      // 바깥 레포 기준으로 저장되는 것을 막는다(설계 D1).
+                      openImageEditor(menu.path, projectId);
                       setMenu(null);
                     }}
                   />

@@ -15,6 +15,7 @@
     "core:webview:allow-create-webview-window",
     "clipboard-manager:allow-write-text",
     "clipboard-manager:allow-read-text",
+    "clipboard-manager:allow-write-image",
     "dialog:default",
     "store:default",
     "notification:default",
