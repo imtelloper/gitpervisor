@@ -85,23 +85,35 @@ export function HealthBanner() {
     };
   }, []);
 
+  // danger를 닫은 채 위험이 그대로 지속되면 5분 뒤 배너를 다시 띄운다. 백엔드는 레벨
+  // "전이" 시에만 발행하므로(주기 IPC가 압박을 키우지 않도록), danger에 고정된 상태에선
+  // 이 타이머가 유일한 재알림 채널이다 — 토스트는 6초짜리 인앱이고 상태바 칩은 아직 없다.
+  useEffect(() => {
+    if (dismissed !== "danger" || snap?.level !== "danger") return;
+    const t = setTimeout(() => setDismissed(null), 300_000);
+    return () => clearTimeout(t);
+  }, [dismissed, snap]);
+
   const prevBanner = prev ? (
     <PrevSessionBanner prev={prev} onClose={() => setPrev(null)} />
   ) : null;
 
-  // 주의 단계는 배너를 띄우지 않는다(상태바 칩 역할만). 위험 단계는 닫을 수 없다.
+  // 주의 단계는 배너를 띄우지 않는다(조용한 단계). 위험 단계도 닫을 수 있다 —
+  // 닫기 없는 배너는 화면 상단을 계속 점유해 오히려 저장 작업을 방해한다. 닫으면
+  // 닫은 레벨 이하에선 숨기고, 그보다 올라가거나 정상(ok) 회복 후 다시 악화되면
+  // (ok 전이에서 dismissed 리셋) 다시 띄운다. danger 지속 중엔 위 타이머가 재표시한다.
   const showLive =
     snap &&
     snap.sample.available &&
     (snap.level === "warn" || snap.level === "danger") &&
-    !(dismissed === snap.level && snap.level !== "danger");
+    RANK[snap.level] > RANK[dismissed ?? "ok"];
   if (!showLive) return prevBanner;
 
   const danger = snap.level === "danger";
   const s = snap.sample;
 
   // 지난 실행 안내와 현재 경보를 배타 관계로 두면, 이미 지나간 일 때문에 "지금 죽는다"는
-  // 닫기 불가 배너가 렌더조차 안 된다. 둘 다 세로로 쌓는다.
+  // 최우선 경보가 렌더조차 안 된다. 둘 다 세로로 쌓는다.
   return (
     <>
       {prevBanner}
@@ -137,15 +149,13 @@ export function HealthBanner() {
           >
             리소스 모니터 열기
           </button>
-          {!danger && (
-            <button
-              type="button"
-              onClick={() => setDismissed(snap.level)}
-              className="rounded px-2 py-1 opacity-70 hover:bg-white/10 hover:opacity-100"
-            >
-              닫기
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={() => setDismissed(snap.level)}
+            className="rounded px-2 py-1 opacity-70 hover:bg-white/10 hover:opacity-100"
+          >
+            닫기
+          </button>
         </div>
       </div>
       </div>
