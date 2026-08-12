@@ -135,6 +135,105 @@ export async function run({ cdp, report: r, fix }) {
     wbEsc.code || "(ok?)",
   );
 
+  // ── rename_path (같은 폴더 안 이름만 변경 — 이동이 아니다) ──
+  // 자기 완결 픽스처(e2e-rename)를 따로 쓴다 — 위 단언들이 쓰는 e2e-newdir 를 건드리지 않게.
+  await cdp.try("create_dir", P("e2e-rename"));
+  await cdp.try("create_file", P("e2e-rename/old.txt"));
+
+  const rn = await cdp.try("rename_path", {
+    ...P("e2e-rename/old.txt"),
+    newName: "new.txt",
+  });
+  r.check(
+    "rename_path: 파일 이름 변경",
+    rn.ok &&
+      rn.r === "e2e-rename/new.txt" &&
+      has("e2e-rename/new.txt") &&
+      !has("e2e-rename/old.txt"),
+    rn.ok ? `→ ${rn.r}` : rn.code,
+  );
+
+  // 이미 있는 이름으로는 덮어쓰지 않는다(데이터 손실 방지).
+  await cdp.try("create_file", P("e2e-rename/other.txt"));
+  const rnDup = await cdp.try("rename_path", {
+    ...P("e2e-rename/new.txt"),
+    newName: "other.txt",
+  });
+  r.check(
+    "rename_path: 기존 이름 충돌 → ALREADY_EXISTS",
+    !rnDup.ok && rnDup.code === "ALREADY_EXISTS" && has("e2e-rename/new.txt"),
+    rnDup.code || "(ok?)",
+  );
+
+  // 구분자가 들어오면 '이동'이 되므로 계약상 거부한다.
+  for (const [label, name] of [
+    ["슬래시", "sub/x.txt"],
+    ["역슬래시", "sub\\x.txt"],
+    ["상위(..)", ".."],
+  ]) {
+    const bad = await cdp.try("rename_path", {
+      ...P("e2e-rename/new.txt"),
+      newName: name,
+    });
+    r.check(
+      `rename_path: ${label} 이름 거부`,
+      !bad.ok && bad.code === "IO",
+      bad.code || "(ok?)",
+    );
+  }
+
+  // 윈도우 예약 장치명 — 확장자가 붙어도 거부(create_file 과 같은 방어).
+  const rnReserved = await cdp.try("rename_path", {
+    ...P("e2e-rename/new.txt"),
+    newName: "CON.txt",
+  });
+  r.check(
+    "rename_path: 예약 장치명(CON.txt) 거부",
+    !rnReserved.ok && rnReserved.code === "IO",
+    rnReserved.code || "(ok?)",
+  );
+
+  const rnGit = await cdp.try("rename_path", { ...P(".git"), newName: "git-old" });
+  r.check("rename_path: .git 거부", !rnGit.ok, rnGit.code || "(ok?)");
+
+  const rnEsc = await cdp.try("rename_path", {
+    ...P("../escape.txt"),
+    newName: "x.txt",
+  });
+  r.check(
+    "rename_path: '..' 원본 경로 거부",
+    !rnEsc.ok && rnEsc.code === "IO",
+    rnEsc.code || "(ok?)",
+  );
+
+  const rnMissing = await cdp.try("rename_path", {
+    ...P("__missing_xyz__"),
+    newName: "y.txt",
+  });
+  r.check(
+    "rename_path: 없는 대상 → NOT_FOUND",
+    !rnMissing.ok && rnMissing.code === "NOT_FOUND",
+    rnMissing.code || "(ok?)",
+  );
+
+  const rnRoot = await cdp.try("rename_path", { ...P(""), newName: "x" });
+  r.check("rename_path: 루트(빈 경로) 거부", !rnRoot.ok, rnRoot.code || "(ok?)");
+
+  // 폴더 이름 변경 — 안의 파일이 새 경로로 함께 따라와야 한다.
+  const rnDir = await cdp.try("rename_path", {
+    ...P("e2e-rename"),
+    newName: "e2e-renamed",
+  });
+  r.check(
+    "rename_path: 폴더 이름 변경(하위 유지)",
+    rnDir.ok &&
+      rnDir.r === "e2e-renamed" &&
+      has("e2e-renamed/new.txt") &&
+      !has("e2e-rename"),
+    rnDir.ok ? `→ ${rnDir.r}` : rnDir.code,
+  );
+  await cdp.try("delete_path", P("e2e-renamed"));
+
   // ── delete_path ──
   const delFile = await cdp.try("delete_path", P("e2e-newdir/pixel.png"));
   r.check(

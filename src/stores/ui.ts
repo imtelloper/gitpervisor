@@ -117,6 +117,11 @@ export interface UiState {
   closeViewerTab: (key: string) => void;
   /** 프로젝트 제거 시 그 프로젝트의 뷰어 탭·활성 파일 정리(고아 방지). */
   closeProjectViewerTabs: (projectId: string) => void;
+  /**
+   * 파일/폴더 이름 바꾸기 후 그 프로젝트의 뷰어 경로(탭·활성 파일·선택 diff)를 새 경로로 옮긴다.
+   * 안 하면 열려 있던 탭이 사라진 옛 경로를 가리켜 "불러오지 못함"만 뜬다.
+   */
+  renameViewerPaths: (projectId: string, from: string, to: string) => void;
   toggleLog: () => void;
   setLogHeight: (h: number) => void;
   setAggregateOpen: (open: boolean) => void;
@@ -329,6 +334,76 @@ export const useUi = create<UiState>((set) => ({
       delete activeDiffByProject[projectId];
       return {
         viewerTabs: s.viewerTabs.filter((t) => t.outerId !== projectId),
+        activeDiffByProject,
+      };
+    }),
+  renameViewerPaths: (projectId, from, to) =>
+    set((s) => {
+      // 이름 바꾼 항목 자신(정확 일치)과 그 하위(`from/` 접두)만 옮긴다 — 대상이 아니면 null.
+      const mapPath = (p: string): string | null =>
+        p === from ? to : p.startsWith(`${from}/`) ? to + p.slice(from.length) : null;
+      // 임베디드(중첩) 저장소로 라우팅된 대상의 path는 **그 저장소** 기준이라 outer 경로(from/to)로
+      // 매핑하면 엉뚱한 경로가 된다 — outer의 `src`를 바꿨는데 중첩 저장소의 `src/…` 탭이 딸려간다.
+      // repoId가 없거나 outer 자신일 때만 outer 상대 경로다(viewerTabKey의 `repoId ?? outerId`와 동일 규칙).
+      const isOuterRel = (repoId: string | null) =>
+        repoId === null || repoId === projectId;
+      let tabsChanged = false;
+      const seen = new Set<string>();
+      const viewerTabs: ViewerFileTab[] = [];
+      for (const t of s.viewerTabs) {
+        const next =
+          t.outerId === projectId && isOuterRel(t.repoId)
+            ? mapPath(t.target.path)
+            : null;
+        if (next === null) {
+          // 이관된 탭이 이 탭의 키를 이미 차지했으면(같은 대상) 앞의 것만 남긴다.
+          if (seen.has(t.key)) {
+            tabsChanged = true;
+            continue;
+          }
+          seen.add(t.key);
+          viewerTabs.push(t);
+          continue;
+        }
+        tabsChanged = true;
+        const target = { ...t.target, path: next };
+        // 탭 키에 경로가 박혀 있다 — 다시 계산하지 않으면 탭이 죽은 경로를 가리킨 채 남는다.
+        const key = viewerTabKey(target, t.repoId, t.outerId);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        viewerTabs.push({ ...t, key, target });
+      }
+
+      const cur = s.selectedDiff;
+      let selectedDiff = cur;
+      let selChanged = false;
+      if (s.selectedProjectId === projectId && isOuterRel(s.selectedDiffRepoId) && cur) {
+        const np = mapPath(cur.path);
+        if (np !== null) {
+          selectedDiff = { ...cur, path: np };
+          selChanged = true;
+        }
+      }
+
+      let activeDiffByProject = s.activeDiffByProject;
+      const active = s.activeDiffByProject[projectId];
+      let actChanged = false;
+      if (active && isOuterRel(active.repoId)) {
+        const np = mapPath(active.target.path);
+        if (np !== null) {
+          activeDiffByProject = {
+            ...s.activeDiffByProject,
+            [projectId]: { ...active, target: { ...active.target, path: np } },
+          };
+          actChanged = true;
+        }
+      }
+
+      // 옮길 것이 없으면 상태를 그대로 — 뷰어 탭 영속·리렌더를 헛돌리지 않는다.
+      if (!tabsChanged && !selChanged && !actChanged) return s;
+      return {
+        viewerTabs: tabsChanged ? viewerTabs : s.viewerTabs,
+        selectedDiff,
         activeDiffByProject,
       };
     }),

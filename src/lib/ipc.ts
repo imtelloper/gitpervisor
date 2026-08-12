@@ -842,6 +842,9 @@ export const ipc = {
   // 파일/폴더 삭제 — 파괴적, 프론트 확인 후 호출. 재시도 금지.
   deletePath: (projectId: string, relPath: string) =>
     callMutating<void>("delete_path", { projectId, relPath }),
+  // 이름 바꾸기 — 같은 폴더 안에서 이름만. 성공 시 새 레포-상대 경로를 돌려준다.
+  renamePath: (projectId: string, relPath: string, newName: string) =>
+    callMutating<string>("rename_path", { projectId, relPath, newName }),
   // 이미지 변환·편집 저장 — base64 바이트를 디스크에 쓴다. overwrite=false면 기존 파일 충돌 시
   // ALREADY_EXISTS 오류(프론트가 덮어쓰기 확인). 큰 이미지 대비 타임아웃 넉넉히.
   writeFileBytes: (

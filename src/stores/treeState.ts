@@ -29,6 +29,8 @@ interface TreeStateStore {
   expanded: Expanded;
   /** 폴더 펼침 토글. */
   toggle: (projectId: string, path: string) => void;
+  /** 이름 바꾼 폴더(와 그 하위)의 펼침 경로를 새 경로로 이관. */
+  renameTo: (projectId: string, from: string, to: string) => void;
   /** 프로젝트 제거 시 정리. */
   clearProject: (projectId: string) => void;
 }
@@ -41,6 +43,17 @@ export const useTreeState = create<TreeStateStore>((set) => ({
       const next = cur.includes(path)
         ? cur.filter((p) => p !== path)
         : [...cur, path];
+      return { expanded: { ...s.expanded, [projectId]: next } };
+    }),
+  // 이름 바꾸기 후 이관 — 안 하면 펼침 상태가 옛 경로에 남아 방금 이름 바꾼 폴더가
+  // (하위까지) 접힌 채로 보인다. 자기 자신과 `from/` 접두 하위를 모두 새 경로로 옮긴다.
+  renameTo: (projectId, from, to) =>
+    set((s) => {
+      const cur = s.expanded[projectId];
+      if (!cur || cur.length === 0) return s; // 이 프로젝트에 펼침 기록 없음 — 리렌더 방지
+      const next = cur.map((p) =>
+        p === from ? to : p.startsWith(`${from}/`) ? to + p.slice(from.length) : p,
+      );
       return { expanded: { ...s.expanded, [projectId]: next } };
     }),
   clearProject: (projectId) =>

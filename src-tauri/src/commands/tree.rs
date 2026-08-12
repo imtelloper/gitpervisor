@@ -126,6 +126,82 @@ pub async fn delete_path(
     result.map_err(|e| IpcError::new(ErrorCode::Io, format!("삭제 실패: {e}")))
 }
 
+/// 파일/폴더 이름 바꾸기 — **같은 상위 디렉토리 안에서 이름만** 바꾼다(다른 폴더로의 이동이 아니다).
+/// 성공하면 새 레포-상대 경로(forward slash)를 돌려준다 — 프론트가 트리 펼침 상태·뷰어 탭을
+/// 새 경로로 옮기는 데 쓴다. 경로 탈출(절대경로·`..`·`.git`·예약 장치명)은 원본·대상 **양쪽** 검증.
+#[tauri::command]
+pub async fn rename_path(
+    state: State<'_, AppState>,
+    project_id: String,
+    rel_path: String,
+    new_name: String,
+) -> Result<String, IpcError> {
+    let repo = project_path(&state, &project_id)?;
+    let new_name = new_name.trim();
+    // 구분자를 허용하면 이름 바꾸기가 아니라 '이동'이 된다 — 이 커맨드의 계약을 벗어나므로 거부.
+    if new_name.contains('/') || new_name.contains('\\') {
+        return Err(IpcError::new(
+            ErrorCode::Io,
+            "이름에 경로 구분자를 쓸 수 없습니다",
+        ));
+    }
+    if new_name.is_empty() || new_name == "." || new_name == ".." {
+        return Err(IpcError::new(ErrorCode::Io, "잘못된 이름입니다"));
+    }
+    // 상위 디렉토리는 그대로 두고 마지막 컴포넌트만 교체한다(마지막 '/' 없으면 루트 바로 아래).
+    let (parent, old_name) = match rel_path.rfind('/') {
+        Some(i) => (&rel_path[..i], &rel_path[i + 1..]),
+        None => ("", rel_path.as_str()),
+    };
+    let new_rel = join_rel(parent, new_name);
+    let from = resolve_in_repo(&repo, &rel_path)?;
+    let to = resolve_in_repo(&repo, &new_rel)?;
+    // 존재 판정은 링크를 따라가지 않는다 — 심볼릭 링크 자체도 이름 변경 대상이다.
+    if tokio::fs::symlink_metadata(&from).await.is_err() {
+        return Err(IpcError::new(ErrorCode::NotFound, "대상을 찾을 수 없습니다"));
+    }
+    // 이름이 그대로면 파일시스템을 건드리지 않는다(대소문자까지 동일한 경우).
+    if from == to {
+        return Ok(new_rel);
+    }
+    // 상위 디렉토리가 달라지면 '이름 바꾸기'가 아니라 '이동'이다 — rel_path에 역슬래시가 섞여
+    // 들어오면(`a\b.txt`) Windows에서 컴포넌트가 갈라져 parent 추출이 어긋나고 실제로 폴더를
+    // 넘어간다. 조용히 옮기느니 거부한다.
+    if from.parent() != to.parent() {
+        return Err(IpcError::new(ErrorCode::Io, "잘못된 경로입니다"));
+    }
+    if tokio::fs::symlink_metadata(&to).await.is_ok() {
+        // 대소문자 무시 FS(Windows/macOS)에서는 여기서 "자기 자신"이 잡혀 정당한 대소문자
+        // 변경(`Foo`→`foo`)이 막힌다. 그렇다고 대소문자만 다르면 무조건 통과시키면 대소문자
+        // 구분 FS(Linux)에서 rename이 **같은 이름의 다른 파일**을 조용히 덮어써 그 파일이
+        // 통째로 날아간다. 상위 디렉토리에 정확히 그 이름의 항목이 실제로 있는지로 둘을 가른다.
+        let mut exact = true; // 스캔 불가(권한 등)면 충돌로 본다 — 애매할 때 덮어쓰지 않는다.
+        if let Some(dir) = to.parent() {
+            if let Ok(mut rd) = tokio::fs::read_dir(dir).await {
+                exact = false;
+                while let Ok(Some(e)) = rd.next_entry().await {
+                    if e.file_name().as_os_str() == OsStr::new(new_name) {
+                        exact = true;
+                        break;
+                    }
+                }
+            }
+        }
+        // 이름 목록에 없는데 존재한다면 Win32 정규화(끝의 점·ADS·8.3 단축명)로 **다른** 파일에
+        // 겹쳐 쓰는 경우다. 대소문자만 다른 진짜 self-match일 때만 통과시킨다.
+        if exact || old_name.to_lowercase() != new_name.to_lowercase() {
+            return Err(IpcError::new(
+                ErrorCode::AlreadyExists,
+                "같은 이름이 이미 있습니다",
+            ));
+        }
+    }
+    tokio::fs::rename(&from, &to)
+        .await
+        .map_err(|e| IpcError::new(ErrorCode::Io, format!("이름 변경 실패: {e}")))?;
+    Ok(new_rel)
+}
+
 /// 바이너리 파일 쓰기 — base64 바이트를 디스크에 쓴다(이미지 변환·편집 저장용).
 /// 새 파일 생성을 허용하되(상위 디렉토리는 존재해야 함), 기존 디렉토리에는 쓰지 않는다.
 /// 경로 탈출(빈 경로·절대경로·`..`·`.git`)을 막는다.

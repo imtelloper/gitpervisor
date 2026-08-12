@@ -8,6 +8,7 @@ import {
   ImageDown,
   Link,
   Pencil,
+  PencilLine,
   Trash2,
   Type,
 } from "lucide-react";
@@ -43,6 +44,7 @@ import {
   useDeletePath,
   useDir,
   useProjects,
+  useRenamePath,
   useSaveImage,
   useStatus,
 } from "../../queries";
@@ -384,6 +386,7 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
   const createDir = useCreateDir(projectId);
   const createFile = useCreateFile(projectId);
   const deletePath = useDeletePath(projectId);
+  const renamePath = useRenamePath(projectId);
   const saveImage = useSaveImage(projectId);
   const qc = useQueryClient();
 
@@ -565,6 +568,46 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
       confirmLabel: "삭제",
       danger: true,
       onConfirm: () => deletePath.mutate(m.path),
+    });
+  }
+
+  // 이름 바꾸기 — 같은 폴더 안에서 이름만 바꾼다. 성공 후 펼침 상태·뷰어 탭·멀티선택을 새 경로로
+  // 옮긴다: 안 옮기면 방금 이름 바꾼 폴더가 접히고, 열려 있던 탭이 사라진 경로를 가리킨다.
+  function renameEntry(m: TreeMenu) {
+    setMenu(null);
+    askPrompt({
+      title: `${m.isDir ? "폴더" : "파일"} 이름 바꾸기`,
+      label: toOsPath(m.path),
+      placeholder: m.isDir ? "폴더 이름" : "파일 이름",
+      defaultValue: m.name,
+      confirmLabel: "바꾸기",
+      validate: validateName,
+      onConfirm: (v) => {
+        const newName = v.trim();
+        if (newName === m.name) return; // 이름이 그대로면 호출할 이유가 없다
+        renamePath.mutate(
+          { relPath: m.path, newName },
+          {
+            onSuccess: (newRel) => {
+              useTreeState.getState().renameTo(projectId, m.path, newRel);
+              useUi.getState().renameViewerPaths(projectId, m.path, newRel);
+              // 멀티선택에도 옛 경로가 남는다 — 같은 규칙으로 옮겨 일괄 변환이 죽은 경로를 잡지 않게.
+              setTreeSel((prev) => {
+                const next = new Set<string>();
+                for (const p of prev)
+                  next.add(
+                    p === m.path
+                      ? newRel
+                      : p.startsWith(`${m.path}/`)
+                        ? newRel + p.slice(m.path.length)
+                        : p,
+                  );
+                return next;
+              });
+            },
+          },
+        );
+      },
     });
   }
 
@@ -899,6 +942,11 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
                 icon={FolderPlus}
                 label="새 폴더"
                 onClick={() => newFolder(menu)}
+              />
+              <MenuItem
+                icon={PencilLine}
+                label="이름 바꾸기"
+                onClick={() => renameEntry(menu)}
               />
               <MenuItem
                 icon={Trash2}

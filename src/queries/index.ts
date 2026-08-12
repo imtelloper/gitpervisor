@@ -839,6 +839,28 @@ export function useDeletePath(projectId: string) {
 }
 
 /**
+ * 파일/폴더 이름 바꾸기 — 성공 시 트리·상태·diff 무효화 + 토스트.
+ * 성공 콜백에 새 레포-상대 경로가 들어온다(호출 측이 펼침 상태·뷰어 탭을 새 경로로 옮긴다).
+ */
+export function useRenamePath(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { relPath: string; newName: string }) =>
+      ipc.renamePath(projectId, v.relPath, v.newName),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["dir"] });
+      void qc.invalidateQueries({ queryKey: ["statuses"] });
+      void qc.invalidateQueries({ queryKey: ["diff"] });
+      // 이미지 캐시는 경로 키라 staleTime:Infinity로 남는다 — 나중에 다른 이미지가 그 이름을
+      // 물려받으면 옛 그림이 그대로 뜬다.
+      void qc.invalidateQueries({ queryKey: ["file-image"] });
+      useUi.getState().pushToast("success", "이름을 바꿨습니다");
+    },
+    onError: (e) => useUi.getState().pushToast("error", errorMessage(e)),
+  });
+}
+
+/**
  * 이미지 변환·편집 저장 — base64 바이트를 디스크에 쓰고 트리·상태·diff·이미지 캐시 무효화.
  * 오류 토스트는 호출 측(에디터/변환)에서 처리한다 — 인코딩 단계 오류와 합쳐 한 번만 띄우기 위함.
  */
