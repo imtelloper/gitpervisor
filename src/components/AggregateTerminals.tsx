@@ -5,6 +5,8 @@ import {
   History,
   LayoutGrid,
   Loader2,
+  Maximize2,
+  Minimize2,
   Plus,
   Terminal as TerminalIcon,
   Trash2,
@@ -136,6 +138,10 @@ export function AggregateTerminals() {
 
   // 선택 집합 — 최초엔 클로드 활동(working/done) 있는 터미널만. 없으면 전부(브라우저 포함).
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  // 확대(줌) 중인 터미널 셀 — 그리드 전면을 혼자 덮는다. 나머지 셀은 언마운트하지 않고
+  // invisible로만 숨긴다: 언마운트하면 터미널 재부착·브라우저 리로드가 일어나고, 크기를
+  // 바꾸면 xterm 리핏이 연쇄된다. 크기 불변이면 둘 다 없다.
+  const [zoomed, setZoomed] = useState<string | null>(null);
   const initedRef = useRef(false);
   useEffect(() => {
     if (initedRef.current || all.length === 0) return;
@@ -160,6 +166,9 @@ export function AggregateTerminals() {
       added.forEach((id) => next.add(id));
       return next;
     });
+    // 확대 중이면 해제 — 새 셀이 invisible 뒤에 숨어 "가려 보이지 않는" 문제가
+    // 확대 상태에서 그대로 재발하기 때문(이 효과가 존재하는 이유와 동일).
+    setZoomed(null);
   }, [all]);
 
   // 사라진 터미널/브라우저는 선택에서 제거
@@ -191,6 +200,7 @@ export function AggregateTerminals() {
     initedRef.current = true;
     const { paneId } = openTerminal(projectId);
     setSelected((prev) => new Set(prev).add(paneId));
+    setZoomed(null); // 확대 중이었다면 해제 — 새 셀이 보이지 않으면 생성 실패로 오인한다
   };
 
   // 새 브라우저(독립 탭) 생성 + 즉시 그리드 편입 — URL은 셀 안 주소창에서 입력한다.
@@ -198,6 +208,7 @@ export function AggregateTerminals() {
     initedRef.current = true;
     const id = openBrowserTab(projectId);
     setSelected((prev) => new Set(prev).add(id));
+    setZoomed(null); // 확대 중이었다면 해제 — 새 셀이 보이지 않으면 생성 실패로 오인한다
   };
 
   const gridRef = useRef<HTMLDivElement>(null);
@@ -205,6 +216,13 @@ export function AggregateTerminals() {
   const [resizing, setResizing] = useState(false);
 
   const shown = all.filter((t) => selected.has(t.id));
+  // 렌더 기준 확대 대상 — 상태가 스테일해도(대상이 방금 닫힘·칩 해제) 이번 프레임부터 무시.
+  const zoomedId = zoomed && shown.some((t) => t.id === zoomed) ? zoomed : null;
+  // 스테일 상태 정리 — 안 지우면 같은 id가 칩으로 되돌아올 때 예고 없이 다시 확대된다.
+  useEffect(() => {
+    if (zoomed && !all.some((t) => t.id === zoomed && selected.has(t.id)))
+      setZoomed(null);
+  }, [zoomed, all, selected]);
   const n = shown.length;
   const cols = n <= 1 ? 1 : n <= 4 ? 2 : n <= 9 ? 3 : 4;
   const rows = Math.max(1, Math.ceil(n / cols));
@@ -401,20 +419,39 @@ export function AggregateTerminals() {
               return rowCells.map((t, c) => {
                 const leftFrac =
                   cellFr[r].slice(0, c).reduce((a, b) => a + b, 0) / sumC;
-                const style = {
-                  top,
-                  height,
-                  left: `calc(${GAP + c * GAP}px + ${leftFrac} * (100% - ${fixedH}px))`,
-                  width: `calc(${cellFr[r][c] / sumC} * (100% - ${fixedH}px))`,
-                };
+                const isZoomed = zoomedId === t.id;
+                // 확대 중: 대상은 그리드 전면(z-30), 나머지는 invisible — 슬롯 크기를
+                // 그대로 두어 xterm 리핏·webview 재배치를 일으키지 않는다. 네이티브
+                // webview는 CSS로 안 숨으므로 브라우저 셀은 suspended로 별도 숨김.
+                const style = isZoomed
+                  ? {
+                      top: GAP,
+                      left: GAP,
+                      width: `calc(100% - ${GAP * 2}px)`,
+                      height: `calc(100% - ${GAP * 2}px)`,
+                    }
+                  : {
+                      top,
+                      height,
+                      left: `calc(${GAP + c * GAP}px + ${leftFrac} * (100% - ${fixedH}px))`,
+                      width: `calc(${cellFr[r][c] / sumC} * (100% - ${fixedH}px))`,
+                    };
                 return (
-                  <div key={t.id} className="absolute" style={style}>
+                  <div
+                    key={t.id}
+                    className={`absolute${isZoomed ? " z-30" : ""}${
+                      zoomedId && !isZoomed ? " invisible" : ""
+                    }`}
+                    style={style}
+                  >
                     {t.kind === "browser" ? (
                       <BrowserCell
                         meta={t}
                         // 드래그 중엔 네이티브 webview 숨김+iframe 포인터 차단, 드롭다운
                         // 열림 중엔 fixed 메뉴가 webview에 가려지지 않게 숨긴다.
-                        suspended={resizing}
+                        // 다른 셀 확대 중에도 숨긴다 — 네이티브 webview는 DOM 위에 떠서
+                        // invisible로는 확대된 터미널을 가리는 것을 못 막는다.
+                        suspended={resizing || (zoomedId !== null && !isZoomed)}
                         // 칩 토글로 셀이 "크기 그대로 위치만" 밀리면 ResizeObserver가 못
                         // 잡는다 — 슬롯 좌표가 바뀔 때 bounds를 재동기화하게 한다.
                         layoutKey={`${n}:${r}:${c}`}
@@ -432,9 +469,12 @@ export function AggregateTerminals() {
                       <AggregateCell
                         meta={t}
                         fontSize={fontSize}
-                        // 경계가 컨테이너 가장자리면 재분배할 이웃이 없다 — 핸들 생략
-                        canRight={c < len - 1}
-                        canBottom={r < rowsOfCells.length - 1}
+                        zoomed={isZoomed}
+                        onZoom={() => setZoomed(isZoomed ? null : t.id)}
+                        // 경계가 컨테이너 가장자리면 재분배할 이웃이 없다 — 핸들 생략.
+                        // 확대 중엔 트랙 경계가 화면에 없으므로 핸들도 없다.
+                        canRight={!isZoomed && c < len - 1}
+                        canBottom={!isZoomed && r < rowsOfCells.length - 1}
                         onResizeStart={(e, axis) => startResize(e, r, c, axis)}
                         // 숨기기 = 상단 칩 선택 해제와 같다 — 셸은 계속 돌아간다.
                         onHide={() => toggle(t.id)}
@@ -753,6 +793,8 @@ function MenuRow({
 function AggregateCell({
   meta,
   fontSize,
+  zoomed,
+  onZoom,
   canRight,
   canBottom,
   onResizeStart,
@@ -761,6 +803,8 @@ function AggregateCell({
 }: {
   meta: TermMeta;
   fontSize: number;
+  zoomed: boolean;
+  onZoom: () => void;
   canRight: boolean;
   canBottom: boolean;
   onResizeStart: (e: React.PointerEvent, axis: "x" | "y" | "both") => void;
@@ -809,6 +853,17 @@ function AggregateCell({
           <span className="text-fg-dim"> · {meta.title}</span>
         </span>
         <PromptLogButton termId={meta.id} />
+        <button
+          onClick={onZoom}
+          title={
+            zoomed
+              ? "원래 크기로 — 그리드로 돌아갑니다"
+              : "확대 — 이 터미널만 화면 가득 봅니다"
+          }
+          className="shrink-0 rounded p-0.5 text-fg-dim hover:bg-raised hover:text-fg"
+        >
+          {zoomed ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
+        </button>
         <HideButton onClick={onHide} what="터미널" />
         {!IS_AGGREGATE_WINDOW && (
           <button
