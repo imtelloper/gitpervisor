@@ -6,6 +6,7 @@ import type { Terminal } from "@xterm/xterm";
 import { useUi } from "../stores/ui";
 import { copyText, readClipboardText } from "./clipboard";
 import { isMac } from "./platform";
+import { forgetPtyInput } from "./prompt-capture";
 
 // PTY 세션은 Rust가 수명의 단일 진실 — xterm 인스턴스/스크롤백은 dispose 전까지 살려둔다.
 // 탭/프로젝트 전환은 host(div)를 컨테이너에 붙였다 떼는 것뿐 (설계 §16.5).
@@ -221,6 +222,8 @@ export function detachTerminalKeepPty(id: string) {
   const inst = registry.get(id);
   if (!inst) return;
   registry.delete(id);
+  // 입력 복원 상태만 버린다 — 세션은 살아 있고 이어받는 창이 새로 쌓는다(기록 자체는 보존).
+  forgetPtyInput(id);
   try {
     inst.term.dispose();
   } catch {
@@ -234,6 +237,11 @@ export function disposeTerminal(id: string): Promise<void> {
   const inst = registry.get(id);
   if (!inst) return Promise.resolve();
   registry.delete(id);
+  // 입력 복원 상태만 버린다. **프롬프트 기록은 여기서 지우지 않는다** — 이 함수는 "프로세스가
+  // 종료되었습니다 → 재시작"(TerminalPane)에서도 불리는데, 같은 패널을 되살리는 것뿐이라
+  // 기록까지 날리면 방금 뭘 시켰는지 잃는다. 패널 자체가 사라질 때(stores/terminals의 닫기
+  // 경로)만 기록을 지운다.
+  forgetPtyInput(id);
   const closed = invoke("term_close", { termId: id }).catch(() => {}) as Promise<void>;
   try {
     inst.term.dispose();

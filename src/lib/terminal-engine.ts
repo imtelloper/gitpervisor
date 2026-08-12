@@ -10,6 +10,7 @@ import { useUi } from "../stores/ui";
 import { errorMessage } from "./ipc";
 import { copyText } from "./clipboard";
 import { isMod, isWindows } from "./platform";
+import { capturePtyInput } from "./prompt-capture";
 import {
   ensureExitListener,
   pasteIntoTerminal,
@@ -32,6 +33,10 @@ import { themeOf } from "./themes";
 const writeChains = new Map<string, Promise<void>>();
 
 function ptyWrite(termId: string, data: string) {
+  // 프롬프트 기록 — 키 입력·IME 확정·붙여넣기가 전부 이 함수를 지나므로 여기 한 곳에서만 캡처한다
+  // (자동응답 걸러내기는 prompt-capture가 담당). 이 줄이 던지면 아래 term_write가 통째로
+  // 건너뛰어져 그 키가 PTY로 안 나가므로, capturePtyInput 안에서 전부 삼킨다.
+  capturePtyInput(termId, data);
   const next = (writeChains.get(termId) ?? Promise.resolve()).then(() =>
     invoke("term_write", { termId, data }).then(
       () => {},

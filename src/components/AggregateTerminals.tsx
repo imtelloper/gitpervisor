@@ -2,21 +2,26 @@ import {
   CircleCheck,
   EyeOff,
   Globe,
+  History,
   LayoutGrid,
   Loader2,
   Plus,
   Terminal as TerminalIcon,
+  Trash2,
   X,
 } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { copyText } from "../lib/clipboard";
+import { relativeTime } from "../lib/format";
 import type { Project } from "../lib/ipc";
 import { isMac, modLabel } from "../lib/platform";
 import { attachTerminal, createTerminal, fitTerminal } from "../lib/terminal";
 import { useProjects, useSettings } from "../queries";
 import { useAgentActivity } from "../stores/agentActivity";
 import { useBrowsers } from "../stores/browser";
+import { usePromptHistory } from "../stores/promptHistory";
 import {
   collectByContent,
   IS_AGGREGATE_WINDOW,
@@ -584,6 +589,144 @@ function HideButton({ onClick, what }: { onClick: () => void; what: string }) {
   );
 }
 
+/**
+ * 이 셀에 **내가 입력해 Enter로 확정한 줄** 목록 — 셀 우측 상단에서 펼쳐 본다.
+ * 기록은 lib/prompt-capture가 PTY 송신 경로에서 모은다(셸 명령·에이전트 프롬프트 구분 없이 전부).
+ *
+ * 항목을 누르면 **클립보드로 복사**만 한다 — 되돌려 보내면 그 터미널이 지금 무엇을 하고 있는지
+ * 모른 채 Enter를 대신 눌러 주는 셈이라, 실행은 사용자가 붙여넣고 직접 결정하게 둔다.
+ * 메뉴는 버튼 rect 기준 fixed + 백드롭 — 셀이 overflow-hidden이라 안에 그리면 잘린다.
+ */
+function PromptLogButton({ termId }: { termId: string }) {
+  const entries = usePromptHistory((s) => s.byTerminal[termId]);
+  const clear = usePromptHistory((s) => s.clear);
+  const pushToast = useUi((s) => s.pushToast);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  // top/bottom 중 하나만 채운다 — 아래 공간이 모자라면 버튼 위로 뒤집어 연다.
+  const [menu, setMenu] = useState<{
+    right: number;
+    top?: number;
+    bottom?: number;
+    maxH: number;
+  } | null>(null);
+  // 열린 동안 그리드의 네이티브 webview를 숨긴다 — 안 그러면 브라우저 셀이 이 메뉴를 덮는다.
+  useOccludesWebview(!!menu);
+
+  useEffect(() => {
+    if (!menu) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setMenu(null);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [menu]);
+
+  const list = entries ?? [];
+  const close = () => setMenu(null);
+  const open = () => {
+    const r = btnRef.current?.getBoundingClientRect();
+    if (!r) return;
+    // 셀이 화면 우측일 수 있으니 우측 모서리 정렬 — 좌측 기준이면 메뉴가 창 밖으로 잘린다.
+    const right = Math.max(8, window.innerWidth - r.right);
+    // 아래/위 남은 공간을 재서 방향과 높이를 정한다. 이 버튼은 **그리드 아래 행 셀**에도
+    // 붙는데, 그때 아래 공간은 셀 하나 높이뿐이다 — 고정 max-height로 열면 목록 끝이 화면
+    // 밖으로 나가고 fixed라 스크롤도 못 해 오래된 항목에 아예 손이 닿지 않는다.
+    const below = window.innerHeight - r.bottom - 12;
+    const above = r.top - 12;
+    setMenu(
+      below >= 220 || below >= above
+        ? { right, top: r.bottom + 4, maxH: below }
+        : { right, bottom: window.innerHeight - r.top + 4, maxH: above },
+    );
+  };
+  const copy = (text: string) => {
+    void copyText(text).then((ok) =>
+      pushToast(
+        ok ? "success" : "error",
+        ok ? "프롬프트를 복사했습니다" : "복사에 실패했습니다",
+      ),
+    );
+    close();
+  };
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        onClick={() => (menu ? close() : open())}
+        title={`입력한 프롬프트 ${list.length}개 — 이 터미널에서 Enter로 확정한 줄 목록`}
+        className={`flex shrink-0 items-center gap-0.5 rounded p-0.5 ${
+          menu ? "bg-raised text-accent" : "text-fg-dim hover:bg-raised hover:text-fg"
+        }`}
+      >
+        <History size={12} />
+        {list.length > 0 && (
+          <span className="text-[9px] leading-none tabular-nums">{list.length}</span>
+        )}
+      </button>
+      {menu && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={close} />
+          <div
+            className="fixed z-50 flex w-[380px] max-w-[calc(100vw-16px)] flex-col overflow-hidden rounded-md border border-edge bg-panel text-[12px] shadow-xl"
+            style={{
+              right: menu.right,
+              top: menu.top,
+              bottom: menu.bottom,
+              // 아주 좁은 셀에서도 목록이 몇 줄은 보이게 하한을 둔다(넘치면 안쪽이 스크롤).
+              maxHeight: Math.max(140, Math.min(420, menu.maxH)),
+            }}
+          >
+            <div className="flex shrink-0 items-center gap-1.5 border-b border-edge px-3 py-2 text-[11px] text-fg-dim">
+              <History size={12} className="shrink-0 text-accent" />
+              <span className="min-w-0 flex-1 truncate">
+                입력한 프롬프트 {list.length}개
+              </span>
+              {list.length > 0 && (
+                <button
+                  onClick={() => {
+                    clear(termId);
+                    close();
+                  }}
+                  title="이 터미널의 기록 지우기"
+                  className="shrink-0 rounded p-0.5 hover:bg-raised hover:text-danger"
+                >
+                  <Trash2 size={12} />
+                </button>
+              )}
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              {/* 최신이 위 — 방금 시킨 것을 가장 먼저 찾는다. */}
+              {list
+                .slice()
+                .reverse()
+                .map((e) => (
+                  <button
+                    key={e.id}
+                    onClick={() => copy(e.text)}
+                    title="클릭하면 복사"
+                    className="block w-full border-b border-edge/40 px-3 py-1.5 text-left last:border-b-0 hover:bg-raised"
+                  >
+                    <div className="line-clamp-3 break-words whitespace-pre-wrap text-fg">
+                      {e.text}
+                    </div>
+                    <div className="mt-0.5 text-[10px] text-fg-dim">
+                      {relativeTime(e.at)}
+                    </div>
+                  </button>
+                ))}
+              {list.length === 0 && (
+                <div className="px-3 py-4 text-[11px] leading-5 text-fg-dim">
+                  아직 입력한 프롬프트가 없습니다.
+                  <br />이 터미널에 입력하고 Enter를 치면 여기에 쌓입니다.
+                </div>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
 /** 메뉴 한 줄 — 아이콘 + 라벨. */
 function MenuRow({
   icon,
@@ -665,6 +808,7 @@ function AggregateCell({
           <span className="font-medium text-fg">{meta.projName}</span>
           <span className="text-fg-dim"> · {meta.title}</span>
         </span>
+        <PromptLogButton termId={meta.id} />
         <HideButton onClick={onHide} what="터미널" />
         {!IS_AGGREGATE_WINDOW && (
           <button

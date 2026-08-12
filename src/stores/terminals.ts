@@ -3,6 +3,14 @@ import { create } from "zustand";
 
 import { openFloatingWindow } from "../lib/floating";
 import { detachTerminalKeepPty, disposeTerminal, onTermExit } from "../lib/terminal";
+import { usePromptHistory } from "./promptHistory";
+
+/** 패널을 영영 없앤다 — PTY 종료 + 그 패널의 프롬프트 기록 정리(닫힌 터미널 잔재가 쌓이지 않게).
+ *  셸만 되살리는 "재시작"은 disposeTerminal만 부르므로 기록이 남는다(의도). */
+function dropPane(paneId: string): void {
+  disposeTerminal(paneId);
+  usePromptHistory.getState().clear(paneId);
+}
 
 // 보조 창들은 메인 창과 같은 origin이라 localStorage(gp:terminals)를 공유한다. 역할별로
 // "불러오기"와 "저장하기"를 따로 정한다 — 보조 창이 저장하면 메인 창 탭을 스테일 스냅샷으로
@@ -290,7 +298,7 @@ export const useTerminals = create<TerminalsState>((set, get) => ({
 
   closeTab: (tabId) => {
     const tab = get().terminals.find((t) => t.id === tabId);
-    if (tab) collectPanes(tab.layout).forEach((p) => disposeTerminal(p));
+    if (tab) collectPanes(tab.layout).forEach((p) => dropPane(p));
     set((s) => {
       const activeTab = { ...s.activeTab };
       if (tab && activeTab[tab.projectId] === tabId) {
@@ -313,7 +321,7 @@ export const useTerminals = create<TerminalsState>((set, get) => ({
 
   closeProjectTerminals: (projectId) => {
     const tabs = get().terminals.filter((t) => t.projectId === projectId);
-    tabs.forEach((t) => collectPanes(t.layout).forEach((p) => disposeTerminal(p)));
+    tabs.forEach((t) => collectPanes(t.layout).forEach((p) => dropPane(p)));
     set((s) => {
       const activeTab = { ...s.activeTab };
       delete activeTab[projectId];
@@ -428,7 +436,7 @@ export const useTerminals = create<TerminalsState>((set, get) => ({
     })),
 
   closePane: (tabId, paneId) => {
-    disposeTerminal(paneId);
+    dropPane(paneId);
     const tab = get().terminals.find((t) => t.id === tabId);
     if (!tab) return;
     const layout = removePane(tab.layout, paneId);

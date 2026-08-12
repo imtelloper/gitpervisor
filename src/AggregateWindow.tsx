@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 
 import { AggregateTerminals } from "./components/AggregateTerminals";
+import { Toasts } from "./components/common/Toast";
 import { FloatTitleBar } from "./components/FloatTitleBar";
 import { announceAggregateWindow } from "./lib/aggregate-window";
 import { refreshTerminalThemes } from "./lib/terminal";
@@ -44,6 +45,9 @@ export function AggregateWindow() {
       <div className="min-h-0 flex-1">
         <AggregateTerminals />
       </div>
+      {/* 이 창에도 토스트가 필요하다 — 셀의 프롬프트 목록에서 복사할 때 성공/실패를 알려야 한다.
+          스토어는 창마다 별개라(웹뷰 = 별도 JS 컨텍스트) 메인 창의 토스트가 여기 뜨진 않는다. */}
+      <Toasts />
     </div>
   );
 }
