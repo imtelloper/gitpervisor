@@ -355,6 +355,8 @@ export interface Memo {
   updatedAt: string;
 }
 export type NotesMap = Record<string, Memo[]>;
+/** 전역 메모(프로젝트 무관)를 담는 예약 키 — 프로젝트 id는 UUIDv4라 절대 충돌하지 않는다. */
+export const GLOBAL_NOTES_ID = "__global__";
 
 // ---- 타이틀바 시스템 모니터 ----
 export interface SysMetrics {

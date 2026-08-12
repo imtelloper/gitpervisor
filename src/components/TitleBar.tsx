@@ -1,12 +1,13 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { LayoutGrid, ShieldAlert } from "lucide-react";
-import { useEffect, useState } from "react";
+import { LayoutGrid, ShieldAlert, StickyNote } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 
 import { openAggregateWindow } from "../lib/aggregate-window";
 import { isMac, modLabel } from "../lib/platform";
 import { useProjects, useQuarantinedTools } from "../queries";
 import { useTerminals } from "../stores/terminals";
 import { useUi } from "../stores/ui";
+import { GlobalMemoPopover } from "./memo/GlobalMemoPopover";
 import { SysMonitor } from "./SysMonitor";
 
 const appWindow = getCurrentWindow();
@@ -58,8 +59,9 @@ export function TitleBar() {
       {/* 가운데: 드래그 영역 */}
       <div data-tauri-drag-region className="h-full flex-1" />
 
-      {/* 우: 모아보기 토글 + 시스템 모니터 */}
+      {/* 우: 모아보기 토글 + 메모장 + 시스템 모니터 */}
       <AggregateButton />
+      <GlobalMemoButton />
       <SysMonitor />
 
       {/* 우: macOS 격리 도구 배지 (차단 항목 있을 때만) */}
@@ -117,6 +119,55 @@ function AggregateButton() {
     >
       <LayoutGrid size={11} /> 모아보기
     </button>
+  );
+}
+
+/**
+ * 전역 메모장 — 버튼 바로 아래에 팝오버로 연다.
+ * 프로젝트 메모(사이드바 우클릭 → 메모)와 목록이 완전히 분리돼 있어 프로젝트 선택·터미널
+ * 유무와 무관하다 — 그래서 모아보기 버튼과 달리 **항상 표시**한다.
+ */
+function GlobalMemoButton() {
+  const btnRef = useRef<HTMLButtonElement>(null);
+  // 타이틀바 우측 버튼이라 좌측 기준(left)이면 팝오버가 창 밖으로 잘린다 — 우측 모서리 정렬
+  const [anchor, setAnchor] = useState<{ right: number; top: number } | null>(
+    null,
+  );
+  // 닫기는 팝오버가 심어 주는 close로만 한다 — setAnchor(null)로 직접 끄면 미저장 메모가
+  // flush 없이 사라진다(디바운스 500ms 안의 입력 + 빈 초안 정리).
+  const closeRef = useRef<(() => void) | null>(null);
+
+  const onClick = () => {
+    if (anchor) {
+      closeRef.current?.();
+      return;
+    }
+    const r = btnRef.current?.getBoundingClientRect();
+    if (r) setAnchor({ right: window.innerWidth - r.right, top: r.bottom + 6 });
+  };
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        onClick={onClick}
+        title="메모장 — 프로젝트와 무관한 전역 메모"
+        className={`mr-2.5 flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] ${
+          anchor
+            ? "bg-raised text-accent"
+            : "text-fg-muted hover:bg-raised hover:text-fg"
+        }`}
+      >
+        <StickyNote size={11} /> 메모장
+      </button>
+      {anchor && (
+        <GlobalMemoPopover
+          anchor={anchor}
+          onClose={() => setAnchor(null)}
+          closeRef={closeRef}
+        />
+      )}
+    </>
   );
 }
 
