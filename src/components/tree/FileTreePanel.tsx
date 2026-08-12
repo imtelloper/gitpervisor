@@ -132,8 +132,10 @@ interface TreeRowApi {
 }
 const TreeRowCtx = createContext<TreeRowApi | null>(null);
 
-// 더블클릭으로 실행할 수 있는 파일 확장자(주로 Windows 실행 파일). 프론트 1차 게이트.
-const EXEC_EXT = new Set(["exe", "bat", "cmd", "com", "msi"]);
+// 더블클릭으로 실행할 수 있는 파일 확장자(Windows 실행 파일 + macOS dmg). 프론트 1차 게이트.
+// 플랫폼 구분은 안 한다 — 실행은 OS 기본 핸들러(open/ShellExecute)가 판단하고, 핸들러가
+// 없는 플랫폼에서는 에러 토스트로 끝난다(확인 다이얼로그가 오조작 안전장치).
+const EXEC_EXT = new Set(["exe", "bat", "cmd", "com", "msi", "dmg"]);
 function isRunnable(name: string): boolean {
   const dot = name.lastIndexOf(".");
   return dot >= 0 && EXEC_EXT.has(name.slice(dot + 1).toLowerCase());
