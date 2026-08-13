@@ -4,12 +4,14 @@ import { create } from "zustand";
 import { openFloatingWindow } from "../lib/floating";
 import { detachTerminalKeepPty, disposeTerminal, onTermExit } from "../lib/terminal";
 import { usePromptHistory } from "./promptHistory";
+import { useTermThemes } from "./termThemes";
 
-/** 패널을 영영 없앤다 — PTY 종료 + 그 패널의 프롬프트 기록 정리(닫힌 터미널 잔재가 쌓이지 않게).
- *  셸만 되살리는 "재시작"은 disposeTerminal만 부르므로 기록이 남는다(의도). */
+/** 패널을 영영 없앤다 — PTY 종료 + 그 패널의 프롬프트 기록·세션 컬러 스킴 정리(닫힌 터미널
+ *  잔재가 쌓이지 않게). 셸만 되살리는 "재시작"은 disposeTerminal만 부르므로 둘 다 남는다(의도). */
 function dropPane(paneId: string): void {
   disposeTerminal(paneId);
   usePromptHistory.getState().clear(paneId);
+  useTermThemes.getState().clear(paneId);
 }
 
 // 보조 창들은 메인 창과 같은 origin이라 localStorage(gp:terminals)를 공유한다. 역할별로

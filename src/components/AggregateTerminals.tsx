@@ -1,4 +1,5 @@
 import {
+  Check,
   CircleCheck,
   EyeOff,
   Globe,
@@ -7,6 +8,7 @@ import {
   Loader2,
   Maximize2,
   Minimize2,
+  Palette,
   Plus,
   Terminal as TerminalIcon,
   Trash2,
@@ -20,10 +22,12 @@ import { relativeTime } from "../lib/format";
 import type { Project } from "../lib/ipc";
 import { isMac, modLabel } from "../lib/platform";
 import { attachTerminal, createTerminal, fitTerminal } from "../lib/terminal";
+import { TERM_SCHEMES } from "../lib/term-color-schemes";
 import { useProjects, useSettings } from "../queries";
 import { useAgentActivity } from "../stores/agentActivity";
 import { useBrowsers } from "../stores/browser";
 import { usePromptHistory } from "../stores/promptHistory";
+import { useTermThemes } from "../stores/termThemes";
 import {
   collectByContent,
   IS_AGGREGATE_WINDOW,
@@ -630,6 +634,123 @@ function HideButton({ onClick, what }: { onClick: () => void; what: string }) {
 }
 
 /**
+ * 이 세션의 컬러 스킴 선택 — 셀 우측 상단 팔레트 버튼. 그리드에 여러 세션을 놓고 색으로
+ * 구분하는 용도라, 선택은 **세션(termId) 단위**로 저장돼(termThemes 스토어) 그 세션이
+ * 닫히지 않는 한 유지된다(모아보기를 닫거나 앱을 재시작해도 — dropPane에서만 지운다).
+ * 메뉴는 버튼 rect 기준 fixed + 백드롭 — 셀이 overflow-hidden이라 안에 그리면 잘린다.
+ */
+function ThemeButton({ termId }: { termId: string }) {
+  const current = useTermThemes((s) => s.byTerminal[termId]);
+  const setScheme = useTermThemes((s) => s.setScheme);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const [menu, setMenu] = useState<{
+    right: number;
+    top?: number;
+    bottom?: number;
+    maxHeight: number;
+  } | null>(null);
+  // 열린 동안 그리드의 네이티브 webview를 숨긴다 — 브라우저 셀이 이 메뉴를 덮지 않게.
+  useOccludesWebview(!!menu);
+
+  useEffect(() => {
+    if (!menu) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setMenu(null);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [menu]);
+
+  const close = () => setMenu(null);
+  const open = () => {
+    const r = btnRef.current?.getBoundingClientRect();
+    if (!r) return;
+    // 셀이 화면 우측일 수 있으니 우측 모서리 정렬. 메뉴 실높이(~290px)가 하단 행 셀에서는
+    // 아래 여유를 넘으므로, 부족하면 버튼 **위**로 뒤집는다(PromptLogButton과 같은 규칙).
+    // 아주 낮은 창에서 양쪽 다 모자라는 극단은 maxHeight + 스크롤이 안전망.
+    const right = Math.max(8, window.innerWidth - r.right);
+    const below = window.innerHeight - r.bottom - 12;
+    const above = r.top - 12;
+    if (below >= 300 || below >= above)
+      setMenu({ right, top: r.bottom + 4, maxHeight: Math.max(140, Math.min(below, 320)) });
+    else
+      setMenu({
+        right,
+        bottom: window.innerHeight - r.top + 4,
+        maxHeight: Math.max(140, Math.min(above, 320)),
+      });
+  };
+  const pick = (id: (typeof TERM_SCHEMES)[number]["id"] | null) => {
+    setScheme(termId, id);
+    close();
+  };
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        onClick={() => (menu ? close() : open())}
+        title="이 터미널의 컬러 테마 — 세션이 닫힐 때까지 유지됩니다"
+        className={`shrink-0 rounded p-0.5 ${
+          menu || current
+            ? "bg-raised text-accent"
+            : "text-fg-dim hover:bg-raised hover:text-fg"
+        }`}
+      >
+        <Palette size={12} />
+      </button>
+      {menu && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={close} />
+          <div
+            className="fixed z-50 w-[210px] overflow-y-auto rounded-md border border-edge bg-panel py-1 text-[12px] shadow-xl"
+            style={{
+              right: menu.right,
+              top: menu.top,
+              bottom: menu.bottom,
+              maxHeight: menu.maxHeight,
+            }}
+          >
+            <button
+              onClick={() => pick(null)}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-fg-muted hover:bg-raised hover:text-fg"
+            >
+              <Palette size={12} className="shrink-0 text-fg-dim" />
+              <span className="min-w-0 flex-1 truncate">앱 테마 (기본)</span>
+              {!current && <Check size={12} className="shrink-0 text-accent" />}
+            </button>
+            <div className="my-1 border-t border-edge/60" />
+            {TERM_SCHEMES.map((s) => (
+              <button
+                key={s.id}
+                onClick={() => pick(s.id)}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-fg-muted hover:bg-raised hover:text-fg"
+              >
+                {/* 스와치 — 배경 칩 위에 팔레트 3색 점: 목록에서 색감을 한눈에 비교 */}
+                <span
+                  className="flex h-[14px] w-[26px] shrink-0 items-center justify-center gap-[2px] rounded-[3px] border border-edge/60"
+                  style={{ background: s.swatch[0] }}
+                >
+                  {s.swatch.slice(1).map((c) => (
+                    <span
+                      key={c}
+                      className="size-[5px] rounded-full"
+                      style={{ background: c }}
+                    />
+                  ))}
+                </span>
+                <span className="min-w-0 flex-1 truncate">{s.label}</span>
+                {current === s.id && (
+                  <Check size={12} className="shrink-0 text-accent" />
+                )}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
+/**
  * 이 셀에 **내가 입력해 Enter로 확정한 줄** 목록 — 셀 우측 상단에서 펼쳐 본다.
  * 기록은 lib/prompt-capture가 PTY 송신 경로에서 모은다(셸 명령·에이전트 프롬프트 구분 없이 전부).
  *
@@ -852,6 +973,7 @@ function AggregateCell({
           <span className="font-medium text-fg">{meta.projName}</span>
           <span className="text-fg-dim"> · {meta.title}</span>
         </span>
+        <ThemeButton termId={meta.id} />
         <PromptLogButton termId={meta.id} />
         <button
           onClick={onZoom}

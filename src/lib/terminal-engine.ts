@@ -6,11 +6,13 @@ import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 
 import { collectPanes, useTerminals } from "../stores/terminals";
+import { useTermThemes } from "../stores/termThemes";
 import { useUi } from "../stores/ui";
 import { errorMessage } from "./ipc";
 import { copyText } from "./clipboard";
 import { isMod, isWindows } from "./platform";
 import { capturePtyInput } from "./prompt-capture";
+import { termSchemeOf } from "./term-color-schemes";
 import {
   ensureExitListener,
   pasteIntoTerminal,
@@ -100,14 +102,21 @@ function readTheme(): ITheme {
   return fix ? { ...base, ...fix } : base;
 }
 
-/** 열린 모든 터미널에 현재 CSS 변수 기반 테마 재적용 — 테마 전환 시 코어가 호출한다.
- *  xterm 6은 options.theme 참조 비교로 리렌더를 판단하므로 "새 객체" 대입이 필수
- *  (readTheme가 매번 새 객체를 반환해 충족). */
+/** 이 세션의 최종 xterm 테마 — 세션별 스킴 오버라이드가 있으면 그것, 없으면 앱 테마 파생.
+ *  cssTheme(앱 테마)는 호출자가 한 번 계산해 넘긴다(readTheme는 getComputedStyle이라 비싸다). */
+function themeFor(termId: string, cssTheme: ITheme): ITheme {
+  const scheme = termSchemeOf(useTermThemes.getState().byTerminal[termId]);
+  return scheme ? { ...scheme.theme } : { ...cssTheme };
+}
+
+/** 열린 모든 터미널에 테마 재적용 — 앱 테마 전환·세션 스킴 변경 시 코어가 호출한다.
+ *  세션별 스킴이 선택된 터미널은 앱 테마 전환에도 자기 스킴을 유지한다(오버라이드 우선).
+ *  xterm 6은 options.theme 참조 비교로 리렌더를 판단하므로 "새 객체" 대입이 필수. */
 export function refreshTerminalThemesImpl(): void {
-  const theme = readTheme();
+  const cssTheme = readTheme();
   for (const inst of registry.values()) {
     // 인스턴스 간 객체 공유는 무해(xterm이 내부 복사) — 참조만 새 것이면 된다.
-    inst.term.options.theme = { ...theme };
+    inst.term.options.theme = themeFor(inst.id, cssTheme);
   }
 }
 
@@ -142,7 +151,8 @@ export function createTerminalImpl(opts: {
     // 비활성 + "마지막 문자가 공백 아니면 wrap" 휴리스틱. 이걸 안 켜면 리사이즈 시 ConPTY 재방출과
     // xterm 기본 리플로우가 충돌해 TUI(Claude Code 등) 출력이 우측에 유령 텍스트로 깨진다.
     ...(isWindows ? { windowsPty: { backend: "conpty" as const } } : {}),
-    theme: readTheme(),
+    // 세션별 스킴이 있으면 그것으로 시작 — 재시작·창 이동(attach) 후에도 같은 색을 복원한다.
+    theme: themeFor(opts.id, readTheme()),
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
