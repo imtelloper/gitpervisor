@@ -116,7 +116,7 @@ export default function App() {
   return (
     <div className="flex h-screen flex-col overflow-hidden">
       <TitleBar />
-      {/* 강제 종료 경보 / 지난 실행 비정상 종료 안내 — 최상단 고정 */}
+      {/* 메모리 압박 경보 / 지난 실행 비정상 종료 안내 — 우측 하단 fixed 카드(레이아웃 불점유) */}
       <HealthBanner />
       <div className="min-h-0 flex-1">
         <GitGate>
