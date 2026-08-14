@@ -861,6 +861,18 @@ export function useRenamePath(projectId: string) {
 }
 
 /**
+ * 파일/폴더 이동(드래그 앤 드롭) 후 관련 캐시 무효화 — 여러 개를 옮겨도 한 번만 부른다
+ * (항목마다 무효화하면 리페치가 폭주한다). file-image까지 지우는 이유는 rename과 같다:
+ * staleTime Infinity라 옛 경로가 재사용되면 낡은 이미지가 남는다.
+ */
+export function invalidateAfterMove(qc: ReturnType<typeof useQueryClient>): void {
+  void qc.invalidateQueries({ queryKey: ["dir"] });
+  void qc.invalidateQueries({ queryKey: ["statuses"] });
+  void qc.invalidateQueries({ queryKey: ["diff"] });
+  void qc.invalidateQueries({ queryKey: ["file-image"] });
+}
+
+/**
  * 이미지 변환·편집 저장 — base64 바이트를 디스크에 쓰고 트리·상태·diff·이미지 캐시 무효화.
  * 오류 토스트는 호출 측(에디터/변환)에서 처리한다 — 인코딩 단계 오류와 합쳐 한 번만 띄우기 위함.
  */

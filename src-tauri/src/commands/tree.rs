@@ -202,6 +202,94 @@ pub async fn rename_path(
     Ok(new_rel)
 }
 
+/// 파일/폴더 이동 — **이름은 그대로**, 다른 폴더로 옮긴다(트리 드래그 앤 드롭용).
+/// `dest_dir`은 레포 루트 기준 대상 폴더(빈 문자열 = 루트). 성공하면 새 레포-상대 경로를
+/// 돌려준다. 기존 파일은 절대 덮어쓰지 않고(ALREADY_EXISTS), 폴더를 자기 자신/자손 안으로
+/// 옮기는 것을 거부한다(rename이 소스를 통째로 삼켜 데이터가 사라지는 유형).
+#[tauri::command]
+pub async fn move_path(
+    state: State<'_, AppState>,
+    project_id: String,
+    rel_path: String,
+    dest_dir: String,
+) -> Result<String, IpcError> {
+    let repo = project_path(&state, &project_id)?;
+    // 원본 검증 + 정규화. 이름은 마지막 컴포넌트 그대로 가져간다.
+    let from = resolve_in_repo(&repo, &rel_path)?;
+    let name = match rel_path.rfind('/') {
+        Some(i) => &rel_path[i + 1..],
+        None => rel_path.as_str(),
+    };
+    // 자기 자신/자손 안으로의 이동 거부 — 렉시컬 선검사(정규화 전에 싸게 거른다).
+    // 프론트는 항상 forward-slash 상대 경로를 보내므로 문자열 접두 비교가 성립한다.
+    if dest_dir == rel_path || dest_dir.starts_with(&format!("{rel_path}/")) {
+        return Err(IpcError::new(
+            ErrorCode::Io,
+            "폴더를 자기 자신 안으로 옮길 수 없습니다",
+        ));
+    }
+    // 대상 폴더 검증 — 루트(빈 문자열)는 레포 자체. resolve_in_repo는 **상위까지만** 정규화하므로
+    // 대상 폴더 자신이 레포 밖을 가리키는 심볼릭/정션일 수 있다 — 끝까지 정규화한 뒤 레포 안임을
+    // 다시 단언한다(안 하면 그 링크 하나로 이동이 레포 밖 쓰기가 된다).
+    let repo_canon = dunce::canonicalize(&repo)
+        .map_err(|e| IpcError::new(ErrorCode::Io, format!("레포 경로 확인 실패: {e}")))?;
+    let dest = if dest_dir.is_empty() {
+        repo_canon.clone()
+    } else {
+        let d = resolve_in_repo(&repo, &dest_dir)?;
+        let c = dunce::canonicalize(&d)
+            .map_err(|_| IpcError::new(ErrorCode::NotFound, "대상 폴더를 찾을 수 없습니다"))?;
+        if !c.starts_with(&repo_canon) {
+            return Err(IpcError::new(ErrorCode::Io, "레포 밖 경로입니다"));
+        }
+        // 정규화 결과가 `.git` 아래로 떨어져도 거부 — 레포 안 심볼릭/정션이 `.git`(hooks 등)을
+        // 가리키면 위 렉시컬 `.git` 검사(validate_rel_file)는 우회되고, 컨테인먼트 검사는
+        // `.git`도 레포 안이라 통과한다. 훅 파일 이식은 곧 코드 실행이다.
+        if c.strip_prefix(&repo_canon).is_ok_and(|r| {
+            r.components()
+                .any(|p| matches!(p, Component::Normal(os) if is_dotgit_component(os)))
+        }) {
+            return Err(IpcError::new(ErrorCode::Io, "잘못된 경로입니다"));
+        }
+        c
+    };
+    if !dest.is_dir() {
+        return Err(IpcError::new(ErrorCode::Io, "대상이 폴더가 아닙니다"));
+    }
+    // 정규화 후 방어(심볼릭/정션으로 rel 접두 검사를 우회한 경우) — dest가 from 아래면 거부.
+    if dest.starts_with(&from) {
+        return Err(IpcError::new(
+            ErrorCode::Io,
+            "폴더를 자기 자신 안으로 옮길 수 없습니다",
+        ));
+    }
+    if tokio::fs::symlink_metadata(&from).await.is_err() {
+        return Err(IpcError::new(ErrorCode::NotFound, "대상을 찾을 수 없습니다"));
+    }
+    let to = dest.join(name);
+    // name이 단일 컴포넌트가 아니면 거부 — rel_path에 역슬래시가 섞여 오면(`a\b.txt`)
+    // Windows에서 join이 컴포넌트를 갈라 반환 경로와 실제 디스크 위치가 어긋난다.
+    // rename_path와 같은 이유로 조용히 옮기느니 거부한다(Linux의 `\` 포함 파일명은 안 갈라져 통과).
+    if to.parent() != Some(dest.as_path()) {
+        return Err(IpcError::new(ErrorCode::Io, "잘못된 경로입니다"));
+    }
+    // 같은 폴더로의 이동은 no-op — 드래그를 제자리에 놓은 경우다.
+    if from == to {
+        return Ok(join_rel(&dest_dir, name));
+    }
+    // 기존 파일 보호 — 이동은 대소문자 예외가 없다(같은 이름이 있으면 언제나 진짜 충돌).
+    if tokio::fs::symlink_metadata(&to).await.is_ok() {
+        return Err(IpcError::new(
+            ErrorCode::AlreadyExists,
+            "대상 폴더에 같은 이름이 이미 있습니다",
+        ));
+    }
+    tokio::fs::rename(&from, &to)
+        .await
+        .map_err(|e| IpcError::new(ErrorCode::Io, format!("이동 실패: {e}")))?;
+    Ok(join_rel(&dest_dir, name))
+}
+
 /// 바이너리 파일 쓰기 — base64 바이트를 디스크에 쓴다(이미지 변환·편집 저장용).
 /// 새 파일 생성을 허용하되(상위 디렉토리는 존재해야 함), 기존 디렉토리에는 쓰지 않는다.
 /// 경로 탈출(빈 경로·절대경로·`..`·`.git`)을 막는다.

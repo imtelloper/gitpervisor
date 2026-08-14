@@ -15,9 +15,11 @@ import {
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import {
   createContext,
+  forwardRef,
   useCallback,
   useContext,
   useEffect,
+  useImperativeHandle,
   useMemo,
   useRef,
   useState,
@@ -39,6 +41,7 @@ import type { ChangeKind, DirEntry, FileChange, RepoStatus } from "../../lib/ipc
 import { isHtml, isImage } from "../../lib/language-map";
 import { usePanelWidth } from "../../lib/use-panel-width";
 import {
+  invalidateAfterMove,
   useCreateDir,
   useCreateFile,
   useDeletePath,
@@ -166,6 +169,7 @@ function FileRow({
   return (
     <div
       data-tree-file={path}
+      data-tree-path={path}
       onClick={(e) => row?.onClick(path, e)}
       onDoubleClick={() => row?.onDouble(path, name)}
       onContextMenu={(e) => {
@@ -234,6 +238,8 @@ function TreeNode({
         }}
         title={path}
         data-tree-row
+        data-tree-path={path}
+        data-tree-isdir="1"
         style={{ paddingLeft: depth * INDENT + 8 }}
         className={`flex cursor-pointer items-center gap-1.5 whitespace-nowrap py-0.5 pr-3 hover:bg-raised ${
           entry.isIgnored ? "italic text-fg-dim" : ""
@@ -285,11 +291,15 @@ function DirChildren({
       openMenu({ x: e.clientX, y: e.clientY, path: "", name: "", isDir: true, root: true });
   };
 
+  // 자리표시자에도 폴더 경로를 단다 — "비어 있음"에 드래그로 떨어뜨리면 그 (빈) 폴더가
+  // 대상이 되는 것이 맞다. 안 달면 히트테스트가 컨테이너로 새서 루트로 이동해 버린다.
   if (isLoading)
     return (
       <div
         style={pad}
         onContextMenu={onPlaceholderMenu}
+        data-tree-path={path}
+        data-tree-isdir="1"
         className="py-0.5 text-xs text-fg-dim"
       >
         …
@@ -300,6 +310,8 @@ function DirChildren({
       <div
         style={pad}
         onContextMenu={onPlaceholderMenu}
+        data-tree-path={path}
+        data-tree-isdir="1"
         className="py-0.5 text-xs text-fg-dim"
       >
         불러오지 못함
@@ -310,6 +322,8 @@ function DirChildren({
       <div
         style={pad}
         onContextMenu={onPlaceholderMenu}
+        data-tree-path={path}
+        data-tree-isdir="1"
         className="py-0.5 text-xs text-fg-dim"
       >
         비어 있음
@@ -362,6 +376,42 @@ function parentDir(rel: string): string {
   const i = rel.lastIndexOf("/");
   return i >= 0 ? rel.slice(0, i) : "";
 }
+
+// ── 드래그 이동 고스트 ──
+// 커서를 따라다니는 라벨은 pointermove마다 갱신된다 — FileTreePanel state로 두면 이동 한 번에
+// 트리 전체(수백 행)가 프레임마다 리렌더된다. 고스트만 자기 state를 갖고, 부모는 핸들로
+// 명령만 내린다(리렌더 범위 = 이 작은 컴포넌트 하나).
+interface GhostState {
+  x: number;
+  y: number;
+  /** 끌고 있는 것 — 파일명 또는 "N개 항목" */
+  label: string;
+  /** 대상 폴더(레포 상대, ""=루트). null = 지금 위치엔 놓을 수 없음 */
+  dest: string | null;
+}
+export interface DragGhostHandle {
+  update(g: GhostState | null): void;
+}
+const DragGhost = forwardRef<DragGhostHandle>(function DragGhost(_props, ref) {
+  const [g, setG] = useState<GhostState | null>(null);
+  useImperativeHandle(ref, () => ({ update: setG }), []);
+  if (!g) return null;
+  return (
+    <div
+      className="pointer-events-none fixed z-50 max-w-64 rounded-md border border-edge bg-panel px-2.5 py-1.5 text-xs shadow-xl"
+      style={{ left: g.x + 14, top: g.y + 10 }}
+    >
+      <div className="truncate font-medium text-fg">{g.label}</div>
+      <div className={`truncate text-[11px] ${g.dest !== null ? "text-accent" : "text-fg-dim"}`}>
+        {g.dest !== null ? `→ ${g.dest || "루트"}` : "여기로는 이동할 수 없습니다"}
+      </div>
+    </div>
+  );
+});
+
+// 드롭 대상 폴더 행 하이라이트 — React state 대신 classList 직접 조작(위 고스트와 같은 이유).
+// 문자열 리터럴이라 Tailwind JIT가 클래스를 생성한다.
+const DROP_HL = ["ring-1", "ring-inset", "ring-accent", "bg-accent/15"];
 
 /** 폴더/파일 이름 검증 — 빈 이름·경로 구분자·`..` 거부. 통과면 null. */
 function validateName(v: string): string | null {
@@ -525,6 +575,229 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
     () => ({ sel: treeSel, onClick: onRowClick, onDouble }),
     [treeSel, onRowClick, onDouble],
   );
+
+  // ── 드래그로 이동 ──
+  // HTML5 DnD가 아니라 포인터 이벤트로 직접 구현한다: Tauri는 창의 dragDropEnabled(네이티브
+  // 파일 드롭)가 켜져 있으면 Windows(WebView2)에서 DOM drag 이벤트를 가로채 내부 DnD가
+  // 아예 발화하지 않는다. 포인터 방식은 세 플랫폼 공통이고 창 설정도 건드리지 않는다.
+  //
+  // 규칙: 행(파일·폴더)을 5px 이상 끌면 드래그 시작. 폴더 행 = 그 폴더로, 파일 행 = 그 파일의
+  // 폴더로, 빈 영역 = 루트로 떨어뜨린다. 멀티선택된 파일을 끌면 선택 전체가 함께 간다.
+  const ghostRef = useRef<DragGhostHandle>(null);
+  const dragRef = useRef<{
+    path: string;
+    isDir: boolean;
+    startX: number;
+    startY: number;
+    active: boolean;
+    /** Escape로 취소됨 — 버튼을 놓을 때까지 리스너는 유지하되 이동·고스트는 죽인다. */
+    canceled: boolean;
+    paths: string[];
+    overEl: HTMLElement | null;
+    destDir: string | null;
+    cleanup: () => void;
+  } | null>(null);
+  // 언마운트(프로젝트 전환 등) 중 드래그가 걸쳐 있으면 리스너·하이라이트를 거둔다.
+  useEffect(() => () => dragRef.current?.cleanup(), []);
+
+  async function moveItems(paths: string[], destDir: string) {
+    let ok = 0;
+    const errors: string[] = [];
+    const moved: [string, string][] = [];
+    for (const p of paths) {
+      if (parentDir(p) === destDir) continue; // 제자리 — 멀티선택에 섞여 있으면 건너뛴다
+      try {
+        moved.push([p, await ipc.movePath(projectId, p, destDir)]);
+        ok++;
+      } catch (e) {
+        errors.push(`${p.split("/").pop()}: ${errorMessage(e)}`);
+      }
+    }
+    if (ok) {
+      // 펼침 상태·뷰어 탭·멀티선택을 새 경로로 — 이름 바꾸기와 같은 이관 규칙(하위 포함).
+      for (const [from, to] of moved) {
+        useTreeState.getState().renameTo(projectId, from, to);
+        useUi.getState().renameViewerPaths(projectId, from, to);
+      }
+      setTreeSel((prev) => {
+        const next = new Set<string>();
+        for (const p of prev) {
+          const m = moved.find(([f]) => p === f || p.startsWith(`${f}/`));
+          next.add(m ? m[1] + p.slice(m[0].length) : p);
+        }
+        return next;
+      });
+      // 대상 폴더가 접혀 있으면 펼친다 — 옮긴 결과가 보이지 않으면 이동이 실패한 줄 안다.
+      const ts = useTreeState.getState();
+      if (destDir && !(ts.expanded[projectId] ?? []).includes(destDir))
+        ts.toggle(projectId, destDir);
+      invalidateAfterMove(qc);
+      pushToast("success", `${ok}개 이동됨 → ${destDir ? toOsPath(destDir) : "루트"}`);
+    }
+    if (errors.length)
+      pushToast(
+        "error",
+        `이동 실패 ${errors.length}개 — ${errors[0]}${errors.length > 1 ? " 외" : ""}`,
+      );
+  }
+
+  function onTreePointerDown(e: React.PointerEvent) {
+    if (e.button !== 0 || dragRef.current) return;
+    // 드래그 "소스"는 실제 행만 — 자리표시자("비어 있음")는 대상은 되지만 끌 수는 없다.
+    const rowEl = (e.target as HTMLElement).closest?.(
+      "[data-tree-path][data-tree-row]",
+    ) as HTMLElement | null;
+    if (!rowEl || !treeRef.current?.contains(rowEl)) return;
+    const path = rowEl.dataset.treePath;
+    if (!path) return;
+    const isDir = rowEl.dataset.treeIsdir === "1";
+    const startX = e.clientX;
+    const startY = e.clientY;
+
+    const onMove = (ev: PointerEvent) => {
+      const st = dragRef.current;
+      if (!st || st.canceled) return;
+      if (!st.active) {
+        // 임계값 전엔 평범한 클릭 후보다 — 여기서 시작해야 클릭/더블클릭이 안 죽는다.
+        if (Math.hypot(ev.clientX - st.startX, ev.clientY - st.startY) < 5) return;
+        st.active = true;
+        st.paths =
+          !st.isDir && treeSel.has(st.path) && treeSel.size > 1
+            ? [...treeSel]
+            : [st.path];
+        document.body.style.userSelect = "none"; // 드래그 중 텍스트 선택 방지
+      }
+      const cont = treeRef.current;
+      const el = document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null;
+      const hit =
+        el && cont?.contains(el)
+          ? ((el.closest("[data-tree-path]") as HTMLElement | null) ?? null)
+          : null;
+      let destDir: string | null = null;
+      if (hit) {
+        const tPath = hit.dataset.treePath ?? "";
+        destDir = hit.dataset.treeIsdir === "1" ? tPath : parentDir(tPath);
+      } else if (el && cont?.contains(el)) {
+        destDir = ""; // 트리 빈 영역 = 루트
+      }
+      if (destDir !== null) {
+        // 자기 자신/자손 안으로는 불가(폴더), 전부 제자리면 이동할 것이 없다.
+        const invalid = st.paths.some(
+          (p) => destDir === p || destDir!.startsWith(`${p}/`),
+        );
+        const allNoop = st.paths.every((p) => parentDir(p) === destDir);
+        if (invalid || allNoop) destDir = null;
+      }
+      st.destDir = destDir;
+      // 폴더 행을 직접 겨냥했을 때만 하이라이트 — 파일 행/빈 영역은 고스트 문구가 대상을 알린다.
+      const hl =
+        destDir !== null && hit?.dataset.treeIsdir === "1" && hit.dataset.treePath === destDir
+          ? hit
+          : null;
+      if (st.overEl !== hl) {
+        st.overEl?.classList.remove(...DROP_HL);
+        hl?.classList.add(...DROP_HL);
+        st.overEl = hl;
+      }
+      // 컨테이너 가장자리 자동 스크롤 — 긴 트리에서 화면 밖 폴더로도 끌어갈 수 있게.
+      if (cont) {
+        const r = cont.getBoundingClientRect();
+        if (ev.clientY < r.top + 28) cont.scrollTop -= 10;
+        else if (ev.clientY > r.bottom - 28) cont.scrollTop += 10;
+      }
+      ghostRef.current?.update({
+        x: ev.clientX,
+        y: ev.clientY,
+        label:
+          st.paths.length > 1
+            ? `${st.paths.length}개 항목`
+            : (st.paths[0] ?? st.path).split("/").pop() ?? "",
+        dest: destDir === null ? null : destDir ? toOsPath(destDir) : "",
+      });
+    };
+
+    const onUp = () => {
+      const st = dragRef.current;
+      if (!st) return;
+      const { active, paths, destDir } = st;
+      st.cleanup();
+      if (!active) return;
+      // 드래그로 끝난 pointerup 뒤에 따라오는 click이 행 선택/폴더 토글을 바꾸지 않게 한 번 삼킨다.
+      const suppress = (ce: MouseEvent) => {
+        ce.stopPropagation();
+        ce.preventDefault();
+        window.removeEventListener("click", suppress, true);
+      };
+      window.addEventListener("click", suppress, true);
+      setTimeout(() => window.removeEventListener("click", suppress, true), 120);
+      if (destDir !== null) void moveItems(paths, destDir);
+    };
+
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key !== "Escape") return;
+      const st = dragRef.current;
+      if (!st) return;
+      // 임계값 전이면 평범한 클릭 후보 — 통째로 걷어도 뒤따르는 click이 자연스럽다.
+      if (!st.active) {
+        st.cleanup();
+        return;
+      }
+      // 활성 드래그 취소: 시각 요소만 즉시 걷고 리스너는 유지한다 — 버튼을 놓을 때 onUp이
+      // 리스너 해제와 "드래그로 끝난 click 한 번 삼키기"까지 처리한다. 여기서 cleanup()을
+      // 해 버리면 Escape 후 pointerup에 딸려 오는 click이 밑에 있던 행을 선택/토글해 버린다.
+      st.canceled = true;
+      st.destDir = null;
+      st.overEl?.classList.remove(...DROP_HL);
+      st.overEl = null;
+      ghostRef.current?.update(null);
+    };
+
+    // 터치/펜 드래그를 스크롤 제스처가 가로채면 pointerup 없이 pointercancel만 온다 —
+    // 안 걷으면 고스트·리스너·userSelect가 남고 dragRef가 차 있어 이후 드래그가 전부 막힌다.
+    // 드래그 중 포커스 상실(Alt+Tab)도 같다: 남겨 두면 복귀 후 첫 pointerup이 옛 드래그의
+    // 이동을 실행해 버린다. 둘 다 click이 따라오지 않으므로 억제 없이 즉시 접는다.
+    const onCancel = () => dragRef.current?.cleanup();
+    // 드래그 중 우클릭 메뉴 차단 — 곧 옮겨질 경로를 가리키는 메뉴(삭제/이름 바꾸기)가 열리면
+    // 액션 대상이 이동과 어긋난다. capture라 행의 onContextMenu(React 위임)보다 먼저 먹는다.
+    const onCtx = (ev: MouseEvent) => {
+      if (dragRef.current?.active) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+    };
+
+    const cleanup = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("pointercancel", onCancel);
+      window.removeEventListener("blur", onCancel);
+      window.removeEventListener("contextmenu", onCtx, true);
+      dragRef.current?.overEl?.classList.remove(...DROP_HL);
+      ghostRef.current?.update(null);
+      document.body.style.userSelect = "";
+      dragRef.current = null;
+    };
+
+    dragRef.current = {
+      path,
+      isDir,
+      startX,
+      startY,
+      active: false,
+      canceled: false,
+      paths: [path],
+      overEl: null,
+      destDir: null,
+      cleanup,
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("pointercancel", onCancel);
+    window.addEventListener("blur", onCancel);
+    window.addEventListener("contextmenu", onCtx, true);
+  }
 
   // 새 폴더 — 대상이 폴더면 그 안에, 파일이면 같은 폴더에 만든다.
   function newFolder(m: TreeMenu) {
@@ -830,6 +1103,7 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
       </div>
       <div
         ref={treeRef}
+        onPointerDown={onTreePointerDown}
         className="min-h-0 flex-1 overflow-auto py-1 text-[13px]"
         onContextMenu={(e) => {
           // 빈 영역 우클릭 → 루트 새 폴더 메뉴 (행은 stopPropagation으로 여기 안 온다).
@@ -855,6 +1129,8 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
         </TreeStatusCtx.Provider>
       </div>
       <ResizeHandle onMouseDown={startResize} onDoubleClick={fitToContent} />
+      {/* 드래그 이동 고스트 — 커서 옆 라벨 + 대상 폴더 안내 */}
+      <DragGhost ref={ghostRef} />
 
       {menu && (
         <div

@@ -234,6 +234,83 @@ export async function run({ cdp, report: r, fix }) {
   );
   await cdp.try("delete_path", P("e2e-renamed"));
 
+  // ── move_path (이름 그대로 다른 폴더로 — 트리 드래그 앤 드롭) ──
+  await cdp.try("create_dir", P("e2e-move"));
+  await cdp.try("create_dir", P("e2e-move/sub"));
+  await cdp.try("create_file", P("e2e-move/a.txt"));
+
+  const mv = await cdp.try("move_path", {
+    ...P("e2e-move/a.txt"),
+    destDir: "e2e-move/sub",
+  });
+  r.check(
+    "move_path: 파일을 하위 폴더로 이동",
+    mv.ok &&
+      mv.r === "e2e-move/sub/a.txt" &&
+      has("e2e-move/sub/a.txt") &&
+      !has("e2e-move/a.txt"),
+    mv.ok ? `→ ${mv.r}` : mv.code,
+  );
+
+  const mvRoot = await cdp.try("move_path", {
+    ...P("e2e-move/sub/a.txt"),
+    destDir: "",
+  });
+  r.check(
+    "move_path: 루트(빈 destDir)로 이동",
+    mvRoot.ok && mvRoot.r === "a.txt" && has("a.txt"),
+    mvRoot.ok ? `→ ${mvRoot.r}` : mvRoot.code,
+  );
+
+  // 기존 파일은 덮어쓰지 않는다.
+  await cdp.try("create_file", P("e2e-move/a.txt"));
+  const mvDup = await cdp.try("move_path", { ...P("a.txt"), destDir: "e2e-move" });
+  r.check(
+    "move_path: 대상에 같은 이름 → ALREADY_EXISTS",
+    !mvDup.ok && mvDup.code === "ALREADY_EXISTS" && has("a.txt"),
+    mvDup.code || "(ok?)",
+  );
+  await cdp.try("delete_path", P("a.txt"));
+
+  // 폴더를 자기 자신/자손 안으로 — rename이 소스를 삼키는 유형이라 반드시 거부.
+  const mvSelf = await cdp.try("move_path", {
+    ...P("e2e-move"),
+    destDir: "e2e-move/sub",
+  });
+  r.check(
+    "move_path: 폴더 → 자기 자손 거부",
+    !mvSelf.ok && mvSelf.code === "IO" && has("e2e-move/sub"),
+    mvSelf.code || "(ok?)",
+  );
+
+  const mvEsc = await cdp.try("move_path", { ...P("e2e-move/a.txt"), destDir: ".." });
+  r.check("move_path: '..' destDir 거부", !mvEsc.ok, mvEsc.code || "(ok?)");
+  const mvGit = await cdp.try("move_path", {
+    ...P("e2e-move/a.txt"),
+    destDir: ".git",
+  });
+  r.check("move_path: .git destDir 거부", !mvGit.ok, mvGit.code || "(ok?)");
+  const mvMissing = await cdp.try("move_path", {
+    ...P("__missing_xyz__"),
+    destDir: "e2e-move",
+  });
+  r.check(
+    "move_path: 없는 원본 → NOT_FOUND",
+    !mvMissing.ok && mvMissing.code === "NOT_FOUND",
+    mvMissing.code || "(ok?)",
+  );
+
+  // 폴더 이동 — 하위 파일이 함께 따라온다.
+  await cdp.try("create_file", P("e2e-move/sub/deep.txt"));
+  const mvDir = await cdp.try("move_path", { ...P("e2e-move/sub"), destDir: "" });
+  r.check(
+    "move_path: 폴더 이동(하위 유지)",
+    mvDir.ok && mvDir.r === "sub" && has("sub/deep.txt") && !has("e2e-move/sub"),
+    mvDir.ok ? `→ ${mvDir.r}` : mvDir.code,
+  );
+  await cdp.try("delete_path", P("sub"));
+  await cdp.try("delete_path", P("e2e-move"));
+
   // ── delete_path ──
   const delFile = await cdp.try("delete_path", P("e2e-newdir/pixel.png"));
   r.check(

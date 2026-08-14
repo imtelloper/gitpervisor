@@ -528,6 +528,7 @@ pub fn run() {
             commands::create_file,
             commands::delete_path,
             commands::rename_path,
+            commands::move_path,
             commands::write_file_bytes,
             commands::find_definition,
             commands::find_symbols,
