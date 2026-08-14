@@ -13,6 +13,9 @@ export interface PromptEntry {
 export type PromptLog = Record<string, PromptEntry[]>;
 
 const KEY = "gp:prompt-history";
+// 셀 우측 프롬프트 컬럼(사이드 패널)의 열림 상태 — termId 단위. 기록과 키를 분리해
+// 서로의 쓰기(기록은 Enter마다, 열림은 토글할 때만)가 상대 스냅샷을 갈아치우지 않게 한다.
+const PANEL_KEY = "gp:prompt-panel-open";
 // 한 터미널당 보관 개수 / 한 줄 최대 길이 / 추적할 터미널 수.
 const MAX_PER_TERM = 200;
 const MAX_TEXT = 4000;
@@ -42,6 +45,36 @@ function load(): PromptLog {
     return parseLog(raw ? JSON.parse(raw) : null);
   } catch {
     return {};
+  }
+}
+
+/** termId → true 맵으로 정규화 — 손상 값은 버린다. */
+function parsePanels(raw: unknown): Record<string, true> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: Record<string, true> = {};
+  for (const [id, v] of Object.entries(raw as Record<string, unknown>))
+    if (v === true) out[id] = true;
+  return out;
+}
+
+function loadPanels(): Record<string, true> {
+  try {
+    const raw = localStorage.getItem(PANEL_KEY);
+    return parsePanels(raw ? JSON.parse(raw) : null);
+  } catch {
+    return {};
+  }
+}
+
+/** 패널 열림 상태 반영 — 기록(persist)과 같은 이유로 termId 단위 읽고-고쳐-쓰기. */
+function persistPanel(termId: string, open: boolean): void {
+  try {
+    const cur = loadPanels();
+    if (open) cur[termId] = true;
+    else delete cur[termId];
+    localStorage.setItem(PANEL_KEY, JSON.stringify(cur));
+  } catch {
+    /* localStorage 불가 — 열림 상태는 메모리에만 남는다 */
   }
 }
 
@@ -92,18 +125,25 @@ function persist(termId: string, list: PromptEntry[] | null): void {
 
 interface PromptHistoryState {
   byTerminal: PromptLog;
+  /** 셀 우측 프롬프트 컬럼이 열려 있는 터미널들 — 세션이 닫힐 때(clear)까지 기억. */
+  openPanels: Record<string, true>;
   /**
    * 확정된 줄들을 기록. 직전과 같은 줄이면 시각만 갱신한다(반복 실행이 목록을 채우지 않게).
    * **배열로 받는 이유**: 붙여넣기 한 번이 수백 줄을 동시에 확정할 수 있는데(bracketed paste가
    * 꺼진 셸), 줄마다 부르면 그 횟수만큼 localStorage를 파싱·직렬화해 입력이 멈춘다.
    */
   record: (termId: string, texts: string[]) => void;
-  /** 이 터미널의 기록을 통째로 지운다(세션 종료·사용자 지우기). */
+  /** 셀 우측 프롬프트 컬럼 켜기/끄기. */
+  togglePanel: (termId: string) => void;
+  /** 여러 터미널의 컬럼을 한꺼번에 펼치기/접기(타이틀바 마스터 토글). */
+  setPanels: (termIds: string[], open: boolean) => void;
+  /** 이 터미널의 기록·패널 상태를 통째로 지운다(세션 종료·사용자 지우기). */
   clear: (termId: string) => void;
 }
 
 export const usePromptHistory = create<PromptHistoryState>((set, get) => ({
   byTerminal: load(),
+  openPanels: loadPanels(),
 
   record: (termId, texts) => {
     if (texts.length === 0) return;
@@ -121,23 +161,62 @@ export const usePromptHistory = create<PromptHistoryState>((set, get) => ({
     persist(termId, capped);
   },
 
+  togglePanel: (termId) => {
+    const open = !get().openPanels[termId];
+    set((s) => {
+      const next = { ...s.openPanels };
+      if (open) next[termId] = true;
+      else delete next[termId];
+      return { openPanels: next };
+    });
+    persistPanel(termId, open);
+  },
+
+  setPanels: (termIds, open) => {
+    set((s) => {
+      const next = { ...s.openPanels };
+      for (const id of termIds) {
+        if (open) next[id] = true;
+        else delete next[id];
+      }
+      return { openPanels: next };
+    });
+    // 일괄 반영 — termId마다 persistPanel을 부르면 N번 읽고-쓰기라, 같은 RMW 규칙으로 한 번에 쓴다.
+    try {
+      const cur = loadPanels();
+      for (const id of termIds) {
+        if (open) cur[id] = true;
+        else delete cur[id];
+      }
+      localStorage.setItem(PANEL_KEY, JSON.stringify(cur));
+    } catch {
+      /* localStorage 불가 — 메모리에만 남는다 */
+    }
+  },
+
   clear: (termId) => {
     set((s) => {
-      if (!(termId in s.byTerminal)) return s;
+      if (!(termId in s.byTerminal) && !(termId in s.openPanels)) return s;
       const rest = { ...s.byTerminal };
       delete rest[termId];
-      return { byTerminal: rest };
+      const panels = { ...s.openPanels };
+      delete panels[termId];
+      return { byTerminal: rest, openPanels: panels };
     });
     persist(termId, null);
+    persistPanel(termId, false);
   },
 }));
 
-// 다른 창(모아보기 별도 창 ↔ 메인)이 기록을 남기면 따라간다 — storage 이벤트는 **다른 창**에서만
-// 발화한다. 이쪽 창의 기록은 이미 write-through 됐으므로 방금 읽은 스냅샷에도 들어 있다.
+// 다른 창(모아보기 별도 창 ↔ 메인)이 기록/패널 상태를 바꾸면 따라간다 — storage 이벤트는
+// **다른 창**에서만 발화한다. 이쪽 창의 쓰기는 이미 write-through 됐으므로 스냅샷에 들어 있다.
 window.addEventListener("storage", (e) => {
-  if (e.key !== KEY || !e.newValue) return;
+  if (!e.newValue) return;
   try {
-    usePromptHistory.setState({ byTerminal: parseLog(JSON.parse(e.newValue)) });
+    if (e.key === KEY)
+      usePromptHistory.setState({ byTerminal: parseLog(JSON.parse(e.newValue)) });
+    else if (e.key === PANEL_KEY)
+      usePromptHistory.setState({ openPanels: parsePanels(JSON.parse(e.newValue)) });
   } catch {
     /* 손상된 값 무시 */
   }

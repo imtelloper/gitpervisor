@@ -1,11 +1,12 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { LayoutGrid, ShieldAlert, StickyNote } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { History, LayoutGrid, ShieldAlert, StickyNote } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { openAggregateWindow } from "../lib/aggregate-window";
 import { isMac, modLabel } from "../lib/platform";
 import { useProjects, useQuarantinedTools } from "../queries";
-import { useTerminals } from "../stores/terminals";
+import { usePromptHistory } from "../stores/promptHistory";
+import { collectByContent, useTerminals } from "../stores/terminals";
 import { useUi } from "../stores/ui";
 import { GlobalMemoPopover } from "./memo/GlobalMemoPopover";
 import { SysMonitor } from "./SysMonitor";
@@ -59,8 +60,9 @@ export function TitleBar() {
       {/* 가운데: 드래그 영역 */}
       <div data-tauri-drag-region className="h-full flex-1" />
 
-      {/* 우: 모아보기 토글 + 메모장 + 시스템 모니터 */}
+      {/* 우: 모아보기 토글 + 전체 프롬프트 히스토리 + 메모장 + 시스템 모니터 */}
       <AggregateButton />
+      <PromptHistoryButton />
       <GlobalMemoButton />
       <SysMonitor />
 
@@ -118,6 +120,43 @@ function AggregateButton() {
       }`}
     >
       <LayoutGrid size={11} /> 모아보기
+    </button>
+  );
+}
+
+/**
+ * 전체 프롬프트 히스토리 펼치기/접기 — **모든 터미널 셀 우측 프롬프트 컬럼**의 마스터 토글.
+ * 켜면 모든 세션 셀에 컬럼이 펼쳐지고(모아보기에서 보임), 다시 누르면 전부 접힌다.
+ * 셀마다 개별 토글(헤더 버튼·패널 X)은 그대로 살아 있다 — 일부만 닫힌 상태에서 누르면
+ * "전부 펼치기"부터 한다(반쯤 섞인 상태에서 마스터의 의도는 언제나 '다 보이게'가 먼저다).
+ * 열린 터미널이 있을 때만 표시(모아보기 버튼과 같은 규칙).
+ */
+function PromptHistoryButton() {
+  const terminals = useTerminals((s) => s.terminals);
+  const openPanels = usePromptHistory((s) => s.openPanels);
+  const setPanels = usePromptHistory((s) => s.setPanels);
+  // 살아있는 모든 터미널 pane — 마스터 토글의 대상 집합.
+  const paneIds = useMemo(
+    () => terminals.flatMap((t) => collectByContent(t.layout, "terminal")),
+    [terminals],
+  );
+  if (paneIds.length === 0) return null;
+  const allOpen = paneIds.every((id) => openPanels[id]);
+  return (
+    <button
+      onClick={() => setPanels(paneIds, !allOpen)}
+      title={
+        allOpen
+          ? "전체 프롬프트 히스토리 접기 — 모든 터미널의 우측 목록을 닫습니다"
+          : "전체 프롬프트 히스토리 펼치기 — 모든 터미널 우측에 입력 목록을 엽니다 (모아보기에서 표시)"
+      }
+      className={`mr-2.5 flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] ${
+        allOpen
+          ? "bg-raised text-accent"
+          : "text-fg-muted hover:bg-raised hover:text-fg"
+      }`}
+    >
+      <History size={11} /> 히스토리
     </button>
   );
 }
