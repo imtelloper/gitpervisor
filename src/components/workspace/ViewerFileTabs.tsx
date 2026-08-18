@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { X } from "lucide-react";
 
 import type { DiffTarget } from "../../lib/ipc";
@@ -31,10 +32,18 @@ export function ViewerFileTabs({ projectId }: { projectId: string }) {
   const closeViewerTab = useUi((s) => s.closeViewerTab);
 
   const tabs = viewerTabs.filter((t) => t.outerId === projectId);
+  const activeKey =
+    selectedDiff && tabs.length > 0
+      ? viewerTabKey(selectedDiff, selectedDiffRepoId, projectId)
+      : null;
+
+  // 탭이 많아 가로로 넘칠 때, 활성 탭이 밖에 있으면 보이는 데까지만 스크롤한다.
+  const activeRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    activeRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [activeKey]);
+
   if (tabs.length === 0) return null;
-  const activeKey = selectedDiff
-    ? viewerTabKey(selectedDiff, selectedDiffRepoId, projectId)
-    : null;
 
   return (
     <div
@@ -50,6 +59,7 @@ export function ViewerFileTabs({ projectId }: { projectId: string }) {
         return (
           <div
             key={t.key}
+            ref={on ? activeRef : undefined}
             onClick={() => selectDiff(t.target, t.repoId)}
             onAuxClick={(e) => {
               if (e.button === 1) closeViewerTab(t.key); // 휠클릭 닫기
