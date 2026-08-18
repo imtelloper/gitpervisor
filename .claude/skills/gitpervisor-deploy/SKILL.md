@@ -64,6 +64,12 @@ grep -A1 '^name = "gitpervisor"$' src-tauri/Cargo.lock | grep version
 npm run tauri build -- --bundles deb 2>&1 | tee /tmp/gp-build.log | tail -5
 ```
 
+> **Windows 개발기에서는 `--bundles nsis`를 쓴다.** 인자를 안 주면 tauri가 MSI(WiX)부터
+> 만드는데 `WixTools314\candle.exe` 실행에서 깨지고, 거기서 멈춰 NSIS 설치본이 안 나온다.
+> CI의 Windows 매트릭스도 `--bundles nsis`뿐이라 MSI는 애초에 배포물이 아니다.
+> 산출물은 `src-tauri/target/release/bundle/nsis/Gitpervisor_<버전>_x64-setup.exe`.
+> (로컬 exe가 CI 것보다 2배 이상 큰 건 정상 — CI 산출물끼리 크기를 비교하라.)
+
 - `--bundles deb`로 좁히는 이유: AppImage는 `linuxdeploy` 다운로드/실행 실패로 종종 깨지는데,
   로컬 검증에는 deb만 있으면 충분하다. (CI는 전 포맷을 빌드한다.)
 - 프론트 타입 오류는 여기서 먼저 걸린다. 미리 `npx tsc --noEmit`으로 확인해도 좋다.
@@ -203,6 +209,8 @@ curl -sI -L "https://github.com/imtelloper/gitpervisor/releases/download/v${NEW}
 | `cargo: command not found` | `export PATH="$HOME/.cargo/bin:$PATH"` |
 | 빌드가 exit 1인데 deb는 있음 | 서명 단계(개인키 CI 전용). **실패 아님** |
 | AppImage `failed to run linuxdeploy` | 로컬에서 흔함. `--bundles deb`로 우회(CI는 정상) |
+| Windows 로컬 빌드가 `candle.exe` 실행 실패로 멈춤 | MSI(WiX) 단계. `--bundles nsis`로 좁혀라 — CI도 NSIS만 만든다 |
+| `failed to read plugin permissions: ...\<옛 경로>\...\app_hide.toml` | `src-tauri/target/`을 다른 경로에서 옮겨 왔다. tauri 플러그인 build script 출력(`output`)에 옛 절대경로가 박혀 있다. 해당 build 디렉터리만 지워 재생성:<br>`grep -rl "<옛 경로 조각>" target/release/build/*/output \| xargs -n1 dirname \| grep /tauri \| xargs rm -rf`<br>**`cargo clean -p`는 프로필별로 따로 지운다** — 릴리스는 `--release`를 붙여야 한다(debug만 지우고 릴리스에서 같은 에러를 다시 만난다) |
 | 릴리스는 됐는데 사이트가 옛 버전 | ISR 1시간 캐시 → 빈 커밋으로 사이트 재배포 |
 | 사이트 리눅스 버튼이 AppImage를 가리킴 | `website/lib/github.ts`의 `linux:` 선택 순서 확인(deb 우선이어야 함) |
 | 자동 업데이트가 안 옴 | 릴리스에 `.sig`/`latest.json` 누락 — CI를 거치지 않았을 가능성 |
