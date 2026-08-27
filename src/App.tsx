@@ -74,6 +74,9 @@ export default function App() {
   // 시작 시 자동 업데이트 확인(옵트인, 기본 켬) — 콜드스타트 IPC 폭주와 안 겹치게 잠깐 지연.
   // 새 버전이 있으면 updater 스토어가 토스트로 알리고 설정 › 업데이트에 표시한다. 실패는 조용히.
   useEffect(() => {
+    // dev 인스턴스는 확인하지 않는다 — 설치본과 나란히 띄우는 구성에서(package.json dev:app)
+    // 여기서 "설치"를 누르면 지금 쓰고 있는 설치본을 통째로 갈아엎는다(installMode: passive).
+    if (import.meta.env.DEV) return;
     if (!useUpdater.getState().autoCheck) return;
     const t = setTimeout(() => void useUpdater.getState().check({ silent: true }), 4000);
     return () => clearTimeout(t);
@@ -94,6 +97,15 @@ export default function App() {
         onCancel: () => void invoke("reset_close_guard").catch(() => {}),
       });
     });
+    return () => void un.then((f) => f());
+  }, []);
+
+  // 화면 캡쳐 전역 단축키 등록 실패 — **조용히 넘기면 안 되는 종류의 고장이다.** 단축키가
+  // 설정에 있는데 안 눌리면 사용자는 원인을 알 방법이 없다(대개 다른 앱이 조합을 선점한 것).
+  useEffect(() => {
+    const un = listen<string>("capture://hotkey-error", (e) =>
+      useUi.getState().pushToast("error", e.payload),
+    );
     return () => void un.then((f) => f());
   }, []);
 

@@ -235,6 +235,8 @@ pub struct Settings {
     /// 워크스페이스 node_modules/typescript를 tsserver로 쓰기(옵트인 기본 false — 레포 공급 코드
     /// 실행 공급망 표면, §3.2). false면 관리 사본 typescript 사용.
     pub lsp_workspace_tsserver: bool,
+    /// ffmpeg 명시 경로 (null/빈값 = 자동 발견: PATH → 관리 설치본). 지정 시 그것만(폴백 금지).
+    pub video_ffmpeg_path: Option<String>,
 }
 
 impl Default for Settings {
@@ -262,6 +264,7 @@ impl Default for Settings {
             format_on_save: false,
             lsp_enabled_projects: Vec::new(),
             lsp_workspace_tsserver: false,
+            video_ffmpeg_path: None,
         }
     }
 }

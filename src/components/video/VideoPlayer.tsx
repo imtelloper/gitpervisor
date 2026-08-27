@@ -1,0 +1,1069 @@
+// 동영상 플레이어 (DOCS/video-editor-design.md L1) — 커스텀 컨트롤 + 타임라인 + 구간(A-B).
+//
+// - 스트리밍은 MediaView와 같은 루프백 Range 경로(previewLocalUrl). 유휴 사망 시 1회 재발급.
+// - 하나의 In/Out 구간이 반복 재생(⑤)과 클립 추출(①)의 공용 입력이다(설계 결정 3).
+// - 단축키는 window가 아니라 **포커스된 컨테이너**에 바인딩 — 전역 Ctrl+W(탭 닫기) 등과 충돌 없음.
+// - 확대(F)는 OS 전체화면이 아니라 앱 내 오버레이(WKWebView requestFullscreen 신뢰 불가) —
+//   네이티브 자식 webview 점유는 useOccludesWebview로 등록한다(ui.ts 차단 오버레이 계약).
+import {
+  ExternalLink,
+  FileWarning,
+  Maximize2,
+  Minimize2,
+  ChevronsLeft,
+  ChevronsRight,
+  Pause,
+  Play,
+  Repeat,
+  RotateCcw,
+  RotateCw,
+  SkipBack,
+  SkipForward,
+  SlidersHorizontal,
+  Volume2,
+  VolumeX,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+import { errorMessage, ipc } from "../../lib/ipc";
+import { useVideoProbe, useVideoToolStatus } from "../../queries";
+import { useDb } from "../../stores/db";
+import { useOcclusion, useOccludesWebview } from "../../stores/occlusion";
+import { selectBlockingOverlay, useUi } from "../../stores/ui";
+import { EmptyState } from "../common/EmptyState";
+import { CropOverlay, type CropRect } from "./CropOverlay";
+import { ExportPanel } from "./ExportPanel";
+
+const RATES = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 4];
+
+/** 123.456초 → "2:03.4" (시간 단위는 필요할 때만).
+ *  0.1초 단위로 먼저 반올림한 뒤 분해한다 — 초를 나중에 반올림하면 "1:60.0"이 나온다. */
+export function fmtTime(sec: number): string {
+  if (!Number.isFinite(sec) || sec < 0) sec = 0;
+  const tot = Math.round(sec * 10); // 0.1초 단위
+  const h = Math.floor(tot / 36_000);
+  const m = Math.floor((tot % 36_000) / 600);
+  const s = (tot % 600) / 10;
+  const ss = s.toFixed(1).padStart(4, "0");
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
+}
+
+const btnCls =
+  "rounded px-1.5 py-1 text-fg-dim hover:bg-raised hover:text-fg disabled:opacity-40";
+
+export default function VideoPlayer({
+  projectId,
+  path,
+}: {
+  projectId: string;
+  path: string;
+}) {
+  const pushToast = useUi((s) => s.pushToast);
+  const [url, setUrl] = useState<string | null>(null);
+  const [mintError, setMintError] = useState<string | null>(null);
+  const [playError, setPlayError] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const retriedRef = useRef(false);
+
+  const [playing, setPlaying] = useState(false);
+  const [time, setTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [rate, setRate] = useState(1);
+  const [muted, setMuted] = useState(false);
+  const [inPt, setInPt] = useState<number | null>(null);
+  const [outPt, setOutPt] = useState<number | null>(null);
+  const [loopOn, setLoopOn] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [cropActive, setCropActive] = useState(false);
+  const [crop, setCrop] = useState<CropRect | null>(null);
+
+  // 확대 오버레이가 네이티브 자식 webview(내장 브라우저) 위에 보이도록 점유 등록.
+  useOccludesWebview(expanded);
+
+  const tool = useVideoToolStatus();
+  const canEdit = !!tool.data?.found && !!tool.data?.probeFound;
+  const probe = useVideoProbe(projectId, path, canEdit);
+  const fps = probe.data && probe.data.fps > 0 ? probe.data.fps : 30;
+
+  /** 루프백 URL 발급 — 서버가 살아 있으면 같은 URL이 돌아와 멱등(MediaView와 동일). */
+  const mint = useCallback(async () => {
+    try {
+      const u = await ipc.previewLocalUrl(projectId, path);
+      setUrl(u);
+      setMintError(null);
+      return u;
+    } catch (e) {
+      setMintError(errorMessage(e));
+      return null;
+    }
+  }, [projectId, path]);
+
+  // 파일이 바뀌면 전부 리셋.
+  useEffect(() => {
+    setUrl(null);
+    setMintError(null);
+    setPlayError(false);
+    retriedRef.current = false;
+    setPlaying(false);
+    setTime(0);
+    setDuration(0);
+    setInPt(null);
+    setOutPt(null);
+    setLoopOn(false);
+    setCrop(null);
+    setCropActive(false);
+    void mint();
+  }, [mint]);
+
+  // 파일을 열면 바로 단축키가 듣도록 컨테이너에 포커스 — 클릭 없이 Space/←→ 사용 가능.
+  // url이 조건: url 전엔 EmptyState 분기라 컨테이너가 아직 없다(마운트 직후 no-op 방지).
+  useEffect(() => {
+    if (url) containerRef.current?.focus();
+  }, [path, url]);
+
+  // 프리뷰 서버 keep-alive — 영상 탭이 열려 있는 동안은 서버가 "사용 중"이다. 긴 영상은
+  // 브라우저가 잔뜩 선버퍼한 뒤 10분 넘게 조용해질 수 있는데, 그때 유휴 종료로 서버가
+  // 죽으면 다음 탐색이 연결 거부 → 미디어 오류가 된다(1시간짜리 실파일에서 실사례).
+  // mint는 멱등이고 기존 서버의 유휴 시계를 리셋한다(preview.rs). CSP connect-src가
+  // 루프백 fetch를 막으므로 HEAD 핑 대신 mint를 쓴다.
+  useEffect(() => {
+    const id = window.setInterval(
+      () => void ipc.previewLocalUrl(projectId, path).catch(() => {}),
+      4 * 60_000,
+    );
+    return () => window.clearInterval(id);
+  }, [projectId, path]);
+
+  // Space 재생/정지 **전역** — 포커스가 플레이어 밖(파일트리·로그 패널 등)으로 옮겨가도 듣는다.
+  // 컨테이너 내부 포커스는 컨테이너 onKeyDown이 처리하므로 건너뛴다(이중 토글 방지).
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if (e.key !== " " || e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
+      if (e.repeat) return; // 꾹 누름 자동 반복이 재생/정지를 파닥거리게 하면 안 된다
+      // 플레이어가 실제로 보일 때만 — 다른 워크스페이스 탭이 활성이면 ViewerTab이
+      // display:none으로 마운트 유지되는데(WorkspaceTabs), 그때 Space가 보이지도 않는
+      // 영상을 토글하면 소리만 난다. 에러/로딩 분기(containerRef 없음)도 여기서 걸러진다.
+      const box = containerRef.current;
+      if (!box || box.offsetWidth === 0) return;
+      const t = e.target as HTMLElement | null;
+      const tag = t?.tagName ?? "";
+      // 입력 요소·버튼은 자기 의미(입력·활성화)가 우선. 터미널(xterm)·에디터(monaco)는 TEXTAREA.
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "BUTTON") return;
+      if (t?.isContentEditable) return;
+      if (t && box.contains(t)) return; // 내부는 컨테이너 핸들러 담당
+      // 모달 위에선 양보 — ui 모달들 + DB 다이얼로그 + 로컬 메뉴(occlusion 카운터)까지.
+      // selectBlockingOverlay 하나만 보면 DB 다이얼로그가 새는 것이 확인된 갭이다.
+      if (
+        selectBlockingOverlay(useUi.getState()) ||
+        !!useDb.getState().dialog ||
+        useOcclusion.getState().count > 0
+      )
+        return;
+      e.preventDefault();
+      const el = videoRef.current;
+      if (!el) return;
+      if (el.paused) void el.play().catch(() => {});
+      else el.pause();
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, []);
+
+  // 재생 중 부드러운 플레이헤드 — timeupdate(~4Hz)만으로는 눈금자 위 헤드가 뚝뚝 끊긴다.
+  useEffect(() => {
+    if (!playing) return;
+    let raf = 0;
+    const tick = () => {
+      const el = videoRef.current;
+      if (el) setTime(el.currentTime);
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [playing]);
+
+  /** 죽은 프리뷰 서버·일시적 네트워크 오류 복구 — 재발급 후 위치·재생 상태까지 복원한다.
+   *  서버가 살아 있으면 재발급 URL이 **동일**해 src 변경으로는 재로드가 안 일어난다 —
+   *  load()를 명시 호출해야 재시도가 된다. load()는 pause 이벤트 **없이** 정지시키므로
+   *  재생 중이었으면 play()로 재개해야 한다 — 안 하면 UI는 ⏸(재생 중)인데 영상은 멈춘
+   *  어긋난 상태로 남는다(1시간짜리 실파일에서 실사례). 복구가 성공(onCanPlay)하면
+   *  retriedRef를 재장전해 긴 세션의 다음 오류도 다시 한 번 복구할 수 있다. */
+  const onError = () => {
+    const el = videoRef.current;
+    if (retriedRef.current || !el) {
+      setPlayError(true);
+      return;
+    }
+    retriedRef.current = true;
+    const at = el.currentTime;
+    // 치명 오류로 멈춰도 paused는 false로 남는다 — "재생 중이었나"의 판단 근거로 쓸 수 있다.
+    const wasPlaying = !el.paused;
+    void mint().then((u) => {
+      if (!u) {
+        setPlayError(true);
+        return;
+      }
+      requestAnimationFrame(() => {
+        const m = videoRef.current;
+        if (!m) return;
+        m.load();
+        if (at > 0) m.currentTime = at;
+        if (wasPlaying) void m.play().catch(() => {});
+      });
+    });
+  };
+
+  const openExternally = () => {
+    void ipc
+      .runExecutable(projectId, path)
+      .catch((e) => pushToast("error", errorMessage(e)));
+  };
+
+  // ── 트랜스포트 ──
+  const seekTo = (t: number) => {
+    const el = videoRef.current;
+    if (!el) return;
+    el.currentTime = Math.min(Math.max(t, 0), duration || el.duration || 0);
+    setTime(el.currentTime);
+  };
+  const seekBy = (d: number) => seekTo((videoRef.current?.currentTime ?? 0) + d);
+  const togglePlay = () => {
+    const el = videoRef.current;
+    if (!el) return;
+    if (el.paused) void el.play().catch(() => {});
+    else el.pause();
+  };
+  /** 프레임 스텝 — HTML5엔 프레임 정확 API가 없어 1/fps 근사(probe 없으면 30fps 가정). */
+  const frameStep = (dir: 1 | -1) => {
+    videoRef.current?.pause();
+    seekBy(dir / fps);
+  };
+  const markIn = () => {
+    const t = videoRef.current?.currentTime ?? time;
+    setInPt(t);
+    if (outPt != null && outPt <= t) setOutPt(null);
+  };
+  const markOut = () => {
+    const t = videoRef.current?.currentTime ?? time;
+    setOutPt(t);
+    if (inPt != null && inPt >= t) setInPt(null);
+  };
+  const changeRate = (r: number) => {
+    setRate(r);
+    const el = videoRef.current;
+    if (el) el.playbackRate = r;
+  };
+  const stepRate = (dir: 1 | -1) => {
+    const i = RATES.indexOf(rate);
+    const next = RATES[Math.min(RATES.length - 1, Math.max(0, (i < 0 ? 3 : i) + dir))];
+    changeRate(next);
+  };
+  const toggleMute = () => {
+    const el = videoRef.current;
+    const next = !muted;
+    setMuted(next);
+    if (el) el.muted = next;
+  };
+
+  // ExportPanel(memo)에 주는 함수 props — 재생 중 rAF 60fps 리렌더가 패널까지 번지지 않게
+  // 참조를 고정한다(전부 ref/함수형 setState만 사용해 deps 없음).
+  const clearRange = useCallback(() => {
+    setInPt(null);
+    setOutPt(null);
+    setLoopOn(false);
+  }, []);
+  const toggleCrop = useCallback(() => {
+    videoRef.current?.pause();
+    setCropActive((v) => !v);
+  }, []);
+  const clearCrop = useCallback(() => {
+    setCrop(null);
+    setCropActive(false);
+  }, []);
+  const getTime = useCallback(() => videoRef.current?.currentTime ?? 0, []);
+
+  // ── 단축키(포커스된 컨테이너 한정) ──
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    const tag = (e.target as HTMLElement).tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    // 포커스된 버튼의 Space는 그 버튼 활성화가 기대 동작 — 가로채면 키보드 탐색이 깨진다.
+    if (tag === "BUTTON" && e.key === " ") return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return; // 전역 단축키(Ctrl+W 등)에 양보
+    let handled = true;
+    switch (e.key) {
+      case " ":
+      case "k":
+      case "K":
+        if (!e.repeat) togglePlay(); // 꾹 누름 반복 무시(화살표 시킹은 반복이 의도라 여기만)
+        break;
+      case "ArrowLeft":
+        seekBy(e.shiftKey ? -1 : -5);
+        break;
+      case "ArrowRight":
+        seekBy(e.shiftKey ? 1 : 5);
+        break;
+      case ",":
+        frameStep(-1);
+        break;
+      case ".":
+        frameStep(1);
+        break;
+      case "i":
+      case "I":
+        markIn();
+        break;
+      case "o":
+      case "O":
+        markOut();
+        break;
+      case "r":
+      case "R":
+        setLoopOn((v) => !v);
+        break;
+      case "m":
+      case "M":
+        toggleMute();
+        break;
+      case "f":
+      case "F":
+        setExpanded((v) => !v);
+        break;
+      case "-":
+        stepRate(-1);
+        break;
+      case "=":
+      case "+":
+        stepRate(1);
+        break;
+      case "Escape":
+        if (cropActive) setCropActive(false);
+        else if (expanded) setExpanded(false);
+        else handled = false;
+        break;
+      default:
+        if (/^[0-9]$/.test(e.key) && duration > 0) {
+          seekTo((duration * Number(e.key)) / 10);
+        } else {
+          handled = false;
+        }
+    }
+    if (handled) e.preventDefault();
+  };
+
+  if (mintError)
+    return (
+      <EmptyState icon={FileWarning} title="미디어를 준비하지 못했습니다" desc={mintError} />
+    );
+
+  if (playError)
+    return (
+      <EmptyState
+        icon={FileWarning}
+        title="이 형식은 재생할 수 없습니다"
+        desc="현재 플랫폼의 웹뷰가 이 코덱을 지원하지 않습니다. 파일 자체는 정상일 수 있습니다."
+        action={
+          <button
+            onClick={openExternally}
+            className="flex items-center gap-1.5 rounded border border-edge px-3 py-1.5 text-xs text-fg-muted hover:bg-raised hover:text-fg"
+          >
+            <ExternalLink size={13} /> 외부 앱으로 열기
+          </button>
+        }
+      />
+    );
+
+  if (!url) return <EmptyState title="미디어 준비 중…" />;
+
+  return (
+    <div
+      ref={containerRef}
+      tabIndex={0}
+      onKeyDown={onKeyDown}
+      className={
+        expanded
+          ? "fixed inset-0 z-50 flex flex-col bg-base outline-none"
+          : "flex h-full flex-col bg-base outline-none"
+      }
+    >
+      {/* 상단 바 */}
+      <div className="flex h-8 shrink-0 items-center gap-1 border-b border-edge px-3 text-xs text-fg-dim">
+        {probe.data && (
+          <span className="truncate">
+            {probe.data.width}×{probe.data.height} · {probe.data.fps.toFixed(2)}fps
+            {probe.data.vcodec ? ` · ${probe.data.vcodec}` : ""}
+            {probe.data.acodec ? `+${probe.data.acodec}` : ""}
+            {probe.data.bitrateKbps ? ` · ${Math.round(probe.data.bitrateKbps / 100) / 10}Mbps` : ""}
+          </span>
+        )}
+        <div className="flex-1" />
+        <button
+          onClick={() => setEditOpen((v) => !v)}
+          title="편집·내보내기 (ffmpeg)"
+          className={`flex items-center gap-1 rounded px-2 py-0.5 hover:bg-raised hover:text-fg ${editOpen ? "bg-raised text-accent" : ""}`}
+        >
+          <SlidersHorizontal size={12} /> 편집
+        </button>
+        <button
+          onClick={openExternally}
+          title="시스템 기본 앱으로 열기"
+          className="flex items-center gap-1 rounded px-2 py-0.5 hover:bg-raised hover:text-fg"
+        >
+          <ExternalLink size={12} /> 외부 앱
+        </button>
+      </div>
+
+      {/* 영상 영역 */}
+      <div
+        className="flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-black/40 p-3"
+        onClick={(e) => {
+          // 빈 영역 클릭 → 재생 토글(크롭 중엔 방해 금지). 컨테이너에 포커스도 준다.
+          containerRef.current?.focus();
+          if (!cropActive && e.target === e.currentTarget) togglePlay();
+        }}
+      >
+        <div className="relative inline-flex max-h-full max-w-full">
+          <video
+            ref={videoRef}
+            src={url}
+            preload="metadata"
+            onError={onError}
+            onClick={() => {
+              if (!cropActive) togglePlay();
+            }}
+            onLoadedMetadata={(e) => {
+              const el = e.currentTarget;
+              // Infinity 방어 — Duration 요소 없는 WebM(MediaRecorder 녹화물)에서 Chromium이
+              // duration=Infinity를 준다. 통과시키면 눈금 생성 루프가 무한이 돼 앱이 얼어붙는다.
+              setDuration(Number.isFinite(el.duration) ? el.duration : 0);
+              el.playbackRate = rate;
+              el.muted = muted;
+            }}
+            onTimeUpdate={(e) => {
+              const el = e.currentTarget;
+              setTime(el.currentTime);
+              // 구간 반복 — timeupdate(~250ms) 정밀도.
+              if (loopOn && inPt != null && outPt != null && el.currentTime >= outPt)
+                el.currentTime = inPt;
+            }}
+            onPlay={() => setPlaying(true)}
+            onPause={() => setPlaying(false)}
+            // load()는 pause 이벤트 없이 정지시킨다 — emptied로 상태를 정직하게 유지.
+            onEmptied={() => setPlaying(false)}
+            // 로드가 성공할 때마다 오류 복구 1회권을 재장전 — 긴 재생 세션은 서버 교체가
+            // 여러 번 있을 수 있다(파일당 1회 제한이면 두 번째부터 오류 화면행).
+            onCanPlay={() => {
+              retriedRef.current = false;
+            }}
+            // Out이 영상 끝과 같으면 timeupdate가 outPt에 못 미친 채 ended가 먼저 온다 —
+            // 반복 중이면 여기서 되감아 재생을 이어간다.
+            onEnded={(e) => {
+              const el = e.currentTarget;
+              if (loopOn && inPt != null && outPt != null) {
+                el.currentTime = inPt;
+                void el.play().catch(() => {});
+              }
+            }}
+            className="max-h-full max-w-full"
+          />
+          {cropActive && probe.data && (
+            <CropOverlay
+              videoW={probe.data.width}
+              videoH={probe.data.height}
+              crop={crop}
+              onChange={setCrop}
+            />
+          )}
+        </div>
+      </div>
+
+      {/* 타임라인 + 컨트롤 */}
+      <div className="shrink-0 border-t border-edge px-3 pb-1.5 pt-2">
+        <Timeline
+          duration={duration}
+          time={time}
+          playing={playing}
+          inPt={inPt}
+          outPt={outPt}
+          onSeek={seekTo}
+          // 최소 구간 0.1초 — 드래그로 In==Out을 만들면 반복 재생이 그 지점에 영원히 고정된다.
+          onDragIn={(t) => setInPt(Math.max(0, Math.min(t, (outPt ?? duration) - 0.1)))}
+          onDragOut={(t) => setOutPt(Math.min(duration, Math.max(t, (inPt ?? 0) + 0.1)))}
+          // 스크럽 후에도 화살표·프레임 스텝이 바로 듣도록 — 드래그 preventDefault가
+          // 브라우저의 클릭-포커스 기본동작을 막아서 명시적으로 포커스를 준다.
+          onInteract={() => containerRef.current?.focus()}
+        />
+        {/* flex-wrap: 좁은 패널에서 우측 도구가 화면 밖으로 잘리는 대신 다음 줄로 내려간다.
+            중앙 클러스터는 mx-auto로 남는 공간의 가운데에 선다. */}
+        <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-fg-dim">
+          <span className="font-mono tabular-nums">
+            {fmtTime(time)} / {fmtTime(duration)}
+          </span>
+          {/* 중앙 트랜스포트 — 큰 원형 재생 버튼 + 5s/1m/10m 원형 스킵(길이에 맞춰 노출) */}
+          <div className="mx-auto flex items-center gap-0.5">
+            <button onClick={() => frameStep(-1)} title="이전 프레임 (,)" className={btnCls}>
+              <SkipBack size={13} />
+            </button>
+            {duration >= 900 && <SkipBtn secs={-600} label="10m" onSkip={seekBy} />}
+            {duration >= 90 && <SkipBtn secs={-60} label="1m" onSkip={seekBy} />}
+            <SkipBtn secs={-5} label="5s" onSkip={seekBy} />
+            <button
+              onClick={togglePlay}
+              title="재생/일시정지 (Space)"
+              className="mx-1.5 grid h-10 w-10 place-items-center rounded-full bg-accent text-on-accent shadow hover:bg-accent-hover"
+            >
+              {playing ? (
+                <Pause size={17} fill="currentColor" />
+              ) : (
+                <Play size={17} fill="currentColor" className="translate-x-px" />
+              )}
+            </button>
+            <SkipBtn secs={5} label="5s" onSkip={seekBy} />
+            {duration >= 90 && <SkipBtn secs={60} label="1m" onSkip={seekBy} />}
+            {duration >= 900 && <SkipBtn secs={600} label="10m" onSkip={seekBy} />}
+            <button onClick={() => frameStep(1)} title="다음 프레임 (.)" className={btnCls}>
+              <SkipForward size={13} />
+            </button>
+          </div>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={markIn}
+              title="구간 시작 지정 (I)"
+              className={`${btnCls} font-semibold ${inPt != null ? "text-add" : ""}`}
+            >
+              I
+            </button>
+            <button
+              onClick={markOut}
+              title="구간 끝 지정 (O)"
+              className={`${btnCls} font-semibold ${outPt != null ? "text-danger" : ""}`}
+            >
+              O
+            </button>
+            <button
+              onClick={() => setLoopOn((v) => !v)}
+              title="구간 반복 (R)"
+              disabled={inPt == null || outPt == null}
+              className={`${btnCls} ${loopOn ? "text-accent" : ""}`}
+            >
+              <Repeat size={13} />
+            </button>
+            {/* 배속 — 세그먼트 컨트롤: « 느리게 · 현재 배속(클릭=1x 복원) · 빠르게 » */}
+            <div className="flex items-stretch overflow-hidden rounded-md border border-edge bg-panel">
+              <button
+                onClick={() => stepRate(-1)}
+                disabled={rate <= RATES[0]}
+                title="느리게 (-)"
+                className="px-1.5 py-1 text-fg-dim hover:bg-raised hover:text-accent disabled:opacity-40"
+              >
+                <ChevronsLeft size={13} />
+              </button>
+              <button
+                onClick={() => changeRate(1)}
+                title="재생 배속 — 클릭하면 1x로 복원 (-/=)"
+                className="flex min-w-11 items-center justify-center border-x border-edge px-1.5 font-mono text-xs font-semibold text-fg hover:bg-raised"
+              >
+                {rate}x
+              </button>
+              <button
+                onClick={() => stepRate(1)}
+                disabled={rate >= RATES[RATES.length - 1]}
+                title="빠르게 (=)"
+                className="px-1.5 py-1 text-fg-dim hover:bg-raised hover:text-accent disabled:opacity-40"
+              >
+                <ChevronsRight size={13} />
+              </button>
+            </div>
+            <button onClick={toggleMute} title="음소거 (M)" className={btnCls}>
+              {muted ? <VolumeX size={14} /> : <Volume2 size={14} />}
+            </button>
+            <button
+              onClick={() => setExpanded((v) => !v)}
+              title={expanded ? "축소 (F/Esc)" : "확대 (F)"}
+              className={btnCls}
+            >
+              {expanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* 편집·내보내기 패널 — key=path: 파일이 바뀌면 상태(파일명·형식·수정 플래그) 전부 리셋.
+          안 하면 이전 파일용으로 고친 파일명이 남아 새 영상을 엉뚱한 이름으로 내보낸다. */}
+      {editOpen && (
+        <ExportPanel
+          key={path}
+          projectId={projectId}
+          path={path}
+          tool={tool.data}
+          probe={probe.data}
+          probeError={probe.error ? errorMessage(probe.error) : null}
+          inPt={inPt}
+          outPt={outPt}
+          onClearRange={clearRange}
+          crop={crop}
+          cropActive={cropActive}
+          onToggleCrop={toggleCrop}
+          onClearCrop={clearCrop}
+          getTime={getTime}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── 타임라인 (DVR식 눈금자 + 플레이헤드·In/Out 배지 + 줌/팬) ──
+
+/** 주 눈금 후보 간격(초) — 라벨 간격이 ~72px 이상이 되는 가장 촘촘한 것을 고른다. */
+const TICK_STEPS = [0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200];
+
+/** 줌 최소 창 — 이보다 좁게는 확대하지 않는다(프레임 단위 이하로는 의미가 없다). */
+const MIN_VIEW_SECS = 0.5;
+
+/**
+ * 보이는 구간 [viewStart, viewEnd]의 눈금 — **절대 격자에 정렬**해서 줌/팬 중에도
+ * 눈금이 시간축에 고정돼 보인다(창 기준으로 만들면 팬할 때 눈금이 함께 미끄러진다).
+ */
+function buildTicks(
+  viewStart: number,
+  viewEnd: number,
+  width: number,
+): { major: number[]; minor: number[]; step: number } {
+  const span = viewEnd - viewStart;
+  // Infinity/NaN 이중 방어(설정 지점에서도 걸러지지만 여기가 무한 루프의 본진이다).
+  if (!Number.isFinite(span) || span <= 0 || width <= 60) return { major: [], minor: [], step: 1 };
+  const step = TICK_STEPS.find((s) => (width * s) / span >= 72) ?? TICK_STEPS[TICK_STEPS.length - 1];
+  // 소 눈금은 주 눈금의 1/5 — 개수는 폭에 비례해 유계(≈ width/14).
+  const minorStep = step / 5;
+  const major: number[] = [];
+  const minor: number[] = [];
+  const first = Math.ceil((viewStart - 1e-6) / minorStep);
+  const last = Math.floor((viewEnd + 1e-6) / minorStep);
+  for (let i = first; i <= last; i++) {
+    (i % 5 === 0 ? major : minor).push(minorStep * i);
+  }
+  return { major, minor, step };
+}
+
+/** 눈금 라벨용 시계 표기 — "0:05" / "1:23:45". decimals는 스텝 크기에 맞춘 소수 자릿수
+ *  (0.1초 미만 스텝에서 한 자리면 이웃 라벨이 같은 값으로 찍힌다). */
+function fmtClock(sec: number, decimals: number): string {
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  const ss = s.toFixed(decimals).padStart(decimals > 0 ? 3 + decimals : 2, "0");
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
+}
+
+function Timeline({
+  duration,
+  time,
+  playing,
+  inPt,
+  outPt,
+  onSeek,
+  onDragIn,
+  onDragOut,
+  onInteract,
+}: {
+  duration: number;
+  time: number;
+  playing: boolean;
+  inPt: number | null;
+  outPt: number | null;
+  onSeek: (t: number) => void;
+  onDragIn: (t: number) => void;
+  onDragOut: (t: number) => void;
+  onInteract: () => void;
+}) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const barRef = useRef<HTMLDivElement>(null);
+  const ovRef = useRef<HTMLDivElement>(null);
+  const [barW, setBarW] = useState(0);
+  const [hoverT, setHoverT] = useState<number | null>(null);
+  // 줌 창 [s, e] — null이면 전체 보기. 렌더 밖(휠 리스너·드래그)에서는 ref로 읽는다(스테일 방지).
+  const [view, setView] = useState<{ s: number; e: number } | null>(null);
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  // 재생 팔로우 억제 — 드래그 중이거나 사용자가 방금 휠로 창을 만졌으면 따라가지 않는다.
+  // 없으면 재생 중 팬/줌이 16ms 만에 플레이헤드 창으로 되돌아가 사용자와 싸운다(검증된 결함).
+  const draggingRef = useRef(false);
+  const holdUntilRef = useRef(0);
+
+  const vs = view?.s ?? 0;
+  const ve = view?.e ?? duration;
+  const vlen = Math.max(ve - vs, 1e-6);
+
+  // 파일 전환·메타 로드로 duration이 바뀌면 줌 리셋.
+  useEffect(() => setView(null), [duration]);
+
+  // 폭 실측 — 눈금 밀도가 패널 리사이즈에 따라 적응한다.
+  useEffect(() => {
+    const el = barRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setBarW(el.clientWidth));
+    ro.observe(el);
+    setBarW(el.clientWidth);
+    return () => ro.disconnect();
+  }, []);
+
+  const ticks = useMemo(() => buildTicks(vs, ve, barW), [vs, ve, barW]);
+  /** 보이는 창 기준 % (0~100 클램프 — 창 밖 값은 visible()로 걸러 그리지 않는다). */
+  const pct = (t: number) => Math.min(100, Math.max(0, ((t - vs) / vlen) * 100));
+  const visible = (t: number) => t >= vs - 1e-6 && t <= ve + 1e-6;
+  /** 미니맵(전체 축) 기준 %. */
+  const fullPct = (t: number) =>
+    duration > 0 ? Math.min(100, Math.max(0, (t / duration) * 100)) : 0;
+
+  const posToTime = (clientX: number): number => {
+    const rect = barRef.current?.getBoundingClientRect();
+    if (!rect || rect.width === 0 || duration <= 0) return 0;
+    // 휠/드래그 리스너가 렌더 밖에서 부르므로 창은 ref에서 읽는다.
+    const v = viewRef.current;
+    const s = v?.s ?? 0;
+    const len = Math.max((v ? v.e - v.s : duration) || 0, 1e-6);
+    const x = Math.min(Math.max(clientX - rect.left, 0), rect.width);
+    return s + (x / rect.width) * len;
+  };
+
+  /** 창 이동(팬) — 전체 범위로 클램프. 커서는 안 움직였는데 내용이 움직였으므로
+   *  호버 표시는 무효(스테일 위치에 남아 커서에서 미끄러진다) — 지운다. */
+  const panTo = (s: number) => {
+    const v = viewRef.current;
+    if (!v) return;
+    const len = v.e - v.s;
+    const ns = Math.min(Math.max(s, 0), Math.max(0, duration - len));
+    setView({ s: ns, e: ns + len });
+    setHoverT(null);
+  };
+
+  // 휠 = 커서 시각 고정 줌(DVR 관례 — Ctrl 유무 무관, 트랙패드 핀치도 ctrl+wheel로 와서 동일),
+  // Shift+휠 = 팬(줌 상태에서만). 처음엔 Ctrl+휠만 줌이었는데 실사용에서 "줌이 안 된다"로
+  // 체감됐다 — 참조 DVR UI들이 맨 휠 줌이라 기대가 그쪽이다.
+  // React onWheel은 루트에 passive로 붙어 preventDefault가 안 먹는다 — 네이티브로 단다.
+  // (현재 wry는 웹뷰 줌 단축키를 꺼 두지만 그건 우리가 정한 계약이 아니다 — 방어적으로 막는다.)
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (duration <= 0) return;
+      const v = viewRef.current;
+      // Shift+휠 = 팬 (브라우저가 shift+세로휠을 deltaX로 주기도 해 둘 다 본다)
+      if (e.shiftKey) {
+        if (!v) return; // 전체 보기에선 팬할 것이 없다
+        e.preventDefault();
+        holdUntilRef.current = Date.now() + 1500;
+        const len = v.e - v.s;
+        const dir = (e.deltaY || e.deltaX) > 0 ? 1 : -1;
+        panTo(v.s + dir * len * 0.12);
+        return;
+      }
+      // 휠 = 줌
+      e.preventDefault();
+      holdUntilRef.current = Date.now() + 1500; // 사용자가 창을 조작 중 — 팔로우 잠시 양보
+      const anchor = posToTime(e.clientX);
+      const factor = e.deltaY < 0 ? 1.3 : 1 / 1.3;
+      const s0 = v?.s ?? 0;
+      const len0 = Math.max((v ? v.e - v.s : duration) || 0, 1e-6);
+      const len = Math.min(duration, Math.max(MIN_VIEW_SECS, len0 / factor));
+      if (len >= duration - 1e-9) {
+        setView(null); // 전체까지 축소되면 줌 해제
+        return;
+      }
+      // 커서 아래 시각이 그대로 있도록: s' = anchor - (anchor - s) * (len'/len)
+      let s = anchor - (anchor - s0) * (len / len0);
+      s = Math.min(Math.max(s, 0), duration - len);
+      setView({ s, e: s + len });
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [duration]);
+
+  // 재생 중 플레이헤드가 창을 벗어나면 페이지 넘기듯 따라간다(NLE 관례).
+  // 단, 일시정지 상태 / 드래그 중 / 휠 조작 직후(1.5초)는 따라가지 않는다 —
+  // 사용자가 다른 구간을 보고 있거나 마커를 잡고 있는데 창이 튀면 안 된다.
+  useEffect(() => {
+    if (!playing || draggingRef.current || Date.now() < holdUntilRef.current) return;
+    const v = viewRef.current;
+    if (!v) return;
+    if (time > v.e || time < v.s) {
+      const len = v.e - v.s;
+      panTo(time - len * 0.1);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [time, playing]);
+
+  /** 포인터 드래그 공통 — window 리스너 추적, pointerup 유실·취소 자가 복구. */
+  const trackPointer = (e: React.PointerEvent, apply: (clientX: number) => void) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onInteract(); // preventDefault가 클릭-포커스 기본동작을 막으므로 명시 포커스
+    draggingRef.current = true;
+    const up = () => {
+      draggingRef.current = false;
+      holdUntilRef.current = Date.now() + 1500; // 놓은 직후 팔로우가 바로 낚아채지 않게
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+    };
+    const move = (ev: PointerEvent) => {
+      // 버튼이 놓였는데 pointerup을 놓친 경우(창 전환·캡처 상실) 자가 복구 —
+      // 안 하면 버튼도 안 눌린 채 마우스만 따라다니는 유령 스크럽이 된다.
+      if (ev.buttons === 0) {
+        up();
+        return;
+      }
+      apply(ev.clientX);
+    };
+    apply(e.clientX);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  };
+
+  const startDrag = (mode: "seek" | "in" | "out") => (e: React.PointerEvent) =>
+    trackPointer(e, (clientX) => {
+      const t = posToTime(clientX);
+      if (mode === "seek") onSeek(t);
+      else if (mode === "in") onDragIn(t);
+      else onDragOut(t);
+    });
+
+  /** 미니맵 드래그 — 썸 위를 잡았으면 잡은 지점을 유지하는 **상대** 드래그(스크롤바 관례),
+   *  썸 밖 클릭은 그 지점으로 창 중심 점프. 즉시-센터만 있으면 깊은 줌의 긴 영상에서
+   *  (썸 최소폭 1% 부풀림 때문에) 썸을 누르는 순간 수십 초씩 튄다. */
+  const startOverviewDrag = (e: React.PointerEvent) => {
+    const rect = ovRef.current?.getBoundingClientRect();
+    const v0 = viewRef.current;
+    if (!rect || rect.width === 0 || !v0 || duration <= 0) return;
+    const len = v0.e - v0.s;
+    const fracAt = (x: number) => Math.min(Math.max((x - rect.left) / rect.width, 0), 1);
+    const center0 = (v0.s + len / 2) / duration;
+    const f0 = fracAt(e.clientX);
+    const halfThumb = Math.max(len / duration, 0.01) / 2; // 렌더 최소폭(1%)과 일치
+    const offset = Math.abs(f0 - center0) <= halfThumb ? f0 - center0 : 0;
+    trackPointer(e, (clientX) => {
+      panTo((fracAt(clientX) - offset) * duration - len / 2);
+    });
+  };
+
+  /** 배지 공통 스타일 — 눈금자 위 캡슐(가로 이동은 shift()가 결정). */
+  const badgeCls = "absolute top-0 rounded px-1.5 font-mono text-[10px] font-bold leading-5";
+
+  /**
+   * 배지 가로 앵커 — 기본은 중앙 정렬이되, 패널 가장자리(0%/100%)에선 안쪽으로 펼쳐
+   * 잘리지 않게 하고, In/Out이 근접하면 서로 반대쪽으로 벌려 겹침을 푼다.
+   */
+  const shift = (p: number, bias?: "left" | "right"): string => {
+    if (p < 4) return "";
+    if (p > 96) return "-translate-x-full";
+    if (bias === "left") return "-translate-x-full";
+    if (bias === "right") return "";
+    return "-translate-x-1/2";
+  };
+  // In/Out 배지가 겹칠 만큼 가까운가 — 배지 폭(~56px)을 실측 막대 폭으로 환산해 판정.
+  const tight =
+    inPt != null &&
+    outPt != null &&
+    visible(inPt) &&
+    visible(outPt) &&
+    barW > 0 &&
+    ((pct(outPt) - pct(inPt)) / 100) * barW < 56;
+
+  return (
+    // pt-6: 배지 층, pb-4: 시간 라벨 층
+    <div ref={rootRef} className="relative select-none pb-4 pt-6">
+      {/* 눈금자 막대 */}
+      <div
+        ref={barRef}
+        title="탐색 · 휠: 줌 · Shift+휠: 좌우 이동"
+        className="relative h-7 cursor-pointer overflow-hidden rounded-sm bg-accent/75"
+        onPointerDown={startDrag("seek")}
+        onPointerMove={(e) => setHoverT(posToTime(e.clientX))}
+        onPointerLeave={() => setHoverT(null)}
+      >
+        {/* 구간(In~Out) 음영 */}
+        {inPt != null && outPt != null && (
+          <div
+            className="absolute inset-y-0 bg-base/25"
+            style={{ left: `${pct(inPt)}%`, width: `${Math.max(0, pct(outPt) - pct(inPt))}%` }}
+          />
+        )}
+        {/* 소 눈금(하단 짧게) · 주 눈금(전체 높이) — 막대색 위 어두운 에칭 */}
+        {ticks.minor.map((t) => (
+          <div key={t} className="absolute bottom-0 h-2 w-px bg-base/30" style={{ left: `${pct(t)}%` }} />
+        ))}
+        {ticks.major.map((t) => (
+          <div key={t} className="absolute inset-y-0 w-px bg-base/45" style={{ left: `${pct(t)}%` }} />
+        ))}
+      </div>
+
+      {/* 미니맵(전체 축) + 줌 칩 — 줌 상태에서만. 칩을 배지 층에 두면 우측 끝의 드래그 배지를
+          가로막고 오클릭이 줌을 날린다(검증된 결함) — 여기 인라인이 안전하다. */}
+      {view && (
+        <div className="mt-1 flex items-center gap-1.5">
+          <div
+            ref={ovRef}
+            onPointerDown={startOverviewDrag}
+            title="전체 구간 — 썸 드래그로 보이는 창 이동"
+            className="relative h-2 flex-1 cursor-grab overflow-hidden rounded-sm bg-raised"
+          >
+            {inPt != null && (
+              <div className="absolute inset-y-0 w-px bg-add" style={{ left: `${fullPct(inPt)}%` }} />
+            )}
+            {outPt != null && (
+              <div
+                className="absolute inset-y-0 w-px bg-danger"
+                style={{ left: `${fullPct(outPt)}%` }}
+              />
+            )}
+            <div className="absolute inset-y-0 w-px bg-fg" style={{ left: `${fullPct(time)}%` }} />
+            {(() => {
+              // 썸 최소폭 1% — left를 함께 클램프해 우측 끝에서 스트립 밖으로 삐져나가지 않게.
+              const w = Math.max((vlen / Math.max(duration, 1e-6)) * 100, 1);
+              const l = Math.min(fullPct(vs), 100 - w);
+              return (
+                <div
+                  className="absolute inset-y-0 rounded-sm border border-accent bg-accent/40"
+                  style={{ left: `${l}%`, width: `${w}%` }}
+                />
+              );
+            })()}
+          </div>
+          <span className="shrink-0 font-mono text-[10px] text-fg-dim">
+            ×{(duration / vlen).toFixed(duration / vlen >= 10 ? 0 : 1)}
+          </span>
+          <button
+            onClick={() => setView(null)}
+            title="전체 보기 (줌 해제)"
+            className="shrink-0 rounded border border-edge bg-panel px-1 text-[10px] leading-4 text-fg-dim hover:bg-raised hover:text-fg"
+          >
+            전체
+          </button>
+        </div>
+      )}
+
+      {/* 주 눈금 시간 라벨 */}
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-4 font-mono text-[10px] leading-4 text-fg-dim">
+        {ticks.major.map((t) => {
+          const p = pct(t);
+          return (
+            <span
+              key={t}
+              className={`absolute ${p < 3 ? "" : p > 97 ? "-translate-x-full" : "-translate-x-1/2"}`}
+              style={{ left: `${p}%` }}
+            >
+              {fmtClock(t, ticks.step < 0.1 ? 2 : ticks.step < 1 ? 1 : 0)}
+            </span>
+          );
+        })}
+      </div>
+
+      {/* 호버 미리보기 — 얇은 선 + 외곽선 배지 (줌 직후 창 밖에 남은 스테일 값은 숨김) */}
+      {hoverT != null && visible(hoverT) && (
+        <>
+          <div
+            className="pointer-events-none absolute top-6 h-7 w-px bg-fg/60"
+            style={{ left: `${pct(hoverT)}%` }}
+          />
+          <div
+            className={`${badgeCls} ${shift(pct(hoverT))} pointer-events-none border border-edge bg-panel font-medium text-fg-muted`}
+            style={{ left: `${pct(hoverT)}%` }}
+          >
+            {fmtTime(hoverT)}
+          </div>
+        </>
+      )}
+
+      {/* In 마커(초록) — 절대시간 배지, 선·배지 모두 드래그 이동. 창 밖이면 숨김(미니맵이 표시) */}
+      {inPt != null && visible(inPt) && (
+        <>
+          <div
+            onPointerDown={startDrag("in")}
+            title="구간 시작 (드래그로 이동)"
+            className="absolute top-6 z-10 h-7 w-2 -translate-x-1/2 cursor-ew-resize"
+            style={{ left: `${pct(inPt)}%` }}
+          >
+            <div className="mx-auto h-full w-0.5 bg-add" />
+          </div>
+          <div
+            onPointerDown={startDrag("in")}
+            title="구간 시작 (드래그로 이동)"
+            // 외곽선 스타일 — bg-add 위 텍스트는 테마별 대비 보장이 없다(nord 실측 3:1 미달).
+            // add/danger는 애초에 "패널 위 텍스트색"으로 설계된 토큰이라 이 방향이 안전하다.
+            className={`${badgeCls} ${shift(pct(inPt), tight ? "left" : undefined)} z-10 cursor-ew-resize border border-add bg-panel text-add`}
+            style={{ left: `${pct(inPt)}%` }}
+          >
+            {fmtTime(inPt)}
+          </div>
+        </>
+      )}
+      {/* Out 마커(빨강) — In 기준 +구간길이 배지 */}
+      {outPt != null && visible(outPt) && (
+        <>
+          <div
+            onPointerDown={startDrag("out")}
+            title="구간 끝 (드래그로 이동)"
+            className="absolute top-6 z-10 h-7 w-2 -translate-x-1/2 cursor-ew-resize"
+            style={{ left: `${pct(outPt)}%` }}
+          >
+            <div className="mx-auto h-full w-0.5 bg-danger" />
+          </div>
+          <div
+            onPointerDown={startDrag("out")}
+            title="구간 끝 (드래그로 이동)"
+            className={`${badgeCls} ${shift(pct(outPt), tight ? "right" : undefined)} z-10 cursor-ew-resize border border-danger bg-panel text-danger`}
+            style={{ left: `${pct(outPt)}%` }}
+          >
+            {inPt != null ? `+${fmtTime(outPt - inPt)}` : fmtTime(outPt)}
+          </div>
+        </>
+      )}
+
+      {/* 플레이헤드(전경색) — 선 + 다이아 포인터 + 현재시간 배지, 최상위. 창 밖이면 숨김 */}
+      {visible(time) && (
+        <>
+          <div
+            className="pointer-events-none absolute top-6 z-20 h-7 w-0.5 -translate-x-1/2 bg-fg"
+            style={{ left: `${pct(time)}%` }}
+          />
+          <div
+            className="pointer-events-none absolute top-5 z-20 h-1.5 w-1.5 -translate-x-1/2 rotate-45 bg-fg"
+            style={{ left: `${pct(time)}%` }}
+          />
+          <div
+            className={`${badgeCls} ${shift(pct(time))} pointer-events-none z-20 bg-fg text-[11px] text-base shadow`}
+            style={{ left: `${pct(time)}%` }}
+          >
+            {fmtTime(time)}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** 원형 스킵 버튼 — 회전 화살표 링 안에 이동량 라벨(5s/1m/10m). */
+function SkipBtn({
+  secs,
+  label,
+  onSkip,
+}: {
+  secs: number;
+  label: string;
+  onSkip: (d: number) => void;
+}) {
+  const Icon = secs < 0 ? RotateCcw : RotateCw;
+  return (
+    <button
+      onClick={() => onSkip(secs)}
+      title={`${secs < 0 ? "뒤로" : "앞으로"} ${label}`}
+      className="relative grid h-9 w-9 place-items-center rounded-full text-fg-dim hover:bg-raised hover:text-fg"
+    >
+      <Icon size={27} strokeWidth={1.25} className="absolute" />
+      <span className="relative text-[9px] font-bold">{label}</span>
+    </button>
+  );
+}

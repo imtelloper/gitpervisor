@@ -1,6 +1,8 @@
 import {
   Check,
   CircleCheck,
+  ExternalLink,
+  Eye,
   EyeOff,
   Globe,
   History,
@@ -38,12 +40,58 @@ import { useOccludesWebview } from "../stores/occlusion";
 import { useUi } from "../stores/ui";
 import { EmptyState } from "./common/EmptyState";
 import { BrowserPane } from "./workspace/BrowserPane";
+import { MenuItem } from "./workspace/TerminalPane";
 
 // 모아보기 토글 단축키 라벨 — mac은 심볼 관례(⌘⇧A), 그 외는 Ctrl+Shift+A
 const hotkeyLabel = isMac ? `${modLabel}⇧A` : `${modLabel}+Shift+A`;
 
-/** 그리드 한 칸의 메타 — 터미널 pane 또는 브라우저(분할 pane·독립 탭)를 한 목록으로 다룬다. */
-type CellMeta =
+// 프로젝트 색상환 — 균등 분할(30°씩)이 아니다. 균등하면 초록 구간(90~150°)에 여러 칸이 몰려
+// 눈으로 갈리지 않는다. 실제로 구분되는 지점만 골라 12개를 둔다.
+const PROJECT_HUES = [0, 25, 45, 75, 140, 168, 190, 215, 250, 280, 310, 335];
+
+/**
+ * 프로젝트 이름 → 색 배정(한 화면 기준).
+ *
+ * 이름 해시로 자리를 잡되 **이미 쓰인 자리면 다음 빈 자리로 민다.** 해시만 쓰면 한 화면에
+ * 같은 색이 두 번 나온다 — 실측: gitpervisor(82°)와 nqvm-vis(80°)가 사실상 같은 초록이었다.
+ * 반대로 순번으로만 배정하면 프로젝트가 하나 늘 때 나머지 색이 전부 밀린다. 해시 + 충돌 회피는
+ * 둘 다 피한다: 겹치지 않으면 이름이 색을 결정하고(창·세션이 달라도 같은 색), 겹칠 때만 밀린다.
+ *
+ * 색상(hue)만 돌려준다. 실제 칠은 **반투명 배경**이라(`projectTint`) 테마 배경 위에 얹히므로,
+ * 라이트 2종·다크 4종 어디서든 글자 대비를 깨지 않고 칩만 물든다.
+ */
+function assignProjectHues(names: string[]): Map<string, number> {
+  const taken = new Set<number>();
+  const out = new Map<string, number>();
+  for (const name of names) {
+    if (out.has(name)) continue;
+    let h = 0;
+    for (let i = 0; i < name.length; i++) h = (Math.imul(h, 31) + name.charCodeAt(i)) | 0;
+    const pref = Math.abs(h) % PROJECT_HUES.length;
+    let slot = pref;
+    // 프로젝트가 팔레트보다 많으면 결국 재사용할 수밖에 없다 — 한 바퀴만 돌고 포기한다.
+    for (let i = 0; i < PROJECT_HUES.length && taken.has(slot); i++) {
+      slot = (pref + i + 1) % PROJECT_HUES.length;
+    }
+    taken.add(slot);
+    out.set(name, PROJECT_HUES[slot]);
+  }
+  return out;
+}
+
+/**
+ * 프로젝트 색 배경. 명도·알파는 테마 종류에 따라 갈리므로 CSS 변수로 뺐다(styles.css의
+ * `--proj-*` 주석에 이유가 있다 — 같은 알파가 다크·라이트에서 반대로 작동한다).
+ *
+ * 선택 칩은 더 진하게(`strong`) — 선택 표시는 ring이 하지만 배경까지 같으면 색만 보이고
+ * 선택 여부가 안 읽힌다.
+ */
+function projectTint(hue: number, strong: boolean): string {
+  return `hsl(${hue} 70% var(--proj-l) / var(${strong ? "--proj-a-on" : "--proj-a-off"}))`;
+}
+
+/** 그리드 한 칸의 원본 메타 — 터미널 pane 또는 브라우저(분할 pane·독립 탭)를 한 목록으로 다룬다. */
+type CellSource =
   | {
       kind: "terminal";
       id: string; // paneId
@@ -62,6 +110,14 @@ type CellMeta =
       title: string;
       status?: undefined;
     };
+
+/**
+ * 렌더에 쓰는 셀 메타 = 원본 + 프로젝트 색.
+ *
+ * 색을 여기 실어 두는 이유: 배정은 **화면 전체의 프로젝트 집합**을 봐야 결정되는데(충돌 회피),
+ * 칩과 셀 헤더는 서로 다른 컴포넌트다. 메타에 실으면 프롭 배관 없이 같은 색이 따라간다.
+ */
+type CellMeta = CellSource & { hue: number };
 
 type TermMeta = Extract<CellMeta, { kind: "terminal" }>;
 type BrowserMeta = Extract<CellMeta, { kind: "browser" }>;
@@ -87,6 +143,7 @@ export function AggregateTerminals() {
   const terminals = useTerminals((s) => s.terminals);
   const openTerminal = useTerminals((s) => s.openTerminal);
   const closePane = useTerminals((s) => s.closePane);
+  const floatPane = useTerminals((s) => s.floatPane);
   const askConfirm = useUi((s) => s.askConfirm);
   const byTerminal = useAgentActivity((s) => s.byTerminal);
   const browserItems = useBrowsers((s) => s.items);
@@ -101,7 +158,7 @@ export function AggregateTerminals() {
   const all = useMemo<CellMeta[]>(() => {
     const projName = (id: string) =>
       projects?.find((p) => p.id === id)?.name ?? "프로젝트";
-    const out: CellMeta[] = [];
+    const out: CellSource[] = [];
     for (const tab of terminals) {
       for (const paneId of collectByContent(tab.layout, "terminal")) {
         out.push({
@@ -137,7 +194,13 @@ export function AggregateTerminals() {
         title: item.title,
       });
     }
-    return out;
+    // 같은 프로젝트끼리 붙인다 — 탭 생성 순서 그대로면 프로젝트가 뒤섞여 칩 바에서 무엇이
+    // 어디 소속인지 읽히지 않는다(색 막대와 짝이 되는 그룹핑의 나머지 절반).
+    // 이름 오름차순, 같은 프로젝트 안에서는 원래 순서 유지 — Array#sort는 stable이다.
+    out.sort((a, b) => a.projName.localeCompare(b.projName, "ko"));
+    // 색은 정렬 뒤에 배정한다 — 배정 순서가 정렬 순서와 같아야 충돌 회피 결과가 결정적이다.
+    const hues = assignProjectHues(out.map((c) => c.projName));
+    return out.map((c) => ({ ...c, hue: hues.get(c.projName) ?? 0 }));
   }, [terminals, projects, byTerminal, browserItems, browserTabIds]);
 
   // 선택 집합 — 최초엔 클로드 활동(working/done) 있는 터미널만. 없으면 전부(브라우저 포함).
@@ -218,6 +281,10 @@ export function AggregateTerminals() {
   const gridRef = useRef<HTMLDivElement>(null);
   // 트랙 드래그 중 — 네이티브 webview를 숨기고 iframe 포인터를 차단해야 드래그가 안 끊긴다.
   const [resizing, setResizing] = useState(false);
+
+  // 칩 우클릭 메뉴 — fixed 메뉴가 브라우저 셀의 네이티브 webview에 가려지지 않게 점유 등록.
+  const [chipMenu, setChipMenu] = useState<{ x: number; y: number; cell: CellMeta } | null>(null);
+  useOccludesWebview(!!chipMenu);
 
   const shown = all.filter((t) => selected.has(t.id));
   // 렌더 기준 확대 대상 — 상태가 스테일해도(대상이 방금 닫힘·칩 해제) 이번 프레임부터 무시.
@@ -331,11 +398,19 @@ export function AggregateTerminals() {
               <button
                 key={t.id}
                 onClick={() => toggle(t.id)}
-                title={`${t.projName} · ${t.title}`}
-                className={`flex shrink-0 items-center gap-1 rounded px-2 py-1 text-[11px] ${
-                  on
-                    ? "bg-accent/20 text-fg ring-1 ring-accent"
-                    : "bg-raised text-fg-muted hover:text-fg"
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  setChipMenu({ x: e.clientX, y: e.clientY, cell: t });
+                }}
+                title={`${t.projName} · ${t.title} (우클릭: 메뉴)`}
+                // 배경이 프로젝트 색이다 — 정렬로 같은 프로젝트를 붙여 놓아도 경계가 어디인지
+                // 한눈에 안 들어와서(3px 막대는 너무 약했다) 칩 전체를 물들인다.
+                style={{ backgroundColor: projectTint(t.hue, on) }}
+                // 글자는 선택 여부와 무관하게 text-fg다. 예전처럼 미선택을 fg-muted로 흐리면
+                // 물든 배경 위에서 대비가 무너진다(실측 solarized-light 3.5:1 — AA 미달).
+                // 선택 표시는 ring + 진한 배경(--proj-a-on)이 한다.
+                className={`flex shrink-0 items-center gap-1 rounded px-2 py-1 text-[11px] text-fg ${
+                  on ? "ring-1 ring-accent" : ""
                 } ${
                   t.status === "working"
                     ? "ai-working"
@@ -447,6 +522,14 @@ export function AggregateTerminals() {
                       zoomedId && !isZoomed ? " invisible" : ""
                     }`}
                     style={style}
+                    // 세션 셀 위 우클릭 = 칩 우클릭과 같은 메뉴(숨기기·확대·Float·닫기).
+                    // 브라우저 셀의 주소창 등 입력 요소는 네이티브 편집 메뉴를 유지한다.
+                    onContextMenu={(e) => {
+                      const tag = (e.target as HTMLElement).tagName;
+                      if (tag === "INPUT" || tag === "TEXTAREA") return;
+                      e.preventDefault();
+                      setChipMenu({ x: e.clientX, y: e.clientY, cell: t });
+                    }}
                   >
                     {t.kind === "browser" ? (
                       <BrowserCell
@@ -499,6 +582,141 @@ export function AggregateTerminals() {
             });
           })()}
         </div>
+      )}
+
+      {chipMenu && (
+        <ChipMenu
+          cell={chipMenu.cell}
+          x={chipMenu.x}
+          y={chipMenu.y}
+          shown={selected.has(chipMenu.cell.id)}
+          zoomed={zoomedId === chipMenu.cell.id}
+          onClose={() => setChipMenu(null)}
+          onToggle={() => toggle(chipMenu.cell.id)}
+          onZoom={() => {
+            const id = chipMenu.cell.id;
+            initedRef.current = true;
+            setSelected((prev) => new Set(prev).add(id)); // 숨김 상태에서도 확대가 바로 보이게
+            setZoomed((z) => (z === id ? null : id));
+          }}
+          // 별도 창은 "보는 화면" — 여기서 닫으면 메인이 소유한 PTY가 죽는다(헤더 주석과 동일
+          // 이유). Float/닫기는 메인 창에서만 내리고, 별도 창 메뉴는 표시·확대만 남긴다.
+          onFloat={
+            !IS_AGGREGATE_WINDOW &&
+            chipMenu.cell.kind === "terminal" &&
+            chipMenu.cell.tabId != null
+              ? () => floatPane(chipMenu.cell.tabId!, chipMenu.cell.id)
+              : undefined
+          }
+          onCloseCell={
+            IS_AGGREGATE_WINDOW
+              ? undefined
+              : () => {
+                  const c = chipMenu.cell;
+                  if (c.kind === "terminal" && c.tabId != null) {
+                    askConfirm({
+                      title: "터미널 닫기",
+                      message: `'${c.projName} · ${c.title}' 터미널을 닫을까요? 실행 중인 프로세스가 종료됩니다.`,
+                      confirmLabel: "닫기",
+                      danger: true,
+                      onConfirm: () => closePane(c.tabId!, c.id),
+                    });
+                  } else if (c.tabId != null) {
+                    // 브라우저 pane — 프로세스가 없으니 확인 없이(그리드 셀 X와 동일).
+                    closePane(c.tabId, c.id);
+                  } else {
+                    closeBrowserTab(c.id);
+                  }
+                }
+          }
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * 칩 우클릭 메뉴 — 그리드 표시 토글·확대·Float 분리·닫기.
+ * 모양·닫힘 규칙은 TerminalPane의 PaneMenu와 동일(창 클릭·Esc로 닫힘, MenuItem 재사용).
+ */
+function ChipMenu({
+  cell,
+  x,
+  y,
+  shown,
+  zoomed,
+  onClose,
+  onToggle,
+  onZoom,
+  onFloat,
+  onCloseCell,
+}: {
+  cell: CellMeta;
+  x: number;
+  y: number;
+  shown: boolean;
+  zoomed: boolean;
+  onClose: () => void;
+  onToggle: () => void;
+  onZoom: () => void;
+  onFloat?: () => void;
+  onCloseCell?: () => void;
+}) {
+  useEffect(() => {
+    const close = () => onClose();
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("click", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+
+  const run = (fn: () => void) => () => {
+    fn();
+    onClose();
+  };
+
+  return (
+    <div
+      className="fixed z-50 min-w-52 rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl"
+      style={{
+        left: Math.min(x, window.innerWidth - 220),
+        top: Math.min(y, window.innerHeight - 200),
+      }}
+      onClick={(e) => e.stopPropagation()}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      <div className="truncate px-3 py-1 text-[11px] text-fg-dim">
+        {cell.projName} · {cell.title}
+      </div>
+      <div className="my-1 border-t border-edge" />
+      <MenuItem
+        icon={shown ? <EyeOff size={14} /> : <Eye size={14} />}
+        label={shown ? "그리드에서 숨기기" : "그리드에 표시"}
+        onClick={run(onToggle)}
+      />
+      <MenuItem
+        icon={zoomed ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+        label={zoomed ? "확대 해제" : "확대해서 보기"}
+        onClick={run(onZoom)}
+      />
+      {(onFloat || onCloseCell) && <div className="my-1 border-t border-edge" />}
+      {onFloat && (
+        <MenuItem
+          icon={<ExternalLink size={14} />}
+          label="새 창으로 분리 (Float)"
+          onClick={run(onFloat)}
+        />
+      )}
+      {onCloseCell && (
+        <MenuItem
+          icon={<X size={14} />}
+          label={cell.kind === "terminal" ? "터미널 닫기" : "브라우저 닫기"}
+          danger
+          onClick={run(onCloseCell)}
+        />
       )}
     </div>
   );
@@ -929,7 +1147,10 @@ function AggregateCell({
             : ""
       }`}
     >
-      <div className="flex h-6 shrink-0 items-center gap-1.5 border-b border-edge bg-panel px-2 text-[11px] text-fg-muted">
+      <div
+        style={{ backgroundColor: projectTint(meta.hue, false) }}
+        className="flex h-6 shrink-0 items-center gap-1.5 border-b border-edge px-2 text-[11px] text-fg-muted"
+      >
         <StatusIcon status={status} />
         <span className="min-w-0 flex-1 truncate">
           <span className="font-medium text-fg">{meta.projName}</span>
@@ -1006,7 +1227,10 @@ function BrowserCell({
 
   return (
     <div className="group/cell relative flex h-full w-full min-h-0 min-w-0 flex-col overflow-hidden rounded border border-edge">
-      <div className="flex h-6 shrink-0 items-center gap-1.5 border-b border-edge bg-panel px-2 text-[11px] text-fg-muted">
+      <div
+        style={{ backgroundColor: projectTint(meta.hue, false) }}
+        className="flex h-6 shrink-0 items-center gap-1.5 border-b border-edge px-2 text-[11px] text-fg-muted"
+      >
         <Globe size={11} className="shrink-0 text-accent" />
         <span className="min-w-0 flex-1 truncate">
           <span className="font-medium text-fg">{meta.projName}</span>

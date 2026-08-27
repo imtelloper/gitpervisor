@@ -1,6 +1,7 @@
-// 코드 도구 설정 (태스크 18) — 포매터/린터(ruff·biome) + LSP(언어 서버). 둘 다 작아 한 카테고리에
-// 묶고 내부 소제목으로 구분. projects·lspBusy·lspStatus·onDownload는 셸에서 주입.
+// 코드 도구 설정 (태스크 18) — 포매터/린터(ruff·biome) + LSP(언어 서버) + 동영상 도구(ffmpeg).
+// 전부 작아 한 카테고리에 묶고 내부 소제목으로 구분. busy/status/onDownload류는 셸에서 주입.
 import type { Project } from "../../../lib/ipc";
+import { useVideoToolStatus } from "../../../queries";
 import { Field, Hl, inputCls, type SectionProps } from "./shared";
 
 const subHeading = "text-[11px] font-semibold tracking-widest text-fg-dim";
@@ -13,12 +14,20 @@ export function CodeToolsSection({
   lspBusy,
   lspStatus,
   onDownload,
+  ffmpegBusy,
+  ffmpegStatus,
+  onFfmpegDownload,
 }: SectionProps & {
   projects: Project[] | undefined;
   lspBusy: boolean;
   lspStatus: string;
   onDownload: () => void;
+  ffmpegBusy: boolean;
+  ffmpegStatus: string;
+  onFfmpegDownload: () => void;
 }) {
+  // 발견 상태 표시용 — 다운로드 흐름(busy/status)은 셸이 소유한다(LSP와 동일 분업).
+  const ffTool = useVideoToolStatus();
   return (
     <>
       <div className={subHeading}>포매터 / 린터</div>
@@ -133,6 +142,46 @@ export function CodeToolsSection({
             </span>
           </span>
         </label>
+      </Hl>
+
+      <div className={`border-t border-edge pt-3 ${subHeading}`}>동영상 도구 (ffmpeg)</div>
+      <div className="text-[11px] text-fg-dim">
+        동영상 뷰어의 편집·내보내기(클립 추출·배속·화질·영역·GIF·프레임 캡처)에 씁니다. 발견
+        순서: 명시 경로 → PATH → 앱 내 다운로드 설치본.
+      </div>
+      <Hl id="videoFfmpegPath" hl={hl}>
+        <Field label="ffmpeg 경로" hint="비우면 자동 발견. ffprobe가 같은 폴더에 있어야 합니다">
+          <input
+            type="text"
+            value={form.videoFfmpegPath ?? ""}
+            placeholder="(자동 발견)"
+            onChange={(e) => update("videoFfmpegPath", e.target.value)}
+            className={`${inputCls} font-mono`}
+          />
+        </Field>
+      </Hl>
+      <Hl id="ffmpegDownload" hl={hl}>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onFfmpegDownload}
+            disabled={ffmpegBusy || !!ffTool.data?.found}
+            className="shrink-0 rounded bg-accent/20 px-2 py-1 text-xs text-accent hover:bg-accent/30 disabled:opacity-50"
+          >
+            {ffmpegBusy ? "다운로드 중…" : "ffmpeg 다운로드"}
+          </button>
+          <span className="truncate text-[11px] text-fg-dim">
+            {ffmpegStatus ||
+              (ffTool.data?.found
+                ? `발견됨 ✓ ${ffTool.data.version ?? ""} (${
+                    { explicit: "명시 경로", path: "PATH", managed: "앱 설치본" }[
+                      ffTool.data.source ?? ""
+                    ] ?? ffTool.data.source
+                  })${ffTool.data.probeFound ? "" : " — ⚠ ffprobe 없음"}`
+                : ffTool.data?.managedSupported
+                  ? "미발견 — 약 40~110MB 다운로드"
+                  : "미발견 — 이 플랫폼은 패키지 관리자로 설치하세요 (brew/apt)")}
+          </span>
+        </div>
       </Hl>
     </>
   );

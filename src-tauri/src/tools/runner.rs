@@ -85,7 +85,8 @@ pub struct ToolOutput {
 }
 
 /// 실행 파일 후보인지 — 존재하는 파일이고 셸 셔틀 확장자가 아니어야 한다.
-fn is_real_exe(p: &Path) -> bool {
+/// (commands/video.rs의 ffmpeg 발견 체인도 같은 판정을 쓴다.)
+pub(crate) fn is_real_exe(p: &Path) -> bool {
     if !p.is_file() {
         return false;
     }
@@ -169,7 +170,8 @@ fn cache_usable(hit: &Option<PathBuf>, recorded_ago: Duration) -> bool {
 }
 
 /// PATH에서 도구 실행 파일을 찾는다(캐시 경유, 셸 스폰 없음).
-fn find_on_path(name: &str) -> Option<PathBuf> {
+/// (commands/video.rs의 ffmpeg/ffprobe 발견도 이 캐시를 공유한다.)
+pub(crate) fn find_on_path(name: &str) -> Option<PathBuf> {
     let cache = PATH_CACHE.get_or_init(Default::default);
     // 읽기 락은 조회에만 — is_real_exe/is_executable의 stat을 락 안에서 돌리지 않는다.
     let cached = cache.read().unwrap_or_else(|e| e.into_inner()).get(name).cloned();

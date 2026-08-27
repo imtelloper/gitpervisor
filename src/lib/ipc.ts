@@ -213,6 +213,8 @@ export interface Settings {
   // LSP (태스크 17)
   lspEnabledProjects: string[]; // 옵트인 프로젝트 id 목록 — 기본 빈(전부 OFF)
   lspWorkspaceTsserver: boolean; // 워크스페이스 node_modules/typescript 사용 — 기본 false(공급망)
+  // 동영상 편집 (video.rs)
+  videoFfmpegPath: string | null; // null/빈값 = 자동 발견(PATH → 관리 설치본). 지정 시 그것만.
 }
 
 /** 포맷 결과 (commands/format.rs format_source). */
@@ -257,6 +259,72 @@ export interface LspEnsureProgress {
   name: string;
   phase: "download" | "done" | "error";
   message?: string;
+}
+
+// ---- 동영상 편집 (commands/video.rs — DOCS/video-editor-design.md) ----
+
+/** ffmpeg 발견 상태. source: explicit(설정 경로) | path | managed(앱 내 다운로드). */
+export interface VideoToolStatus {
+  found: boolean;
+  source: string | null;
+  path: string | null;
+  probeFound: boolean; // ffprobe 동반 여부 — 없으면 프로브·편집 불가
+  version: string | null;
+  managedSupported: boolean; // 이 플랫폼에 앱 내 다운로드가 있는가
+}
+
+export interface VideoEnsureProgress {
+  name: string;
+  phase: "download" | "extract" | "done" | "error";
+  percent?: number | null;
+  message?: string | null;
+}
+
+/** ffprobe 메타데이터. width/height는 회전 반영 **표시 기준**(크롭 좌표계와 일치). */
+export interface VideoMeta {
+  durationMs: number;
+  width: number;
+  height: number;
+  fps: number;
+  vcodec: string | null;
+  acodec: string | null;
+  bitrateKbps: number | null;
+  rotation: number;
+  hasAudio: boolean;
+  hasVideo: boolean;
+}
+
+/** 내보내기 스펙 — copy(무손실, 키프레임 스냅)는 배속·크롭·화질과 양립 불가. */
+export interface VideoExportSpec {
+  srcRel: string;
+  outRel: string;
+  overwrite: boolean;
+  range: { startMs: number; endMs: number } | null;
+  mode: "copy" | "encode";
+  speed: number | null;
+  crop: { x: number; y: number; w: number; h: number } | null;
+  crf: number | null;
+  maxHeight: number | null;
+  removeAudio: boolean;
+  durationMs: number; // 진행률 분모 (probe 값)
+  hasAudio: boolean;
+}
+
+export interface VideoExportProgress {
+  jobId: string;
+  projectId: string;
+  percent: number;
+  outTimeMs: number;
+  speed: string | null;
+}
+
+export interface VideoExportFinished {
+  jobId: string;
+  projectId: string;
+  ok: boolean;
+  cancelled: boolean;
+  error: string | null;
+  outRel: string;
 }
 
 /** 외부 알림 시크릿 종류 — 키링 계정 키. */
@@ -477,6 +545,25 @@ export interface HealthSample {
   memAvailablePct: number;
   swapUsedPct: number;
   available: boolean; // false면 이 플랫폼에서 신호를 못 읽음 → 경보 비활성
+}
+
+// ---- 화면 캡쳐 (commands/capture.rs) ----
+
+export interface CaptureSession {
+  id: string;
+  /** 프리즈 프레임의 실제 픽셀 크기(모니터 물리 해상도). 좌표 환산의 분모다. */
+  width: number;
+  height: number;
+  /** 표시 **전용** JPEG data URL. 최종 결과물은 여기서 뜨지 않는다(원본은 Rust에 남는다). */
+  preview: string;
+}
+
+/** 잘라낼 영역 — 프레임 버퍼 로컬 픽셀. 가상 데스크톱 좌표가 아니다(음수 원점·혼합 DPI 회피). */
+export interface CaptureRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
 }
 
 export interface HealthSnapshot {
@@ -918,6 +1005,47 @@ export const ipc = {
     }
     return invoke<LspEnsureResult>("lsp_ensure", { lang, onProgress: ch });
   },
+  // ---- 동영상 편집 (video.rs) ----
+  // 도구 상태 — ffmpeg -version 1회 스폰이라 재시도 없음, background lane.
+  videoToolStatus: () =>
+    call<VideoToolStatus>("video_tool_status", {}, { attempts: 1, lane: "background", timeoutMs: 10_000 }),
+  // ffmpeg 앱 내 다운로드(40~111MB) — 설정 버튼 클릭으로만("클릭이 곧 동의"). 진행률은 Channel.
+  videoToolEnsure: (onProgress?: (p: VideoEnsureProgress) => void) => {
+    const ch = new Channel<string>();
+    if (onProgress) {
+      ch.onmessage = (raw) => {
+        try {
+          onProgress(JSON.parse(raw) as VideoEnsureProgress);
+        } catch {
+          /* 형식 오류 무시 */
+        }
+      };
+    }
+    return invoke<VideoToolStatus>("video_tool_ensure", { onProgress: ch });
+  },
+  // ffprobe 메타데이터 — 프로세스 스폰이라 재시도 없음(이중 스폰 방지).
+  videoProbe: (projectId: string, relPath: string) =>
+    call<VideoMeta>("video_probe", { projectId, relPath }, { attempts: 1, timeoutMs: 20_000 }),
+  // 내보내기 — 장시간 잡. 진행·종결은 video:// 이벤트가 진실이고, 이 프라미스는 보조다
+  // (Windows 응답 유실 대비 — events.ts가 이벤트만으로 UI를 정리한다). 재시도 절대 금지.
+  videoExport: (projectId: string, jobId: string, spec: VideoExportSpec) =>
+    callMutating<void>("video_export", { projectId, jobId, spec }, 6 * 60 * 60_000),
+  // 멱등 취소 — 모르는 jobId는 no-op.
+  videoExportCancel: (jobId: string) =>
+    callMutating<void>("video_export_cancel", { jobId }, 10_000),
+  // 현재 프레임 PNG 캡처 — 캔버스 불가(루프백이 cross-origin이라 taint) → ffmpeg 경유.
+  videoCaptureFrame: (
+    projectId: string,
+    relPath: string,
+    atMs: number,
+    outRel: string,
+    overwrite: boolean,
+  ) =>
+    callMutating<void>(
+      "video_capture_frame",
+      { projectId, relPath, atMs, outRel, overwrite },
+      60_000,
+    ),
   // 린트 — 마커는 배경 장식이라 background lane, 재시도 없음(다음 트리거가 자기치유).
   // content 있으면 ruff는 stdin으로 저장 전 버퍼를 실시간 린트(on-type). biome는 디스크 파일.
   lintFile: (projectId: string, relPath: string, content?: string) =>
@@ -1033,6 +1161,20 @@ export const ipc = {
     callMutating<KillOutcome>("kill_processes", { pids }),
   // 파일 위치 열기 — 탐색기에서 폴더 열고 그 파일 선택(리소스 모니터).
   revealPath: (path: string) => callMutating<void>("reveal_path", { path }),
+
+  // ---- 화면 캡쳐 (commands/capture.rs · DOCS/screen-capture-design.md) ----
+  // 단축키와 같은 동작을 IPC로도 연다(설정의 "지금 캡쳐"·e2e).
+  captureTrigger: () => invoke<void>("capture_trigger"),
+  // 오버레이가 마운트 직후 현재 세션을 당겨 간다 — 창을 **처음 만든** 순간에는 아직 리스너가
+  // 없어 capture://begin 이벤트가 유실되기 때문이다(두 경로가 같은 상태로 수렴).
+  captureCurrent: () => invoke<CaptureSession | null>("capture_current"),
+  // 새 프레임을 실제로 그린 뒤 부른다 → 백엔드가 그때 창을 띄운다. 먼저 띄우면 첫 캡쳐엔
+  // 웹뷰 로딩 중 검은 전체화면이, 두 번째부터는 직전 캡쳐 잔상이 보인다.
+  captureOverlayReady: (id: string) => invoke<void>("capture_overlay_ready", { id }),
+  // 확정 — 원본에서 잘라 클립보드로 직행하고 오버레이를 닫는다. 픽셀이 프론트를 거치지 않는다.
+  captureToClipboard: (id: string, rect: CaptureRect) =>
+    invoke<void>("capture_to_clipboard", { id, rect }),
+  captureCancel: (id: string) => invoke<void>("capture_cancel", { id }),
   // Claude 사용량 — statusline.js가 떨군 ~/.claude/gitpervisor-usage.json을 읽어 반환(없으면 null).
   claudeUsage: () =>
     call<ClaudeUsage | null>(

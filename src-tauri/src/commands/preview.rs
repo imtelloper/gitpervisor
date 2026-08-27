@@ -371,7 +371,11 @@ fn handle_conn(
     last_hit.store(started.elapsed().as_secs(), Ordering::Relaxed);
     // 느린/멈춘 클라이언트가 워커 스레드를 영구 점유하지 못하게 — 루프백에서 10s는 충분.
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
+    // 쓰기는 넉넉히 — 대용량 미디어 스트리밍 중 브라우저가 버퍼를 채우면 TCP 역압으로
+    // 쓰기가 오래 블록되는 것이 **정상**이다(일시정지·선버퍼 완료). 30s는 1시간짜리 영상
+    // 재생 중 커넥션을 상습적으로 끊었다. 끊겨도 브라우저가 Range로 재접속하므로 치명은
+    // 아니지만, 서버 유휴 종료와 겹치면 미디어 오류로 번진다(§body 루프 주석).
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(120)));
     // 요청 라인+헤더 총량 64KB 상한 — 무제한 read_line로 메모리가 자라지 못하게.
     let mut reader = BufReader::new(stream.try_clone()?).take(64 * 1024);
 
@@ -494,8 +498,16 @@ fn handle_conn(
         file.seek(SeekFrom::Start(start))?;
     }
     let mut remaining = body_len;
-    let mut buf = [0u8; 64 * 1024];
+    let mut buf = [0u8; 256 * 1024];
     while remaining > 0 {
+        // 유휴 시계 갱신 — 동영상은 커넥션 **하나**로 수 분간 GB 단위를 흘린다. accept/요청
+        // 시점만 활동으로 세면 그동안 유휴가 쌓여 서버가 스트림 도중 자살하고, 브라우저의
+        // 다음 Range 요청이 연결 거부 → 미디어 오류가 된다(1시간·6GB 실파일에서 실사례).
+        last_hit.store(started.elapsed().as_secs(), Ordering::Relaxed);
+        // 폐기된 서버(프로젝트 제거)면 스트림도 접는다 — 안 보면 revoke 후에도 계속 서빙한다.
+        if !alive.load(Ordering::Relaxed) {
+            return Ok(());
+        }
         let want = remaining.min(buf.len() as u64) as usize;
         let n = file.read(&mut buf[..want])?;
         if n == 0 {

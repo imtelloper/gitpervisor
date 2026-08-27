@@ -61,6 +61,8 @@ export const SETTINGS_INDEX: SettingIndexEntry[] = [
   { category: "codetools", key: "lspEnabledProjects", label: "LSP 활성 프로젝트", keywords: ["lsp", "타입", "자동완성", "completion", "언어 서버", "basedpyright", "clangd", "rust-analyzer"] },
   { category: "codetools", key: "lspWorkspaceTsserver", label: "워크스페이스 TypeScript", keywords: ["tsserver", "typescript", "workspace", "워크스페이스"] },
   { category: "codetools", key: null, id: "lspDownload", label: "언어 서버 다운로드", keywords: ["lsp", "다운로드", "download", "설치"] },
+  { category: "codetools", key: "videoFfmpegPath", label: "ffmpeg 경로", keywords: ["ffmpeg", "ffprobe", "동영상", "video", "비디오", "편집", "인코딩"] },
+  { category: "codetools", key: null, id: "ffmpegDownload", label: "ffmpeg 다운로드", keywords: ["ffmpeg", "다운로드", "download", "동영상", "설치"] },
   // 터미널
   { category: "terminal", key: "terminalShell", label: "셸", keywords: ["shell", "셸", "pwsh", "powershell", "cmd", "bash"] },
   { category: "terminal", key: "terminalFontSize", label: "터미널 폰트 크기", keywords: ["font", "폰트", "크기", "terminal", "터미널"] },
@@ -80,6 +82,7 @@ export const SETTINGS_INDEX: SettingIndexEntry[] = [
   { category: "maintenance", key: null, id: "browserData", label: "브라우저 데이터 초기화", keywords: ["쿠키", "cookie", "로그아웃", "logout", "세션", "브라우저", "browser"] },
   { category: "maintenance", key: null, id: "crashLog", label: "진단 / 크래시 로그", keywords: ["crash", "panic", "로그", "log", "진단"] },
   { category: "maintenance", key: null, id: "quarantine", label: "macOS 격리 도구", keywords: ["quarantine", "격리", "macos", "brew"] },
+  { category: "notify", key: null, id: "healthAlert", label: "시스템 메모리 경보 표시", keywords: ["health", "메모리", "memory", "경보", "alert", "배너", "banner", "oom", "다시 보지 않기"] },
   // 업데이트 (즉시 액션 — key null)
   { category: "update", key: null, id: "appUpdate", label: "앱 업데이트", keywords: ["update", "업데이트", "버전", "version", "새 버전", "설치", "upgrade"] },
   { category: "update", key: null, id: "autoUpdateCheck", label: "시작 시 자동 확인", keywords: ["auto", "자동", "확인", "check", "업데이트"] },

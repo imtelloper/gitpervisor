@@ -7,6 +7,59 @@
 
 ---
 
+## 개발 실행
+
+```bash
+npm run dev:app     # = tauri dev --config src-tauri/tauri.dev.conf.json
+```
+
+**`npm run tauri dev`를 그냥 쓰지 마라.** 사용자는 설치본(`C:\Program Files\Gitpervisor`)을
+평소 작업에 계속 켜 둔 채로 개발한다 — 끄고 시작하는 게 아니라 **나란히 띄우는 게 기본**이다.
+single-instance 플러그인이 없어서 맨 `tauri dev`도 뜨긴 뜬다. **그게 함정이다.**
+
+Tauri는 `app_data_dir`/`app_local_data_dir`/`app_log_dir`/WebView2 유저데이터를 **전부
+`identifier` 하나에서** 파생시킨다(`tauri-2.11.2/src/path/desktop.rs:247`,
+`manager/webview.rs:534`). identifier가 같으면 두 프로세스가:
+
+- `projects.json`·`settings.json`을 양쪽이 **파일 통째로** read-modify-write 한다 →
+  나중에 저장한 쪽이 상대 변경분을 말없이 덮는다. `state.rs`의 `SAVE_LOCK`은
+  **프로세스 내부** 뮤텍스라 아무 것도 막지 못한다.
+- `session.json`을 공유한다 → dev가 뜨는 순간 "지난번에 비정상 종료됐습니다"를 오진한다
+  (설치본이 **실행 중**이라 `clean_exit`가 당연히 false다). 반대로 dev를 끄면 설치본의
+  세션 기록이 날아간다.
+
+`src-tauri/tauri.dev.conf.json`이 `identifier`만 `com.greathoon.gitpervisor.dev`로 덮는다.
+그 한 줄로 위가 전부 갈라진다. `--config` 경로는 **CWD 기준**이라 레포 루트에서 도는 npm
+스크립트에 그대로 먹는다. 자동 병합 대상은 `tauri.<platform>.conf.json`뿐이므로
+이 파일은 `dev:app`이 명시적으로 넘길 때만 적용된다 — **`tauri build`(릴리스)는 영향 없다.**
+
+### 새 머신에서 한 번만
+
+dev 데이터 디렉터리는 처음엔 비어 있다. 프로젝트 목록을 옮기고 LSP 270MB 재다운로드를 피한다:
+
+```powershell
+$dev = "$env:APPDATA\com.greathoon.gitpervisor.dev"
+New-Item -ItemType Directory -Force $dev, "$env:LOCALAPPDATA\com.greathoon.gitpervisor.dev" | Out-Null
+Copy-Item "$env:APPDATA\com.greathoon.gitpervisor\*.json" $dev
+New-Item -ItemType Junction -Path "$env:LOCALAPPDATA\com.greathoon.gitpervisor.dev\lsp" -Target "$env:LOCALAPPDATA\com.greathoon.gitpervisor\lsp"
+```
+
+복사 이후로는 두 쪽이 독립이다. Linux/macOS도 구조는 같고 경로만 다르다
+(`~/.local/share/<identifier>`, `~/Library/Application Support/<identifier>`).
+
+### 여기 손대지 마라
+
+- **AUMID는 설치본 것(`com.greathoon.gitpervisor`)으로 하드코딩돼 있다**(`lib.rs`의 setup).
+  dev identifier에 "맞춰" 고치지 마라 — 그 AUMID로 등록된 시작메뉴 바로가기가 없어서
+  **Windows 토스트가 아예 안 뜬다.** 대가로 두 창이 작업표시줄 한 그룹으로 묶이지만,
+  창 제목이 `Gitpervisor (dev)`(`cfg!(debug_assertions)`)로 갈라지니 그걸로 구분한다.
+- **dev는 자동 업데이트 확인을 건너뛴다**(`App.tsx`, `import.meta.env.DEV`). 이 가드를 빼면
+  dev 창에서 누른 "설치"가 **지금 쓰고 있는 설치본을 passive 모드로 갈아엎는다.**
+- 같은 레포를 양쪽이 감시하므로 백그라운드 remote fetch는 한쪽만 켠다
+  (설정 › `remote_refresh_minutes`). 2026-08 OOM 사건의 그 노브다.
+
+---
+
 ## 빌드
 
 ```bash

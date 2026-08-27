@@ -34,7 +34,8 @@ tauri-plugin-log = "2"
 tauri-plugin-clipboard-manager = "2"
 log = "0.4"
 dunce = "1.0.5"
-tokio = { version = "1.52.3", features = ["process", "time", "macros", "net"] }
+# sync: 동영상 내보내기 취소 신호(oneshot — commands/video.rs)
+tokio = { version = "1.52.3", features = ["process", "time", "macros", "net", "sync"] }
 uuid = { version = "1.23.3", features = ["v4"] }
 chrono = "0.4.45"
 futures = "0.3.32"
@@ -70,6 +71,9 @@ tar = "0.4"
 sha2 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 tauri-plugin-process = "2"
+# 화면 캡쳐 전역 단축키(DOCS/screen-capture-design.md §5.4). 앱이 포커스가 아닐 때 동작하는 것이
+# 기능의 전제라 인앱 단축키로는 대체되지 않는다. 등록은 Rust에서만 하므로 JS 권한은 안 준다.
+tauri-plugin-global-shortcut = "2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # native-tls(tiberius/sqlx/lettre/redis)가 Linux에서 링크하는 시스템 openssl 대신 소스에서 빌드한다 —
@@ -111,7 +115,9 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 # 파일 읽기에 해당하는 것이 Windows엔 없어 Win32 API로 같은 신호를 만든다(health/probe.rs).
 windows-sys = { version = "0.59", features = ["Win32_System_Performance", "Win32_System_SystemInformation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_System_ProcessStatus", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_Foundation"] }
 # 추출한 아이콘 BGRA→PNG 인코딩(리소스 모니터). tauri image-png가 같은 0.25를 트리에 가져 비용 미미.
-image = { version = "0.25", default-features = false, features = ["png"] }
+# jpeg: 화면 캡쳐 오버레이의 **표시용** 프레임. PNG는 같은 프레임에 667ms/9.75MB가 들어 예산을
+# 통째로 먹는다(실측 — DOCS/screen-capture-design.md §2.3). 최종 결과물은 항상 무손실 원본에서 뜬다.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 clipboard-win = "5"
 # AI 완료 OS 토스트를 앱 AUMID로 직접 띄운다 — 알림 플러그인은 dev(target/debug)에서 app_id를
 # 안 붙여 PowerShell 명의로 뜨므로, 직접 토스트 + AUMID(DisplayName/Icon) 레지스트리 등록으로 대체.

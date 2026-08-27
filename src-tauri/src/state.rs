@@ -46,6 +46,8 @@ pub struct AppState {
     pub icons: crate::proc_icons::IconCache,
     /// 로컬 HTML 프리뷰 루프백 서버 레지스트리 (base 폴더 → 포트). preview.rs §.
     pub preview: Mutex<PreviewServers>,
+    /// 동영상 내보내기(ffmpeg) 잡 레지스트리 (jobId → 취소 핸들). video.rs §.
+    pub video: Mutex<crate::commands::VideoReg>,
 }
 
 impl AppState {
@@ -64,6 +66,7 @@ impl AppState {
             lsp: Mutex::new(HashMap::new()),
             icons: crate::proc_icons::IconCache::default(),
             preview: Mutex::new(PreviewServers::default()),
+            video: Mutex::new(crate::commands::VideoReg::default()),
         }
     }
 

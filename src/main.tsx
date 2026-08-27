@@ -5,6 +5,7 @@ import ReactDOM from "react-dom/client";
 
 import { AggregateWindow } from "./AggregateWindow";
 import App from "./App";
+import { CaptureOverlay } from "./CaptureOverlay";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { SysMonitorWindow } from "./components/sysmon/SysMonitorWindow";
 import { FloatingTerminal } from "./FloatingTerminal";
@@ -70,6 +71,17 @@ if (label === "aggregate") {
           <AggregateWindow />
         </ErrorBoundary>
       </QueryClientProvider>
+    </React.StrictMode>,
+  );
+} else if (label === "capture") {
+  // 화면 캡쳐 오버레이 — 프리즈 프레임 위에서 영역만 고른다. 쿼리·이벤트 부트스트랩을 태우지
+  // 않는다: 이 창은 상시 살아 있으면서 숨었다 나타나므로, 여기서 구독을 열면 캡쳐를 안 쓰는
+  // 내내 메인 창과 같은 부하를 두 벌 돌리게 된다.
+  root.render(
+    <React.StrictMode>
+      <ErrorBoundary>
+        <CaptureOverlay />
+      </ErrorBoundary>
     </React.StrictMode>,
   );
 } else if (label === "sysmon") {

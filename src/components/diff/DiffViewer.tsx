@@ -17,21 +17,25 @@ import { DiffEditor, Editor } from "@monaco-editor/react";
 import type { DiffOnMount, OnMount } from "@monaco-editor/react";
 import {
   Code2,
+  ExternalLink,
   Eye,
   FileQuestion,
+  FileSpreadsheet,
+  FileText,
   FileWarning,
   FoldVertical,
   Pencil,
+  Presentation,
   Save,
   UnfoldVertical,
   Wand2,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { errorMessage } from "../../lib/ipc";
+import { errorMessage, ipc } from "../../lib/ipc";
 import type { DiffTarget } from "../../lib/ipc";
 import { isMod } from "../../lib/platform";
-import { isImage, isPlayable, languageOf } from "../../lib/language-map";
+import { isImage, isOffice, isPlayable, languageOf } from "../../lib/language-map";
 import { monacoThemeOf } from "../../lib/themes";
 import { useDiff, useSettings, useWriteFile } from "../../queries";
 import { useUi } from "../../stores/ui";
@@ -39,6 +43,59 @@ import { EmptyState } from "../common/EmptyState";
 import ImageView from "./ImageView";
 import MediaView from "./MediaView";
 import MarkdownView from "./MarkdownView";
+
+/** Office 문서 종류별 아이콘·이름. 확장자 접두사로 가족을 가른다(doc/xls/ppt + m·x 변형). */
+const OFFICE_KIND = [
+  { prefix: "doc", icon: FileText, name: "Word 문서" },
+  { prefix: "xls", icon: FileSpreadsheet, name: "Excel 통합 문서" },
+  { prefix: "ppt", icon: Presentation, name: "PowerPoint 프레젠테이션" },
+] as const;
+
+/**
+ * Office 문서 카드 — 웹뷰가 못 그리는 형식을 OS 기본 앱으로 넘긴다.
+ *
+ * 인앱 렌더를 하지 않는 이유: docx/xlsx는 라이브러리로 대략 그릴 수 있지만 pptx는 브라우저에서
+ * 쓸 만한 렌더러가 없어 **세 종류 중 하나만 되는 반쪽 기능**이 된다. Word/Excel/PowerPoint는
+ * 이미 설치돼 있고 서식·수식·차트를 정확히 그린다. ImageView의 미지원 형식 폴백과 같은 처리다.
+ */
+function OfficeView({
+  projectId,
+  path,
+  mode,
+}: {
+  projectId: string;
+  path: string;
+  mode: DiffTarget["mode"];
+}) {
+  const pushToast = useUi((s) => s.pushToast);
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  const kind = OFFICE_KIND.find((k) => ext.startsWith(k.prefix));
+  // 커밋 뷰에서도 여는 건 **작업 트리의 현재 파일**이다(다른 뷰와 달리 과거 버전을 꺼내지
+  // 않는다). 말 안 하면 사용자는 그 커밋 시점 문서를 본다고 믿는다 — 조용히 다른 내용이다.
+  const desc =
+    mode === "commit"
+      ? "웹뷰에서는 표시할 수 없는 형식입니다. 이 커밋 버전이 아니라 작업 트리의 현재 파일이 열립니다."
+      : "웹뷰에서는 표시할 수 없는 형식입니다. 기본 앱으로 열어 확인하세요.";
+  return (
+    <EmptyState
+      icon={kind?.icon ?? FileQuestion}
+      title={kind?.name ?? "Office 문서"}
+      desc={desc}
+      action={
+        <button
+          onClick={() =>
+            void ipc
+              .runExecutable(projectId, path)
+              .catch((e) => pushToast("error", errorMessage(e)))
+          }
+          className="flex items-center gap-1.5 rounded border border-edge px-3 py-1.5 text-xs text-fg-muted hover:bg-raised hover:text-fg"
+        >
+          <ExternalLink size={13} /> 외부 앱으로 열기
+        </button>
+      }
+    />
+  );
+}
 
 function modeLabel(target: DiffTarget): string {
   switch (target.mode) {
@@ -145,11 +202,13 @@ export default function DiffViewer({
   const isImageView = isImage(target.path);
   // 동영상·오디오도 같은 원칙 — 워크트리 파일을 재생한다(git이 바이너리로 보는 대상이라 diff 무의미).
   const isMediaView = isPlayable(target.path);
+  // Office 문서(docx/xlsx/pptx…) — 웹뷰가 못 그리는 바이너리라 OS 기본 앱으로 넘긴다.
+  const isOfficeView = isOffice(target.path);
   const isMarkdown =
     isFileView && !isImageView && !isMediaView && languageOf(target.path) === "markdown";
   // 파일뷰만 직접 편집한다. diff뷰(worktree/index)는 "편집" 버튼으로 파일뷰 전환.
   // 이미지·미디어는 편집 불가.
-  const editable = isFileView && !isImageView && !isMediaView;
+  const editable = isFileView && !isImageView && !isMediaView && !isOfficeView;
   const fileOptions = useMemo(
     () => ({ ...FILE_OPTIONS, readOnly: !editable, fontSize: settings?.diffFontSize ?? 13 }),
     [settings?.diffFontSize, editable],
@@ -477,7 +536,10 @@ export default function DiffViewer({
 
   // diff뷰에서 워킹 파일을 편집 가능한 파일뷰로 여는 버튼 표시 여부.
   const canEditFromDiff =
-    !isImageView && !isMediaView && (target.mode === "worktree" || target.mode === "index");
+    !isImageView &&
+    !isMediaView &&
+    !isOfficeView &&
+    (target.mode === "worktree" || target.mode === "index");
 
   return (
     <div className="flex h-full min-w-0 flex-col bg-base">
@@ -533,7 +595,7 @@ export default function DiffViewer({
             {mdRaw ? <Eye size={14} /> : <Code2 size={14} />}
           </button>
         )}
-        {!isFileView && !isImageView && !isMediaView && (
+        {!isFileView && !isImageView && !isMediaView && !isOfficeView && (
           <button
             onClick={toggleDiffCollapse}
             title={
@@ -576,6 +638,8 @@ export default function DiffViewer({
           <ImageView projectId={projectId} path={path} />
         ) : isMediaView ? (
           <MediaView projectId={projectId} path={path} />
+        ) : isOfficeView ? (
+          <OfficeView projectId={projectId} path={path} mode={target.mode} />
         ) : isLoading ? (
           <EmptyState title="diff 불러오는 중…" />
         ) : error ? (

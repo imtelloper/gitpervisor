@@ -103,6 +103,31 @@ export async function run({ cdp, report: r, fix }) {
       /* cleanup이 픽스처 통째로 지운다 */
     }
 
+    // ── #9b Office 문서 라우팅 (확장자만 보므로 실제 파일이 없어도 된다) ──
+    // 회귀 대상: 예전엔 docx/xlsx/pptx가 "바이너리 파일"이라는 막다른 안내로 떨어져 열 방법이
+    // 없었다. 세 가족 모두 각자 이름의 카드 + 외부 앱 버튼이 나와야 한다.
+    for (const [file, want] of [
+      ["e2e.docx", "Word 문서"],
+      ["e2e.xlsx", "Excel 통합 문서"],
+      ["e2e.pptx", "PowerPoint 프레젠테이션"],
+    ]) {
+      await cdp.eval(
+        `window.__gpv.ui.getState().selectDiff({ mode: "file", path: ${J(file)} })`,
+      );
+      const shown = await poll(
+        () => cdp.eval(`document.querySelector('main')?.innerText ?? ""`),
+        (v) => v.includes(want) && v.includes("외부 앱으로 열기"),
+        12,
+        250,
+      );
+      r.check(
+        `Office 라우팅: ${file} → ${want} 카드 + 외부 앱 버튼`,
+        shown.includes(want) && shown.includes("외부 앱으로 열기"),
+        shown.slice(0, 80),
+      );
+    }
+    await cdp.eval(`window.__gpv.ui.getState().selectDiff(null)`);
+
     // ── #2 그리드 분할 (우클릭 → 4분할) ──
     // openTerminal은 { tabId, paneId }를 반환한다 — 여기선 탭 전환/정리용 tabId만 쓴다.
     tabId = await cdp.eval(

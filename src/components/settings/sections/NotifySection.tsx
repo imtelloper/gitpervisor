@@ -3,6 +3,7 @@
 import { Send } from "lucide-react";
 
 import type { NotifySecret, Settings } from "../../../lib/ipc";
+import { useHealthMute } from "../../../stores/health";
 import { Field, Hl, inputCls, type SectionProps } from "./shared";
 
 export interface NotifySectionProps extends SectionProps {
@@ -27,6 +28,8 @@ export function NotifySection({
   smtpHas,
   onTest,
 }: NotifySectionProps) {
+  const healthMuted = useHealthMute((st) => st.muted);
+  const setHealthMuted = useHealthMute((st) => st.setMuted);
   return (
     <>
       <Hl id="notifyMode" hl={hl}>
@@ -175,6 +178,26 @@ export function NotifySection({
           </button>
         </div>
       )}
+
+      {/* 경보 카드의 "이 알림 다시 보지 않기"를 되돌리는 유일한 자리. 백엔드 Settings가 아니라
+          localStorage 토글이라 form/update가 아닌 스토어를 직접 읽는다(업데이트 자동 확인과 동일). */}
+      <Hl id="healthAlert" hl={hl}>
+        <div className="border-t border-edge pt-3">
+          <label className="flex cursor-pointer items-center gap-2">
+            <input
+              type="checkbox"
+              checked={!healthMuted}
+              onChange={(e) => setHealthMuted(!e.target.checked)}
+              className="accent-accent"
+            />
+            <span>시스템 메모리 경보 표시</span>
+          </label>
+          <div className="mt-1 pl-6 text-[11px] leading-5 text-fg-dim">
+            메모리 여유가 줄어 OS가 앱을 종료할 수 있을 때 우측 하단에 카드로 알립니다. 끄면 경고·위험
+            단계 모두 뜨지 않습니다 — 지난 실행이 비정상 종료됐다는 안내는 이 설정과 무관하게 뜹니다.
+          </div>
+        </div>
+      </Hl>
     </>
   );
 }

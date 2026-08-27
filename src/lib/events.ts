@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useOps } from "../stores/ops";
 import { useUi } from "../stores/ui";
 import type { SyncOp } from "../stores/ops";
+import type { VideoExportFinished } from "./ipc";
 import { ipc } from "./ipc";
 
 interface RepoChanged {
@@ -70,6 +71,22 @@ export function attachRepoEvents(qc: QueryClient) {
 
   void listen<OpProgress>("repo://op-progress", (e) => {
     useOps.getState().progress(e.payload.projectId, e.payload.line);
+  });
+
+  // 동영상 내보내기 종결 — invoke 응답이 유실돼도(§10) 이 이벤트가 토스트·갱신을 책임진다.
+  // 진행 중 UI(ExportPanel)는 자기 jobId로 별도 구독하고, 토스트는 여기 한 곳에서만(중복 방지).
+  void listen<VideoExportFinished>("video://export-finished", (e) => {
+    const { ok, cancelled, error, outRel } = e.payload;
+    const name = outRel.split("/").pop() ?? outRel;
+    if (cancelled) useUi.getState().pushToast("info", "내보내기를 취소했습니다");
+    else if (ok) useUi.getState().pushToast("success", `내보내기 완료 — ${name}`);
+    else useUi.getState().pushToast("error", error ?? "내보내기 실패");
+    // 산출물이 워크트리에 생겼다 — 파일트리·git 상태 갱신. 덮어쓰기 내보내기로 기존
+    // 미디어가 교체됐을 수 있어 staleTime Infinity인 프로브·이미지 캐시도 함께 무효화.
+    void qc.invalidateQueries({ queryKey: ["dir"] });
+    void qc.invalidateQueries({ queryKey: ["statuses"] });
+    void qc.invalidateQueries({ queryKey: ["video-probe"] });
+    void qc.invalidateQueries({ queryKey: ["file-image"] });
   });
 
   void listen<OpFinished>("repo://op-finished", (e) => {

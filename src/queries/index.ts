@@ -19,7 +19,7 @@ import type {
 } from "../lib/ipc";
 import { formatBytes } from "../lib/format";
 import { errorMessage, ipc, isIpcError } from "../lib/ipc";
-import { isImage, isPlayable } from "../lib/language-map";
+import { isImage, isOffice, isPlayable } from "../lib/language-map";
 import { useDb } from "../stores/db";
 import type { SyncOp } from "../stores/ops";
 import { useOps } from "../stores/ops";
@@ -448,9 +448,10 @@ export function useClearQuarantine() {
 }
 
 export function useDiff(projectId: string | null, target: DiffTarget | null) {
-  // 이미지·동영상·오디오는 뷰어가 diff보다 먼저 분기해 결과를 쓰지 않는다 — 부르면 순수 낭비고,
-  // 동영상은 파일이 GB 단위일 수 있어 git spawn 비용이 더 크다. 아예 끈다.
-  const media = !!target && (isImage(target.path) || isPlayable(target.path));
+  // 이미지·동영상·오디오·Office는 뷰어가 diff보다 먼저 분기해 결과를 쓰지 않는다 — 부르면
+  // 순수 낭비고, 동영상은 파일이 GB 단위일 수 있어 git spawn 비용이 더 크다. 아예 끈다.
+  const media =
+    !!target && (isImage(target.path) || isPlayable(target.path) || isOffice(target.path));
   return useQuery({
     queryKey: target ? keys.diff(projectId ?? "none", target) : ["diff", "none"],
     queryFn: () => ipc.getDiff(projectId!, target!),
@@ -459,6 +460,26 @@ export function useDiff(projectId: string | null, target: DiffTarget | null) {
     staleTime: Infinity,
     // 파일 전환 시 이전 diff를 유지해 "불러오는 중" 깜빡임을 없앤다
     placeholderData: keepPreviousData,
+  });
+}
+
+/** ffmpeg 발견 상태 — 편집 UI 게이트. 설치 직후 반영되도록 60초만 신선. */
+export function useVideoToolStatus() {
+  return useQuery({
+    queryKey: ["video-tool"],
+    queryFn: () => ipc.videoToolStatus(),
+    staleTime: 60_000,
+  });
+}
+
+/** ffprobe 메타데이터 — 프레임 스텝 fps·크롭 좌표계·내보내기 분모. 도구 있을 때만. */
+export function useVideoProbe(projectId: string | null, path: string | null, enabled: boolean) {
+  return useQuery({
+    queryKey: ["video-probe", projectId ?? "none", path ?? "none"],
+    queryFn: () => ipc.videoProbe(projectId!, path!),
+    enabled: enabled && !!projectId && !!path,
+    staleTime: Infinity,
+    retry: false, // 프로세스 스폰 — 실패 자동 재시도 금지
   });
 }
 
@@ -619,6 +640,8 @@ export function useSetSettings() {
       void qc.invalidateQueries({ queryKey: keys.settings });
       // git 경로가 바뀌었을 수 있으니 게이트 재확인
       void qc.invalidateQueries({ queryKey: keys.git });
+      // ffmpeg 명시 경로(videoFfmpegPath)도 마찬가지 — 발견 상태 재확인
+      void qc.invalidateQueries({ queryKey: ["video-tool"] });
       useUi.getState().pushToast("success", "설정을 저장했습니다");
     },
     onError: (e) => useUi.getState().pushToast("error", errorMessage(e)),

@@ -1,5 +1,6 @@
 // 설정 모달 (태스크 18) — 좌 사이드바 카테고리 + 검색. 셸이 폼 상태 전부 소유(테마 프리뷰·시크릿·
 // LSP 진행·category/query), 섹션은 순수 표현. 저장 모델은 불변(전역 폼 + 단일 저장/취소).
+import { useQueryClient } from "@tanstack/react-query";
 import { Search, Settings as SettingsIcon, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -36,6 +37,7 @@ function buildCleaned(f: Settings): Settings {
     smtpUsername: f.smtpUsername?.trim() || null,
     smtpFrom: f.smtpFrom?.trim() || null,
     smtpTo: f.smtpTo?.trim() || null,
+    videoFfmpegPath: f.videoFfmpegPath && f.videoFfmpegPath.trim() ? f.videoFfmpegPath.trim() : null,
   };
 }
 
@@ -63,12 +65,15 @@ export function SettingsDialog() {
   const { data: settings } = useSettings();
   const { data: projects } = useProjects();
   const save = useSetSettings();
+  const qc = useQueryClient();
 
   const [form, setForm] = useState<Settings | null>(null);
   const [category, setCategory] = useState<SettingsCategory>("general");
   const [query, setQuery] = useState("");
   const [lspBusy, setLspBusy] = useState(false);
   const [lspStatus, setLspStatus] = useState("");
+  const [ffmpegBusy, setFfmpegBusy] = useState(false);
+  const [ffmpegStatus, setFfmpegStatus] = useState("");
   const [slackSecret, setSlackSecret] = useState("");
   const [smtpSecret, setSmtpSecret] = useState("");
   const [slackHas, setSlackHas] = useState(false);
@@ -236,6 +241,25 @@ export function SettingsDialog() {
     setLspBusy(false);
   }
 
+  async function downloadFfmpeg() {
+    setFfmpegBusy(true);
+    setFfmpegStatus("다운로드 준비…");
+    try {
+      const res = await ipc.videoToolEnsure((p) => {
+        if (p.phase === "download")
+          setFfmpegStatus(`받는 중${p.percent != null ? ` ${p.percent}%` : "…"}`);
+        else if (p.phase === "extract") setFfmpegStatus("압축 해제 중…");
+        else if (p.phase === "error") setFfmpegStatus(`⚠ ${p.message ?? "실패"}`);
+      });
+      setFfmpegStatus(res.found ? `설치 완료 ✓ (${res.version ?? "버전 미상"})` : "⚠ 설치 후에도 발견 실패");
+      // 열려 있는 플레이어·이 섹션의 발견 상태를 즉시 갱신.
+      void qc.invalidateQueries({ queryKey: ["video-tool"] });
+    } catch (e) {
+      setFfmpegStatus(`⚠ ${errorMessage(e)}`);
+    }
+    setFfmpegBusy(false);
+  }
+
   const noResults = matched != null && matched.length === 0;
 
   return (
@@ -312,6 +336,9 @@ export function SettingsDialog() {
                 lspBusy={lspBusy}
                 lspStatus={lspStatus}
                 onDownload={() => void downloadLspServers()}
+                ffmpegBusy={ffmpegBusy}
+                ffmpegStatus={ffmpegStatus}
+                onFfmpegDownload={() => void downloadFfmpeg()}
               />
             )}
             {category === "terminal" && <TerminalSection form={form} update={update} hl={hl} />}

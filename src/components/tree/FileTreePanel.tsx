@@ -130,14 +130,14 @@ interface TreeRowApi {
   sel: Set<string>;
   /** 클릭 — Ctrl/Cmd면 멀티선택 토글, 아니면 단일선택(diff) + 멀티선택 해제 */
   onClick: (path: string, e: React.MouseEvent) => void;
-  /** 더블클릭 — 실행 파일이면 확인 후 실행 */
+  /** 더블클릭 — 실행 파일이면 즉시 실행 */
   onDouble: (path: string, name: string) => void;
 }
 const TreeRowCtx = createContext<TreeRowApi | null>(null);
 
 // 더블클릭으로 실행할 수 있는 파일 확장자(Windows 실행 파일 + macOS dmg). 프론트 1차 게이트.
 // 플랫폼 구분은 안 한다 — 실행은 OS 기본 핸들러(open/ShellExecute)가 판단하고, 핸들러가
-// 없는 플랫폼에서는 에러 토스트로 끝난다(확인 다이얼로그가 오조작 안전장치).
+// 없는 플랫폼에서는 에러 토스트로 끝난다.
 const EXEC_EXT = new Set(["exe", "bat", "cmd", "com", "msi", "dmg"]);
 function isRunnable(name: string): boolean {
   const dot = name.lastIndexOf(".");
@@ -549,26 +549,20 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
     [selectDiff],
   );
 
-  // 더블클릭 — 실행 파일이면 확인 후 OS로 실행한다.
+  // 더블클릭 — 실행 파일이면 즉시 OS로 실행한다.
+  // 확인 다이얼로그는 사용자 요청으로 제거했다(2026-08-27) — 매번 묻는 것이 더 큰 마찰이었다.
+  // 더블클릭 자체가 의도 표현이고, 실행 여부·결과는 성공/실패 토스트가 알린다.
   const onDouble = useCallback(
     (path: string, name: string) => {
       if (!isRunnable(name)) return;
-      askConfirm({
-        title: "실행 파일 실행",
-        message: `'${name}'을(를) 실행할까요? 신뢰할 수 있는 파일만 실행하세요.`,
-        detail: absOf(path),
-        confirmLabel: "실행",
-        onConfirm: () => {
-          void ipc
-            .runExecutable(projectId, path)
-            .then(() => pushToast("success", `${name} 실행됨`))
-            .catch((err) => pushToast("error", errorMessage(err)));
-        },
-      });
+      void ipc
+        .runExecutable(projectId, path)
+        .then(() => pushToast("success", `${name} 실행됨`))
+        .catch((err) => pushToast("error", errorMessage(err)));
     },
-    // absOf는 projectPath에 의존 — 프로젝트별로 안정. projectId/askConfirm/pushToast도 안정.
+    // pushToast는 스토어 액션이라 안정.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [projectId, projectPath],
+    [projectId],
   );
 
   const rowApi = useMemo<TreeRowApi>(

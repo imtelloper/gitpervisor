@@ -1,5 +1,6 @@
 mod actions;
 mod browser;
+mod capture;
 mod check;
 mod diagnostics;
 mod diff;
@@ -20,9 +21,11 @@ mod status;
 mod sync;
 mod terminal;
 mod tree;
+mod video;
 
 pub use actions::*;
 pub use browser::*;
+pub use capture::*;
 pub use check::*;
 pub use diagnostics::*;
 pub use diff::*;
@@ -43,3 +46,4 @@ pub use status::*;
 pub use sync::*;
 pub use terminal::*;
 pub use tree::*;
+pub use video::*;

@@ -87,7 +87,7 @@ const BASE_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartS
 
 /// 모든 창이 동일한 WebView2 환경 인자를 써야 한다 — 같은 user-data 폴더를 공유하는 웹뷰는
 /// 환경 인자가 일치하지 않으면 추가 웹뷰가 초기화에 실패해 빈 창이 된다. 메인·플로팅 공용.
-fn browser_args() -> String {
+pub(crate) fn browser_args() -> String {
     let mut s = String::from(BASE_BROWSER_ARGS);
     #[cfg(debug_assertions)]
     s.push_str(" --remote-debugging-port=29222");
@@ -195,6 +195,69 @@ async fn open_aggregate_window(app: tauri::AppHandle, origin: String) -> Result<
     Ok(())
 }
 
+/// 화면 캡쳐 전역 단축키(`Ctrl+Shift+X`)를 등록한다.
+///
+/// **실패를 조용히 넘기지 않는다.** 등록은 두 가지로 실패한다: (a) 다른 앱이 같은 조합을
+/// 선점했다 (b) OS가 거부했다. 어느 쪽이든 "단축키가 있는데 안 눌리는" 상태가 되는데, 그건
+/// 사용자가 원인을 알 방법이 없는 종류의 고장이다. 그래서 메인 창에 이벤트로 알린다.
+///
+/// 고칠 수 없는 제약 하나는 미리 적어 둔다: **UIPI** — 관리자 권한으로 뜬 창이 포커스를 쥐고
+/// 있으면 일반 권한 프로세스의 훅에 키가 오지 않는다. 등록은 성공한 채로 그 순간만 안 먹는다.
+fn register_capture_hotkey(app: &tauri::AppHandle) {
+    use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
+
+    let sc = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyX);
+    match app.global_shortcut().register(sc) {
+        Ok(()) => log::info!("[capture] 전역 단축키 Ctrl+Shift+X 등록"),
+        Err(e) => {
+            log::error!("[capture] 전역 단축키 등록 실패: {e}");
+            let _ = app.emit(
+                "capture://hotkey-error",
+                "Ctrl+Shift+X 를 다른 프로그램이 쓰고 있어 화면 캡쳐 단축키를 등록하지 못했습니다",
+            );
+        }
+    }
+}
+
+/// 캡쳐 오버레이 창을 확보한다 — **없으면 만들고, 있으면 그대로 돌려준다.**
+///
+/// 새로 만들면 내용이 뜰 때까지 이 개발기 실측 **1367ms**다(dev 빌드). 그래서 한 번 만든 창은
+/// 닫지 않고 `hide()`로만 숨긴다 — 두 번째 캡쳐부터는 `show()` 몇 ms로 끝난다
+/// (`DOCS/screen-capture-design.md` §3 D4). 파괴 정책(유휴 회수)은 M2 이후다.
+///
+/// **반드시 메인 스레드에서 부른다** — 웹뷰 창 생성은 메인 스레드 전용이다.
+pub(crate) fn ensure_capture_overlay(
+    app: &tauri::AppHandle,
+) -> Result<tauri::WebviewWindow, String> {
+    if let Some(w) = app.get_webview_window(commands::CAPTURE_OVERLAY_LABEL) {
+        return Ok(w);
+    }
+    // 메인 창이 실제로 보고 있는 URL을 그대로 쓴다 — dev는 개발서버, 설치본은 tauri://.
+    // origin을 프론트에서 받아 넘기는 다른 보조 창과 달리, 이 창은 **단축키(Rust)에서** 뜨므로
+    // 프론트를 거칠 기회가 없다.
+    let url = app
+        .get_webview_window("main")
+        .and_then(|w| w.url().ok())
+        .map(WebviewUrl::External)
+        .unwrap_or_else(|| WebviewUrl::App("index.html".into()));
+    WebviewWindowBuilder::new(app, commands::CAPTURE_OVERLAY_LABEL, url)
+        .title("화면 캡쳐")
+        // 숨긴 채로 만든다 — 프리워밍 경로에서 화면에 잠깐 뜨면 그게 캡쳐에 찍힌다.
+        .visible(false)
+        .decorations(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .shadow(false)
+        // 프리즈 프레임을 깔기 때문에 투명일 필요가 없다. 투명이면 아래가 **살아 움직여**
+        // 선택 중 화면이 바뀐다(설계 §4.4).
+        .background_color(tauri::window::Color(0, 0, 0, 255))
+        .disable_drag_drop_handler()
+        .additional_browser_args(&browser_args())
+        .build()
+        .map_err(|e| e.to_string())
+}
+
 /// 플로팅 터미널 창 라벨 접두사 — 라벨이 곧 paneId 전달 통로다(open_float_window 주석 참고).
 const FLOAT_LABEL_PREFIX: &str = "float-";
 
@@ -293,6 +356,8 @@ pub(crate) fn shutdown_children(app: &tauri::AppHandle) {
         shutdown_step("terminals", || commands::kill_all(state));
         shutdown_step("lsp", || commands::lsp_kill_all(state));
         shutdown_step("browser", || commands::browser_kill_all(app, state));
+        shutdown_step("video", || commands::video_kill_all(state));
+        shutdown_step("capture", commands::capture_release_all);
     } else {
         // setup 실패 등으로 manage 전에 끝난 경우 — 정리할 자식도 아직 없다.
         log::warn!("[shutdown] AppState 미등록 — 자식 프로세스 정리 생략");
@@ -381,6 +446,17 @@ pub fn run() {
 
     let result = tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
+        // 화면 캡쳐 전역 단축키. 등록은 setup에서 하고, 여기선 눌림만 받는다.
+        // 지금 등록하는 단축키가 하나뿐이라 어느 것인지 가리지 않는다 — 늘어나면 shortcut을 본다.
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                        commands::run_capture(app);
+                    }
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_updater::Builder::new().build())
         // 파일 로그(앱 로그 폴더) + stdout. log::error!·패닉·프론트 미처리 에러까지 한 파일에 모인다.
         // 무한 증가 방지: 10MB마다 회전하고 최신 8개 아카이브만 보존(= 활성 + 8 ≈ 최신 90MB).
@@ -438,7 +514,14 @@ pub fn run() {
             // 메인 창을 코드에서 생성한다 — 원격 디버깅 포트(CDP)는 debug 빌드에서만 열고
             // release 빌드에는 노출하지 않기 위함 (정적 config로는 빌드별 분기가 불가).
             WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
-                .title("Gitpervisor")
+                // dev 인스턴스는 설치본과 동시에 뜰 수 있다(tauri.dev.conf.json이 identifier를
+                // 갈라 데이터 디렉터리를 분리한다). 창 제목이 같으면 어느 쪽을 보고 있는지
+                // 구분이 안 된다 — 설치본에 대고 디버깅하는 사고의 원인이 된다.
+                .title(if cfg!(debug_assertions) {
+                    "Gitpervisor (dev)"
+                } else {
+                    "Gitpervisor"
+                })
                 .inner_size(1440.0, 900.0)
                 .min_inner_size(1100.0, 700.0)
                 .center()
@@ -489,10 +572,16 @@ pub fn run() {
             });
             // 원격 최신상태 배경 fetch 스케줄러 — 주기 실행에 invoke가 없다 (태스크 04 §3.1).
             fetch_scheduler::spawn(app.handle().clone());
+            register_capture_hotkey(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::check_git,
+            commands::capture_trigger,
+            commands::capture_current,
+            commands::capture_overlay_ready,
+            commands::capture_to_clipboard,
+            commands::capture_cancel,
             commands::list_projects,
             commands::add_project,
             commands::create_project_folder,
@@ -571,6 +660,12 @@ pub fn run() {
             commands::browser_clear_data,
             commands::http_request,
             commands::http_cancel,
+            commands::video_tool_status,
+            commands::video_tool_ensure,
+            commands::video_probe,
+            commands::video_export,
+            commands::video_export_cancel,
+            commands::video_capture_frame,
             commands::get_target_sizes,
             commands::get_project_sizes,
             commands::clean_target,

@@ -123,6 +123,26 @@ export function isPlayable(path: string): boolean {
   return isVideo(path) || isAudio(path);
 }
 
+// Office 문서 — 웹뷰가 렌더할 수 없는 ZIP+XML(또는 OLE) 바이너리다. 뷰어에서 텍스트 diff를
+// 시도하면 "바이너리 파일"이라는 막다른 안내만 나오므로, 라우팅을 갈라 OS 기본 앱
+// (Word/Excel/PowerPoint)으로 넘긴다. csv는 일부러 뺐다 — 텍스트라 Monaco에서 보는 게 낫다.
+const OFFICE_EXT = new Set([
+  "doc",
+  "docx",
+  "docm",
+  "xls",
+  "xlsx",
+  "xlsm",
+  "ppt",
+  "pptx",
+  "pptm",
+]);
+
+/** OS 기본 앱으로 넘길 Office 문서인가 (뷰어 라우팅·diff 게이팅 공용). */
+export function isOffice(path: string): boolean {
+  return OFFICE_EXT.has(extOf(path));
+}
+
 // 브라우저로 렌더 가능한 HTML 문서 확장자만. languageOf(path)==="html"은 .vue/.svelte도
 // 잡지만 그건 렌더 가능한 페이지가 아니라 별도로 좁게 판정한다.
 const HTML_EXT = new Set(["html", "htm", "xhtml"]);

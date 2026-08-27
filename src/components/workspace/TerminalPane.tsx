@@ -174,69 +174,69 @@ function PaneMenu({
       onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
     >
-      <Item
+      <MenuItem
         icon={<Copy size={14} />}
         label="복사"
         hint="Ctrl+Shift+C"
         onClick={run(() => copyTerminalSelection(paneId))}
       />
-      <Item
+      <MenuItem
         icon={<ClipboardPaste size={14} />}
         label="붙여넣기"
         hint="Ctrl+V"
         onClick={run(() => void pasteIntoTerminal(paneId))}
       />
       <div className="my-1 border-t border-edge" />
-      <Item
+      <MenuItem
         icon={<SplitSquareHorizontal size={14} />}
         label="오른쪽으로 분할"
         hint="Ctrl+Shift+D"
         onClick={run(() => ts.splitPane(tabId, paneId, "row", false))}
       />
-      <Item
+      <MenuItem
         icon={<SplitSquareHorizontal size={14} />}
         label="왼쪽으로 분할"
         onClick={run(() => ts.splitPane(tabId, paneId, "row", true))}
       />
-      <Item
+      <MenuItem
         icon={<SplitSquareVertical size={14} />}
         label="아래로 분할"
         hint="Ctrl+Shift+E"
         onClick={run(() => ts.splitPane(tabId, paneId, "col", false))}
       />
-      <Item
+      <MenuItem
         icon={<SplitSquareVertical size={14} />}
         label="위로 분할"
         onClick={run(() => ts.splitPane(tabId, paneId, "col", true))}
       />
       <div className="my-1 border-t border-edge" />
-      <Item
+      <MenuItem
         icon={<LayoutGrid size={14} />}
         label="2분할 (좌우)"
         onClick={run(() => ts.splitGrid(tabId, paneId, 2))}
       />
-      <Item
+      <MenuItem
         icon={<LayoutGrid size={14} />}
         label="4분할 (2×2)"
         onClick={run(() => ts.splitGrid(tabId, paneId, 4))}
       />
-      <Item
+      <MenuItem
         icon={<LayoutGrid size={14} />}
         label="8분할 (2×4)"
         onClick={run(() => ts.splitGrid(tabId, paneId, 8))}
       />
       <div className="my-1 border-t border-edge" />
-      <Item
+      <MenuItem
         icon={maximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
         label={maximized ? "패널 최대화 해제" : "패널 최대화"}
         onClick={run(() => ts.toggleMaximize(tabId, paneId))}
       />
-      <Item
+      <MenuItem
         icon={<ExternalLink size={14} />}
         label="새 창으로 분리 (Float)"
         onClick={run(() => ts.floatPane(tabId, paneId))}
       />
-      <Item
+      <MenuItem
         icon={<X size={14} />}
         label="패널 닫기"
         hint="Ctrl+Shift+W"
@@ -247,7 +247,8 @@ function PaneMenu({
   );
 }
 
-function Item({
+/** 컨텍스트 메뉴 한 줄 — 모아보기 칩 메뉴(AggregateTerminals)도 같은 모양을 쓴다. */
+export function MenuItem({
   icon,
   label,
   hint,
