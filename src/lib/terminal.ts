@@ -185,8 +185,17 @@ export function installTerminalCopyFallback(): void {
   });
 }
 
+/** 스마트 붙여넣기 진행 중 플래그 — 완료 전의 ⌘V/Ctrl+V 재진입을 무시한다.
+ *  macOS 페이스트보드 프라이버시 프롬프트(26+)가 떠 있는 동안 ⌘V를 연타하면, 가드 없이는
+ *  호출마다 OS 읽기(=프롬프트)가 하나씩 쌓였다가 Allow 순간 쌓인 붙여넣기가 한꺼번에 발사된다
+ *  (2026-08-28 실사례 — 같은 경로가 연속으로 수십 번 붙었다). */
+let pasteInFlight = false;
+
 /** 스마트 붙여넣기 — 백엔드(term_paste, 3플랫폼 실구현)가 클립보드를 판별(파일/이미지→경로,
- *  그 외 텍스트)한 텍스트를 넣는다. 빈 값이면 플러그인 readText로 한 번 더 시도(보조 안전망).
+ *  그 외 텍스트)한 텍스트를 넣는다. 플러그인 readText 폴백은 **invoke가 실패(reject)했을 때만**
+ *  탄다 — 빈 문자열은 "클립보드가 비었거나 읽을 수 없음"이라는 유효한 답이고, 그때 또 읽으면
+ *  macOS에선 프라이버시 프롬프트가 하나 더 뜬다(위 pasteInFlight 주석의 폭주 기전 절반이
+ *  바로 이 이중 읽기였다).
  *  PTY에 직접 쓰지 않고 term.paste()를 경유한다: xterm이 개행 정규화(\n→\r)와 bracketed
  *  paste(ESC[200~) 래핑을 처리해, 멀티라인 붙여넣기가 셸에서 줄마다 즉시 실행되는 사고를 막는다
  *  (최종 전송은 어차피 onData → term_write 경로).
@@ -195,14 +204,22 @@ export function installTerminalCopyFallback(): void {
  *  (zsh는 다음 프롬프트에서 재설정, Claude Code류 TUI는 세션 내 지속). 근본 해결은 Rust가
  *  세션별 2004 모드를 추적해 attach 시 프론트 파서에 되살리는 것 — 후속 과제. */
 export async function pasteIntoTerminal(id: string) {
+  if (pasteInFlight) return;
+  pasteInFlight = true;
   try {
-    let text = await invoke<string>("term_paste");
-    if (!text) text = await readClipboardText();
+    let text: string;
+    try {
+      text = await invoke<string>("term_paste");
+    } catch {
+      text = await readClipboardText();
+    }
     const inst = getTerminal(id);
     if (text && inst) inst.term.paste(text);
     inst?.term.focus();
   } catch {
     /* noop */
+  } finally {
+    pasteInFlight = false;
   }
 }
 

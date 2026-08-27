@@ -96,7 +96,9 @@ libc = "0.2"
 arboard = { version = "3", default-features = false, features = ["image-data"] }
 # 클립보드 이미지 RGBA→PNG 파일 인코딩(임시 파일 경로 붙여넣기). tauri image-png가 이미 트리에
 # 같은 0.25를 가지므로 추가 컴파일 비용 최소.
-image = { version = "0.25", default-features = false, features = ["png"] }
+# jpeg: 화면 캡쳐(commands/capture.rs)의 프리뷰 인코딩은 `imp`(플랫폼 구현)와 달리 cfg로 갈리지
+# 않는 공용 코드다. 캡쳐 자체는 아직 Windows 전용이지만 이 피처가 없으면 여기서 컴파일이 깨진다.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # term_paste의 파일 목록 읽기 — Finder ⌘C는 public.file-url을 올리지만 arboard는 이를 못 읽고,

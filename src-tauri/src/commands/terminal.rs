@@ -540,27 +540,54 @@ pub fn term_paste() -> String {
     get_clipboard(formats::Unicode).unwrap_or_default()
 }
 
-/// Linux(X11/XWayland)·macOS: arboard로 이미지→임시 PNG 경로, 그 외 텍스트.
-/// (파일 목록(text/uri-list)은 arboard 미지원 — 파일 매니저 복사는 대부분 텍스트 폴백으로 경로가 온다.)
+/// Linux(X11/XWayland)·macOS: 파일→경로, 이미지→임시 PNG 경로, 그 외 텍스트.
+/// (macOS 파일 목록은 NSPasteboard로 직접 읽는다 — macos_clipboard_files. Linux의 text/uri-list는
+/// arboard 미지원이라 여전히 텍스트 폴백에 기댄다 — 파일 매니저 복사는 대부분 경로가 함께 온다.)
 ///
 /// 반드시 async 커맨드로 메인 스레드 밖에서 실행한다: 동기 커맨드는 GTK 메인루프에서 돌고,
 /// X11 클립보드는 "소유자가 요청에 응답"하는 모델이라 웹뷰(이 앱 자신)가 복사 주체일 때
 /// 메인루프가 막혀 있으면 자기 자신을 기다리는 데드락이 된다(tauri plugins-workspace#2267과 동일 기전).
-/// 여기에 더해 소유자가 끝내 응답하지 않는 경우를 대비해 워커 스레드 + 2초 타임아웃으로 감싼다
+/// 여기에 더해 소유자가 끝내 응답하지 않는 경우를 대비해 워커 스레드 + 타임아웃으로 감싼다
 /// — 실패 시 빈 문자열(붙여넣기 no-op)로 강등되며 UI는 절대 매달리지 않는다.
+///
+/// **타임아웃은 플랫폼별로 다르다.** Linux의 2초는 위 X11 "소유자 무응답" 대비다. macOS는
+/// 15.4+/26의 페이스트보드 프라이버시 프롬프트("~에서 붙여넣으려고 합니다")가 읽기를 **사용자가
+/// 응답할 때까지** 블록한다 — 2초면 사람이 누르기 전에 끝나서 (1) 결과를 버리고 (2) 프론트가
+/// 빈 값을 보고 재시도해 프롬프트를 하나 더 띄운다. ⌘V 연타와 겹치면 프롬프트가 줄줄이 쌓였다가
+/// Allow 순간 쌓인 붙여넣기가 한꺼번에 발사되는 폭주가 됐다(2026-08-28 실사례). 사람이 프롬프트를
+/// 읽고 누를 시간으로 120초를 준다 — 데드락 기전 자체가 macOS엔 없으므로 길어도 안전하다.
 #[cfg(not(windows))]
 #[tauri::command(async)]
 pub fn term_paste() -> String {
+    #[cfg(target_os = "macos")]
+    const TIMEOUT_MS: u64 = 120_000;
+    #[cfg(not(target_os = "macos"))]
+    const TIMEOUT_MS: u64 = 2000;
+
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let _ = tx.send(read_clipboard_unix());
     });
-    rx.recv_timeout(std::time::Duration::from_millis(2000))
+    rx.recv_timeout(std::time::Duration::from_millis(TIMEOUT_MS))
         .unwrap_or_default()
 }
 
 #[cfg(not(windows))]
 fn read_clipboard_unix() -> String {
+    // macOS는 파일 목록을 **이미지보다 먼저** 본다 — 이유는 macos_clipboard_files 주석 참조.
+    // 이로써 세 플랫폼 모두 "파일 → 이미지 → 텍스트" 우선순위로 일치한다.
+    #[cfg(target_os = "macos")]
+    {
+        let files = macos_clipboard_files();
+        if !files.is_empty() {
+            return files
+                .iter()
+                .map(|p| shell_quote(p))
+                .collect::<Vec<_>>()
+                .join(" ");
+        }
+    }
+
     let mut cb = match arboard::Clipboard::new() {
         Ok(cb) => cb,
         Err(_) => return String::new(),
@@ -572,6 +599,51 @@ fn read_clipboard_unix() -> String {
         }
     }
     cb.get_text().unwrap_or_default()
+}
+
+/// macOS: Finder ⌘C가 올린 `public.file-url`을 실제 파일 경로로 읽는다(Windows FileList 대응).
+///
+/// **`get_image()`보다 먼저 호출해야 한다.** Finder는 파일을 복사할 때 URL과 **함께 파일 아이콘
+/// TIFF**를 페이스트보드에 올린다. arboard는 `public.file-url`을 못 읽는 반면 그 아이콘은 이미지로
+/// 집어 들기 때문에, 순서가 뒤바뀌면 붙여넣기 결과가 **1024×1024 범용 문서 아이콘을 저장한
+/// `gitpervisor-paste-*.png` 경로**가 된다 — 실제 파일 경로는 영영 나오지 않는다.
+///
+/// **`types()` 확인을 빼지 마라.** 이 확인 없이 `readObjectsForClasses:[NSURL]`를 부르면 AppKit이
+/// 평범한 텍스트(`public.utf8-plain-string`)에서 NSURL을 **합성**해, URL처럼 생긴 문자열을 복사한
+/// 일반 텍스트 붙여넣기까지 경로로 바꿔 버린다.
+///
+/// 워커 스레드에서 불린다(term_paste 참조). NSPasteboard 읽기는 메인 스레드 전용이 아니며
+/// (objc2가 MainThreadMarker를 요구하지 않는다), 같은 스레드에서 arboard도 이미 이 API를 쓴다.
+#[cfg(target_os = "macos")]
+fn macos_clipboard_files() -> Vec<String> {
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2::ClassType;
+    use objc2_app_kit::{NSPasteboard, NSPasteboardTypeFileURL};
+    use objc2_foundation::{NSArray, NSURL};
+
+    let pb = NSPasteboard::generalPasteboard();
+    // extern "C" static — 접근 자체가 unsafe다.
+    let file_url_ty = unsafe { NSPasteboardTypeFileURL };
+    let declares_file_url = pb
+        .types()
+        .is_some_and(|ts| ts.iter().any(|t| *t == *file_url_ty));
+    if !declares_file_url {
+        return Vec::new();
+    }
+
+    let classes = NSArray::from_slice(&[NSURL::class()]);
+    // SAFETY: class_array는 NSPasteboardReading을 구현하는 NSURL 하나뿐이고, options는 None.
+    let Some(objs) = (unsafe { pb.readObjectsForClasses_options(&classes, None) }) else {
+        return Vec::new();
+    };
+
+    objs.iter()
+        .filter_map(|o: Retained<AnyObject>| o.downcast::<NSURL>().ok())
+        // types() 확인을 통과해도 배열에 비-파일 URL이 섞일 수 있다(다중 아이템 페이스트보드).
+        .filter(|u| u.isFileURL())
+        .filter_map(|u| u.path().map(|p| p.to_string()))
+        .collect()
 }
 
 /// 클립보드 RGBA 이미지를 임시 PNG로 저장하고 경로를 돌려준다 (Windows save_temp_image의 unix 대응).
