@@ -735,7 +735,11 @@ fn default_shell() -> ShellSpec {
     }
 }
 
-#[cfg(all(test, unix))]
+// Linux 한정 — macOS는 unix지만 이 테스트의 전제 둘이 다 없다: 검증 대상인 세션 스캔
+// (session_tree/alive)이 /proc를 읽는 Linux 전용 구현이고, 픽스처가 실행하는 setsid(1)
+// 명령도 macOS에 없다. macOS에서 terminate_tree는 killpg + pid 가드까지만 동작하고
+// 세션 스캔·ppid 폐포는 빈손이 된다(알려진 갭 — /proc 부재).
+#[cfg(all(test, target_os = "linux"))]
 mod terminate_tests {
     use super::*;
     use std::time::{Duration, Instant};
