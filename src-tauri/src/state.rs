@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use tauri::{AppHandle, Manager};
 
 use crate::commands::{BrowserReg, HttpReg, PreviewServers, TerminalSession};
+use crate::disk_scan::DiskScanState;
 use crate::error::{ErrorCode, IpcError};
 use crate::fetch_scheduler::RemoteFreshness;
 use crate::git::types::{Memo, Project, Settings};
@@ -48,6 +49,12 @@ pub struct AppState {
     pub preview: Mutex<PreviewServers>,
     /// 동영상 내보내기(ffmpeg) 잡 레지스트리 (jobId → 취소 핸들). video.rs §.
     pub video: Mutex<crate::commands::VideoReg>,
+    /// 파일트리 ignore 디밍 캐시 (projectId → ignored 집합) — list_dir이 git 스폰 없이
+    /// 동기 조회한다. tree.rs §ignore-cache, DOCS/file-tree-performance-design.md.
+    pub ignore_cache: Mutex<HashMap<String, crate::commands::IgnoreCache>>,
+    /// 디스크 용량 분석 스캔 상태·결과(arena) — Monitor와 별도 뮤텍스라 몇 분짜리 스캔이
+    /// 2초 폴링을 막지 않는다. Arc: 스캔 워커·리포터 스레드가 들고 간다. disk_scan.rs §.
+    pub disk_scan: Arc<Mutex<DiskScanState>>,
 }
 
 impl AppState {
@@ -67,6 +74,8 @@ impl AppState {
             icons: crate::proc_icons::IconCache::default(),
             preview: Mutex::new(PreviewServers::default()),
             video: Mutex::new(crate::commands::VideoReg::default()),
+            ignore_cache: Mutex::new(HashMap::new()),
+            disk_scan: Arc::new(Mutex::new(DiskScanState::default())),
         }
     }
 

@@ -50,8 +50,14 @@ export function attachRepoEvents(qc: QueryClient) {
   });
 
   let timer: number | undefined;
+  // 코얼레싱 동안 바뀐 프로젝트 수집 — 파일트리(["dir", pid])는 **프로젝트 단위**로만
+  // 무효화해 다른 프로젝트의 펼쳐진 폴더를 건드리지 않는다. 이 연결은 백엔드 ignore 캐시로
+  // list_dir이 ms급이 된 뒤에만 안전하다(예전엔 폴더당 git 스폰이라 폭풍이 됐다 —
+  // DOCS/file-tree-performance-design.md §4).
+  const changedProjects = new Set<string>();
 
-  void listen<RepoChanged>("repo://changed", () => {
+  void listen<RepoChanged>("repo://changed", (e) => {
+    changedProjects.add(e.payload.projectId);
     // watcher 폭주 코얼레싱 — 마지막 신호 후 250ms 지나면 한 번만 재조회
     window.clearTimeout(timer);
     timer = window.setTimeout(() => {
@@ -60,7 +66,16 @@ export function attachRepoEvents(qc: QueryClient) {
       void qc.invalidateQueries({ queryKey: ["log"] });
       void qc.invalidateQueries({ queryKey: ["branches"] });
       void qc.invalidateQueries({ queryKey: ["repo-files"] }); // Quick Open 파일 목록
+      // 파일트리 즉각 반영 — react-query는 마운트된(=펼쳐진) 폴더만 refetch한다.
+      for (const pid of changedProjects)
+        void qc.invalidateQueries({ queryKey: ["dir", pid] });
+      changedProjects.clear();
     }, 250);
+  });
+
+  // ignore 캐시 재빌드 완료(tree.rs kick_ignore_refresh) — 펼쳐진 폴더의 디밍만 재검증.
+  void listen<RepoChanged>("tree://ignore-ready", (e) => {
+    void qc.invalidateQueries({ queryKey: ["dir", e.payload.projectId] });
   });
 
   // 배경 fetch 오류 발생/해소 "전이" 신호(태스크 04 §3.5) — statuses만 재조회해

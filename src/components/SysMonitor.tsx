@@ -1,7 +1,7 @@
 import type { ProcSortKey } from "../lib/ipc";
 import { ipc } from "../lib/ipc";
 import { useSysMetrics } from "../queries";
-import { writeSysmonSortKey } from "./sysmon/prefs";
+import { writeSysmonSortKey, writeSysmonView } from "./sysmon/prefs";
 
 /** 부하 임계에 따른 색 — 평상시 sky, 70%+ 앰버, 88%+ 빨강 */
 function loadText(pct: number): string {
@@ -16,9 +16,11 @@ function gb(bytes: number): string {
 }
 
 /** 지표 클릭 → 클릭한 지표를 초기 정렬로 핸드오프하고 리소스 모니터 팝업을 연다(§3.6).
- *  이미 떠 있으면 백엔드가 포커스만 준다(싱글턴 — 정렬은 창이 부팅 시 1회 읽는다). */
-function openSysmon(sortBy?: ProcSortKey) {
-  if (sortBy) writeSysmonSortKey(sortBy);
+ *  이미 떠 있으면 백엔드가 포커스만 준다(싱글턴 — 정렬은 창이 부팅 시 1회 읽는다).
+ *  SSD 클릭(disk=true)은 디스크 용량 분석 뷰로 핸드오프한다(disk-usage 설계 §3.4). */
+function openSysmon(sortBy?: ProcSortKey, disk?: boolean) {
+  if (disk) writeSysmonView("disk");
+  else if (sortBy) writeSysmonSortKey(sortBy);
   void ipc.openSysmonWindow().catch((e) => {
     console.error("리소스 모니터 창 생성 실패:", e);
   });
@@ -29,19 +31,24 @@ function Metric({
   pct,
   tip,
   sortBy,
+  disk,
 }: {
   label: string;
   pct: number | null;
   tip?: string;
-  /** 클릭 시 팝업 초기 정렬로 넘길 지표 — 없으면(SSD) 정렬 유지한 채 열기만 */
+  /** 클릭 시 팝업 초기 정렬로 넘길 지표 — 없으면 정렬 유지한 채 열기만 */
   sortBy?: ProcSortKey;
+  /** SSD — 클릭 시 디스크 용량 분석 뷰로 연다 */
+  disk?: boolean;
 }) {
   const v = pct == null ? null : Math.max(0, Math.min(100, Math.round(pct)));
   return (
     <button
       type="button"
-      onClick={() => openSysmon(sortBy)}
-      title={`${tip ? `${tip} — ` : ""}클릭하면 프로세스별 상세 보기`}
+      onClick={() => openSysmon(sortBy, disk)}
+      title={`${tip ? `${tip} — ` : ""}${
+        disk ? "클릭하면 디스크 용량 분석" : "클릭하면 프로세스별 상세 보기"
+      }`}
       className="flex w-[50px] cursor-pointer flex-col gap-[3px] rounded-sm px-0 py-0 text-left hover:opacity-80"
     >
       <div className="flex w-full items-baseline justify-between leading-none">
@@ -98,6 +105,7 @@ export function SysMonitor() {
       <Metric
         label="SSD"
         pct={m?.storage ?? null}
+        disk
         // 드라이브 문자를 지어내지 않는다 — 백엔드가 실제로 측정한 볼륨의 마운트 지점을
         // 실어 보낸다(Windows "C:\", macOS "/"). 예전엔 "C:"를 하드코딩해 macOS에서
         // 엉뚱한 외장 볼륨 수치에 존재하지도 않는 드라이브 문자를 붙였다.

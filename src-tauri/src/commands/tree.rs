@@ -6,7 +6,7 @@ use std::time::Duration;
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
 use serde::Serialize;
-use tauri::State;
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use super::projects::project_path;
 use crate::error::{ErrorCode, IpcError};
@@ -16,14 +16,52 @@ use crate::state::AppState;
 
 /// 프로젝트 내 한 디렉토리의 항목을 나열한다 (지연 로딩 — 폴더 펼칠 때 한 단계씩).
 /// `rel_path`는 레포 루트 기준 상대 경로(빈 문자열이면 루트).
+///
+/// git 스폰 0회 — ignore 디밍은 레포당 캐시(§ignore-cache) 동기 조회다. 예전에는 리스팅마다
+/// `git check-ignore`를 스폰했는데, 실측상 그 스폰이 폴더 펼침 지연의 전부였다
+/// (바닥 60ms, 234GB 레포 1~3.5초 — DOCS/file-tree-performance-design.md §0).
 #[tauri::command]
 pub async fn list_dir(
+    app: AppHandle,
     state: State<'_, AppState>,
     project_id: String,
     rel_path: String,
 ) -> Result<Vec<DirEntry>, IpcError> {
     let repo = project_path(&state, &project_id)?;
-    read_dir_entries(&repo, &rel_path).await
+    let items = read_dir_raw(&repo, &rel_path).await?;
+    let entries = decorate_entries(state.inner(), &project_id, &rel_path, items);
+    kick_ignore_refresh(&app, state.inner(), &project_id, repo);
+    Ok(entries)
+}
+
+/// 여러 디렉토리를 invoke 1개로 배치 나열 — 프로젝트 전환/시작 시 저장된 확장 상태 워밍용
+/// (설계 §3.1). 개별 실패(사라진 폴더 등)는 건너뛴다 — 배치 전체를 죽이지 않는다(roots 패턴).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirListing {
+    pub rel_path: String,
+    pub entries: Vec<DirEntry>,
+}
+
+#[tauri::command]
+pub async fn list_dirs(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    project_id: String,
+    rel_paths: Vec<String>,
+) -> Result<Vec<DirListing>, IpcError> {
+    let repo = project_path(&state, &project_id)?;
+    let mut out = Vec::new();
+    for rel in rel_paths.into_iter().take(200) {
+        if let Ok(items) = read_dir_raw(&repo, &rel).await {
+            out.push(DirListing {
+                entries: decorate_entries(state.inner(), &project_id, &rel, items),
+                rel_path: rel,
+            });
+        }
+    }
+    kick_ignore_refresh(&app, state.inner(), &project_id, repo);
+    Ok(out)
 }
 
 /// Viewer 편집 저장 — 텍스트 파일 내용을 디스크에 쓴다. `rel_path`는 레포 루트 기준 상대 경로.
@@ -345,6 +383,7 @@ pub struct ProjectRoot {
 /// 요청 1개로 전부 처리, 내부는 join_all 동시 실행). 프론트는 결과를 dir 캐시에 시드한다.
 #[tauri::command]
 pub async fn list_project_roots(
+    app: AppHandle,
     state: State<'_, AppState>,
     project_ids: Vec<String>,
 ) -> Result<Vec<ProjectRoot>, IpcError> {
@@ -363,41 +402,55 @@ pub async fn list_project_roots(
             .collect()
     };
 
-    // 동시성 제한(buffer_unordered) — Windows에서 git 프로세스를 한꺼번에 수십 개
-    // 띄우면(Defender 스캔·프로세스 생성 폭주) 서로를 굶겨 타임아웃 난다. 소수씩 동시 실행.
+    // 원시 나열은 동시(디스크 I/O), 디밍·킥은 뒤에서 순차(캐시 락 짧게).
+    // git 스폰이 경로에서 빠져 예전의 프로세스 폭풍 문제는 없지만 동시성 캡은 유지한다
+    // (수십 레포 × spawn_blocking이 블로킹 풀을 독점하지 않게).
     use futures::stream::StreamExt;
     const ROOT_CONCURRENCY: usize = 4;
 
-    let results: Vec<ProjectRoot> = futures::stream::iter(targets)
-        .map(|(id, path)| async move {
-            let Some(p) = path else {
-                return ProjectRoot {
-                    project_id: id,
-                    entries: Vec::new(),
-                    error: Some("프로젝트 경로를 찾을 수 없습니다".to_string()),
+    let raw: Vec<(String, Option<PathBuf>, Result<Vec<(String, bool)>, String>)> =
+        futures::stream::iter(targets)
+            .map(|(id, path)| async move {
+                let Some(p) = path else {
+                    return (id, None, Err("프로젝트 경로를 찾을 수 없습니다".to_string()));
                 };
-            };
-            match tokio::time::timeout(Duration::from_secs(15), read_dir_entries(&p, "")).await {
-                Ok(Ok(entries)) => ProjectRoot {
+                let r = match tokio::time::timeout(
+                    Duration::from_secs(15),
+                    read_dir_raw(&p, ""),
+                )
+                .await
+                {
+                    Ok(Ok(items)) => Ok(items),
+                    Ok(Err(e)) => Err(e.message),
+                    Err(_) => Err("루트 읽기 시간 초과".to_string()),
+                };
+                (id, Some(p), r)
+            })
+            .buffer_unordered(ROOT_CONCURRENCY)
+            .collect()
+            .await;
+
+    let results = raw
+        .into_iter()
+        .map(|(id, path, r)| match r {
+            Ok(items) => {
+                let entries = decorate_entries(state.inner(), &id, "", items);
+                if let Some(p) = path {
+                    kick_ignore_refresh(&app, state.inner(), &id, p);
+                }
+                ProjectRoot {
                     project_id: id,
                     entries,
                     error: None,
-                },
-                Ok(Err(e)) => ProjectRoot {
-                    project_id: id,
-                    entries: Vec::new(),
-                    error: Some(e.message),
-                },
-                Err(_) => ProjectRoot {
-                    project_id: id,
-                    entries: Vec::new(),
-                    error: Some("루트 읽기 시간 초과".to_string()),
-                },
+                }
             }
+            Err(e) => ProjectRoot {
+                project_id: id,
+                entries: Vec::new(),
+                error: Some(e),
+            },
         })
-        .buffer_unordered(ROOT_CONCURRENCY)
-        .collect()
-        .await;
+        .collect();
 
     Ok(results)
 }
@@ -492,59 +545,69 @@ pub async fn list_repo_files(
     Ok(results)
 }
 
-/// 한 디렉토리의 항목을 읽어 정렬한다 (list_dir·배치 프리페치 공통).
-async fn read_dir_entries(repo: &Path, rel_path: &str) -> Result<Vec<DirEntry>, IpcError> {
+/// 한 디렉토리 항목 수집 — spawn_blocking 단일 패스. tokio read_dir은 엔트리마다
+/// next_entry().await + file_type().await 왕복이라 수천 항목 디렉토리에서 눈에 띄게 느리다.
+async fn read_dir_raw(repo: &Path, rel_path: &str) -> Result<Vec<(String, bool)>, IpcError> {
     validate_rel_dir(rel_path)?;
-
     let dir = if rel_path.is_empty() {
         repo.to_path_buf()
     } else {
         repo.join(rel_path)
     };
-    if !dir.is_dir() {
-        return Err(IpcError::new(
-            ErrorCode::NotFound,
-            "디렉토리를 찾을 수 없습니다",
-        ));
-    }
+    tokio::task::spawn_blocking(move || {
+        if !dir.is_dir() {
+            return Err(IpcError::new(
+                ErrorCode::NotFound,
+                "디렉토리를 찾을 수 없습니다",
+            ));
+        }
+        let read = std::fs::read_dir(&dir)
+            .map_err(|e| IpcError::new(ErrorCode::Io, format!("디렉토리 읽기 실패: {e}")))?;
+        let mut items: Vec<(String, bool)> = Vec::new(); // (name, is_dir)
+        for entry in read.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            // Windows의 read_dir 엔트리 file_type은 디렉토리 나열 데이터에서 나온다 — 추가 stat 없음.
+            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            items.push((name, is_dir));
+        }
+        Ok(items)
+    })
+    .await
+    .map_err(|e| IpcError::new(ErrorCode::Io, format!("디렉토리 읽기 작업 실패: {e}")))?
+}
 
-    // 1) 디렉토리 항목 수집
-    let mut read = tokio::fs::read_dir(&dir)
-        .await
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("디렉토리 읽기 실패: {e}")))?;
-    let mut items: Vec<(String, bool)> = Vec::new(); // (name, is_dir)
-    while let Ok(Some(entry)) = read.next_entry().await {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let is_dir = entry
-            .file_type()
-            .await
-            .map(|t| t.is_dir())
-            .unwrap_or(false);
-        items.push((name, is_dir));
-    }
-
-    // 2) gitignore 판정 (git check-ignore 배치)
-    let ignored = check_ignored(repo, rel_path, &items).await;
-
-    let mut entries: Vec<DirEntry> = items
+/// (name, is_dir) 목록을 ignore 캐시로 디밍 판정해 정렬된 DirEntry로 만든다.
+/// 캐시 락은 판정 동안만 짧게 잡는다 — await 없음.
+fn decorate_entries(
+    state: &AppState,
+    project_id: &str,
+    rel_path: &str,
+    items: Vec<(String, bool)>,
+) -> Vec<DirEntry> {
+    let entries: Vec<DirEntry> = {
+        let map = state.ignore_cache.lock().unwrap_or_else(|e| e.into_inner());
+        let cache = map.get(project_id);
+        items
+            .into_iter()
+            .map(|(name, is_dir)| {
+                let rel = join_rel(rel_path, &name);
+                DirEntry {
+                    is_ignored: name == ".git"
+                        || cache.map(|c| c.is_ignored(&rel)).unwrap_or(false),
+                    name,
+                    is_dir,
+                }
+            })
+            .collect()
+    };
+    // 디렉토리 우선 + 이름순(대소문자 무시). 정렬 키는 엔트리당 1회만 계산
+    // (비교당 to_lowercase 2회 할당하던 이전 방식 제거).
+    let mut keyed: Vec<(bool, String, DirEntry)> = entries
         .into_iter()
-        .map(|(name, is_dir)| {
-            let rel = join_rel(rel_path, &name);
-            DirEntry {
-                is_ignored: name == ".git" || ignored.contains(&rel),
-                name,
-                is_dir,
-            }
-        })
+        .map(|e| (e.is_dir, e.name.to_lowercase(), e))
         .collect();
-
-    // 3) 디렉토리 우선 + 이름순(대소문자 무시, 점 파일은 자연히 앞)
-    entries.sort_by(|a, b| {
-        b.is_dir
-            .cmp(&a.is_dir)
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-    });
-    Ok(entries)
+    keyed.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    keyed.into_iter().map(|(_, _, e)| e).collect()
 }
 
 fn join_rel(base: &str, name: &str) -> String {
@@ -555,32 +618,173 @@ fn join_rel(base: &str, name: &str) -> String {
     }
 }
 
-/// `git check-ignore -z --stdin` 로 무시되는 경로 집합을 구한다 (추적 중인 파일은 제외됨).
-async fn check_ignored(repo: &Path, rel_path: &str, items: &[(String, bool)]) -> HashSet<String> {
-    if items.is_empty() {
-        return HashSet::new();
+// ── ignore 캐시 — git 스폰을 리스팅당 1회에서 레포 변경당 1회로 상각 ──
+//
+// `git ls-files -z --others --ignored --exclude-standard --directory` 한 번이 레포 전체의
+// ignored 파일/디렉토리 집합을 준다. 시맨틱 보존 3원칙(이전 check-ignore와 동일해야 함):
+//   ① 추적(tracked) 파일은 절대 ignored 아님 — --others가 추적 파일을 안 내놓으므로 자동 보존
+//   ② `.git`은 코드에서 강제 ignored(decorate_entries)
+//   ③ 판정 불가(캐시 없음·git 실패·상한 초과)면 디밍 없음으로 폴백
+// `--directory`가 ignored 디렉토리를 접어 출력하므로(node_modules/ = 한 줄) 출력이 작다.
+
+/// 병리적 대량 출력 상한 — 넘으면 그 레포는 디밍 폴백(정확성 대신 정직한 강등).
+const MAX_IGNORE_ENTRIES: usize = 100_000;
+
+pub struct IgnoreCache {
+    files: HashSet<String>,
+    /// 무시되는 디렉토리(후행 '/' 제거) — 조상 판정용.
+    dirs: HashSet<String>,
+    truncated: bool,
+    /// false = 레포가 바뀜 — 다음 list_dir이 배경 재빌드를 킥한다(watcher.rs가 내린다).
+    pub fresh: bool,
+    /// 재빌드 in-flight 가드(레포당 1개).
+    building: bool,
+}
+
+impl IgnoreCache {
+    fn is_ignored(&self, rel: &str) -> bool {
+        if self.truncated {
+            return false;
+        }
+        if self.files.contains(rel) || self.dirs.contains(rel) {
+            return true;
+        }
+        // 조상 디렉토리 중 하나라도 무시면 하위도 무시 — 깊이만큼의 해시 조회.
+        let mut end = 0;
+        while let Some(pos) = rel[end..].find('/') {
+            end += pos;
+            if self.dirs.contains(&rel[..end]) {
+                return true;
+            }
+            end += 1;
+        }
+        false
     }
-    let mut input = Vec::new();
-    for (name, _) in items {
-        input.extend_from_slice(join_rel(rel_path, name).as_bytes());
-        input.push(0);
+}
+
+/// ls-files 출력 파싱 — 순수 함수(테스트 대상). 후행 '/' = 디렉토리.
+fn parse_ignore_output(stdout: &[u8]) -> IgnoreCache {
+    let mut files = HashSet::new();
+    let mut dirs = HashSet::new();
+    for raw in stdout.split(|&b| b == 0).filter(|s| !s.is_empty()) {
+        if files.len() + dirs.len() >= MAX_IGNORE_ENTRIES {
+            return IgnoreCache {
+                files: HashSet::new(),
+                dirs: HashSet::new(),
+                truncated: true,
+                fresh: true,
+                building: false,
+            };
+        }
+        let s = String::from_utf8_lossy(raw);
+        match s.strip_suffix('/') {
+            Some(d) => {
+                dirs.insert(d.to_string());
+            }
+            None => {
+                files.insert(s.into_owned());
+            }
+        }
     }
-    match runner::run_git_with_stdin(
+    IgnoreCache {
+        files,
+        dirs,
+        truncated: false,
+        fresh: true,
+        building: false,
+    }
+}
+
+async fn build_ignore_cache(repo: &Path) -> IgnoreCache {
+    // --others는 미추적 스캔(워크트리 워크)이라 거대 레포에서 수십 초일 수 있다 —
+    // status와 같은 넉넉한 타임아웃. 어차피 배경 실행이라 클릭을 막지 않는다.
+    let out = runner::run_git(
         Some(repo),
-        &["check-ignore", "-z", "--stdin"],
-        &input,
-        runner::READ_TIMEOUT_SECS,
+        &[
+            "ls-files",
+            "-z",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--directory",
+        ],
+        runner::STATUS_TIMEOUT_SECS,
     )
-    .await
-    {
-        Ok(out) => out
-            .stdout
-            .split(|&b| b == 0)
-            .filter(|s| !s.is_empty())
-            .map(|s| String::from_utf8_lossy(s).into_owned())
-            .collect(),
-        Err(_) => HashSet::new(),
+    .await;
+    match out {
+        // 비-git 폴더(등록 허용됨)는 exit 128 + 빈 stdout → 빈 캐시 = 디밍 없음(정상).
+        Ok(out) => parse_ignore_output(&out.stdout),
+        // 실패(git 없음·타임아웃) → 디밍 폴백. fresh=true로 두어 재시도 루프를 만들지
+        // 않는다 — 다음 레포 변경(fresh=false)이 자연스러운 재시도다.
+        Err(_) => IgnoreCache {
+            files: HashSet::new(),
+            dirs: HashSet::new(),
+            truncated: true,
+            fresh: true,
+            building: false,
+        },
     }
+}
+
+/// 캐시가 없거나 stale이면 배경 재빌드를 킥한다(레포당 in-flight 1개). 완료 시
+/// `tree://ignore-ready`로 프론트가 펼쳐진 폴더의 디밍만 재검증한다.
+/// (repo://changed 재사용은 statuses/log 재조회까지 연쇄시켜 git 스폰이 늘어난다 — 전용 신호가 싸다.)
+///
+/// 알려진 근사: 빌드 **도중** 레포가 또 바뀌면 그 변경분은 이번 결과에 없을 수 있고 fresh=true로
+/// 덮인다 — 다음 변경 때 따라잡는다. 디밍은 장식이라 수용(설계 §8).
+fn kick_ignore_refresh(app: &AppHandle, state: &AppState, project_id: &str, repo: PathBuf) {
+    {
+        let mut map = state.ignore_cache.lock().unwrap_or_else(|e| e.into_inner());
+        match map.get_mut(project_id) {
+            Some(c) if c.fresh || c.building => return,
+            Some(c) => c.building = true,
+            None => {
+                // 빌드 완료까지의 자리 채움 — truncated=디밍 없음 폴백.
+                map.insert(
+                    project_id.to_string(),
+                    IgnoreCache {
+                        files: HashSet::new(),
+                        dirs: HashSet::new(),
+                        truncated: true,
+                        fresh: false,
+                        building: true,
+                    },
+                );
+            }
+        }
+    }
+    // 전역 동시 빌드 캡 — 앱 시작 시 루트 프리페치가 전 프로젝트를 한꺼번에 킥하는데,
+    // 레포 수만큼 ls-files를 동시에 띄우면 Windows에서 git 프로세스 폭풍이 된다
+    // (list_project_roots가 4로 캡한 것과 같은 이유). 배경 작업이라 2면 충분하다.
+    static BUILD_SEM: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+
+    let app = app.clone();
+    let pid = project_id.to_string();
+    tauri::async_runtime::spawn(async move {
+        let _permit = BUILD_SEM.acquire().await;
+        let built = build_ignore_cache(&repo).await;
+        if let Some(st) = app.try_state::<AppState>() {
+            // 빌드 중 제거된 프로젝트면 버린다 — 안 보면 remove_project의 캐시 정리를
+            // 이 늦은 삽입이 되돌려 죽은 id 아래 수 MB가 앱 수명 내내 남는다.
+            let still_exists = pid.contains("::") // 합성 id는 목록에 없다 — 존재 판정 불가, 보수적으로 유지
+                || st
+                    .projects
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .iter()
+                    .any(|p| p.id == pid);
+            if still_exists {
+                let mut map = st.ignore_cache.lock().unwrap_or_else(|e| e.into_inner());
+                map.insert(pid.clone(), built);
+            }
+        }
+        #[derive(Clone, Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct IgnoreReady {
+            project_id: String,
+        }
+        let _ = app.emit("tree://ignore-ready", IgnoreReady { project_id: pid });
+    });
 }
 
 /// 레포 밖 접근 차단 — 절대경로·루트/드라이브 상대(`\`·`C:`)·`..` 거부. 빈 문자열(루트)은 허용.
@@ -1487,4 +1691,71 @@ pub(crate) fn resolve_in_repo(repo: &Path, rel: &str) -> Result<PathBuf, IpcErro
         .file_name()
         .ok_or_else(|| IpcError::new(ErrorCode::Io, "잘못된 경로입니다"))?;
     Ok(parent_canon.join(name))
+}
+
+#[cfg(test)]
+mod ignore_tests {
+    use super::*;
+
+    fn cache(files: &[&str], dirs: &[&str]) -> IgnoreCache {
+        IgnoreCache {
+            files: files.iter().map(|s| s.to_string()).collect(),
+            dirs: dirs.iter().map(|s| s.to_string()).collect(),
+            truncated: false,
+            fresh: true,
+            building: false,
+        }
+    }
+
+    /// 조상 디렉토리 판정 — "가장 가까운 정렬 이웃만 보는" 식의 지름길은
+    /// dirs={"a","a/m"} 에서 "a/z"를 놓친다. 조상 전부를 해시 조회해야 한다.
+    #[test]
+    fn ancestor_dirs_are_ignored_recursively() {
+        let c = cache(&[], &["a", "a/m"]);
+        assert!(c.is_ignored("a/z"), "a가 무시면 a/z도 무시");
+        assert!(c.is_ignored("a/m/deep/x.txt"));
+        assert!(c.is_ignored("a"), "무시 디렉토리 자신");
+        assert!(!c.is_ignored("ab/z"), "접두사 문자열 오판 금지(a vs ab)");
+        assert!(!c.is_ignored("b/z"));
+    }
+
+    #[test]
+    fn exact_file_and_miss() {
+        let c = cache(&["dist.log", "sub/temp.bin"], &[]);
+        assert!(c.is_ignored("dist.log"));
+        assert!(c.is_ignored("sub/temp.bin"));
+        assert!(!c.is_ignored("src/main.rs"));
+    }
+
+    /// 상한 초과(truncated)는 디밍 전체 폴백 — 틀린 디밍보다 없는 디밍(원칙 ③).
+    #[test]
+    fn truncated_cache_dims_nothing() {
+        let mut c = cache(&["x"], &["node_modules"]);
+        c.truncated = true;
+        assert!(!c.is_ignored("x"));
+        assert!(!c.is_ignored("node_modules/pkg/index.js"));
+    }
+
+    /// ls-files 출력 파싱 — 후행 '/' = 디렉토리(접힘), NUL 구분, 빈 조각 무시.
+    #[test]
+    fn parses_ls_files_output() {
+        let out = b"node_modules/\0dist/\0secret.env\0deep/cache.tmp\0";
+        let c = parse_ignore_output(out);
+        assert!(c.dirs.contains("node_modules"));
+        assert!(c.dirs.contains("dist"));
+        assert!(c.files.contains("secret.env"));
+        assert!(c.files.contains("deep/cache.tmp"));
+        assert!(!c.truncated && c.fresh);
+        assert!(c.is_ignored("node_modules/react/index.js"));
+    }
+
+    /// 추적 파일 미디밍(원칙 ①)의 구조적 근거 — --others 출력에 추적 파일이 없으므로
+    /// 캐시에 없는 경로는 ignored가 아니다(패턴이 .gitignore에 있어도).
+    #[test]
+    fn tracked_files_absent_from_cache_are_not_ignored() {
+        // "*.log"가 .gitignore에 있어도 추적 중인 build.log는 --others에 안 나온다.
+        let c = parse_ignore_output(b"other.log\0");
+        assert!(c.is_ignored("other.log"));
+        assert!(!c.is_ignored("build.log"), "추적 파일은 절대 미디밍");
+    }
 }

@@ -175,6 +175,20 @@ rm -f installers/Gitpervisor_<이전버전>*
   런처가 종료하는 순간 cgroup을 통째로 SIGTERM 해 방금 띄운 브라우저를 죽이면서
   exit 0을 돌려준다(무성 실패). 회귀 방지 단언이 테스트에 있다.
 
+- **같은 `Channel` 객체를 두 번 `invoke`에 넘기지 마라 — 출력이 조용히 영구 정지한다.**
+  Tauri v2의 Channel은 순서 보장을 위해 양쪽에 인덱스 카운터를 둔다. JS는 `nextMessageIndex`가
+  아닌 메시지를 `pendingMessages`에 쌓아 두고(`@tauri-apps/api/core.js`), Rust는 `__CHANNEL__:<id>`
+  를 역직렬화할 때마다 **카운터 0짜리 새 Channel**을 만든다. 이미 N개를 받은 채널을 다시 넘기면
+  이후 메시지 인덱스가 0부터라 전부 대기열로 들어가 **한 줄도 그려지지 않는다.** 예외도 로그도
+  없다. 2026-08-28에 `reattachAllTerminals`가 정확히 이 실수를 하고 있었다 — 모아보기 별도 창을
+  닫으면 메인 터미널이 멈춘 화면이 됐다. 재연결은 반드시 `attachOutputChannel()`로 새 채널을 만든다.
+
+- **다른 창이 터미널을 가져갔다 돌려주면 크기도 되돌려야 한다.** 저쪽 창이 자기 셀 크기로
+  `term_resize`를 보냈는데, 이쪽 xterm은 내내 큰 상태라 `fit()`이 아무것도 안 바꿔 `onResize`가
+  발화하지 않는다 → PTY만 작게 남아 TUI가 화면 왼쪽 일부에만 그려진다. `reattachAllTerminals`가
+  값이 같아도 `resyncTerminalSizeImpl`로 강제로 다시 보낸다. 회귀 체크는 e2e 14 `#2b`
+  (셸에게 `$Host.UI.RawUI.WindowSize.Width`를 직접 물어 진짜 ConPTY 폭을 확인한다).
+
 - **PTY를 종료할 때는 셸 PID 하나만 죽이면 안 된다.** 셸의 job들은 다른 프로세스 그룹에 있고,
   `setsid`로 갈라진 자손은 killpg로도 안 닿는다. `terminate_tree()`가 세션 스캔 + ppid 폐포로
   전부 거둔다. 같은 위 사건의 주범이었다.

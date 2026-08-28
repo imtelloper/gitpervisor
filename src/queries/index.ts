@@ -242,7 +242,11 @@ const PROC_SNAPSHOT_LIMIT = 200;
  * 모니터 창은 비포커스 상태로 곁눈질하는 게 기본 자세라 refetchIntervalInBackground:true —
  * 대신 document.visibilityState(최소화 시 hidden)로 게이트해 "보일 때만" 폴링한다 (§3.2).
  */
-export function useProcessSnapshot(sortBy: ProcSortKey, groupByName: boolean) {
+export function useProcessSnapshot(
+  sortBy: ProcSortKey,
+  groupByName: boolean,
+  enabled = true,
+) {
   const [visible, setVisible] = useState(
     document.visibilityState === "visible",
   );
@@ -255,12 +259,29 @@ export function useProcessSnapshot(sortBy: ProcSortKey, groupByName: boolean) {
     queryKey: keys.processSnapshot(sortBy, groupByName),
     queryFn: () =>
       ipc.sysProcessSnapshot(sortBy, PROC_SNAPSHOT_LIMIT, groupByName),
+    // 디스크 분석 뷰에선 프로세스 폴링 자체를 끈다(디스크 설계 §3.4).
+    enabled,
     refetchInterval: visible ? 2000 : false,
     refetchIntervalInBackground: true,
     staleTime: 0,
     gcTime: 4000,
     // 정렬/그룹 전환·첫 틱(CPU 0%)에도 직전 데이터를 유지해 깜빡임을 없앤다.
     placeholderData: keepPreviousData,
+  });
+}
+
+/**
+ * 디스크 분석 — 스캔 결과 폴더 1개의 자식 목록. 스캔 결과는 불변 스냅샷이라 staleTime ∞,
+ * 새 스캔 완료 시 DiskUsageView가 ["disk"] 전체를 무효화한다(디스크 설계 §3.2).
+ * scanRoot가 키에 들어가 다른 경로 재스캔이 자연스럽게 별도 캐시가 된다.
+ */
+export function useDiskChildren(scanRoot: string | null, rel: string) {
+  return useQuery({
+    queryKey: ["disk", scanRoot, rel],
+    queryFn: () => ipc.diskChildren(rel),
+    enabled: scanRoot != null,
+    staleTime: Infinity,
+    gcTime: 10 * 60_000,
   });
 }
 
@@ -596,8 +617,45 @@ export function useDir(projectId: string | null, relPath: string) {
     queryKey: keys.dir(projectId ?? "none", relPath),
     queryFn: () => ipc.listDir(projectId!, relPath),
     enabled: !!projectId,
-    staleTime: 30_000,
+    // 신선도는 워처(repo://changed → ["dir", pid], events.ts)가 책임진다 — 시간 기반
+    // 재조회와 포커스 복귀 일제 refetch를 제거(DOCS/file-tree-performance-design.md §3.2).
+    staleTime: Infinity,
+    // 워처 커버리지 밖(node_modules 등 IGNORED_DIRS) 외부 변경 보완 — 접었다 펴면 항상
+    // 배경 재검증. 백엔드가 ms급(ignore 캐시)이라 비용이 사실상 0이다.
+    refetchOnMount: "always",
+    // 재검증 중 '…' 깜빡임 제거 — 캐시를 즉시 그리고 조용히 갱신.
+    placeholderData: keepPreviousData,
   });
+}
+
+/**
+ * 프로젝트 전환/시작 시 저장된 확장 폴더를 invoke 1개(list_dirs)로 워밍 — 트리가 즉시 뜬다
+ * (설계 §3.1). 루트("")는 useProjectRootsPrefetch가 이미 시딩하므로 나머지만.
+ */
+export function useExpandedDirsPrefetch(projectId: string | null) {
+  const qc = useQueryClient();
+  useEffect(() => {
+    if (!projectId) return;
+    const expanded = (useTreeState.getState().expanded[projectId] ?? []).filter((p) => p !== "");
+    if (expanded.length === 0) return;
+    let cancelled = false;
+    void ipc
+      .listDirs(projectId, expanded)
+      .then((listings) => {
+        if (cancelled) return;
+        for (const l of listings) {
+          // 이미 데이터가 있는 키는 건너뛴다 — 마운트된(펼쳐진) 폴더는 refetchOnMount가
+          // 어차피 재검증하고, 배치가 뒤늦게 도착해 **더 신선한 refetch 결과를 옛 목록으로
+          // 덮는** 레이스를 막는다(usePrefetchDiffs의 neverLoaded 가드와 같은 원칙).
+          if (qc.getQueryState(keys.dir(projectId, l.relPath))?.data !== undefined) continue;
+          qc.setQueryData(keys.dir(projectId, l.relPath), l.entries);
+        }
+      })
+      .catch(() => {}); // 워밍 실패는 무해 — 개별 useDir이 평소 경로로 채운다
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, qc]);
 }
 
 /**

@@ -1,4 +1,4 @@
-import { Channel, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import type { ITheme } from "@xterm/xterm";
@@ -14,6 +14,7 @@ import { isMod, isWindows } from "./platform";
 import { capturePtyInput } from "./prompt-capture";
 import { termSchemeOf } from "./term-color-schemes";
 import {
+  attachOutputChannel,
   ensureExitListener,
   pasteIntoTerminal,
   registry,
@@ -33,6 +34,46 @@ import { themeOf } from "./themes";
 // 붙여넣기·xterm 자동응답까지 전부 fire-and-forget이라, 체이닝하지 않으면 빠르게 친 키가
 // 뒤바뀐다("ls" → "sl"). 호출자 입장에선 여전히 fire-and-forget이다(await도 throw도 없다).
 const writeChains = new Map<string, Promise<void>>();
+
+// PTY 리사이즈 송신 — 입력과 같은 이유로 **termId별 순서를 보장한다**. `term_resize`도 async
+// 커맨드라 연속 리사이즈(드래그·창 전환)가 워커에서 뒤바뀌면 마지막 크기가 아니라 이전 크기가
+// PTY에 남는다.
+//
+// 맵으로 뺀 이유는 xterm의 `onResize` 말고 **강제 재동기화**(`resyncTerminalSizeImpl`)도 같은
+// 줄에 세워야 하기 때문이다. 두 경로가 별개 체인이면 재동기화가 fit이 보낸 새 크기를 옛 크기로
+// 덮을 수 있다.
+const resizeChains = new Map<string, Promise<void>>();
+
+function ptyResize(termId: string, cols: number, rows: number) {
+  const next = (resizeChains.get(termId) ?? Promise.resolve()).then(() =>
+    invoke("term_resize", { termId, cols, rows }).then(
+      () => {},
+      () => {}, // 실패해도 체인을 끊지 않는다(ptyWrite와 동일)
+    ),
+  );
+  resizeChains.set(termId, next);
+  void next.then(() => {
+    if (resizeChains.get(termId) === next) resizeChains.delete(termId);
+  });
+}
+
+/**
+ * 지금 xterm 크기를 PTY에 **다시** 알린다 — 값이 같아도 보낸다.
+ *
+ * 왜 필요한가: PTY 출력 소비자는 하나뿐이라 모아보기 별도 창이 터미널을 가져가면 그 창의 작은
+ * 셀 크기로 `term_resize`가 나간다. 창을 닫고 메인이 이어받을 때(`reattachAllTerminals`) 출력
+ * 채널은 되돌아오지만 **크기는 그대로 작게 남는다** — 메인 창의 xterm은 처음부터 큰 상태였으니
+ * `fit()`이 아무것도 바꾸지 않아 `onResize`가 발화하지 않기 때문이다.
+ *
+ * 결과는 실사용에서 이렇게 보인다: 넓은 터미널인데 글자가 왼쪽 절반에만 그려지고 오른쪽이
+ * 통째로 비어 있다(2026-08-28 실사례 — 1718px 창에 내용이 810px, 딱 모아보기 2열 셀 폭).
+ * TUI(claude 등)는 PTY가 알려준 폭에 맞춰 그리므로 화면이 깨진 것처럼 보인다.
+ */
+export function resyncTerminalSizeImpl(id: string): void {
+  const inst = registry.get(id);
+  if (!inst || inst.status !== "live") return;
+  ptyResize(id, inst.term.cols, inst.term.rows);
+}
 
 function ptyWrite(termId: string, data: string) {
   // 프롬프트 기록 — 키 입력·IME 확정·붙여넣기가 전부 이 함수를 지나므로 여기 한 곳에서만 캡처한다
@@ -482,17 +523,9 @@ export function createTerminalImpl(opts: {
   registry.set(opts.id, inst);
 
   // 출력: Channel(raw bytes) → xterm. 멀티바이트 경계 안전을 위해 바이트 그대로 write.
-  // 플로팅 분리 중(detach 후 term_attach 전)엔 Rust가 잠깐 옛 채널로 보낼 수 있어, 이미 dispose된
-  // xterm에 write가 떨어질 수 있다 — try/catch로 그 짧은 공백의 예외를 무시한다.
-  const channel = new Channel<number[]>();
-  inst.channel = channel; // 재연결(reattachAllTerminals)이 같은 채널로 다시 붙일 수 있게 보관
-  channel.onmessage = (bytes) => {
-    try {
-      term.write(new Uint8Array(bytes));
-    } catch {
-      /* dispose/detach 직후 — 무시 */
-    }
-  };
+  // 채널 생성은 코어의 attachOutputChannel 한 곳에서만 한다 — 재연결도 같은 함수를 쓴다.
+  // **채널 재사용 금지**의 이유가 그 함수 주석에 있다(재사용하면 출력이 영구히 멎는다).
+  const channel = attachOutputChannel(inst);
 
   // attach=새 창이 살아있는 PTY 출력만 이어받음(term_attach), 아니면 새 PTY spawn(term_open).
   const startCmd = opts.attach
@@ -534,17 +567,13 @@ export function createTerminalImpl(opts: {
   // 수십 회 질의). 제어바이트 매칭으로 리셋하면 한글 조합 도중 미러+textarea가 계속 지워져
   // 입력이 깨진다(자모 파편·중복). 리셋은 keydown 목록/ASCII input/blur가 담당한다.
   term.onData((data) => ptyWrite(opts.id, data));
-  // 리사이즈 → ConPTY. open 뒤로 + **서로 순서 보장** 체이닝 — term_resize도 async 커맨드라
-  // 연속 리사이즈(드래그)가 워커에서 뒤바뀌면 마지막 크기가 아니라 이전 크기가 남는다.
-  let resizeChain = opened;
-  term.onResize(({ cols, rows }) => {
-    resizeChain = resizeChain.then(() =>
-      invoke("term_resize", { termId: opts.id, cols, rows }).then(
-        () => {},
-        () => {}, // 실패해도 체인을 끊지 않는다(ptyWrite와 동일)
-      ),
-    );
+  // 리사이즈 → ConPTY. 체인을 open으로 시드해 **term_open 완료 뒤부터** 나가게 한다(위 주석의
+  // "PTY가 80x24로 박제" 레이스). 순서 보장·정리 규칙은 ptyResize가 맡는다.
+  resizeChains.set(opts.id, opened);
+  void opened.then(() => {
+    if (resizeChains.get(opts.id) === opened) resizeChains.delete(opts.id);
   });
+  term.onResize(({ cols, rows }) => ptyResize(opts.id, cols, rows));
 
   return inst;
 }

@@ -299,6 +299,13 @@ pub fn remove_project(
         let root = dunce::canonicalize(&p).unwrap_or(p);
         state.preview.lock().unwrap_or_else(|e| e.into_inner()).revoke_under(&root);
     }
+    // 파일트리 ignore 캐시도 정리 — 거대 레포는 수 MB짜리 집합이라 남기면 앱 수명 내내 든다.
+    // (제거 시점에 빌드가 in-flight였던 레이스는 tree.rs의 삽입 가드가 막는다.)
+    state
+        .ignore_cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&id);
     // 메모도 함께 정리 (있을 때만 저장)
     let removed_note = state.notes.write().unwrap_or_else(|e| e.into_inner()).remove(&id).is_some();
     if removed_note {

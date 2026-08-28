@@ -8,9 +8,13 @@ import type { ProcSortKey } from "../../lib/ipc";
  */
 const LS_KEY = "gp:sysmon";
 
+/** 팝업의 표시 뷰 — 프로세스 목록 ⇄ 디스크 용량 분석(disk-usage-analyzer 설계 §3.4). */
+export type SysmonView = "proc" | "disk";
+
 export interface SysmonPrefs {
   sortBy: ProcSortKey;
   groupByName: boolean;
+  view: SysmonView;
 }
 
 export function loadSysmonPrefs(): SysmonPrefs {
@@ -22,12 +26,16 @@ export function loadSysmonPrefs(): SysmonPrefs {
         p.sortBy === "ram" || p.sortBy === "gpu" || p.sortBy === "disk"
           ? p.sortBy
           : "cpu";
-      return { sortBy, groupByName: !!p.groupByName };
+      return {
+        sortBy,
+        groupByName: !!p.groupByName,
+        view: p.view === "disk" ? "disk" : "proc",
+      };
     }
   } catch {
     // 손상된 값은 기본값으로
   }
-  return { sortBy: "cpu", groupByName: false };
+  return { sortBy: "cpu", groupByName: false, view: "proc" };
 }
 
 export function saveSysmonPrefs(prefs: SysmonPrefs) {
@@ -38,7 +46,13 @@ export function saveSysmonPrefs(prefs: SysmonPrefs) {
   }
 }
 
-/** 타이틀바 지표 클릭 → 초기 정렬 핸드오프. 그룹 토글 등 나머지 설정은 보존한다. */
+/** 타이틀바 지표 클릭 → 초기 정렬 핸드오프. 그룹 토글 등 나머지 설정은 보존한다.
+ *  CPU/RAM 등 프로세스 지표 클릭은 뷰도 프로세스로 되돌린다(디스크 뷰에 눌러앉음 방지). */
 export function writeSysmonSortKey(sortBy: ProcSortKey) {
-  saveSysmonPrefs({ ...loadSysmonPrefs(), sortBy });
+  saveSysmonPrefs({ ...loadSysmonPrefs(), sortBy, view: "proc" });
+}
+
+/** 타이틀바 SSD 클릭 → 디스크 분석 뷰 핸드오프(디스크 설계 §3.4). */
+export function writeSysmonView(view: SysmonView) {
+  saveSysmonPrefs({ ...loadSysmonPrefs(), view });
 }

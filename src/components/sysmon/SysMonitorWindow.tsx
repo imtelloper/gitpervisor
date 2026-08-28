@@ -11,6 +11,8 @@ import { useUi } from "../../stores/ui";
 import { ConfirmHost } from "../common/ConfirmDialog";
 import { Toasts } from "../common/Toast";
 import { FloatTitleBar } from "../FloatTitleBar";
+import { DiskUsageView } from "./DiskUsageView";
+import type { SysmonView } from "./prefs";
 import { loadSysmonPrefs, saveSysmonPrefs } from "./prefs";
 
 // 부하 임계 색 — 타이틀바 SysMonitor의 Metric과 동일 규약(평상시/70%+/88%+).
@@ -216,15 +218,22 @@ export function SysMonitorWindow() {
     if (settings?.theme) document.documentElement.dataset.theme = settings.theme;
   }, [settings?.theme]);
 
-  // 부팅 시 1회 localStorage에서 초기값을 읽는다 — 타이틀바가 클릭 직전 써둔 sortBy 핸드오프.
+  // 부팅 시 1회 localStorage에서 초기값을 읽는다 — 타이틀바가 클릭 직전 써둔
+  // sortBy/view 핸드오프(SSD 클릭 → 디스크 분석 뷰).
   const [prefs] = useState(loadSysmonPrefs);
   const [sortBy, setSortBy] = useState<ProcSortKey>(prefs.sortBy);
   const [groupByName, setGroupByName] = useState(prefs.groupByName);
+  const [view, setView] = useState<SysmonView>(prefs.view);
   useEffect(() => {
-    saveSysmonPrefs({ sortBy, groupByName });
-  }, [sortBy, groupByName]);
+    saveSysmonPrefs({ sortBy, groupByName, view });
+  }, [sortBy, groupByName, view]);
 
-  const { data, dataUpdatedAt } = useProcessSnapshot(sortBy, groupByName);
+  // 디스크 뷰에선 프로세스 스냅샷 폴링을 끈다(관측 비용 0 — 디스크 설계 §3.4).
+  const { data, dataUpdatedAt } = useProcessSnapshot(
+    sortBy,
+    groupByName,
+    view === "proc",
+  );
 
   const totals = data?.totals;
   // GPU를 못 읽는 플랫폼(macOS/Linux)에선 전 행이 null이라 GPU 정렬이 무의미하다.
@@ -359,6 +368,34 @@ export function SysMonitorWindow() {
     <div className="flex h-screen flex-col bg-base text-fg select-none">
       <FloatTitleBar title="리소스 모니터" badge="모니터" />
 
+      {/* 뷰 전환 탭 — 프로세스 목록 ⇄ 디스크 용량 분석(disk-usage 설계 §3.4) */}
+      <div className="flex shrink-0 items-center gap-0.5 border-b border-edge bg-panel px-2">
+        {(
+          [
+            ["proc", "프로세스"],
+            ["disk", "디스크"],
+          ] as const
+        ).map(([k, label]) => (
+          <button
+            key={k}
+            type="button"
+            onClick={() => setView(k)}
+            className={`-mb-px border-b-2 px-3 py-1.5 text-[11px] transition-colors ${
+              view === k
+                ? "border-accent text-accent"
+                : "border-transparent text-fg-dim hover:text-fg"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {view === "disk" ? <DiskUsageView /> : null}
+
+      {/* ── 프로세스 뷰 ── */}
+      {view === "proc" ? (
+        <>
       {/* 헤더: 전체 사용률 게이지 + 검색 + 프로그램별 토글 */}
       <div className="flex shrink-0 items-center gap-4 border-b border-edge bg-panel px-3 py-2.5">
         <Gauge label="CPU" pct={totals?.cpu ?? null} tip="CPU 사용률 (전체)" />
@@ -483,6 +520,8 @@ export function SysMonitorWindow() {
         <div className="shrink-0 border-t border-edge bg-panel px-3 py-1.5 text-right text-[10px] text-fg-dim">
           … 외 {rest}개
         </div>
+      ) : null}
+        </>
       ) : null}
 
       {/* 우클릭 메뉴 */}

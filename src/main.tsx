@@ -6,6 +6,7 @@ import ReactDOM from "react-dom/client";
 import { AggregateWindow } from "./AggregateWindow";
 import App from "./App";
 import { CaptureOverlay } from "./CaptureOverlay";
+import { DocWindow } from "./DocWindow";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { SysMonitorWindow } from "./components/sysmon/SysMonitorWindow";
 import { FloatingTerminal } from "./FloatingTerminal";
@@ -13,6 +14,9 @@ import { installMacCopyInterceptor } from "./lib/clipboard";
 import { attachRepoEvents } from "./lib/events";
 import { setupErrorLogging } from "./lib/logging";
 import { watchAggregateWindow } from "./lib/aggregate-window";
+import { docTarget } from "./lib/floating";
+import { ipc } from "./lib/ipc";
+import { keys } from "./queries";
 import { installTerminalCopyFallback, reattachAllTerminals } from "./lib/terminal";
 import { initPreviewRemint } from "./stores/browser";
 import { useTerminals } from "./stores/terminals";
@@ -60,6 +64,8 @@ const label = (() => {
 const floatPaneId = label.startsWith("float-")
   ? label.slice("float-".length)
   : null;
+// 파일 뷰어 창 — 라벨이 곧 대상 id다(경로는 localStorage 경유, lib/floating.ts 주석).
+const docId = label.startsWith("doc-") ? label.slice("doc-".length) : null;
 
 if (label === "aggregate") {
   // 터미널 모아보기 전용 창 — 메인의 살아있는 PTY에 재연결해 보여주는 "터미널 벽".
@@ -69,6 +75,32 @@ if (label === "aggregate") {
       <QueryClientProvider client={aggQc}>
         <ErrorBoundary>
           <AggregateWindow />
+        </ErrorBoundary>
+      </QueryClientProvider>
+    </React.StrictMode>,
+  );
+} else if (docId) {
+  // 파일 뷰어 창 — 뷰어가 settings·diff 쿼리를 쓰므로 자체 QueryClient로 감싼다.
+  const docQc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // **파일 읽기를 렌더보다 먼저 건다.** 뷰어 컴포넌트는 lazy라 청크를 받아 오는 동안 아무 일도
+  // 안 하는데, 그 시간에 IPC를 태우면 마운트 시점엔 대개 캐시에 이미 있다. 뷰어가 쓰는 것과
+  // **같은 키**여야 하므로 queries.keys를 그대로 쓴다(키가 어긋나면 조용히 두 번 읽는다).
+  {
+    const t = docTarget(docId);
+    if (t) {
+      const target = { mode: "file", path: t.path } as const;
+      void docQc.prefetchQuery({
+        queryKey: keys.diff(t.projectId, target),
+        queryFn: () => ipc.getDiff(t.projectId, target),
+        staleTime: Infinity,
+      });
+    }
+  }
+  root.render(
+    <React.StrictMode>
+      <QueryClientProvider client={docQc}>
+        <ErrorBoundary>
+          <DocWindow docId={docId} />
         </ErrorBoundary>
       </QueryClientProvider>
     </React.StrictMode>,
@@ -114,6 +146,10 @@ if (label === "aggregate") {
       queries: {
         retry: false, // git 오류는 재시도해도 같다 — 즉시 표면화
         refetchOnWindowFocus: true, // 앱 포커스 복귀 시 일괄 갱신 (설계 §9)
+        // 전송이 Tauri IPC라 네트워크 연결과 무관하다. 기본 'online'이면 OS가 오프라인을
+        // 보고하는 순간 첫 fetch가 'paused'로 멈춰 — 로딩도 오류도 아닌 채 — 파일트리가
+        // 비어 있지 않은 폴더를 "비어 있음"으로 그리는 오표시가 난다(v5 networkMode 실측).
+        networkMode: "always",
       },
     },
   });

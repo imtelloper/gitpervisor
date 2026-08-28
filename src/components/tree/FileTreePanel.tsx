@@ -2,6 +2,7 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
+  ExternalLink,
   FilePlus,
   FolderPlus,
   Globe,
@@ -36,16 +37,19 @@ import {
   type ImgFormat,
   loadImage,
 } from "../../lib/image-codec";
+import { openDocWindow } from "../../lib/floating";
 import { errorMessage, ipc, isIpcError } from "../../lib/ipc";
 import type { ChangeKind, DirEntry, FileChange, RepoStatus } from "../../lib/ipc";
 import { isHtml, isImage } from "../../lib/language-map";
 import { usePanelWidth } from "../../lib/use-panel-width";
 import {
   invalidateAfterMove,
+  keys,
   useCreateDir,
   useCreateFile,
   useDeletePath,
   useDir,
+  useExpandedDirsPrefetch,
   useProjects,
   useRenamePath,
   useSaveImage,
@@ -274,6 +278,41 @@ function DirChildren({
   const { data, isLoading, error } = useDir(projectId, path);
   const openMenu = useContext(TreeMenuCtx);
   const pad = { paddingLeft: depth * INDENT + 24 };
+  const qc = useQueryClient();
+
+  // 하위 1단계 선읽기 — 다음 클릭을 캐시 히트(0ms 펼침)로 만든다(설계 §3.3).
+  // background lane이라 클릭(interactive)을 굶기지 않고, 이미 캐시된 폴더와
+  // ignored 폴더(node_modules 등)는 건너뛴다. 상한 30개 · 4개씩 순차 청크.
+  // ponytail: 프리페치 in-flight 중 정확히 그 폴더를 펼치면 클릭이 background 순번에
+  // 합류한다(react-query 키 합류 + ipc 디덥이 lane을 구분 안 함). 백엔드 ms급이라
+  // 최악도 슬롯 8개가 좀비로 찬 드문 경우뿐 — 아프면 lane별 디덥 분리로 승급.
+  useEffect(() => {
+    if (!data) return;
+    const dirs = data
+      .filter((e) => e.isDir && !e.isIgnored)
+      .slice(0, 30)
+      .map((e) => joinPath(path, e.name));
+    let cancelled = false;
+    void (async () => {
+      for (let i = 0; i < dirs.length && !cancelled; i += 4) {
+        const chunk = dirs
+          .slice(i, i + 4)
+          .filter((d) => !qc.getQueryState(keys.dir(projectId, d)));
+        await Promise.all(
+          chunk.map((d) =>
+            qc.prefetchQuery({
+              queryKey: keys.dir(projectId, d),
+              queryFn: () => ipc.listDir(projectId, d, "background"),
+              staleTime: Infinity,
+            }),
+          ),
+        );
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [data, projectId, path, qc]);
 
   // 펼친 폴더의 빈/로딩/오류 자리 우클릭 → 그 폴더 기준 메뉴(루트로 새지 않게 stopPropagation).
   const onPlaceholderMenu = (e: React.MouseEvent) => {
@@ -441,6 +480,8 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
   const renamePath = useRenamePath(projectId);
   const saveImage = useSaveImage(projectId);
   const qc = useQueryClient();
+  // 저장된 확장 폴더를 invoke 1개로 워밍 — 프로젝트 전환 직후에도 트리가 즉시 뜬다.
+  useExpandedDirsPrefetch(projectId);
 
   // 이미지 쓰기 후 관련 쿼리를 한 번만 무효화한다 — 일괄 변환에서 N회 무효화(리페치 폭주) 회피.
   const invalidateImageWrites = useCallback(() => {
@@ -1158,6 +1199,20 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
             </>
           ) : (
             <>
+              {/* 파일 종류를 가리지 않는다 — 뷰어(DiffViewer)가 마크다운·텍스트·이미지·동영상·
+                  Office를 이미 다 분기하므로, 여기서 확장자 화이트리스트를 두면 "왜 이 파일은
+                  안 되지?"만 만든다. 메인 창에서 열리는 것은 여기서도 열린다. */}
+              <MenuItem
+                icon={ExternalLink}
+                label="새 창으로 열기"
+                onClick={() => {
+                  // 이 트리가 보고 있는 저장소 id를 넘긴다 — 임베디드 저장소 파일이 바깥 레포
+                  // 기준으로 해석되지 않게(이미지 편집과 같은 이유).
+                  openDocWindow(projectId, menu.path);
+                  setMenu(null);
+                }}
+              />
+              <div className="my-1 border-t border-edge/60" />
               {showBatch && (
                 <>
                   <div className="px-3 py-1 text-[11px] text-fg-dim">

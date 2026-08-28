@@ -1,6 +1,7 @@
 mod claude_usage;
 mod commands;
 mod db;
+mod disk_scan;
 mod error;
 mod fetch_scheduler;
 mod git;
@@ -195,6 +196,57 @@ async fn open_aggregate_window(app: tauri::AppHandle, origin: String) -> Result<
     Ok(())
 }
 
+/// 파일 하나를 별도 OS 창으로 띄운다(파일트리 우클릭 → 새 창으로 열기).
+///
+/// **라벨이 `float-`로 시작하면 안 된다** — Destroyed 핸들러의 float 분기가 그 라벨을 PTY
+/// paneId로 보고 세션을 종료시킨다. `doc-` 접두사를 쓴다(그 외 라벨은 no-op).
+///
+/// 무엇을 띄울지는 **라벨의 id로만** 전달한다. 파일 경로를 라벨에 넣을 수는 없다 — Tauri 창
+/// 라벨은 문자 집합이 제한적이라 공백·한글·`.`이 든 경로가 통과하지 못한다. 실제 대상
+/// (projectId·상대경로)은 프론트가 같은 origin의 localStorage에 적어 두고, 새 창이 자기 라벨의
+/// id로 찾아 읽는다(`lib/floating.ts`).
+#[tauri::command]
+async fn open_doc_window(
+    app: tauri::AppHandle,
+    doc_id: String,
+    title: String,
+    origin: String,
+) -> Result<(), String> {
+    // 프론트가 만든 값이 그대로 창 라벨이 된다 — 문자 집합을 강제해 라벨 주입을 막는다.
+    if doc_id.is_empty()
+        || doc_id.len() > 64
+        || !doc_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
+        return Err("잘못된 문서 창 id".into());
+    }
+    let label = format!("{DOC_LABEL_PREFIX}{doc_id}");
+    if let Some(win) = app.get_webview_window(&label) {
+        let _ = win.set_focus();
+        return Ok(());
+    }
+    let url = tauri::Url::parse(&origin).map_err(|e| format!("잘못된 origin: {e}"))?;
+    let app2 = app.clone();
+    app.run_on_main_thread(move || {
+        let r = WebviewWindowBuilder::new(&app2, &label, WebviewUrl::External(url))
+            .title(title)
+            .inner_size(900.0, 760.0)
+            .min_inner_size(420.0, 300.0)
+            .center()
+            // OS 기본 타이틀바 제거 — 프론트의 FloatTitleBar로 대체(리사이즈는 유지)
+            .decorations(false)
+            .background_color(tauri::window::Color(30, 31, 34, 255))
+            .additional_browser_args(&browser_args())
+            .build();
+        if let Err(e) = r {
+            log::error!("문서 창 생성 실패: {e}");
+        }
+    })
+    .map_err(|e| format!("문서 창 예약 실패: {e}"))?;
+    Ok(())
+}
+
 /// 화면 캡쳐 전역 단축키(`Ctrl+Shift+X`)를 등록한다.
 ///
 /// **실패를 조용히 넘기지 않는다.** 등록은 두 가지로 실패한다: (a) 다른 앱이 같은 조합을
@@ -260,6 +312,10 @@ pub(crate) fn ensure_capture_overlay(
 
 /// 플로팅 터미널 창 라벨 접두사 — 라벨이 곧 paneId 전달 통로다(open_float_window 주석 참고).
 const FLOAT_LABEL_PREFIX: &str = "float-";
+
+/// 파일 뷰어 창 라벨 접두사. **`float-`와 달라야 한다** — Destroyed 훅의 float 분기가 라벨 뒷부분을
+/// PTY paneId로 보고 세션을 죽인다(open_doc_window 주석).
+const DOC_LABEL_PREFIX: &str = "doc-";
 
 /// 메인 창 "닫기 확인"을 이미 띄웠는가.
 ///
@@ -610,6 +666,7 @@ pub fn run() {
             commands::preview_local_url,
             commands::reveal_path,
             commands::list_dir,
+            commands::list_dirs,
             commands::list_project_roots,
             commands::list_repo_files,
             commands::write_file,
@@ -637,6 +694,7 @@ pub fn run() {
             open_float_window,
             open_sysmon_window,
             open_aggregate_window,
+            open_doc_window,
             prepare_relaunch,
             commands::term_open,
             commands::term_attach,
@@ -678,6 +736,13 @@ pub fn run() {
             monitor::sys_metrics,
             monitor::sys_process_snapshot,
             monitor::kill_processes,
+            disk_scan::disk_scan_start,
+            disk_scan::disk_scan_cancel,
+            disk_scan::disk_scan_status,
+            disk_scan::disk_children,
+            disk_scan::disk_top_files,
+            disk_scan::disk_treemap,
+            disk_scan::disk_roots,
             proc_icons::get_process_icons,
             claude_usage::claude_usage,
             claude_usage::last_agent_message,
@@ -750,6 +815,18 @@ pub fn run() {
                     shutdown_step("float-close", || {
                         if let Some(state) = window.try_state::<AppState>() {
                             commands::close_session(state.inner(), term_id);
+                        }
+                    });
+                } else if label == "sysmon" {
+                    // 디스크 스캔은 이 창 전용 — 닫히면 진행 중 스캔을 취소하고 결과(arena
+                    // 수십 MB)를 반환한다(disk_scan 설계 §2.4). 다시 열면 재스캔.
+                    shutdown_step("sysmon-close", || {
+                        if let Some(state) = window.try_state::<AppState>() {
+                            state
+                                .disk_scan
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .reset();
                         }
                     });
                 }

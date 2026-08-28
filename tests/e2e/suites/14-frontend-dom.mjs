@@ -139,6 +139,86 @@ export async function run({ cdp, report: r, fix }) {
     const rendered = await poll(xtermCount, (n) => n >= 1);
     r.check("새 터미널 렌더(콜드스타트)", rendered >= 1, `xterm=${rendered}`);
 
+    // ── #2b 모아보기 별도 창이 돌려준 뒤 PTY 크기 복구 ──
+    //
+    // 회귀 대상(2026-08-28 실사례): 모아보기 별도 창이 터미널을 가져가면 그 창의 작은 셀 크기로
+    // PTY가 줄어든다. 창을 닫고 메인이 이어받을 때 출력 채널만 되돌아오고 **크기는 작게 남아**,
+    // 넓은 터미널인데 글자가 왼쪽 일부에만 그려졌다(1718px 창에 내용 810px).
+    // 메인 창 xterm은 내내 큰 상태라 fit()이 아무것도 안 바꿔 onResize가 안 뜨는 것이 원인이라,
+    // reattachAllTerminals가 **값이 같아도** 크기를 다시 보내야 한다.
+    // 관측은 **셸에게 직접 묻는다.** `window.__TAURI_INTERNALS__.invoke`는 non-writable이라
+    // 스파이를 끼울 수 없고, IPC 호출을 셌자 한들 PTY가 실제로 그 크기가 됐는지는 증명하지 못한다.
+    // 셸이 보고하는 폭이 진짜 ConPTY 폭이다.
+    const resync = await cdp.eval(`(async()=>{
+      // 앱이 **실제로 로드한** URL로 import한다. vite HMR은 갱신된 모듈에 ?t=… 를 붙이는데,
+      // 맨 경로로 import하면 레지스트리가 빈 별개 인스턴스를 받아 늘 "터미널 없음"이 된다.
+      const url = performance.getEntriesByType("resource").map((e) => e.name)
+        .find((n) => /\\/src\\/lib\\/terminal\\.ts/.test(n)) || "/src/lib/terminal.ts";
+      const t = await import(url);
+      const inv = (c, a) => window.__TAURI_INTERNALS__.invoke(c, a);
+      // PTY가 응답할 때까지 기다린다 — term_open 완료 전 write는 NOT_FOUND로 튄다.
+      let inst = null;
+      for (let i = 0; i < 60; i++) {
+        inst = t.listTerminals().find((x) => x.status === "live");
+        if (inst) { try { await inv("term_write", { termId: inst.id, data: "\\r" }); break; } catch (e) { inst = null; } }
+        await new Promise((r) => setTimeout(r, 300));
+      }
+      if (!inst) return { skip: "살아있는 터미널이 응답하지 않음" };
+      const want = inst.term.cols;
+      const read = () => {
+        const b = inst.term.buffer.active;
+        let s = "";
+        for (let i = Math.max(0, b.length - 90); i < b.length; i++)
+          s += (b.getLine(i)?.translateToString(true) ?? "") + "\\n";
+        return s;
+      };
+      // 정규식을 문자열로 조립하지 않는다 — 이 소스는 템플릿 리터럴 → CDP → eval 여러 겹을
+      // 지나며 역슬래시가 먹혀 \d 가 d 로 죽는다(실제로 겪었다). 숫자 파싱은 손으로 한다.
+      const grab = (tag) => {
+        const s = read(), key = tag + ":";
+        let out = null, i = -1;
+        while ((i = s.indexOf(key, i + 1)) >= 0) {
+          const rest = s.slice(i + key.length), e = rest.indexOf(":");
+          if (e > 0) { const n = Number(rest.slice(0, e)); if (Number.isFinite(n) && n > 0) out = n; }
+        }
+        return out; // 마지막 숫자 매치 — 에코된 입력줄은 숫자가 아니라 걸러진다
+      };
+      const ask = async (tag) => {
+        try {
+          await inv("term_write", { termId: inst.id, data: 'Write-Host "' + tag + ':$($Host.UI.RawUI.WindowSize.Width):"\\r' });
+        } catch (e) { return null; }
+        for (let i = 0; i < 36; i++) {
+          const v = grab(tag);
+          if (v) return v;
+          await new Promise((r) => setTimeout(r, 250));
+        }
+        return null;
+      };
+      const before = await ask("GPVA");
+      if (before == null) return { skip: "셸이 폭을 보고하지 않는다(비-PowerShell 또는 미준비)" };
+      // 저쪽 창이 가져가 작게 줄인 상황을 그대로 흉내낸다 — PTY만 줄고 이쪽 xterm은 그대로다.
+      await inv("term_resize", { termId: inst.id, cols: 40, rows: 10 });
+      const shrunk = await ask("GPVB");
+      t.reattachAllTerminals();
+      await new Promise((r) => setTimeout(r, 1500));
+      const after = await ask("GPVC");
+      return { want, before, shrunk, after };
+    })()`);
+    if (resync?.skip) {
+      r.skip("모아보기 반환 후 PTY 크기 복구", resync.skip);
+    } else {
+      r.check(
+        "PTY 축소가 실제로 먹는다(전제)",
+        resync?.shrunk === 40,
+        `40 기대 · 실제 ${resync?.shrunk}`,
+      );
+      r.check(
+        "모아보기 반환 후 PTY 폭 복구(reattach가 크기도 되돌린다)",
+        resync?.after === resync?.want,
+        `xterm ${resync?.want}열 · 축소 ${resync?.shrunk} → 복구 ${resync?.after}`,
+      );
+    }
+
     const ctx = await cdp.eval(`(()=>{
       const x = document.querySelector('.xterm');
       if (!x) return false;

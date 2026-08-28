@@ -68,6 +68,17 @@ pub fn register(app: &AppHandle, project: &Project) {
                 .iter()
                 .any(|e| e.paths.iter().any(|p| is_relevant(p)));
             if relevant {
+                // 파일트리 ignore 캐시 무효화 — .gitignore 편집 포함 모든 레포 변경이
+                // 다음 list_dir에서 배경 재빌드를 킥하게 한다(tree.rs kick_ignore_refresh).
+                if let Some(st) = emit_app.try_state::<crate::state::AppState>() {
+                    let mut map = st
+                        .ignore_cache
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    if let Some(c) = map.get_mut(&project_id) {
+                        c.fresh = false;
+                    }
+                }
                 let emit_result = emit_app.emit(
                     "repo://changed",
                     RepoChanged {

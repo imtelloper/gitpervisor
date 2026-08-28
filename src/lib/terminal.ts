@@ -31,6 +31,36 @@ export interface TermInstance {
 /** 살아 있는 터미널 인스턴스 레지스트리 — 엔진이 등록하고, 코어/스캐너가 조회한다. */
 export const registry = new Map<string, TermInstance>();
 
+/**
+ * PTY 출력 채널을 **새로 만들어** 인스턴스에 꽂는다. `term_open`/`term_attach`에 넘길 것.
+ *
+ * ## 같은 Channel 객체를 두 번 넘기면 안 된다 — 출력이 영구히 멎는다
+ *
+ * Tauri v2의 `Channel`은 순서 보장을 위해 **양쪽에 인덱스 카운터**를 둔다. JS 쪽은
+ * `nextMessageIndex`를 세면서 그 번호가 아닌 메시지는 `pendingMessages`에 쌓아 두고
+ * (`@tauri-apps/api/core.js` Channel 클래스), Rust 쪽은 `__CHANNEL__:<id>` 를 역직렬화할 때마다
+ * **카운터가 0인 새 Channel을 만든다.**
+ *
+ * 그래서 이미 N개를 받은 채널을 `term_attach`에 다시 넘기면, 이후 도착하는 메시지의 인덱스는
+ * 0,1,2… 인데 JS는 N을 기다린다 → 전부 `pendingMessages`로 들어가 **한 줄도 그려지지 않는다.**
+ * 예외도 로그도 없다. 터미널이 그냥 멈춘 화면이 된다.
+ *
+ * 2026-08-28 실사례: 모아보기 별도 창을 닫으면 메인 창 터미널이 이 상태가 됐다 — 출력이 죽은 채
+ * 옛 화면만 남고, PTY 크기도 저쪽 창 것으로 남아 글자가 왼쪽 일부에만 그려져 있었다.
+ */
+export function attachOutputChannel(inst: TermInstance): Channel<number[]> {
+  const ch = new Channel<number[]>();
+  ch.onmessage = (bytes) => {
+    try {
+      inst.term.write(new Uint8Array(bytes));
+    } catch {
+      /* dispose/detach 직후의 짧은 공백 — 무시 */
+    }
+  };
+  inst.channel = ch;
+  return ch;
+}
+
 type ExitListener = (id: string, code: number) => void;
 const exitListeners = new Set<ExitListener>();
 
@@ -112,12 +142,30 @@ export function refreshTerminalThemes(): void {
  * 스크롤백은 그대로였으므로 화면 손실 없이 이어진다(끊긴 동안의 출력은 저쪽 창이 받았다).
  */
 export function reattachAllTerminals(): void {
-  for (const inst of registry.values()) {
-    if (inst.status !== "live" || !inst.channel) continue;
-    void invoke("term_attach", { termId: inst.id, onData: inst.channel }).catch(
-      () => {},
-    );
+  const live = [...registry.values()].filter(
+    (i) => i.status === "live" && i.channel,
+  );
+  if (live.length === 0) return;
+  for (const inst of live) {
+    // **채널을 새로 만든다.** 쓰던 것을 다시 넘기면 인덱스가 어긋나 출력이 통째로 멎는다
+    // (attachOutputChannel 주석 — 이 함수의 원래 구현이 정확히 그 버그였다).
+    void invoke("term_attach", {
+      termId: inst.id,
+      onData: attachOutputChannel(inst),
+    }).catch(() => {});
   }
+  // **크기도 되돌려야 한다.** 저쪽 창은 자기 셀 크기로 PTY를 줄여 놓았는데, 이쪽 xterm은 내내
+  // 큰 상태였으므로 `fit()`이 아무것도 바꾸지 않아 `onResize`가 안 뜬다 → PTY가 작은 채로 남아
+  // TUI가 화면 왼쪽 일부에만 그려진다(2026-08-28 실사례). 값이 같아도 강제로 다시 보낸다.
+  //
+  // 한 프레임 미루는 이유: 저 창이 떠 있는 동안 메인 창 크기가 바뀌었을 수 있어, pane의
+  // attach→fit이 먼저 돌게 두고 그 결과 크기를 보낸다. fit이 보낸 것과 이것이 겹쳐도
+  // 엔진의 리사이즈 체인이 순서를 지켜 마지막 값이 남는다.
+  requestAnimationFrame(() => {
+    void import("./terminal-engine").then((m) => {
+      for (const inst of live) m.resyncTerminalSizeImpl(inst.id);
+    });
+  });
 }
 
 /** host를 컨테이너에 붙이고 맞춘다. 탭 활성화 시 호출. */

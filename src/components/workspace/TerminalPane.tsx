@@ -21,8 +21,10 @@ import {
   pasteIntoTerminal,
 } from "../../lib/terminal";
 import { useOccludesWebview } from "../../stores/occlusion";
+import { usePromptHistory } from "../../stores/promptHistory";
 import { useTerminals } from "../../stores/terminals";
 import { useUi } from "../../stores/ui";
+import { PromptLogButton, PromptSidePanel, ThemeButton } from "./TermSessionControls";
 
 /**
  * 단일 터미널 패널 — xterm 인스턴스(레지스트리 소유)를 이 컨테이너에 붙인다.
@@ -47,6 +49,10 @@ export function TerminalPane({
     (s) => s.terminals.find((t) => t.id === tabId)?.maximizedPaneId === paneId,
   );
   const setActivePane = useTerminals((s) => s.setActivePane);
+  const toggleMaximize = useTerminals((s) => s.toggleMaximize);
+  const closePaneAct = useTerminals((s) => s.closePane);
+  // 프롬프트 컬럼 열림 — 세션 단위 스토어(모아보기와 공유: 어디서 켜든 같은 세션 = 같은 상태).
+  const promptOpen = usePromptHistory((s) => !!s.openPanels[paneId]);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   // 분할 배치에서 이웃 브라우저 pane의 네이티브 webview가 이 메뉴를 덮는다 — 열린 동안 숨긴다.
   useOccludesWebview(!!menu);
@@ -78,7 +84,7 @@ export function TerminalPane({
 
   return (
     <div
-      className={`relative h-full w-full ${
+      className={`group relative flex h-full w-full ${
         active ? "outline outline-1 -outline-offset-1 outline-accent" : ""
       }`}
       onMouseDown={() => setActivePane(tabId, paneId)}
@@ -88,7 +94,31 @@ export function TerminalPane({
         setMenu({ x: e.clientX, y: e.clientY });
       }}
     >
-      <div ref={ref} className="h-full w-full" />
+      <div className="relative h-full min-w-0 flex-1">
+        <div ref={ref} className="h-full w-full" />
+        {/* 우상단 세션 컨트롤 — 모아보기 셀 헤더와 동일 기능(테마·프롬프트 기록·최대화·닫기).
+            평소엔 숨고 hover 시 표시해 터미널 출력을 가리지 않는다. */}
+        <div className="absolute right-1 top-1 z-10 flex items-center gap-0.5 rounded border border-edge/60 bg-panel/90 p-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+          <ThemeButton termId={paneId} />
+          <PromptLogButton termId={paneId} />
+          <button
+            onClick={() => toggleMaximize(tabId, paneId)}
+            title={maximized ? "패널 최대화 해제" : "패널 최대화"}
+            className="shrink-0 rounded p-0.5 text-fg-dim hover:bg-raised hover:text-fg"
+          >
+            {maximized ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
+          </button>
+          <button
+            onClick={() => closePaneAct(tabId, paneId)}
+            title="패널 닫기 (Ctrl+Shift+W)"
+            className="shrink-0 rounded p-0.5 text-fg-dim hover:bg-raised hover:text-danger"
+          >
+            <X size={12} />
+          </button>
+        </div>
+      </div>
+      {/* 프롬프트 컬럼 — 여닫힘은 host ResizeObserver가 xterm을 refit해 따라온다. */}
+      {promptOpen && <PromptSidePanel termId={paneId} />}
       {takenByWindow && (
         <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 bg-base/90 text-xs text-fg-muted">
           <LayoutGrid size={18} className="text-accent" />

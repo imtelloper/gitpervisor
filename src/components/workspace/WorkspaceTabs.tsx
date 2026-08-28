@@ -1,5 +1,6 @@
 import {
   Database,
+  ExternalLink,
   FileText,
   Globe,
   Plus,
@@ -19,6 +20,7 @@ import { useUi } from "../../stores/ui";
 import { BrowserPane } from "./BrowserPane";
 import { Favicon } from "./Favicon";
 import { PaneTreeRoot } from "./PaneTree";
+import { MenuItem as PaneMenuItem } from "./TerminalPane";
 import { ViewerTab } from "./ViewerTab";
 
 // DB 탐색기는 monaco 에디터(~2-3MB)를 끌어온다 — DB 탭을 처음 열 때만 로드해
@@ -40,6 +42,16 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
   const setActiveTab = useTerminals((s) => s.setActiveTab);
   const openTerminal = useTerminals((s) => s.openTerminal);
   const closeTab = useTerminals((s) => s.closeTab);
+  const floatPane = useTerminals((s) => s.floatPane);
+  // 터미널 탭 우클릭 메뉴 — Float 분리·닫기(모아보기 칩 메뉴와 같은 기능 계열).
+  const [tabMenu, setTabMenu] = useState<{
+    x: number;
+    y: number;
+    tabId: string;
+    paneId: string;
+    title: string;
+  } | null>(null);
+  useOccludesWebview(!!tabMenu);
   const dbOpen = useTerminals((s) => s.dbProjects.includes(projectId));
   const closeDbTab = useTerminals((s) => s.closeDbTab);
   const tabIds = useBrowsers((s) => s.tabIds);
@@ -111,6 +123,16 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
             extraClass={tabAgentClass(t)}
             onClick={() => setActiveTab(projectId, t.id)}
             onClose={() => closeTab(t.id)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setTabMenu({
+                x: e.clientX,
+                y: e.clientY,
+                tabId: t.id,
+                paneId: t.activePaneId,
+                title: t.title,
+              });
+            }}
           />
         ))}
         {browsers.map((b) => (
@@ -179,7 +201,75 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
           </div>
         ))}
       </div>
+
+      {tabMenu && (
+        <TabMenu
+          x={tabMenu.x}
+          y={tabMenu.y}
+          title={tabMenu.title}
+          onClose={() => setTabMenu(null)}
+          onFloat={() => floatPane(tabMenu.tabId, tabMenu.paneId)}
+          onCloseTab={() => closeTab(tabMenu.tabId)}
+        />
+      )}
     </section>
+  );
+}
+
+/** 터미널 탭 우클릭 메뉴 — 닫힘 규칙(창 클릭·Esc)·모양은 PaneMenu와 동일(MenuItem 재사용). */
+function TabMenu({
+  x,
+  y,
+  title,
+  onClose,
+  onFloat,
+  onCloseTab,
+}: {
+  x: number;
+  y: number;
+  title: string;
+  onClose: () => void;
+  onFloat: () => void;
+  onCloseTab: () => void;
+}) {
+  useEffect(() => {
+    const close = () => onClose();
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("click", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+  const run = (fn: () => void) => () => {
+    fn();
+    onClose();
+  };
+  return (
+    <div
+      className="fixed z-50 min-w-52 rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl"
+      style={{
+        left: Math.min(x, window.innerWidth - 220),
+        top: Math.min(y, window.innerHeight - 130),
+      }}
+      onClick={(e) => e.stopPropagation()}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      <div className="truncate px-3 py-1 text-[11px] text-fg-dim">{title}</div>
+      <div className="my-1 border-t border-edge" />
+      <PaneMenuItem
+        icon={<ExternalLink size={14} />}
+        label="새 창으로 분리 (Float)"
+        onClick={run(onFloat)}
+      />
+      <PaneMenuItem
+        icon={<X size={14} />}
+        label="탭 닫기"
+        danger
+        onClick={run(onCloseTab)}
+      />
+    </div>
   );
 }
 
@@ -287,6 +377,7 @@ function TabChip({
   extraClass,
   onClick,
   onClose,
+  onContextMenu,
 }: {
   active: boolean;
   icon: React.ReactNode;
@@ -296,10 +387,12 @@ function TabChip({
   extraClass?: string;
   onClick: () => void;
   onClose?: () => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
 }) {
   return (
     <div
       onClick={onClick}
+      onContextMenu={onContextMenu}
       title={label}
       className={`group flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded px-2 text-xs ${
         active ? "bg-raised text-fg" : "text-fg-muted hover:bg-raised/60 hover:text-fg"

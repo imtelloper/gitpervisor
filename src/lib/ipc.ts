@@ -457,6 +457,62 @@ export interface ProcessSnapshot {
   totalCount: number; // 절단 전 행 수 ("… 외 N개")
 }
 export type ProcSortKey = "cpu" | "ram" | "gpu" | "disk";
+
+// ---- 디스크 용량 분석 (disk_scan.rs — DOCS/disk-usage-analyzer-design.md) ----
+export type DiskScanPhase = "idle" | "scanning" | "done" | "cancelled" | "error";
+/** disk_scan_status 응답 + 스캔 진행 Channel 메시지 공용. */
+export interface DiskScanStatus {
+  phase: DiskScanPhase;
+  root: string | null;
+  bytes: number;
+  alloc: number; // 디스크 할당 크기 합(압축·스파스 실측 — §2.2)
+  files: number;
+  dirs: number;
+  skipped: number; // 권한 거부 등으로 못 들어간 폴더 수
+  elapsedMs: number;
+  done: boolean; // Channel 마지막 메시지 판별
+  error: string | null;
+}
+export interface DiskDirRow {
+  name: string;
+  bytes: number; // 하위 전체 합산(스캔 캐시)
+  alloc: number;
+  files: number;
+  dirs: number;
+  modified: number | null; // epoch ms
+}
+export interface DiskFileRow {
+  name: string;
+  bytes: number;
+  alloc: number;
+  modified: number | null;
+}
+/** 트리맵 노드 — 자식은 상위 24개, 나머지는 otherBytes("기타"), 직속 파일은 ownBytes. */
+export interface DiskTreemapNode {
+  name: string;
+  rel: string; // 스캔 루트 기준 — 드릴다운·탐색기 열기
+  bytes: number;
+  ownBytes: number;
+  ownFiles: number;
+  otherBytes: number;
+  children: DiskTreemapNode[];
+}
+export interface DiskListing {
+  bytes: number; // 이 폴더 합산(부모 % 계산용)
+  dirs: DiskDirRow[]; // bytes 내림차순 정렬 완료
+  files: DiskFileRow[]; // live read_dir, 1000 캡
+  truncatedFiles: number; // "외 N개"
+}
+export interface DiskTopFile {
+  path: string;
+  bytes: number;
+  modified: number | null;
+}
+export interface DiskRoot {
+  mount: string;
+  total: number;
+  available: number;
+}
 /** 작업 끝내기 결과 — 종료 성공 수 + 실패(권한 부족) pid + 자기보호로 건너뛴 pid. */
 export interface KillOutcome {
   killed: number;
@@ -486,6 +542,12 @@ export interface ProjectRoot {
   projectId: string;
   entries: DirEntry[];
   error: string | null;
+}
+
+/** 배치 폴더 나열(commands/tree.rs list_dirs) — 확장 상태 워밍용. */
+export interface DirListing {
+  relPath: string;
+  entries: DirEntry[];
 }
 
 /** Quick Open 파일 목록 (commands/tree.rs list_repo_files). */
@@ -917,8 +979,15 @@ export const ipc = {
   // 폴더별 포트 캐시로 멱등이라 call(타임아웃+재시도)이 안전 — 응답 유실 시 영구 대기 방지.
   previewLocalUrl: (projectId: string, relPath: string) =>
     call<string>("preview_local_url", { projectId, relPath }),
-  listDir: (projectId: string, relPath: string) =>
-    call<DirEntry[]>("list_dir", { projectId, relPath }),
+  listDir: (projectId: string, relPath: string, lane: "interactive" | "background" = "interactive") =>
+    call<DirEntry[]>("list_dir", { projectId, relPath }, { lane }),
+  // 여러 폴더 배치 나열 — 프로젝트 전환/시작 시 저장된 확장 상태 워밍(개별 실패는 결과에서 빠짐).
+  listDirs: (projectId: string, relPaths: string[]) =>
+    call<DirListing[]>("list_dirs", { projectId, relPaths }, {
+      lane: "background",
+      attempts: 1,
+      timeoutMs: 20_000,
+    }),
   // Viewer 편집 저장 — 텍스트 파일 내용을 디스크에 쓴다(레포 상대 경로). 재시도 금지.
   writeFile: (projectId: string, relPath: string, content: string) =>
     callMutating<void>("write_file", { projectId, relPath, content }),
@@ -1159,6 +1228,39 @@ export const ipc = {
   // 작업 끝내기 — pid 목록 종료(프론트가 파괴적 확인 후 호출). 실패 pid는 결과로 안내.
   killProcesses: (pids: number[]) =>
     callMutating<KillOutcome>("kill_processes", { pids }),
+  // ---- 디스크 용량 분석 (disk_scan.rs) ----
+  // 스캔 대상 후보 볼륨 — 클릭 시 1회 열거.
+  diskRoots: () =>
+    call<DiskRoot[]>("disk_roots", undefined, { attempts: 1, timeoutMs: 10_000 }),
+  // 스캔 시작 — 장시간 잡. 진행·종결은 Channel(250ms 스로틀, 마지막 메시지 done=true).
+  // 스캔마다 새 Channel을 만든다(재사용 시 출력 영구 정지 — CLAUDE.md 함정).
+  diskScanStart: (path: string, onProgress: (s: DiskScanStatus) => void) => {
+    const ch = new Channel<string>();
+    ch.onmessage = (raw) => {
+      try {
+        onProgress(JSON.parse(raw) as DiskScanStatus);
+      } catch {
+        /* 형식 오류 무시 */
+      }
+    };
+    return invoke<void>("disk_scan_start", { path, onProgress: ch });
+  },
+  diskScanCancel: () => invoke<void>("disk_scan_cancel"),
+  // 창 재오픈 시 재동기화 — 진행 중이면 진행값, 완료면 결과 요약.
+  diskScanStatus: () =>
+    call<DiskScanStatus>("disk_scan_status", undefined, {
+      lane: "background",
+      attempts: 1,
+      timeoutMs: 4000,
+    }),
+  // 스캔 결과에서 폴더 1개의 자식 목록(폴더=캐시, 파일=live). 클릭 응답 — interactive 기본 레인.
+  diskChildren: (rel: string) =>
+    call<DiskListing>("disk_children", { rel }, { attempts: 1, timeoutMs: 20_000 }),
+  diskTopFiles: (limit: number) =>
+    call<DiskTopFile[]>("disk_top_files", { limit }, { attempts: 1, timeoutMs: 10_000 }),
+  // 트리맵 — rel 하위 depth 레벨(레벨당 상위 24, 예산 1500 타일)을 중첩 JSON으로.
+  diskTreemap: (rel: string, depth: number) =>
+    call<DiskTreemapNode>("disk_treemap", { rel, depth }, { attempts: 1, timeoutMs: 20_000 }),
   // 파일 위치 열기 — 탐색기에서 폴더 열고 그 파일 선택(리소스 모니터).
   revealPath: (path: string) => callMutating<void>("reveal_path", { path }),
 
