@@ -46,14 +46,24 @@ export async function run({ cdp, report: r, fix }) {
   await new Promise((res) => setTimeout(res, 3000));
 
   // 타입 인지 자동완성 — os.
+  // 부하 중에는 basedpyright 인덱싱이 늦어 첫 요청이 비거나 시한(8000ms)을 넘긴다.
+  // → 2s 간격으로 최대 30s 재요청하고, 멤버가 채워지면 즉시 탈출. 리포트에는 마지막 시도 결과를 남긴다.
+  const OS_MEMBERS = ["getcwd", "environ", "path", "getenv"];
   const comp = await cdp.eval(`(async () => {
-    const res = await window.__LS.request('textDocument/completion', {
-      textDocument: { uri: window.__URI }, position: { line: ${osLine0}, character: 3 },
-    }, 8000).catch(() => null);
-    const items = Array.isArray(res) ? res : (res && res.items) || [];
-    return { count: items.length, labels: items.slice(0, 500).map(i => i.label) };
-  })()`);
-  const osMembers = ["getcwd", "environ", "path", "getenv"].filter((x) => comp.labels?.includes(x));
+    const want = ${JSON.stringify(OS_MEMBERS)};
+    const deadline = Date.now() + 30000;
+    for (;;) {
+      const res = await window.__LS.request('textDocument/completion', {
+        textDocument: { uri: window.__URI }, position: { line: ${osLine0}, character: 3 },
+      }, 8000).catch(() => null);
+      const items = Array.isArray(res) ? res : (res && res.items) || [];
+      const last = { count: items.length, labels: items.slice(0, 500).map(i => i.label) };
+      if (want.filter(x => last.labels.includes(x)).length >= 3 || Date.now() >= deadline) return last;
+      await new Promise(r => setTimeout(r, 2000));
+    }
+  // 페이지 안 예산이 30s(+마지막 요청 8s)라 cdp.eval 기본 60s 시한과 너무 가깝다 — 넉넉히 잡는다.
+  })()`, { timeoutMs: 120000 });
+  const osMembers = OS_MEMBERS.filter((x) => comp.labels?.includes(x));
   r.check("타입 인지 자동완성(os 멤버 ≥3)", osMembers.length >= 3, `${comp.count}개 → ${osMembers.join(",")}`);
 
   // 로컬 정의 점프 — make_greeting 사용처(5행) → 정의(3행)
@@ -105,9 +115,11 @@ export async function run({ cdp, report: r, fix }) {
   })()`);
   const strM = ["charAt", "toUpperCase", "substring", "trim"].filter((x) => tc?.includes(x));
   r.check("TS 타입 인지 자동완성(string 메서드)", strM.length >= 3, strM.join(","));
+  // (3,21) = 0-based 3행 `const out = combine(1, 'x')`의 호출 괄호 안(첫 인자 뒤).
+  // 4행은 빈 줄이라 시그니처가 나올 수 없다.
   const tsig = await cdp.eval(`(async () => {
     const res = await window.__TS.request('textDocument/signatureHelp', {
-      textDocument: { uri: window.__TURI }, position: { line: 4, character: 8 },
+      textDocument: { uri: window.__TURI }, position: { line: 3, character: 21 },
     }, 8000).catch(() => null);
     return res && res.signatures && res.signatures.length > 0;
   })()`);

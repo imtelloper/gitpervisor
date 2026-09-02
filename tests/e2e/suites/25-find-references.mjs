@@ -59,17 +59,25 @@ export async function run({ cdp, report: r, fix }) {
       ed.setPosition({ lineNumber: hit.range.startLineNumber, column: hit.range.startColumn+2 });
       ed.focus();
       ed.trigger('e2e','editor.action.goToReferences',{});
-      let w=null;
-      for(let i=0;i<24;i++){ await new Promise(r=>setTimeout(r,200)); w=document.querySelector('.reference-zone-widget, .peekview-widget'); if(w && w.getBoundingClientRect().height>0) break; }
+      let w=null; const t0=Date.now();
+      // 부하 중 백엔드 find_references(git grep)가 수 초~17s 걸린다(스위트 22/23 실측) → 최대 30s 대기.
+      for(let i=0;i<150;i++){ await new Promise(r=>setTimeout(r,200)); w=document.querySelector('.reference-zone-widget, .peekview-widget'); if(w && w.getBoundingClientRect().height>0) break; }
       const visible=!!(w && w.getBoundingClientRect().height>0);
-      const rows = w ? w.querySelectorAll('.monaco-list-row').length : 0;
+      // 위젯 프레임이 먼저 뜨고 목록은 늦게 렌더될 수 있다 → 행이 생길 때까지 최대 3s 추가 폴링.
+      let rows = w ? w.querySelectorAll('.monaco-list-row').length : 0;
+      for(let i=0; visible && rows<1 && i<15; i++){ await new Promise(r=>setTimeout(r,200)); rows = w.querySelectorAll('.monaco-list-row').length; }
       ed.focus(); ed.trigger('e2e','closeReferenceSearch',{});
-      return { visible, rows };
-    })()`);
+      return { visible, rows, ms: Date.now()-t0 };
+    // 페이지 안 예산이 33s(30s + 3s)인데 부하 중엔 setTimeout 지연이 얹혀 실제로 60s를 넘겼다
+    // (cdp.eval 기본 시한에 걸려 스위트가 통째로 예외로 죽었다) → 예산보다 넉넉히 잡는다.
+    })()`, { timeoutMs: 120000 });
     r.check("Shift+F12 → peek 위젯 표시(참조 목록)", peek.visible === true && peek.rows >= 1, J(peek));
   } finally {
+    // selectProject를 selectDiff보다 **먼저** — 순서가 바뀌면 selectDiff가 아직 픽스처인
+    // selectedProjectId로 사용자 파일을 activeDiffByProject/viewerTabs에 기록해 다음 스위트가 그 파일을 연다.
     await cdp.eval(`(()=>{ const u=window.__gpv.ui.getState();
       for (const t of [...u.viewerTabs].filter(t=>t.outerId===${J(fix.projectId)})) u.closeViewerTab(t.key);
-      u.selectDiff(${J(prior.diff)}, ${J(prior.repo)}); if(${J(prior.pid)}) u.selectProject(${J(prior.pid)}); })()`).catch(() => {});
+      if(${J(prior.pid)}) u.selectProject(${J(prior.pid)});
+      u.selectDiff(${J(prior.diff)}, ${J(prior.repo)}); })()`).catch(() => {});
   }
 }

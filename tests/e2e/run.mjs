@@ -7,6 +7,10 @@
 //   사용법:  npm run test:e2e          (앱이 'npm run tauri dev' 로 떠 있어야 함)
 //            GPV_E2E_PORT=9222 node tests/e2e/run.mjs
 //
+import { readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { connect } from "./lib/cdp.mjs";
 import { createReport } from "./lib/report.mjs";
 import { createFixture } from "./lib/git-fixture.mjs";
@@ -43,6 +47,7 @@ const SUITES = [
   "./suites/29-settings-ux.mjs",
   "./suites/30-image-annotate.mjs",
   "./suites/32-disk-usage.mjs",
+  "./suites/33-video-split.mjs",
   // 오버레이가 전체화면·포커스를 가져가므로 마지막에 둔다(31-capture.mjs 상단 주석).
   "./suites/31-capture.mjs",
 ];
@@ -66,6 +71,27 @@ async function takeSnapshot() {
   };
 }
 
+/**
+ * 이전 러너가 남긴 픽스처 디렉토리(%TEMP%\gpv-e2e-*) 정리 — 새 픽스처를 만들기 **전에** 부르므로
+ * 그 시점의 gpv-e2e-* 는 전부 잔여물이다. 앱(파일 워처·LSP)이 잡고 있으면 EPERM 이 나는데,
+ * 그건 이번 실행의 문제가 아니므로 로그만 남기고 진행한다(best-effort).
+ */
+function purgeStaleFixtures() {
+  const tmp = tmpdir();
+  let removed = 0;
+  let kept = 0;
+  for (const entry of readdirSync(tmp).filter((n) => n.startsWith("gpv-e2e-"))) {
+    try {
+      rmSync(join(tmp, entry), { recursive: true, force: true, maxRetries: 5 });
+      removed++;
+    } catch (e) {
+      kept++;
+      console.log(`  잔여 픽스처 삭제 실패(무시): ${entry} — ${e.code || e.message}`);
+    }
+  }
+  if (removed || kept) console.log(`  잔여 픽스처 정리: ${removed}개 삭제, ${kept}개 남김`);
+}
+
 async function teardown() {
   report.suite("정리 · 사용자 상태 복원 검증");
   // 1) 테스트가 만든 자원 강제 정리(방어적 — 스위트가 이미 닫았어도 무해). cdp.try 는 throw 하지 않는다.
@@ -80,6 +106,14 @@ async function teardown() {
 
   // 2) 픽스처 프로젝트 제거(메모도 함께 정리됨) + 설정 원복 — 복원 invoke 실패를 "조용히" 삼키지 않고
   //    명시적으로 표면화한다(실패해도 아래 스냅샷 대조가 한 번 더 잡는다 — 이중 방어).
+  //    remove_project 를 직접 invoke 하면 UI 경로(queries/index.ts 의 removeProject)를 안 타서
+  //    localStorage 의 viewerTabs/activeDiffByProject 에 죽은 픽스처 탭이 영구히 쌓인다.
+  //    그 경로가 부르는 스토어 액션을 여기서 직접 호출해 준다(dev 전용 window.__gpv).
+  if (fix?.projectId) {
+    await cdp
+      .eval(`window.__gpv?.ui?.getState().closeProjectViewerTabs(${JSON.stringify(fix.projectId)})`)
+      .catch((e) => console.error("viewerTabs 정리 경고:", e.message));
+  }
   const rmRes = fix?.projectId ? await cdp.try("remove_project", { id: fix.projectId }) : { ok: true };
   const setRes = snapshot?.settings ? await cdp.try("set_settings", { settings: snapshot.settings }) : { ok: true };
   report.check("teardown: remove_project(픽스처) 호출 성공", rmRes.ok, rmRes.code || rmRes.message || "");
@@ -112,6 +146,21 @@ async function main() {
   console.log(`  연결됨: ${cdp.pageUrl}  (CDP ${cdp.cdpPort})`);
   snapshot = await takeSnapshot();
   console.log(`  스냅샷: 프로젝트 ${snapshot.projectIds.length} · DB연결 ${snapshot.dbConnIds.length} · 메모키 ${snapshot.notesKeys.length} · 테마 ${snapshot.settings.theme}`);
+
+  // 러너가 도는 동안 주기 배경 fetch를 끈다. fetch_one 은 git fetch 내내 프로젝트 op 락을 쥐므로
+  // (fetch_scheduler.rs / state.rs) 사용자 프로젝트 수십 개의 사이클이 스위트의 pull/commit 을
+  // OP_IN_PROGRESS 로 튕기고, 세마포어(3) 대기까지 겹치면 폴링 시한을 통째로 잡아먹는다.
+  // 17-remote-freshness 는 force=true 로 부르므로 0 이어도 그대로 동작한다 — 0 차단은
+  // refresh_remotes 의 !force 분기에만 있고(fetch_scheduler.rs), should_attempt 도 force 면 즉시 true.
+  // 원복은 teardown 의 set_settings(snapshot.settings) 가 담당한다(스냅샷은 위에서 이미 떴다).
+  const offRes = await cdp.try("set_settings", { settings: { ...snapshot.settings, remoteRefreshMinutes: 0 } });
+  console.log(
+    `  배경 fetch: remoteRefreshMinutes ${snapshot.settings.remoteRefreshMinutes} → 0` +
+      (offRes.ok ? "" : ` (실패: ${offRes.code || offRes.message})`),
+  );
+
+  // 이전 러너 잔여 픽스처 정리 — 새 픽스처를 만들기 전에(그래야 "현재 것 제외"가 자명하다).
+  purgeStaleFixtures();
 
   fix = createFixture();
   const project = await cdp.invoke("add_project", { path: fix.repo }, { timeoutMs: 30000 });

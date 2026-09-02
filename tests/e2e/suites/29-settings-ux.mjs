@@ -1,9 +1,12 @@
 // 설정 모달 UX (태스크 18) — 사이드바 카테고리 + 검색. 저장 모델 불변·상태 보존·검색·완전성 가드.
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 export const name = "설정 모달 UX (카테고리 + 검색)";
 
-const REPO = "C:/Users/GreatHoon/DEVELOPMENT/gitpervisor";
+// 레포 루트를 이 파일 위치에서 유도한다(suites → e2e → tests → 루트). 절대경로를 박아 두면
+// 레포를 옮긴 순간 완전성 가드가 ENOENT로 죽는다 — 실제로 그렇게 실패했다.
+const REPO = fileURLToPath(new URL("../../../", import.meta.url)).replace(/[\\/]+$/, "");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export async function run({ cdp, report: r }) {
@@ -76,6 +79,30 @@ export async function run({ cdp, report: r }) {
   const reopenQ = await cdp.eval(`document.querySelector('input[placeholder="설정 검색…"]')?.value`);
   r.check("재오픈 시 검색어 리셋", reopenQ === "");
   await cdp.eval(`window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`);
+
+  // ── ④ 설정 딥링크(태스크 20): openSettings("update")가 업데이트 탭으로 연다 ──
+  await cdp.eval(`window.__gpv.ui.getState().openSettings("update")`);
+  await sleep(400);
+  const deep = await cdp.eval(`(() => {
+    const btn = [...document.querySelectorAll('button')].find(b => b.textContent.trim() === '업데이트');
+    return {
+      active: !!btn && btn.className.includes('border-accent'),
+      body: document.body.textContent.includes('현재 버전'),
+      consumed: window.__gpv.ui.getState().settingsCategory === null,
+    };
+  })()`);
+  r.check("④ 딥링크: 설정이 업데이트 탭으로 열림(요청은 1회 소비)", deep.active && deep.body && deep.consumed, JSON.stringify(deep));
+  await cdp.eval(`window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`);
+  await sleep(200);
+
+  // persistent 토스트(durationMs: null) — 6초 자동 소멸에 걸리지 않는다.
+  await cdp.eval(`window.__gpv.ui.getState().pushToast("info","e2e-persistent",undefined,{durationMs:null})`);
+  await sleep(7000);
+  r.check(
+    "persistent 토스트 7초 후 생존",
+    await cdp.eval(`document.body.textContent.includes('e2e-persistent')`),
+  );
+  await cdp.eval(`window.__gpv.ui.getState().toasts.forEach(t => window.__gpv.ui.getState().dismissToast(t.id))`);
 
   // ── ⑤ SETTINGS_INDEX 완전성 가드: getSettings 런타임 키 ↔ 인덱스 non-null key ──
   const runtimeKeys = Object.keys(orig).sort();

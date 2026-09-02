@@ -354,12 +354,23 @@ const HELPERS = `(() => {
     return null;
   };
 
-  /** 선택된 객체 수 — 툴바 아래 안내 문구("N개 선택 — …")에서 읽는다. */
+  /**
+   * 선택된 객체 수 — 툴바 아래 안내 문구("N개 선택 — …")에서 읽는다.
+   *
+   * 모달 전체 textContent 에 걸면 안 된다: 바로 앞 PropSlider 의 값 span("100")과 이 문구
+   * 사이에 공백 노드가 없어 "1001개 선택"으로 읽힌다. 문구를 직접 담은 **가장 안쪽** 요소를
+   * 찾아 문자열 첫머리에 앵커해 매칭한다(제품 코드에 testid 를 심지 않는다).
+   */
   A.selCount = () => {
     const m = A.modal();
     if (!m) return -1;
-    const hit = /(\\d+)개 선택/.exec(m.textContent || '');
-    return hit ? Number(hit[1]) : 0;
+    const re = /^\\s*(\\d+)개 선택/;
+    let hit = null;
+    // querySelectorAll 은 문서 순서(조상 → 자손)라 마지막 매치가 가장 안쪽 요소다.
+    for (const el of Array.from(m.querySelectorAll('*'))) {
+      if (re.test(el.textContent || '')) hit = el;
+    }
+    return hit ? Number(re.exec(hit.textContent)[1]) : 0;
   };
 
   /** 크롭 모드 켜짐 — 버튼 라벨이 '크롭 선택' → '영역을 드래그'로 바뀐다. */

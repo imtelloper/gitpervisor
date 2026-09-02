@@ -4,6 +4,18 @@ export const name = "빠른 파일 열기 (Quick Open / list_repo_files)";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// 결과 행 폴링 — 부하 걸린 머신에서 repo-files 쿼리가 6s 넘게 걸린다. 고정 sleep으로 0행일 때
+// Enter를 누르면 모달이 안 닫힌 채 남아 이후 검증(모아보기 중 mod+P)까지 연쇄로 무너진다.
+async function waitRows(cdp, maxMs = 30000) {
+  const expr = `[...document.querySelectorAll('.z-\\\\[60\\\\] [data-idx]')].map(x=>x.textContent)`;
+  const t0 = Date.now();
+  for (;;) {
+    const rows = await cdp.eval(expr);
+    if ((Array.isArray(rows) && rows.length) || Date.now() - t0 >= maxMs) return rows || [];
+    await sleep(200);
+  }
+}
+
 export async function run({ cdp, report: r, fix }) {
   // ── 백엔드 list_repo_files ──
   fix.writeFile("untracked_new.txt", "hello\n"); // 미추적(--others가 잡아야 함)
@@ -53,22 +65,27 @@ export async function run({ cdp, report: r, fix }) {
     r.check("mod+P → Quick Open 열림", open);
     r.check("모달 input 렌더", await cdp.eval(`!!document.querySelector('.z-\\\\[60\\\\] input')`));
 
-    // 검색 → 결과 행 + Enter 열기
-    await sleep(600);
-    const rows = await cdp.eval(`(async ()=>{
-      const inp=document.querySelector('.z-\\\\[60\\\\] input'); if(!inp) return null;
+    // 검색 → 결과 행(폴링) + Enter 열기
+    await cdp.eval(`(()=>{
+      const inp=document.querySelector('.z-\\\\[60\\\\] input'); if(!inp) return;
       const setter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;
       setter.call(inp,'app'); inp.dispatchEvent(new Event('input',{bubbles:true}));
-      await new Promise(r=>setTimeout(r,400));
-      return [...document.querySelectorAll('.z-\\\\[60\\\\] [data-idx]')].map(x=>x.textContent).slice(0,5);
     })()`);
-    r.check("검색 결과에 app.txt", Array.isArray(rows) && rows.some((t) => /app\.txt/.test(t)), J(rows));
+    const rows = (await waitRows(cdp)).slice(0, 5);
+    r.check("검색 결과에 app.txt", rows.some((t) => /app\.txt/.test(t)), J(rows));
 
-    await cdp.eval(`(()=>{ const inp=document.querySelector('.z-\\\\[60\\\\] input'); inp && inp.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true})); })()`);
-    await sleep(400);
-    const nav = await cdp.eval(`window.__gpv.ui.getState().selectedDiff`);
-    r.check("Enter → 파일 뷰어에 열림", !!nav && nav.mode === "file" && /app\.txt$/.test(nav.path || ""), J(nav));
-    r.check("선택 후 모달 닫힘", (await uGet("quickOpenOpen")) === false);
+    if (rows.length) {
+      await cdp.eval(`(()=>{ const inp=document.querySelector('.z-\\\\[60\\\\] input'); inp && inp.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true})); })()`);
+      await sleep(400);
+      const nav = await cdp.eval(`window.__gpv.ui.getState().selectedDiff`);
+      r.check("Enter → 파일 뷰어에 열림", !!nav && nav.mode === "file" && /app\.txt$/.test(nav.path || ""), J(nav));
+      r.check("선택 후 모달 닫힘", (await uGet("quickOpenOpen")) === false);
+    } else {
+      // 전제조건 미충족 — 0행에서 Enter를 누르면 모달이 열린 채 남아 다음 검증까지 오염된다.
+      r.check("Enter → 파일 뷰어에 열림", false, "결과 행 0개(30s 폴링 타임아웃) — Enter 생략");
+      r.check("선택 후 모달 닫힘", false, "결과 행 0개 — 선택 불가");
+      await cdp.eval(`window.__gpv.ui.getState().setQuickOpenOpen(false)`);
+    }
 
     // 모아보기 중엔 mod+P 무동작(등록 위치 — KeyboardShortcuts 언마운트)
     await cdp.eval(`window.__gpv.ui.getState().setAggregateOpen(true)`);
@@ -80,9 +97,11 @@ export async function run({ cdp, report: r, fix }) {
     await cdp.eval(`window.__gpv.ui.getState().setAggregateOpen(false)`).catch(() => {});
     await cdp.eval(`window.__gpv.ui.getState().setQuickOpenOpen(false)`).catch(() => {});
     // 픽스처에서 연 탭 정리 + 상태 원복
+    // selectProject를 selectDiff보다 **먼저** — 순서가 바뀌면 selectDiff가 아직 픽스처인
+    // selectedProjectId로 사용자 파일을 activeDiffByProject/viewerTabs에 기록해 다음 스위트가 그 파일을 연다.
     await cdp.eval(`(()=>{ const u=window.__gpv.ui.getState();
       for (const t of [...u.viewerTabs].filter(t=>t.outerId===${J(fix.projectId)})) u.closeViewerTab(t.key);
-      u.selectDiff(${J(prior.diff)}, ${J(prior.repo)});
-      if (${J(prior.pid)}) u.selectProject(${J(prior.pid)}); })()`).catch(() => {});
+      if (${J(prior.pid)}) u.selectProject(${J(prior.pid)});
+      u.selectDiff(${J(prior.diff)}, ${J(prior.repo)}); })()`).catch(() => {});
   }
 }

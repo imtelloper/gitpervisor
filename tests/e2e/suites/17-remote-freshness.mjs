@@ -29,8 +29,11 @@ export async function run({ cdp, report: r, fix }) {
   r.check("refresh_remotes: 즉시 반환(<5s, 백그라운드 진행)", Date.now() - t0 < 5000, `${Date.now() - t0}ms`);
 
   // ── 배경 fetch 완료 폴링: behind ≥ 1 + lastFetchAt 채워짐 (freshness 조인) ──
+  // 시한이 넉넉한 이유: run_cycle은 전역 세마포어(3, fetch_scheduler.rs)로 fetch를 직렬화하는데,
+  // 다른 프로젝트들의 사이클이 겹치면 이 픽스처의 permit 획득까지 실측 68s 까지 걸렸다
+  // (git fetch 1회가 이 머신에서 3.6~8.6s). 20s 로는 배경 fetch가 시작도 못 한 채 실패한다.
   let st = null;
-  const deadline = Date.now() + 20000;
+  const deadline = Date.now() + 60000;
   while (Date.now() < deadline) {
     st = await statusOf(cdp, fix.projectId);
     if ((st?.behind || 0) >= 1 && st?.lastFetchAt) break;
@@ -50,13 +53,16 @@ export async function run({ cdp, report: r, fix }) {
   const throttled = await cdp.try("refresh_remotes", { projectIds: [fix.projectId], force: false });
   r.check("refresh_remotes(no-force): 성공(스로틀 no-op 허용)", throttled.ok, throttled.code || "");
 
-  // ── 뒷정리: pull 로 behind 해소(다른 검증·teardown 오염 방지). 위 호출의 배경 fetch가
-  //    op 락을 잠깐 쥘 수 있어 OP_IN_PROGRESS 는 짧게 재시도한다. ──
+  // ── 뒷정리: pull 로 behind 해소(다른 검증·teardown 오염 방지). 배경 fetch는 git fetch가
+  //    끝날 때까지 op 락(state.rs)을 쥔 채로 돈다(fetch_scheduler.rs 의 fetch_one) — "잠깐"이
+  //    아니라 fetch 1회 전체(실측 3.6~8.6s)다. 고정 3회×1s 재시도로는 모자라, 시한 기반으로
+  //    OP_IN_PROGRESS 인 동안 계속 다시 친다. ──
   let pull = null;
-  for (let i = 0; i < 3; i++) {
+  const pullDeadline = Date.now() + 30000;
+  for (;;) {
     pull = await cdp.try("pull", { projectId: fix.projectId }, { timeoutMs: 60000 });
-    if (pull.ok || pull.code !== "OP_IN_PROGRESS") break;
-    await sleep(1000);
+    if (pull.ok || pull.code !== "OP_IN_PROGRESS" || Date.now() >= pullDeadline) break;
+    await sleep(500);
   }
   r.check("정리: pull 로 behind 해소", pull?.ok === true, pull?.code || pull?.message || "");
   const after = await statusOf(cdp, fix.projectId);

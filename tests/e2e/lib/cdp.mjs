@@ -3,12 +3,23 @@
 //
 // 디버그 빌드만 9222 포트를 연다(lib.rs: --remote-debugging-port=9222 는 debug_assertions 전용).
 // release 빌드/미실행이면 connect() 가 명확한 안내와 함께 throw 한다.
+//
+// 부하가 큰 머신에서 CDP 응답이 실제로 유실된다(실측): `Runtime.evaluate` 응답에 result 가
+// 통째로 없어 eval 이 조용히 undefined 를 돌려주면 호출부가 `Cannot read properties of undefined`
+// 로 죽고, 응답이 아예 안 오면 _send 가 영원히 대기해 러너가 멈춘다. 그래서 _send 는 시한을
+// 두고, eval 은 result 누락을 재시도 후 명시적 오류로 올리며, try() 는 그 오류를 E2E_CDP 로 감싼다.
 
 // gitpervisor 메인 창은 타이틀 "Gitpervisor" 로 식별한다(lib.rs: .title("Gitpervisor")).
 // 9222 가 다른 Tauri 앱에 점유될 수 있으므로(사용자는 여러 Tauri 앱을 띄움) 포트 범위를 스캔해
 // gitpervisor 페이지를 찾는다. GPV_E2E_PORT 가 지정되면 그 포트만 본다.
+//
+// **타이틀만으로 고르면 안 된다.** 플로팅 터미널 프리워밍 풀 창(label `float-pool-N`)도 같은
+// 타이틀·같은 URL 이라 /json 순서에 따라 첫 매칭이 풀 창일 수 있다. 그 창에 붙으면 스위트 13 이
+// 풀 창을 닫는 순간 CDP 연결이 통째로 끊겨 러너가 중간에 죽는다(실제로 두 세션이 겪었다).
+// 그래서 매칭 페이지마다 붙어 webview 라벨을 물어 `main` 을 고른다.
 const SCAN_PORTS = [29222, 9222, 9223, 9224, 9225, 9226, 9333];
 const TITLE = /gitpervisor/i;
+const LABEL_EXPR = "window.__TAURI_INTERNALS__?.metadata?.currentWebview?.label";
 
 async function listTargets(port) {
   try {
@@ -27,8 +38,9 @@ async function locate(explicitPort) {
     if (!list) continue;
     const pages = list.filter((t) => t.type === "page");
     for (const p of pages) seen.push(`  - 포트 ${port}: "${p.title || ""}" ${p.url}`);
-    const page = pages.find((t) => TITLE.test(t.title || ""));
-    if (page) return { page, port };
+    // 타이틀 매칭을 **전부** 돌려준다 — 어느 것이 메인 창인지는 connect() 가 라벨로 가린다.
+    const matched = pages.filter((t) => TITLE.test(t.title || ""));
+    if (matched.length) return { pages: matched, port };
   }
   const hint = seen.length
     ? `발견된 다른 앱/타겟:\n${seen.join("\n")}\n\n` +
@@ -57,26 +69,58 @@ class Cdp {
     };
   }
 
-  _send(method, params) {
-    return new Promise((res) => {
+  _send(method, params, { timeoutMs = 60000 } = {}) {
+    return new Promise((res, rej) => {
       const mid = ++this._id;
-      this._pending.set(mid, res);
+      const timer = setTimeout(() => {
+        this._pending.delete(mid);
+        rej(new Error(`CDP ${method} 응답 시간 초과(${Math.round(timeoutMs / 1000)}s)`));
+      }, timeoutMs);
+      this._pending.set(mid, (msg) => {
+        clearTimeout(timer);
+        res(msg);
+      });
       this._ws.send(JSON.stringify({ id: mid, method, params: params || {} }));
     });
   }
 
-  /** 페이지 컨텍스트에서 표현식을 평가하고 값을 그대로(by value) 돌려준다. JS 예외는 throw. */
-  async eval(expression) {
-    const r = await this._send("Runtime.evaluate", {
-      expression,
-      awaitPromise: true,
-      returnByValue: true,
-    });
-    if (r.result?.exceptionDetails) {
-      const d = r.result.exceptionDetails;
-      throw new Error(`page eval 예외: ${d.exception?.description || d.text || JSON.stringify(d)}`);
+  /**
+   * 페이지 컨텍스트에서 표현식을 평가하고 값을 그대로(by value) 돌려준다. JS 예외는 throw.
+   *
+   * `awaitPromise` 라 **페이지 안의 대기가 곧 CDP 응답 대기**다. 자체 폴링 예산이 큰 표현식
+   * (14 의 #2b 는 셸에 폭을 세 번 물어 최악 ~55s)은 기본 60s 시한에 그대로 걸린다 —
+   * 그런 호출부만 `{ timeoutMs }` 로 예산보다 넉넉히 잡는다.
+   */
+  async eval(expression, { timeoutMs = 60000 } = {}) {
+    for (let attempt = 0; ; attempt++) {
+      const r = await this._send(
+        "Runtime.evaluate",
+        {
+          expression,
+          awaitPromise: true,
+          returnByValue: true,
+        },
+        { timeoutMs },
+      );
+      if (r.error) {
+        throw new Error(
+          `CDP Runtime.evaluate 오류: ${r.error.message || JSON.stringify(r.error)}`,
+        );
+      }
+      if (r.result?.exceptionDetails) {
+        const d = r.result.exceptionDetails;
+        throw new Error(`page eval 예외: ${d.exception?.description || d.text || JSON.stringify(d)}`);
+      }
+      // result 객체가 있으면 value 가 없어도(정상 `{type:"undefined"}`) 그대로 돌려준다.
+      // result 자체가 없는 것만 응답 유실로 보고 재시도한다.
+      if (r.result?.result) return r.result.result.value;
+      if (attempt >= 2) {
+        throw new Error(
+          `CDP Runtime.evaluate 응답에 result 가 없습니다(재시도 2회 실패): ${expression.slice(0, 120)}`,
+        );
+      }
+      await new Promise((res) => setTimeout(res, 150));
     }
-    return r.result?.result?.value;
   }
 
   /**
@@ -106,7 +150,13 @@ class Cdp {
           message: (e&&e.message) || (e&&e.__e2eTimeout ? 'invoke 응답 시간 초과' : (typeof e==='string'? e : JSON.stringify(e))),
           stderr: (e&&e.stderr) || null }));
     })()`;
-    return this.eval(expr);
+    // CDP 계층 오류(응답 유실·시간 초과)는 throw 하지 않고 실패 결과로 돌려준다 —
+    // invoke() 가 `.ok` 를 읽다 TypeError 로 죽지 않고 원인이 그대로 보고되게.
+    try {
+      return await this.eval(expr);
+    } catch (e) {
+      return { ok: false, code: "E2E_CDP", message: e?.message || String(e), stderr: null };
+    }
   }
 
   /**
@@ -137,16 +187,50 @@ class Cdp {
   }
 }
 
-export async function connect({ port } = {}) {
-  const explicit = port || Number(process.env.GPV_E2E_PORT) || null;
-  const { page, port: cdpPort } = await locate(explicit);
+/** 한 페이지에 붙어 Runtime 을 켠 Cdp 를 돌려준다(연결 실패는 null). */
+async function attach(page) {
   const ws = new WebSocket(page.webSocketDebuggerUrl);
-  await new Promise((res, rej) => {
-    ws.onopen = res;
-    ws.onerror = (e) => rej(new Error("CDP WebSocket 오류: " + (e?.message || "")));
-  });
+  try {
+    await new Promise((res, rej) => {
+      ws.onopen = res;
+      ws.onerror = (e) => rej(new Error("CDP WebSocket 오류: " + (e?.message || "")));
+    });
+  } catch (_) {
+    return null;
+  }
   const cdp = new Cdp(ws);
   await cdp._send("Runtime.enable");
+  return cdp;
+}
+
+export async function connect({ port } = {}) {
+  const explicit = port || Number(process.env.GPV_E2E_PORT) || null;
+  const { pages, port: cdpPort } = await locate(explicit);
+
+  // 라벨이 `main` 인 페이지를 고른다. 라벨을 못 읽는 옛 빌드를 위해 **첫 매칭 페이지**를
+  // 폴백으로 들고 있는다(기존 동작). 채택되지 않은 연결은 바로 닫는다.
+  let picked = null;
+  let fallback = null;
+  for (const page of pages) {
+    const c = await attach(page);
+    if (!c) continue;
+    const label = await c.eval(LABEL_EXPR).catch(() => null);
+    if (label === "main") {
+      picked = { cdp: c, page };
+      break;
+    }
+    if (fallback) c.close();
+    else fallback = { cdp: c, page };
+  }
+  if (picked && fallback) fallback.cdp.close();
+  const chosen = picked ?? fallback;
+  if (!chosen) {
+    throw new Error(
+      `gitpervisor 페이지(${pages.length}개)에 CDP WebSocket 으로 붙지 못했습니다 — 앱이 방금 종료됐을 수 있습니다.`,
+    );
+  }
+  const { cdp, page } = chosen;
+
   const bridge = await cdp.eval("typeof window.__TAURI_INTERNALS__?.invoke");
   if (bridge !== "function") {
     cdp.close();

@@ -80,8 +80,11 @@ export async function run({ cdp, report: r, fix }) {
     await cdp.eval(`window.__gpv && (window.__gpv.ui.getState().setAggregateOpen(false))`).catch(() => {});
     // search 스토어는 __gpv에 없으니 Esc 키로 패널 닫기 시도
     await cdp.eval(`window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`).catch(() => {});
+    // selectProject를 selectDiff보다 **먼저** — 순서가 바뀌면 selectDiff가 아직 픽스처인
+    // selectedProjectId로 사용자 파일을 activeDiffByProject/viewerTabs에 기록해 다음 스위트가 그 파일을 연다.
     await cdp.eval(`(()=>{ const u=window.__gpv.ui.getState();
       for (const t of [...u.viewerTabs].filter(t=>t.outerId===${J(fix.projectId)})) u.closeViewerTab(t.key);
-      u.selectDiff(${J(prior.diff)}, ${J(prior.repo)}); if(${J(prior.pid)}) u.selectProject(${J(prior.pid)}); })()`).catch(() => {});
+      if(${J(prior.pid)}) u.selectProject(${J(prior.pid)});
+      u.selectDiff(${J(prior.diff)}, ${J(prior.repo)}); })()`).catch(() => {});
   }
 }
