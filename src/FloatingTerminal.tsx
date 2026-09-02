@@ -1,7 +1,9 @@
+import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useEffect, useState } from "react";
+import { Undo2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 
 import { FloatTitleBar } from "./components/FloatTitleBar";
 import { PaneTreeRoot } from "./components/workspace/PaneTree";
@@ -9,11 +11,12 @@ import { floatPoolReady } from "./lib/floating";
 import { ipc } from "./lib/ipc";
 import {
   createTerminal,
+  detachTerminalKeepPty,
   disposeTerminal,
   refreshTerminalThemes,
 } from "./lib/terminal";
 import { useSettings } from "./queries";
-import { collectPanes, useTerminals } from "./stores/terminals";
+import { collectPanes, sendTerminalsCmd, useTerminals } from "./stores/terminals";
 
 const FONT = 13;
 
@@ -104,19 +107,26 @@ export function FloatingTerminal({ paneId: fixedPaneId }: { paneId: string | nul
     };
   }, [paneId]);
 
-  if (!tabId) return <div className="h-screen w-screen bg-base" />;
-  return <FloatWorkspace tabId={tabId} projectId={projectId} />;
+  // tabId는 paneId 효과 안에서만 세팅되므로 둘은 함께 있거나 함께 없다 — 타입 좁히기용 동시 검사.
+  if (!tabId || !paneId) return <div className="h-screen w-screen bg-base" />;
+  return <FloatWorkspace tabId={tabId} projectId={projectId} ownPaneId={paneId} />;
 }
 
 function FloatWorkspace({
   tabId,
   projectId,
+  ownPaneId,
 }: {
   tabId: string;
   projectId: string;
+  /** 이 창의 대표 pane(라벨 접미사 또는 풀 claim으로 받은 id) — Rust Destroyed 훅이 PTY를 죽일 때
+   *  조회하는 유일한 id라, 되돌리기의 우회 등록도 이것 하나만 한다(redock 주석). */
+  ownPaneId: string;
 }) {
   const tab = useTerminals((s) => s.terminals.find((t) => t.id === tabId));
   const [title, setTitle] = useState("터미널");
+  // 되돌리기 진행 중 — 연타하면 같은 pane에 openTerminal 명령이 두 번 나가 메인에 빈 탭이 생긴다.
+  const redocking = useRef(false);
 
   // 타이틀에 프로젝트명 표시
   useEffect(() => {
@@ -167,9 +177,50 @@ function FloatWorkspace({
   }, [tab]);
 
   if (!tab) return null;
+
+  /** 이 창의 터미널을 PTY를 살린 채 메인 창으로 넘긴다(되돌리기). */
+  const redock = async () => {
+    if (redocking.current) return;
+    redocking.current = true;
+    const panes = collectPanes(tab.layout); // 이 창에서 분할로 늘린 pane까지 전부
+    // **창을 닫기 전에 반드시 완료돼야 한다.** 이 호출이 Rust에 "이 세션은 창이 파괴돼도
+    // 죽이지 말라"고 등록하는 일이라(Destroyed 훅의 PTY kill 우회), 등록 전에 창이 닫히면
+    // 되돌릴 세션이 이미 없다. 실패하면 아무것도 건드리지 않고 멈춘다 — 진행하면 PTY가 죽는다.
+    //
+    // 등록은 **대표 pane 하나만.** Destroyed 훅이 조회하는 id는 창당 하나(풀 창 claim / 라벨
+    // 접미사)고, 분할로 늘린 pane은 Rust가 한 번도 조회하지 않아 등록하면 skip 셋에 영구히 남는다
+    // → 훗날 그 pane을 다시 분리했다 진짜로 닫을 때 PTY가 고아로 산다. 분할 pane의 PTY는 등록
+    // 없이도 살아남는다 — 그것들을 죽이는 건 아래 언로드 정리뿐인데, 그 전에 목록을 비운다.
+    try {
+      await invoke("float_redock_begin", { termIds: [ownPaneId] });
+    } catch (e) {
+      redocking.current = false;
+      console.error("되돌리기 중단 — PTY 보존 등록 실패:", e);
+      return;
+    }
+    panes.forEach((p) => detachTerminalKeepPty(p)); // xterm만 정리, PTY는 살린다
+    panes.forEach((p) =>
+      sendTerminalsCmd({ op: "openTerminal", projectId, paneId: p }),
+    );
+    // 목록을 비우면 위 "탭 소멸 → 창 닫기" 효과가 창을 닫고, 언로드 정리 효과는 빈 목록을 돌아
+    // disposeTerminal(=PTY kill)을 한 번도 부르지 않는다.
+    useTerminals.setState({ terminals: [] });
+  };
+
   return (
     <div className="flex h-screen flex-col bg-base">
-      <FloatTitleBar title={title} />
+      <FloatTitleBar
+        title={title}
+        actions={
+          <button
+            onClick={() => void redock()}
+            title="이 창의 터미널을 메인 창으로 되돌립니다 — 모아보기가 열려 있으면 거기 나타납니다"
+            className="flex h-full shrink-0 items-center gap-1 px-2 text-[11px] text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+          >
+            <Undo2 size={12} /> 메인으로 되돌리기
+          </button>
+        }
+      />
       <div className="min-h-0 flex-1">
         <PaneTreeRoot tab={tab} projectId={projectId} fontSize={FONT} />
       </div>

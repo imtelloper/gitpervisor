@@ -1,3 +1,4 @@
+import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { create } from "zustand";
 
@@ -22,6 +23,7 @@ function dropPane(paneId: string): void {
 //  - float-*    : 불러오지 않음(FloatingTerminal이 단일 pane을 시드) + 저장 안 함
 //  - aggregate  : **불러옴**(그리드에 메인의 터미널을 그려야 한다) + 저장 안 함.
 //                 메인이 이후 만든 터미널은 storage 이벤트로 따라간다(아래 구독).
+//                 **변경은 메인에 위임한다**(terminals://cmd) — 아래 sendTerminalsCmd.
 type WindowRole = "main" | "float" | "aggregate";
 const ROLE: WindowRole = (() => {
   try {
@@ -34,6 +36,18 @@ const ROLE: WindowRole = (() => {
   }
 })();
 export const IS_AGGREGATE_WINDOW = ROLE === "aggregate";
+
+/** 보조 창이 메인에 내리는 터미널 변경 명령 — 스토어 액션과 1:1. */
+export type TerminalsCmd =
+  | { op: "openTerminal"; projectId: string; paneId: string; tabId?: string }
+  | { op: "closePane"; tabId: string; paneId: string }
+  | { op: "floatPane"; tabId: string; paneId: string };
+
+/** 보조 창 → 메인. 메인만 스토어를 저장하므로 변경은 메인이 하고, 결과는 storage 이벤트로 돌아온다. */
+export const sendTerminalsCmd = (cmd: TerminalsCmd) =>
+  void emitTo("main", "terminals://cmd", cmd).catch((e) =>
+    console.error("메인 위임 실패:", e),
+  );
 
 export type SplitDir = "row" | "col"; // row=좌우 분할, col=상하 분할
 
@@ -181,8 +195,13 @@ interface TerminalsState {
   /** 프로젝트별 활성 탭 ("viewer" 또는 tabId) */
   activeTab: Record<string, string>;
   paneStatus: Record<string, PaneStatus>;
-  /** 새 터미널 탭(단일 리프)을 연다 — 신규 pane을 바로 다루도록 paneId까지 반환 */
-  openTerminal: (projectId: string) => { tabId: string; paneId: string };
+  /** 새 터미널 탭(단일 리프)을 연다 — 신규 pane을 바로 다루도록 paneId까지 반환.
+   *  ids를 넘기면 그 id로 만든다: 보조 창의 위임(같은 id가 storage로 되돌아온다)과
+   *  Float 되돌리기(살아 있는 PTY의 paneId를 그대로 담은 새 탭)가 쓴다. */
+  openTerminal: (
+    projectId: string,
+    ids?: { tabId?: string; paneId?: string },
+  ) => { tabId: string; paneId: string };
   closeTab: (tabId: string) => void;
   closeProjectTerminals: (projectId: string) => void;
   setActiveTab: (projectId: string, tab: string) => void;
@@ -276,9 +295,13 @@ export const useTerminals = create<TerminalsState>((set, get) => ({
       },
     })),
 
-  openTerminal: (projectId) => {
-    const tabId = crypto.randomUUID();
-    const paneId = crypto.randomUUID();
+  openTerminal: (projectId, ids) => {
+    const tabId = ids?.tabId ?? crypto.randomUUID();
+    const paneId = ids?.paneId ?? crypto.randomUUID();
+    if (ROLE === "aggregate") {
+      sendTerminalsCmd({ op: "openTerminal", projectId, tabId, paneId });
+      return { tabId, paneId }; // 호출부는 이 id로 selected에 넣는다 — 같은 id가 storage로 돌아온다
+    }
     const n = get().terminals.filter((t) => t.projectId === projectId).length + 1;
     set((s) => ({
       terminals: [
@@ -386,6 +409,8 @@ export const useTerminals = create<TerminalsState>((set, get) => ({
   },
 
   floatPane: (tabId, paneId) => {
+    if (ROLE === "aggregate")
+      return sendTerminalsCmd({ op: "floatPane", tabId, paneId });
     const tab = get().terminals.find((t) => t.id === tabId);
     if (!tab) return;
     // PTY는 살린 채 메인 창의 xterm만 정리하고 트리에서 패널을 뺀다(closePane과 달리 term_close 안 함).
@@ -438,6 +463,8 @@ export const useTerminals = create<TerminalsState>((set, get) => ({
     })),
 
   closePane: (tabId, paneId) => {
+    if (ROLE === "aggregate")
+      return sendTerminalsCmd({ op: "closePane", tabId, paneId });
     dropPane(paneId);
     const tab = get().terminals.find((t) => t.id === tabId);
     if (!tab) return;
@@ -520,6 +547,17 @@ if (ROLE === "main")
     } catch {
       /* localStorage 불가 환경 무시 */
     }
+  });
+
+// 보조 창(모아보기·플로팅)이 보낸 변경 명령을 메인이 대신 실행한다 — 스토어를 저장하는 창이
+// 메인 하나뿐이라, 변경도 메인이 해야 결과가 영속되고 다른 창에 storage로 퍼진다.
+if (ROLE === "main")
+  void listen<TerminalsCmd>("terminals://cmd", ({ payload: c }) => {
+    const ts = useTerminals.getState();
+    if (c.op === "openTerminal")
+      ts.openTerminal(c.projectId, { tabId: c.tabId, paneId: c.paneId });
+    else if (c.op === "closePane") ts.closePane(c.tabId, c.paneId);
+    else if (c.op === "floatPane") ts.floatPane(c.tabId, c.paneId);
   });
 
 // 모아보기 창은 메인이 저장한 내용을 따라간다 — storage 이벤트는 **다른 창**에서만 발화하므로

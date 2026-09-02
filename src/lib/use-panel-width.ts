@@ -47,6 +47,61 @@ export function usePanelWidth(
   return { width, startResize, resizeTo };
 }
 
+/**
+ * 드래그로 조절 가능한 박스 크기(폭·높이). localStorage에 JSON으로 영속한다.
+ *
+ * 델타가 `usePanelWidth`와 반대인 이유: 이 훅을 쓰는 팝오버는 **우상단 앵커**(right/top 고정)라
+ * 왼쪽·아래로 끌어야 커진다. 최대는 클램프하지 않는다 — 호출부의 인라인 maxWidth/maxHeight가
+ * 이미 창 크기로 자른다.
+ */
+export function useDragSize(
+  storageKey: string,
+  initial: { w: number; h: number },
+  min: { w: number; h: number },
+) {
+  const [size, setSize] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(storageKey) ?? "");
+      if (saved?.w >= min.w && saved?.h >= min.h)
+        return { w: saved.w as number, h: saved.h as number };
+    } catch {
+      /* 손상 값은 기본으로 */
+    }
+    return initial;
+  });
+
+  useEffect(() => {
+    localStorage.setItem(storageKey, JSON.stringify(size));
+  }, [storageKey, size]);
+
+  const startResize = (e: React.MouseEvent, axis: "x" | "y" | "both") => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const start = size;
+    const onMove = (ev: MouseEvent) => {
+      const w =
+        axis === "y" ? start.w : Math.max(min.w, start.w + startX - ev.clientX);
+      const h =
+        axis === "x" ? start.h : Math.max(min.h, start.h + ev.clientY - startY);
+      setSize({ w, h });
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    document.body.style.cursor =
+      axis === "x" ? "col-resize" : axis === "y" ? "row-resize" : "nesw-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  return { size, startResize };
+}
+
 /** 사이드 패널 접힘 상태. localStorage에 영속해 리로드 후에도 유지된다. */
 export function usePanelCollapsed(storageKey: string) {
   const [collapsed, setCollapsed] = useState(

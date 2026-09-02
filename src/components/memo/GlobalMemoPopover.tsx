@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 
 import { GLOBAL_NOTES_ID } from "../../lib/ipc";
+import { useDragSize } from "../../lib/use-panel-width";
 import { useOccludesWebview } from "../../stores/occlusion";
 import { MemoPanel } from "./MemoPanel";
 
@@ -22,6 +23,12 @@ export function GlobalMemoPopover({
   closeRef?: React.RefObject<(() => void) | null>;
 }) {
   const flushRef = useRef<(() => void) | null>(null);
+  // 최소폭 480 = 목록 240(MemoPanel의 w-[240px]) + 편집기 최소.
+  const { size, startResize } = useDragSize(
+    "gp:memo-size",
+    { w: 720, h: 420 },
+    { w: 480, h: 300 },
+  );
   // 워크스페이스의 네이티브 자식 webview(브라우저 탭)는 React DOM과 z-합성되지 않고 항상 위에
   // 그려진다 — 등록하지 않으면 브라우저가 열려 있을 때 이 팝오버가 통째로 가린다(occlusion.ts).
   useOccludesWebview(true);
@@ -64,10 +71,12 @@ export function GlobalMemoPopover({
         //
         // cursor-auto·select-text: 이 팝오버는 타이틀바(<header> select-none cursor-default)
         // 안에 DOM으로 들어가 상속을 받는다 — 편집기에는 상속을 끊어 준다.
-        className="fixed z-50 flex h-[420px] w-[720px] cursor-auto overflow-hidden rounded-lg border border-edge bg-panel shadow-xl select-text"
+        className="fixed z-50 flex cursor-auto overflow-hidden rounded-lg border border-edge bg-panel shadow-xl select-text"
         style={{
           right: anchor.right,
           top: anchor.top,
+          width: size.w,
+          height: size.h,
           maxWidth: `calc(100vw - ${anchor.right}px - 12px)`,
           maxHeight: `calc(100vh - ${anchor.top}px - 12px)`,
         }}
@@ -77,6 +86,29 @@ export function GlobalMemoPopover({
           scopeLabel="전역 메모"
           onClose={close}
           flushRef={flushRef}
+        />
+        {/* 크기 조절 핸들 — 우상단 앵커라 자유 모서리는 좌하단이다(CellHandles의 좌우 미러).
+            stopPropagation: 드래그 시작이 백드롭 클릭(닫기)으로 새지 않게. */}
+        <div
+          onMouseDown={(e) => {
+            e.stopPropagation();
+            startResize(e, "x");
+          }}
+          className="absolute bottom-0 left-0 top-0 z-10 w-1.5 cursor-col-resize hover:bg-accent/50"
+        />
+        <div
+          onMouseDown={(e) => {
+            e.stopPropagation();
+            startResize(e, "y");
+          }}
+          className="absolute bottom-0 left-0 z-10 h-1.5 w-full cursor-row-resize hover:bg-accent/50"
+        />
+        <div
+          onMouseDown={(e) => {
+            e.stopPropagation();
+            startResize(e, "both");
+          }}
+          className="absolute bottom-0 left-0 z-20 size-3 cursor-nesw-resize hover:bg-accent/40"
         />
       </div>
     </>

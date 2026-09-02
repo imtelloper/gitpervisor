@@ -270,6 +270,45 @@ fn float_pool_ready(app: tauri::AppHandle, window: tauri::Window) {
     }
 }
 
+// ── 플로팅 → 메인 되돌리기 ──
+// 플로팅 창이 닫히면 Destroyed 훅이 그 창의 PTY를 죽인다(풀 분기·float 분기 둘 다). 되돌리기는
+// **창만** 닫고 PTY는 메인이 이어받아야 하므로, 창을 닫기 전에 그 정리를 1회 건너뛰게 등록한다.
+
+/// 되돌리기 절차 2단계 — 이 창의 PTY id들을 Destroyed 우회 목록에 넣는다.
+/// **창을 닫기 전에 완료돼야 한다**(닫힌 뒤에 등록하면 이미 세션이 죽어 있다).
+#[tauri::command]
+fn float_redock_begin(
+    state: tauri::State<'_, AppState>,
+    term_ids: Vec<String>,
+) -> Result<(), String> {
+    state
+        .redock_skip
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .extend(term_ids);
+    Ok(())
+}
+
+/// 등록돼 있으면 **제거하고** true — 우회는 1회성이다. 남겨 두면 그 뒤 진짜로 닫은 플로팅 창의
+/// PTY가 정리되지 않아 셸이 고아로 남는다(2026-08 누수 경로).
+fn take_redock_skip(skip: &mut std::collections::HashSet<String>, term_id: &str) -> bool {
+    skip.remove(term_id)
+}
+
+/// Destroyed 훅의 PTY 정리 — 되돌리기로 등록된 id면 살려 둔다. 두 분기(풀/float) 공통.
+/// 락 가드는 블록 안에서 끝낸다 — close_session은 PTY 종료를 기다리므로 잡은 채로 들어가지 않는다.
+fn close_unless_redocking(state: &AppState, term_id: &str) {
+    let redocking = {
+        let mut skip = state.redock_skip.lock().unwrap_or_else(|e| e.into_inner());
+        take_redock_skip(&mut skip, term_id)
+    };
+    if redocking {
+        log::info!("redock: {term_id} PTY 유지");
+    } else {
+        commands::close_session(state, term_id);
+    }
+}
+
 /// 리소스 모니터 팝업 창(태스크 05) — open_float_window와 같은 검증된 레시피를 그대로 미러:
 /// async 커맨드 + run_on_main_thread + WebviewUrl::External(origin) + browser_args() 일치.
 /// 라벨 "sysmon" 싱글턴 — 이미 떠 있으면 새로 만들지 않고 포커스만 준다. Destroyed 핸들러는
@@ -832,6 +871,7 @@ pub fn run() {
             open_float_window,
             float_pool_warm,
             float_pool_ready,
+            float_redock_begin,
             open_sysmon_window,
             open_aggregate_window,
             open_doc_window,
@@ -956,7 +996,7 @@ pub fn run() {
                         };
                         if let Some(pane_id) = claimed {
                             if let Some(state) = window.try_state::<AppState>() {
-                                commands::close_session(state.inner(), &pane_id);
+                                close_unless_redocking(state.inner(), &pane_id);
                             }
                         }
                     });
@@ -970,7 +1010,7 @@ pub fn run() {
                     // try_state를 쓰는 이유도 같다 — state()는 상태 미등록 시 패닉한다.
                     shutdown_step("float-close", || {
                         if let Some(state) = window.try_state::<AppState>() {
-                            commands::close_session(state.inner(), term_id);
+                            close_unless_redocking(state.inner(), term_id);
                         }
                     });
                 } else if label == "sysmon" {
@@ -984,6 +1024,18 @@ pub fn run() {
                                 .unwrap_or_else(|e| e.into_inner())
                                 .reset();
                         }
+                    });
+                } else if label == "aggregate" {
+                    // 모아보기 창의 "꺼짐"은 여기서 메인에 알린다. 그 창의 beforeunload가 보내던
+                    // 이벤트는 창이 죽는 중의 비동기 IPC라 유실됐고, 그러면 메인이 터미널을 "다른
+                    // 창에서 표시 중"으로 접은 채 갇힌다(lib/aggregate-window.ts § 열림 상태).
+                    // PTY는 건드리지 않는다 — 메인이 다시 이어받는다.
+                    shutdown_step("aggregate-close", || {
+                        let _ = window.emit_to(
+                            "main",
+                            "aggregate-window://state",
+                            serde_json::json!({ "open": false }),
+                        );
                     });
                 }
             }
@@ -1055,6 +1107,23 @@ mod tests {
         );
         assert!(!"aggregate".starts_with(FLOAT_LABEL_PREFIX));
         assert!(!"sysmon".starts_with(FLOAT_LABEL_PREFIX));
+    }
+
+    /// 되돌리기 우회는 **1회성**이다. 등록이 남으면 그 뒤 진짜로 닫은 플로팅 창의 PTY가
+    /// 정리되지 않아 셸이 고아로 남는다 — 미등록 id는 당연히 기존 동작(close_session)이다.
+    #[test]
+    fn redock_skip_is_consumed_once() {
+        let mut skip = std::collections::HashSet::new();
+        skip.insert("pane-a".to_string());
+        assert!(take_redock_skip(&mut skip, "pane-a"), "등록된 id는 PTY를 유지한다");
+        assert!(
+            !take_redock_skip(&mut skip, "pane-a"),
+            "두 번째 닫기는 정상 정리해야 한다"
+        );
+        assert!(
+            !take_redock_skip(&mut skip, "pane-b"),
+            "등록한 적 없는 id는 우회 대상이 아니다"
+        );
     }
 
     /// 닫기 확인은 **한 번만** 묻고, 두 번째 요청은 통과시킨다.

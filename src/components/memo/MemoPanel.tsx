@@ -50,7 +50,11 @@ export function MemoPanel({
     return [...list].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }, [notes, scopeId]);
 
-  const [activeId, setActiveId] = useState<string | null>(null);
+  // 마지막으로 보던 메모를 스코프별로 기억한다 — 전역/프로젝트가 서로를 덮지 않게 키를 나눈다.
+  const activeKey = `gp:memo-active:${scopeId}`;
+  const [activeId, setActiveId] = useState<string | null>(() =>
+    localStorage.getItem(activeKey),
+  );
   const active = memos.find((m) => m.id === activeId) ?? memos[0] ?? null;
 
   const [text, setText] = useState("");
@@ -66,16 +70,18 @@ export function MemoPanel({
   //  입력 — 붙여넣기처럼 input 이벤트 한 번으로 끝나는 편집 — 이 통째로 저장을 건너뛰었다.)
   const textOwner = useRef<string | null>(null);
 
-  // 스코프가 바뀌면 선택을 버린다 — 전역↔프로젝트로 갈아끼울 때 이전 스코프의 memoId가 남으면
+  // 스코프가 바뀌면 그 스코프가 마지막에 보던 메모로 갈아끼운다 — 이전 스코프의 memoId가 남으면
   // 첫 렌더에서 엉뚱한 메모를 가리킨다.
   useEffect(() => {
-    setActiveId(null);
-  }, [scopeId]);
+    setActiveId(localStorage.getItem(activeKey));
+  }, [activeKey]);
 
-  // active 메모가 바뀌면 본문 로드
+  // active 메모가 바뀌면 본문 로드. 기억은 activeId가 아니라 **실효 active.id**로 — 아무것도
+  // 고르지 않고 첫 메모를 보다 닫은 경우도 그 메모로 복원된다.
   useEffect(() => {
     setText(active?.text ?? "");
     textOwner.current = active?.id ?? null;
+    if (active?.id) localStorage.setItem(activeKey, active.id);
   }, [active?.id]);
 
   // 디바운스 자동 저장 — 방금 불러온 그대로(text === active.text)면 쓸 것이 없고,

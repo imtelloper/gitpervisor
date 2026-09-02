@@ -1,9 +1,11 @@
 // 터미널 세션 공용 컨트롤 — 컬러 테마(ThemeButton) · 프롬프트 기록(PromptLogButton +
-// PromptSidePanel). 원래 모아보기 셀 헤더(AggregateTerminals) 전용이었는데, 워크스페이스
-// 터미널 패널에도 같은 기능을 붙이면서 여기로 뽑았다. 상태는 전부 **세션(termId=paneId)
-// 단위 스토어**(termThemes/promptHistory)라 어디서 그리든 같은 세션 = 같은 상태다.
+// PromptSidePanel) · 전체 프롬프트 컬럼 마스터 토글(PromptHistoryButton). 원래 모아보기 셀
+// 헤더(AggregateTerminals) 전용이었는데, 워크스페이스 터미널 패널에도 같은 기능을 붙이면서
+// 여기로 뽑았다. 세션 단위 컨트롤의 상태는 전부 **세션(termId=paneId) 단위 스토어**
+// (termThemes/promptHistory)라 어디서 그리든 같은 세션 = 같은 상태다. 마스터 토글만 창의
+// 모든 세션을 대상으로 하며, 메인 타이틀바와 모아보기 별도 창 헤더가 함께 쓴다.
 import { Check, History, Palette, Trash2, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { copyText } from "../../lib/clipboard";
 import { relativeTime } from "../../lib/format";
@@ -11,6 +13,7 @@ import { TERM_SCHEMES } from "../../lib/term-color-schemes";
 import { useOccludesWebview } from "../../stores/occlusion";
 import { usePromptHistory } from "../../stores/promptHistory";
 import { useTermThemes } from "../../stores/termThemes";
+import { collectByContent, useTerminals } from "../../stores/terminals";
 import { useUi } from "../../stores/ui";
 
 /**
@@ -152,6 +155,44 @@ export function PromptLogButton({ termId }: { termId: string }) {
       {count > 0 && (
         <span className="text-[9px] leading-none tabular-nums">{count}</span>
       )}
+    </button>
+  );
+}
+
+/**
+ * 전체 프롬프트 히스토리 펼치기/접기 — **모든 터미널 셀 우측 프롬프트 컬럼**의 마스터 토글.
+ * 켜면 모든 세션 셀에 컬럼이 펼쳐지고(모아보기에서 보임), 다시 누르면 전부 접힌다.
+ * 셀마다 개별 토글(헤더 버튼·패널 X)은 그대로 살아 있다 — 일부만 닫힌 상태에서 누르면
+ * "전부 펼치기"부터 한다(반쯤 섞인 상태에서 마스터의 의도는 언제나 '다 보이게'가 먼저다).
+ * 열린 터미널이 있을 때만 표시(모아보기 버튼과 같은 규칙).
+ * className은 두는 자리의 버튼 크기에 맞추는 용도 — 생략하면 타이틀바 치수다.
+ */
+export function PromptHistoryButton({ className }: { className?: string }) {
+  const terminals = useTerminals((s) => s.terminals);
+  const openPanels = usePromptHistory((s) => s.openPanels);
+  const setPanels = usePromptHistory((s) => s.setPanels);
+  // 살아있는 모든 터미널 pane — 마스터 토글의 대상 집합.
+  const paneIds = useMemo(
+    () => terminals.flatMap((t) => collectByContent(t.layout, "terminal")),
+    [terminals],
+  );
+  if (paneIds.length === 0) return null;
+  const allOpen = paneIds.every((id) => openPanels[id]);
+  return (
+    <button
+      onClick={() => setPanels(paneIds, !allOpen)}
+      title={
+        allOpen
+          ? "전체 프롬프트 히스토리 접기 — 모든 터미널의 우측 목록을 닫습니다"
+          : "전체 프롬프트 히스토리 펼치기 — 모든 터미널 우측에 입력 목록을 엽니다 (모아보기에서 표시)"
+      }
+      className={`flex items-center gap-1 rounded ${
+        allOpen
+          ? "bg-raised text-accent"
+          : "text-fg-muted hover:bg-raised hover:text-fg"
+      } ${className ?? "mr-2.5 px-1.5 py-0.5 text-[10px]"}`}
+    >
+      <History size={11} /> 히스토리
     </button>
   );
 }

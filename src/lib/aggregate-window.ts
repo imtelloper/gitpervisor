@@ -13,9 +13,9 @@ import { getAllWebviewWindows } from "@tauri-apps/api/webviewWindow";
  * 중"으로 접는다** — 창을 닫으면 메인이 다시 이어받는다.
  *
  * ## 열림 상태를 어떻게 아는가
- * 창이 켜지고 꺼질 때 Tauri 이벤트를 쏜다(창 간 브로드캐스트). 다만 창이 비정상 종료하면
- * "꺼짐"을 못 받아 메인이 영영 접힌 채 남을 수 있어, 메인은 포커스를 얻을 때마다 실제 창
- * 목록으로 재확인한다(아래 watchAggregateWindow).
+ * "켜짐"은 그 창이 마운트되며 이벤트로 알리고, "꺼짐"은 **Rust의 Destroyed 훅**이 메인에 보낸다
+ * (lib.rs — 창 자신의 beforeunload는 죽는 중의 비동기 IPC라 유실됐다). 그래도 이벤트 하나에
+ * 매달리지 않도록, 메인은 포커스를 얻을 때마다 실제 창 목록으로 재확인한다(아래 watchAggregateWindow).
  */
 const EVENT = "aggregate-window://state";
 

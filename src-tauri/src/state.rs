@@ -29,6 +29,9 @@ pub struct AppState {
     pub watchers: Mutex<HashMap<String, RepoWatcher>>,
     /// 열려 있는 임베디드 터미널 세션 (termId → PTY 핸들). M5 §16.
     pub terminals: Mutex<HashMap<String, TerminalSession>>,
+    /// 되돌리기 중인 PTY id — Destroyed 훅이 1회 확인 후 제거하고 close_session을 건너뛴다
+    /// (플로팅 창은 닫되 PTY는 메인이 이어받는다). lib.rs `float_redock_begin`.
+    pub redock_skip: Mutex<HashSet<String>>,
     /// 타이틀바 시스템 모니터(CPU/GPU/RAM/저장소) — 폴링 시 갱신.
     pub monitor: Mutex<Monitor>,
     /// 프로젝트별 메모 (projectId → 메모).
@@ -65,6 +68,7 @@ impl AppState {
             ops: Arc::new(Mutex::new(HashSet::new())),
             watchers: Mutex::new(HashMap::new()),
             terminals: Mutex::new(HashMap::new()),
+            redock_skip: Mutex::new(HashSet::new()),
             monitor: Mutex::new(Monitor::new()),
             notes: RwLock::new(notes),
             browser: Mutex::new(BrowserReg::default()),

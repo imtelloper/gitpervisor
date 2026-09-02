@@ -4,13 +4,16 @@ import { useEffect, useState } from "react";
 const win = getCurrentWindow();
 
 /** 플로팅 창의 커스텀 타이틀바 — 드래그 영역 + 창 컨트롤(최소화/최대화/닫기).
- *  badge는 창 종류 표시(기본 "터미널" — 기존 사용처 무영향, 리소스 모니터는 "모니터"). */
+ *  badge는 창 종류 표시(기본 "터미널" — 기존 사용처 무영향, 리소스 모니터는 "모니터").
+ *  actions는 창 컨트롤 왼쪽에 붙는 창 전용 버튼 자리(되돌리기 등) — 생략하면 무영향. */
 export function FloatTitleBar({
   title,
   badge = "터미널",
+  actions,
 }: {
   title: string;
   badge?: string;
+  actions?: React.ReactNode;
 }) {
   return (
     <header
@@ -33,6 +36,8 @@ export function FloatTitleBar({
       </div>
 
       <div data-tauri-drag-region className="h-full flex-1" />
+
+      {actions}
 
       <div className="flex h-full">
         <CtlButton onClick={() => void win.minimize()} title="최소화">

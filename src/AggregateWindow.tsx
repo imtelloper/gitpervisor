@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 
 import { AggregateTerminals } from "./components/AggregateTerminals";
+import { ConfirmHost } from "./components/common/ConfirmDialog";
 import { Toasts } from "./components/common/Toast";
 import { FloatTitleBar } from "./components/FloatTitleBar";
 import { announceAggregateWindow } from "./lib/aggregate-window";
@@ -20,16 +21,12 @@ import { useSettings } from "./queries";
 export function AggregateWindow() {
   const { data: settings } = useSettings();
 
-  // 열림/닫힘을 메인 창에 알린다. 비정상 종료로 "닫힘"을 못 보내는 경우는 메인이 포커스 시
-  // 창 목록으로 재확인해 보정한다.
+  // 열림만 여기서 알린다. "닫힘"은 Rust의 Destroyed 훅이 메인에 보낸다(lib.rs) — 예전엔 이 창의
+  // beforeunload가 보냈는데, 창이 죽는 중의 비동기 IPC라 **유실**돼 메인이 "다른 창에서 표시 중"에
+  // 갇혔다(2026-09-02 실측). 효과 정리에서도 보내지 않는다 — StrictMode 이중 마운트가 true·true·false
+  // 순서로 도착해 창이 열려 있는데 마지막 false가 남았다(같은 날 실측).
   useEffect(() => {
     announceAggregateWindow(true);
-    const bye = () => announceAggregateWindow(false);
-    window.addEventListener("beforeunload", bye);
-    return () => {
-      window.removeEventListener("beforeunload", bye);
-      bye();
-    };
   }, []);
 
   // 이 창에도 저장된 테마 적용 — attach된 xterm은 생성 시 테마가 박제라 확정값으로 재적용한다.
@@ -45,8 +42,10 @@ export function AggregateWindow() {
       <div className="min-h-0 flex-1">
         <AggregateTerminals />
       </div>
-      {/* 이 창에도 토스트가 필요하다 — 셀의 프롬프트 목록에서 복사할 때 성공/실패를 알려야 한다.
-          스토어는 창마다 별개라(웹뷰 = 별도 JS 컨텍스트) 메인 창의 토스트가 여기 뜨진 않는다. */}
+      {/* 이 창에도 확인 모달·토스트가 필요하다 — 터미널 닫기 확인(askConfirm)이 이 창에서 뜨고,
+          셀의 프롬프트 목록 복사는 성공/실패를 알려야 한다. 스토어는 창마다 별개라
+          (웹뷰 = 별도 JS 컨텍스트) 메인 창의 호스트가 여기 대신 그려 주지 않는다(SysMonitorWindow와 동일). */}
+      <ConfirmHost />
       <Toasts />
     </div>
   );

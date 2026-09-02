@@ -299,15 +299,20 @@ export function detachTerminalKeepPty(id: string) {
 
 /** 세션 완전 종료 — PTY kill + xterm dispose + 레지스트리 제거. term_close 완료를 await할 수 있다. */
 export function disposeTerminal(id: string): Promise<void> {
+  // PTY kill은 **이 창이 그린 적 있느냐와 무관하게** 보낸다. 모아보기 별도 창이 위임으로 만든
+  // 터미널은 그 창이 spawn하고 메인은 takenByWindow 동안 xterm을 만들지 않는다 — 그 pane을
+  // 메인이 닫을 때(closePane 위임 수신) 레지스트리에 인스턴스가 없다는 이유로 건너뛰면 스토어에서만
+  // 사라진 PTY가 고아 셸로 남는다(실측: 2026-09-02 위임 검증에서 term_project가 계속 non-null).
+  // 세션이 없는 id면 백엔드가 no-op이라 무조건 보내도 해가 없다.
+  const closed = invoke("term_close", { termId: id }).catch(() => {}) as Promise<void>;
   const inst = registry.get(id);
-  if (!inst) return Promise.resolve();
+  if (!inst) return closed;
   registry.delete(id);
   // 입력 복원 상태만 버린다. **프롬프트 기록은 여기서 지우지 않는다** — 이 함수는 "프로세스가
   // 종료되었습니다 → 재시작"(TerminalPane)에서도 불리는데, 같은 패널을 되살리는 것뿐이라
   // 기록까지 날리면 방금 뭘 시켰는지 잃는다. 패널 자체가 사라질 때(stores/terminals의 닫기
   // 경로)만 기록을 지운다.
   forgetPtyInput(id);
-  const closed = invoke("term_close", { termId: id }).catch(() => {}) as Promise<void>;
   try {
     inst.term.dispose();
   } catch {

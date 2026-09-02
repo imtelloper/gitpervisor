@@ -19,7 +19,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { Project } from "../lib/ipc";
 import { isMac, modLabel } from "../lib/platform";
-import { attachTerminal, createTerminal, fitTerminal } from "../lib/terminal";
+import {
+  attachTerminal,
+  createTerminal,
+  detachTerminalKeepPty,
+  fitTerminal,
+} from "../lib/terminal";
 import { useProjects, useSettings } from "../queries";
 import { useAgentActivity } from "../stores/agentActivity";
 import { useBrowsers } from "../stores/browser";
@@ -35,6 +40,7 @@ import { useUi } from "../stores/ui";
 import { EmptyState } from "./common/EmptyState";
 import { BrowserPane } from "./workspace/BrowserPane";
 import {
+  PromptHistoryButton,
   PromptLogButton,
   PromptSidePanel,
   ThemeButton,
@@ -227,6 +233,10 @@ export function AggregateTerminals() {
     const ids = new Set(all.map((t) => t.id));
     const prev = prevIdsRef.current;
     prevIdsRef.current = ids;
+    // 사라진 셀(닫힘·분리)의 xterm 인스턴스를 버린다 — 별도 창에선 이 정리를 아무도 하지 않아
+    // WebGL 컨텍스트가 창에 계속 쌓인다(보조 모니터에 종일 켜 두는 창이다). PTY는 이미 메인이
+    // 처리했으므로 detach만 한다. 메인 창에선 closePane/floatPane이 먼저 정리해 no-op이다.
+    if (prev) [...prev].filter((id) => !ids.has(id)).forEach((id) => detachTerminalKeepPty(id));
     if (!prev || !initedRef.current) return;
     const added = [...ids].filter((id) => !prev.has(id));
     if (added.length === 0) return;
@@ -494,16 +504,15 @@ export function AggregateTerminals() {
                 />
               ))}
         </div>
-        {/* 별도 창은 "보는 화면"이다 — 터미널을 만들고 닫는 관리는 메인 창에서 한다.
-            (이 창의 스토어는 영속되지 않아 여기서 만든 터미널을 메인이 알 수 없고, 여기서
-            닫으면 메인이 소유한 PTY가 죽는다.) */}
-        {!IS_AGGREGATE_WINDOW && (
-          <NewCellButton
-            projects={projects}
-            onCreateTerminal={addTerminal}
-            onCreateBrowser={addBrowser}
-          />
-        )}
+        {/* 별도 창에서도 만들 수 있다 — 이 창의 스토어는 변경을 메인에 위임하므로
+            (stores/terminals.ts terminals://cmd) 메인이 만들고 결과가 storage로 돌아온다.
+            브라우저만 제외: 브라우저 스토어에는 storage 따라가기가 없어 위임해도 이 창 그리드에
+            안 뜬다 → onCreateBrowser를 안 넘겨 "새 터미널" 전용 버튼이 된다. */}
+        <NewCellButton
+          projects={projects}
+          onCreateTerminal={addTerminal}
+          onCreateBrowser={IS_AGGREGATE_WINDOW ? undefined : addBrowser}
+        />
         {/* 셀 크기 균등 복구 — 드래그로 흐트러진 트랙을 되돌린다. 행/열 개수는 셀 수가 자동으로
             정하므로(cols/rows) 사람이 망가뜨릴 수 있는 것은 fr 비율과 확대 상태뿐이고, 이 버튼은
             그 둘을 함께 되돌린다. 확대를 같이 풀지 않으면 눌러도 화면이 그대로라 고장으로 보인다. */}
@@ -516,6 +525,11 @@ export function AggregateTerminals() {
           >
             <Grid2x2 size={14} /> 자동배치
           </button>
+        )}
+        {/* 전체 프롬프트 컬럼 마스터 토글 — 별도 창에만 둔다. 메인 안 모아보기는 바로 위
+            TitleBar에 같은 버튼이 있어 한 화면에 두 개가 보이면 안 된다. */}
+        {IS_AGGREGATE_WINDOW && (
+          <PromptHistoryButton className="shrink-0 px-2 py-1 text-xs" />
         )}
         {/* 탭 모으기 ON/OFF — 프로젝트·탭이 늘면 칩 바가 스크롤로 밀린다. 묶으면 프로젝트당
             칩 하나로 줄고, 개별 탭은 묶음 칩 호버 시 드롭다운으로 편다. */}
@@ -723,17 +737,13 @@ export function AggregateTerminals() {
                 />
               ))}
               {/* 개별 칩 우클릭 메뉴의 '새 터미널'과 같은 동작 — 묶음 모드에선 프로젝트 단위
-                  동선이 이 드롭다운뿐이라 여기에도 둔다. 별도 창은 생성 불가(헤더 주석 참조). */}
-              {!IS_AGGREGATE_WINDOW && (
-                <>
-                  <div className="border-t border-edge" />
-                  <MenuRow
-                    icon={<TerminalIcon size={13} />}
-                    label={`'${groupMenu.name}'에 새 터미널 열기`}
-                    onClick={() => addTerminal(cells[0].projectId)}
-                  />
-                </>
-              )}
+                  동선이 이 드롭다운뿐이라 여기에도 둔다. */}
+              <div className="border-t border-edge" />
+              <MenuRow
+                icon={<TerminalIcon size={13} />}
+                label={`'${groupMenu.name}'에 새 터미널 열기`}
+                onClick={() => addTerminal(cells[0].projectId)}
+              />
             </div>
           );
         })()}
@@ -753,22 +763,17 @@ export function AggregateTerminals() {
             setSelected((prev) => new Set(prev).add(id)); // 숨김 상태에서도 확대가 바로 보이게
             setZoomed((z) => (z === id ? null : id));
           }}
-          // 별도 창은 "보는 화면" — 여기서 닫으면 메인이 소유한 PTY가 죽는다(헤더 주석과 동일
-          // 이유). Float/닫기/새 터미널은 메인 창에서만 내리고, 별도 창 메뉴는 표시·확대만 남긴다.
-          onNewTerminal={
-            !IS_AGGREGATE_WINDOW
-              ? () => addTerminal(chipMenu.cell.projectId)
-              : undefined
-          }
+          // 별도 창의 변경은 스토어가 메인에 위임한다(stores/terminals.ts terminals://cmd) —
+          // 새 터미널·Float·닫기가 여기서도 그대로 동작한다. 예외는 **독립 브라우저 탭 닫기**뿐:
+          // closeBrowserTab은 위임 경로가 없는 메인 전용이라 별도 창에선 항목을 빼 둔다.
+          onNewTerminal={() => addTerminal(chipMenu.cell.projectId)}
           onFloat={
-            !IS_AGGREGATE_WINDOW &&
-            chipMenu.cell.kind === "terminal" &&
-            chipMenu.cell.tabId != null
+            chipMenu.cell.kind === "terminal" && chipMenu.cell.tabId != null
               ? () => floatPane(chipMenu.cell.tabId!, chipMenu.cell.id)
               : undefined
           }
           onCloseCell={
-            IS_AGGREGATE_WINDOW
+            IS_AGGREGATE_WINDOW && chipMenu.cell.tabId == null
               ? undefined
               : () => {
                   const c = chipMenu.cell;
@@ -964,7 +969,10 @@ function Chip({
  *  API 클라이언트는 그리드가 지원하는 셀 종류가 아니라 여기 메뉴엔 없다.
  *
  *  프로젝트가 1개면 종류만 고르면 바로 생성한다(모호성 없음). 0개(또는 로딩 전)면 비활성.
- *  메뉴는 버튼 rect 기준 fixed 위치 + 백드롭 패턴 — 헤더(h-10) 밖으로 넘칠 때 클리핑을 벗어난다. */
+ *  메뉴는 버튼 rect 기준 fixed 위치 + 백드롭 패턴 — 헤더(h-10) 밖으로 넘칠 때 클리핑을 벗어난다.
+ *
+ *  `onCreateBrowser`를 생략하면(별도 창 — 브라우저는 위임해도 이 창 그리드에 안 뜬다) **터미널
+ *  전용**이 된다: 고를 종류가 하나뿐이라 그 단계를 건너뛰고 바로 프로젝트 목록으로 간다. */
 function NewCellButton({
   projects,
   onCreateTerminal,
@@ -972,7 +980,7 @@ function NewCellButton({
 }: {
   projects: Project[] | undefined;
   onCreateTerminal: (projectId: string) => void;
-  onCreateBrowser: (projectId: string) => void;
+  onCreateBrowser?: (projectId: string) => void;
 }) {
   const selectedProjectId = useUi((s) => s.selectedProjectId);
   // 버튼이 헤더 우측 끝이라 좌측 기준(left)이면 메뉴가 창 밖으로 잘린다 — 우측 모서리 정렬
@@ -996,7 +1004,7 @@ function NewCellButton({
   };
   const create = (k: PaneKind, projectId: string) => {
     if (k === "terminal") onCreateTerminal(projectId);
-    else onCreateBrowser(projectId);
+    else onCreateBrowser?.(projectId);
     close();
   };
   // 종류 선택 → 프로젝트가 하나뿐이면 바로 만들고, 여러 개면 프로젝트 목록으로 넘어간다.
@@ -1009,6 +1017,15 @@ function NewCellButton({
     if (menu) {
       close();
       return;
+    }
+    // 터미널 전용 모드는 pickKind와 같은 판정을 버튼 클릭에서 미리 한다 — 종류가 하나뿐이라
+    // 그 단계를 건너뛰고, 프로젝트도 하나면 메뉴를 열 것 없이 바로 만든다.
+    if (!onCreateBrowser) {
+      if (ordered.length === 1) {
+        create("terminal", ordered[0].id);
+        return;
+      }
+      setKind("terminal");
     }
     const r = btnRef.current?.getBoundingClientRect();
     if (r) setMenu({ right: window.innerWidth - r.right, y: r.bottom + 4 });
@@ -1024,7 +1041,9 @@ function NewCellButton({
         title={
           list.length === 0
             ? "프로젝트를 추가하면 새 터미널·브라우저를 열 수 있습니다"
-            : "새 터미널 · 새 브라우저 — 이 화면에 바로 연다"
+            : onCreateBrowser
+              ? "새 터미널 · 새 브라우저 — 이 화면에 바로 연다"
+              : "새 터미널 — 이 화면에 바로 연다"
         }
         className="ml-1 flex shrink-0 items-center rounded p-1 text-fg-muted hover:bg-raised hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
       >
@@ -1191,15 +1210,13 @@ function AggregateCell({
           {zoomed ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
         </button>
         <HideButton onClick={onHide} what="터미널" />
-        {!IS_AGGREGATE_WINDOW && (
-          <button
-            onClick={onClose}
-            title="터미널 닫기 (프로세스 종료)"
-            className="-mr-1 shrink-0 rounded p-0.5 text-fg-dim hover:bg-raised hover:text-danger"
-          >
-            <X size={12} />
-          </button>
-        )}
+        <button
+          onClick={onClose}
+          title="터미널 닫기 (프로세스 종료)"
+          className="-mr-1 shrink-0 rounded p-0.5 text-fg-dim hover:bg-raised hover:text-danger"
+        >
+          <X size={12} />
+        </button>
       </div>
       {/* 본문: xterm + (켜져 있으면) 우측 프롬프트 컬럼. 패널이 여닫히면 host 크기가 변해
           위 ResizeObserver가 refit한다 — xterm 배선 추가 없이 크기가 따라온다. */}
@@ -1258,7 +1275,9 @@ function BrowserCell({
           <span className="text-fg-dim"> · {meta.title}</span>
         </span>
         <HideButton onClick={onHide} what="브라우저" />
-        {!IS_AGGREGATE_WINDOW && (
+        {/* 분할 pane(tabId 있음)은 closePane이라 위임을 탄다. 독립 브라우저 탭은 closeBrowserTab —
+            위임 경로가 없는 메인 전용이라 별도 창에선 X를 감춘다(ChipMenu와 같은 규칙). */}
+        {(!IS_AGGREGATE_WINDOW || meta.tabId != null) && (
           <button
             onClick={onClose}
             title="브라우저 닫기"
