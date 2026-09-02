@@ -34,6 +34,8 @@ interface UpdaterState {
   progress: number;
   error: string | null;
   lastCheckedAt: number | null;
+  /** 이번 세션에 토스트로 알린 버전 — 같은 버전으로 두 번 조르지 않는다(메모리 전용). */
+  notifiedVersion: string | null;
   autoCheck: boolean;
   setAutoCheck: (v: boolean) => void;
   /** 업데이트 확인. silent면 실패를 조용히(수동 확인만 에러 노출·있음 시 토스트). */
@@ -51,6 +53,7 @@ export const useUpdater = create<UpdaterState>((set, get) => ({
   progress: 0,
   error: null,
   lastCheckedAt: null,
+  notifiedVersion: null,
   autoCheck: localStorage.getItem(LS_AUTOCHECK) !== "off",
 
   setAutoCheck: (v) => {
@@ -73,11 +76,21 @@ export const useUpdater = create<UpdaterState>((set, get) => ({
           notes: update.body ?? null,
           lastCheckedAt: Date.now(),
         });
-        // 시작 시 조용한 확인에서도 새 버전은 한 번 알린다(클릭 시 설정 열기).
-        useUi.getState().pushToast("info", `새 버전 v${update.version} — 설정에서 업데이트`, {
-          label: "설정 열기",
-          run: () => useUi.getState().setSettingsOpen(true),
-        });
+        // 시작 시·주기 확인 어느 쪽이든 새 버전은 한 번 알린다. 토스트는 자동으로 사라지지
+        // 않는다(durationMs: null) — 앱을 종일 켜 두는 사용법이라 6초 뒤 사라지면 못 본다.
+        // 같은 버전은 세션당 1회만: 12시간 주기 확인이 돌 때마다 다시 조르지 않게.
+        if (get().notifiedVersion !== update.version) {
+          set({ notifiedVersion: update.version });
+          useUi.getState().pushToast(
+            "info",
+            `새 버전 v${update.version}이 나왔습니다`,
+            {
+              label: "업데이트 열기",
+              run: () => useUi.getState().openSettings("update"),
+            },
+            { durationMs: null },
+          );
+        }
       } else {
         set({
           status: "upToDate",

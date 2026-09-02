@@ -117,3 +117,45 @@
 |---|--------|------|------|-----------|-----------|
 | 19 | 새 프로젝트 폴더 생성 + 프로젝트별 뷰 상태 기억 | (직접 구현·검증 2026-07-09) | **M** | ① PROJECTS에 "새 프로젝트 폴더 만들기": `create_project_folder`(부모+이름+git init → 절대경로) Rust 커맨드 신설 → 기존 addProject 재사용(DRY). ② 프로젝트 왕복 시 상태 복원: **트리 펼침**(TreeNode 로컬 state → 프로젝트별 영속 스토어 `stores/treeState.ts`, `gp:tree-expanded`), **활성 파일**(전역 selectedDiff → `activeDiffByProject` 프로젝트별 복원, selectProject/selectDiff/closeViewerTab 동기), **뷰**(이미 terminals.activeTab 영속 — 유지). 뷰어탭+활성파일 localStorage 영속(`gp:viewer-tabs`, 재시작 복원). WorkspaceTabs 자동전환 가드(전환·마운트 복원 시 뷰 안 덮음). 실앱 검증: 폴더생성+git init·중복/이름거부, 트리 왕복 복원, 활성파일 복원, 정상 open→viewer 유지 | 활성파일 복원↔뷰 자동전환 상호작용(가드로 해소), 재시작 stale worktree 대상(DiffViewer 무해 처리) |
 | 18 | 설정 모달 UX 재설계 | [18-settings-ux.md](18-settings-ux.md) | **M** · **구현·검증 완료(2026-07-07)** | 단일 스크롤 컬럼(8섹션·22필드) → **좌 사이드바 6카테고리 + 정적 인덱스 검색**(w-860 분할 셸). 저장 모델 불변(전역 폼+단일 저장), 카테고리는 뷰 필터, 섹션 6파일+shared.tsx 분해(860→365줄). 검색 하이라이트(HlField)·자동전환·조건렌더 부모토글 폴백·dirty 정규화 비교·Esc 2단계·유지보수 hidden 마운트. **실앱 검증**: 편집값 유지·검색/하이라이트·테마 프리뷰+Esc 복원·저장·C3 폴백·완전성 가드(22키 커버) E2E 29 | (해소) 검증 15건 반영 — 완전성 가드는 getSettings 런타임 키 대조로 구현 |
+
+## 6. 알림·미디어 태스크 (20~22) — 2026-09-02
+
+> 상위 설계: `DOCS/video-split-redock-notify-design.md`(4건 배치 — F2 "분리 터미널 되돌리기"는
+> `aggregate-window-redock-memo-design.md` 경로로 **구현 완료·실기 검증 통과**, 나머지 3건이 아래).
+> 근거: 코드 실측 2026-09-02(워킹트리 미커밋 변경 포함). **세 태스크 모두 Rust 변경 0.**
+
+| # | 태스크 | 문서 | 규모 | 핵심 판단 | 주요 위험 |
+|---|--------|------|------|-----------|-----------|
+| 20 | 새 버전 알림(우측 하단) | [20-update-notify.md](20-update-notify.md) | **S** · **구현·검증 완료(2026-09-02)** — 버전 하향 실기·e2e 29 통과, §8 | 신규 기능이 아니라 기존 updater 토스트의 약점 3개 수리 — `pushToast` 4번째 인자 `{durationMs:null}`(persistent), `useUi.openSettings("update")` 딥링크(1회성 소비), App 효과 안 12h `setInterval`(dev·autoCheck 가드 공유) + `notifiedVersion` 세션당 1회 | dev 가드 누락 시 dev 창이 설치본을 갈아엎음(같은 효과 안에서 가드 공유로 차단) |
+| 21 | GitHub star 부탁 카드 | [21-github-star-prompt.md](21-github-star-prompt.md) | **S** · **구현·검증 완료(2026-09-02)** — `window.open` 위임 Windows 실측 OK, §8 | 3번째 실행에 1회(`gp:launch-count`·`gp:star-asked` localStorage — 설정 스키마 불변). HealthBanner 미러 카드 + App 공용 스택 컨테이너. 링크는 **`window.open` → 기존 `on_new_window` 위임**(lib.rs:773) — 신규 커맨드 불필요 | `window.open` 위임은 프론트 선례 0건 — Windows·Linux 실측 필수, 실패 시 `open_url` 커맨드 대안. 카운터는 App 렌더 안에서만(모듈 최상위면 보조 창마다 +1) |
+| 22 | 동영상 타임틱 분할 | [22-video-timetick-split.md](22-video-timetick-split.md) | **M** · **구현·검증 완료(2026-09-02)** — e2e 33 18 pass, 실기 §8 | 틱 N개 → 기존 `video_export`를 세그먼트마다 **순차** 호출(백엔드 0줄). 배치 상태는 신규 `stores/videoSplit.ts`(패널 닫혀도 진행·취소 유지), 종결은 이벤트·프라미스 경주, `events.ts`가 토스트 위임. 출력 `<stem>.split/<stem>.part-01.mp4`, 기본 copy·선택 encode | copy 키프레임 스냅(기존 한계 승계), invoke 응답 유실(이벤트 경주로 방어), webm/ogv→mp4 remux 거부 가능(기존 단일 내보내기와 동일). 진행률 분모는 백엔드가 range 길이로 계산함을 확인(video.rs:601-608) |
+
+**구현 상태(2026-09-02)**: 20·21·22 전부 구현·검증 완료(미커밋). 후속으로 토스트 z-order(`Toast.tsx` z-[55] — 설정 모달 위·확인
+다이얼로그 아래)와 `videoSplit` 마지막 세그먼트 중복 토스트 경주(`recentlyOwned` 10초)도 봉합·실측.
+
+**e2e 기준선 정비(같은 날, 전부 원인 규명 후 수정)**: 전체 러너가 484/23/4 → 부하 낮은 실행에서 **516 pass / 5 fail / 3 skip**, 남은 5건도
+격리 실행에서 전부 통과. 규명된 원인 — 30-image-annotate: **제품 버그** `AnnotationLayer` rAF 플래그 미리셋(StrictMode 이중 마운트에서
+캔버스 영구 미도색, dev 한정 · `image-annotation-design.md` 부록) + 헬퍼 `selCount` 정규식 결함 → 60/60; 22/23: 고정 sleep → 행 출현 폴링 30s,
+23 smart-case 기대값 정정(`13-symbol-search.md` §81 유지), 22~25 finally의 `selectDiff`→`selectProject` 순서 결함(뷰어 상태 오염) 교정; 28: 시그니처
+좌표가 빈 줄 → 3행 21열, completion 재시도; 17: 시한 기반 pull 재시도 + `run.mjs`가 러너 동안 `remoteRefreshMinutes:0`·teardown 뷰어 탭 정리·잔여
+픽스처 purge; 14: 모아보기 뷰가 열린 채 터미널 검사 진입 시 연쇄 실패 → `ensureAggClosed` 전제 가드·타이틀바 토글 선택자 한정; 25: peek 대기 30s;
+`lib/cdp.mjs`: 라벨 `main` 페이지 선택(풀 창 함정)·`_send` 60s 시한·`eval` 응답 유실 throw/재시도·`E2E_CDP`; 29: 하드코딩 레포 경로 제거.
+**주의**: 마지막 실행(RAM 96%·CPU 86%)은 495/11/4였으나 신규 실패 10건이 전부 30s `E2E_TIMEOUT`·빈 DOM 결과·네트워크 TIMEOUT 등
+**부하 신호**였다(백엔드 체크 통과, 실행 전 GitGate 거짓 화면). 러너 결과는 부하가 낮을 때만 신뢰한다(메모리 `e2e-baseline-failures`).
+
+### 6.1 권장 구현 순서
+
+```
+20 → 21 → 22
+```
+20·21은 반나절 규모의 독립 작업이고 22가 몸통이다. 21의 `window.open` 실측이 실패하면 그때만 Rust 커맨드
+1개가 생긴다. 22는 `VideoPlayer.tsx`·`ExportPanel.tsx`를 크게 건드리므로 다른 영상 작업과 동시 진행 금지.
+
+### 6.2 사용자 결정이 필요한 열린 질문
+
+| 태스크 | 질문 | 설계 기본값(미응답 시) |
+|--------|------|------------------------|
+| 22 | In/Out 구간이 설정된 상태에서 분할 — 구간 안만? | 전체 길이(구간 무시) |
+| 22 | 결과 폴더가 이미 있고 파일이 겹칠 때 | 1회 확인 후 전체 덮어쓰기 |
+| 21 | 노출 시점 3번째 실행 vs 첫 실행 즉시 | 3번째 실행 |
+| 20 | 재확인 주기 | 12시간 |

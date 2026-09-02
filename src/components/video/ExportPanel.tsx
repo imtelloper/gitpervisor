@@ -19,6 +19,7 @@ import type {
 } from "../../lib/ipc";
 import { errorMessage, ipc, isIpcError } from "../../lib/ipc";
 import { useUi } from "../../stores/ui";
+import { planSegments, useVideoSplit } from "../../stores/videoSplit";
 import type { CropRect } from "./CropOverlay";
 import { fmtTime } from "./VideoPlayer";
 
@@ -54,6 +55,8 @@ export const ExportPanel = memo(function ExportPanel({
   inPt,
   outPt,
   onClearRange,
+  ticks,
+  onClearTicks,
   crop,
   cropActive,
   onToggleCrop,
@@ -68,6 +71,9 @@ export const ExportPanel = memo(function ExportPanel({
   inPt: number | null;
   outPt: number | null;
   onClearRange: () => void;
+  /** 분할 타임틱(초, 미정렬) — 경계 계산은 planSegments가 한다. */
+  ticks: number[];
+  onClearTicks: () => void;
   crop: CropRect | null;
   cropActive: boolean;
   onToggleCrop: () => void;
@@ -88,6 +94,12 @@ export const ExportPanel = memo(function ExportPanel({
   const nameEditedRef = useRef(false);
   const [jobId, setJobId] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ pct: number; speed: string | null } | null>(null);
+  // 분할 폴더명 — key={path} 리마운트로 파일마다 기본값으로 돌아온다(파일명 필드와 같은 수명).
+  const [folder, setFolder] = useState(() => `${splitPath(path).stem}.split`);
+  const [splitEncode, setSplitEncode] = useState(false);
+  const batch = useVideoSplit((s) => s.batch);
+  const startSplit = useVideoSplit((s) => s.start);
+  const cancelSplit = useVideoSplit((s) => s.cancel);
 
   const range = useMemo(
     () =>
@@ -266,6 +278,15 @@ export const ExportPanel = memo(function ExportPanel({
   };
 
   const busy = jobId != null;
+  // 분할 배치는 앱 전역에 하나뿐(스토어) — 이 파일 것인지 남의 것인지 나눠 본다.
+  const mine =
+    batch != null && batch.projectId === projectId && batch.srcRel === path;
+  const segs = planSegments(ticks, probe.durationMs / 1000);
+  const folderInvalid = !folder.trim() || /[\\/]|\.\./.test(folder);
+  // 진행 중이면 틱이 없어도(패널을 닫았다 열거나 파일을 오갔다) 진행 표시는 살려 둔다.
+  const showSplit = ticks.length > 0 || mine;
+  const partLabel = (i: number) =>
+    String(i).padStart(Math.max(2, String(batch?.total ?? 0).length), "0");
 
   return (
     <div className="shrink-0 space-y-2 border-t border-edge px-3 py-2 text-xs text-fg-muted">
@@ -399,13 +420,16 @@ export const ExportPanel = memo(function ExportPanel({
         {!busy ? (
           <button
             onClick={() => doExport(false)}
-            disabled={nothingToDo || nameInvalid}
+            // 분할 배치와 상호 배타 — 동시 ffmpeg를 띄우지 않는다(프로세스 위생).
+            disabled={nothingToDo || nameInvalid || batch != null}
             title={
-              nothingToDo
-                ? "구간·배속·화질 등 변경할 항목을 선택하세요"
-                : nameInvalid
-                  ? "파일명이 비었거나 경로 문자를 포함합니다"
-                  : undefined
+              batch != null
+                ? "분할 저장이 진행 중입니다"
+                : nothingToDo
+                  ? "구간·배속·화질 등 변경할 항목을 선택하세요"
+                  : nameInvalid
+                    ? "파일명이 비었거나 경로 문자를 포함합니다"
+                    : undefined
             }
             className="rounded bg-accent/20 px-3 py-1 font-semibold text-accent hover:bg-accent/30 disabled:opacity-40"
           >
@@ -421,8 +445,103 @@ export const ExportPanel = memo(function ExportPanel({
         )}
       </div>
 
+      {/* 3행: 분할 — 틱이 있거나(설정 중) 이 파일의 배치가 도는 중일 때만 */}
+      {showSplit && (
+        <>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-edge pt-2">
+            <span className="flex items-center gap-1">
+              분할
+              <span className="font-mono tabular-nums text-fg">
+                틱 {ticks.length}개 → {segs.length}개 파일
+              </span>
+              <span className="text-fg-dim">(T 키로 지정)</span>
+            </span>
+            <label className="flex items-center gap-1">
+              폴더
+              <input
+                type="text"
+                value={folder}
+                onChange={(e) => setFolder(e.target.value)}
+                disabled={batch != null}
+                spellCheck={false}
+                className="min-w-32 rounded border border-edge bg-panel px-2 py-1 font-mono text-xs text-fg"
+                title="원본 옆에 이 이름의 하위 폴더를 만들어 저장합니다"
+              />
+            </label>
+            <label className="flex items-center gap-1">
+              <input
+                type="checkbox"
+                checked={splitEncode}
+                onChange={(e) => setSplitEncode(e.target.checked)}
+                disabled={batch != null}
+                className="accent-accent"
+              />
+              정확한 지점에서 분할(재인코딩)
+            </label>
+            <button
+              onClick={onClearTicks}
+              disabled={batch != null || ticks.length === 0}
+              className="rounded border border-edge px-2 py-1 hover:bg-raised hover:text-fg disabled:opacity-40"
+            >
+              틱 지우기
+            </button>
+            {!mine ? (
+              <button
+                onClick={() =>
+                  void startSplit(projectId, path, dir, segs, {
+                    folder: folder.trim(),
+                    mode: splitEncode ? "encode" : "copy",
+                    stem: splitPath(path).stem,
+                    durationMs: probe.durationMs,
+                    hasAudio: probe.hasAudio,
+                  })
+                }
+                disabled={busy || batch != null || folderInvalid || segs.length === 0}
+                title={
+                  busy
+                    ? "내보내기가 끝난 뒤에 실행하세요"
+                    : batch != null
+                      ? "다른 분할이 진행 중입니다"
+                      : folderInvalid
+                        ? "폴더명이 비었거나 경로 문자를 포함합니다"
+                        : undefined
+                }
+                className="rounded bg-accent/20 px-3 py-1 font-semibold text-accent hover:bg-accent/30 disabled:opacity-40"
+              >
+                분할 저장
+              </button>
+            ) : (
+              <button
+                onClick={cancelSplit}
+                className="flex items-center gap-1 rounded border border-edge px-3 py-1 text-warn hover:bg-raised"
+              >
+                <Loader2 size={12} className="animate-spin" /> 취소
+              </button>
+            )}
+          </div>
+          {mine && batch && (
+            <div className="flex items-center gap-2">
+              <div className="h-1.5 flex-1 overflow-hidden rounded bg-raised">
+                <div
+                  className="h-full rounded bg-accent transition-[width]"
+                  style={{
+                    // 완료분 + 현재 잡 진행률 — 세그먼트 경계에서 되감기지 않게 누적으로 그린다.
+                    width: `${Math.min(100, ((batch.done + Math.min(100, batch.currentPct) / 100) / batch.total) * 100)}%`,
+                  }}
+                />
+              </div>
+              <span className="font-mono tabular-nums text-fg-dim">
+                {batch.done}/{batch.total} · part-{partLabel(batch.currentIndex)} ·{" "}
+                {batch.currentPct.toFixed(0)}%
+              </span>
+            </div>
+          )}
+        </>
+      )}
+
       {/* 안내·진행 */}
-      {quality === "copy" && format === "mp4" && mode === "copy" && (
+      {((quality === "copy" && format === "mp4" && mode === "copy") ||
+        (showSplit && !splitEncode)) && (
         <div className="text-[11px] text-fg-dim">
           무손실 복사는 시작점이 키프레임 단위로 스냅됩니다(수 초 어긋날 수 있음) — 정밀 컷은
           화질을 재인코딩으로.

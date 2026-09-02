@@ -62,6 +62,8 @@ function settingsEqual(a: Settings, b: Settings): boolean {
 export function SettingsDialog() {
   const open = useUi((s) => s.settingsOpen);
   const setOpen = useUi((s) => s.setSettingsOpen);
+  // openSettings("update") 같은 딥링크가 남긴 1회성 요청 — 아래 효과에서 소비한다.
+  const requestedCategory = useUi((s) => s.settingsCategory);
   const { data: settings } = useSettings();
   const { data: projects } = useProjects();
   const save = useSetSettings();
@@ -92,6 +94,14 @@ export function SettingsDialog() {
       void ipc.notifyHasSecret("smtp").then(setSmtpHas).catch(() => {});
     }
   }, [open, settings]);
+
+  // 딥링크 소비 — 요청이 있을 때만 카테고리를 옮기고 곧바로 비운다. 그래야 그냥 ⚙로 다시 열 때는
+  // 기존 시맨틱(마지막에 보던 카테고리 유지)이 그대로 남는다.
+  useEffect(() => {
+    if (!open || !requestedCategory) return;
+    setCategory(requestedCategory);
+    useUi.setState({ settingsCategory: null });
+  }, [open, requestedCategory]);
 
   useEffect(() => {
     if (category === "maintenance") setMaintVisited(true);

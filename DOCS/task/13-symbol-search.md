@@ -192,7 +192,7 @@ if (isMod(e) && e.altKey && k === "n") return false; // 심볼 검색 — window
 3. **ipc.ts** — SymbolMatch + findSymbols 래퍼. (~15 LOC)
 4. **QuickPick 심볼 모드** — [09-quick-open.md](09-quick-open.md) 프리미티브에 비동기 소스 연결: 디바운스 250ms·seq 무효화·로딩/빈 상태·항목 렌더(name 강조+시그니처+경로:라인)·선택 착지. useUi에 open 상태 1개. (~120 LOC — 09 완료가 선행)
 5. **단축키** — KeyboardShortcuts 분기 + terminal-engine 화이트리스트 1줄 + 발견성(뷰어/트리 어딘가 title에 `⌘⌥N`/`Ctrl+Alt+N` 병기). (~10 LOC)
-6. **E2E** — ① `suites/10-codenav.mjs` 확장(또는 신규 `20-symbol-search.mjs`): 픽스처에 `gpvAlpha`/`gpvAlphaBeta`/`class GpvAlphaCls` 작성 → `find_symbols {query:"gpvAlpha"}` 접두>부분 순위·name/line/column 검증, 2자 미만·특수문자 쿼리 → 빈 결과, 없는 프로젝트 → NOT_FOUND(10-codenav.mjs:29-38 미러). ② `14-frontend-dom.mjs` 패턴: `__gpv.ui`로 픽스처 선택 → 합성 keydown(Ctrl+Alt+N, `:71-73` 미러) → 모달 DOM 출현 → input에 값 주입+input 이벤트 → 항목 폴링 → Enter → `__gpv.ui.getState().selectedDiff`가 `{mode:"file", path, line}`인지 단언. xterm textarea 포커스 상태에서 1회 재검증(`:135-138` 미러).
+6. **E2E** — ① `suites/10-codenav.mjs` 확장(또는 신규 `20-symbol-search.mjs`): 픽스처에 `gpvAlpha`/`gpvAlphaBeta`/`class GpvAlphaCls`/`const gpvAlphaVar` 작성 → `find_symbols {query:"gpvAlpha"}` 는 **smart-case(§3.1 `:81`)대로 대문자 포함 = 대소문자 구분**이므로 gpvAlpha·gpvAlphaBeta·gpvAlphaVar 포함·`GpvAlphaCls` 미포함, 전부 소문자인 `{query:"gpvalpha"}` 는 `-i` 가 붙어 `GpvAlphaCls` 포함 — 두 쿼리로 smart-case를 가른다. 정확>접두 순위·name/line/column 검증, 2자 미만·특수문자 쿼리 → 빈 결과, 없는 프로젝트 → NOT_FOUND(10-codenav.mjs:29-38 미러). ② `14-frontend-dom.mjs` 패턴: `__gpv.ui`로 픽스처 선택 → 합성 keydown(Ctrl+Alt+N, `:71-73` 미러) → 모달 DOM 출현 → input에 값 주입+input 이벤트 → 항목 폴링 → Enter → `__gpv.ui.getState().selectedDiff`가 `{mode:"file", path, line}`인지 단언. xterm textarea 포커스 상태에서 1회 재검증(`:135-138` 미러).
 
 규모: **M (2~4일)** — Rust ~190 LOC + 프론트 ~150 LOC + 테스트. 4단계가 09 산출물에 의존.
 

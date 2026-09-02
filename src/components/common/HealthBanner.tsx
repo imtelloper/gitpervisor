@@ -98,11 +98,10 @@ export function HealthBanner() {
 
   if (!showLive && !prev) return null;
 
+  // 위치 컨테이너는 App의 우측 하단 카드 스택이 갖는다 — 여기서 자기 fixed 박스를 또 만들면
+  // 같은 좌표의 다른 카드(StarPrompt)와 겹친다. 여기서는 카드만 돌려준다.
   return (
-    // 토스트(Toasts, bottom-8 right-4 z-50)와 같은 구석 — 토스트가 잠깐 위를 덮을 수 있지만
-    // 6초면 사라진다. 네이티브 webview(브라우저 탭)가 이 구석을 덮는 한계도 토스트와 동일한
-    // 기존 결정을 따른다(occlusion에 넣으면 카드가 떠 있는 내내 브라우저가 통째로 숨는다).
-    <div className="fixed bottom-8 right-4 z-40 flex w-[380px] max-w-[calc(100vw-32px)] flex-col gap-2">
+    <>
       {prev && <PrevSessionCard prev={prev} onClose={() => setPrev(null)} />}
       {showLive && snap && (
         <LiveCard
@@ -111,7 +110,7 @@ export function HealthBanner() {
           onMute={() => setMuted(true)}
         />
       )}
-    </div>
+    </>
   );
 }
 

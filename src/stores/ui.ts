@@ -1,6 +1,8 @@
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { create } from "zustand";
 
+// 타입만 가져온다(import type) — 런타임 import가 아니라서 settings-index ↔ ui 순환이 생기지 않는다.
+import type { SettingsCategory } from "../components/settings/settings-index";
 import type { DiffTarget } from "../lib/ipc";
 
 export interface Toast {
@@ -9,6 +11,11 @@ export interface Toast {
   message: string;
   /** 선택 액션 버튼(예: "설정 열기") — 클릭 시 실행 + 토스트 닫힘. */
   action?: { label: string; run: () => void };
+}
+
+export interface ToastOptions {
+  /** 자동 소멸까지 ms. 기본 6000. `null`이면 사용자가 X로 닫을 때까지 유지. */
+  durationMs?: number | null;
 }
 
 export interface ConfirmRequest {
@@ -103,6 +110,8 @@ export interface UiState {
   symbolSearchOpen: boolean;
   /** 메모 팝오버 열림 여부 (현재 선택 프로젝트) */
   memoOpen: boolean;
+  /** 설정 모달이 다음에 열릴 때 처음 보여줄 카테고리(1회성 — SettingsDialog가 소비 후 null). */
+  settingsCategory: SettingsCategory | null;
   /** diff 뷰어: 변경 없는 영역 접기 (기본 접기, 끄면 전체 펼침) */
   diffCollapseUnchanged: boolean;
   /** 파일 트리 패널 표시 여부 (localStorage 영속) */
@@ -150,6 +159,8 @@ export interface UiState {
   toggleDiffCollapse: () => void;
   toggleFileTree: () => void;
   toggleProjectSort: () => void;
+  /** 설정 열기 + 선택적 카테고리 딥링크. setSettingsOpen(true)의 상위 호환. */
+  openSettings: (category?: SettingsCategory) => void;
   pushToast: (
     kind: Toast["kind"],
     message: string,
@@ -160,6 +171,7 @@ export interface UiState {
   closeConfirm: () => void;
   askPrompt: (req: PromptRequest) => void;
   closePrompt: () => void;
+    opts?: ToastOptions,
   /** repoId: 임베디드 저장소 파일이면 그 저장소의 합성 id(생략하면 선택 프로젝트로 라우팅). */
   openImageEditor: (path: string, repoId?: string) => void;
   closeImageEditor: () => void;
@@ -255,6 +267,7 @@ export const useUi = create<UiState>((set) => ({
   projectSortByChanges: localStorage.getItem("gp:project-sort-changes") === "1",
   imageEditorPath: null,
   imageEditorRepoId: null,
+  settingsCategory: null,
   toasts: [],
   confirm: null,
   prompt: null,
@@ -465,12 +478,17 @@ export const useUi = create<UiState>((set) => ({
     set((s) => {
       const v = !s.projectSortByChanges;
       localStorage.setItem("gp:project-sort-changes", v ? "1" : "0");
+  openSettings: (category) =>
+    set({ settingsOpen: true, settingsCategory: category ?? null }),
       return { projectSortByChanges: v };
     }),
-  pushToast: (kind, message, action) => {
+  pushToast: (kind, message, action, opts) => {
     const id = ++toastSeq;
     set((s) => ({ toasts: [...s.toasts, { id, kind, message, action }] }));
-    setTimeout(() => useUi.getState().dismissToast(id), 6000);
+    // durationMs를 넘기지 않으면 기존대로 6초. null이면 타이머를 걸지 않는다 —
+    // 사용자가 X로 닫을 때까지 남는 알림(새 버전 안내 등).
+    const ms = opts?.durationMs === undefined ? 6000 : opts.durationMs;
+    if (ms != null) setTimeout(() => useUi.getState().dismissToast(id), ms);
   },
   dismissToast: (id) =>
     set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),

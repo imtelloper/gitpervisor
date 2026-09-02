@@ -281,7 +281,12 @@ function AnnotationLayerImpl(
 
   useEffect(
     () => () => {
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      // 취소한 rAF 는 콜백이 돌지 않으니 플래그도 직접 되돌린다 — 남겨 두면 이후 schedule() 이
+      // 전부 무시돼 캔버스가 미도색으로 굳는다(StrictMode 이중 마운트에서 실제로 잠겼다).
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = 0;
+      }
     },
     [],
   );

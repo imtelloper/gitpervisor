@@ -23,7 +23,7 @@ import {
   Volume2,
   VolumeX,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { errorMessage, ipc } from "../../lib/ipc";
 import { useVideoProbe, useVideoToolStatus } from "../../queries";
@@ -73,6 +73,9 @@ export default function VideoPlayer({
   const [muted, setMuted] = useState(false);
   const [inPt, setInPt] = useState<number | null>(null);
   const [outPt, setOutPt] = useState<number | null>(null);
+  // 분할 타임틱(초) — **미정렬**로 둔다: 드래그 중 배열 인덱스가 흔들리면 잡고 있던 마커가
+  // 손에서 빠져나간다. 정렬·병합은 planSegments 안에서만 한다(태스크 22 §3.5).
+  const [ticks, setTicks] = useState<number[]>([]);
   const [loopOn, setLoopOn] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
@@ -111,6 +114,7 @@ export default function VideoPlayer({
     setDuration(0);
     setInPt(null);
     setOutPt(null);
+    setTicks([]);
     setLoopOn(false);
     setCrop(null);
     setCropActive(false);
@@ -250,6 +254,11 @@ export default function VideoPlayer({
     setOutPt(t);
     if (inPt != null && inPt >= t) setInPt(null);
   };
+  /** 현재 위치에 분할 틱 추가 — 100ms 안에 이미 있으면 무시(같은 자리 중복 방지). */
+  const addTick = () => {
+    const t = videoRef.current?.currentTime ?? time;
+    setTicks((p) => (p.some((x) => Math.abs(x - t) < 0.1) ? p : [...p, t]));
+  };
   const changeRate = (r: number) => {
     setRate(r);
     const el = videoRef.current;
@@ -282,6 +291,8 @@ export default function VideoPlayer({
     setCrop(null);
     setCropActive(false);
   }, []);
+  // In/Out 해제(clearRange)와는 무관한 별도 동작 — 구간과 틱은 서로 독립이다.
+  const clearTicks = useCallback(() => setTicks([]), []);
   const getTime = useCallback(() => videoRef.current?.currentTime ?? 0, []);
 
   // ── 단축키(포커스된 컨테이너 한정) ──
@@ -317,6 +328,10 @@ export default function VideoPlayer({
       case "o":
       case "O":
         markOut();
+        break;
+      case "t":
+      case "T":
+        addTick();
         break;
       case "r":
       case "R":
@@ -490,6 +505,10 @@ export default function VideoPlayer({
           // 최소 구간 0.1초 — 드래그로 In==Out을 만들면 반복 재생이 그 지점에 영원히 고정된다.
           onDragIn={(t) => setInPt(Math.max(0, Math.min(t, (outPt ?? duration) - 0.1)))}
           onDragOut={(t) => setOutPt(Math.min(duration, Math.max(t, (inPt ?? 0) + 0.1)))}
+          ticks={ticks}
+          // 인덱스 자리에 값만 갈아끼운다 — 정렬하면 드래그 중 손에서 마커가 바뀐다.
+          onDragTick={(i, t) => setTicks((p) => p.map((x, j) => (j === i ? t : x)))}
+          onRemoveTick={(i) => setTicks((p) => p.filter((_, j) => j !== i))}
           // 스크럽 후에도 화살표·프레임 스텝이 바로 듣도록 — 드래그 preventDefault가
           // 브라우저의 클릭-포커스 기본동작을 막아서 명시적으로 포커스를 준다.
           onInteract={() => containerRef.current?.focus()}
@@ -602,6 +621,8 @@ export default function VideoPlayer({
           inPt={inPt}
           outPt={outPt}
           onClearRange={clearRange}
+          ticks={ticks}
+          onClearTicks={clearTicks}
           crop={crop}
           cropActive={cropActive}
           onToggleCrop={toggleCrop}
@@ -665,6 +686,9 @@ function Timeline({
   onSeek,
   onDragIn,
   onDragOut,
+  ticks: splitTicks,
+  onDragTick,
+  onRemoveTick,
   onInteract,
 }: {
   duration: number;
@@ -675,6 +699,10 @@ function Timeline({
   onSeek: (t: number) => void;
   onDragIn: (t: number) => void;
   onDragOut: (t: number) => void;
+  /** 분할 틱(초, 미정렬) — 인덱스가 곧 정체성이다(드래그 안정). */
+  ticks: number[];
+  onDragTick: (i: number, t: number) => void;
+  onRemoveTick: (i: number) => void;
   onInteract: () => void;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
@@ -831,6 +859,12 @@ function Timeline({
       else onDragOut(t);
     });
 
+  /** 분할 틱 드래그 — startDrag의 모드 유니언을 늘리지 않는다(인덱스가 필요해 별도 킷). */
+  const startTickDrag = (i: number) => (e: React.PointerEvent) =>
+    trackPointer(e, (clientX) =>
+      onDragTick(i, Math.min(Math.max(posToTime(clientX), 0), duration)),
+    );
+
   /** 미니맵 드래그 — 썸 위를 잡았으면 잡은 지점을 유지하는 **상대** 드래그(스크롤바 관례),
    *  썸 밖 클릭은 그 지점으로 창 중심 점프. 즉시-센터만 있으면 깊은 줌의 긴 영상에서
    *  (썸 최소폭 1% 부풀림 때문에) 썸을 누르는 순간 수십 초씩 튄다. */
@@ -871,6 +905,15 @@ function Timeline({
     visible(outPt) &&
     barW > 0 &&
     ((pct(outPt) - pct(inPt)) / 100) * barW < 56;
+  // 틱 배지 겹침(N개 일반화) — 자기보다 **왼쪽**(시간이 작은) 마커가 배지 폭 안에 있으면
+  // 배지만 생략한다(선·드래그·우클릭은 유지). 줌하면 간격이 벌어져 다시 나타난다.
+  const crowded = (t: number) => {
+    if (barW <= 0) return false;
+    const left = [...splitTicks, inPt, outPt].filter(
+      (o): o is number => o != null && o < t,
+    );
+    return left.some((o) => ((pct(t) - pct(o)) / 100) * barW < 56);
+  };
 
   return (
     // pt-6: 배지 층, pb-4: 시간 라벨 층
@@ -919,6 +962,13 @@ function Timeline({
                 style={{ left: `${fullPct(outPt)}%` }}
               />
             )}
+            {splitTicks.map((t, i) => (
+              <div
+                key={i}
+                className="absolute inset-y-0 w-px bg-warn"
+                style={{ left: `${fullPct(t)}%` }}
+              />
+            ))}
             <div className="absolute inset-y-0 w-px bg-fg" style={{ left: `${fullPct(time)}%` }} />
             {(() => {
               // 썸 최소폭 1% — left를 함께 클램프해 우측 끝에서 스트립 밖으로 삐져나가지 않게.
@@ -1020,6 +1070,41 @@ function Timeline({
             {inPt != null ? `+${fmtTime(outPt - inPt)}` : fmtTime(outPt)}
           </div>
         </>
+      )}
+
+      {/* 분할 틱(앰버) — 선은 드래그로 이동, 우클릭이 삭제. 창 밖이면 숨김(미니맵이 표시).
+          배지는 왼쪽 이웃과 겹칠 때만 생략한다(crowded) — 선은 언제나 남아 조작이 가능하다. */}
+      {splitTicks.map((t, i) =>
+        visible(t) ? (
+          <Fragment key={i}>
+            <div
+              onPointerDown={startTickDrag(i)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                onRemoveTick(i);
+              }}
+              title={`분할 지점 ${fmtTime(t)} (드래그로 이동 · 우클릭 삭제)`}
+              className="absolute top-6 z-10 h-7 w-2 -translate-x-1/2 cursor-ew-resize"
+              style={{ left: `${pct(t)}%` }}
+            >
+              <div className="mx-auto h-full w-0.5 bg-warn" />
+            </div>
+            {!crowded(t) && (
+              <div
+                onPointerDown={startTickDrag(i)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  onRemoveTick(i);
+                }}
+                title={`분할 지점 ${fmtTime(t)} (드래그로 이동 · 우클릭 삭제)`}
+                className={`${badgeCls} ${shift(pct(t))} z-10 cursor-ew-resize border border-warn bg-panel text-warn`}
+                style={{ left: `${pct(t)}%` }}
+              >
+                {fmtTime(t)}
+              </div>
+            )}
+          </Fragment>
+        ) : null,
       )}
 
       {/* 플레이헤드(전경색) — 선 + 다이아 포인터 + 현재시간 배지, 최상위. 창 밖이면 숨김 */}

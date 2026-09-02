@@ -491,3 +491,20 @@ openImageEditor: (path: string, repoId?: string) => void;
 | 도구 단축키가 전역 단축키와 충돌하는가 | 모달 안에서만 활성 · 단일 글자 키 · textarea focus 시 비활성. 충돌 없음 |
 | 모자이크 기본 모드 | `pixelate`(블러는 원본 추정 공격에 상대적으로 약하다) |
 | 번호 뱃지가 삭제 후 번호를 재정렬해야 하는가 | **재정렬 안 함**(계속 증가) — 재정렬은 기존 설명 캡션과 어긋난다 |
+
+## 부록 — 구현 후 결함 수정 기록
+
+### 2026-09-02 · `AnnotationLayer` rAF 코얼레싱 플래그가 StrictMode 이중 마운트에서 영구 잠김(dev 한정)
+
+- **증상**: e2e 30(이미지 주석)에서 프리뷰 주석 캔버스의 픽셀 readback이 전부 `rgba(0,0,0,0)`, 캔버스 크기가 기본
+  300×150으로 남음(정상 200×200). 저장 파일 픽셀은 정상. 실행마다 5~12건이 무작위로 실패.
+- **원인**: `schedule()`은 `rafRef.current !== 0`이면 즉시 반환하는데, 언마운트 cleanup이 대기 중 rAF를
+  `cancelAnimationFrame`만 하고 **플래그를 0으로 되돌리지 않았다**. React 19 StrictMode(dev)가 마운트 직후 effect를
+  unmount→mount로 한 번 더 돌릴 때 첫 rAF가 발화 전이면 취소되고 플래그가 남아 이후 모든 `schedule()`이 무시된다 →
+  `paintNow`가 한 번도 돌지 않음. 실측: 미도색 열기 8/8회에서 "미발화 rAF 취소" 정확히 1건, rAF를 microtask로 바꾸면
+  3/3 도색. 릴리스 빌드는 StrictMode 이중 호출이 없어 사용자 영향 없음.
+- **수정**: cleanup에서 `cancelAnimationFrame(rafRef.current); rafRef.current = 0;` (플래그 리셋 1줄, `AnnotationLayer.tsx`).
+  취소한 rAF는 다시 잡아야 하므로 release 경로에서도 정확한 동작이다.
+- **함께 고친 테스트 결함**: 30 스위트의 `selCount` 헬퍼가 모달 `textContent` 전체에 `/(\d+)개 선택/`을 걸어 툴바
+  마지막 슬라이더 값 "100"과 "1개 선택"이 붙은 "1001개 선택"을 읽었다 → 가장 안쪽 요소에 `^(\d+)개 선택` 앵커 매칭으로.
+- **결과**: 30 스위트 연속 2회 60 pass / 0 fail.

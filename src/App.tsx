@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { FolderGit2 } from "lucide-react";
-import { lazy, Suspense, useEffect } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 
 import { AggregateTerminals } from "./components/AggregateTerminals";
 import { ChangesPanel } from "./components/changes/ChangesPanel";
@@ -25,6 +25,7 @@ import { ProjectPathMissing } from "./components/ProjectPathMissing";
 import { StatusBar } from "./components/StatusBar";
 import { TitleBar } from "./components/TitleBar";
 import { HealthBanner } from "./components/common/HealthBanner";
+import { bumpLaunchCount, StarPrompt } from "./components/common/StarPrompt";
 import { Toolbar } from "./components/toolbar/Toolbar";
 import { FileTreePanel } from "./components/tree/FileTreePanel";
 import { WorkspaceTabs } from "./components/workspace/WorkspaceTabs";
@@ -42,7 +43,16 @@ import { useUpdater } from "./stores/updater";
 // 이미지 편집기는 무겁고(canvas + avif wasm 동적 로드) 자주 안 열리므로 처음 열 때만 로드한다.
 const ImageEditor = lazy(() => import("./components/image/ImageEditor"));
 
+// 업데이트 재확인 주기 — 릴리스는 주 1회도 안 나오고 요청은 latest.json 1회 fetch라
+// 더 촘촘히 볼 이유가 없다. 절전에서 깨어나 늦게 발화해도 무해하다.
+const UPDATE_RECHECK_MS = 12 * 60 * 60_000;
+
 export default function App() {
+  // 실행 횟수는 **렌더 중** 올린다 — useEffect에 두면 자식(StarPrompt)이 이미 마운트하며
+  // 증가 전 값을 읽어, 3번째 실행에서 카드가 한 박자 늦게(=다음 실행에) 뜬다.
+  // 모듈 플래그로 멱등하므로 StrictMode 이중 마운트에도 1회다.
+  useState(bumpLaunchCount);
+
   const { data: projects } = useProjects();
   const selectedProjectId = useUi((s) => s.selectedProjectId);
   const selectProject = useUi((s) => s.selectProject);
@@ -73,13 +83,21 @@ export default function App() {
 
   // 시작 시 자동 업데이트 확인(옵트인, 기본 켬) — 콜드스타트 IPC 폭주와 안 겹치게 잠깐 지연.
   // 새 버전이 있으면 updater 스토어가 토스트로 알리고 설정 › 업데이트에 표시한다. 실패는 조용히.
+  // 시작 1회로 끝내지 않고 주기적으로도 확인한다 — 이 앱은 종일 켜 둔 채로 쓰는 물건이라
+  // 시작 시 1회만 보면 다음 재시작까지 새 릴리스를 모른다. 주기 확인을 **같은 효과 안**에 두는
+  // 이유는 아래 dev·autoCheck 가드를 공유하기 위함이다(가드를 복제하면 한쪽만 고쳐진다).
   useEffect(() => {
     // dev 인스턴스는 확인하지 않는다 — 설치본과 나란히 띄우는 구성에서(package.json dev:app)
     // 여기서 "설치"를 누르면 지금 쓰고 있는 설치본을 통째로 갈아엎는다(installMode: passive).
     if (import.meta.env.DEV) return;
     if (!useUpdater.getState().autoCheck) return;
-    const t = setTimeout(() => void useUpdater.getState().check({ silent: true }), 4000);
-    return () => clearTimeout(t);
+    const run = () => void useUpdater.getState().check({ silent: true });
+    const t = setTimeout(run, 4000);
+    const iv = setInterval(run, UPDATE_RECHECK_MS);
+    return () => {
+      clearTimeout(t);
+      clearInterval(iv);
+    };
   }, []);
 
   // 메인 창 닫기 확인 — 백엔드가 살아있는 PTY 세션이 있을 때만 닫기를 막고 이 이벤트를 보낸다.
@@ -128,8 +146,13 @@ export default function App() {
   return (
     <div className="flex h-screen flex-col overflow-hidden">
       <TitleBar />
-      {/* 메모리 압박 경보 / 지난 실행 비정상 종료 안내 — 우측 하단 fixed 카드(레이아웃 불점유) */}
-      <HealthBanner />
+      {/* 우측 하단 카드 스택 — 레이아웃 불점유(fixed). 빈 컨테이너가 클릭을 먹지 않게
+          pointer-events는 카드에만 준다. 위: 메모리 압박 경보 / 지난 실행 비정상 종료 안내,
+          아래: GitHub star 부탁(3번째 실행 1회). */}
+      <div className="pointer-events-none fixed bottom-8 right-4 z-40 flex w-[380px] max-w-[calc(100vw-32px)] flex-col gap-2 [&>*]:pointer-events-auto">
+        <HealthBanner />
+        <StarPrompt />
+      </div>
       <div className="min-h-0 flex-1">
         <GitGate>
           <div className="flex h-full flex-col">

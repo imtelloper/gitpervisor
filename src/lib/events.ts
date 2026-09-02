@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 
 import { useOps } from "../stores/ops";
 import { useUi } from "../stores/ui";
+import { setSplitQueryClient, useVideoSplit } from "../stores/videoSplit";
 import type { SyncOp } from "../stores/ops";
 import type { VideoExportFinished } from "./ipc";
 import { ipc } from "./ipc";
@@ -31,6 +32,9 @@ const OP_LABEL: Record<SyncOp, string> = {
 
 /** 백엔드 이벤트 구독 — 앱 시작 시 1회. 이벤트는 신호일 뿐, 진실은 상태 재조회 (§10). */
 export function attachRepoEvents(qc: QueryClient) {
+  // 분할 배치 스토어는 React 밖이라 훅으로 qc를 못 얻는다 — 여기서 한 번 넘긴다.
+  setSplitQueryClient(qc);
+
   // v5 기본은 visibilitychange만 본다 — 데스크톱 창은 항상 visible이라
   // 실제 포커스 복귀 갱신(설계 §9)을 위해 window focus 이벤트에 연결한다.
   focusManager.setEventListener((handleFocus) => {
@@ -91,6 +95,12 @@ export function attachRepoEvents(qc: QueryClient) {
   // 동영상 내보내기 종결 — invoke 응답이 유실돼도(§10) 이 이벤트가 토스트·갱신을 책임진다.
   // 진행 중 UI(ExportPanel)는 자기 jobId로 별도 구독하고, 토스트는 여기 한 곳에서만(중복 방지).
   void listen<VideoExportFinished>("video://export-finished", (e) => {
+    // 분할 배치가 발급한 잡이면 세그먼트마다 토스트·무효화가 터지면 안 된다 —
+    // 스토어가 루프를 이어가고 배치 끝에 요약 토스트 1개만 띄운다(태스크 22 §3.3).
+    if (useVideoSplit.getState().owns(e.payload.jobId)) {
+      useVideoSplit.getState().advance(e.payload);
+      return;
+    }
     const { ok, cancelled, error, outRel } = e.payload;
     const name = outRel.split("/").pop() ?? outRel;
     if (cancelled) useUi.getState().pushToast("info", "내보내기를 취소했습니다");

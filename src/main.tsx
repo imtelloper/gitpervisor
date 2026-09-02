@@ -22,6 +22,7 @@ import { initPreviewRemint } from "./stores/browser";
 import { useTerminals } from "./stores/terminals";
 import { useUi } from "./stores/ui";
 import "./styles.css";
+import { planSegments, useVideoSplit } from "./stores/videoSplit";
 
 const root = ReactDOM.createRoot(document.getElementById("root")!);
 
@@ -48,6 +49,8 @@ installTerminalCopyFallback();
 if (import.meta.env.DEV) {
   (window as unknown as { __gpv?: unknown }).__gpv = {
     ui: useUi,
+    videoSplit: useVideoSplit,
+    planSegments,
     terminals: useTerminals,
   };
 }
