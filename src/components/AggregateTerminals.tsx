@@ -1,10 +1,11 @@
 import {
-  AlignVerticalDistributeCenter,
   CircleCheck,
   ExternalLink,
   Eye,
   EyeOff,
   Globe,
+  Grid2x2,
+  Layers,
   LayoutGrid,
   Loader2,
   Maximize2,
@@ -125,6 +126,9 @@ const MIN_W = 240;
 const MIN_H = 160;
 // 그리드 간격/패딩(px) — Tailwind gap-1.5 / p-1.5 = 6px와 맞춘다(트랙 px 환산용).
 const GAP = 6;
+
+// 호버 강조 없음 — 참조가 고정이라 매 leave마다 새 Set으로 리렌더를 만들지 않는다.
+const NO_HOVER: ReadonlySet<string> = new Set();
 
 /**
  * 터미널 모아보기 — 여러 프로젝트/탭에 흩어진 터미널·브라우저를 한 화면에 분할해 동시에 본다.
@@ -258,6 +262,15 @@ export function AggregateTerminals() {
       return next;
     });
 
+  /** 묶음 칩 클릭 — 전부 선택돼 있으면 전부 해제, 하나라도 빠져 있으면 전부 선택. */
+  const toggleAll = (cells: CellMeta[]) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      const allOn = cells.every((c) => next.has(c.id));
+      cells.forEach((c) => (allOn ? next.delete(c.id) : next.add(c.id)));
+      return next;
+    });
+
   // 새 터미널 생성 + 즉시 그리드 편입. initedRef 선행 — 터미널 0개에서 첫 생성 시
   // 초기 자동선택 효과가 뒤늦게 selected를 덮어쓰는 경합 차단. 스토어 갱신은 동기라
   // 신규 paneId만 selected에 넣으면 셀 마운트→PTY spawn→attach는 기존 경로로 완결된다.
@@ -282,7 +295,25 @@ export function AggregateTerminals() {
 
   // 칩 우클릭 메뉴 — fixed 메뉴가 브라우저 셀의 네이티브 webview에 가려지지 않게 점유 등록.
   const [chipMenu, setChipMenu] = useState<{ x: number; y: number; cell: CellMeta } | null>(null);
-  useOccludesWebview(!!chipMenu);
+
+  // 칩 호버 중 강조할 셀 — 칩과 그리드 셀은 위치가 떨어져 있어 어느 칩이 어느 셀인지
+  // 눈으로 짝을 못 짓는다. 호버한 칩의 셀(묶음 칩이면 프로젝트 전체)에 ring을 띄운다.
+  const [hovered, setHovered] = useState<ReadonlySet<string>>(NO_HOVER);
+
+  // 탭 모으기 — 같은 프로젝트의 칩을 하나로 묶고, 호버 시 아래 드롭다운으로 개별 탭을 편다.
+  const groupTabs = useUi((s) => s.aggregateGroupTabs);
+  const toggleGroupTabs = useUi((s) => s.toggleAggregateGroupTabs);
+  const [groupMenu, setGroupMenu] = useState<{ name: string; x: number; y: number } | null>(null);
+  // 칩 → 드롭다운으로 마우스가 건너가는 짧은 공백에 닫히지 않게 지연 닫기(타이머) 사용.
+  const groupCloseTimer = useRef<number | undefined>(undefined);
+  const holdGroupOpen = () => window.clearTimeout(groupCloseTimer.current);
+  const scheduleGroupClose = () => {
+    window.clearTimeout(groupCloseTimer.current);
+    groupCloseTimer.current = window.setTimeout(() => setGroupMenu(null), 150);
+  };
+  // 닫기 지연 타이머가 언마운트 후 발화하지 않게 정리(모아보기 닫힘·창 닫힘).
+  useEffect(() => () => window.clearTimeout(groupCloseTimer.current), []);
+  useOccludesWebview(!!chipMenu || !!groupMenu);
 
   const shown = all.filter((t) => selected.has(t.id));
   // 렌더 기준 확대 대상 — 상태가 스테일해도(대상이 방금 닫힘·칩 해제) 이번 프레임부터 무시.
@@ -407,45 +438,61 @@ export function AggregateTerminals() {
           {n}/{all.length} 선택
         </span>
         <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto pl-2">
-          {all.map((t) => {
-            const on = selected.has(t.id);
-            return (
-              <button
-                key={t.id}
-                onClick={() => toggle(t.id)}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  setChipMenu({ x: e.clientX, y: e.clientY, cell: t });
-                }}
-                title={`${t.projName} · ${t.title} (우클릭: 메뉴)`}
-                // 배경이 프로젝트 색이다 — 정렬로 같은 프로젝트를 붙여 놓아도 경계가 어디인지
-                // 한눈에 안 들어와서(3px 막대는 너무 약했다) 칩 전체를 물들인다.
-                style={{ backgroundColor: projectTint(t.hue, on) }}
-                // 글자는 선택 여부와 무관하게 text-fg다. 예전처럼 미선택을 fg-muted로 흐리면
-                // 물든 배경 위에서 대비가 무너진다(실측 solarized-light 3.5:1 — AA 미달).
-                // 선택 표시는 ring + 진한 배경(--proj-a-on)이 한다.
-                className={`flex shrink-0 items-center gap-1 rounded px-2 py-1 text-[11px] text-fg ${
-                  on ? "ring-1 ring-accent" : ""
-                } ${
-                  t.status === "working"
-                    ? "ai-working"
-                    : t.status === "done"
-                      ? "ai-done"
-                      : ""
-                }`}
-              >
-                {t.kind === "browser" ? (
-                  <Globe size={11} className="shrink-0 text-accent" />
-                ) : (
-                  <StatusIcon status={t.status} />
-                )}
-                <span className="max-w-[120px] truncate">
-                  {t.projName}
-                  <span className="text-fg-dim"> · {t.title}</span>
-                </span>
-              </button>
-            );
-          })}
+          {groupTabs
+            ? groupByProject(all).map((cells) => {
+                const name = cells[0].projName;
+                const selCount = cells.filter((c) => selected.has(c.id)).length;
+                // 묶음 상태 = 구성원 요약 — 하나라도 작업 중이면 working이 우선.
+                const status = cells.some((c) => c.status === "working")
+                  ? ("working" as const)
+                  : cells.some((c) => c.status === "done")
+                    ? ("done" as const)
+                    : undefined;
+                const openDropdown = (el: HTMLElement) => {
+                  holdGroupOpen();
+                  const r = el.getBoundingClientRect();
+                  setGroupMenu({ name, x: r.left, y: r.bottom + 4 });
+                  setHovered(new Set(cells.map((c) => c.id)));
+                };
+                return (
+                  <button
+                    key={name}
+                    onClick={() => toggleAll(cells)}
+                    onMouseEnter={(e) => openDropdown(e.currentTarget)}
+                    // 우클릭도 드롭다운 — 개별 칩의 우클릭 메뉴(새 터미널 등)가 묶음 모드에선
+                    // 드롭다운 안에 있으므로, 우클릭을 죽은 입력으로 두지 않는다.
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      openDropdown(e.currentTarget);
+                    }}
+                    onMouseLeave={() => {
+                      scheduleGroupClose();
+                      setHovered(NO_HOVER);
+                    }}
+                    title={`${name} — 탭 ${cells.length}개 (클릭: 전체 표시/숨김, 호버: 목록)`}
+                    style={{ backgroundColor: projectTint(cells[0].hue, selCount > 0) }}
+                    className={`flex shrink-0 items-center gap-1 rounded px-2 py-1 text-[11px] text-fg ${
+                      selCount === cells.length ? "ring-1 ring-accent" : ""
+                    } ${status === "working" ? "ai-working" : status === "done" ? "ai-done" : ""}`}
+                  >
+                    <StatusIcon status={status} />
+                    <span className="max-w-[140px] truncate">{name}</span>
+                    <span className="text-fg-dim">
+                      {selCount}/{cells.length}
+                    </span>
+                  </button>
+                );
+              })
+            : all.map((t) => (
+                <Chip
+                  key={t.id}
+                  t={t}
+                  on={selected.has(t.id)}
+                  onToggle={() => toggle(t.id)}
+                  onMenu={(x, y) => setChipMenu({ x, y, cell: t })}
+                  onHover={(over) => setHovered(over ? new Set([t.id]) : NO_HOVER)}
+                />
+              ))}
         </div>
         {/* 별도 창은 "보는 화면"이다 — 터미널을 만들고 닫는 관리는 메인 창에서 한다.
             (이 창의 스토어는 영속되지 않아 여기서 만든 터미널을 메인이 알 수 없고, 여기서
@@ -464,12 +511,33 @@ export function AggregateTerminals() {
           <button
             onClick={evenTracks}
             disabled={!canEven}
-            title="셀 크기 균등 맞춤 — 드래그로 바뀐 칸 비율을 되돌립니다"
+            title="셀 자동배치 — 드래그로 바뀐 칸 비율을 균등 그리드로 되돌립니다"
             className="flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs text-fg-muted hover:bg-raised hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-muted"
           >
-            <AlignVerticalDistributeCenter size={14} /> 균등
+            <Grid2x2 size={14} /> 자동배치
           </button>
         )}
+        {/* 탭 모으기 ON/OFF — 프로젝트·탭이 늘면 칩 바가 스크롤로 밀린다. 묶으면 프로젝트당
+            칩 하나로 줄고, 개별 탭은 묶음 칩 호버 시 드롭다운으로 편다. */}
+        <button
+          onClick={() => {
+            toggleGroupTabs();
+            setGroupMenu(null);
+            setHovered(NO_HOVER);
+          }}
+          title={
+            groupTabs
+              ? "탭 모으기 끄기 — 탭을 개별 칩으로 펼칩니다"
+              : "탭 모으기 켜기 — 같은 프로젝트의 탭을 칩 하나로 묶습니다"
+          }
+          className={`flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs ${
+            groupTabs
+              ? "bg-raised text-accent"
+              : "text-fg-muted hover:bg-raised hover:text-fg"
+          }`}
+        >
+          <Layers size={14} /> 탭 모으기
+        </button>
         <button
           onClick={() => {
             if (IS_AGGREGATE_WINDOW) void getCurrentWindow().close();
@@ -546,9 +614,11 @@ export function AggregateTerminals() {
                 return (
                   <div
                     key={t.id}
+                    // 칩 호버 강조 — 어느 칩이 이 셀인지 짝을 보여준다(ring은 셀 밖으로 그려져
+                    // xterm 크기를 건드리지 않는다 = 리핏 없음).
                     className={`absolute${isZoomed ? " z-30" : ""}${
                       zoomedId && !isZoomed ? " invisible" : ""
-                    }`}
+                    }${hovered.has(t.id) ? " rounded ring-2 ring-accent" : ""}`}
                     style={style}
                     // 세션 셀 위 우클릭 = 칩 우클릭과 같은 메뉴(숨기기·확대·Float·닫기).
                     // 브라우저 셀의 주소창 등 입력 요소는 네이티브 편집 메뉴를 유지한다.
@@ -612,6 +682,62 @@ export function AggregateTerminals() {
         </div>
       )}
 
+      {/* 묶음 칩 호버 드롭다운 — 그 프로젝트의 탭을 개별 칩으로 편다. 칩 바가 overflow-x라
+          absolute면 잘리므로 fixed. 마우스가 칩→드롭다운으로 건너올 수 있게 지연 닫기와 짝. */}
+      {groupMenu &&
+        (() => {
+          const cells = all.filter((c) => c.projName === groupMenu.name);
+          if (cells.length === 0) return null;
+          return (
+            <div
+              className="fixed z-50 flex max-h-[60vh] min-w-44 max-w-80 flex-col gap-1 overflow-y-auto rounded-md border border-edge bg-panel p-1.5 shadow-xl"
+              style={{
+                left: Math.min(groupMenu.x, window.innerWidth - 328),
+                top: groupMenu.y,
+              }}
+              onMouseEnter={() => {
+                holdGroupOpen();
+                // 칩→드롭다운 이동 중 칩 mouseleave가 지운 묶음 강조를 복원한다.
+                setHovered(new Set(cells.map((c) => c.id)));
+              }}
+              onMouseLeave={() => {
+                scheduleGroupClose();
+                setHovered(NO_HOVER);
+              }}
+            >
+              {cells.map((t) => (
+                <Chip
+                  key={t.id}
+                  t={t}
+                  full
+                  on={selected.has(t.id)}
+                  onToggle={() => toggle(t.id)}
+                  onMenu={(x, y) => setChipMenu({ x, y, cell: t })}
+                  // 항목을 떠나도 드롭다운 안이면 묶음 전체 강조로 되돌린다(드롭다운을
+                  // 아예 떠나면 위 onMouseLeave가 마지막에 실행돼 전부 지운다).
+                  onHover={(over) =>
+                    setHovered(
+                      over ? new Set([t.id]) : new Set(cells.map((c) => c.id)),
+                    )
+                  }
+                />
+              ))}
+              {/* 개별 칩 우클릭 메뉴의 '새 터미널'과 같은 동작 — 묶음 모드에선 프로젝트 단위
+                  동선이 이 드롭다운뿐이라 여기에도 둔다. 별도 창은 생성 불가(헤더 주석 참조). */}
+              {!IS_AGGREGATE_WINDOW && (
+                <>
+                  <div className="border-t border-edge" />
+                  <MenuRow
+                    icon={<TerminalIcon size={13} />}
+                    label={`'${groupMenu.name}'에 새 터미널 열기`}
+                    onClick={() => addTerminal(cells[0].projectId)}
+                  />
+                </>
+              )}
+            </div>
+          );
+        })()}
+
       {chipMenu && (
         <ChipMenu
           cell={chipMenu.cell}
@@ -628,7 +754,12 @@ export function AggregateTerminals() {
             setZoomed((z) => (z === id ? null : id));
           }}
           // 별도 창은 "보는 화면" — 여기서 닫으면 메인이 소유한 PTY가 죽는다(헤더 주석과 동일
-          // 이유). Float/닫기는 메인 창에서만 내리고, 별도 창 메뉴는 표시·확대만 남긴다.
+          // 이유). Float/닫기/새 터미널은 메인 창에서만 내리고, 별도 창 메뉴는 표시·확대만 남긴다.
+          onNewTerminal={
+            !IS_AGGREGATE_WINDOW
+              ? () => addTerminal(chipMenu.cell.projectId)
+              : undefined
+          }
           onFloat={
             !IS_AGGREGATE_WINDOW &&
             chipMenu.cell.kind === "terminal" &&
@@ -676,6 +807,7 @@ function ChipMenu({
   onClose,
   onToggle,
   onZoom,
+  onNewTerminal,
   onFloat,
   onCloseCell,
 }: {
@@ -687,6 +819,7 @@ function ChipMenu({
   onClose: () => void;
   onToggle: () => void;
   onZoom: () => void;
+  onNewTerminal?: () => void;
   onFloat?: () => void;
   onCloseCell?: () => void;
 }) {
@@ -730,7 +863,16 @@ function ChipMenu({
         label={zoomed ? "확대 해제" : "확대해서 보기"}
         onClick={run(onZoom)}
       />
-      {(onFloat || onCloseCell) && <div className="my-1 border-t border-edge" />}
+      {(onNewTerminal || onFloat || onCloseCell) && (
+        <div className="my-1 border-t border-edge" />
+      )}
+      {onNewTerminal && (
+        <MenuItem
+          icon={<TerminalIcon size={14} />}
+          label={`'${cell.projName}'에 새 터미널 열기`}
+          onClick={run(onNewTerminal)}
+        />
+      )}
       {onFloat && (
         <MenuItem
           icon={<ExternalLink size={14} />}
@@ -747,6 +889,73 @@ function ChipMenu({
         />
       )}
     </div>
+  );
+}
+
+/** 같은 프로젝트끼리 묶는다 — all이 projName 오름차순 정렬이라 인접 비교면 충분하다. */
+function groupByProject(all: CellMeta[]): CellMeta[][] {
+  const groups: CellMeta[][] = [];
+  for (const c of all) {
+    const last = groups[groups.length - 1];
+    if (last && last[0].projName === c.projName) last.push(c);
+    else groups.push([c]);
+  }
+  return groups;
+}
+
+/** 선택 칩 하나 — 클릭 토글·우클릭 메뉴·호버 시 해당 셀 강조. 칩 바와 묶음 드롭다운에서 공용. */
+function Chip({
+  t,
+  on,
+  full,
+  onToggle,
+  onMenu,
+  onHover,
+}: {
+  t: CellMeta;
+  on: boolean;
+  /** 드롭다운 목록용 — 가로 폭을 채우고 제목을 더 길게 보여준다 */
+  full?: boolean;
+  onToggle: () => void;
+  onMenu: (x: number, y: number) => void;
+  onHover: (over: boolean) => void;
+}) {
+  return (
+    <button
+      onClick={onToggle}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        onMenu(e.clientX, e.clientY);
+      }}
+      onMouseEnter={() => onHover(true)}
+      onMouseLeave={() => onHover(false)}
+      title={`${t.projName} · ${t.title} (우클릭: 메뉴)`}
+      // 배경이 프로젝트 색이다 — 정렬로 같은 프로젝트를 붙여 놓아도 경계가 어디인지
+      // 한눈에 안 들어와서(3px 막대는 너무 약했다) 칩 전체를 물들인다.
+      style={{ backgroundColor: projectTint(t.hue, on) }}
+      // 글자는 선택 여부와 무관하게 text-fg다. 예전처럼 미선택을 fg-muted로 흐리면
+      // 물든 배경 위에서 대비가 무너진다(실측 solarized-light 3.5:1 — AA 미달).
+      // 선택 표시는 ring + 진한 배경(--proj-a-on)이 한다.
+      className={`flex shrink-0 items-center gap-1 rounded px-2 py-1 text-[11px] text-fg ${
+        on ? "ring-1 ring-accent" : ""
+      } ${
+        t.status === "working"
+          ? "ai-working"
+          : t.status === "done"
+            ? "ai-done"
+            : ""
+      }${full ? " w-full" : ""}`}
+    >
+      {t.kind === "browser" ? (
+        <Globe size={11} className="shrink-0 text-accent" />
+      ) : (
+        <StatusIcon status={t.status} />
+      )}
+      <span className={full ? "min-w-0 truncate" : "max-w-[120px] truncate"}>
+        {t.projName}
+        <span className="text-fg-dim"> · {t.title}</span>
+      </span>
+    </button>
   );
 }
 

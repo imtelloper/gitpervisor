@@ -1,7 +1,7 @@
 //! 디스크 용량 분석(TreeSize류) — DOCS/disk-usage-analyzer-design.md.
 //!
-//! std 스레드 풀 병렬 walk(신규 크레이트 0). Windows에선 `DirEntry::metadata()`가
-//! FIND_DATA에 포함돼 무비용이라 병목은 디렉터리 열거뿐 — 워커 N개로 병렬화한다.
+//! std 스레드 풀 병렬 walk(신규 크레이트 0). 병목은 디렉터리 열거뿐이라 워커 N개(코어 수)로
+//! 병렬화하고, Windows는 FindFirstFileExW(LARGE_FETCH)로 FIND_DATA를 직독한다(§win_enum).
 //! 트리는 Rust arena에만 상주(폴더 65만 개 ≈ 60-80MB)하고 파일 430만 개는 저장하지
 //! 않는다 — 프론트가 폴더를 펼칠 때 그 폴더 1개만 live read_dir 한다(§2.3).
 //! Monitor 뮤텍스와 분리 — 몇 분짜리 스캔이 2초 폴링을 막으면 안 된다.
@@ -248,25 +248,13 @@ fn to_epoch_ms(t: SystemTime) -> i64 {
         .unwrap_or(0)
 }
 
-/// 파일의 디스크 할당 크기(§2.2 후속 — TreeSize "할당된 공간").
-///
-/// Windows: 압축(0x800)·스파스(0x200) 속성이 있을 때만 `GetCompressedFileSizeW` 1회 —
-/// 일반 파일은 논리 크기와 같다고 보고 syscall을 아낀다(383만 파일 × 추가 syscall 방지).
-/// 클러스터 반올림은 반영하지 않는다(볼륨별 클러스터 조회·per-file 핸들이 필요해 비용 대비 무가치).
-/// Unix: st_blocks × 512 — 홀(스파스)과 블록 반올림이 모두 실측으로 반영된다.
+/// 압축·스파스 파일의 실제 디스크 점유(`GetCompressedFileSizeW`). 실패 시 None.
 #[cfg(windows)]
-fn file_alloc(path: &std::path::Path, md: &std::fs::Metadata) -> u64 {
+fn compressed_size(path: &std::path::Path) -> Option<u64> {
     use std::os::windows::ffi::OsStrExt;
-    use std::os::windows::fs::MetadataExt;
     use windows_sys::Win32::Foundation::GetLastError;
     use windows_sys::Win32::Storage::FileSystem::{GetCompressedFileSizeW, INVALID_FILE_SIZE};
 
-    const FILE_ATTRIBUTE_COMPRESSED: u32 = 0x800;
-    const FILE_ATTRIBUTE_SPARSE_FILE: u32 = 0x200;
-    let logical = md.len();
-    if md.file_attributes() & (FILE_ATTRIBUTE_COMPRESSED | FILE_ATTRIBUTE_SPARSE_FILE) == 0 {
-        return logical;
-    }
     let wide: Vec<u16> = path
         .as_os_str()
         .encode_wide()
@@ -276,9 +264,28 @@ fn file_alloc(path: &std::path::Path, md: &std::fs::Metadata) -> u64 {
     let low = unsafe { GetCompressedFileSizeW(wide.as_ptr(), &mut high) };
     // INVALID_FILE_SIZE는 "하위 32비트가 우연히 0xFFFFFFFF"와 겹친다 — GetLastError로 구분.
     if low == INVALID_FILE_SIZE && unsafe { GetLastError() } != 0 {
+        return None;
+    }
+    Some(((high as u64) << 32) | low as u64)
+}
+
+/// 파일의 디스크 할당 크기(§2.2 후속 — TreeSize "할당된 공간").
+///
+/// Windows: 압축(0x800)·스파스(0x200) 속성이 있을 때만 `GetCompressedFileSizeW` 1회 —
+/// 일반 파일은 논리 크기와 같다고 보고 syscall을 아낀다(383만 파일 × 추가 syscall 방지).
+/// 클러스터 반올림은 반영하지 않는다(볼륨별 클러스터 조회·per-file 핸들이 필요해 비용 대비 무가치).
+/// Unix: st_blocks × 512 — 홀(스파스)과 블록 반올림이 모두 실측으로 반영된다.
+#[cfg(windows)]
+fn file_alloc(path: &std::path::Path, md: &std::fs::Metadata) -> u64 {
+    use std::os::windows::fs::MetadataExt;
+
+    const FILE_ATTRIBUTE_COMPRESSED: u32 = 0x800;
+    const FILE_ATTRIBUTE_SPARSE_FILE: u32 = 0x200;
+    let logical = md.len();
+    if md.file_attributes() & (FILE_ATTRIBUTE_COMPRESSED | FILE_ATTRIBUTE_SPARSE_FILE) == 0 {
         return logical;
     }
-    ((high as u64) << 32) | low as u64
+    compressed_size(path).unwrap_or(logical)
 }
 
 #[cfg(unix)]
@@ -300,6 +307,212 @@ fn top_push(heap: &mut TopHeap, bytes: u64, path: String, modified: i64) {
     if heap.len() > TOP_FILES_CAP {
         heap.pop();
     }
+}
+
+/// Top-N 후보 사전 판정 — 경로 문자열을 만들기 **전에** 크기만으로 거른다.
+/// 수백만 파일 절대다수가 여기서 걸러져 파일당 힙 할당(PathBuf+String)이 사라진다.
+fn top_candidate(heap: &TopHeap, bytes: u64) -> bool {
+    heap.len() < TOP_FILES_CAP
+        || heap
+            .peek()
+            .is_some_and(|std::cmp::Reverse((floor, _, _))| bytes > *floor)
+}
+
+/// 한 디렉터리 열거 결과의 직속 파일 합계.
+#[derive(Default)]
+struct OwnTotals {
+    bytes: u64,
+    alloc: u64,
+    files: u64,
+}
+
+// ── Windows 고속 열거 ──
+// std read_dir도 FindFirstFileExW(FindExInfoBasic)까지는 쓰지만 FIND_FIRST_EX_LARGE_FETCH는
+// "사용자 프로파일을 모르니 보수적으로" 뺀다(std/src/sys/fs/windows.rs). 볼륨 전체 스캔은
+// 정확히 그 플래그가 이득인 워크로드(대형 디렉터리 배치 열거)라 직접 연다. 추가 이득:
+// DirEntry/Metadata/PathBuf를 만들지 않고 WIN32_FIND_DATAW에서 바로 읽는다 — 일반 파일은
+// 엔트리당 힙 할당 0(이름 문자열조차 안 만든다).
+#[cfg(windows)]
+mod win_enum {
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+
+    use windows_sys::Win32::Foundation::{
+        GetLastError, ERROR_FILE_NOT_FOUND, FILETIME, INVALID_HANDLE_VALUE,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        FindClose, FindExInfoBasic, FindExSearchNameMatch, FindFirstFileExW, FindNextFileW,
+        FIND_FIRST_EX_LARGE_FETCH, WIN32_FIND_DATAW,
+    };
+
+    pub const ATTR_DIRECTORY: u32 = 0x10;
+    pub const ATTR_REPARSE_POINT: u32 = 0x400;
+    pub const ATTR_SPARSE: u32 = 0x200;
+    pub const ATTR_COMPRESSED: u32 = 0x800;
+
+    /// FILETIME(1601 기준 100ns) → epoch ms. 0(미기록)은 None.
+    pub fn filetime_ms(ft: &FILETIME) -> Option<i64> {
+        let t = ((ft.dwHighDateTime as u64) << 32) | ft.dwLowDateTime as u64;
+        (t != 0).then(|| (t as i64).saturating_sub(116_444_736_000_000_000) / 10_000)
+    }
+
+    pub fn size_of(w: &WIN32_FIND_DATAW) -> u64 {
+        ((w.nFileSizeHigh as u64) << 32) | w.nFileSizeLow as u64
+    }
+
+    /// symlink·정션(name-surrogate reparse) — std `FileType::is_symlink`와 같은 판정.
+    /// reparse point일 때 FIND_DATA의 dwReserved0이 reparse tag다(문서 보장).
+    /// OneDrive 자리표시자 등 비-surrogate tag는 일반 파일/폴더로 취급된다(std와 동일).
+    pub fn is_name_surrogate(w: &WIN32_FIND_DATAW) -> bool {
+        w.dwFileAttributes & ATTR_REPARSE_POINT != 0 && w.dwReserved0 & 0x2000_0000 != 0
+    }
+
+    pub fn name_of(w: &WIN32_FIND_DATAW) -> String {
+        let len = w
+            .cFileName
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(w.cFileName.len());
+        String::from_utf16_lossy(&w.cFileName[..len])
+    }
+
+    /// 검색 패턴(wide, NUL 종결) — 드라이브 절대경로·UNC는 `\\?\`로 승격해 MAX_PATH 한계를
+    /// 없앤다(std maybe_verbatim과 같은 목적 — 우리 경로는 자체 join 산물이라 정규화 불요).
+    fn search_pattern(dir: &Path) -> Vec<u16> {
+        const SEP: u16 = b'\\' as u16;
+        let raw: Vec<u16> = dir.as_os_str().encode_wide().collect();
+        let mut w: Vec<u16> = Vec::with_capacity(raw.len() + 10);
+        if raw.starts_with(&[SEP, SEP, b'?' as u16, SEP]) {
+            w.extend(&raw); // 이미 verbatim
+        } else if raw.starts_with(&[SEP, SEP]) {
+            // UNC: \\server\share → \\?\UNC\server\share
+            w.extend([SEP, SEP, b'?' as u16, SEP, b'U' as u16, b'N' as u16, b'C' as u16, SEP]);
+            w.extend(&raw[2..]);
+        } else if raw.len() >= 2 && raw[1] == b':' as u16 {
+            w.extend([SEP, SEP, b'?' as u16, SEP]);
+            w.extend(&raw);
+        } else {
+            w.extend(&raw); // 상대경로 등 — 있는 그대로(260자 한계 감수)
+        }
+        if w.last() != Some(&SEP) {
+            w.push(SEP);
+        }
+        w.push(b'*' as u16);
+        w.push(0);
+        w
+    }
+
+    /// 콜백 열거 — "."/".."은 거른다. 열지 못하면 Err(GetLastError) — 권한 거부 등.
+    pub fn enum_dir(dir: &Path, mut f: impl FnMut(&WIN32_FIND_DATAW)) -> Result<(), u32> {
+        let pat = search_pattern(dir);
+        unsafe {
+            let mut wfd: WIN32_FIND_DATAW = std::mem::zeroed();
+            let h = FindFirstFileExW(
+                pat.as_ptr(),
+                FindExInfoBasic,
+                &mut wfd as *mut _ as *mut _,
+                FindExSearchNameMatch,
+                std::ptr::null(),
+                FIND_FIRST_EX_LARGE_FETCH,
+            );
+            if h == INVALID_HANDLE_VALUE {
+                let e = GetLastError();
+                // 엔트리가 하나도 없는 드라이브 루트("."/".."가 없는 유일한 경우) — 빈 성공.
+                return if e == ERROR_FILE_NOT_FOUND { Ok(()) } else { Err(e) };
+            }
+            loop {
+                let n = &wfd.cFileName;
+                let dot = n[0] == b'.' as u16
+                    && (n[1] == 0 || (n[1] == b'.' as u16 && n[2] == 0));
+                if !dot {
+                    f(&wfd);
+                }
+                if FindNextFileW(h, &mut wfd) == 0 {
+                    break; // NO_MORE_FILES — 그 외 오류도 부분 결과로 종료(하드웨어 오류 등)
+                }
+            }
+            FindClose(h);
+        }
+        Ok(())
+    }
+}
+
+/// 한 디렉터리를 열거해 직속 파일 합산·하위 폴더 수집·Top-N 갱신. 열지 못하면 false(skipped).
+#[cfg(windows)]
+fn collect_entries(
+    path: &std::path::Path,
+    subdirs: &mut Vec<(String, Option<i64>)>,
+    top: &mut TopHeap,
+    own: &mut OwnTotals,
+) -> bool {
+    use win_enum::*;
+    enum_dir(path, |w| {
+        // symlink/정션은 재귀도 계상도 하지 않는다 — 순환·이중계상 차단(설계 §7).
+        if is_name_surrogate(w) {
+            return;
+        }
+        if w.dwFileAttributes & ATTR_DIRECTORY != 0 {
+            subdirs.push((name_of(w), filetime_ms(&w.ftLastWriteTime)));
+        } else {
+            let len = size_of(w);
+            own.bytes += len;
+            own.files += 1;
+            let real_alloc = w.dwFileAttributes & (ATTR_COMPRESSED | ATTR_SPARSE) != 0;
+            let is_top = top_candidate(top, len);
+            if real_alloc || is_top {
+                // 경로가 필요한 드문 갈래(압축·스파스, Top-N 후보)만 문자열을 만든다.
+                let full = path.join(name_of(w));
+                own.alloc += if real_alloc {
+                    compressed_size(&full).unwrap_or(len)
+                } else {
+                    len
+                };
+                if is_top {
+                    let m = filetime_ms(&w.ftLastWriteTime).unwrap_or(0);
+                    top_push(top, len, full.display().to_string(), m);
+                }
+            } else {
+                own.alloc += len;
+            }
+        }
+    })
+    .is_ok()
+}
+
+/// Unix 외 공통 — std read_dir(엔트리당 stat 1회 추가, 느릴 뿐 정확).
+#[cfg(not(windows))]
+fn collect_entries(
+    path: &std::path::Path,
+    subdirs: &mut Vec<(String, Option<i64>)>,
+    top: &mut TopHeap,
+    own: &mut OwnTotals,
+) -> bool {
+    let Ok(rd) = std::fs::read_dir(path) else {
+        return false;
+    };
+    for e in rd.flatten() {
+        let Ok(ft) = e.file_type() else { continue };
+        // symlink는 재귀도 계상도 하지 않는다 — 순환·이중계상 차단(설계 §7).
+        if ft.is_symlink() {
+            continue;
+        }
+        if ft.is_dir() {
+            let modified = e.metadata().ok().and_then(|m| m.modified().ok()).map(to_epoch_ms);
+            subdirs.push((e.file_name().to_string_lossy().into_owned(), modified));
+        } else {
+            let Ok(md) = e.metadata() else { continue };
+            let len = md.len();
+            own.bytes += len;
+            // unix file_alloc은 경로를 쓰지 않는다(st_blocks) — PathBuf 할당 회피.
+            own.alloc += file_alloc(std::path::Path::new(""), &md);
+            own.files += 1;
+            if top_candidate(top, len) {
+                let modified = md.modified().ok().map(to_epoch_ms).unwrap_or(0);
+                top_push(top, len, e.path().display().to_string(), modified);
+            }
+        }
+    }
+    true
 }
 
 /// 워커 1개 — 잡(디렉터리)을 꺼내 read_dir 1회로 파일 합산 + 하위 폴더 노드 생성·잡 등록.
@@ -338,40 +551,18 @@ fn worker(shared: &Shared) -> TopHeap {
 }
 
 fn process_dir(shared: &Shared, (idx, path): (u32, PathBuf), top: &mut TopHeap) {
-    let rd = match std::fs::read_dir(&path) {
-        Ok(r) => r,
-        Err(_) => {
-            // 권한 거부(System Volume Information 등) — 세지 못한 폴더로 정직하게 집계.
-            shared.counters.skipped.fetch_add(1, Ordering::Relaxed);
-            return;
-        }
-    };
-
-    let mut own_bytes = 0u64;
-    let mut own_alloc = 0u64;
-    let mut own_files = 0u64;
+    let mut own = OwnTotals::default();
     let mut subdirs: Vec<(String, Option<i64>)> = Vec::new();
-    for e in rd.flatten() {
-        let Ok(ft) = e.file_type() else { continue };
-        // symlink/정션은 재귀도 계상도 하지 않는다 — 순환·이중계상 차단(설계 §7).
-        // Rust std의 is_symlink는 Windows 정션(mount point)도 참을 준다(name surrogate).
-        if ft.is_symlink() {
-            continue;
-        }
-        if ft.is_dir() {
-            let modified = e.metadata().ok().and_then(|m| m.modified().ok()).map(to_epoch_ms);
-            subdirs.push((e.file_name().to_string_lossy().into_owned(), modified));
-        } else {
-            let Ok(md) = e.metadata() else { continue };
-            let len = md.len();
-            let path = e.path();
-            own_bytes += len;
-            own_alloc += file_alloc(&path, &md);
-            own_files += 1;
-            let modified = md.modified().ok().map(to_epoch_ms).unwrap_or(0);
-            top_push(top, len, path.display().to_string(), modified);
-        }
+    if !collect_entries(&path, &mut subdirs, top, &mut own) {
+        // 권한 거부(System Volume Information 등) — 세지 못한 폴더로 정직하게 집계.
+        shared.counters.skipped.fetch_add(1, Ordering::Relaxed);
+        return;
     }
+    let OwnTotals {
+        bytes: own_bytes,
+        alloc: own_alloc,
+        files: own_files,
+    } = own;
 
     shared.counters.bytes.fetch_add(own_bytes, Ordering::Relaxed);
     shared.counters.alloc.fetch_add(own_alloc, Ordering::Relaxed);
@@ -440,12 +631,31 @@ fn aggregate(nodes: &mut [DirNode]) {
     }
 }
 
+/// 스캔 워커 수 — 코어 수만큼(하한 4, 상한 32). 웜 캐시에선 커널 CPU 바운드라 코어 수가
+/// 정답이고, 콜드 캐시에선 아웃스탠딩 I/O가 많을수록 NVMe 큐가 차므로 코어 수 이상도 손해가
+/// 없다. (구 8 캡의 실측·교체 근거는 설계 문서 §4 벤치.)
+fn default_workers() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .clamp(4, 32)
+}
+
 /// 스캔 본체(블로킹, tauri 무관 — 테스트 대상). cancel로 중단되면 부분 결과를 돌려주고
 /// 호출자가 cancel/fatal을 보고 최종 phase를 정한다.
 fn run_scan(
     root: PathBuf,
     counters: Arc<Counters>,
     cancel: Arc<AtomicBool>,
+) -> Result<ScanResult, String> {
+    run_scan_with(root, counters, cancel, default_workers())
+}
+
+fn run_scan_with(
+    root: PathBuf,
+    counters: Arc<Counters>,
+    cancel: Arc<AtomicBool>,
+    n_workers: usize,
 ) -> Result<ScanResult, String> {
     // 루트 접근 검증 — 여기서 실패하면 스캔 자체가 성립하지 않는다(Error).
     std::fs::read_dir(&root).map_err(|e| format!("폴더를 열 수 없습니다: {e}"))?;
@@ -475,11 +685,7 @@ fn run_scan(
         fatal: Mutex::new(None),
     });
 
-    let n_workers = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4)
-        .min(8);
-    let handles: Vec<_> = (0..n_workers)
+    let handles: Vec<_> = (0..n_workers.max(1))
         .map(|_| {
             let s = Arc::clone(&shared);
             std::thread::spawn(move || worker(&s))
@@ -998,6 +1204,36 @@ mod tests {
         let big1 = &shallow.children[0];
         assert!(big1.children.is_empty());
         assert_eq!(big1.other_bytes, 300, "inner(300)가 기타로 접혀야 한다");
+    }
+
+    /// 수동 벤치(기본 무시) — 실기 볼륨을 스캔해 시간·규모를 출력한다. 예:
+    /// `GP_BENCH_ROOT='C:\' GP_BENCH_WORKERS=24 cargo test --release bench_scan -- --ignored --nocapture`
+    #[test]
+    #[ignore = "실기 볼륨 수동 벤치"]
+    fn bench_scan() {
+        let root = std::env::var("GP_BENCH_ROOT").unwrap_or_else(|_| "C:\\".into());
+        let workers = std::env::var("GP_BENCH_WORKERS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(default_workers);
+        let counters = Arc::new(Counters::default());
+        let t = Instant::now();
+        let r = run_scan_with(
+            PathBuf::from(&root),
+            Arc::clone(&counters),
+            Arc::new(AtomicBool::new(false)),
+            workers,
+        )
+        .unwrap();
+        println!(
+            "workers={workers} elapsed={:.2}s files={} dirs={} bytes={:.1}GB alloc={:.1}GB skipped={}",
+            t.elapsed().as_secs_f64(),
+            counters.files.load(Ordering::Relaxed),
+            r.nodes.len(),
+            counters.bytes.load(Ordering::Relaxed) as f64 / 1e9,
+            counters.alloc.load(Ordering::Relaxed) as f64 / 1e9,
+            counters.skipped.load(Ordering::Relaxed),
+        );
     }
 
     /// 역순 집계 불변식 — 자식 인덱스가 항상 부모보다 커야 역순 1패스가 성립한다.

@@ -1,6 +1,7 @@
 import {
   ChevronDown,
   ChevronRight,
+  ChevronsLeft,
   Copy,
   FolderGit2,
   GitBranch,
@@ -16,7 +17,7 @@ import type { DiffTarget, FileChange, RepoStatus } from "../../lib/ipc";
 import { KIND_BADGE } from "../../lib/change-kind";
 import { fileIcon } from "../../lib/file-icon";
 import { splitPath } from "../../lib/format";
-import { usePanelWidth } from "../../lib/use-panel-width";
+import { usePanelCollapsed, usePanelWidth } from "../../lib/use-panel-width";
 import {
   useDiscardFiles,
   usePrefetchDiffs,
@@ -28,6 +29,7 @@ import {
 } from "../../queries";
 import { useOccludesWebview } from "../../stores/occlusion";
 import { useUi } from "../../stores/ui";
+import { CollapsedPanelStrip } from "../common/CollapsedPanelStrip";
 import { ResizeHandle } from "../common/ResizeHandle";
 import { CommitForm } from "./CommitForm";
 
@@ -696,12 +698,22 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
     .sort((a, b) => (a.relPath ?? "").localeCompare(b.relPath ?? ""));
 
   const { width, startResize } = usePanelWidth("gp:changes-width", 288, 220, 680);
+  const { collapsed, toggle: toggleCollapsed } = usePanelCollapsed("gp:changes-collapsed");
 
   const outerTotal = status ? changeCount(status) : 0;
   const nestedTotal = nested.reduce((n, s) => n + changeCount(s), 0);
   const total = outerTotal + nestedTotal;
   // 최상위·임베디드 모두 변경이 없고 임베디드 저장소 자체도 없을 때만 "변경 없음".
   const isEmpty = status && !status.error && total === 0 && nested.length === 0;
+
+  if (collapsed)
+    return (
+      <CollapsedPanelStrip
+        title="Changes"
+        badge={status && total > 0 ? String(total) : undefined}
+        onExpand={toggleCollapsed}
+      />
+    );
 
   return (
     <div
@@ -713,6 +725,14 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
         <span className="text-xs text-fg-dim">
           {status ? `${total} files` : "…"}
         </span>
+        <div className="flex-1" />
+        <button
+          title="패널 접기"
+          onClick={toggleCollapsed}
+          className="rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
+        >
+          <ChevronsLeft size={14} />
+        </button>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto py-1">

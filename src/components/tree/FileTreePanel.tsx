@@ -1,6 +1,7 @@
 import {
   ChevronDown,
   ChevronRight,
+  ChevronsLeft,
   Copy,
   ExternalLink,
   FilePlus,
@@ -10,6 +11,7 @@ import {
   Link,
   Pencil,
   PencilLine,
+  Play,
   Trash2,
   Type,
 } from "lucide-react";
@@ -41,7 +43,7 @@ import { openDocWindow } from "../../lib/floating";
 import { errorMessage, ipc, isIpcError } from "../../lib/ipc";
 import type { ChangeKind, DirEntry, FileChange, RepoStatus } from "../../lib/ipc";
 import { isHtml, isImage } from "../../lib/language-map";
-import { usePanelWidth } from "../../lib/use-panel-width";
+import { usePanelCollapsed, usePanelWidth } from "../../lib/use-panel-width";
 import {
   invalidateAfterMove,
   keys,
@@ -60,6 +62,7 @@ import { useOccludesWebview } from "../../stores/occlusion";
 import { useTerminals } from "../../stores/terminals";
 import { useTreeState } from "../../stores/treeState";
 import { useUi } from "../../stores/ui";
+import { CollapsedPanelStrip } from "../common/CollapsedPanelStrip";
 import { ResizeHandle } from "../common/ResizeHandle";
 
 function joinPath(base: string, name: string): string {
@@ -464,6 +467,7 @@ function validateName(v: string): string | null {
 /** 선택 프로젝트의 전체 파일 트리 (지연 로딩). 파일 클릭 → 중앙 뷰어에 내용/diff. */
 export function FileTreePanel({ projectId }: { projectId: string }) {
   const { width, startResize, resizeTo } = usePanelWidth("gp:filetree-width", 260, 180, 520);
+  const { collapsed, toggle: toggleCollapsed } = usePanelCollapsed("gp:filetree-collapsed");
   const { data: status } = useStatus(projectId);
   const { data: projects } = useProjects();
   const pushToast = useUi((s) => s.pushToast);
@@ -1097,6 +1101,10 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
     : false;
   // 브라우저로 열 수 있는 HTML 문서인지 — 파일(디렉토리·루트 아님)이면서 .html류.
   const menuIsHtml = menu ? !menu.isDir && !menu.root && isHtml(menu.name) : false;
+  // 실행 파일(더블클릭 실행과 같은 게이트) — 우클릭 메뉴에도 실행 항목을 노출한다.
+  const menuIsRunnable = menu
+    ? !menu.isDir && !menu.root && isRunnable(menu.name)
+    : false;
   // 멀티선택된 변환 가능 이미지들 — 우클릭 대상이 선택에 포함되면 일괄 변환 메뉴를 띄운다.
   const selImages = useMemo(
     () => [...treeSel].filter((p) => isImage(p) && !/\.svg$/i.test(p)),
@@ -1108,6 +1116,9 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
     !menu.root &&
     selImages.length >= 2 &&
     treeSel.has(menu.path);
+
+  if (collapsed)
+    return <CollapsedPanelStrip title="Files" onExpand={toggleCollapsed} />;
 
   return (
     <div
@@ -1134,6 +1145,13 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
           className="rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
         >
           <FolderPlus size={14} />
+        </button>
+        <button
+          title="패널 접기"
+          onClick={toggleCollapsed}
+          className="rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
+        >
+          <ChevronsLeft size={14} />
         </button>
       </div>
       <div
@@ -1202,6 +1220,17 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
               {/* 파일 종류를 가리지 않는다 — 뷰어(DiffViewer)가 마크다운·텍스트·이미지·동영상·
                   Office를 이미 다 분기하므로, 여기서 확장자 화이트리스트를 두면 "왜 이 파일은
                   안 되지?"만 만든다. 메인 창에서 열리는 것은 여기서도 열린다. */}
+              {menuIsRunnable && (
+                <MenuItem
+                  icon={Play}
+                  label="실행하기"
+                  onClick={() => {
+                    // 더블클릭 실행과 동일 경로 — 토스트 처리까지 onDouble이 담당한다.
+                    onDouble(menu.path, menu.name);
+                    setMenu(null);
+                  }}
+                />
+              )}
               <MenuItem
                 icon={ExternalLink}
                 label="새 창으로 열기"

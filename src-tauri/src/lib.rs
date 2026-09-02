@@ -108,10 +108,44 @@ async fn open_float_window(
     pane_id: String,
     origin: String,
 ) -> Result<(), String> {
-    let label = format!("{FLOAT_LABEL_PREFIX}{pane_id}");
     // 메인 창이 이미 떠 있는 origin을 그대로 로드한다 — dev(localhost devUrl)·prod(tauri://localhost)
     // 모두에서 같은 index를 띄운다. 런타임의 WebviewUrl::App은 dev에서 about:blank로 떨어진다.
     let url = tauri::Url::parse(&origin).map_err(|e| format!("잘못된 origin: {e}"))?;
+
+    // 프리워밍 풀에서 먼저 꺼낸다 — 있으면 창 생성·번들 로드·React 부트스트랩이 전부 이미
+    // 끝나 있으므로 paneId를 이벤트로 넘기고 보여주는 것으로 끝난다(수십 ms). 없으면(앱 시작
+    // 직후·연타) 아래 직접 생성 경로로 떨어진다 — 기존과 동일 동작.
+    let claimed = {
+        let mut pool = FLOAT_POOL.lock().unwrap_or_else(|e| e.into_inner());
+        pool.ready.pop().map(|label| {
+            pool.claims.insert(label.clone(), pane_id.clone());
+            label
+        })
+    };
+    if let Some(label) = claimed {
+        if let Some(win) = app.get_webview_window(&label) {
+            let _ = app.emit(
+                "float://claim",
+                FloatClaim {
+                    label: label.clone(),
+                    pane_id: pane_id.clone(),
+                },
+            );
+            let _ = win.show();
+            let _ = win.set_focus();
+            // 다음 분리에 대비해 풀을 보충한다(백그라운드 — 이번 분리 속도와 무관).
+            spawn_float_pool_window(&app, url);
+            return Ok(());
+        }
+        // 창이 사라져 있었다(웹뷰 크래시 등) — claim을 되돌리고 직접 생성으로 진행.
+        FLOAT_POOL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .claims
+            .remove(&label);
+    }
+
+    let label = format!("{FLOAT_LABEL_PREFIX}{pane_id}");
     let app2 = app.clone();
     app.run_on_main_thread(move || {
         let r = WebviewWindowBuilder::new(&app2, &label, WebviewUrl::External(url))
@@ -130,6 +164,110 @@ async fn open_float_window(
     })
     .map_err(|e| format!("플로팅 창 예약 실패: {e}"))?;
     Ok(())
+}
+
+// ── 플로팅 터미널 프리워밍 풀 ──
+// 분리 클릭 → 새 창이 쓸 수 있기까지의 시간은 WebView2 창 생성 + 번들 로드 + React 부트가
+// 지배한다(attach 자체는 sink 교체라 ms급). 그래서 숨김 창 1개를 미리 만들어 두고, 분리 시
+// paneId만 이벤트로 배정해 즉시 show 한다. claim 직후 다음 창을 백그라운드로 보충한다.
+// 라벨은 `float-pool-<seq>` — `float-`로 시작하므로 is_secondary_window(종료 정리)에 자동
+// 포함되고, Destroyed 훅에서는 **풀 분기가 float 분기보다 먼저** 걸린다(claims로 PTY 식별).
+
+/// 풀 창 라벨 접두사. FLOAT_LABEL_PREFIX로도 시작하므로 분기 순서가 중요하다(위 주석).
+const FLOAT_POOL_PREFIX: &str = "float-pool-";
+
+#[derive(Default)]
+struct FloatPool {
+    /// float_pool_ready를 보내와 claim 가능한 창 라벨들.
+    ready: Vec<String>,
+    /// 생성 지시됐지만 아직 ready 신고 전인 창 수 — 중복 프리워밍 방지.
+    pending: usize,
+    /// claim된 라벨 → paneId. Destroyed에서 PTY 정리, 리로드 시 claim 재전송에 쓴다.
+    claims: std::collections::HashMap<String, String>,
+    seq: u64,
+}
+
+static FLOAT_POOL: std::sync::LazyLock<std::sync::Mutex<FloatPool>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// claim 이벤트 페이로드 — 브로드캐스트라 풀 창이 자기 라벨을 보고 거른다.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FloatClaim {
+    label: String,
+    pane_id: String,
+}
+
+/// 숨김 풀 창 1개를 만든다(open_float_window와 같은 검증된 레시피 + visible(false)).
+fn spawn_float_pool_window(app: &tauri::AppHandle, url: tauri::Url) {
+    let label = {
+        let mut pool = FLOAT_POOL.lock().unwrap_or_else(|e| e.into_inner());
+        pool.seq += 1;
+        pool.pending += 1;
+        format!("{FLOAT_POOL_PREFIX}{}", pool.seq)
+    };
+    let app2 = app.clone();
+    let scheduled = app.run_on_main_thread(move || {
+        let r = WebviewWindowBuilder::new(&app2, &label, WebviewUrl::External(url))
+            .title("터미널")
+            .inner_size(900.0, 600.0)
+            .min_inner_size(360.0, 240.0)
+            .center()
+            // 핵심 — 숨긴 채 번들 로드·React 부트까지 끝내 두고 claim 때 show만 한다.
+            .visible(false)
+            .decorations(false)
+            .background_color(tauri::window::Color(30, 31, 34, 255))
+            .additional_browser_args(&browser_args())
+            .build();
+        if let Err(e) = r {
+            log::error!("플로팅 풀 창 생성 실패: {e}");
+            let mut pool = FLOAT_POOL.lock().unwrap_or_else(|e| e.into_inner());
+            pool.pending = pool.pending.saturating_sub(1);
+        }
+    });
+    if scheduled.is_err() {
+        let mut pool = FLOAT_POOL.lock().unwrap_or_else(|e| e.into_inner());
+        pool.pending = pool.pending.saturating_sub(1);
+    }
+}
+
+/// 메인 창 프론트가 부트 후 유휴 시점에 호출 — 풀이 비어 있으면 1개 프리워밍한다.
+#[tauri::command]
+async fn float_pool_warm(app: tauri::AppHandle, origin: String) -> Result<(), String> {
+    let url = tauri::Url::parse(&origin).map_err(|e| format!("잘못된 origin: {e}"))?;
+    let need = {
+        let pool = FLOAT_POOL.lock().unwrap_or_else(|e| e.into_inner());
+        pool.ready.is_empty() && pool.pending == 0
+    };
+    if need {
+        spawn_float_pool_window(&app, url);
+    }
+    Ok(())
+}
+
+/// 풀 창 프론트가 claim 리스너를 무장한 뒤 호출(핸드셰이크 — 이벤트 유실 방지).
+/// 이미 claim된 창의 재신고(vite 리로드)면 배정된 paneId로 claim을 재전송해 되살린다.
+#[tauri::command(async)]
+fn float_pool_ready(app: tauri::AppHandle, window: tauri::Window) {
+    let label = window.label().to_string();
+    if !label.starts_with(FLOAT_POOL_PREFIX) {
+        return;
+    }
+    let reclaim = {
+        let mut pool = FLOAT_POOL.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(pane_id) = pool.claims.get(&label).cloned() {
+            Some(pane_id)
+        } else {
+            if !pool.ready.contains(&label) {
+                pool.ready.push(label.clone());
+                pool.pending = pool.pending.saturating_sub(1);
+            }
+            None
+        }
+    };
+    if let Some(pane_id) = reclaim {
+        let _ = app.emit("float://claim", FloatClaim { label, pane_id });
+    }
 }
 
 /// 리소스 모니터 팝업 창(태스크 05) — open_float_window와 같은 검증된 레시피를 그대로 미러:
@@ -692,6 +830,8 @@ pub fn run() {
             commands::update_memo,
             commands::delete_memo,
             open_float_window,
+            float_pool_warm,
+            float_pool_ready,
             open_sysmon_window,
             open_aggregate_window,
             open_doc_window,
@@ -804,6 +944,22 @@ pub fn run() {
                     // 메인 창이 닫히면 자식 자원을 전부 정리한다(좀비 셸 방지, 설계 §16.8).
                     // 순서·재진입 방지는 shutdown_children 한 곳에 모여 있다.
                     shutdown_children(window.app_handle());
+                } else if label.starts_with(FLOAT_POOL_PREFIX) {
+                    // 풀 창 — claim됐으면 배정된 PTY만 종료, 미claim(숨김 대기 중 소멸)이면
+                    // 목록 정리만. **float 분기보다 먼저** 와야 한다(라벨이 float-로도 시작).
+                    shutdown_step("float-pool-close", || {
+                        let claimed = {
+                            let mut pool =
+                                FLOAT_POOL.lock().unwrap_or_else(|e| e.into_inner());
+                            pool.ready.retain(|l| l != label);
+                            pool.claims.remove(label)
+                        };
+                        if let Some(pane_id) = claimed {
+                            if let Some(state) = window.try_state::<AppState>() {
+                                commands::close_session(state.inner(), &pane_id);
+                            }
+                        }
+                    });
                 } else if let Some(term_id) = label.strip_prefix(FLOAT_LABEL_PREFIX) {
                     // 플로팅 터미널 창이 닫히면 그 세션의 PTY만 종료한다(나머지는 메인이 유지).
                     //

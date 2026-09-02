@@ -14,7 +14,7 @@ import { installMacCopyInterceptor } from "./lib/clipboard";
 import { attachRepoEvents } from "./lib/events";
 import { setupErrorLogging } from "./lib/logging";
 import { watchAggregateWindow } from "./lib/aggregate-window";
-import { docTarget } from "./lib/floating";
+import { docTarget, warmFloatingWindowPool } from "./lib/floating";
 import { ipc } from "./lib/ipc";
 import { keys } from "./queries";
 import { installTerminalCopyFallback, reattachAllTerminals } from "./lib/terminal";
@@ -61,9 +61,13 @@ const label = (() => {
     return "";
   }
 })();
-const floatPaneId = label.startsWith("float-")
-  ? label.slice("float-".length)
-  : null;
+// 프리워밍 풀 창(float-pool-*)은 paneId가 아직 없다 — claim 이벤트로 나중에 배정받는다.
+// `float-`로도 시작하므로 **먼저** 판별해야 한다.
+const isFloatPool = label.startsWith("float-pool-");
+const floatPaneId =
+  !isFloatPool && label.startsWith("float-")
+    ? label.slice("float-".length)
+    : null;
 // 파일 뷰어 창 — 라벨이 곧 대상 id다(경로는 localStorage 경유, lib/floating.ts 주석).
 const docId = label.startsWith("doc-") ? label.slice("doc-".length) : null;
 
@@ -128,8 +132,9 @@ if (label === "aggregate") {
       </QueryClientProvider>
     </React.StrictMode>,
   );
-} else if (floatPaneId) {
+} else if (floatPaneId || isFloatPool) {
   // 플로팅 창도 QueryClientProvider로 감싼다 — 분할 패널 컴포넌트가 쿼리를 쓰더라도 안전하게.
+  // 풀 창(paneId=null)은 FloatingTerminal이 claim 이벤트를 기다렸다가 배정받아 attach한다.
   const floatQc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   root.render(
     <React.StrictMode>
@@ -189,6 +194,11 @@ if (label === "aggregate") {
   } else {
     setTimeout(preloadDiffViewer, 1500);
   }
+
+  // 플로팅 터미널 풀 프리워밍 — "새 창으로 분리"가 창 생성·번들 로드를 기다리지 않게
+  // 숨김 창 1개를 미리 만들어 둔다(claim 시 즉시 표시, 사용 후 자동 보충 — lib.rs FloatPool).
+  // 메인 부트와 경합하지 않게 넉넉히 뒤로 미룬다.
+  setTimeout(() => warmFloatingWindowPool(), 3000);
 
   root.render(
     <React.StrictMode>

@@ -46,3 +46,16 @@ export function usePanelWidth(
 
   return { width, startResize, resizeTo };
 }
+
+/** 사이드 패널 접힘 상태. localStorage에 영속해 리로드 후에도 유지된다. */
+export function usePanelCollapsed(storageKey: string) {
+  const [collapsed, setCollapsed] = useState(
+    () => localStorage.getItem(storageKey) === "1",
+  );
+  const toggle = () => {
+    const next = !collapsed;
+    localStorage.setItem(storageKey, next ? "1" : "0");
+    setCollapsed(next);
+  };
+  return { collapsed, toggle };
+}

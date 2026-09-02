@@ -9,12 +9,24 @@ import { invoke } from "@tauri-apps/api/core";
 export function openFloatingWindow(paneId: string, _projectId: string) {
   // paneId는 창 라벨(float-<paneId>)로 전달된다 — 프론트가 라벨에서 읽어 PTY에 attach한다.
   // origin은 메인 창이 로드된 곳 — 새 창도 같은 곳을 띄워 dev/prod 모두 동작한다.
+  // Rust가 프리워밍 풀(숨김 창)이 있으면 그걸 claim해 즉시 띄운다(lib.rs FloatPool).
   void invoke("open_float_window", {
     paneId,
     origin: window.location.origin,
   }).catch((e) => {
     console.error("플로팅 터미널 창 생성 실패:", e);
   });
+}
+
+/** 플로팅 창 풀 프리워밍 — 분리 클릭 시 창 생성·번들 로드를 기다리지 않게 숨김 창을 미리
+ *  만들어 둔다. 메인 창 부트 후 유휴 시점에 1회 호출(비어 있을 때만 실제 생성). */
+export function warmFloatingWindowPool() {
+  void invoke("float_pool_warm", { origin: window.location.origin }).catch(() => {});
+}
+
+/** 풀 창 자신이 claim 리스너 무장 후 호출 — 준비 신고(핸드셰이크). FloatingTerminal 전용. */
+export function floatPoolReady() {
+  void invoke("float_pool_ready").catch(() => {});
 }
 
 // ---- 파일 뷰어 창(doc-<id>) ----

@@ -90,6 +90,9 @@ export interface UiState {
    * 여닫아도 유지되게 localStorage 영속. fr은 상대값이라 창 크기가 변해도 비율 유지.
    */
   aggregateTracks: Record<string, { rows: number[]; cols: number[][] }>;
+  /** 모아보기 칩 바에서 같은 프로젝트의 탭을 칩 하나로 묶어 표시 (localStorage 영속) */
+  aggregateGroupTabs: boolean;
+  toggleAggregateGroupTabs: () => void;
   /** Log 패널에서 선택된 커밋 (상세 패널 구동) */
   selectedCommitSha: string | null;
   /** 설정 모달 열림 여부 */
@@ -240,6 +243,7 @@ export const useUi = create<UiState>((set) => ({
       return {};
     }
   })(),
+  aggregateGroupTabs: localStorage.getItem("gp:aggregate-group-tabs") === "1",
   selectedCommitSha: null,
   settingsOpen: false,
   quickOpenOpen: false,
@@ -437,6 +441,12 @@ export const useUi = create<UiState>((set) => ({
         /* localStorage 불가 환경 무시 */
       }
       return { aggregateTracks: next };
+    }),
+  toggleAggregateGroupTabs: () =>
+    set((s) => {
+      const v = !s.aggregateGroupTabs;
+      localStorage.setItem("gp:aggregate-group-tabs", v ? "1" : "0");
+      return { aggregateGroupTabs: v };
     }),
   selectCommit: (sha) => set({ selectedCommitSha: sha }),
   setSettingsOpen: (open) => set({ settingsOpen: open }),

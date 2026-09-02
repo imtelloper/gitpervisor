@@ -12,7 +12,7 @@
 
 | # | 항목 | 결론 | 근거 |
 |---|---|---|---|
-| A | 스캔 엔진 | **std 스레드 풀 병렬 walk, 신규 크레이트 0** | Windows에선 `DirEntry::metadata()`가 무비용(FIND_DATA에 포함) — 병목은 디렉터리 열거뿐이라 워커 N개면 충분. MFT 직독(WizTree식)은 관리자 권한+NTFS 한정이라 기각 |
+| A | 스캔 엔진 | **std 스레드 풀 병렬 walk, 신규 크레이트 0** | 병목은 디렉터리 열거뿐이라 워커 N개면 충분. Windows는 `FindFirstFileExW(LARGE_FETCH)` 직접 열거로 FIND_DATA 직독(§2.1 고속화). MFT 직독(WizTree식)은 관리자 권한+NTFS 한정이라 기각 |
 | B | 데이터 상주 | **트리는 Rust arena에만, 프론트는 폴더 단위 질의** | 폴더 65만 개 ≈ arena ~60MB. 파일 430만 개는 저장하지 않는다 — 펼칠 때 그 폴더만 live read_dir(§3.3) |
 | C | 진행률 | **Channel 1개(JSON), 250ms 스로틀** | `lsp_ensure`/`video_tool_ensure` 전례 그대로(ipc.ts:1009,1027). 스캔마다 **새 Channel**(재사용 금지 — CLAUDE.md 함정) |
 | D | UI 위치 | **sysmon 창 안 뷰 전환(프로세스 ⇄ 디스크)** | 원문 "리소스 모니터에도". 새 창·새 라벨 불필요, `gp:sysmon` prefs에 `view` 필드만 추가(태스크 05 §3.6 핸드오프 확장) |
@@ -43,7 +43,7 @@
 | 방식 | 판단 |
 |---|---|
 | (a) 단일 스레드 재귀 read_dir | 기각 — 폴더 65만 개 순차 열거는 분 단위. TreeSize가 "고성능"인 이유가 병렬화다 |
-| (b) **std 스레드 풀 병렬 walk** ✅ | 공유 작업 큐(`Mutex<VecDeque>` + Condvar) + 워커 N개(`available_parallelism` 캡 8). Windows는 열거가 곧 메타데이터라 syscall 추가 비용 0. ~150 LOC, 의존성 0 |
+| (b) **std 스레드 풀 병렬 walk** ✅ | 공유 작업 큐(`Mutex` + Condvar) + 워커 N개(`available_parallelism`, 4~32 클램프). Windows는 열거가 곧 메타데이터라 syscall 추가 비용 0. ~150 LOC, 의존성 0 |
 | (c) `jwalk`/`rayon` 크레이트 | 기각 — 우리는 **정렬된 순회가 필요 없다**(집계만 하면 됨). 크레이트의 가치(순서 보장 병렬 순회)를 안 쓰면서 의존성만 산다 |
 | (d) NTFS MFT 직독(WizTree식) | 기각 — 관리자 권한 요구 + NTFS 한정 + 크로스플랫폼 전멸. 사용자 권한 앱의 선을 넘는다 |
 
@@ -216,7 +216,10 @@ squarified 배치(~60 LOC) + div 렌더(2레벨 — 폴더 박스 헤더 + 내�
 | 항목 | 실측 | 비고 |
 |---|---|---|
 | **C:\ 전체 스캔** | **23.5초** — 938GB · 파일 3,828,119 · 폴더 633,869 · 접근불가 668 스킵 | 웜 캐시, 워커 8. 설계 추정(수십 초대) 적중. TreeSize Free 화면과 폴더별 수치 일치(Users 602.7GB — 차이는 스킵·symlink 정책) |
+| **C:\ 전체 스캔 — 고속화 후** | **웜 7.6초**(release·워커 24) — 파일 3,814,420 · 폴더 633,191 · **구 대비 3.1×** | 2026-08-28 고속화: ① Windows `FindFirstFileExW(FindExInfoBasic + LARGE_FETCH)` 직접 열거 — DirEntry/Metadata/PathBuf 생성 없이 FIND_DATA 직독, 일반 파일 힙 할당 0 ② Top-N 후보 사전 판정(크기 문턱) — 파일당 경로 문자열 제거 ③ 워커 8 캡 → 코어 수(4~32 클램프). 워커 스윕(dev, 웜): 8=9.3s · **24=7.9s** · 48=8.2s — 코어 수(24)가 최적점, dev≈release(7.9≈7.6)로 **커널 syscall 바운드** 도달. 유저모드 열거의 사실상 바닥 — 그 밑(WizTree급 콜드 수 초)은 MFT 직독=관리자 권한+NTFS 한정이라 기각 유지(§2.1-d) |
 | `disk_children("")` | **11ms** | 완료 후 루트 질의(캐시 조회 + live read_dir) |
+| `disk_treemap("", 2)` | **23ms** — 레벨1 17개 · 총 76타일 | M2. 드릴다운도 동일 자릿수 |
+| 할당 크기 수집 오버헤드 | **캐시 지배 범위 안**(23.5s → 28.4s → 재스캔 12.6s) | 압축·스파스 속성일 때만 syscall이라 일반 파일 비용 0(§2.2). C:\ 실측 논리 853.8 vs 할당 851.0GB — WinSxS 압축이 실제로 잡힌다 |
 | Top 파일 | pagefile.sys 76GB · nqvm.db 30GB · hiberfil 25GB … | "SSD 꽉참" 범인이 바로 나온다 — 기능 목적 달성 확인 |
 | arena 메모리 | 폴더 63만 규모(추정 60-80MB, 미계측) | 노드 수 상한 400만(초과 시 에러로 정직 중단). 창 닫으면 reset으로 반환(실측: Destroyed → phase idle 확인) |
 | 스캔 시간(콜드) | 미실측 — 분 단위 가능 | 첫 스캔은 디스크 바운드. 진행 게이지·취소가 그래서 v1 필수 |
