@@ -14,6 +14,7 @@ mod state;
 mod sysinfo_static;
 mod tools;
 mod watcher;
+mod webview_guard;
 
 use std::path::PathBuf;
 
@@ -268,7 +269,17 @@ struct FloatClaim {
 }
 
 /// 숨김 풀 창 1개를 만든다(open_float_window와 같은 검증된 레시피 + visible(false)).
+///
+/// **메모리 경보 게이트는 여기 있어야 한다.** 호출자가 둘(프론트 유휴 시점의 `float_pool_warm`,
+/// claim 직후의 보충)인데 warm은 부트 직후 1회뿐이라 정상 운영 중 실제로 도는 쪽은 보충이다.
+/// warm에만 걸면 경보 중 분리할 때마다 방금 `float_pool_drain`이 회수한 렌더러 1벌
+/// (실측 273MB)이 되돌아온다 — 게다가 `on_health_level`은 **레벨 전이 시점에만** 불리므로
+/// 압박이 Warn에 머무는 동안은 아무도 그것을 다시 회수하지 않는다.
 fn spawn_float_pool_window(app: &tauri::AppHandle, url: tauri::Url) {
+    if health::level() >= health::Level::Warn {
+        log::debug!("[float-pool] 메모리 경보 중 — 프리워밍 생략");
+        return;
+    }
     let label = {
         let mut pool = FLOAT_POOL.lock().unwrap_or_else(|e| e.into_inner());
         pool.seq += 1;
@@ -300,10 +311,36 @@ fn spawn_float_pool_window(app: &tauri::AppHandle, url: tauri::Url) {
     }
 }
 
+/// 아직 아무도 claim하지 않은 풀 창을 전부 닫는다(메모리 경보 대응 — webview_guard).
+///
+/// 숨김 풀 창 1개가 WebView2 렌더러 프로세스 1벌(실측 273MB)을 통째로 잡고 있는데, 그게 사는
+/// 이유는 "다음 분리를 수십 ms 빠르게" 뿐이다 — 압박이 오면 제일 먼저 버릴 사치다.
+/// `claims`(사용자가 실제로 쓰는 창)는 건드리지 않는다. `pending`(아직 생성 중인 창)은 여기서
+/// 손대지 못한다 — 그건 `float_pool_ready`가 신고를 받는 자리에서 거른다. `on_health_level`은
+/// **레벨 전이 시점에만** 불리므로 거기서 안 막으면 Warn 내내 렌더러 1벌이 그대로 남는다.
+pub(crate) fn float_pool_drain(app: &tauri::AppHandle) {
+    let ready = {
+        let mut pool = FLOAT_POOL.lock().unwrap_or_else(|e| e.into_inner());
+        std::mem::take(&mut pool.ready)
+    };
+    if ready.is_empty() {
+        return;
+    }
+    log::info!("[float-pool] 메모리 경보 — 미claim 풀 창 {}개 닫음", ready.len());
+    for label in ready {
+        if let Some(win) = app.get_webview_window(&label) {
+            // Destroyed 훅의 풀 분기가 ready.retain(이미 비었다) + claims.remove(없다)를
+            // 돌지만 둘 다 무해하다 — 미claim 창이라 종료할 PTY도 없다.
+            let _ = win.close();
+        }
+    }
+}
+
 /// 메인 창 프론트가 부트 후 유휴 시점에 호출 — 풀이 비어 있으면 1개 프리워밍한다.
 #[tauri::command]
 async fn float_pool_warm(app: tauri::AppHandle, origin: String) -> Result<(), String> {
     let url = tauri::Url::parse(&origin).map_err(|e| format!("잘못된 origin: {e}"))?;
+    // 경보 게이트는 spawn_float_pool_window 안에 있다(호출자 전부를 덮는다).
     let need = {
         let pool = FLOAT_POOL.lock().unwrap_or_else(|e| e.into_inner());
         pool.ready.is_empty() && pool.pending == 0
@@ -336,6 +373,12 @@ fn float_pool_ready(app: tauri::AppHandle, window: tauri::Window) {
     };
     if let Some(pane_id) = reclaim {
         let _ = app.emit("float://claim", FloatClaim { label, pane_id });
+        return;
+    }
+    // 미claim 창인데 그새 경보가 올라갔다면(drain 시점에 pending이던 창) 바로 회수한다.
+    // 여기서 안 막으면 Warn이 유지되는 동안 재drain이 없어 렌더러 1벌이 그대로 남는다.
+    if health::level() >= health::Level::Warn {
+        float_pool_drain(&app);
     }
 }
 
@@ -830,7 +873,7 @@ pub fn run() {
 
             // 메인 창을 코드에서 생성한다 — 원격 디버깅 포트(CDP)는 debug 빌드에서만 열고
             // release 빌드에는 노출하지 않기 위함 (정적 config로는 빌드별 분기가 불가).
-            WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
+            let main_window = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
                 // dev 인스턴스는 설치본과 동시에 뜰 수 있다(tauri.dev.conf.json이 identifier를
                 // 갈라 데이터 디렉터리를 분리한다). 창 제목이 같으면 어느 쪽을 보고 있는지
                 // 구분이 안 된다 — 설치본에 대고 디버깅하는 사고의 원인이 된다.
@@ -866,6 +909,11 @@ pub fn run() {
                     "../icons/128x128.png"
                 ))?)?
                 .build()?;
+            // WebView2 렌더러/GPU/브라우저 프로세스가 죽으면 wry도 tauri도 아무 것도 하지 않아
+            // 로그 한 줄 없이 "빈 창"만 남는다 — 최소한 원인을 남긴다(webview_guard 모듈 주석).
+            // 다른 창(float/float-pool/aggregate/sysmon/doc)은 생성 지점이 5곳이라 이번엔 메인만
+            // 건다. 메인 창이 곧 앱이고, 보조 창은 닫았다 다시 열면 복구된다.
+            webview_guard::install(&main_window);
 
             let projects = state::load_projects(app.handle());
             let settings = state::load_settings(app.handle());

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
+import { registerDraftFlush } from "../../lib/drafts";
 import { useCommit, usePushFlow, useStatus } from "../../queries";
 import { useOps } from "../../stores/ops";
 
@@ -58,13 +59,27 @@ export function CommitForm({
   // 타이머가 취소돼도 직전 입력이 유실되지 않는다.
   const pendingDraft = useRef({ projectId, message });
   pendingDraft.current = { projectId, message };
+  const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    const timer = setTimeout(() => saveDraft(projectId, message), 300);
+    draftTimer.current = setTimeout(() => saveDraft(projectId, message), 300);
     return () => {
-      clearTimeout(timer);
+      if (draftTimer.current) clearTimeout(draftTimer.current);
+      draftTimer.current = null;
       saveDraft(pendingDraft.current.projectId, pendingDraft.current.message);
     };
   }, [projectId, message]);
+
+  // health 경보(warn↑) 때 대기 중인 초안을 즉시 기록한다 — OS가 메모리 부족으로 앱을 죽이면
+  // 언마운트 cleanup조차 돌지 않아 마지막 300ms 입력이 사라진다(2026-09-02 NTS, lib/drafts.ts).
+  useEffect(
+    () =>
+      registerDraftFlush(() => {
+        if (draftTimer.current) clearTimeout(draftTimer.current);
+        draftTimer.current = null;
+        saveDraft(pendingDraft.current.projectId, pendingDraft.current.message);
+      }),
+    [],
+  );
 
   const stagedCount = status?.staged.length ?? 0;
   const canCommit =

@@ -687,6 +687,22 @@ export interface HealthSample {
   memAvailablePct: number;
   swapUsedPct: number;
   available: boolean; // false면 이 플랫폼에서 신호를 못 읽음 → 경보 비활성
+  /**
+   * 앱 자체(gitpervisor.exe + 트리 안의 msedgewebview2.exe 전부)의 private 합.
+   * scopeMemBytes에서 이걸 빼면 사용자가 터미널에서 띄운 프로그램 몫이 나온다 —
+   * "앱 메모리 2GB"만 보면 어느 쪽을 줄여야 할지 알 수 없어서 나눠 담는다.
+   * 옛 session.json에는 없다(Windows 전용, 비Windows는 0) → optional.
+   */
+  scopeCoreBytes?: number;
+  /** private 큰 순 상위 8개(health/probe.rs). 옛 기록에는 없다. */
+  top?: TopProc[];
+}
+
+/** 트리 안에서 메모리를 많이 쥔 프로세스 한 줄. */
+export interface TopProc {
+  name: string;
+  pid: number;
+  bytes: number;
 }
 
 // ---- 화면 캡쳐 (commands/capture.rs) ----
@@ -731,9 +747,16 @@ export interface PrevSessionRecord {
 
 export interface PrevSession {
   crashed: boolean;
-  verdict: "clean" | "oom" | "panic" | "unknown";
+  /** health/session.rs `classify()`의 판정. 우선순위: alloc > panic > crash > power > reboot > oom. */
+  verdict: "clean" | "oom" | "panic" | "crash" | "power" | "reboot" | "unknown";
   message: string;
   record: PrevSessionRecord | null;
+  /**
+   * Windows 이벤트 로그에서 건진 사후 단서 — 이미 한국어 한 줄로 포맷돼 있다.
+   * 앱이 흔적 없이 사라지는 경로(할당 실패 abort·강제 종료·전원 차단·WER)는 앱 로그에
+   * 아무것도 안 남아 전부 "oom"으로 찍혔다. 구분 근거가 여기밖에 없다.
+   */
+  osEvents?: string[];
 }
 
 // ---- macOS 격리 도구 (commands/quarantine.rs) ----

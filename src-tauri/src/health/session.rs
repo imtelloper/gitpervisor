@@ -11,10 +11,15 @@ use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 
-use super::probe::Sample;
+use super::probe::{Sample, TopProc};
+use super::winlog::OsEvent;
 
 pub const CURRENT: &str = "session.json";
 pub const PREVIOUS: &str = "session.prev.json";
+/// 할당 실패 표식(`alloc_guard`가 abort 직전에 남긴다)과 그 1세대 보관본.
+/// 판정에 쓴 표식은 곧바로 밀어낸다 — 그러지 않으면 다음 실행마다 같은 사고를 재판정한다.
+pub const ALLOC_FAIL: &str = "alloc-fail.txt";
+pub const ALLOC_FAIL_PREV: &str = "alloc-fail.prev.txt";
 
 static SESSION_PATH: OnceLock<PathBuf> = OnceLock::new();
 static PREV: OnceLock<PrevSession> = OnceLock::new();
@@ -47,11 +52,14 @@ pub struct SessionRecord {
 pub struct PrevSession {
     /// 지난 실행이 비정상 종료되었는가.
     pub crashed: bool,
-    /// "oom" | "panic" | "unknown" | "clean"
+    /// "oom" | "panic" | "crash" | "power" | "reboot" | "unknown" | "clean"
     pub verdict: String,
     /// 사용자에게 보여줄 한국어 진단 문구.
     pub message: String,
     pub record: Option<SessionRecord>,
+    /// Windows 이벤트 로그에서 건진 상관 이벤트(이미 한국어 한 줄로 포맷됨).
+    /// 앱 로그에 아무것도 없는 종료(할당 실패 abort·강제 종료·전원 차단)의 유일한 외부 근거다.
+    pub os_events: Vec<String>,
 }
 
 /// 시작 시 1회. 이전 세션 파일을 판정해 보관하고, 이번 세션 기록을 새로 연다.
@@ -64,7 +72,29 @@ pub fn begin(log_dir: &Path, version: &str) {
         .ok()
         .and_then(|s| serde_json::from_str::<SessionRecord>(&s).ok());
 
-    let verdict = classify(prev.as_ref(), panic_log_near(log_dir, prev.as_ref()));
+    // 할당 실패 표식은 판정 근거 중 가장 강하다(다른 어떤 신호보다 직접적이다). 읽고 밀어낸 뒤
+    // 이번 세션용 경로를 등록한다 — 순서가 바뀌면 방금 읽은 표식을 다시 판정하게 된다.
+    let alloc_fail = take_alloc_marker(log_dir, prev.as_ref());
+    super::alloc_guard::install(log_dir);
+
+    // 비정상 종료였을 때만 이벤트 로그를 본다 — 정상 시작 경로에 자식 프로세스를 붙이지 않는다.
+    // 창 생성 전 메인 스레드이므로 동기 호출이지만 상한 3초(채널당)라 체감되지 않는다.
+    let crashed = prev.as_ref().is_some_and(|r| !r.clean_exit);
+    let events = if crashed {
+        prev.as_ref()
+            .and_then(|r| chrono::DateTime::parse_from_rfc3339(&r.updated_at).ok())
+            .map(|t| super::winlog::query_around(t.with_timezone(&chrono::Local)))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    let verdict = classify(
+        prev.as_ref(),
+        panic_log_near(log_dir, prev.as_ref()),
+        alloc_fail,
+        &events,
+    );
     if verdict.crashed {
         // 사후 분석용으로 보관 — prune_logs가 지우지 않도록 보존 목록에 있다.
         let _ = std::fs::rename(&current, log_dir.join(PREVIOUS));
@@ -73,6 +103,9 @@ pub fn begin(log_dir: &Path, version: &str) {
             verdict.verdict,
             verdict.message
         );
+        for line in &verdict.os_events {
+            log::warn!("[health] OS 이벤트: {line}");
+        }
     }
     let _ = PREV.set(verdict);
 
@@ -113,11 +146,68 @@ fn oom_message(s: &Sample) -> String {
     if s.swap_used_pct > 0.0 {
         bits.push(format!("{} {:.0}%", super::SWAP_LABEL, s.swap_used_pct));
     }
-    if bits.is_empty() {
+    let base = if bits.is_empty() {
         head.to_string()
     } else {
         format!("{head} 종료 직전 {}.", bits.join(", "))
+    };
+    match top_summary(&s.top) {
+        Some(t) => format!("{base} {t}."),
+        None => base,
     }
+}
+
+/// 종료 직전 상위 프로세스를 **이름별로 묶어** 위에서 4개까지.
+///
+/// 개별 나열하면 안 된다 — WebView2는 4~6개, pwsh는 터미널 수만큼 뜨므로 상위 8개가 전부
+/// 같은 이름으로 차서 정작 "우리 프로세스가 1.1GB였다"가 목록 밖으로 밀린다.
+fn top_summary(top: &[TopProc]) -> Option<String> {
+    if top.is_empty() {
+        return None;
+    }
+    let mut groups: Vec<(&str, u64, u32)> = Vec::new();
+    for p in top {
+        match groups.iter_mut().find(|(n, _, _)| *n == p.name) {
+            Some(g) => {
+                g.1 += p.bytes;
+                g.2 += 1;
+            }
+            None => groups.push((&p.name, p.bytes, 1)),
+        }
+    }
+    groups.sort_by(|a, b| b.1.cmp(&a.1));
+    let listed = groups
+        .iter()
+        .take(4)
+        .map(|(name, bytes, count)| {
+            let gb = *bytes as f32 / 1_073_741_824.0;
+            if *count > 1 {
+                format!("{name} {gb:.1}GB({count}개)")
+            } else {
+                format!("{name} {gb:.1}GB")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" · ");
+    Some(format!("종료 직전 가장 큰 프로세스: {listed}"))
+}
+
+/// 할당 실패 표식을 읽고 밀어낸다 — 지난 세션의 것인지는 mtime으로 가른다.
+///
+/// 하트비트는 최대 30초 낡을 수 있고 표식은 그 **뒤에** 쓰이므로, 하한만 둔다(−180초).
+/// 다음 실행에서 같은 표식을 다시 판정하지 않도록 읽었든 아니든 곧바로 rename 한다.
+fn take_alloc_marker(log_dir: &Path, prev: Option<&SessionRecord>) -> Option<u64> {
+    let path = log_dir.join(ALLOC_FAIL);
+    let meta = std::fs::metadata(&path).ok()?;
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let _ = std::fs::rename(&path, log_dir.join(ALLOC_FAIL_PREV));
+
+    let updated = chrono::DateTime::parse_from_rfc3339(&prev?.updated_at).ok()?;
+    let mtime: chrono::DateTime<chrono::Local> = meta.modified().ok()?.into();
+    if (mtime - updated.with_timezone(&chrono::Local)).num_seconds() < -180 {
+        return None; // 지난 세션보다 한참 앞선 표식 — 그 세션의 것이 아니다.
+    }
+    text.split("bytes=").nth(1)?.trim().parse::<u64>().ok()
 }
 
 /// 이전 세션 기록으로 비정상 종료 여부와 원인을 판정한다(순수 함수 — 테스트 대상).
@@ -125,12 +215,23 @@ fn oom_message(s: &Sample) -> String {
 /// `clean_exit == false`가 유일한 "비정상" 근거다. systemd-oomd나 커널 OOM Killer는 SIGKILL을
 /// 쓰므로 어떤 종료 훅도 돌지 않고, 패닉이 아니라 `panic.log`도 남지 않는다 — 살아있는 동안
 /// 미리 적어둔 이 플래그 말고는 사후에 알 방법이 없다.
-fn classify(prev: Option<&SessionRecord>, panicked: bool) -> PrevSession {
+///
+/// 근거의 우선순위는 **직접적일수록 위**다:
+/// 할당 실패 표식 > 패닉 로그 > OS가 기록한 앱 크래시 > 전원/재부팅 > 죽기 직전 지표(oom) > 불명.
+/// 지표(맨 아래)는 정황일 뿐이라 위의 직접 증거가 있으면 뒤로 물러나야 한다 — 전원 차단으로
+/// 꺼진 앱을 "메모리 부족"으로 단정하면 사용자가 엉뚱한 곳을 손보게 된다.
+fn classify(
+    prev: Option<&SessionRecord>,
+    panicked: bool,
+    alloc_fail: Option<u64>,
+    events: &[OsEvent],
+) -> PrevSession {
     let clean = |()| PrevSession {
         crashed: false,
         verdict: "clean".into(),
         message: String::new(),
         record: None,
+        os_events: Vec::new(),
     };
     let Some(rec) = prev else { return clean(()) };
     if rec.clean_exit {
@@ -153,13 +254,63 @@ fn classify(prev: Option<&SessionRecord>, panicked: bool) -> PrevSession {
         // 여유 메모리가 경고선(8%) 아래였거나, 빠듯한 채로 커밋/스왑이 위험선을 넘고 있었다.
         || (mem_measured && mem <= 8.0)
         || (mem_measured && mem <= 15.0 && rec.last.swap_used_pct >= 85.0);
-    let (verdict, message) = if panicked {
+    // OS 이벤트에서 근거를 골라낸다. 크래시는 **우리 프로세스 것만** 인정한다 —
+    // WebView2 렌더러가 죽어도 앱 프로세스는 살아 있으므로 그것으로 종료를 단정할 수 없다.
+    //
+    // 그리고 "우리 프로세스"는 exe 이름만으로 못 가른다. dev 인스턴스와 설치본은 같은
+    // gitpervisor.exe이고 이 저장소는 둘을 나란히 띄우는 게 기본 워크플로다(CLAUDE.md) —
+    // 이벤트 로그는 머신 전역이라 남의 인스턴스 크래시가 그대로 걸린다(dev는 재빌드마다
+    // 죽으므로 그쪽 이벤트가 훨씬 흔하다). 1000의 faulting process id를 지난 세션 pid와
+    // 대조해 가른다(pid를 못 읽은 옛 이벤트는 지금처럼 통과).
+    //
+    // **1001(WER)은 판정 근거에서 뺀다.** EventData에 pid 필드가 없어 같은 방식으로 가를 수
+    // 없는데, 실제 크래시는 1000을 항상 함께 남기므로 1001이 더 주는 정보가 없다. 근거
+    // 목록(os_events)에는 그대로 남아 사용자에게 보인다.
+    let crash_ev = events
+        .iter()
+        .find(|e| e.own_app && e.id == 1000 && e.pid.is_none_or(|p| p == rec.pid));
+    let power_ev = events.iter().find(|e| e.id == 6008 || e.id == 41);
+    let reboot_ev = events.iter().find(|e| e.id == 1074);
+    let exhaust: Vec<&OsEvent> = events.iter().filter(|e| e.id == 2004).collect();
+
+    let (verdict, message) = if let Some(bytes) = alloc_fail {
+        (
+            "oom",
+            format!(
+                "메모리 할당 실패로 앱이 종료됐습니다(요청 {bytes}바이트). \
+                 더 이상 메모리를 확보할 수 없어 OS가 프로세스를 중단시켰습니다."
+            ),
+        )
+    } else if panicked {
         (
             "panic",
             "앱 내부 오류(패닉)로 종료된 것으로 보입니다. 진단 로그를 확인해 주세요.".to_string(),
         )
-    } else if pressured {
-        ("oom", oom_message(&rec.last))
+    } else if let Some(e) = crash_ev {
+        (
+            "crash",
+            format!("앱이 크래시로 종료됐습니다. {}", e.text),
+        )
+    } else if let Some(e) = power_ev {
+        (
+            "power",
+            format!(
+                "시스템이 예기치 않게 종료·재부팅됐습니다 — 앱 문제가 아닐 수 있습니다. {}",
+                e.text
+            ),
+        )
+    } else if let Some(e) = reboot_ev {
+        (
+            "reboot",
+            format!("Windows 종료·재시작 요청으로 앱이 함께 종료됐습니다. {}", e.text),
+        )
+    } else if pressured || !exhaust.is_empty() {
+        let mut m = oom_message(&rec.last);
+        for e in &exhaust {
+            m.push(' ');
+            m.push_str(&e.text);
+        }
+        ("oom", m)
     } else {
         (
             "unknown",
@@ -171,6 +322,7 @@ fn classify(prev: Option<&SessionRecord>, panicked: bool) -> PrevSession {
         verdict: verdict.into(),
         message,
         record: Some(rec.clone()),
+        os_events: events.iter().map(|e| e.text.clone()).collect(),
     }
 }
 
@@ -217,6 +369,7 @@ pub fn previous() -> PrevSession {
         verdict: "clean".into(),
         message: String::new(),
         record: None,
+        os_events: Vec::new(),
     })
 }
 
@@ -268,6 +421,21 @@ fn panic_log_near(log_dir: &Path, prev: Option<&SessionRecord>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 이벤트 없이 판정 — 기존 테스트가 쓰던 2인자 형태를 유지한다.
+    fn classify(prev: Option<&SessionRecord>, panicked: bool) -> PrevSession {
+        super::classify(prev, panicked, None, &[])
+    }
+
+    fn ev(id: u32, own_app: bool, text: &str) -> OsEvent {
+        OsEvent {
+            id,
+            own_app,
+            at: None,
+            pid: None,
+            text: text.into(),
+        }
+    }
 
     fn rec(clean: bool, level: &str, procs: u32, pressure: f32) -> SessionRecord {
         SessionRecord {
@@ -368,5 +536,153 @@ mod tests {
             "unknown",
             "측정 안 된 0%를 위험으로 읽었다"
         );
+    }
+
+    /// 할당 실패 표식은 모든 근거를 이긴다 — 가장 직접적인 증거다.
+    #[test]
+    fn alloc_marker_outranks_everything() {
+        let r = rec(false, "danger", 371, 44.0);
+        let v = super::classify(
+            Some(&r),
+            true, // 패닉 로그까지 있어도
+            Some(1_073_741_824),
+            &[ev(6008, false, "시스템이 예기치 않게 종료됨(6008)")],
+        );
+        assert_eq!(v.verdict, "oom");
+        assert!(v.message.contains("1073741824"), "{}", v.message);
+    }
+
+    /// 전원 차단으로 꺼졌는데 죽기 직전 지표가 빠듯했다고 "메모리 부족"으로 단정하면
+    /// 사용자가 엉뚱한 곳(메모리)을 손보게 된다 — OS 기록이 정황보다 우선한다.
+    #[test]
+    fn power_event_outranks_pressure_metrics() {
+        let mut r = rec(false, "warn", 12, 0.0);
+        r.last.mem_available_pct = 3.0;
+        let v = super::classify(
+            Some(&r),
+            false,
+            None,
+            &[ev(41, false, "커널 전원 이벤트(41) BugcheckCode=0 (0이면 전원 차단·강제 리셋)")],
+        );
+        assert_eq!(v.verdict, "power", "{}", v.message);
+        assert!(v.message.contains("앱 문제가 아닐 수 있습니다"), "{}", v.message);
+        assert_eq!(v.os_events.len(), 1);
+    }
+
+    /// 우리 프로세스의 크래시 기록이 있으면 "crash"로 확정하고 예외 코드를 그대로 보여준다.
+    #[test]
+    fn own_app_crash_event_wins_over_metrics() {
+        let mut r = rec(false, "warn", 12, 0.0);
+        r.last.mem_available_pct = 3.0;
+        let v = super::classify(
+            Some(&r),
+            false,
+            None,
+            &[ev(
+                1000,
+                true,
+                "앱 크래시(1000) gitpervisor.exe 예외 코드 0xc0000409 — abort/fastfail(Rust 할당 실패 포함)",
+            )],
+        );
+        assert_eq!(v.verdict, "crash");
+        assert!(v.message.contains("0xc0000409"), "{}", v.message);
+    }
+
+    /// **다른 인스턴스의 크래시를 가져오면 안 된다.** dev와 설치본은 같은 exe 이름이라
+    /// 이벤트 로그에서는 pid로만 갈린다 — 남의 1000이 crash로 확정되면 진짜 원인(저메모리)이
+    /// 통째로 가려지고 남의 예외 코드가 사용자 문구에 박힌다.
+    #[test]
+    fn crash_event_from_other_instance_is_ignored() {
+        let mut r = rec(false, "warn", 12, 0.0); // pid 1234
+        r.last.mem_available_pct = 3.0;
+        let mut e = ev(1000, true, "앱 크래시(1000) gitpervisor.exe 예외 코드 0x80000003");
+        e.pid = Some(9999); // dev 인스턴스
+        let v = super::classify(Some(&r), false, None, &[e]);
+        assert_eq!(v.verdict, "oom", "{}", v.message);
+        assert_eq!(v.os_events.len(), 1, "근거는 그대로 남겨야 한다");
+    }
+
+    /// pid가 일치하면 그대로 crash로 확정한다.
+    #[test]
+    fn crash_event_with_matching_pid_is_ours() {
+        let r = rec(false, "warn", 12, 0.0); // pid 1234
+        let mut e = ev(1000, true, "앱 크래시(1000) gitpervisor.exe 예외 코드 0xc0000409");
+        e.pid = Some(1234);
+        assert_eq!(super::classify(Some(&r), false, None, &[e]).verdict, "crash");
+    }
+
+    /// WER 1001은 pid를 담지 않아 인스턴스를 가를 수 없다 — 판정 근거에서 뺀다.
+    /// 실제 크래시는 1000을 항상 함께 남기므로 잃는 정보가 없다.
+    #[test]
+    fn wer_1001_alone_does_not_decide_crash() {
+        let r = rec(false, "ok", 3, 0.0);
+        let v = super::classify(
+            Some(&r),
+            false,
+            None,
+            &[ev(1001, true, "오류 보고(WER 1001) gitpervisor.exe APPCRASH")],
+        );
+        assert_eq!(v.verdict, "unknown", "{}", v.message);
+        assert_eq!(v.os_events.len(), 1);
+    }
+
+    /// WebView2 렌더러 크래시(own_app=false)로 앱 종료를 단정하면 안 된다 —
+    /// 렌더러가 죽어도 앱 프로세스는 살아 있다.
+    #[test]
+    fn webview_crash_alone_does_not_become_app_crash() {
+        let r = rec(false, "ok", 3, 0.0);
+        let v = super::classify(
+            Some(&r),
+            false,
+            None,
+            &[ev(1000, false, "WebView2 프로세스 크래시(1000) msedgewebview2.exe …")],
+        );
+        assert_eq!(v.verdict, "unknown", "{}", v.message);
+        assert_eq!(v.os_events.len(), 1, "근거는 그대로 남겨야 한다");
+    }
+
+    /// 커밋 고갈(2004)은 지표가 한가해 보여도 oom을 확정하고 상위 소비자를 덧붙인다.
+    #[test]
+    fn commit_exhaustion_event_implies_oom() {
+        let r = rec(false, "ok", 3, 0.0);
+        let v = super::classify(
+            Some(&r),
+            false,
+            None,
+            &[ev(2004, false, "커밋 한도 고갈(2004): 상위 소비 warp.exe 28.4GB")],
+        );
+        assert_eq!(v.verdict, "oom");
+        assert!(v.message.contains("warp.exe 28.4GB"), "{}", v.message);
+    }
+
+    /// 상위 프로세스는 **이름별로 묶여야** 한다. 안 묶으면 WebView2 6개가 목록을 다 채워
+    /// 정작 우리 프로세스가 밖으로 밀린다(2026-09-02 NTS 사건의 실제 구성).
+    #[test]
+    fn oom_message_groups_top_processes_by_name() {
+        let mut r = rec(false, "danger", 15, 0.0);
+        r.last.mem_available_pct = 6.0;
+        r.last.top = vec![
+            TopProc { name: "gitpervisor.exe".into(), pid: 100, bytes: 1_181_116_006 },
+            TopProc { name: "msedgewebview2.exe".into(), pid: 101, bytes: 322_122_547 },
+            TopProc { name: "msedgewebview2.exe".into(), pid: 102, bytes: 214_748_364 },
+            TopProc { name: "msedgewebview2.exe".into(), pid: 103, bytes: 107_374_182 },
+            TopProc { name: "pwsh.exe".into(), pid: 104, bytes: 104_857_600 },
+            TopProc { name: "pwsh.exe".into(), pid: 105, bytes: 104_857_600 },
+        ];
+        let v = classify(Some(&r), false);
+        assert_eq!(v.verdict, "oom");
+        assert!(v.message.contains("gitpervisor.exe 1.1GB"), "{}", v.message);
+        assert!(v.message.contains("msedgewebview2.exe 0.6GB(3개)"), "{}", v.message);
+        assert!(v.message.contains("pwsh.exe 0.2GB(2개)"), "{}", v.message);
+    }
+
+    /// 옛 세션 파일(top 없음)에서도 문구가 그대로 나와야 한다 — serde default 회귀 방지.
+    #[test]
+    fn missing_top_field_keeps_old_message() {
+        let mut r = rec(false, "ok", 12, 0.0);
+        r.last.mem_available_pct = 3.0;
+        let v = classify(Some(&r), false);
+        assert_eq!(v.verdict, "oom");
+        assert!(!v.message.contains("가장 큰 프로세스"), "{}", v.message);
     }
 }

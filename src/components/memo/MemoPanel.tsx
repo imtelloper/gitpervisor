@@ -1,6 +1,7 @@
 import { Plus, StickyNote, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { registerDraftFlush } from "../../lib/drafts";
 import { relativeTime } from "../../lib/format";
 import {
   useAddMemo,
@@ -106,6 +107,13 @@ export function MemoPanel({
       flushRef.current = null;
     };
   });
+
+  // health 경보(warn↑) 때도 같은 flush를 돌린다 — OS가 메모리 부족으로 앱을 죽이면 500ms
+  // 디바운스에 걸려 있던 본문이 통째로 날아간다(2026-09-02 NTS, lib/drafts.ts).
+  // 등록은 마운트 때 한 번이고, 최신 flush는 ref로 따라간다(매 렌더 재등록 방지).
+  const flushLatest = useRef(flush);
+  flushLatest.current = flush;
+  useEffect(() => registerDraftFlush(() => flushLatest.current()), []);
 
   // 빈 메모는 떠날 때 정리, 변경분은 즉시 저장.
   // 소유자 불일치(= 새 메모 추가 직후 캐시가 아직 안 따라온 과도기)에는 손대지 않는다 —

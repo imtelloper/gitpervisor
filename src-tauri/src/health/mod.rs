@@ -11,8 +11,10 @@
 //! 설계 원칙: 감시 자체가 부담이 되면 안 된다. 전부 파일 read이고 자식 프로세스를 하나도
 //!만들지 않는다(실측 샘플 1회 ~70µs = CPU 0.0035%).
 
+pub mod alloc_guard;
 pub mod probe;
 pub mod session;
+pub mod winlog;
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Mutex;
@@ -22,6 +24,11 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use probe::{Probe, Sample};
+
+/// 바이트 → GB. 사용자 문구·로그가 전부 GB 단위라 한 군데로 모은다.
+fn gb(bytes: u64) -> f32 {
+    bytes as f32 / 1_073_741_824.0
+}
 
 /// 현재 레벨(다른 모듈이 잠금 없이 읽을 수 있게 원자값으로 둔다).
 static LEVEL: AtomicU8 = AtomicU8::new(0);
@@ -48,6 +55,17 @@ impl Level {
             Level::Warn => "warn",
             Level::Danger => "danger",
         }
+    }
+}
+
+/// 지금 레벨 — 다른 모듈이 잠금 없이 읽는다(webview_guard의 메모리 목표, 플로팅 프리워밍
+/// 게이트, PTY 출력 예산). 원자값 하나라 뜨거운 경로(PTY 리더 루프)에서 불러도 부담이 없다.
+pub fn level() -> Level {
+    match LEVEL.load(Ordering::Relaxed) {
+        1 => Level::Notice,
+        2 => Level::Warn,
+        3 => Level::Danger,
+        _ => Level::Ok,
     }
 }
 
@@ -192,13 +210,26 @@ fn assess(s: &Sample) -> (Level, Vec<String>) {
     );
 
     let lv = rate(s.scope_mem_pct, T_MEM_PCT, true);
+    // "앱 메모리 2.0GB"만으로는 사용자가 할 수 있는 일이 없다 — 우리 누수인지, 터미널에서
+    // 직접 띄운 빌드/서버가 먹은 것인지에 따라 대응이 정반대다. 값이 있으면 갈라서 보여준다
+    // (Windows 전용. 다른 플랫폼은 scope_core_bytes가 0이라 예전 문구 그대로 나간다).
     consider(
         lv,
-        format!(
-            "앱 메모리 {:.1}GB (시스템의 {:.0}%)",
-            s.scope_mem_bytes as f32 / 1_073_741_824.0,
-            s.scope_mem_pct
-        ),
+        if s.scope_core_bytes > 0 {
+            format!(
+                "앱 메모리 {:.1}GB (시스템의 {:.0}%; 앱 자체 {:.1}GB, 터미널 프로그램 {:.1}GB)",
+                gb(s.scope_mem_bytes),
+                s.scope_mem_pct,
+                gb(s.scope_core_bytes),
+                gb(s.scope_mem_bytes.saturating_sub(s.scope_core_bytes)),
+            )
+        } else {
+            format!(
+                "앱 메모리 {:.1}GB (시스템의 {:.0}%)",
+                gb(s.scope_mem_bytes),
+                s.scope_mem_pct
+            )
+        },
         &mut worst,
         &mut reasons,
     );
@@ -375,6 +406,11 @@ fn watchdog_tick(
     if let Some(level) = transition {
         if level > Level::Ok {
             log::warn!("[health] 레벨 상승 → {} 원인={:?}", level.as_str(), reasons);
+            // 경보와 **같은 시각에** 어느 프로세스가 쥐고 있었는지를 붙인다. 2026-09-02 NTS
+            // 사건에서 로그에는 합계(2.0GB)만 있고 내역이 없어 원인 추적이 여기서 멈췄다.
+            if let Some(line) = top_line(&sample, 6) {
+                log::warn!("{line}");
+            }
         } else {
             log::info!("[health] 레벨 정상 복귀");
         }
@@ -387,6 +423,7 @@ fn watchdog_tick(
                 reasons: reasons.clone(),
             },
         );
+        crate::webview_guard::on_health_level(app, level);
         // 경고 이상이면 미저장 초안을 즉시 flush하라고 프론트에 알린다.
         if level >= Level::Warn {
             let _ = app.emit("health://flush-drafts", ());
@@ -419,8 +456,30 @@ fn watchdog_tick(
                 sample.mem_available_pct,
                 sample.swap_used_pct,
             );
+            // 주의 이상일 때만 내역까지 — 평시에 매 5분 찍으면 로그 예산만 먹는다.
+            if m.level >= Level::Notice {
+                if let Some(line) = top_line(&sample, 6) {
+                    log::info!("{line}");
+                }
+            }
         }
     }
+}
+
+/// `[health] top: gitpervisor.exe 554MB(pid 1234), …` — private 큰 순 상위 n개.
+/// 내역이 없는 플랫폼(리눅스·macOS)에서는 None이라 줄 자체가 안 남는다.
+fn top_line(s: &Sample, n: usize) -> Option<String> {
+    if s.top.is_empty() {
+        return None;
+    }
+    let listed = s
+        .top
+        .iter()
+        .take(n)
+        .map(|p| format!("{} {}MB(pid {})", p.name, p.bytes / 1_048_576, p.pid))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!("[health] top: {listed}"))
 }
 
 /// 감시 스레드 시작. setup에서 1회 호출한다.
@@ -511,6 +570,8 @@ mod tests {
             scope_mem_pct: 0.834,
             scope_current_bytes: 451_481_600,
             scope_procs: 3,
+            scope_core_bytes: 0,
+            top: Vec::new(),
             mem_available_pct: 68.4,
             swap_used_pct: 99.86,
             available: true,
@@ -623,5 +684,44 @@ mod tests {
             }
         }
         assert_eq!(promoted, Some(Level::Warn), "흔들림에 승격이 막혔다");
+    }
+
+    /// 앱 자체와 터미널 프로그램을 갈라 보여줘야 한다 — 대응이 정반대다.
+    /// (2026-09-02 NTS: 트리 15개가 2.0GB, 그중 앱 코어 1.5GB·pwsh 0.5GB 구성)
+    #[test]
+    fn app_memory_reason_splits_core_and_terminals() {
+        let mut s = idle_sample();
+        s.scope_mem_bytes = 2_147_483_648; // 2.0GB
+        s.scope_mem_pct = 26.0;
+        s.scope_core_bytes = 1_610_612_736; // 1.5GB
+        let (_, reasons) = assess(&s);
+        let r = reasons.iter().find(|r| r.contains("앱 메모리")).expect("사유 없음");
+        assert!(r.contains("앱 자체 1.5GB"), "{r}");
+        assert!(r.contains("터미널 프로그램 0.5GB"), "{r}");
+    }
+
+    /// 내역이 없는 플랫폼(리눅스·macOS)에서는 예전 문구 그대로 — 없는 값을 0으로 찍으면
+    /// "터미널 프로그램 0.0GB"라는 거짓 정보가 붙는다.
+    #[test]
+    fn app_memory_reason_stays_plain_without_breakdown() {
+        let mut s = idle_sample();
+        s.scope_mem_pct = 26.0;
+        let (_, reasons) = assess(&s);
+        let r = reasons.iter().find(|r| r.contains("앱 메모리")).expect("사유 없음");
+        assert!(!r.contains("앱 자체"), "{r}");
+    }
+
+    /// 상위 프로세스 로그 줄 — 내역이 없으면 줄 자체가 없어야 한다.
+    #[test]
+    fn top_line_lists_largest_processes() {
+        let mut s = idle_sample();
+        assert!(top_line(&s, 6).is_none());
+        s.top = vec![
+            probe::TopProc { name: "gitpervisor.exe".into(), pid: 1234, bytes: 580_911_104 },
+            probe::TopProc { name: "msedgewebview2.exe".into(), pid: 34048, bytes: 571_473_920 },
+        ];
+        let line = top_line(&s, 6).expect("줄이 없다");
+        assert!(line.contains("gitpervisor.exe 554MB(pid 1234)"), "{line}");
+        assert!(line.contains("msedgewebview2.exe 545MB(pid 34048)"), "{line}");
     }
 }

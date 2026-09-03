@@ -2,12 +2,15 @@ import { listen } from "@tauri-apps/api/event";
 import { Activity, BellOff, FolderOpen, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import { flushAllDrafts } from "../../lib/drafts";
+import { formatBytes } from "../../lib/format";
 import {
   ipc,
   type HealthLevel,
   type HealthSnapshot,
   type HealthTransition,
   type PrevSession,
+  type TopProc,
 } from "../../lib/ipc";
 import { useHealthMute } from "../../stores/health";
 
@@ -63,13 +66,22 @@ export function HealthBanner() {
       // 해소되면 닫음 기록도 리셋 — 다음 상승은 새 사건이니 다시 알린다.
       if (t.level === "ok") setDismissed(null);
     });
+    // 백엔드가 warn 이상으로 올라갈 때 보내는 초안 저장 신호. 받는 쪽이 여기밖에 없다
+    // (lib/drafts.ts) — 이 구독이 없으면 이벤트는 그냥 버려진다.
+    const unFlush = listen("health://flush-drafts", () => flushAllDrafts());
     // 창을 새로 연 경우를 위해 현재 상태도 한 번 읽는다.
     void ipc
       .healthSnapshot()
-      .then((s) => s && s.level !== "ok" && setSnap(s))
+      .then((s) => {
+        if (!s || s.level === "ok") return;
+        setSnap(s);
+        // 이 창은 이미 지나간 전이 이벤트를 받지 못했다 — 경보 중이면 지금 한 번 비운다.
+        if (s.level === "warn" || s.level === "danger") flushAllDrafts();
+      })
       .catch(() => {});
     return () => {
       void un.then((f) => f());
+      void unFlush.then((f) => f());
     };
   }, []);
 
@@ -171,6 +183,16 @@ function LiveCard({
         여유 메모리 {s.memAvailablePct.toFixed(0)}% · 프로세스 {s.scopeProcs}개 · 앱 메모리{" "}
         {(s.scopeMemBytes / 1_073_741_824).toFixed(1)}GB
       </div>
+      {/* 앱 메모리 한 덩어리만 보면 무엇을 닫아야 할지 알 수 없다 — 앱 자체(창·WebView2)와
+          터미널에서 띄운 프로그램을 나눠 보여준다. Windows 전용 값이라 없을 수 있다. */}
+      {s.scopeCoreBytes != null && s.scopeCoreBytes > 0 && (
+        <div className="pl-6 font-mono text-[11px] text-fg-dim">
+          앱 자체 {formatBytes(s.scopeCoreBytes)}
+          {s.scopeMemBytes - s.scopeCoreBytes > 0 && (
+            <> · 터미널 프로그램 {formatBytes(s.scopeMemBytes - s.scopeCoreBytes)}</>
+          )}
+        </div>
+      )}
       <div className="mt-2 flex flex-wrap gap-1.5 pl-6">
         <button
           type="button"
@@ -192,9 +214,20 @@ function LiveCard({
   );
 }
 
+/**
+ * 상위 프로세스를 **이름으로 합산**해 큰 순 n개. 같은 이름이 여러 개로 뜨는 게 정상이라
+ * (msedgewebview2.exe 4~5개, pwsh.exe 13개) 개별로 나열하면 목록이 한 이름으로 채워진다.
+ */
+function topByName(top: TopProc[], n: number): [string, number][] {
+  const sum = new Map<string, number>();
+  for (const p of top) sum.set(p.name, (sum.get(p.name) ?? 0) + p.bytes);
+  return [...sum].sort((a, b) => b[1] - a[1]).slice(0, n);
+}
+
 /** 재시작 시 1회 — 지난 실행이 왜 사라졌는지 알려준다. */
 function PrevSessionCard({ prev, onClose }: { prev: PrevSession; onClose: () => void }) {
   const r = prev.record;
+  const top = r?.last.top?.length ? topByName(r.last.top, 3) : [];
   return (
     <div
       role="alert"
@@ -223,6 +256,20 @@ function PrevSessionCard({ prev, onClose }: { prev: PrevSession; onClose: () => 
           {/* LiveCard와 같은 이유 — Windows엔 PSI가 없어 늘 "압박 0%"가 붙었다. */}
           {r.last.killThreshold > 0 && <> · 압박 {r.last.anchorFullAvg10.toFixed(0)}%</>}
         </div>
+      )}
+      {top.length > 0 && (
+        <div className="mt-1 pl-6 font-mono text-[11px] text-fg-dim">
+          종료 직전 큰 프로세스: {top.map(([n, b]) => `${n} ${formatBytes(b)}`).join(" · ")}
+        </div>
+      )}
+      {/* OS가 남긴 흔적(Windows 이벤트 로그) — 앱 로그에는 아무것도 안 남는 종료 경로를
+          여기서만 구분할 수 있다. 백엔드가 이미 한국어 문장으로 만들어 보낸다. */}
+      {prev.osEvents && prev.osEvents.length > 0 && (
+        <ul className="mt-1 space-y-0.5 pl-6 text-[11px] leading-4 text-fg-muted opacity-90">
+          {prev.osEvents.map((e, i) => (
+            <li key={i}>· {e}</li>
+          ))}
+        </ul>
       )}
       <div className="mt-2 pl-6">
         <button

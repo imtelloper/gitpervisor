@@ -15,6 +15,16 @@
 
 use serde::{Deserialize, Serialize};
 
+/// 프로세스 1개의 private 커밋. "앱 메모리 2GB"가 **어디에** 있었는지가 사후 진단의 핵심이다
+/// (2026-09-02 NTS 사건: 트리 15개가 2.0GB를 쥐었는데 어느 프로세스인지 로그에 없었다).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TopProc {
+    pub name: String,
+    pub pid: u32,
+    pub bytes: u64,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Sample {
@@ -40,6 +50,14 @@ pub struct Sample {
     /// 반드시 `cgroup.procs`의 줄 수여야 한다. `pids.current`는 스레드를 세므로 값이 크게
     /// 다르다(실측: 98 vs 14). oomd가 죽이며 보고하는 개수도 `cgroup.procs` 기준이다.
     pub scope_procs: u32,
+    /// 위 합계 중 **앱 자체**(gitpervisor.exe 자신 + 트리 안의 msedgewebview2.exe 전부)의 몫.
+    ///
+    /// 나머지는 사용자가 터미널에서 띄운 남의 프로그램(pwsh·node·python…)이다. 둘을 갈라 두지
+    /// 않으면 "앱 메모리 2.0GB"만 보이고 그게 우리 누수인지 사용자가 띄운 빌드인지 알 수 없다.
+    /// Windows 전용 — 다른 플랫폼은 0(= 미측정).
+    pub scope_core_bytes: u64,
+    /// private 큰 순 상위 8개. Windows 전용 — 다른 플랫폼은 빈 배열.
+    pub top: Vec<TopProc>,
     /// 시스템 여유 메모리 비율(%)과 스왑 사용률(%).
     pub mem_available_pct: f32,
     pub swap_used_pct: f32,
@@ -58,12 +76,26 @@ pub struct Probe {
     last_anchor_pgscan: u64,
     #[cfg(target_os = "linux")]
     mem_total_kb: u64,
-    /// 프로세스 트리 스캔 결과 캐시 — (프로세스 수, 자기 트리 전체 private 커밋).
+    /// 프로세스 트리 스캔 결과 캐시.
     /// 전 프로세스 스냅샷은 메모리 조회(µs)보다 훨씬 비싸 매 틱 돌리지 않는다.
     #[cfg(windows)]
-    tree: (u32, u64),
+    tree: TreeScan,
     #[cfg(windows)]
     tree_at: Option<std::time::Instant>,
+}
+
+/// 자기 프로세스 트리 스캔 1회분.
+#[cfg(windows)]
+#[derive(Default, Clone)]
+struct TreeScan {
+    procs: u32,
+    /// 트리 전체 private 커밋 합.
+    private: u64,
+    /// 그중 앱 자체(자기 자신 + WebView2)의 몫.
+    core: u64,
+    /// 트리 전원을 private 내림차순으로. 길이 == `procs`(권한 없어 못 읽은 것은 0바이트로 남긴다 —
+    /// 개수와 목록이 어긋나면 "8개 중 3개만 보인다"가 되어 진단이 헷갈린다).
+    breakdown: Vec<TopProc>,
 }
 
 #[cfg(target_os = "linux")]
@@ -234,7 +266,7 @@ mod imp {
 /// `assess()`에서 물리 메모리가 이미 빠듯할 때만 가중 신호로 쓰인다.
 #[cfg(windows)]
 mod imp {
-    use super::{Probe, Sample};
+    use super::{Probe, Sample, TopProc, TreeScan};
     use std::time::{Duration, Instant};
 
     use windows_sys::Win32::Foundation::{CloseHandle, FALSE, HANDLE};
@@ -264,7 +296,7 @@ mod imp {
     impl Probe {
         pub fn new() -> Self {
             Self {
-                tree: (0, 0),
+                tree: TreeScan::default(),
                 tree_at: None,
             }
         }
@@ -292,14 +324,16 @@ mod imp {
                 self.tree = own_tree();
                 self.tree_at = Some(Instant::now());
             }
-            let (procs, private) = self.tree;
-            if procs > 0 {
-                s.scope_procs = procs;
-                s.scope_mem_bytes = private;
-                s.scope_current_bytes = private;
+            let t = &self.tree;
+            if t.procs > 0 {
+                s.scope_procs = t.procs;
+                s.scope_mem_bytes = t.private;
+                s.scope_current_bytes = t.private;
+                s.scope_core_bytes = t.core;
+                s.top = t.breakdown.iter().take(8).cloned().collect();
                 if let Some(m) = mem_status() {
                     if m.ullTotalPhys > 0 {
-                        s.scope_mem_pct = private as f32 / m.ullTotalPhys as f32 * 100.0;
+                        s.scope_mem_pct = t.private as f32 / m.ullTotalPhys as f32 * 100.0;
                     }
                 }
                 s.available = true;
@@ -315,25 +349,29 @@ mod imp {
         (unsafe { GlobalMemoryStatusEx(&mut m) } != FALSE).then_some(m)
     }
 
-    /// 자기 프로세스 + 모든 자손의 (개수, private 커밋 합).
+    /// 자기 프로세스 + 모든 자손의 개수·private 커밋 합·프로세스별 내역.
     ///
     /// 리눅스의 `cgroup.procs` 줄 수에 해당한다. 한계 하나: Windows는 PID를 재사용하고
     /// PROCESSENTRY32의 부모 PID는 부모가 죽어도 갱신되지 않는다. 다만 **우리 PID는 살아 있는
     /// 동안 재사용되지 않으므로** 남의 프로세스가 우리를 부모로 갖는 경우는 "우리가 뜨기 전에
     /// 죽은 동일 PID의 부모를 가진 프로세스"뿐이다 — 드물고, 임계가 60부터라 몇 개 오차는
     /// 판정을 바꾸지 않는다.
-    fn own_tree() -> (u32, u64) {
+    fn own_tree() -> TreeScan {
         let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
         if snap.is_null() || snap as isize == -1 {
-            return (0, 0);
+            return TreeScan::default();
         }
-        let mut entries: Vec<(u32, u32)> = Vec::new(); // (pid, ppid)
+        let mut entries: Vec<(u32, u32, String)> = Vec::new(); // (pid, ppid, exe명)
         let mut e: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
         e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
         // SAFETY: 유효한 스냅샷 핸들 + dwSize를 채운 엔트리. 실패 시 즉시 순회를 멈춘다.
         if unsafe { Process32FirstW(snap, &mut e) } != FALSE {
             loop {
-                entries.push((e.th32ProcessID, e.th32ParentProcessID));
+                entries.push((
+                    e.th32ProcessID,
+                    e.th32ParentProcessID,
+                    exe_name(&e.szExeFile),
+                ));
                 if unsafe { Process32NextW(snap, &mut e) } == FALSE {
                     break;
                 }
@@ -345,8 +383,10 @@ mod imp {
         // BFS — 엔트리 수가 수백이라 O(n) 순회 한 번이면 충분하다.
         let me = unsafe { GetCurrentProcessId() };
         let mut children: std::collections::HashMap<u32, Vec<u32>> = std::collections::HashMap::new();
-        for (pid, ppid) in &entries {
+        let mut names: std::collections::HashMap<u32, &str> = std::collections::HashMap::new();
+        for (pid, ppid, name) in &entries {
             children.entry(*ppid).or_default().push(*pid);
+            names.insert(*pid, name.as_str());
         }
         let mut tree = vec![me];
         let mut queue = vec![me];
@@ -363,8 +403,37 @@ mod imp {
             }
         }
 
-        let private: u64 = tree.iter().filter_map(|&pid| private_bytes(pid)).sum();
-        (tree.len() as u32, private)
+        // 권한이 없어 못 읽은 프로세스도 0바이트로 남긴다 — 개수(scope_procs)와 내역 길이가
+        // 어긋나면 로그를 읽는 쪽에서 "빠진 게 있나"를 계속 의심하게 된다.
+        let mut breakdown: Vec<TopProc> = tree
+            .iter()
+            .map(|&pid| TopProc {
+                name: names.get(&pid).copied().unwrap_or_default().to_string(),
+                pid,
+                bytes: private_bytes(pid).unwrap_or(0),
+            })
+            .collect();
+        let private: u64 = breakdown.iter().map(|p| p.bytes).sum();
+        // 앱 자체 = 자기 자신 + WebView2(브라우저/렌더러/GPU). 나머지는 사용자가 터미널에서
+        // 띄운 남의 프로그램이다.
+        let core: u64 = breakdown
+            .iter()
+            .filter(|p| p.pid == me || p.name.eq_ignore_ascii_case("msedgewebview2.exe"))
+            .map(|p| p.bytes)
+            .sum();
+        breakdown.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+        TreeScan {
+            procs: breakdown.len() as u32,
+            private,
+            core,
+            breakdown,
+        }
+    }
+
+    /// `PROCESSENTRY32W.szExeFile`(널 종료 UTF-16 배열) → 문자열.
+    fn exe_name(buf: &[u16]) -> String {
+        let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        String::from_utf16_lossy(&buf[..end])
     }
 
     /// 프로세스 1개의 private 커밋(작업 관리자의 "커밋 크기"). 권한이 없으면 None.
@@ -442,6 +511,54 @@ mod windows_tests {
         // assess()가 "메모리 압박 N% (OS 종료 기준 M%)"라는 거짓 문구를 만든다.
         assert_eq!(s.anchor_full_avg10, 0.0);
         assert_eq!(s.victim_share, 0.0);
+    }
+
+    /// 프로세스별 내역이 실제로 채워지는지 — "앱 메모리 2.0GB"가 **어디에** 있었는지를
+    /// 남기지 못한 것이 2026-09-02 NTS 사건에서 원인 추적을 막은 지점이다.
+    #[test]
+    fn breakdown_and_core_are_populated() {
+        let mut p = Probe::new();
+        let s = p.sample();
+        eprintln!(
+            "[측정] core={:.0}MB / tree={:.0}MB, top={:?}",
+            s.scope_core_bytes as f64 / 1_048_576.0,
+            s.scope_mem_bytes as f64 / 1_048_576.0,
+            s.top
+        );
+
+        assert_eq!(
+            p.tree.breakdown.len() as u32,
+            s.scope_procs,
+            "내역 길이와 프로세스 수가 어긋난다"
+        );
+        assert!(!s.top.is_empty(), "상위 프로세스 목록이 비어 있다");
+        assert!(s.top.len() <= 8, "상위 목록이 8개를 넘었다: {}", s.top.len());
+        // 내림차순 정렬 — 로그의 "top:" 줄이 큰 것부터 나와야 의미가 있다.
+        assert!(
+            s.top.windows(2).all(|w| w[0].bytes >= w[1].bytes),
+            "상위 목록이 내림차순이 아니다: {:?}",
+            s.top
+        );
+
+        // 앱 자체 합은 최소한 **자기 프로세스**를 포함해야 한다(테스트 실행 프로세스 자신).
+        let me = std::process::id();
+        let own = p
+            .tree
+            .breakdown
+            .iter()
+            .find(|t| t.pid == me)
+            .map(|t| t.bytes)
+            .unwrap_or(0);
+        assert!(own > 0, "자기 프로세스의 private를 읽지 못했다");
+        assert!(
+            s.scope_core_bytes >= own,
+            "앱 자체 합({})이 자기 프로세스({own})보다 작다",
+            s.scope_core_bytes
+        );
+        assert!(
+            s.scope_core_bytes <= s.scope_mem_bytes,
+            "앱 자체 합이 트리 전체 합을 넘었다"
+        );
     }
 
     /// 두 번째 샘플은 캐시를 써야 한다 — 전 프로세스 스냅샷을 매 틱 돌리면 감시가 부담이 된다.

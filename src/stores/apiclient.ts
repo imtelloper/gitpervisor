@@ -2,6 +2,7 @@ import { create } from "zustand";
 
 import { ipc } from "../lib/ipc";
 import { resolveRequest, mergeVars } from "../lib/apiclient";
+import { registerDraftFlush } from "../lib/drafts";
 import { useTerminals } from "./terminals";
 
 // ============================================================================
@@ -938,4 +939,7 @@ if (typeof window !== "undefined") {
   };
   window.addEventListener("beforeunload", flush);
   window.addEventListener("pagehide", flush);
+  // 창이 닫히는 것만이 유실 경로가 아니다 — OS가 메모리 부족으로 앱을 통째로 죽이면
+  // beforeunload도 못 받는다. health 경보(warn↑) 때도 같은 flush를 돌린다(lib/drafts.ts).
+  registerDraftFlush(flush);
 }

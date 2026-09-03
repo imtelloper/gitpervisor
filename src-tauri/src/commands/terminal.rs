@@ -12,12 +12,30 @@ use super::projects::project_path;
 use crate::error::{ErrorCode, IpcError};
 use crate::state::AppState;
 
-/// PTY 출력 상한(초당 바이트).
+/// PTY 출력 상한(초당 바이트) — 평시.
 ///
 /// 80x24 화면 한 장이 ≈2KB다. 8MB/s면 사람이 읽을 수 있는 양의 수천 배라 정상 사용
 /// (빌드 로그·테스트 출력)에는 절대 걸리지 않는다. `yes`, 크래시 루프에 빠진 dev 서버,
 /// 거대 파일 `cat` 처럼 **끝없이 쏟아내는** 경우에만 발동한다.
 const PTY_BYTES_PER_SEC: usize = 8 * 1024 * 1024;
+
+/// 지금 써도 되는 예산. 메모리 경보 중에는 조인다.
+///
+/// 렌더러가 메모리 압박으로 멈추면(스왑·GC 스톨·프로세스 실패) Channel 페이로드가 소비되지
+/// 않은 채 Tauri의 `ChannelDataIpcQueue`(Rust 힙, 원시 바이트의 ~3.5배짜리 JSON 배열)에
+/// 무한 적체된다. 즉 **가장 메모리가 없을 때 앱이 메모리를 제일 빨리 먹는다.** 유입을 줄이면
+/// 적체 상한이 그만큼 내려간다 — 줄이는 방식은 평시와 같아서(버리지 않고 OS 파이프 역압으로
+/// 셸의 write를 막는다) ANSI 시퀀스가 잘리지 않는다.
+///
+/// Warn 1MB/s는 화면 500장/초라 사람이 읽는 용도로는 여전히 과하고, Danger 128KB/s는
+/// 살아있음이 보이는 최소치다(그 시점엔 수십 초 내 강제 종료가 목표라 체감 지연은 부차적).
+fn pty_budget() -> usize {
+    match crate::health::level() {
+        crate::health::Level::Warn => 1024 * 1024,
+        crate::health::Level::Danger => 128 * 1024,
+        _ => PTY_BYTES_PER_SEC,
+    }
+}
 
 /// PTY 출력 속도 제한기(토큰 버킷).
 ///
@@ -42,7 +60,9 @@ impl Pacer {
     }
 
     /// n바이트를 보냈다고 기록한다. 1초 창의 예산을 넘겼으면 창이 끝날 때까지 잘 시간을 돌려준다.
-    fn take(&mut self, n: usize, now: Instant) -> Option<Duration> {
+    /// `budget`은 호출자가 매번 넘긴다(`pty_budget()`) — 메모리 상태에 따라 바뀌기 때문이고,
+    /// 덕분에 테스트는 고정값을 주입해 전역 상태 없이 돈다.
+    fn take(&mut self, n: usize, now: Instant, budget: usize) -> Option<Duration> {
         self.bytes = self.bytes.saturating_add(n);
         let elapsed = now.duration_since(self.window_start);
         if elapsed >= Duration::from_secs(1) {
@@ -51,7 +71,7 @@ impl Pacer {
             self.bytes = 0;
             return None;
         }
-        if self.bytes < PTY_BYTES_PER_SEC {
+        if self.bytes < budget {
             return None;
         }
         // 예산 초과 — 남은 창 시간만큼 쉬고 다음 창을 연다.
@@ -198,7 +218,8 @@ pub fn term_open(
                             let _ = ch.send(buf[..n].to_vec());
                         }
                         // 속도 제한(Pacer 주석 참고) — 넘치면 여기서 잠깐 잔다.
-                        if let Some(d) = pacer.take(n, Instant::now()) {
+                        // 예산은 매번 읽는다(원자값 1회 로드) — 경보가 뜨면 즉시 조여진다.
+                        if let Some(d) = pacer.take(n, Instant::now(), pty_budget()) {
                             std::thread::sleep(d);
                         }
                     }
@@ -877,7 +898,7 @@ mod pacer_tests {
         for i in 0..100 {
             let now = t0 + Duration::from_millis(i * 10);
             assert!(
-                p.take(64 * 1024, now).is_none(),
+                p.take(64 * 1024, now, PTY_BYTES_PER_SEC).is_none(),
                 "정상 출력에 브레이크가 걸렸다({}번째)",
                 i
             );
@@ -892,7 +913,7 @@ mod pacer_tests {
         // 같은 순간에 상한을 넘겨 쏟아붓는다.
         let mut slept = None;
         for i in 0..200 {
-            if let Some(d) = p.take(64 * 1024, t0 + Duration::from_millis(i)) {
+            if let Some(d) = p.take(64 * 1024, t0 + Duration::from_millis(i), PTY_BYTES_PER_SEC) {
                 slept = Some(d);
                 break;
             }
@@ -906,9 +927,33 @@ mod pacer_tests {
     fn pacer_budget_recovers_next_window() {
         let t0 = Instant::now();
         let mut p = Pacer::new(t0);
-        assert!(p.take(PTY_BYTES_PER_SEC, t0 + Duration::from_millis(10)).is_some());
+        assert!(p
+            .take(PTY_BYTES_PER_SEC, t0 + Duration::from_millis(10), PTY_BYTES_PER_SEC)
+            .is_some());
         // 다음 창에서는 같은 양을 다시 보낼 수 있어야 한다.
         let later = t0 + Duration::from_secs(3);
-        assert!(p.take(1024, later).is_none(), "예산이 회복되지 않았다");
+        assert!(
+            p.take(1024, later, PTY_BYTES_PER_SEC).is_none(),
+            "예산이 회복되지 않았다"
+        );
+    }
+
+    /// 메모리 경보 예산(1MB/s)에서는 평시라면 그냥 통과할 양에도 브레이크가 걸려야 한다 —
+    /// 이게 안 걸리면 압박 중 Channel 큐 적체를 줄이려던 목적이 통째로 사라진다.
+    #[test]
+    fn pacer_honors_tightened_budget() {
+        let t0 = Instant::now();
+        let now = t0 + Duration::from_millis(10);
+        // 2MB: 평시 예산(8MB)에서는 통과.
+        let mut relaxed = Pacer::new(t0);
+        assert!(relaxed
+            .take(2 * 1024 * 1024, now, PTY_BYTES_PER_SEC)
+            .is_none());
+        // 같은 양, Warn 예산(1MB)에서는 잡혀야 한다.
+        let mut tight = Pacer::new(t0);
+        assert!(
+            tight.take(2 * 1024 * 1024, now, 1024 * 1024).is_some(),
+            "조인 예산이 무시됐다"
+        );
     }
 }

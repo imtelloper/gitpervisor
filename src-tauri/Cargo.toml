@@ -127,6 +127,12 @@ clipboard-win = "5"
 # 안 붙여 PowerShell 명의로 뜨므로, 직접 토스트 + AUMID(DisplayName/Icon) 레지스트리 등록으로 대체.
 tauri-winrt-notification = "0.7"
 windows-registry = "0.6"
+# WebView2 직결(webview_guard.rs). wry가 이미 트리에 가진 것과 **같은 버전**이어야 한다 —
+# tauri의 PlatformWebview::controller()가 돌려주는 ICoreWebView2Controller가 이 크레이트의
+# 타입이라, 버전이 갈리면 같은 이름의 다른 타입이 돼 컴파일이 깨진다(cargo tree -i webview2-com
+# 으로 1벌인지 확인). windows-core는 Interface::cast(ICoreWebView2_19 질의)와 PWSTR 때문에 필요.
+webview2-com = "0.38"
+windows-core = "0.61"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"

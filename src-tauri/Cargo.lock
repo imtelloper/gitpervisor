@@ -2095,6 +2095,8 @@ dependencies = [
  "tokio",
  "tokio-util",
  "uuid",
+ "webview2-com",
+ "windows-core 0.61.2",
  "windows-registry",
  "windows-sys 0.59.0",
  "zip 2.4.2",
