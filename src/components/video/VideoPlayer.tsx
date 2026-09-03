@@ -156,6 +156,8 @@ export default function VideoPlayer({
   // 의존해서 클립을 바꿔도 루프가 옛 값을 계속 본다(닫힌 클로저).
   const clipEndRef = useRef<number | null>(null);
   const [clipPlaying, setClipPlaying] = useState<number | null>(null);
+  // 구간 지정 모드 — 버튼은 켜기만 하고, 실제 지정은 타임라인에서 한다(영역·가리기와 같은 관례).
+  const [rangeActive, setRangeActive] = useState(false);
   const [cropActive, setCropActive] = useState(false);
   const [crop, setCrop] = useState<CropRect | null>(null);
   // 가림 영역들(원본 video px) — crop과 같은 좌표계, 개수 제한 없음.
@@ -207,6 +209,7 @@ export default function VideoPlayer({
     setMaskActive(false);
     clipEndRef.current = null;
     setClipPlaying(null);
+    setRangeActive(false);
     void mint();
   }, [mint]);
 
@@ -469,18 +472,19 @@ export default function VideoPlayer({
     setOutPt(t);
     if (inPt != null && inPt >= t) setInPt(null);
   };
-  /** 구간 버튼의 **다음** 동작. 버튼이 하나라 지금 무엇이 찍히는지는 이 값이 전부다. */
-  const rangeStep: "in" | "out" | "restart" =
-    inPt == null ? "in" : outPt == null ? "out" : "restart";
-  /** 구간 지정 한 버튼 — 1클릭 시작, 2클릭 끝, 완성 뒤 누르면 새 구간.
-   *  I/O 키는 그대로 둔다: 끝만 다시 잡는 건 버튼 사이클로는 못 하고 키로만 된다. */
-  const cycleRange = () => {
-    if (rangeStep === "out") markOut();
-    else {
-      if (rangeStep === "restart") setOutPt(null);
-      markIn();
-    }
+  /** 구간 지정 모드 토글. 켜면 타임라인이 크로스헤어가 되고, 거기서 정할 때까지 유지된다 —
+   *  버튼으로 돌아와 두 번 누를 필요가 없다. 오버레이 모드들과는 배타(포인터가 하나뿐이다). */
+  const toggleRange = () => {
+    setCropActive(false);
+    setMaskActive(false);
+    setRangeActive((v) => !v);
   };
+
+  // 시작·끝이 다 찍히면 모드를 끈다. 드래그든 클릭 두 번이든 I/O 키든 경로를 안 가린다 —
+  // 종료 조건을 각 경로에 흩어 두면 하나가 빠져 모드가 남는다.
+  useEffect(() => {
+    if (rangeActive && inPt != null && outPt != null) setRangeActive(false);
+  }, [rangeActive, inPt, outPt]);
 
   /** 현재 위치에 분할 틱 추가 — 100ms 안에 이미 있으면 무시(같은 자리 중복 방지). */
   const addTick = () => {
@@ -637,7 +641,8 @@ export default function VideoPlayer({
         stepRate(1);
         break;
       case "Escape":
-        if (cropActive) setCropActive(false);
+        if (rangeActive) setRangeActive(false);
+        else if (cropActive) setCropActive(false);
         else if (maskActive) setMaskActive(false);
         else if (expanded) setExpanded(false);
         else handled = false;
@@ -900,6 +905,12 @@ export default function VideoPlayer({
       <div className="shrink-0 border-t border-edge px-3 pb-1.5 pt-2">
         <Timeline
           onZoomChange={setZoomPct}
+          rangeActive={rangeActive}
+          onRangeDraft={(a, b) => {
+            setInPt(a);
+            setOutPt(b);
+          }}
+          onRangeCommit={() => setRangeActive(false)}
           filmstrip={filmstrip.data ?? null}
           waveform={waveform.data ?? []}
           segments={segments}
@@ -967,31 +978,28 @@ export default function VideoPlayer({
                 다음 차례인지 화면에 없어서, 이미 찍은 I를 또 누르는 일이 잦았다. 라벨이 곧
                 "다음에 찍히는 것"이라 상태가 버튼 자체에 드러난다. */}
             <button
-              onClick={cycleRange}
+              onClick={toggleRange}
               onContextMenu={(e) => {
                 e.preventDefault();
                 clearRange();
               }}
               title={
-                rangeStep === "in"
-                  ? "구간 시작 지정 (I 키) · 우클릭으로 구간 해제"
-                  : rangeStep === "out"
-                    ? `구간 끝 지정 — 시작 ${fmtTime(inPt!)} (O 키) · 우클릭으로 해제`
-                    : `새 구간 시작 — 지금 구간(${fmtTime(inPt!)} ~ ${fmtTime(outPt!)})을 지우고 다시 찍습니다 · 우클릭으로 해제`
+                rangeActive
+                  ? "구간 지정 중 — 타임라인을 드래그하거나 두 번 클릭하세요 (Esc 취소)"
+                  : inPt != null && outPt != null
+                    ? `구간 ${fmtTime(inPt)} ~ ${fmtTime(outPt)} · 눌러서 다시 지정 · 우클릭 해제`
+                    : "구간 지정 — 누른 뒤 타임라인에서 정합니다 (I·O 키로 직접 지정도 가능)"
               }
-              aria-label={
-                rangeStep === "in"
-                  ? "구간 시작 지정"
-                  : rangeStep === "out"
-                    ? "구간 끝 지정"
-                    : "새 구간 시작"
-              }
-              className={`${btnCls} flex items-center gap-0.5 font-semibold ${
-                rangeStep === "out" ? "text-add" : rangeStep === "restart" ? "text-accent" : ""
+              aria-label={rangeActive ? "구간 지정 취소" : "구간 지정"}
+              className={`${btnCls} font-semibold ${
+                rangeActive
+                  ? "bg-raised text-accent ring-1 ring-inset ring-accent"
+                  : inPt != null && outPt != null
+                    ? "text-add"
+                    : ""
               }`}
             >
-              {rangeStep === "out" ? "O" : "I"}
-              {rangeStep === "restart" && <RotateCcw size={10} />}
+              구간
             </button>
             <button
               onClick={() => setLoopOn((v) => !v)}
@@ -1183,6 +1191,9 @@ function Timeline({
   vcodec,
   acodec,
   onZoomChange,
+  rangeActive,
+  onRangeDraft,
+  onRangeCommit,
 }: {
   duration: number;
   time: number;
@@ -1199,6 +1210,12 @@ function Timeline({
   acodec: string | null;
   /** 상태바 확대율 표시용 — 줌은 타임라인 내부 상태라 밖에서 읽을 수 없다. */
   onZoomChange: (pct: number) => void;
+  /** 구간 지정 모드 — 켜져 있으면 눈금자/V1 드래그가 탐색이 아니라 구간 지정이 된다. */
+  rangeActive: boolean;
+  /** 지정 중인 구간(끝이 아직이면 b=null). 확정 전에도 마커가 보이게 즉시 반영한다. */
+  onRangeDraft: (a: number, b: number | null) => void;
+  /** 구간이 완성됐다 — 부모가 모드를 끈다. */
+  onRangeCommit: () => void;
   onSeek: (t: number) => void;
   onDragIn: (t: number) => void;
   onDragOut: (t: number) => void;
@@ -1372,7 +1389,11 @@ function Timeline({
   }, [time, playing]);
 
   /** 포인터 드래그 공통 — window 리스너 추적, pointerup 유실·취소 자가 복구. */
-  const trackPointer = (e: React.PointerEvent, apply: (clientX: number) => void) => {
+  const trackPointer = (
+    e: React.PointerEvent,
+    apply: (clientX: number) => void,
+    onUp?: () => void,
+  ) => {
     e.preventDefault();
     e.stopPropagation();
     onInteract(); // preventDefault가 클릭-포커스 기본동작을 막으므로 명시 포커스
@@ -1383,6 +1404,7 @@ function Timeline({
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       window.removeEventListener("pointercancel", up);
+      onUp?.();
     };
     const move = (ev: PointerEvent) => {
       // 버튼이 놓였는데 pointerup을 놓친 경우(창 전환·캡처 상실) 자가 복구 —
@@ -1406,6 +1428,43 @@ function Timeline({
       else if (mode === "in") onDragIn(t);
       else onDragOut(t);
     });
+
+  /** 구간 지정 모드의 첫 클릭 지점. 드래그면 안 쓰이고, 클릭 두 번 경로에서만 산다. */
+  const [pendingIn, setPendingIn] = useState<number | null>(null);
+  /**
+   * 구간 지정 — 한 제스처로 끝내는 **드래그**와, 두 번 눌러 정하는 **클릭** 둘 다 받는다.
+   * 어느 쪽이든 버튼으로 돌아갈 필요가 없다는 게 요점이다(모드가 유지된다).
+   * 3px 미만 이동은 클릭으로 본다 — 손떨림으로 폭 0짜리 구간이 만들어지면 안 된다.
+   */
+  const startRangeDrag = (e: React.PointerEvent) => {
+    const a = snapTo(Math.min(Math.max(posToTime(e.clientX), 0), duration));
+    let moved = false;
+    let last = a;
+    trackPointer(
+      e,
+      (clientX) => {
+        const b = snapTo(Math.min(Math.max(posToTime(clientX), 0), duration));
+        last = b;
+        if (Math.abs(b - a) * (barW / vlen) > 3) {
+          moved = true;
+          onRangeDraft(Math.min(a, b), Math.max(a, b));
+        }
+      },
+      () => {
+        if (moved) {
+          setPendingIn(null);
+          onRangeCommit();
+        } else if (pendingIn == null) {
+          setPendingIn(last);
+          onRangeDraft(last, null); // 시작만 먼저 — 초록 마커가 바로 선다
+        } else {
+          onRangeDraft(Math.min(pendingIn, last), Math.max(pendingIn, last));
+          setPendingIn(null);
+          onRangeCommit();
+        }
+      },
+    );
+  };
 
   /** 분할 틱 드래그 — startDrag의 모드 유니언을 늘리지 않는다(인덱스가 필요해 별도 킷). */
   const startTickDrag = (i: number) => (e: React.PointerEvent) =>
@@ -1468,6 +1527,12 @@ function Timeline({
     <div ref={rootRef} className="relative select-none pb-4 pt-6">
       {/* 도구 행 — 스냅·확대. 줌은 여기(뷰 상태 소유자)에 있어야 미니맵/눈금과 한 소스를 쓴다. */}
       <div className="mb-1 flex items-center gap-2 text-[11px] text-fg-dim">
+        {rangeActive && (
+          <span className="rounded bg-accent/20 px-1.5 py-0.5 font-semibold text-accent">
+            구간 지정 중 — 타임라인을 드래그하거나 두 번 클릭하세요{" "}
+            {pendingIn != null && `(시작 ${fmtClock(pendingIn, 1)} · 끝을 클릭)`} · Esc 취소
+          </span>
+        )}
         <label className="flex items-center gap-1" title="마커·플레이헤드·클립 경계에 붙입니다">
           <input
             type="checkbox"
@@ -1511,9 +1576,15 @@ function Timeline({
       {/* 눈금자 막대 */}
       <div
         ref={barRef}
-        title="탐색 · 휠: 줌 · Shift+휠: 좌우 이동"
-        className="relative h-7 cursor-pointer overflow-hidden rounded-sm bg-accent/75"
-        onPointerDown={startDrag("seek")}
+        title={
+          rangeActive
+            ? "드래그해 구간 지정 · 클릭 두 번으로도 지정됩니다"
+            : "탐색 · 휠: 줌 · Shift+휠: 좌우 이동"
+        }
+        className={`relative h-7 overflow-hidden rounded-sm bg-accent/75 ${
+          rangeActive ? "cursor-crosshair ring-1 ring-inset ring-fg/60" : "cursor-pointer"
+        }`}
+        onPointerDown={rangeActive ? startRangeDrag : startDrag("seek")}
         onPointerMove={(e) => setHoverT(posToTime(e.clientX))}
         onPointerLeave={() => setHoverT(null)}
       >
@@ -1547,7 +1618,12 @@ function Timeline({
             </div>
             <div className="truncate text-[9px] text-fg-dim">{vcodec ?? "비디오"}</div>
           </div>
-          <div className="relative h-12 flex-1 overflow-hidden rounded-sm border border-edge bg-raised">
+          <div
+            onPointerDown={rangeActive ? startRangeDrag : undefined}
+            className={`relative h-12 flex-1 overflow-hidden rounded-sm border bg-raised ${
+              rangeActive ? "cursor-crosshair border-fg/60" : "border-edge"
+            }`}
+          >
             {filmstrip && barW > 0 && (
               <div
                 className="absolute inset-y-0 opacity-90"
