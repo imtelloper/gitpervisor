@@ -227,6 +227,8 @@
 | 32 | 터미널 Shift/Alt+Enter 줄바꿈(Claude Code) | [32-terminal-enter-modifiers.md](32-terminal-enter-modifiers.md) | **S** | xterm은 Shift+Enter를 `\r`로, Alt+Enter를 `ESC CR`로 보내고 ConPTY는 `ESC CR`을 두 키로 쪼갠다. portable-pty가 ConPTY를 `WIN32_INPUT_MODE`로 만들어 `?9001h`를 요청하므로, Windows에선 Enter+수식을 **win32-input-mode 키 레코드(ALT)** 로, 그 외엔 `\x1b\r`로 보낸다 | Shift+Enter를 ALT로 보내는 트레이드오프(pwsh AddLine 대신 무동작 — 현재도 AddLine은 안 됨), ConPTY 레코드 해석은 키 에코 실측으로 확정 |
 | 33 | Windows 10 스크롤 불가 · 최신 ConPTY 번들 | [33-windows-conpty-bundle.md](33-windows-conpty-bundle.md) | **M** | 원인은 Windows 10 내장 ConPTY(2018~22)의 렌더링·스크롤백 결함(VS Code `windowsUseConptyDll`·WezTerm이 같은 이유로 사이드로드). portable-pty 0.8.1이 exe 옆 `conpty.dll`을 `LoadLibraryW`로 우선 로드하므로 NuGet `Microsoft.Windows.Console.ConPTY` 1.24(MIT)의 conpty.dll+OpenConsole.exe를 번들하고 `SetDllDirectoryW`로 아키텍처별 폴더를 가리킨다. Shift+휠 뷰포트 스크롤 보강 | 번들 DLL의 무접두 export 유무(실측), Windows 10 실기 불가(사용자 검증 항목), 크기 +1.2MB |
 
+| 35 | 영상 별도 창(편집 포함) · 뷰어 탭 우클릭 메뉴 | [35-video-doc-window-tab-menu.md](35-video-doc-window-tab-menu.md) | **S** | 30의 doc 창 경로를 영상으로 넓힌다 — 더블클릭 분기에 `isVideo` 추가, `events.ts`의 `video://` 블록을 `attachVideoEvents(qc)`로 뽑아 DocWindow도 구독(토스트는 잡을 시작한 창만 — 모듈 Set `localVideoJobs`). avi/mkv/wmv/flv 컨테이너 추가 + 재생 실패 시 "mp4로 변환해 열기". 탭 우클릭 메뉴는 로컬 state + `useOccludesWebview`. Rust는 preview.rs MIME 4줄 | 이벤트가 전 창 브로드캐스트라 걸러내지 않으면 토스트 2번, 메뉴가 네이티브 webview에 가림 |
+
 ### 8.1 권장 순서
 ```
 [프론트 병렬: 29 · 30 · 31 · 32+33]  →  Rust 1회 재빌드(30·31·33)  →  격리 검증(29→30→31→32/33 실측)  →  전체 e2e

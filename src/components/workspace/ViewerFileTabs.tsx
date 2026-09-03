@@ -1,7 +1,10 @@
-import { useEffect, useRef } from "react";
-import { X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { ExternalLink, X, XSquare } from "lucide-react";
 
+import { openDocWindow } from "../../lib/floating";
 import type { DiffTarget } from "../../lib/ipc";
+import { useOccludesWebview } from "../../stores/occlusion";
+import type { ViewerFileTab } from "../../stores/ui";
 import { useUi, viewerTabKey } from "../../stores/ui";
 
 /** 탭 표기 — 파일명 + 모드 힌트(diff/staged/커밋은 배지로 구분, 파일 보기는 이름만). */
@@ -43,53 +46,128 @@ export function ViewerFileTabs({ projectId }: { projectId: string }) {
     activeRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [activeKey]);
 
+  // 우클릭 메뉴 — 네이티브 자식 webview(내장 브라우저)가 항상 DOM 위에 그려지므로,
+  // 열려 있는 동안 점유를 등록해 webview를 숨긴다(FileTreePanel 메뉴와 같은 계약).
+  const [menu, setMenu] = useState<{ x: number; y: number; tab: ViewerFileTab } | null>(null);
+  useOccludesWebview(!!menu);
+  useEffect(() => {
+    if (!menu) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setMenu(null);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [menu]);
+
   if (tabs.length === 0) return null;
 
+  const menuItemCls =
+    "flex w-full items-center gap-2 px-3 py-1.5 text-left text-fg-muted hover:bg-raised hover:text-fg";
+
   return (
-    <div
-      // 탭 바는 가로로만 넘친다 — 세로 휠을 가로 스크롤로 바꿔 마우스만으로 탐색(VS Code 관례)
-      onWheel={(e) => {
-        if (e.deltaY !== 0) e.currentTarget.scrollLeft += e.deltaY;
-      }}
-      className="flex h-8 shrink-0 items-stretch gap-0.5 overflow-x-auto border-b border-edge bg-panel px-1"
-    >
-      {tabs.map((t) => {
-        const { name, hint } = tabLabel(t.target);
-        const on = t.key === activeKey;
-        return (
-          <div
-            key={t.key}
-            ref={on ? activeRef : undefined}
-            onClick={() => selectDiff(t.target, t.repoId)}
-            onAuxClick={(e) => {
-              if (e.button === 1) closeViewerTab(t.key); // 휠클릭 닫기
-            }}
-            title={`${t.target.path}${hint ? ` (${hint})` : ""}`}
-            className={`group flex shrink-0 cursor-pointer items-center gap-1.5 border-b-2 px-2 text-xs ${
-              on
-                ? "border-accent bg-raised text-fg"
-                : "border-transparent text-fg-muted hover:bg-raised/60 hover:text-fg"
-            }`}
-          >
-            <span className="max-w-[160px] truncate whitespace-nowrap">{name}</span>
-            {hint && (
-              <span className="shrink-0 rounded bg-edge/60 px-1 font-mono text-[10px] text-fg-dim">
-                {hint}
-              </span>
-            )}
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                closeViewerTab(t.key);
+    <>
+      <div
+        // 탭 바는 가로로만 넘친다 — 세로 휠을 가로 스크롤로 바꿔 마우스만으로 탐색(VS Code 관례)
+        onWheel={(e) => {
+          if (e.deltaY !== 0) e.currentTarget.scrollLeft += e.deltaY;
+        }}
+        className="flex h-8 shrink-0 items-stretch gap-0.5 overflow-x-auto border-b border-edge bg-panel px-1"
+      >
+        {tabs.map((t) => {
+          const { name, hint } = tabLabel(t.target);
+          const on = t.key === activeKey;
+          return (
+            <div
+              key={t.key}
+              ref={on ? activeRef : undefined}
+              onClick={() => selectDiff(t.target, t.repoId)}
+              onAuxClick={(e) => {
+                if (e.button === 1) closeViewerTab(t.key); // 휠클릭 닫기
               }}
-              title="탭 닫기"
-              className="ml-0.5 shrink-0 rounded p-0.5 text-fg-dim opacity-0 hover:bg-edge hover:text-fg group-hover:opacity-100"
+              onContextMenu={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setMenu({ x: e.clientX, y: e.clientY, tab: t });
+              }}
+              title={`${t.target.path}${hint ? ` (${hint})` : ""}`}
+              className={`group flex shrink-0 cursor-pointer items-center gap-1.5 border-b-2 px-2 text-xs ${
+                on
+                  ? "border-accent bg-raised text-fg"
+                  : "border-transparent text-fg-muted hover:bg-raised/60 hover:text-fg"
+              }`}
             >
-              <X size={12} />
+              <span className="max-w-[160px] truncate whitespace-nowrap">{name}</span>
+              {hint && (
+                <span className="shrink-0 rounded bg-edge/60 px-1 font-mono text-[10px] text-fg-dim">
+                  {hint}
+                </span>
+              )}
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  closeViewerTab(t.key);
+                }}
+                title="탭 닫기"
+                className="ml-0.5 shrink-0 rounded p-0.5 text-fg-dim opacity-0 hover:bg-edge hover:text-fg group-hover:opacity-100"
+              >
+                <X size={12} />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+
+      {menu && (
+        // 백드롭이 바깥 클릭·우클릭을 삼켜 메뉴를 닫는다(브라우저 기본 메뉴도 막는다).
+        <div
+          className="fixed inset-0 z-50"
+          onClick={() => setMenu(null)}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            setMenu(null);
+          }}
+        >
+          <div
+            className="fixed min-w-44 rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl"
+            style={{
+              left: Math.min(menu.x, window.innerWidth - 200),
+              top: Math.min(menu.y, window.innerHeight - 110),
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              className={menuItemCls}
+              onClick={() => {
+                closeViewerTab(menu.tab.key);
+                setMenu(null);
+              }}
+            >
+              <X size={14} className="shrink-0" />
+              닫기
+            </button>
+            <button
+              className={menuItemCls}
+              onClick={() => {
+                // 같은 프로젝트의 나머지만 — 다른 프로젝트 탭은 이 바에 보이지도 않는다.
+                for (const o of tabs) if (o.key !== menu.tab.key) closeViewerTab(o.key);
+                setMenu(null);
+              }}
+            >
+              <XSquare size={14} className="shrink-0" />
+              다른 탭 닫기
+            </button>
+            <button
+              className={menuItemCls}
+              onClick={() => {
+                // doc 창은 파일 보기 전용이다 — diff 모드 탭도 그 파일로 연다.
+                openDocWindow(projectId, menu.tab.target.path);
+                setMenu(null);
+              }}
+            >
+              <ExternalLink size={14} className="shrink-0" />
+              새 창으로 열기
             </button>
           </div>
-        );
-      })}
-    </div>
+        </div>
+      )}
+    </>
   );
 }

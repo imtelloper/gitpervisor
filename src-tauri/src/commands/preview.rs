@@ -600,6 +600,12 @@ fn content_type(path: &Path) -> &'static str {
         "mov" => "video/quicktime",
         "webm" => "video/webm",
         "ogv" => "video/ogg",
+        // 웹뷰가 대개 못 푸는 컨테이너들 — 그래도 MIME은 정확히 준다. 뷰어가 재생 실패를
+        // 감지해 "mp4로 변환해 열기"(ffmpeg)를 제안한다(태스크 35 §2.3).
+        "avi" => "video/x-msvideo",
+        "mkv" => "video/x-matroska",
+        "wmv" => "video/x-ms-wmv",
+        "flv" => "video/x-flv",
         _ => "application/octet-stream",
     }
 }

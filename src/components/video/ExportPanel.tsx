@@ -10,6 +10,7 @@ import { Camera, Crop as CropIcon, Loader2, X } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
+import { markLocalVideoJob } from "../../lib/events";
 import type {
   VideoExportFinished,
   VideoExportProgress,
@@ -233,6 +234,8 @@ export const ExportPanel = memo(function ExportPanel({
       setJobId(null);
       setProgress(null);
     };
+    // 종결 토스트는 잡을 시작한 창만 띄운다 — 표시가 없으면 events.ts가 무효화만 하고 끝낸다.
+    markLocalVideoJob(id);
     void ipc.videoExport(projectId, id, buildSpec(overwrite)).then(done, (e) => {
       done();
       // 백엔드가 AlreadyExists를 **제외한** 모든 결과에 video://export-finished를 emit하고

@@ -30,10 +30,62 @@ const OP_LABEL: Record<SyncOp, string> = {
   fetch: "페치",
 };
 
-/** 백엔드 이벤트 구독 — 앱 시작 시 1회. 이벤트는 신호일 뿐, 진실은 상태 재조회 (§10). */
-export function attachRepoEvents(qc: QueryClient) {
+/**
+ * 이 창이 시작시킨 단일 내보내기 잡 id — `video://export-finished`는 **모든 창**에 오는데
+ * (Rust `app.emit`), 창마다 토스트 호스트가 따로라 걸러내지 않으면 doc 창에서 내보낸 결과가
+ * 메인 창에도 뜬다. 시작한 창만 표시해 두고 핸들러가 소비한다(태스크 35 §2.2).
+ * 분할 배치는 videoSplit 스토어의 `owns`가 이미 창 단위라 그대로 둔다.
+ */
+const localVideoJobs = new Set<string>();
+
+/** 내보내기 invoke 직전에 부른다 — 이 창이 그 잡의 토스트 주인임을 표시. */
+export function markLocalVideoJob(id: string) {
+  localVideoJobs.add(id);
+}
+
+/**
+ * 동영상 내보내기 이벤트 구독 — 메인(attachRepoEvents)과 doc 창(DocWindow) 양쪽이 부른다.
+ * 무효화는 어느 창이든(멱등), 토스트·배치 진행은 그 잡을 시작한 창만 한다.
+ */
+export function attachVideoEvents(qc: QueryClient) {
   // 분할 배치 스토어는 React 밖이라 훅으로 qc를 못 얻는다 — 여기서 한 번 넘긴다.
   setSplitQueryClient(qc);
+
+  // 동영상 내보내기 종결 — invoke 응답이 유실돼도(§10) 이 이벤트가 토스트·갱신을 책임진다.
+  // 진행 중 UI(ExportPanel)는 자기 jobId로 별도 구독하고, 토스트는 여기 한 곳에서만(중복 방지).
+  void listen<VideoExportFinished>("video://export-finished", (e) => {
+    // 분할 배치가 발급한 잡이면 세그먼트마다 토스트·무효화가 터지면 안 된다 —
+    // 스토어가 루프를 이어가고 배치 끝에 요약 토스트 1개만 띄운다(태스크 22 §3.3).
+    if (useVideoSplit.getState().owns(e.payload.jobId)) {
+      useVideoSplit.getState().advance(e.payload);
+      return;
+    }
+    // 남의 창이 시작한 잡 — 산출물 반영(무효화)만 하고 토스트는 그 창에 맡긴다.
+    if (!localVideoJobs.delete(e.payload.jobId)) {
+      invalidateVideoOutputs(qc);
+      return;
+    }
+    const { ok, cancelled, error, outRel } = e.payload;
+    const name = outRel.split("/").pop() ?? outRel;
+    if (cancelled) useUi.getState().pushToast("info", "내보내기를 취소했습니다");
+    else if (ok) useUi.getState().pushToast("success", `내보내기 완료 — ${name}`);
+    else useUi.getState().pushToast("error", error ?? "내보내기 실패");
+    invalidateVideoOutputs(qc);
+  });
+}
+
+/** 산출물이 워크트리에 생겼다 — 파일트리·git 상태 갱신. 덮어쓰기 내보내기로 기존
+ *  미디어가 교체됐을 수 있어 staleTime Infinity인 프로브·이미지 캐시도 함께 무효화. */
+function invalidateVideoOutputs(qc: QueryClient) {
+  void qc.invalidateQueries({ queryKey: ["dir"] });
+  void qc.invalidateQueries({ queryKey: ["statuses"] });
+  void qc.invalidateQueries({ queryKey: ["video-probe"] });
+  void qc.invalidateQueries({ queryKey: ["file-image"] });
+}
+
+/** 백엔드 이벤트 구독 — 앱 시작 시 1회. 이벤트는 신호일 뿐, 진실은 상태 재조회 (§10). */
+export function attachRepoEvents(qc: QueryClient) {
+  attachVideoEvents(qc);
 
   // v5 기본은 visibilitychange만 본다 — 데스크톱 창은 항상 visible이라
   // 실제 포커스 복귀 갱신(설계 §9)을 위해 window focus 이벤트에 연결한다.
@@ -95,28 +147,6 @@ export function attachRepoEvents(qc: QueryClient) {
 
   void listen<OpProgress>("repo://op-progress", (e) => {
     useOps.getState().progress(e.payload.projectId, e.payload.line);
-  });
-
-  // 동영상 내보내기 종결 — invoke 응답이 유실돼도(§10) 이 이벤트가 토스트·갱신을 책임진다.
-  // 진행 중 UI(ExportPanel)는 자기 jobId로 별도 구독하고, 토스트는 여기 한 곳에서만(중복 방지).
-  void listen<VideoExportFinished>("video://export-finished", (e) => {
-    // 분할 배치가 발급한 잡이면 세그먼트마다 토스트·무효화가 터지면 안 된다 —
-    // 스토어가 루프를 이어가고 배치 끝에 요약 토스트 1개만 띄운다(태스크 22 §3.3).
-    if (useVideoSplit.getState().owns(e.payload.jobId)) {
-      useVideoSplit.getState().advance(e.payload);
-      return;
-    }
-    const { ok, cancelled, error, outRel } = e.payload;
-    const name = outRel.split("/").pop() ?? outRel;
-    if (cancelled) useUi.getState().pushToast("info", "내보내기를 취소했습니다");
-    else if (ok) useUi.getState().pushToast("success", `내보내기 완료 — ${name}`);
-    else useUi.getState().pushToast("error", error ?? "내보내기 실패");
-    // 산출물이 워크트리에 생겼다 — 파일트리·git 상태 갱신. 덮어쓰기 내보내기로 기존
-    // 미디어가 교체됐을 수 있어 staleTime Infinity인 프로브·이미지 캐시도 함께 무효화.
-    void qc.invalidateQueries({ queryKey: ["dir"] });
-    void qc.invalidateQueries({ queryKey: ["statuses"] });
-    void qc.invalidateQueries({ queryKey: ["video-probe"] });
-    void qc.invalidateQueries({ queryKey: ["file-image"] });
   });
 
   void listen<OpFinished>("repo://op-finished", (e) => {

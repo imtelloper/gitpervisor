@@ -5,9 +5,12 @@
 // - 단축키는 window가 아니라 **포커스된 컨테이너**에 바인딩 — 전역 Ctrl+W(탭 닫기) 등과 충돌 없음.
 // - 확대(F)는 OS 전체화면이 아니라 앱 내 오버레이(WKWebView requestFullscreen 신뢰 불가) —
 //   네이티브 자식 webview 점유는 useOccludesWebview로 등록한다(ui.ts 차단 오버레이 계약).
+import { listen } from "@tauri-apps/api/event";
 import {
   ExternalLink,
+  FileVideo2,
   FileWarning,
+  Loader2,
   Maximize2,
   Minimize2,
   ChevronsLeft,
@@ -25,7 +28,10 @@ import {
 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { errorMessage, ipc } from "../../lib/ipc";
+import { markLocalVideoJob } from "../../lib/events";
+import { openDocWindow } from "../../lib/floating";
+import type { VideoExportFinished, VideoExportSpec } from "../../lib/ipc";
+import { errorMessage, ipc, isIpcError } from "../../lib/ipc";
 import { useVideoProbe, useVideoToolStatus } from "../../queries";
 import { useDb } from "../../stores/db";
 import { useOcclusion, useOccludesWebview } from "../../stores/occlusion";
@@ -225,6 +231,91 @@ export default function VideoPlayer({
       .catch((e) => pushToast("error", errorMessage(e)));
   };
 
+  // ── mp4로 변환해 열기 (재생 실패 폴백 — 태스크 35 §2.3) ──
+  // 웹뷰가 못 푸는 컨테이너(avi/wmv/flv …)를 ffmpeg로 mp4로 만들어 **새 doc 창**에서 연다.
+  // 종결은 video://export-finished가 진실이고 invoke 완주는 보조다(ExportPanel과 같은 계약,
+  // Windows 응답 유실 §10) — 어느 쪽이 먼저 와도 ref 가드로 한 번만 처리한다.
+  const convertRef = useRef<{ id: string; outRel: string } | null>(null);
+  const [converting, setConverting] = useState(false);
+
+  const finishConvert = useCallback(
+    (jobId: string, ok: boolean) => {
+      const job = convertRef.current;
+      if (!job || job.id !== jobId) return;
+      convertRef.current = null;
+      setConverting(false);
+      // 실패 토스트는 events.ts 전역 핸들러가 이미 띄운다 — 여기는 버튼만 되돌린다.
+      if (ok) openDocWindow(projectId, job.outRel, { size: [1180, 860] });
+    },
+    [projectId],
+  );
+
+  useEffect(() => {
+    if (!converting) return;
+    // listen()이 resolve되기 전에 정리가 먼저 돌 수 있다(ExportPanel과 같은 처리).
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<VideoExportFinished>("video://export-finished", (e) => {
+      finishConvert(e.payload.jobId, e.payload.ok);
+    }).then((un) => {
+      if (disposed) un();
+      else unlisten = un;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [converting, finishConvert]);
+
+  const convertToMp4 = async () => {
+    if (convertRef.current) return;
+    const slash = path.lastIndexOf("/");
+    const dir = slash >= 0 ? path.slice(0, slash + 1) : "";
+    const base = slash >= 0 ? path.slice(slash + 1) : path;
+    const dot = base.lastIndexOf(".");
+    const stem = dot > 0 ? base.slice(0, dot) : base;
+    // 재생이 안 되는 파일이라도 ffprobe는 대개 읽는다 — 실패하면 진행률 분모만 잃는다(0).
+    const meta = await ipc.videoProbe(projectId, path).catch(() => null);
+    const spec = (outRel: string): VideoExportSpec => ({
+      srcRel: path,
+      outRel,
+      overwrite: false,
+      range: null,
+      mode: "encode",
+      speed: null,
+      crop: null,
+      crf: null,
+      maxHeight: null,
+      removeAudio: false,
+      durationMs: meta?.durationMs ?? 0,
+      hasAudio: meta?.hasAudio ?? true,
+    });
+    const start = (outRel: string) => {
+      const id = crypto.randomUUID();
+      convertRef.current = { id, outRel };
+      setConverting(true);
+      markLocalVideoJob(id); // 완료 토스트는 이 창에서만
+      return ipc
+        .videoExport(projectId, id, spec(outRel))
+        .then(() => finishConvert(id, true))
+        .catch((e) => {
+          // AlreadyExists만 종결 이벤트가 없다(video.rs 계약) — 여기서 직접 되돌린다.
+          finishConvert(id, false);
+          throw e;
+        });
+    };
+    try {
+      await start(`${dir}${stem}.mp4`);
+    } catch (e) {
+      if (!(isIpcError(e) && e.code === "ALREADY_EXISTS")) return;
+      // 같은 이름이 이미 있다 — 덮어쓰지 않고 옆에 만든다(원본을 지우지 않는 것이 우선).
+      await start(`${dir}${stem} (변환).mp4`).catch((e2) => {
+        if (isIpcError(e2) && e2.code === "ALREADY_EXISTS")
+          pushToast("error", `${stem} (변환).mp4 파일이 이미 있습니다`);
+      });
+    }
+  };
+
   // ── 트랜스포트 ──
   const seekTo = (t: number) => {
     const el = videoRef.current;
@@ -379,12 +470,33 @@ export default function VideoPlayer({
         title="이 형식은 재생할 수 없습니다"
         desc="현재 플랫폼의 웹뷰가 이 코덱을 지원하지 않습니다. 파일 자체는 정상일 수 있습니다."
         action={
-          <button
-            onClick={openExternally}
-            className="flex items-center gap-1.5 rounded border border-edge px-3 py-1.5 text-xs text-fg-muted hover:bg-raised hover:text-fg"
-          >
-            <ExternalLink size={13} /> 외부 앱으로 열기
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={openExternally}
+              className="flex items-center gap-1.5 rounded border border-edge px-3 py-1.5 text-xs text-fg-muted hover:bg-raised hover:text-fg"
+            >
+              <ExternalLink size={13} /> 외부 앱으로 열기
+            </button>
+            {/* ffmpeg가 있을 때만 — 없으면 눌러 봐야 "ffmpeg를 찾을 수 없습니다"만 나온다. */}
+            {canEdit && (
+              <button
+                onClick={() => void convertToMp4()}
+                disabled={converting}
+                title="같은 폴더에 mp4로 변환해 새 창에서 엽니다 (ffmpeg)"
+                className="flex items-center gap-1.5 rounded border border-edge px-3 py-1.5 text-xs text-fg-muted hover:bg-raised hover:text-fg disabled:opacity-40"
+              >
+                {converting ? (
+                  <>
+                    <Loader2 size={13} className="animate-spin" /> 변환 중…
+                  </>
+                ) : (
+                  <>
+                    <FileVideo2 size={13} /> mp4로 변환해 열기
+                  </>
+                )}
+              </button>
+            )}
+          </div>
         }
       />
     );

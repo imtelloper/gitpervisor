@@ -1,13 +1,14 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import { Code2, Eye, FileQuestion, FileWarning } from "lucide-react";
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 
 import { ConfirmHost } from "./components/common/ConfirmDialog";
 import { EmptyState } from "./components/common/EmptyState";
 import { PromptHost } from "./components/common/PromptDialog";
 import { Toasts } from "./components/common/Toast";
 import { FloatTitleBar } from "./components/FloatTitleBar";
+import { attachVideoEvents } from "./lib/events";
 import { docTarget } from "./lib/floating";
 import { errorMessage } from "./lib/ipc";
 import { languageOf } from "./lib/language-map";
@@ -80,6 +81,18 @@ export function DocWindow({ docId }: { docId: string }) {
       unlisten?.();
     };
   }, [projectId, qc]);
+
+  /**
+   * 이 창에서 연 동영상의 내보내기 종결도 이 창이 처리한다(태스크 35 §2.2) — 토스트 호스트가
+   * 창마다 따로라 메인의 리스너는 저쪽 스토어에만 띄운다. `attachVideoEvents`는 창당 1회다
+   * (listen을 해제하지 않으므로 StrictMode 이중 마운트에 리스너가 겹치지 않게 ref로 막는다).
+   */
+  const videoAttached = useRef(false);
+  useEffect(() => {
+    if (videoAttached.current) return;
+    videoAttached.current = true;
+    attachVideoEvents(qc);
+  }, [qc]);
 
   const name = target ? (target.path.split("/").pop() ?? target.path) : "파일";
   const isMd = !!target && languageOf(target.path) === "markdown";

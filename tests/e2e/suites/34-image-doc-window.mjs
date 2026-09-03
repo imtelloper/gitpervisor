@@ -11,12 +11,14 @@
 //
 // 창 접속은 `connectLabel` 로 한다 — 러너의 `cdp` 는 라벨 `main` 페이지 하나이고, doc 창은
 // 타이틀이 파일명이라 `connect()` 의 타이틀 필터에 아예 걸리지 않는다.
+import { execFileSync } from "node:child_process";
 import { existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
 import { connectLabel } from "../lib/cdp.mjs";
 
-export const name = "이미지 문서 창 (openDocWindow → doc-* 창 편집기·저장 반영)";
+export const name =
+  "이미지·영상 문서 창 (openDocWindow → doc-* 창 편집기·저장 반영 / 뷰어 탭 우클릭 메뉴)";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const J = JSON.stringify;
@@ -214,6 +216,12 @@ export async function run({ cdp, report: r, fix, port }) {
     }
     return v;
   };
+
+  // ── 태스크 35 — 영상 doc 창 · 뷰어 탭 우클릭 메뉴 ────────────────────────
+  // 이미지 블록보다 **먼저** 돈다: 저쪽은 중간 실패에서 run() 자체를 return 하므로
+  // 뒤에 두면 그때마다 이 검사들이 통째로 사라진다.
+  await videoDocBlock({ cdp, r, fix, cdpPort, arr, labels, closeLabel, poll });
+  await tabMenuBlock({ cdp, r, fix, arr, labels, closeLabel, poll });
 
   // 메인 창이 들고 있는 그 이미지의 캐시 — ③ 의 관측 지점(useFileImage 와 같은 키).
   const MAIN_KEY = ["file-image", fix.projectId, SRC];
@@ -429,6 +437,290 @@ export async function run({ cdp, report: r, fix, port }) {
         /* 이미 없으면 무해 — fixture cleanup 이 통째로 지운다 */
       }
     }
+    await sleep(300);
+  }
+}
+
+/** 닫힌 doc 창이 localStorage(`gp:doc-windows`)에 남긴 대상 기록 제거 — 이 실행분만. */
+const forgetDoc = (cdp, label) =>
+  cdp
+    .eval(
+      `(()=>{ try{ const k='gp:doc-windows'; const v=JSON.parse(localStorage.getItem(k)||'{}');
+         delete v[${J(label.slice("doc-".length))}]; localStorage.setItem(k, JSON.stringify(v)); return true; }catch(e){ return false; } })()`,
+    )
+    .catch(() => {});
+
+/**
+ * 태스크 35 §2.1~2.2 — 영상도 이미지와 **같은 경로**로 별도 창에서 열리고, 그 창에서 한
+ * 내보내기의 완료 토스트가 **그 창에만** 뜬다.
+ *
+ * 토스트 격리가 이 블록의 본론이다: `video://export-finished`는 Rust `app.emit`이라 모든 창에
+ * 오는데, 창마다 토스트 호스트가 따로라 걸러내지 않으면 doc 창에서 누른 내보내기가 메인에도
+ * 뜬다(events.ts `localVideoJobs`). 그래서 스토어의 toasts 배열을 **양쪽 창에서** 본다.
+ */
+async function videoDocBlock({ cdp, r, fix, cdpPort, arr, labels, closeLabel, poll }) {
+  const SRC = "e2e-doc.mp4";
+  const OUT = "e2e-doc.mute.mp4"; // ExportPanel 자동 이름(오디오 제거 → `.mute.mp4`)
+
+  const tool = await cdp.try("video_tool_status", {});
+  if (!tool.ok || !tool.r?.found || !tool.r?.probeFound) {
+    r.skip("영상 문서 창", "ffmpeg/ffprobe 미발견");
+    return;
+  }
+  try {
+    // 33 스위트와 같은 픽스처 — 6초 320×240 h264+aac.
+    execFileSync(
+      "ffmpeg",
+      [
+        "-y", "-hide_banner", "-loglevel", "error",
+        "-f", "lavfi", "-i", "testsrc=duration=6:size=320x240:rate=30",
+        "-f", "lavfi", "-i", "sine=frequency=440:duration=6",
+        "-g", "30", "-pix_fmt", "yuv420p", "-shortest", join(fix.repo, SRC),
+      ],
+      { encoding: "utf8" },
+    );
+  } catch (e) {
+    r.skip("영상 문서 창", `테스트 영상 생성 실패 — ${e.message}`);
+    return;
+  }
+
+  let vLabel = null;
+  let vcdp = null;
+  try {
+    const before = arr(await labels());
+    // 파일트리 더블클릭이 부르는 것과 **같은 호출**(FileTreePanel onDouble → isVideo 분기).
+    await cdp.eval(
+      `window.__gpv.openDocWindow(${J(fix.projectId)}, ${J(SRC)}, { size: [1180, 860] })`,
+    );
+    vLabel = await poll(
+      async () =>
+        arr(await labels()).find((l) => l.startsWith("doc-") && !before.includes(l)) ?? null,
+      (v) => !!v,
+      20,
+      500,
+    );
+    if (!r.check("영상 openDocWindow: doc-* OS 창 생성됨", !!vLabel, vLabel || "미발견")) return;
+
+    vcdp = await connectLabel(vLabel, { port: cdpPort }).catch((e) => {
+      r.check("영상 doc 창 CDP 연결", false, e.message);
+      return null;
+    });
+    if (!vcdp) return;
+
+    // <video>가 실제로 디코드 준비까지 갔는가 — 존재만 보면 코덱·MIME 회귀를 놓친다.
+    const ready = await poll(
+      () => vcdp.eval(`(()=>{ const v = document.querySelector('video'); return v ? v.readyState : -1; })()`),
+      (n) => typeof n === "number" && n >= 1,
+      40,
+      500,
+    );
+    r.check(
+      "영상 doc 창이 <video>를 그리고 메타데이터까지 읽는다(readyState≥1)",
+      ready >= 1,
+      `readyState=${ready}`,
+    );
+
+    // [편집] → ExportPanel. 이 창에도 편집 UI가 있어야 태스크의 "편집이 그대로 된다"가 성립.
+    await vcdp.eval(
+      `(()=>{ const b = Array.from(document.querySelectorAll('button')).find(x => /편집/.test(x.textContent || '')); if (b) b.click(); return !!b; })()`,
+    );
+    const hasPanel = await poll(
+      () =>
+        vcdp.eval(
+          `Array.from(document.querySelectorAll('button')).some(b => b.textContent.trim() === '내보내기')`,
+        ),
+      (v) => v === true,
+      20,
+      250,
+    );
+    r.check("영상 doc 창에 내보내기 패널(ExportPanel)이 뜬다", hasPanel === true);
+    if (hasPanel !== true) return;
+
+    // ── 토스트 격리 ──
+    await cdp.eval(`window.__gpv.ui.setState({ toasts: [] })`);
+    await vcdp.eval(`window.__gpv.ui.setState({ toasts: [] })`);
+    // 무손실 복사 + 변경 없음이면 내보내기 버튼이 비활성이다(nothingToDo) — 오디오 제거를 켠다.
+    const checked = await vcdp.eval(
+      `(()=>{ const cb = document.querySelector('input[type=checkbox]'); if (!cb) return false; if (!cb.checked) cb.click(); return true; })()`,
+    );
+    await sleep(300); // 파일명 자동 갱신(suggested → name) 반영
+    const clicked = await vcdp.eval(
+      `(()=>{ const b = Array.from(document.querySelectorAll('button')).find(x => x.textContent.trim() === '내보내기');
+         if (!b) return 'no-button'; if (b.disabled) return 'disabled'; b.click(); return 'ok'; })()`,
+    );
+    if (!r.check("영상 doc 창에서 내보내기 실행", checked === true && clicked === "ok", `checkbox=${checked} click=${clicked}`))
+      return;
+
+    const toastsOf = (c) =>
+      c.eval(`window.__gpv.ui.getState().toasts.map(t => t.kind + ':' + t.message).join(' | ')`);
+    const docToast = await poll(
+      () => toastsOf(vcdp),
+      (v) => typeof v === "string" && v.includes("내보내기 완료"),
+      60,
+      500,
+    );
+    const mainToast = await toastsOf(cdp);
+    r.check(
+      "완료 토스트가 **그 doc 창에만** 뜬다(메인 창 0개 — events.ts localVideoJobs)",
+      typeof docToast === "string" &&
+        docToast.includes("내보내기 완료") &&
+        !String(mainToast).includes("내보내기"),
+      `doc="${docToast}" main="${mainToast}"`,
+    );
+    const onDisk = await poll(
+      async () => existsSync(join(fix.repo, OUT)),
+      (v) => v === true,
+      20,
+      250,
+    );
+    r.check("영상 doc 창의 내보내기 산출물이 디스크에 생성됨", onDisk === true, OUT);
+  } finally {
+    if (vcdp) vcdp.close();
+    if (vLabel) {
+      await closeLabel(vLabel);
+      await forgetDoc(cdp, vLabel);
+    }
+    await cdp.eval(`window.__gpv.ui.setState({ toasts: [] })`).catch(() => {});
+    for (const rel of [SRC, OUT]) {
+      try {
+        unlinkSync(join(fix.repo, rel));
+      } catch {
+        /* 없으면 무해 */
+      }
+    }
+    await sleep(300);
+  }
+}
+
+/**
+ * 태스크 35 §2.4 — 뷰어 파일 탭 우클릭 메뉴(닫기 · 다른 탭 닫기 · 새 창으로 열기).
+ * 메뉴는 로컬 state라 스토어로는 못 본다 — 실제 `contextmenu` 를 쏘고 DOM 으로 단언한다.
+ */
+async function tabMenuBlock({ cdp, r, fix, arr, labels, closeLabel, poll }) {
+  const A = "a.txt"; // 픽스처가 이미 만들어 두는 파일들
+  const B = "README.md";
+  const tabsOf = () =>
+    cdp.eval(
+      `window.__gpv.ui.getState().viewerTabs.filter(t => t.outerId === ${J(fix.projectId)}).length`,
+    );
+  /** 탭 바의 그 탭 요소 — 같은 title이 파일트리에도 있어 탭 클래스(border-b-2)로 가른다. */
+  const tabEl = (path) =>
+    `Array.from(document.querySelectorAll('div[title]')).find(e => e.getAttribute('title') === ${J(path)} && e.className.includes('border-b-2'))`;
+  const openMenu = (path) =>
+    cdp.eval(`(()=>{
+      const el = ${tabEl(path)};
+      if (!el) return 'no-tab';
+      const b = el.getBoundingClientRect();
+      el.dispatchEvent(new MouseEvent('contextmenu', {
+        bubbles: true, cancelable: true,
+        clientX: Math.round(b.left + b.width / 2), clientY: Math.round(b.top + b.height / 2),
+      }));
+      return 'ok';
+    })()`);
+  const menuItems = () =>
+    cdp.eval(
+      `Array.from(document.querySelectorAll('div.fixed.inset-0.z-50 button')).map(b => b.textContent.trim())`,
+    );
+  const clickItem = (label) =>
+    cdp.eval(`(()=>{
+      const b = Array.from(document.querySelectorAll('div.fixed.inset-0.z-50 button'))
+        .find(x => x.textContent.trim() === ${J(label)});
+      if (!b) return false;
+      b.click();
+      return true;
+    })()`);
+
+  let newDoc = null;
+  const origSel = await cdp.eval(`window.__gpv.ui.getState().selectedProjectId`);
+  try {
+    // 픽스처는 원시 invoke로 추가돼 UI 캐시에 없다 — projects 갱신 후에야 선택이 박힌다.
+    // 안 박히면 selectDiff의 outerId가 **사용자 프로젝트**가 돼 그쪽 탭을 건드린다(14와 같은 가드).
+    await cdp
+      .eval(`window.__gpv.queryClient.invalidateQueries({ queryKey: ["projects"] })`)
+      .catch(() => {});
+    await sleep(500);
+    await cdp.eval(`window.__gpv.ui.getState().selectProject(${J(fix.projectId)})`);
+    const stuck = await poll(
+      () => cdp.eval(`window.__gpv.ui.getState().selectedProjectId`),
+      (v) => v === fix.projectId,
+      12,
+      250,
+    );
+    if (stuck !== fix.projectId) {
+      r.skip("뷰어 탭 우클릭 메뉴", `픽스처 선택 실패(selected=${String(stuck).slice(0, 8)})`);
+      return;
+    }
+    await cdp.eval(
+      `window.__gpv.terminals.getState().setActiveTab(${J(fix.projectId)}, "viewer")`,
+    );
+    await cdp.eval(`window.__gpv.ui.getState().selectDiff({ mode: "file", path: ${J(A)} })`);
+    await cdp.eval(`window.__gpv.ui.getState().selectDiff({ mode: "file", path: ${J(B)} })`);
+    const two = await poll(tabsOf, (n) => typeof n === "number" && n >= 2, 20, 250);
+    if (!r.check("뷰어 탭 2개 이상 열림(우클릭 대상)", two >= 2, `탭 ${two}개`)) return;
+
+    const opened = await openMenu(B);
+    const items = await poll(
+      menuItems,
+      (v) => Array.isArray(v) && v.length >= 3,
+      20,
+      200,
+    );
+    r.check(
+      "탭 우클릭 → 메뉴 3항목(닫기 · 다른 탭 닫기 · 새 창으로 열기)",
+      opened === "ok" &&
+        Array.isArray(items) &&
+        ["닫기", "다른 탭 닫기", "새 창으로 열기"].every((t) => items.includes(t)),
+      `open=${opened} items=${J(items)}`,
+    );
+    if (opened !== "ok") return;
+
+    // 새 창으로 열기 — doc 창 라벨이 하나 늘어난다.
+    const before = arr(await labels());
+    await clickItem("새 창으로 열기");
+    newDoc = await poll(
+      async () =>
+        arr(await labels()).find((l) => l.startsWith("doc-") && !before.includes(l)) ?? null,
+      (v) => !!v,
+      20,
+      500,
+    );
+    r.check("메뉴 '새 창으로 열기' → doc-* 창 생성", !!newDoc, newDoc || "미발견");
+    const closedAfterOpen = await poll(menuItems, (v) => Array.isArray(v) && v.length === 0, 10, 200);
+    r.check("메뉴 항목 클릭 후 메뉴가 닫힌다", Array.isArray(closedAfterOpen) && closedAfterOpen.length === 0);
+
+    // 다른 탭 닫기 — 같은 프로젝트의 나머지가 전부 닫혀 1개만 남는다.
+    await openMenu(B);
+    await poll(menuItems, (v) => Array.isArray(v) && v.length >= 3, 20, 200);
+    await clickItem("다른 탭 닫기");
+    const one = await poll(tabsOf, (n) => n === 1, 20, 250);
+    r.check("메뉴 '다른 탭 닫기' → 이 프로젝트 탭 1개만 남음", one === 1, `탭 ${one}개`);
+
+    // 닫기 — 마지막 하나까지 닫히면 탭 바 자체가 사라진다.
+    await openMenu(B);
+    await poll(menuItems, (v) => Array.isArray(v) && v.length >= 3, 20, 200);
+    await clickItem("닫기");
+    const zero = await poll(tabsOf, (n) => n === 0, 20, 250);
+    r.check("메뉴 '닫기' → 그 탭이 닫힌다", zero === 0, `탭 ${zero}개`);
+  } finally {
+    // 메뉴가 열린 채 남으면 다음 스위트의 클릭을 백드롭이 삼킨다 — Escape 로 확실히 닫는다.
+    await cdp
+      .eval(
+        `window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`,
+      )
+      .catch(() => {});
+    if (newDoc) {
+      await closeLabel(newDoc);
+      await forgetDoc(cdp, newDoc);
+    }
+    await cdp
+      .eval(`window.__gpv.ui.getState().closeProjectViewerTabs(${J(fix.projectId)})`)
+      .catch(() => {});
+    await cdp.eval(`window.__gpv.ui.getState().selectDiff(null)`).catch(() => {});
+    // 사용자 선택 복원 — 이 블록만 프로젝트 선택을 바꾼다.
+    if (origSel)
+      await cdp
+        .eval(`window.__gpv.ui.getState().selectProject(${J(origSel)})`)
+        .catch(() => {});
     await sleep(300);
   }
 }

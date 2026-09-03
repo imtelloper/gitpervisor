@@ -99,7 +99,19 @@ export function isImage(path: string): boolean {
 // 웹뷰 엔진이 정한다(macOS WKWebView는 WebM/VP9가 안 될 수 있고, Linux WebKitGTK는 설치된
 // GStreamer 플러그인에 좌우된다). 그래서 이 목록은 "재생을 시도할 대상"이고, 실패는
 // MediaView가 코덱 미지원으로 안내하며 외부 앱 열기로 넘긴다.
-const VIDEO_EXT = new Set(["mp4", "m4v", "mov", "webm", "ogv"]);
+// avi/mkv/wmv/flv는 웹뷰가 대개 못 푼다 — 그래도 목록에 있어야 뷰어가 열리고, 거기서
+// "mp4로 변환해 열기"(ffmpeg)를 제안할 수 있다. `ts`는 넣지 않는다(TypeScript와 충돌).
+const VIDEO_EXT = new Set([
+  "mp4",
+  "m4v",
+  "mov",
+  "webm",
+  "ogv",
+  "avi",
+  "mkv",
+  "wmv",
+  "flv",
+]);
 const AUDIO_EXT = new Set(["mp3", "wav", "m4a", "aac", "flac", "oga", "ogg"]);
 
 function extOf(path: string): string {

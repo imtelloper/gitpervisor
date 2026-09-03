@@ -42,7 +42,7 @@ import {
 import { openDocWindow } from "../../lib/floating";
 import { errorMessage, ipc, isIpcError } from "../../lib/ipc";
 import type { ChangeKind, DirEntry, FileChange, RepoStatus } from "../../lib/ipc";
-import { isHtml, isImage } from "../../lib/language-map";
+import { isHtml, isImage, isVideo } from "../../lib/language-map";
 import { usePanelCollapsed, usePanelWidth } from "../../lib/use-panel-width";
 import {
   invalidateAfterMove,
@@ -610,7 +610,9 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
       // 그 창은 뷰어에 더해 편집기까지 띄우므로(DocWindow) 넓게 연다: 편집기 우측 패널이
       // 고정 폭이라 기본 900×760에서는 stage가 눌린다. svg도 이미지로 본다 — 뷰어가 그리고,
       // 편집기는 래스터화 경고를 헤더에 표시한다.
-      if (isImage(name)) {
+      // 동영상도 같은 경로다(태스크 35 §2.1) — 그 창의 DiffViewer가 VideoPlayer+ExportPanel을
+      // 그대로 그려 구간·분할·내보내기까지 된다. 오디오는 제외(별도 창으로 띄울 이유가 없다).
+      if (isImage(name) || isVideo(name)) {
         openDocWindow(projectId, path, { size: [1180, 860] });
       }
     },
