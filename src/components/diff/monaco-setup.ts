@@ -10,6 +10,8 @@ import htmlWorker from "monaco-editor/esm/vs/language/html/html.worker?worker";
 import jsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
 import tsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
 
+import { customThemeOf, themeOf, type ThemeId, type ThemeName } from "../../lib/themes";
+
 self.MonacoEnvironment = {
   getWorker(_workerId: string, label: string) {
     switch (label) {
@@ -126,9 +128,13 @@ jsonNs.css?.cssDefaults.setModeConfiguration({
   documentRangeFormattingEdits: false,
 });
 
+// 내장 6종의 Monaco 테마 정의 — id → IStandaloneThemeData. 등록 이름은 themes.ts의
+// monacoTheme("gitpervisor-<계열>")이고, 커스텀 테마(태스크 29)는 기반 항목의 base/rules를
+// 복사해 colors만 갈아끼운다(ensureMonacoTheme).
+export const MONACO_THEMES: Record<ThemeName, monaco.editor.IStandaloneThemeData> = {
 // Darcula — JetBrains 색감(키워드 주황·문자열 초록·숫자 파랑·주석 회색 이탤릭·상수 보라).
 // Monaco는 어휘 토큰만 분류하므로 함수 선언 노랑·인스턴스 필드 보라 같은 의미 색은 제한적.
-monaco.editor.defineTheme("gitpervisor-dark", {
+darcula: {
   base: "vs-dark",
   inherit: true,
   rules: [
@@ -172,10 +178,10 @@ monaco.editor.defineTheme("gitpervisor-dark", {
     "editor.wordHighlightStrongBackground": "#40332B66",
     "editor.wordHighlightTextBackground": "#34413466",
   },
-});
+},
 
 // Monokai — 고전 토큰 색(주석 회색·문자열 노랑·키워드 핑크·타입 시안·함수 초록)
-monaco.editor.defineTheme("gitpervisor-monokai", {
+monokai: {
   base: "vs-dark",
   inherit: true,
   rules: [
@@ -216,10 +222,10 @@ monaco.editor.defineTheme("gitpervisor-monokai", {
     "editor.wordHighlightStrongBackground": "#25517F66",
     "editor.wordHighlightTextBackground": "#1C3F6866",
   },
-});
+},
 
 // Dracula — 공식 스펙 색(주석 블루그레이·문자열 노랑·키워드 핑크·타입 시안·함수 초록·상수 퍼플)
-monaco.editor.defineTheme("gitpervisor-dracula", {
+dracula: {
   base: "vs-dark",
   inherit: true,
   rules: [
@@ -260,10 +266,10 @@ monaco.editor.defineTheme("gitpervisor-dracula", {
     "editor.wordHighlightStrongBackground": "#BD93F930",
     "editor.wordHighlightTextBackground": "#8BE9FD30",
   },
-});
+},
 
 // Nord — 공식 포팅 컨벤션(키워드 nord9·문자열 nord14·타입 nord7·함수 nord8·숫자 nord15)
-monaco.editor.defineTheme("gitpervisor-nord", {
+nord: {
   base: "vs-dark",
   inherit: true,
   rules: [
@@ -305,11 +311,11 @@ monaco.editor.defineTheme("gitpervisor-nord", {
     "editor.wordHighlightStrongBackground": "#81A1C14D",
     "editor.wordHighlightTextBackground": "#81A1C133",
   },
-});
+},
 
 // 라이트 — IntelliJ Light 구문색(키워드 남색·문자열 초록·숫자 파랑·상수 보라·주석 회색).
 // diff 오버레이는 알파를 흰 바탕용으로 낮춘 라이트 전용 값(다크 알파 재사용 금지 — §위험).
-monaco.editor.defineTheme("gitpervisor-light", {
+light: {
   base: "vs",
   inherit: true,
   rules: [
@@ -350,10 +356,10 @@ monaco.editor.defineTheme("gitpervisor-light", {
     "editor.wordHighlightStrongBackground": "#3574F02E",
     "editor.wordHighlightTextBackground": "#3574F01A",
   },
-});
+},
 
 // Solarized Light — 공식 구문 컨벤션(키워드 green·문자열 cyan·함수 blue·숫자 magenta·주석 base1)
-monaco.editor.defineTheme("gitpervisor-solarized-light", {
+"solarized-light": {
   base: "vs",
   inherit: true,
   rules: [
@@ -394,7 +400,54 @@ monaco.editor.defineTheme("gitpervisor-solarized-light", {
     "editor.wordHighlightStrongBackground": "#CB4B1626",
     "editor.wordHighlightTextBackground": "#B5890026",
   },
-});
+},
+};
+
+for (const id of Object.keys(MONACO_THEMES) as ThemeName[])
+  monaco.editor.defineTheme(themeOf(id).monacoTheme, MONACO_THEMES[id]);
+
+// 커스텀 테마(태스크 29)의 Monaco 정의 — 기반의 base/rules(문법색)를 그대로 쓰고 UI 색만
+// 사용자 토큰으로 덮는다. 정의는 monaco 모듈이 로드된 뒤에만 가능하므로 소비처(DiffViewer·
+// MonacoBox·DbWorkspace)가 렌더 시 부른다. 같은 정의를 두 번 만들지 않게 updatedAt으로 캐시.
+const definedCustom = new Map<string, number>();
+
+/** settings.theme → Monaco 테마 이름. 내장은 기존 이름, 커스텀은 정의(멱등) 후 그 이름. */
+export function ensureMonacoTheme(id: ThemeId | undefined): string {
+  const t = customThemeOf(id);
+  // 정의 없는 커스텀 id는 themeOf와 같은 규칙(기반=darcula)으로 폴백한다.
+  if (!t) return themeOf(id).monacoTheme;
+
+  const name = `gitpervisor-custom-${t.id}`;
+  if (definedCustom.get(t.id) !== t.updatedAt) {
+    const src = MONACO_THEMES[t.base];
+    const c = t.colors;
+    monaco.editor.defineTheme(name, {
+      base: src.base,
+      inherit: true,
+      rules: src.rules,
+      colors: {
+        ...src.colors,
+        "editor.background": c.base,
+        "editor.foreground": c.fg,
+        "editor.lineHighlightBackground": c.raised,
+        "editorLineNumber.foreground": c["fg-dim"],
+        "editorLineNumber.activeForeground": c.fg,
+        "editor.selectionBackground": c.selection,
+        // diff 오버레이는 알파를 붙여 배경이 비치게 한다(내장 정의와 같은 관례).
+        "diffEditor.insertedTextBackground": `${c.add}33`,
+        "diffEditor.insertedLineBackground": `${c.add}18`,
+        "diffEditor.removedTextBackground": `${c.danger}33`,
+        "diffEditor.removedLineBackground": `${c.danger}18`,
+        "diffEditorGutter.insertedLineBackground": `${c.add}28`,
+        "diffEditorGutter.removedLineBackground": `${c.danger}28`,
+        "scrollbarSlider.background": `${c.raised}80`,
+        "scrollbarSlider.hoverBackground": `${c.edge}aa`,
+      },
+    });
+    definedCustom.set(t.id, t.updatedAt);
+  }
+  return name;
+}
 
 // ── Python 삼중 따옴표 f-string 구문 강조 수정 + PyCharm풍 토큰 분류 ─────────
 // (1) Monaco 기본 Python 문법은 삼중 따옴표 f-string(f"""...""")을 한 줄 문자열로 취급해

@@ -1,4 +1,4 @@
-import { monaco } from "./monaco-setup";
+import { ensureMonacoTheme, monaco } from "./monaco-setup";
 import {
   registerGotoDefinition,
   setDefContext,
@@ -36,7 +36,6 @@ import { errorMessage, ipc } from "../../lib/ipc";
 import type { DiffTarget } from "../../lib/ipc";
 import { isMod } from "../../lib/platform";
 import { isImage, isOffice, isPlayable, languageOf } from "../../lib/language-map";
-import { monacoThemeOf } from "../../lib/themes";
 import { useDiff, useSettings, useWriteFile } from "../../queries";
 import { useUi } from "../../stores/ui";
 import { EmptyState } from "../common/EmptyState";
@@ -183,7 +182,7 @@ export default function DiffViewer({
 }) {
   const { data: diff, isLoading, error } = useDiff(projectId, target);
   const { data: settings } = useSettings();
-  const monacoTheme = monacoThemeOf(settings?.theme);
+  const monacoTheme = ensureMonacoTheme(settings?.theme);
   const collapseUnchanged = useUi((s) => s.diffCollapseUnchanged);
   const toggleDiffCollapse = useUi((s) => s.toggleDiffCollapse);
   const selectDiff = useUi((s) => s.selectDiff);

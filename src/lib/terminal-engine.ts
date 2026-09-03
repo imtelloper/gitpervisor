@@ -93,6 +93,22 @@ function ptyWrite(termId: string, data: string) {
   });
 }
 
+// Shift/Alt+Enter를 win32-input-mode로 보낼 때 실을 수식 상태(ControlKeyState).
+// **Shift+Enter도 이 값(LEFT_ALT_PRESSED)** 이다 — 정직하게 SHIFT(0x10)를 실으면 ConPTY→libuv
+// 번역이 그냥 `\r`이 돼(libuv는 Enter의 Shift를 구분하지 않는다) Claude Code가 "제출"로 본다.
+// 대가는 pwsh PSReadLine의 Shift+Enter=AddLine 상실인데, 지금도 Shift+Enter는 Enter와 같아
+// AddLine이 된 적이 없다(회귀 아님). 되돌릴 자리는 이 상수 하나다
+// (DOCS/task/32-terminal-enter-modifiers.md §3.1).
+const ENTER_MOD_CS = 0x02;
+
+/** win32-input-mode 키 레코드 한 쌍(down+up) — `ESC [ Vk;Sc;Uc;Kd;Cs;Rc _`.
+ *  ConPTY가 이걸 받아 수식 상태가 살아 있는 INPUT_RECORD를 만들고, 클라이언트(libuv)가
+ *  ALT+Enter를 `\x1b\r`로 번역한다. ESC+CR을 그냥 쓰면 ConPTY의 VT 파서가 ESC 키와 Enter 키
+ *  **두 레코드**로 쪼개 취소+제출이 된다(같은 문서 §2). */
+function win32Key(vk: number, sc: number, uc: number, cs: number): string {
+  return `\x1b[${vk};${sc};${uc};1;${cs};1_\x1b[${vk};${sc};${uc};0;${cs};1_`;
+}
+
 // Linux 웹뷰(WebKitGTK)는 인쇄 가능한 키를 입력기(IME) textarea 경로로 흘려보내는데,
 // 이 버퍼가 비워지지 않아 키마다 직전까지의 내용이 통째로 다시 전송된다(중복 누적,
 // Backspace 무력화). Windows(WebView2)/macOS는 정상. 이 플랫폼에서만 우회한다.
@@ -198,6 +214,45 @@ export function createTerminalImpl(opts: {
   const fit = new FitAddon();
   term.loadAddon(fit);
 
+  // 인스턴스는 여기서 만든다(레지스트리 등록은 아래 open 직전) — 아래 CSI/키 핸들러가
+  // `win32Input`을 읽고 쓰려면 클로저에 인스턴스가 이미 있어야 한다.
+  const inst: TermInstance = {
+    id: opts.id,
+    projectId: opts.projectId,
+    term,
+    fit,
+    host,
+    status: "live",
+    win32Input: false,
+  };
+
+  // win32-input-mode(DECSET 9001) 감지 — ConPTY가 시작 시 `\x1b[?9001h`를 보낸다(portable-pty가
+  // PSEUDOCONSOLE_WIN32_INPUT_MODE로 무조건 연다). xterm 6은 이 모드를 조용히 무시하므로
+  // 여기서만 관측한다. `return false`로 기본 경로도 계속 타게 둔다(무시라서 무해).
+  term.parser.registerCsiHandler({ prefix: "?", final: "h" }, (params) => {
+    if (params.includes(9001)) inst.win32Input = true;
+    return false;
+  });
+  term.parser.registerCsiHandler({ prefix: "?", final: "l" }, (params) => {
+    if (params.includes(9001)) inst.win32Input = false;
+    return false;
+  });
+
+  // 마우스 프로토콜을 켠 TUI(Claude Code 등) 위에서는 휠이 PTY로 전달되고 뷰포트 스크롤이
+  // 꺼진다 — Shift+휠을 뷰포트 스크롤 탈출구로 남긴다(Windows Terminal·VS Code와 동일).
+  // 대체화면(alt 버퍼)은 스크롤백이 없으므로 기본 동작(↑/↓ 변환)에 맡긴다.
+  term.attachCustomWheelEventHandler((ev) => {
+    if (
+      ev.shiftKey &&
+      term.modes.mouseTrackingMode !== "none" &&
+      term.buffer.active.type === "normal"
+    ) {
+      term.scrollLines(Math.sign(ev.deltaY) * 3);
+      return false;
+    }
+    return true;
+  });
+
   // macOS WKWebView 한글 IME 미러 상태(인스턴스별). imeSent = 지금 셸 입력 라인에서 "이번 한글
   // 조합 런"이 반영해 둔 꼬리 문자열(마지막으로 diff한 ta.value). ASCII/Enter/방향키 등 조합 런
   // 밖의 입력에서 리셋되어 다음 조합이 실제 라인 끝에서 새로 시작한다. keydown 핸들러가 아래에서
@@ -237,6 +292,27 @@ export function createTerminalImpl(opts: {
     ) {
       return false;
     }
+    // Shift+Enter / Alt+Enter = 줄바꿈(Claude Code 등 TUI). xterm 기본은 Shift를 무시해 그냥
+    // `\r`(=제출)을 보내고, Alt는 `\x1b\r`을 보내지만 Windows ConPTY가 그 ESC+CR을 ESC 키와
+    // Enter 키 두 레코드로 쪼개 역시 줄바꿈이 안 된다. 그래서 ConPTY(9001 수신)에서는
+    // win32-input-mode 레코드로, 그 외에는 VS Code·iTerm2와 같은 `\x1b\r`로 보낸다.
+    if (
+      e.key === "Enter" &&
+      (e.shiftKey || e.altKey) &&
+      !e.ctrlKey &&
+      !e.metaKey
+    ) {
+      e.preventDefault();
+      if (isMacWebKit) resetImeMirror(); // 줄이 바뀌므로 IME 미러 리셋(Tab 분기와 동일)
+      ptyWrite(
+        opts.id,
+        isWindows && inst.win32Input
+          ? win32Key(13, 28, 13, ENTER_MOD_CS) // VK_RETURN, 스캔코드 28, U+000D
+          : "\x1b\r",
+      );
+      return false;
+    }
+
     // macOS WKWebView 안전망: IME가 첫 keydown의 keyCode를 정상 키로 보내고 e.key에 자모를
     // 그대로 끼워주는 케이스 — 단일 비-ASCII 인쇄 문자(한글 자모/CJK 등)는 xterm으로 보내지
     // 말고 textarea(=composition 경로)에 맡긴다.
@@ -512,14 +588,6 @@ export function createTerminalImpl(opts: {
     }
   }
 
-  const inst: TermInstance = {
-    id: opts.id,
-    projectId: opts.projectId,
-    term,
-    fit,
-    host,
-    status: "live",
-  };
   registry.set(opts.id, inst);
 
   // 출력: Channel(raw bytes) → xterm. 멀티바이트 경계 안전을 위해 바이트 그대로 write.

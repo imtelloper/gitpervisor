@@ -92,6 +92,15 @@ struct TermExit {
     code: i32,
 }
 
+/// `term_open` 응답 — 지금 이 프로세스가 어떤 ConPTY를 쓰는지 알린다(태스크 33 §3.2).
+/// 프론트 동작에는 쓰지 않는다(`windowsPty`는 Terminal 생성자 옵션이라 이 응답으로는 늦다) —
+/// 로그·e2e에서 번들 사이드로드가 실제로 먹었는지 확인하는 신호다. Windows 외에서는 None.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TermOpened {
+    conpty: Option<&'static str>, // "bundled" | "os"
+}
+
 struct ShellSpec {
     program: String,
     args: Vec<String>,
@@ -108,7 +117,7 @@ pub fn term_open(
     cols: u16,
     rows: u16,
     on_data: Channel<Vec<u8>>,
-) -> Result<(), IpcError> {
+) -> Result<TermOpened, IpcError> {
     let path = project_path(&state, &project_id)?;
     if !path.is_dir() {
         return Err(IpcError::new(
@@ -239,7 +248,26 @@ pub fn term_open(
     if let Some(old) = old {
         spawn_terminate(old);
     }
-    Ok(())
+    // portable-pty의 conpty.dll 로드는 **첫 PTY 생성 시점**(lazy_static)이라 여기서부터 판정이
+    // 확정된다. GetModuleHandleW가 non-null이면 우리가 번들한 DLL이 실제로 실린 것.
+    #[cfg(windows)]
+    let conpty = Some(if crate::conpty_sideloaded() {
+        "bundled"
+    } else {
+        "os"
+    });
+    #[cfg(not(windows))]
+    let conpty: Option<&'static str> = None;
+    #[cfg(windows)]
+    log::info!(
+        "ConPTY: {}",
+        if conpty == Some("bundled") {
+            "사이드로드 확인"
+        } else {
+            "OS 내장"
+        }
+    );
+    Ok(TermOpened { conpty })
 }
 
 /// 키 입력을 PTY stdin에 raw로 전달 — 셸 문자열 조립 없음(인젝션 표면 없음).

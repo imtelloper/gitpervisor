@@ -455,3 +455,57 @@ fit은 attach 후 다음 프레임(~16ms)에 돈다. 그래서 fit이 쏘는 첫
   순서가 계약인 호출은 프론트에서 명시적으로 체이닝해야 한다.
 - 오류를 `.catch(() => {})`로 삼키는 자리는 **유실이 시스템 상태로 굳는 지점**이다. 삼키더라도
   "이 실패가 영구 상태를 남기는가"를 물어라 — 여기선 리사이즈 한 번의 유실이 박제로 굳었다.
+
+---
+
+## 10. Windows 10에서 TUI 스크롤/줄바꿈이 깨진다 — 번들 ConPTY
+
+### 10.1 증상
+
+Windows 10에서만 Claude Code 같은 TUI의 **출력이 스크롤백에 남지 않아 위로 올라갈 수 없다**
+(휠·스크롤바 모두 안 먹는다). 창 크기를 바꾸면 이전 출력의 줄바꿈이 어긋나기도 한다.
+Windows 11·Linux·macOS는 정상. 같은 앱·같은 xterm 설정인데 OS로만 갈린다.
+
+### 10.2 원인 — OS 내장 ConPTY(conhost)의 세대 차
+
+ConPTY는 앱이 아니라 **OS에 박혀 있다**. Windows 10의 것은 2018~2022년 세대라 Windows Terminal
+1.17+/Windows 11 22H2+에 들어간 스크롤백 보존·리플로우 수정이 없다. PTY가 위로 지나간 줄을 애초에
+보존하지 않으므로 프론트(xterm)로는 못 고친다. VS Code도 같은 이유로 번들 conpty.dll 옵션
+(`terminal.integrated.windowsUseConptyDll`)을 뒀고, WezTerm은 항상 사이드로드한다.
+
+### 10.3 해결 — 최신 ConPTY 사이드로드
+
+`Microsoft.Windows.Console.ConPTY` 1.24.260710001의 `conpty.dll` + `OpenConsole.exe`를 번들하고,
+**첫 PTY 생성 전에** `SetDllDirectoryW`로 그 폴더를 DLL 검색 경로에 넣는다
+(`lib.rs`의 `install_bundled_conpty`). portable-pty 0.8.1이 `LoadLibraryW("conpty.dll")`를 먼저
+시도하고 실패할 때만 kernel32로 폴백하므로(`win/psuedocon.rs`) 크레이트 수정이 필요 없다.
+로드는 `lazy_static`이라 **프로세스당 1회** 결정된다 — 그래서 setup에서 미리 넣는다.
+
+### 10.4 확인 — 로그 두 줄
+
+```
+[INFO] ConPTY: 번들 1.24.260710001 사용 (…\resources\conpty\x64)   ← 검색 경로 등록(시작 직후)
+[INFO] ConPTY: 사이드로드 확인                                      ← 실제로 로드됨(첫 터미널 뒤)
+```
+
+`ConPTY: OS 내장 사용 (번들 없음: …)`이면 바이너리가 안 깔린 것이다(§10.5). 두 번째 줄이 없으면
+DLL을 못 찾았거나 `SetDllDirectoryW`가 실패한 것 — 이때도 앱은 OS 내장으로 정상 동작한다.
+`term_open` 응답의 `conpty: "bundled"|"os"` 필드로도 같은 판정을 볼 수 있다. 프로세스로도 보인다:
+터미널마다 `OpenConsole.exe`가 하나 늘고(`conhost.exe`는 늘지 않는다) 닫으면 사라진다.
+
+실측(2026-09-03, Win11 26200 dev): `term_open` 응답 `{"conpty":"bundled"}`, 터미널 0→3개에서
+`OpenConsole.exe` 9→12, 닫으면 9로 복귀(`conhost.exe`는 90~104 사이 무관한 잡음), 첫 PTY 출력 23B에
+`\x1b[?9001h` 포함 — 번들 ConPTY도 win32-input-mode를 켠다(`DOCS/task/33-windows-conpty-bundle.md` §9).
+
+### 10.5 바이너리 받기 (레포에 없다)
+
+```bash
+npm run fetch-tools -- conpty              # 호스트 아키텍처만(x64 또는 arm64)
+npm run fetch-tools -- conpty --all-arch   # 둘 다
+```
+
+nupkg sha256을 **고정값과 대조**하고 불일치면 중단한다. 배치 위치는
+`src-tauri/resources/conpty/<arch>/`(출처·해시·갱신 절차는 그 폴더의 `README.md`).
+
+**dev는 이 소스 폴더에서 로드한다** — 실행 중인 앱이 `target/debug`의 DLL을 잠그면 다음 빌드의
+리소스 복사가 `os error 32`로 실패해 재빌드가 막히기 때문이다(`CLAUDE.md` › 개발 실행).

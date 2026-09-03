@@ -14,17 +14,27 @@ import { installMacCopyInterceptor } from "./lib/clipboard";
 import { attachRepoEvents } from "./lib/events";
 import { setupErrorLogging } from "./lib/logging";
 import { watchAggregateWindow } from "./lib/aggregate-window";
-import { docTarget, warmFloatingWindowPool } from "./lib/floating";
+import { docTarget, openDocWindow, warmFloatingWindowPool } from "./lib/floating";
 import { ipc } from "./lib/ipc";
 import { keys } from "./queries";
-import { installTerminalCopyFallback, reattachAllTerminals } from "./lib/terminal";
+import {
+  getTerminal,
+  installTerminalCopyFallback,
+  reattachAllTerminals,
+} from "./lib/terminal";
+import { BUILTIN_TOKENS, installCustomThemeStyles } from "./lib/theme-apply";
 import { initPreviewRemint } from "./stores/browser";
+import { useCustomThemes } from "./stores/customThemes";
 import { useTerminals } from "./stores/terminals";
 import { useUi } from "./stores/ui";
-import "./styles.css";
 import { planSegments, useVideoSplit } from "./stores/videoSplit";
+import "./styles.css";
 
 const root = ReactDOM.createRoot(document.getElementById("root")!);
+
+// 사용자 정의 테마(태스크 29)의 CSS 블록을 **선적용보다 먼저** 심는다 — 캐시된 id가
+// custom-…이면 블록이 있어야 첫 페인트부터 제 색이 나온다. 모든 창 공통 경로.
+installCustomThemeStyles();
 
 // 시작 플래시 제거 — settings 로드 전 첫 페인트가 항상 darcula(기본값)였던 문제.
 // App effect가 저장 시점에 캐시해 둔 테마 id를 렌더 "전"에 선적용한다(이후 settings가
@@ -49,9 +59,13 @@ installTerminalCopyFallback();
 if (import.meta.env.DEV) {
   (window as unknown as { __gpv?: unknown }).__gpv = {
     ui: useUi,
+    terminals: useTerminals,
     videoSplit: useVideoSplit,
     planSegments,
-    terminals: useTerminals,
+    term: { get: getTerminal }, // 터미널 e2e — xterm 인스턴스·win32Input 플래그 관측
+    customThemes: useCustomThemes, // 커스텀 테마 e2e — 정의 upsert/remove
+    builtinTokens: BUILTIN_TOKENS, // e2e 19 — styles.css ↔ 정적 사본 짝 검증
+    openDocWindow, // 문서 창 e2e 34 — 더블클릭이 부르는 것과 같은 계약을 직접 구동
   };
 }
 

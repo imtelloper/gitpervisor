@@ -159,3 +159,40 @@
 | 22 | 결과 폴더가 이미 있고 파일이 겹칠 때 | 1회 확인 후 전체 덮어쓰기 |
 | 21 | 노출 시점 3번째 실행 vs 첫 실행 즉시 | 3번째 실행 |
 | 20 | 재확인 주기 | 12시간 |
+
+## 8. 테마·이미지 창·시스템 정보·Windows 터미널 (29~33) — 2026-09-03
+
+> 근거: 코드 실측 2026-09-03(xterm 6.0.0·portable-pty 0.8.1·sysinfo 0.33 로컬 소스, NuGet ConPTY 패키지 내용 포함).
+> Rust 변경은 30(창 수명 1줄·창 크기 인자)·31(수집 커맨드)·33(ConPTY 사이드로드) 세 건 — 한 번의 재빌드로 묶는다.
+
+| # | 태스크 | 문서 | 규모 | 핵심 판단 | 주요 위험 |
+|---|--------|------|------|-----------|-----------|
+| 29 | 사용자 정의 테마(색 조합) | [29-custom-themes.md](29-custom-themes.md) | **M** | 기반 테마 + 18토큰 오버라이드. 정의는 localStorage `gp:custom-themes`(선례 `gp:term-themes`), 적용은 `<style id="gp-custom-themes">`에 `:root[data-theme="custom-…"]` 블록 생성 → `dataset.theme` 관례·xterm `readTheme`·보조 창 코드 무변경. Monaco는 기반 규칙 복사 + 토큰 colors로 동적 defineTheme. Rust 0 | `BUILTIN_TOKENS` 사본이 styles.css와 어긋남(e2e 19 짝 검증), 라이트 기반의 틴트 5변수 사본, `.ai-working` 라이트 글로우 미적용(장식) |
+| 30 | 이미지 더블클릭 → 별도 창 보기·편집 | [30-image-doc-window-editor.md](30-image-doc-window-editor.md) | **S~M** | doc 창은 이미 이미지를 보여준다 — 빠진 건 그 창의 `ImageEditor`·Toasts·Confirm·Prompt 호스트와 더블클릭 진입, 저장 후 메인 `file-image` 무효화(워처 `repo://changed`에 추가), doc 창 수명(`is_aux`에 `doc-`) | 편집기 청크 인라인(lazy 유지), 900×760에서 편집기 좁음(이미지는 1180×860 인자) |
+| 31 | 리소스 모니터 "시스템 정보" 탭 | [31-sysmon-system-info.md](31-sysmon-system-info.md) | **M** | sysinfo 공통 + Windows PowerShell CIM 1회 호출(6클래스 JSON) + Linux /sys,/proc + macOS sysctl/system_profiler. 신규 크레이트 0, 프로세스 수명 캐시, 항목 단위 실패(`notes`). 탭 배열 리터럴 1곳이 확장 지점 | PowerShell 기동 1~3s(캐시), `AdapterRAM` 4GB 캡(레지스트리 qwMemorySize 우선), 모니터 뮤텍스 미점유(지역 System) |
+| 32 | 터미널 Shift/Alt+Enter 줄바꿈(Claude Code) | [32-terminal-enter-modifiers.md](32-terminal-enter-modifiers.md) | **S** | xterm은 Shift+Enter를 `\r`로, Alt+Enter를 `ESC CR`로 보내고 ConPTY는 `ESC CR`을 두 키로 쪼갠다. portable-pty가 ConPTY를 `WIN32_INPUT_MODE`로 만들어 `?9001h`를 요청하므로, Windows에선 Enter+수식을 **win32-input-mode 키 레코드(ALT)** 로, 그 외엔 `\x1b\r`로 보낸다 | Shift+Enter를 ALT로 보내는 트레이드오프(pwsh AddLine 대신 무동작 — 현재도 AddLine은 안 됨), ConPTY 레코드 해석은 키 에코 실측으로 확정 |
+| 33 | Windows 10 스크롤 불가 · 최신 ConPTY 번들 | [33-windows-conpty-bundle.md](33-windows-conpty-bundle.md) | **M** | 원인은 Windows 10 내장 ConPTY(2018~22)의 렌더링·스크롤백 결함(VS Code `windowsUseConptyDll`·WezTerm이 같은 이유로 사이드로드). portable-pty 0.8.1이 exe 옆 `conpty.dll`을 `LoadLibraryW`로 우선 로드하므로 NuGet `Microsoft.Windows.Console.ConPTY` 1.24(MIT)의 conpty.dll+OpenConsole.exe를 번들하고 `SetDllDirectoryW`로 아키텍처별 폴더를 가리킨다. Shift+휠 뷰포트 스크롤 보강 | 번들 DLL의 무접두 export 유무(실측), Windows 10 실기 불가(사용자 검증 항목), 크기 +1.2MB |
+
+### 8.1 권장 순서
+```
+[프론트 병렬: 29 · 30 · 31 · 32+33]  →  Rust 1회 재빌드(30·31·33)  →  격리 검증(29→30→31→32/33 실측)  →  전체 e2e
+```
+같은 워킹트리에서 태스크 23~28이 병행 중이라 Rust 저장·CDP 조작은 그쪽 검증 완료 신호 뒤에.
+
+### 8.2 사용자 결정이 필요한 열린 질문
+| 태스크 | 질문 | 설계 기본값 |
+|--------|------|------------|
+| 32 | Shift+Enter를 Alt+Enter와 같게(Claude 줄바꿈) vs SHIFT 정직 전달(pwsh AddLine) | Alt와 같게 — 요구가 Claude Code. 상수 1개로 전환 |
+| 29 | 테마 내보내기/가져오기(JSON) | 후속 |
+| 31 | 온도/실시간 클럭(센서) 탭 | 제외(sysinfo Components가 Windows에서 비어 있음) |
+| 33 | portable-pty 업그레이드·PASSTHROUGH 플래그 | 후속(번들만으로 목표 달성 여부 먼저) |
+
+### 8.3 구현 상태(2026-09-03)
+
+**29~33 전부 구현·격리 검증 통과(미커밋).** 프론트 4갈래 병렬 → Rust 1회 재빌드(`cargo test` 151 통과) → 격리 검증 순.
+- 29: e2e 19 38 pass + CDP 실기 43건(미리보기 174ms 반영, Monaco `gitpervisor-custom-*`, sysmon 보조 창 동기, 삭제 폴백). 검증 중 제품 결함 1건 수정(편집 중 카테고리 이동 시 draft id가 남아 기본색으로 떨어짐 → 언마운트 가드).
+- 30: e2e 34 15 pass + 실기 17건(트리 dblclick → 1180×860 doc 창, 그 창의 편집기·확인·프롬프트·토스트, 저장 → 메인 `file-image` 무효화, 양방향).
+- 31: 값 대조표(§8) — CIM은 클래스별 독립 시한, GPU는 레지스트리(WMI `Win32_VideoController`가 이 머신에서 무응답), L3는 `Win32_Processor` 우선(하이브리드 CPU 중복 합산 해소, 36864KB). e2e 18 32 pass, 수집 4.9s·캐시 3ms.
+- 32: 키 에코 실측 Enter `\r` / Shift+Enter·Alt+Enter `\u001b\r`, **Claude Code v2.1.258 실물에서 두 키 모두 줄바꿈**. e2e 06 13 pass.
+- 33: 번들 ConPTY 1.24 사이드로드 확인(로그·`term_open {conpty:"bundled"}`·OpenConsole.exe 수). Claude Code는 alt 버퍼+마우스 추적이라 "위 내용 보기"는 **휠 → SGR 마우스 보고 → Claude 자체 스크롤** 경로이며 번들 ConPTY에서 정상 동작 실측(§9.5, PageUp/PageDown 대안). Windows 10 실기는 이 머신에 없어 사용자 검증 항목(TROUBLESHOOTING §10).
+- 전체 러너: **603 pass / 3 fail / 6 skip**(직전 516/5/3). 실패 3건 중 12의 2건은 번들 ConPTY의 DA1 질의를 원시 e2e 채널이 회신하지 못해 첫 출력이 3.4s 밀린 것(제품 결함 아님 — 스위트를 마커 폴링으로 수정, 3/3 통과; 33 §9.6), 14 #2b는 번들 ON/OFF 모두 4/4 통과로 회귀 아님(부하 시 기대값 스냅샷 낡음, 간헐).

@@ -22,6 +22,9 @@ export interface TermInstance {
   fit: FitAddon;
   host: HTMLDivElement;
   status: "live" | "exited";
+  /** 이 PTY가 win32-input-mode(DECSET 9001)를 요청했는가 — ConPTY가 시작 시 `\x1b[?9001h`를
+   *  보낸다. 엔진이 CSI 핸들러로 갱신하며, Shift/Alt+Enter 인코딩 선택에 쓴다. */
+  win32Input: boolean;
   /** 이 인스턴스가 PTY 출력을 받는 채널 — 재연결(reattachAllTerminals)에 다시 쓴다.
    *  PTY의 출력 소비자는 하나뿐이라(term_attach가 sink를 교체) 다른 창이 가져갔다 돌려줄 때
    *  같은 채널로 붙여야 기존 xterm이 그대로 이어진다. 엔진이 생성 직후 채운다. */

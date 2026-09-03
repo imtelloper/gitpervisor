@@ -31,7 +31,8 @@
     "targets": "all",
     "createUpdaterArtifacts": true,
     "resources": {
-      "resources/tools/*": "tools"
+      "resources/tools/*": "tools",
+      "resources/conpty": "conpty"
     },
     "publisher": "imtelloper <newtype9556@gmail.com>",
     "copyright": "Copyright © 2026 imtelloper",

@@ -116,7 +116,8 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 # health 프로브의 Windows 구현(여유 물리 메모리·커밋 차지·자기 프로세스 트리). Linux의 cgroup
 # 파일 읽기에 해당하는 것이 Windows엔 없어 Win32 API로 같은 신호를 만든다(health/probe.rs).
 # Win32_Storage_FileSystem: 디스크 분석의 압축·스파스 파일 실할당 크기(GetCompressedFileSizeW — disk_scan.rs).
-windows-sys = { version = "0.59", features = ["Win32_System_Performance", "Win32_System_SystemInformation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_System_ProcessStatus", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_Foundation", "Win32_Storage_FileSystem"] }
+# Win32_System_LibraryLoader: 번들 ConPTY 사이드로드(SetDllDirectoryW/GetModuleHandleW — lib.rs, 태스크 33).
+windows-sys = { version = "0.59", features = ["Win32_System_Performance", "Win32_System_SystemInformation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_System_ProcessStatus", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_Foundation", "Win32_Storage_FileSystem"] }
 # 추출한 아이콘 BGRA→PNG 인코딩(리소스 모니터). tauri image-png가 같은 0.25를 트리에 가져 비용 미미.
 # jpeg: 화면 캡쳐 오버레이의 **표시용** 프레임. PNG는 같은 프레임에 667ms/9.75MB가 들어 예산을
 # 통째로 먹는다(실측 — DOCS/screen-capture-design.md §2.3). 최종 결과물은 항상 무손실 원본에서 뜬다.

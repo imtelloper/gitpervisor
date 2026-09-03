@@ -57,6 +57,10 @@ New-Item -ItemType Junction -Path "$env:LOCALAPPDATA\com.greathoon.gitpervisor.d
   dev 창에서 누른 "설치"가 **지금 쓰고 있는 설치본을 passive 모드로 갈아엎는다.**
 - 같은 레포를 양쪽이 감시하므로 백그라운드 remote fetch는 한쪽만 켠다
   (설정 › `remote_refresh_minutes`). 2026-08 OOM 사건의 그 노브다.
+- **dev가 켜져 있으면 `target/debug/conpty/x64/conpty.dll`이 잠긴다** — 그대로 재빌드하면
+  tauri-build의 리소스 복사가 `os error 32`로 실패해 빌드가 통째로 막힌다. 그래서 dev는 소스 폴더
+  (`src-tauri/resources/conpty/<arch>`, 빌드가 덮어쓰지 않는다)에서 먼저 로드한다
+  (`lib.rs`의 `install_bundled_conpty`). 그래도 막히면 그 DLL을 `conpty.dll.locked`로 rename하고 빌드하라.
 
 ---
 

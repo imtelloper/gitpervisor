@@ -14,8 +14,11 @@ export type ThemeName =
   | "nord"
   | "solarized-light";
 
+/** 앱 테마 id — 내장 6종 또는 사용자 정의(태스크 29). Settings.theme의 타입. */
+export type ThemeId = ThemeName | `custom-${string}`;
+
 export interface ThemeMeta {
-  id: ThemeName;
+  id: ThemeId;
   /** SettingsDialog 버튼 표기 — "다크 (Darcula)" 등 */
   label: string;
   kind: "dark" | "light";
@@ -116,12 +119,101 @@ export const THEMES: readonly ThemeMeta[] = [
   },
 ];
 
-/** id로 테마 메타 조회 — 미지의 id(다운그레이드 등)는 darcula로 폴백. */
-export function themeOf(id: string | undefined): ThemeMeta {
-  return THEMES.find((t) => t.id === id) ?? THEMES[0];
+// ── 사용자 정의 테마 (태스크 29) ───────────────────────────────────────────
+// 정의(색)는 localStorage `gp:custom-themes`에 있고 스토어는 stores/customThemes.ts,
+// CSS 블록 생성은 lib/theme-apply.ts다. 이 파일은 **읽기만** 한다 — 스토어를 import하면
+// customThemes → themes → customThemes 순환이 되므로 localStorage를 직접 읽는다.
+
+/** styles.css `@theme` 블록(:5-28)의 색 토큰 18종과 1:1. 순서 = 편집기 그룹 순서. */
+export const THEME_TOKENS = [
+  "base",
+  "panel",
+  "raised",
+  "selection",
+  "edge",
+  "accent",
+  "accent-hover",
+  "on-accent",
+  "fg",
+  "fg-muted",
+  "fg-dim",
+  "ok",
+  "warn",
+  "danger",
+  "mod",
+  "add",
+  "del",
+  "untrk",
+] as const;
+export type ThemeToken = (typeof THEME_TOKENS)[number];
+
+export interface CustomTheme {
+  /** `custom-<8자>` — CSS 셀렉터에 그대로 들어간다(CUSTOM_ID_RE가 문자셋을 제한). */
+  id: `custom-${string}`;
+  /** 표시 이름(중복 허용, 빈 문자열 금지) */
+  name: string;
+  /** kind·Monaco 문법색·xterm ANSI 보정·비토큰 CSS의 상속원 */
+  base: ThemeName;
+  /** "#rrggbb" 6자리 소문자 — e2e 19의 hex 정규식과 xterm 파생이 이 형식을 전제 */
+  colors: Record<ThemeToken, string>;
+  updatedAt: number;
 }
 
-/** settings.theme → Monaco defineTheme 이름 (DiffViewer/MonacoBox/DbWorkspace 공용). */
-export function monacoThemeOf(id: string | undefined): string {
-  return themeOf(id).monacoTheme;
+export const CUSTOM_THEMES_KEY = "gp:custom-themes";
+
+// id는 `:root[data-theme="…"]` 셀렉터로, 색은 선언 값으로 문자열 결합된다 —
+// localStorage는 신뢰 경계 밖(다른 창·수동 편집)이라 두 형식을 여기서 강제한다.
+const CUSTOM_ID_RE = /^custom-[a-z0-9]{1,32}$/;
+const HEX6_RE = /^#[0-9a-f]{6}$/;
+
+export function isCustomThemeId(id: string | undefined): id is `custom-${string}` {
+  return typeof id === "string" && CUSTOM_ID_RE.test(id);
+}
+
+function isValidCustom(v: unknown): v is CustomTheme {
+  const t = v as CustomTheme | null;
+  if (!t || typeof t !== "object") return false;
+  if (!isCustomThemeId(t.id) || typeof t.name !== "string" || !t.name) return false;
+  if (typeof t.updatedAt !== "number") return false;
+  if (!THEMES.some((b) => b.id === t.base)) return false;
+  if (!t.colors || typeof t.colors !== "object") return false;
+  return THEME_TOKENS.every((k) => HEX6_RE.test(t.colors[k] ?? ""));
+}
+
+/** 저장된 커스텀 테마 목록 — 형식이 어긋난 항목은 조용히 버린다(부분 손상에도 나머지는 산다). */
+export function loadCustomThemes(): CustomTheme[] {
+  try {
+    const raw = localStorage.getItem(CUSTOM_THEMES_KEY);
+    const p = raw ? JSON.parse(raw) : null;
+    return Array.isArray(p) ? p.filter(isValidCustom) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** 커스텀 id의 정의 — 내장 id·정의 없는 id는 undefined. */
+export function customThemeOf(id: string | undefined): CustomTheme | undefined {
+  return isCustomThemeId(id) ? loadCustomThemes().find((t) => t.id === id) : undefined;
+}
+
+/** id로 테마 메타 조회 — 미지의 id(다운그레이드·정의 없는 커스텀)는 darcula로 폴백.
+ *  커스텀은 **기반 메타에 id·label·swatch만 갈아끼워** 돌려준다 — kind·monacoTheme·
+ *  xterm 보정을 기반에서 상속하므로 소비처(terminal-engine 등)는 무변경이다. */
+export function themeOf(id: string | undefined): ThemeMeta {
+  const custom = customThemeOf(id);
+  if (custom) {
+    const base = THEMES.find((t) => t.id === custom.base) ?? THEMES[0];
+    return {
+      ...base,
+      id: custom.id,
+      label: custom.name,
+      swatch: [
+        custom.colors.base,
+        custom.colors.accent,
+        custom.colors.add,
+        custom.colors.danger,
+      ],
+    };
+  }
+  return THEMES.find((t) => t.id === id) ?? THEMES[0];
 }

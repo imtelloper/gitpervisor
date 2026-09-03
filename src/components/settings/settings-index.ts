@@ -51,7 +51,7 @@ export const SETTINGS_INDEX: SettingIndexEntry[] = [
   { category: "general", key: "confirmDiscard", label: "되돌리기·삭제 확인", keywords: ["confirm", "확인", "삭제", "되돌리기", "discard"] },
   { category: "general", key: "gitPath", label: "git 실행 파일 경로", keywords: ["git", "path", "경로", "실행"] },
   // 모양
-  { category: "appearance", key: "theme", label: "테마", keywords: ["theme", "테마", "다크", "라이트", "색", "color", "monokai", "dracula", "nord"] },
+  { category: "appearance", key: "theme", label: "테마", keywords: ["theme", "테마", "다크", "라이트", "색", "color", "monokai", "dracula", "nord", "커스텀", "내 테마", "custom"] },
   { category: "appearance", key: "diffFontSize", label: "Diff 폰트 크기", keywords: ["font", "폰트", "크기", "size", "diff"] },
   // 코드 도구
   { category: "codetools", key: "formatterRuffPath", label: "ruff 경로", keywords: ["ruff", "python", "포매터", "formatter", "린터", "linter"] },

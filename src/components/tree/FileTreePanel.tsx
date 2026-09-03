@@ -599,11 +599,20 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
   // 더블클릭 자체가 의도 표현이고, 실행 여부·결과는 성공/실패 토스트가 알린다.
   const onDouble = useCallback(
     (path: string, name: string) => {
-      if (!isRunnable(name)) return;
-      void ipc
-        .runExecutable(projectId, path)
-        .then(() => pushToast("success", `${name} 실행됨`))
-        .catch((err) => pushToast("error", errorMessage(err)));
+      if (isRunnable(name)) {
+        void ipc
+          .runExecutable(projectId, path)
+          .then(() => pushToast("success", `${name} 실행됨`))
+          .catch((err) => pushToast("error", errorMessage(err)));
+        return;
+      }
+      // 이미지는 별도 창으로 — 우클릭 "새 창으로 열기"와 **같은 함수**다(태스크 30 §3.1).
+      // 그 창은 뷰어에 더해 편집기까지 띄우므로(DocWindow) 넓게 연다: 편집기 우측 패널이
+      // 고정 폭이라 기본 900×760에서는 stage가 눌린다. svg도 이미지로 본다 — 뷰어가 그리고,
+      // 편집기는 래스터화 경고를 헤더에 표시한다.
+      if (isImage(name)) {
+        openDocWindow(projectId, path, { size: [1180, 860] });
+      }
     },
     // pushToast는 스토어 액션이라 안정.
     // eslint-disable-next-line react-hooks/exhaustive-deps

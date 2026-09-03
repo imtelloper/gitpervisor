@@ -71,8 +71,13 @@ export function attachRepoEvents(qc: QueryClient) {
       void qc.invalidateQueries({ queryKey: ["branches"] });
       void qc.invalidateQueries({ queryKey: ["repo-files"] }); // Quick Open 파일 목록
       // 파일트리 즉각 반영 — react-query는 마운트된(=펼쳐진) 폴더만 refetch한다.
-      for (const pid of changedProjects)
+      // file-image도 같은 이유로 **프로젝트 한정**이다: staleTime Infinity라 무효화하지 않으면
+      // 별도 창(doc-*)이나 외부 도구가 저장한 새 그림이 이 창에 영영 반영되지 않는다.
+      // 전역으로 지우면 다른 프로젝트의 열린 이미지까지 다시 읽는다.
+      for (const pid of changedProjects) {
         void qc.invalidateQueries({ queryKey: ["dir", pid] });
+        void qc.invalidateQueries({ queryKey: ["file-image", pid] });
+      }
       changedProjects.clear();
     }, 250);
   });

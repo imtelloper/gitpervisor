@@ -94,6 +94,14 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      # 번들 ConPTY — Windows 10 내장 ConPTY의 TUI 스크롤 문제 회피(태스크 33).
+      # nupkg 해시를 스크립트가 고정 대조하므로 변조 시 여기서 빌드가 멈춘다(의도한 동작).
+      # Windows 잡에서만 받는다 — 다른 호스트에는 없어도 리소스 글롭이 비어 무해하다.
+      # 인자 없이 부르면 ruff(31MB)+biome(77MB)까지 받으므로 `-- conpty`로 한정한다.
+      - name: Fetch bundled ConPTY (Windows)
+        if: matrix.platform == 'windows-latest'
+        run: npm run fetch-tools -- conpty
+
       # Windows Authenticode 서명 준비 — 무서명 exe는 AhnLab V3 '앱 격리 검사'와 SmartScreen에
       # 걸려 설치가 막힌다(v0.3.5 실사례). 반드시 번들링 "중"에 signCommand로 서명해야 한다:
       # Tauri가 앱 exe → NSIS 설치본 순서로 서명한 뒤 업데이터 .sig를 최종 파일 기준으로 만든다.

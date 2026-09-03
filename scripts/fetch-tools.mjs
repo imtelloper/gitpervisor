@@ -20,9 +20,16 @@ import { fileURLToPath } from "node:url";
 
 const RUFF_VERSION = "0.15.20";
 const BIOME_VERSION = "2.5.2";
+// 재배포 가능한 최신 ConPTY(MIT). Windows 10 내장 conhost의 ConPTY는 2018~2022년 세대라
+// TUI 스크롤백/리플로우 수정이 없다 — 이 DLL을 앱 옆에 두면 portable-pty가 사이드로드한다
+// (DOCS/task/33-windows-conpty-bundle.md). nupkg 해시는 **고정** — 불일치면 중단한다.
+const CONPTY_VERSION = "1.24.260710001";
+const CONPTY_SHA256 =
+  "175640566a3b59c4b132070ee96c2c77e5ab7edd2e92732a5eb3610bbf63d90e";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const OUT = join(here, "..", "src-tauri", "resources", "tools");
+const OUT_CONPTY = join(here, "..", "src-tauri", "resources", "conpty");
 mkdirSync(OUT, { recursive: true });
 
 const isWin = process.platform === "win32";
@@ -133,7 +140,64 @@ async function fetchBiome() {
   console.log(`  → ${dest} (${(bin.length / 1048576).toFixed(1)}MB)`);
 }
 
-const only = process.argv[2]; // "ruff" | "biome" | undefined(둘 다)
+// nupkg 안의 경로 → 배치 경로(아키텍처별 폴더). conpty.dll은 **자기 디렉터리의** OpenConsole.exe를
+// 띄우므로 둘을 같은 폴더에 둔다.
+const conptyFiles = (arch) => [
+  [`runtimes/win-${arch}/native/conpty.dll`, `${arch}/conpty.dll`],
+  [`build/native/runtimes/${arch}/OpenConsole.exe`, `${arch}/OpenConsole.exe`],
+];
+
+function conptyArch() {
+  const arch = process.arch; // "x64" | "arm64" — nupkg 폴더 이름과 같다
+  if (arch !== "x64" && arch !== "arm64")
+    throw new Error(`지원하지 않는 아키텍처(conpty): ${arch}`);
+  return arch;
+}
+
+async function fetchConpty() {
+  // nupkg는 zip이고 추출에 Windows bsdtar(tar.exe)를 쓴다 — 어차피 Windows 설치본에만 번들되므로
+  // 다른 호스트에서는 건너뛴다(리눅스/macOS 빌드는 이 리소스를 쓰지 않는다).
+  if (!isWin) {
+    console.warn("[conpty] Windows 호스트에서만 받는다 — 건너뜀");
+    return;
+  }
+  const url =
+    `https://api.nuget.org/v3-flatcontainer/microsoft.windows.console.conpty/` +
+    `${CONPTY_VERSION}/microsoft.windows.console.conpty.${CONPTY_VERSION}.nupkg`;
+  console.log(`[conpty ${CONPTY_VERSION}] nupkg 다운로드…`);
+  const pkg = await download(url);
+  // ruff와 달리 배포처에 .sha256 파일이 없다 — 문서화된 고정 해시로 대조한다(공급망 방어).
+  const actual = sha256(pkg);
+  if (actual !== CONPTY_SHA256)
+    throw new Error(
+      `sha256 불일치 — 다운로드 변조 의심, 중단\n기대: ${CONPTY_SHA256}\n실제: ${actual}`,
+    );
+  console.log(`  sha256 검증 OK (${actual.slice(0, 16)}…)`);
+
+  const tmp = join(tmpdir(), `gpv-conpty-${Date.now()}`);
+  mkdirSync(tmp, { recursive: true });
+  const pkgPath = join(tmp, "conpty.nupkg");
+  writeFileSync(pkgPath, pkg);
+  // Windows 시스템 bsdtar 절대경로 — Git Bash의 GNU tar는 `C:\`를 원격 호스트로 오인한다(위와 동일).
+  const tarCmd = join(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe");
+  execFileSync(tarCmd, ["-xf", pkgPath, "-C", tmp], { stdio: "inherit" });
+  // 기본은 **호스트 아키텍처 하나만** 배치한다 — 설치본에 쓰지도 않을 반대편 arch까지 넣으면
+  // +1.2MB가 그냥 늘어난다(CI도 아키텍처 매트릭스별로 자기 것만 받는다). `--all-arch`로 둘 다.
+  const arches = process.argv.includes("--all-arch") ? ["x64", "arm64"] : [conptyArch()];
+  for (const [member, dest] of arches.flatMap(conptyFiles)) {
+    const src = join(tmp, ...member.split("/"));
+    if (!existsSync(src)) throw new Error(`nupkg에 없는 파일: ${member}`);
+    const out = join(OUT_CONPTY, ...dest.split("/"));
+    mkdirSync(dirname(out), { recursive: true });
+    writeFileSync(out, readFileSync(src));
+    console.log(`  → ${out}`);
+  }
+  rmSync(tmp, { recursive: true, force: true });
+}
+
+// "ruff" | "biome" | "conpty" | undefined(전부). 플래그(--all-arch)는 타깃이 아니다.
+const only = process.argv.slice(2).find((a) => !a.startsWith("--"));
 if (!only || only === "ruff") await fetchRuff();
 if (!only || only === "biome") await fetchBiome();
+if (!only || only === "conpty") await fetchConpty();
 console.log("완료.");

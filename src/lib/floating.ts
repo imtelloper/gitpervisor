@@ -57,8 +57,15 @@ function readDocs(): Record<string, DocTarget> {
  * 대상은 **같은 origin의 localStorage**로 넘긴다 — 창 라벨에 경로를 실을 수 없고(공백·한글·`.`),
  * 별도 창이라 메인의 zustand 스토어를 볼 수도 없다. 이 앱이 창 간 상태를 넘기던 기존 방식과 같다
  * (`gp:browser`·`gp:viewer-tabs`).
+ *
+ * `opts.size`는 창 크기 요청(기본은 Rust의 900×760). 이미지처럼 그 창 안에서 편집기까지 여는
+ * 대상은 넓게 연다 — 편집기 우측 패널이 고정 폭이라 좁은 창에서는 stage가 눌린다.
  */
-export function openDocWindow(projectId: string, path: string): void {
+export function openDocWindow(
+  projectId: string,
+  path: string,
+  opts?: { size?: [number, number] },
+): void {
   const id = crypto.randomUUID().replace(/-/g, "");
   const docs = readDocs();
   docs[id] = { projectId, path };
@@ -72,10 +79,13 @@ export function openDocWindow(projectId: string, path: string): void {
   } catch {
     /* 용량 초과 — 창은 그래도 띄운다(대상을 못 찾으면 그 창이 안내한다) */
   }
+  // `size`는 Rust가 창 내부 크기로 받는다(`lib.rs` open_doc_window — 생략하면 900×760,
+  // 값은 420..3000으로 클램프된다: 화면 밖으로 나간 커스텀 타이틀바는 움직일 수도 닫을 수도 없다).
   void invoke("open_doc_window", {
     docId: id,
     title: path.split("/").pop() ?? path,
     origin: window.location.origin,
+    size: opts?.size,
   }).catch((e) => {
     console.error("문서 창 생성 실패:", e);
   });

@@ -11,6 +11,7 @@ mod monitor;
 mod notifications;
 mod proc_icons;
 mod state;
+mod sysinfo_static;
 mod tools;
 mod watcher;
 
@@ -65,6 +66,74 @@ fn set_app_user_model_id(id: &str) {
     unsafe {
         let _ = SetCurrentProcessExplicitAppUserModelID(wide.as_ptr());
     }
+}
+
+/// 번들 ConPTY를 DLL 검색 경로에 넣는다 — Windows 10 내장 conhost의 ConPTY(2018~2022년 세대)에는
+/// TUI 스크롤백/리플로우 수정이 없어 Claude Code 출력이 위로 안 올라간다.
+///
+/// portable-pty 0.8.1은 첫 PTY 생성 시 `LoadLibraryW("conpty.dll")`를 먼저 시도하고 실패할 때만
+/// kernel32로 폴백한다(`win/psuedocon.rs:32-63`, `lazy_static`이라 **프로세스당 1회** 결정).
+/// 베어 파일명이므로 `SetDllDirectoryW`로 넣은 디렉터리가 검색 순서에 들어간다. conpty.dll은
+/// **자기 디렉터리의** OpenConsole.exe를 띄우므로 두 파일이 같은 폴더에 있어야 한다.
+/// 실패해도 무해 — 크레이트가 kernel32(OS 내장)로 폴백한다.
+#[cfg(windows)]
+fn install_bundled_conpty(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::System::LibraryLoader::SetDllDirectoryW;
+
+    let arch = match std::env::consts::ARCH {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        other => {
+            log::info!("ConPTY: 번들 없음(미지원 아키텍처 {other}) — OS 내장");
+            return None;
+        }
+    };
+    // 둘 다 있어야 의미가 있다 — DLL만 있고 OpenConsole.exe가 없으면 PTY 생성이 실패한다.
+    let has_both =
+        |d: &std::path::Path| d.join("conpty.dll").is_file() && d.join("OpenConsole.exe").is_file();
+
+    // dev는 **소스 폴더**를 먼저 본다. 실행 중인 앱이 target/debug의 conpty.dll을 잠그면 다음
+    // 빌드에서 tauri-build의 리소스 복사가 os error 32로 실패해 재빌드가 통째로 막힌다 —
+    // 소스 폴더는 빌드가 덮어쓰지 않으니 잠겨 있어도 무해하다. 릴리스는 그대로 resource_dir.
+    let src_dir =
+        std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/resources/conpty")).join(arch);
+    let dir = if cfg!(debug_assertions) && has_both(&src_dir) {
+        src_dir
+    } else {
+        let d = app.path().resource_dir().ok()?.join("conpty").join(arch);
+        if !has_both(&d) {
+            log::info!("ConPTY: OS 내장 사용 (번들 없음: {})", d.display());
+            return None;
+        }
+        d
+    };
+    let wide: Vec<u16> = dir
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // best-effort — 실패하면 크레이트가 kernel32로 폴백한다.
+    let ok = unsafe { SetDllDirectoryW(wide.as_ptr()) } != 0;
+    if ok {
+        log::info!("ConPTY: 번들 1.24.260710001 사용 ({})", dir.display());
+        Some(dir)
+    } else {
+        log::info!("ConPTY: SetDllDirectoryW 실패 — OS 내장으로 진행");
+        None
+    }
+}
+
+/// 번들 conpty.dll이 **실제로 로드됐는지** 확인한다 — `GetModuleHandleW`가 non-null이면 사이드로드.
+/// portable-pty의 로드는 첫 PTY 생성 시점(lazy_static)이므로 `term_open` 성공 뒤에 부른다.
+#[cfg(windows)]
+pub(crate) fn conpty_sideloaded() -> bool {
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    let name: Vec<u16> = "conpty.dll"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    !unsafe { GetModuleHandleW(name.as_ptr()) }.is_null()
 }
 
 /// 패닉 훅과 동일한 형식으로 크래시 로그(panic.log)에 한 줄 남긴다 — 런타임 실행 실패처럼
@@ -388,6 +457,7 @@ async fn open_doc_window(
     doc_id: String,
     title: String,
     origin: String,
+    size: Option<(f64, f64)>,
 ) -> Result<(), String> {
     // 프론트가 만든 값이 그대로 창 라벨이 된다 — 문자 집합을 강제해 라벨 주입을 막는다.
     if doc_id.is_empty()
@@ -404,11 +474,16 @@ async fn open_doc_window(
         return Ok(());
     }
     let url = tauri::Url::parse(&origin).map_err(|e| format!("잘못된 origin: {e}"))?;
+    // 프론트가 준 크기는 **클램프**한다 — 화면보다 큰 창은 타이틀바(커스텀)가 화면 밖으로 나가
+    // 움직일 수도 닫을 수도 없는 창이 된다. 기본은 텍스트 뷰어에 맞춘 900×760이고,
+    // 이미지처럼 넓은 편집 UI가 들어가는 대상만 프론트가 더 큰 값을 넘긴다(태스크 30 §3.2).
+    let (w, h) = size.unwrap_or((900.0, 760.0));
+    let (w, h) = (w.clamp(420.0, 3000.0), h.clamp(300.0, 3000.0));
     let app2 = app.clone();
     app.run_on_main_thread(move || {
         let r = WebviewWindowBuilder::new(&app2, &label, WebviewUrl::External(url))
             .title(title)
-            .inner_size(900.0, 760.0)
+            .inner_size(w, h)
             .min_inner_size(420.0, 300.0)
             .center()
             // OS 기본 타이틀바 제거 — 프론트의 FloatTitleBar로 대체(리사이즈는 유지)
@@ -523,8 +598,13 @@ const AUX_WINDOW_LABELS: [&str; 2] = ["sysmon", "aggregate"];
 /// `aggregate`가 `float-`로 시작하지 **않는** 것이 중요하다 — Destroyed 훅의 float 분기가
 /// PTY를 종료시키는데 모아보기 창은 메인이 만든 PTY에 붙기만 하기 때문이다
 /// (open_aggregate_window 주석). 그 불변식을 아래 테스트가 지킨다.
+///
+/// 문서 창(`doc-*`)도 여기 포함된다 — 메인이 곧 앱이므로 파일 뷰어 창만 남아 앱이 종료되지
+/// 않는 상태를 만들지 않는다. PTY가 없어 Destroyed 훅에는 분기가 필요 없다(태스크 30 §3.4).
 fn is_secondary_window(label: &str) -> bool {
-    label.starts_with(FLOAT_LABEL_PREFIX) || AUX_WINDOW_LABELS.contains(&label)
+    label.starts_with(FLOAT_LABEL_PREFIX)
+        || label.starts_with(DOC_LABEL_PREFIX)
+        || AUX_WINDOW_LABELS.contains(&label)
 }
 
 /// 종료 정리가 이미 돌았는가 — 종료 경로가 여러 개라 중복 실행을 막는다.
@@ -733,6 +813,10 @@ pub fn run() {
             // 사용한다. dev는 바로가기가 없어 일반 아이콘이 정상 — 실제 아이콘은 설치본에서 확인.
             #[cfg(windows)]
             set_app_user_model_id("com.greathoon.gitpervisor");
+            // 첫 PTY 생성(term_open)보다 반드시 앞이어야 한다 — portable-pty의 conpty.dll 로드는
+            // lazy_static이라 프로세스당 1회뿐이고, 그때 DLL 검색 경로가 확정된다.
+            #[cfg(windows)]
+            let _ = install_bundled_conpty(app.handle());
             log::info!("Gitpervisor 시작 v{}", env!("CARGO_PKG_VERSION"));
             // "갑자기 꺼짐" 조기경보 — 이전 세션이 비정상 종료였는지 먼저 판정하고(하트비트
             // 센티널), 이번 세션의 감시를 시작한다. systemd-oomd는 SIGKILL이라 종료 훅이
@@ -916,6 +1000,7 @@ pub fn run() {
             monitor::sys_metrics,
             monitor::sys_process_snapshot,
             monitor::kill_processes,
+            sysinfo_static::sys_info_static,
             disk_scan::disk_scan_start,
             disk_scan::disk_scan_cancel,
             disk_scan::disk_scan_status,
@@ -1100,6 +1185,11 @@ mod tests {
         assert!(is_secondary_window("float-abc123"));
         assert!(is_secondary_window("sysmon"));
         assert!(is_secondary_window("aggregate"));
+        assert!(
+            is_secondary_window("doc-abc"),
+            "문서 창만 남아 앱이 안 닫히면 안 된다"
+        );
+        assert!(!"doc-abc".starts_with(FLOAT_LABEL_PREFIX));
         assert!(!is_secondary_window("main"), "메인은 대상이 아니다");
         assert!(
             !is_secondary_window("gpv-popup-1"),

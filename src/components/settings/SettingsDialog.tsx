@@ -4,7 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Search, Settings as SettingsIcon, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import type { NotifySecret, Settings, ThemeName } from "../../lib/ipc";
+import type { NotifySecret, Settings, ThemeId } from "../../lib/ipc";
 import { errorMessage, ipc } from "../../lib/ipc";
 import { refreshTerminalThemes } from "../../lib/terminal";
 import { useProjects, useSetSettings, useSettings } from "../../queries";
@@ -169,7 +169,7 @@ export function SettingsDialog() {
     setForm((f) => (f ? { ...f, [key]: value } : f));
 
   // 테마 라이브 프리뷰 — App의 테마 effect는 저장값 의존이라 직접 dataset.theme + 터미널 재적용.
-  const previewTheme = (id: ThemeName) => {
+  const previewTheme = (id: ThemeId) => {
     update("theme", id);
     document.documentElement.dataset.theme = id;
     refreshTerminalThemes();

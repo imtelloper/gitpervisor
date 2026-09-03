@@ -14,6 +14,7 @@ import { FloatTitleBar } from "../FloatTitleBar";
 import { DiskUsageView } from "./DiskUsageView";
 import type { SysmonView } from "./prefs";
 import { loadSysmonPrefs, saveSysmonPrefs } from "./prefs";
+import { SystemInfoView } from "./SystemInfoView";
 
 // 부하 임계 색 — 타이틀바 SysMonitor의 Metric과 동일 규약(평상시/70%+/88%+).
 function loadText(pct: number): string {
@@ -368,12 +369,14 @@ export function SysMonitorWindow() {
     <div className="flex h-screen flex-col bg-base text-fg select-none">
       <FloatTitleBar title="리소스 모니터" badge="모니터" />
 
-      {/* 뷰 전환 탭 — 프로세스 목록 ⇄ 디스크 용량 분석(disk-usage 설계 §3.4) */}
+      {/* 뷰 전환 탭 — 프로세스 목록 ⇄ 디스크 용량 분석(disk-usage 설계 §3.4)
+          ⇄ 시스템 정보(태스크 31 §3.3) */}
       <div className="flex shrink-0 items-center gap-0.5 border-b border-edge bg-panel px-2">
         {(
           [
             ["proc", "프로세스"],
             ["disk", "디스크"],
+            ["info", "시스템 정보"],
           ] as const
         ).map(([k, label]) => (
           <button
@@ -392,6 +395,7 @@ export function SysMonitorWindow() {
       </div>
 
       {view === "disk" ? <DiskUsageView /> : null}
+      {view === "info" ? <SystemInfoView /> : null}
 
       {/* ── 프로세스 뷰 ── */}
       {view === "proc" ? (

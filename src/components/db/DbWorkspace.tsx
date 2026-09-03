@@ -1,11 +1,10 @@
-import { monaco } from "../diff/monaco-setup";
+import { ensureMonacoTheme, monaco } from "../diff/monaco-setup";
 
 import { Editor } from "@monaco-editor/react";
 import { Play, Plus, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { isSqlEngine } from "../../lib/ipc";
-import { monacoThemeOf } from "../../lib/themes";
 import { useDbConnections, useSettings, useTableMeta } from "../../queries";
 import { LIMIT_OPTIONS, useDb } from "../../stores/db";
 import { useUi } from "../../stores/ui";
@@ -25,7 +24,7 @@ function QueryEditor() {
   const lang = sql ? "sql" : activeEngine === "redis" ? "plaintext" : "javascript";
   const dialect = sql ? "sql" : activeEngine === "redis" ? "redis" : "mongo-js";
   const { data: settings } = useSettings();
-  const theme = monacoThemeOf(settings?.theme);
+  const theme = ensureMonacoTheme(settings?.theme);
 
   return (
     <div className="flex h-[210px] shrink-0 flex-col border-b border-edge">

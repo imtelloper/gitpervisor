@@ -1,6 +1,6 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 
-import type { ThemeName } from "./themes";
+import type { ThemeId, ThemeName } from "./themes";
 
 export interface Project {
   id: string;
@@ -180,7 +180,7 @@ export interface LogPage {
 // ---- M4: 설정 ----
 // 테마 유니온의 원천은 themes.ts(레지스트리) — 여기선 재노출만 한다.
 // (themes.ts는 ipc를 import하지 않으므로 순환 없음)
-export type { ThemeName };
+export type { ThemeId, ThemeName };
 
 /** AI 완료 알림 모드 — off=끔, project-inactive=프로젝트 단위·창 비활성 시만,
  *  terminal=터미널 단위 매번, always=항상. */
@@ -191,7 +191,7 @@ export interface Settings {
   remoteRefreshMinutes: number; // 원격 새로고침(배경 fetch) 주기 — 0 = 끔, 기본 5분
   diffFontSize: number;
   confirmDiscard: boolean;
-  theme: ThemeName;
+  theme: ThemeId; // 내장 6종 또는 사용자 정의 `custom-…`(정의는 localStorage — 태스크 29)
   terminalShell: string | null; // null/빈값 = 자동(pwsh→powershell→cmd / $SHELL)
   terminalFontSize: number;
   notifyMode: NotifyMode;
@@ -518,6 +518,86 @@ export interface KillOutcome {
   killed: number;
   failed: number[];
   skipped: number[]; // 앱 자신·앱 번들 안 프로세스 — 시도조차 하지 않음
+}
+
+// ---- 시스템 정보 (sys_info_static — DOCS/task/31-sysmon-system-info.md §3.2) ----
+// 전 필드가 Rust 구조체와 camelCase 1:1. 못 구한 항목은 null(플랫폼별로 다르다) —
+// 이유는 SystemInfo.notes에 문장으로 담기고, 뷰가 "정보 없음" 툴팁에 쓴다.
+export interface OsInfo {
+  name: string;
+  version: string;
+  build: string;
+  kernel: string;
+  arch: string;
+  hostName: string;
+  bootTimeMs: number;
+  uptimeSecs: number;
+  installDate: string | null;
+  userName: string | null;
+}
+export interface CpuInfo {
+  brand: string;
+  vendor: string;
+  physicalCores: number | null;
+  logicalCores: number;
+  baseMhz: number | null;
+  maxMhz: number | null;
+  currentMhzAvg: number | null;
+  cacheL1Kb: number | null;
+  cacheL2Kb: number | null;
+  cacheL3Kb: number | null;
+}
+export interface MemoryModule {
+  slot: string;
+  capacityBytes: number;
+  speedMhz: number | null;
+  manufacturer: string | null;
+  partNumber: string | null;
+}
+export interface MemoryInfo {
+  totalBytes: number;
+  swapTotalBytes: number;
+  modules: MemoryModule[]; // 슬롯별 물리 모듈 — Windows(CIM)만. 그 외는 빈 배열
+}
+export interface GpuInfo {
+  name: string;
+  driverVersion: string | null;
+  driverDate: string | null;
+  vramBytes: number | null;
+  isDiscrete: boolean | null;
+}
+export interface BoardInfo {
+  manufacturer: string;
+  product: string;
+  biosVendor: string;
+  biosVersion: string;
+  biosDate: string;
+}
+export interface VolumeInfo {
+  name: string;
+  mount: string;
+  fs: string;
+  kind: "ssd" | "hdd" | "unknown";
+  totalBytes: number;
+  availableBytes: number;
+  removable: boolean;
+}
+export interface AppInfo {
+  version: string;
+  tauriVersion: string;
+  webviewVersion: string;
+  buildProfile: "debug" | "release";
+}
+export interface SystemInfo {
+  collectedAtMs: number;
+  os: OsInfo;
+  cpu: CpuInfo;
+  memory: MemoryInfo;
+  gpus: GpuInfo[];
+  board: BoardInfo | null;
+  volumes: VolumeInfo[];
+  app: AppInfo;
+  notes: string[]; // 수집 실패 항목 사유("CIM: 시간 초과" 등)
 }
 
 // ---- Claude 사용량(rate_limits) — 좌측 하단 usage 바 ----
@@ -1228,6 +1308,15 @@ export const ipc = {
   // 작업 끝내기 — pid 목록 종료(프론트가 파괴적 확인 후 호출). 실패 pid는 결과로 안내.
   killProcesses: (pids: number[]) =>
     callMutating<KillOutcome>("kill_processes", { pids }),
+  // 시스템 정보 탭 — 탭을 열 때 1회 수집하고 백엔드가 캐시한다(force로 재수집).
+  // PowerShell CIM/system_profiler 기동이 수 초라 타임아웃만 길게, 나머지는 폴링 커맨드와
+  // 같은 규약(background 레인, 재시도 없음 — 실패는 "수집 실패"로 보여주고 사용자가 재시도).
+  sysInfoStatic: (force = false) =>
+    call<SystemInfo>(
+      "sys_info_static",
+      { force },
+      { lane: "background", attempts: 1, timeoutMs: 30_000 },
+    ),
   // ---- 디스크 용량 분석 (disk_scan.rs) ----
   // 스캔 대상 후보 볼륨 — 클릭 시 1회 열거.
   diskRoots: () =>
