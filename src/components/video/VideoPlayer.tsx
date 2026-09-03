@@ -469,6 +469,19 @@ export default function VideoPlayer({
     setOutPt(t);
     if (inPt != null && inPt >= t) setInPt(null);
   };
+  /** 구간 버튼의 **다음** 동작. 버튼이 하나라 지금 무엇이 찍히는지는 이 값이 전부다. */
+  const rangeStep: "in" | "out" | "restart" =
+    inPt == null ? "in" : outPt == null ? "out" : "restart";
+  /** 구간 지정 한 버튼 — 1클릭 시작, 2클릭 끝, 완성 뒤 누르면 새 구간.
+   *  I/O 키는 그대로 둔다: 끝만 다시 잡는 건 버튼 사이클로는 못 하고 키로만 된다. */
+  const cycleRange = () => {
+    if (rangeStep === "out") markOut();
+    else {
+      if (rangeStep === "restart") setOutPt(null);
+      markIn();
+    }
+  };
+
   /** 현재 위치에 분할 틱 추가 — 100ms 안에 이미 있으면 무시(같은 자리 중복 방지). */
   const addTick = () => {
     const t = videoRef.current?.currentTime ?? time;
@@ -950,19 +963,35 @@ export default function VideoPlayer({
             </button>
           </div>
           <div className="flex items-center gap-1">
+            {/* 구간 지정 — 버튼 하나로 시작→끝→새 구간을 돈다. 두 칸(I·O)이던 시절엔 어느 쪽이
+                다음 차례인지 화면에 없어서, 이미 찍은 I를 또 누르는 일이 잦았다. 라벨이 곧
+                "다음에 찍히는 것"이라 상태가 버튼 자체에 드러난다. */}
             <button
-              onClick={markIn}
-              title="구간 시작 지정 (I)"
-              className={`${btnCls} font-semibold ${inPt != null ? "text-add" : ""}`}
+              onClick={cycleRange}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                clearRange();
+              }}
+              title={
+                rangeStep === "in"
+                  ? "구간 시작 지정 (I 키) · 우클릭으로 구간 해제"
+                  : rangeStep === "out"
+                    ? `구간 끝 지정 — 시작 ${fmtTime(inPt!)} (O 키) · 우클릭으로 해제`
+                    : `새 구간 시작 — 지금 구간(${fmtTime(inPt!)} ~ ${fmtTime(outPt!)})을 지우고 다시 찍습니다 · 우클릭으로 해제`
+              }
+              aria-label={
+                rangeStep === "in"
+                  ? "구간 시작 지정"
+                  : rangeStep === "out"
+                    ? "구간 끝 지정"
+                    : "새 구간 시작"
+              }
+              className={`${btnCls} flex items-center gap-0.5 font-semibold ${
+                rangeStep === "out" ? "text-add" : rangeStep === "restart" ? "text-accent" : ""
+              }`}
             >
-              I
-            </button>
-            <button
-              onClick={markOut}
-              title="구간 끝 지정 (O)"
-              className={`${btnCls} font-semibold ${outPt != null ? "text-danger" : ""}`}
-            >
-              O
+              {rangeStep === "out" ? "O" : "I"}
+              {rangeStep === "restart" && <RotateCcw size={10} />}
             </button>
             <button
               onClick={() => setLoopOn((v) => !v)}
