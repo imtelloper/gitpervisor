@@ -9,6 +9,7 @@ import {
 } from "../../stores/terminals";
 import { BrowserPane } from "./BrowserPane";
 import { PaneControls } from "./PaneControls";
+import { PromptLogButton, ThemeButton } from "./TermSessionControls";
 import { TerminalPane } from "./TerminalPane";
 
 interface ViewProps {
@@ -111,7 +112,8 @@ function LeafView({
     );
   }
 
-  // 터미널 패널은 바가 없으므로 우상단 호버 오버레이로 띄운다.
+  // 터미널 패널은 바가 없으므로 우상단 호버 오버레이로 띄운다 — 오버레이 자체는 TerminalPane이
+  // xterm 호스트 안에 그린다(프롬프트 컬럼 헤더의 X를 덮지 않게 — TerminalPane의 주석 참고).
   return (
     <div className="group/pane relative h-full w-full">
       <TerminalPane
@@ -120,10 +122,15 @@ function LeafView({
         paneId={leaf.paneId}
         active={active}
         fontSize={fontSize}
+        controls={
+          <>
+            <ThemeButton termId={leaf.paneId} />
+            <PromptLogButton termId={leaf.paneId} />
+            <span className="mx-0.5 h-3 w-px bg-edge" />
+            {controls}
+          </>
+        }
       />
-      <div className="absolute right-1 top-1 z-30 flex items-center rounded-md border border-edge bg-panel/95 p-0.5 opacity-0 shadow-lg transition-opacity group-hover/pane:opacity-100">
-        {controls}
-      </div>
     </div>
   );
 }

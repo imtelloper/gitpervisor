@@ -20,6 +20,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { OpenTarget, Project } from "../../lib/ipc";
 import { errorMessage, ipc } from "../../lib/ipc";
 import { usePanelWidth } from "../../lib/use-panel-width";
+import { useProjectHues } from "../../lib/project-color";
 import {
   useAddProject,
   useProjects,
@@ -78,6 +79,8 @@ export function ProjectList() {
   const sortByChanges = useUi((s) => s.projectSortByChanges);
   const toggleProjectSort = useUi((s) => s.toggleProjectSort);
   const { width, startResize } = usePanelWidth("gp:projects-width", 240, 170, 440);
+  // 행 배경색 — 이름순 전체 배정이라 표시 순서(정렬·드래그)가 바뀌어도 색은 그대로다.
+  const hues = useProjectHues();
   const gitOps = useProjectGitOps();
   const statusById = useMemo(
     () => new Map((statuses ?? []).map((s) => [s.projectId, s])),
@@ -406,6 +409,7 @@ export function ProjectList() {
             isOver={overId === p.id && dragId !== p.id}
             isDragging={dragId === p.id}
             onPointerDownDrag={beginDrag}
+            hue={hues.get(p.name) ?? 0}
           />
         ))}
         {/* 맨 끝에 삽입할 때의 표시선 */}

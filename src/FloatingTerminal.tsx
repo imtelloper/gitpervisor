@@ -5,8 +5,10 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Undo2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import { Toasts } from "./components/common/Toast";
 import { FloatTitleBar } from "./components/FloatTitleBar";
 import { PaneTreeRoot } from "./components/workspace/PaneTree";
+import { PromptHistoryButton } from "./components/workspace/TermSessionControls";
 import { floatPoolReady } from "./lib/floating";
 import { ipc } from "./lib/ipc";
 import {
@@ -212,18 +214,28 @@ function FloatWorkspace({
       <FloatTitleBar
         title={title}
         actions={
-          <button
-            onClick={() => void redock()}
-            title="이 창의 터미널을 메인 창으로 되돌립니다 — 모아보기가 열려 있으면 거기 나타납니다"
-            className="flex h-full shrink-0 items-center gap-1 px-2 text-[11px] text-fg-muted transition-colors hover:bg-raised hover:text-fg"
-          >
-            <Undo2 size={12} /> 메인으로 되돌리기
-          </button>
+          <>
+            {/* 이 창의 pane 전체(분할로 늘린 것 포함) 프롬프트 컬럼 마스터 토글. useTerminals가
+                창별 독립 스토어라(stores/terminals ROLE float) 대상은 저절로 이 창의 pane만이다 —
+                메인·다른 플로팅 창의 컬럼 상태는 바뀌지 않는다. */}
+            <PromptHistoryButton className="h-full shrink-0 px-2 text-[11px]" />
+            <button
+              onClick={() => void redock()}
+              title="이 창의 터미널을 메인 창으로 되돌립니다 — 모아보기가 열려 있으면 거기 나타납니다"
+              className="flex h-full shrink-0 items-center gap-1 px-2 text-[11px] text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+            >
+              <Undo2 size={12} /> 메인으로 되돌리기
+            </button>
+          </>
         }
       />
       <div className="min-h-0 flex-1">
         <PaneTreeRoot tab={tab} projectId={projectId} fontSize={FONT} />
       </div>
+      {/* 컬럼 항목 복사 토스트가 이 창에서만 무음이었다 — 스토어는 창마다 별개라(웹뷰 = 별도 JS
+          컨텍스트) 메인 창의 호스트가 여기 대신 그려 주지 않는다(AggregateWindow와 같은 이유).
+          확인 모달은 이 창에 askConfirm 경로가 없어 달지 않는다. */}
+      <Toasts />
     </div>
   );
 }

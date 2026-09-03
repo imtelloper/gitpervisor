@@ -16,6 +16,7 @@ import { memo } from "react";
 import { formatBytes, relativeTime } from "../../lib/format";
 import type { Project } from "../../lib/ipc";
 import { errorMessage } from "../../lib/ipc";
+import { projectTint } from "../../lib/project-color";
 import { useNotes, useProjectSize, useStatus } from "../../queries";
 import { useAgentActivity } from "../../stores/agentActivity";
 import { dotStateOf, StatusDot } from "../common/StatusDot";
@@ -32,6 +33,7 @@ export const ProjectItem = memo(function ProjectItem({
   isOver,
   isDragging,
   onPointerDownDrag,
+  hue,
 }: {
   project: Project;
   selected: boolean;
@@ -44,6 +46,8 @@ export const ProjectItem = memo(function ProjectItem({
   isDragging?: boolean;
   /** 포인터 드래그 시작(좌클릭 후 임계 이동 시 정렬 드래그로 전환) */
   onPointerDownDrag?: (e: React.PointerEvent, id: string) => void;
+  /** 프로젝트 색상(hue) — 이름순 전체 배정(useProjectHues). 모아보기 칩·셀 헤더와 같은 값. */
+  hue: number;
 }) {
   const { data: status, isLoading, error } = useStatus(project.id);
   const { data: notes } = useNotes();
@@ -91,10 +95,18 @@ export const ProjectItem = memo(function ProjectItem({
       onPointerDown={
         onPointerDownDrag ? (e) => onPointerDownDrag(e, project.id) : undefined
       }
-      className={`group relative cursor-pointer select-none border-l-2 px-3 py-2 ${
-        selected
-          ? "border-accent bg-selection"
-          : "border-transparent hover:bg-raised"
+      // 배경은 프로젝트 색이다 — 색만 보고도 어느 프로젝트인지 기억할 수 있게(모아보기 칩과 같은 색).
+      // hover 강조는 CSS가 하도록 변수 두 개로 넘긴다: 인라인 backgroundColor로 칠하면
+      // 인라인이 hover: 클래스를 이겨 hover가 죽는다. 선택 행은 두 값이 같아 hover 변화가 없다
+      // (오늘의 bg-selection 행과 같은 거동) — 선택 표시는 border-accent가 계속 맡는다.
+      style={
+        {
+          "--tint": projectTint(hue, selected ? "row-on" : "row"),
+          "--tint-hover": projectTint(hue, "row-on"),
+        } as React.CSSProperties
+      }
+      className={`group relative cursor-pointer select-none border-l-2 px-3 py-2 bg-(--tint) hover:bg-(--tint-hover) ${
+        selected ? "border-accent" : "border-transparent"
       } ${isDragging ? "opacity-40" : ""} ${
         agent === "working" ? "ai-working" : agent === "done" ? "ai-done" : ""
       }`}

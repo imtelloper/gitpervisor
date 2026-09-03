@@ -16,11 +16,72 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const J = JSON.stringify;
 const WIN_API = "/node_modules/@tauri-apps/api/webviewWindow.js";
 const EVT_API = "/node_modules/@tauri-apps/api/event.js";
+const LABEL_EXPR = "window.__TAURI_INTERNALS__?.metadata?.currentWebview?.label";
 
-export async function run({ cdp, report: r, fix }) {
+/**
+ * 한 페이지에 붙는 **최소** CDP 클라이언트 — eval 하나뿐이다.
+ * 러너의 `cdp`는 라벨 `main` 페이지 하나라(lib/cdp.mjs connect) 플로팅 창의 DOM을 못 본다.
+ * lib/cdp.mjs에 export를 늘리는 대신(다른 작업이 편집 중인 파일) 여기서 필요한 만큼만 갖는다.
+ * 연결 실패는 throw 없이 null — 풀 창이 방금 닫혔을 수 있다.
+ */
+async function attachPage(page) {
+  const ws = new WebSocket(page.webSocketDebuggerUrl);
+  const ok = await new Promise((res) => {
+    ws.onopen = () => res(true);
+    ws.onerror = () => res(false);
+  });
+  if (!ok) return null;
+  let seq = 0;
+  const pending = new Map();
+  ws.onmessage = (m) => {
+    const msg = JSON.parse(m.data);
+    const fn = pending.get(msg.id);
+    if (fn) {
+      pending.delete(msg.id);
+      fn(msg);
+    }
+  };
+  const send = (method, params) =>
+    new Promise((res, rej) => {
+      const mid = ++seq;
+      const timer = setTimeout(() => {
+        pending.delete(mid);
+        rej(new Error(`CDP ${method} 응답 시간 초과`));
+      }, 20000);
+      pending.set(mid, (msg) => {
+        clearTimeout(timer);
+        res(msg);
+      });
+      ws.send(JSON.stringify({ id: mid, method, params: params || {} }));
+    });
+  await send("Runtime.enable");
+  return {
+    eval: async (expression) => {
+      const res = await send("Runtime.evaluate", {
+        expression,
+        awaitPromise: true,
+        returnByValue: true,
+      });
+      const d = res.result?.exceptionDetails;
+      if (d) throw new Error(`page eval 예외: ${d.exception?.description || d.text || ""}`);
+      return res.result?.result?.value;
+    },
+    close: () => {
+      try {
+        ws.close();
+      } catch (_) {
+        /* noop */
+      }
+    },
+  };
+}
+
+export async function run({ cdp, report: r, fix, port }) {
+  const cdpPort = port ?? cdp.cdpPort ?? 29222;
   const TID = "gpv-e2e-float"; // 기존 케이스 — 생성·소멸
   const TID_R = "gpv-e2e-redock"; // redock — 창이 죽어도 PTY 생존
   const TID_N = "gpv-e2e-noredock"; // 회귀 가드 — 미등록이면 기존대로 PTY 종료
+  const TID_H = "gpv-e2e-float-hist"; // 히스토리 마스터 토글·토스트 호스트
   const opened = new Set(); // finally 정리용(실패로 빠져나가도 창을 남기지 않는다)
   let redockTabId = null;
 
@@ -87,6 +148,36 @@ export async function run({ cdp, report: r, fix }) {
       rows: 24,
       onData: ch.ref,
     });
+  };
+
+  const poll = async (fn, ok, tries = 20, ms = 300) => {
+    let v;
+    for (let i = 0; i < tries; i++) {
+      v = await fn().catch(() => null);
+      if (ok(v)) return v;
+      await sleep(ms);
+    }
+    return v;
+  };
+
+  /** 라벨이 label인 플로팅 페이지에 두 번째 CDP를 붙인다. 풀 보충 창도 float-* 라벨이라
+   *  **정확히 일치**하는 것만 채택하고 나머지 연결은 즉시 닫는다(cdp.mjs connect와 같은 규칙). */
+  const attachFloat = async (label) => {
+    for (let i = 0; i < 20; i++) {
+      const list = await fetch(`http://127.0.0.1:${cdpPort}/json`, {
+        signal: AbortSignal.timeout(3000),
+      })
+        .then((res) => res.json())
+        .catch(() => []);
+      for (const p of (Array.isArray(list) ? list : []).filter((t) => t.type === "page")) {
+        const c = await attachPage(p).catch(() => null);
+        if (!c) continue;
+        if ((await c.eval(LABEL_EXPR).catch(() => null)) === label) return c;
+        c.close();
+      }
+      await sleep(500);
+    }
+    return null;
   };
 
   try {
@@ -192,6 +283,87 @@ export async function run({ cdp, report: r, fix }) {
       }
     }
 
+    // ── 히스토리 마스터 토글 + 토스트 호스트(태스크 25) ──
+    const openH = await openPty(TID_H);
+    if (r.check("term_open: 히스토리용 PTY 생성", openH.ok, openH.code || "")) {
+      const fh = await openFloat(TID_H);
+      const fcdp = fh.label ? await attachFloat(fh.label) : null;
+      if (!fcdp)
+        r.skip(
+          "플로팅 창 히스토리 마스터 토글",
+          fh.label ? "플로팅 페이지 CDP 연결 실패" : "창 미발견",
+        );
+      else {
+        const openCols = () =>
+          fcdp.eval(`document.querySelectorAll('button[title="프롬프트 목록 닫기"]').length`);
+        const clickMaster = () =>
+          fcdp.eval(`(()=>{ const b=[...document.querySelectorAll('header button')].find(x=>/히스토리/.test(x.textContent||''));
+            if(b){ b.click(); return true; } return false; })()`);
+        try {
+          // 시드 완료(attach 뒤 로컬 스토어에 탭 1개) → 창 안에서 분할 → pane 2개. 메인 스토어는 불변.
+          const seeded = await poll(
+            () => fcdp.eval(`window.__gpv.terminals.getState().terminals.length`),
+            (n) => n === 1,
+          );
+          r.check("플로팅 창: 로컬 스토어 시드", seeded === 1, `tabs=${seeded}`);
+          const mainTabs = await cdp.eval(`window.__gpv.terminals.getState().terminals.length`);
+          await fcdp.eval(`(()=>{ const s=window.__gpv.terminals.getState(); const t=s.terminals[0];
+            s.splitPane(t.id, t.activePaneId, "row", false); })()`);
+          const panes = await poll(
+            () => fcdp.eval(`document.querySelectorAll('.xterm').length`),
+            (n) => n >= 2,
+          );
+          r.check("플로팅 창: 분할로 pane 2개", panes >= 2, `xterm=${panes}`);
+          r.check(
+            "분할이 메인 스토어를 건드리지 않음(창별 독립)",
+            (await cdp.eval(`window.__gpv.terminals.getState().terminals.length`)) === mainTabs,
+          );
+
+          r.check("사전: 프롬프트 컬럼 0개", (await openCols()) === 0);
+          r.check("타이틀바에 히스토리 버튼 존재·클릭", await clickMaster());
+          const openedCols = await poll(openCols, (n) => n === panes); // `opened`(Set)와 이름 충돌 금지
+          r.check("마스터 켬 → 이 창의 모든 pane에 컬럼", openedCols === panes, `${openedCols}/${panes}`);
+          // 상태는 세션 단위 영속 — 같은 origin localStorage를 메인 페이지에서 읽어 확인(promptHistory PANEL_KEY).
+          const persisted = await cdp.eval(
+            `(()=>{ try { return !!JSON.parse(localStorage.getItem('gp:prompt-panel-open')||'{}')[${J(TID_H)}]; } catch { return false; } })()`,
+          );
+          r.check("열림 상태 localStorage 영속(메인에서 관측)", persisted === true);
+
+          await clickMaster();
+          const closed = await poll(openCols, (n) => n === 0);
+          r.check("마스터 끔 → 컬럼 0개", closed === 0, `cols=${closed}`);
+
+          // 토스트 호스트 — 항목 클릭은 클립보드를 건드리므로 pushToast로 호스트 존재만 확인.
+          await fcdp.eval(`window.__gpv.ui.getState().pushToast("success","e2e-float-toast")`);
+          const toast = await poll(
+            () => fcdp.eval(`document.body.textContent.includes('e2e-float-toast')`),
+            (v) => v === true,
+            10,
+            200,
+          );
+          r.check("플로팅 창에 토스트 렌더(호스트 존재)", toast === true);
+          await fcdp
+            .eval(
+              `(()=>{ const u=window.__gpv.ui.getState(); u.toasts.forEach(t=>u.dismissToast(t.id)); })()`,
+            )
+            .catch(() => {});
+        } finally {
+          // 컬럼이 열린 채 창을 닫으면 gp:prompt-panel-open에 e2e id가 남는다 — 끄고 닫는다(best-effort).
+          await fcdp
+            .eval(
+              `(()=>{ const n=document.querySelectorAll('button[title="프롬프트 목록 닫기"]').length;
+                if(n){ const b=[...document.querySelectorAll('header button')].find(x=>/히스토리/.test(x.textContent||'')); b&&b.click(); } })()`,
+            )
+            .catch(() => {});
+          fcdp.close();
+          if (fh.label) {
+            await closeLabel(fh.label);
+            opened.delete(fh.label);
+          }
+        }
+      }
+    }
+
     // ── 회귀 가드: 등록 없이 닫으면 기존 동작 그대로 PTY가 죽는다 ──
     // (redock 케이스 뒤에 둔다 — redock_skip에 잔여가 남았다면 여기서 PTY가 살아남아 실패한다.)
     const openN = await openPty(TID_N);
@@ -230,6 +402,6 @@ export async function run({ cdp, report: r, fix }) {
         .eval(`window.__gpv?.terminals?.getState().closeTab(${J(redockTabId)})`)
         .catch(() => {});
     await sleep(300);
-    for (const id of [TID, TID_R, TID_N]) await cdp.try("term_close", { termId: id });
+    for (const id of [TID, TID_R, TID_N, TID_H]) await cdp.try("term_close", { termId: id });
   }
 }

@@ -160,6 +160,60 @@
 | 21 | 노출 시점 3번째 실행 vs 첫 실행 즉시 | 3번째 실행 |
 | 20 | 재확인 주기 | 12시간 |
 
+## 7. 터미널 히스토리 접근성·툴팁·자동배치·프로젝트 색 (23~28) — 2026-09-02
+
+> 상위 설계: `DOCS/pane-history-tooltip-layout-design.md`(요구 5건 → 태스크 A1~D2). 근거: 워크플로 조사
+> (코드 사실 3갈래 + 초안 반박 2관점, CDP 실측) → 문서 6개 작성 → 문서별 코드 대조 교정 → 문서 간 정합 검토.
+> **구현 상태(2026-09-03)**: 23~28 전부 **구현·검증 완료(미커밋)** — tsc 0, 단독 스위트 13(27 pass)·14(60 pass)·19(38 pass), 실기는 각 문서
+> 구현 결과 절. 리뷰 minor 3건 반영. 후속 결함 1건(23 §10 — 병합 오버레이가 컬럼 헤더 X를 덮음) 수정·검증. **미해결**: 14의 24번 단언
+> "셀 메뉴 '프롬프트 목록 닫기' → 닫힘" 간헐 실패(5회 중 2회, 라벨이 '열기'로 남음 — 원인 미규명).
+>
+> **여섯 태스크 모두 Rust 변경 0.** 줄번호는 워킹트리 기준(HEAD 14108eb; `stores/ui.ts`·`main.tsx`·`tests/e2e/lib/cdp.mjs`는
+> 태스크 20~22의 미커밋 변경을 포함 — 심볼로 찾는다).
+
+| # | 태스크 | 문서 | 규모 | 핵심 판단 | 주요 위험 |
+|---|--------|------|------|-----------|-----------|
+| 23 | 터미널 pane 세션 컨트롤 오버레이 병합 | [23-pane-controls-merge.md](23-pane-controls-merge.md) | **S** | **버튼은 있는데 눌리지 않는다** — TerminalPane의 z-10 세션 클러스터(테마·히스토리)가 같은 앵커의 PaneTree z-30 PaneControls 오버레이에 완전 피복(클래스 치수 119 ⊇ 76~90px + CDP 실측). PaneTree 오버레이 하나에 ThemeButton·PromptLogButton(+구분선)을 편입하고 클러스터·중복 최대화/닫기·전용 셀렉터 삭제(≈ +8/−25). `Maximize2/Minimize2/X` import는 PaneMenu가 쓰므로 유지(상위 설계 정정), 팔레트 메뉴가 오버레이 opacity에 묶이지 않게 `focus-within:opacity-100` 추가 | e2e `elementFromPoint`는 opacity와 무관해 hover 가시성 회귀를 못 잡는다 — 실제 포인터 실기 필수. 24와 TerminalPane.tsx 공유 → 순차 |
+| 24 | 우클릭 메뉴 "프롬프트 목록 열기/닫기" | [24-history-context-menu.md](24-history-context-menu.md) | **S** | PaneMenu(워크스페이스·플로팅)와 ChipMenu(모아보기 메인 안·별도 창)에 MenuItem 1개씩 — 상태별 한 동사 라벨·세션 어휘 "프롬프트 목록", 기존 `togglePanel/openPanels` 그대로(신설 0). ChipMenu는 컨테이너가 `shown && kind==="terminal"`을 판정해 콜백을 넘김. 하단 클램프는 CDP 실측(PaneMenu 413px)에서 유도 — **PaneMenu 240→448, ChipMenu 200→248**(상위 설계의 270/240은 현재 값이 이미 173px 부족한 사실을 놓쳤다) | 하드코딩 클램프가 이미 한 번 낡아 있었다 — 유도식 주석 + "창 바닥 우클릭 시 메뉴 바닥 ≤ innerHeight" e2e 단언. ChipMenu 높이는 계산값 → 실기 확정 |
+| 25 | 플로팅 창 타이틀바 히스토리 마스터 토글 + 토스트 호스트 | [25-float-window-history.md](25-float-window-history.md) | **S** | 기존 `PromptHistoryButton`을 FloatTitleBar actions(되돌리기 왼쪽)에 그대로 — 플로팅 창의 `useTerminals`가 창별 독립 스토어라 대상이 저절로 "이 창의 pane만". `<Toasts/>`를 FloatWorkspace 루트에 마운트해 복사 토스트 무음 해소. title 문구 "전체 프롬프트 목록 펼치기/접기 — 이 창의 모든 터미널 우측…"(세 사용처 공통, prop 없음). ~14 LOC | 되돌리기 실패는 여전히 console.error(오픈 이슈). 플로팅 창 e2e는 러너 CDP가 메인 하나라 `cdp.mjs` export+라벨 attach 헬퍼가 필요(다른 세션이 편집 중인 파일) |
+| 26 | 프롬프트 컬럼 호버 카드(비상호작용 툴팁) | [26-history-hover-card.md](26-history-hover-card.md) | **S~M** | 항목 native `title` → `pointer-events-none fixed z-50 role="tooltip"` 카드(DragGhost 계열). 리스트 단위 hover 상태 하나, 최초 150ms·항목 간 즉시 전환, 컨테이너 leave/scroll 숨김, `list.find` 가드, `useOccludesWebview(!!entry)`. 가로 `W=max(240,min(480,left−16))` 항목 왼쪽, 세로 50% 뒤집기 + 앵커 쪽 여유로 `maxHeight`(30줄 카드 ≈676px는 720px 창 60vh도 넘침). 헤더·푸터 `fg-muted`(상위 설계 fg-dim은 darcula 2.90:1). Escape·스크롤 없음 | 좁은 셀 깜빡임 루프는 pointer-events-none으로 정의상 소멸 — e2e가 computed `pointerEvents==="none"`으로 실측. React는 `mouseover/mouseout`에서 enter/leave를 합성 — e2e 이벤트 선택 주의 |
+| 27 | 모아보기 자동배치 모드(그리드 / 세로 컬럼) | [27-aggregate-layout-mode.md](27-aggregate-layout-mode.md) | **S~M** | `useUi.aggregateLayout`(`gp:aggregate-layout`) + `shapeFor(mode,n)` 순수 함수 하나로 렌더와 `evenTracks(mode)`가 같은 rows/rowLens(columns = `min(n,4)` — 1100px에서 5열부터 MIN_W 미달). 트랙 키 `n${n}` 유지·마이그레이션 없음(아이콘 클릭 = 항상 균등). hover는 래퍼 span, 버튼은 `disabled`→`aria-disabled`(React 19.2.7 `getListener`가 disabled 버튼의 onMouseEnter를 거른다). 묶음 칩과 공유 `useDelayedClose(150)`, 점유 `|| !!layoutMenu` | "균등 상태에서 팝오버가 안 열림"은 정적 검증으로 절대 안 보이는 유형 — e2e가 aria-disabled 상태에서 `mouseover` 유도로 열림 단언. 렌더↔evenTracks 모양 불일치는 저장 검증에 가려지는 조용한 버그 → shapeFor 단일화 |
+| 28 | 프로젝트 색 공유 모듈 + 사이드바 행 배경 | [28-project-colors.md](28-project-colors.md) | **S~M** | `lib/project-color.ts` 신설(팔레트·`assignProjectHues` + 슬롯 소진 시 `taken.clear()`·`projectTint(hue, "off"\|"on"\|"row"\|"row-on")`·`useProjectHues()` 전체 프로젝트 이름순 배정)로 사이드바 행·모아보기 칩·셀 헤더가 한 맵을 본다. 행 배경은 `--tint/--tint-hover` 변수 + `bg-(--tint) hover:bg-(--tint-hover)`(Tailwind 4.3 실증). **대비 목표 재정의**: 절대 4.5/4.5/3.0은 오늘의 행도 못 넘어(darcula dim 2.90) "fg ≥ 4.5 + muted/dim은 현행 bg-selection 기준선 이상" — 초기 알파 다크 .28/.35·라이트 .10/.15·solarized-light .06/.10 | Tailwind가 조립 클래스를 스캔 못 해 배경 투명인데 tsc는 통과하는 유형(e2e computed backgroundColor 가드). solarized-light는 selection≈panel이라 보이는 틴트가 전부 기준선 아래 — 거의 안 보이는 알파 vs 선택행 fg-muted 4.04→3.72 중 택일 |
+
+### 7.1 권장 구현 순서
+
+```
+23 → 24 → 25 → 26 · 27 → 28
+```
+- **23→24**: `TerminalPane.tsx` 공유. 23이 22줄을 지워 24의 앵커가 밀린다(PaneMenu :164→:142 — 24 §5 대응표). 24의 `promptOpen` 구독은 PaneMenu 함수 안이라 TerminalPane :55와 스코프 충돌 없음.
+- **24→27→28**: `AggregateTerminals.tsx` 공유 — 24 ≈+19줄, 27 ≈+40~90줄. 28의 `lib/project-color.ts`·`styles.css`·`ProjectList/Item`은 겹치지 않아 병행 가능, `AggregateTerminals` 전환 단계만 27 뒤.
+- **25→26**: `TermSessionControls.tsx` 공유 — 25는 같은 줄 수 치환이라 26의 PromptSidePanel 앵커 불변.
+- **e2e 14 삽입 순서**: `#2a`(23) → `#2c`(24) → `#2d`(26) · `#11a`(24) → `#11d`(27) → `#12`(28). `paneId`는 23이 함수 스코프에 한 번만 선언(`let` + `openTerminal` 반환 수신) — 24·26은 재선언 금지(try 스코프 `const`는 앞 블록을 TDZ로 죽인다). `finally` 원복은 26(`promptHistory.clear`)·27(`setAggregateLayout(orig)`)만.
+
+### 7.2 사용자 결정이 필요한 열린 질문
+
+| 태스크 | 질문 | 설계 기본값(미응답 시) |
+|--------|------|------------------------|
+| 23 | 세션 버튼 16px vs TBtn 21px 히트박스를 맞출지 | 그대로(TermSessionControls는 25→26 소유 — 거슬리면 이후 size prop 1커밋) |
+| 24 | 숨김 셀의 칩 메뉴에서 항목을 빼기 vs aria-disabled로 보이기 | 뺀다 |
+| 24 | 클램프 상수 유지 + 유도식 주석 vs 지금 ref 실측으로 전환 | 상수(세 번째 변경부터 전환) |
+| 25 | 되돌리기 실패(console.error)를 `pushToast("error")` 1줄로 표면화 | 범위 밖 |
+| 26 | 헤더·푸터 `fg-muted`(solarized-light 4.39:1) 수용 | 수용(기존 컬럼 헤더 fg-dim 3.64보다 높다) |
+| 26 | `__gpv.promptHistory` DEV 노출(main.tsx 1줄) | 노출(videoSplit 관례, release 미포함) |
+| 27 | 팝오버 열기 지연 150ms를 처음부터(헤더를 스칠 때 점유 acquire로 브라우저 셀 깜빡임) | 넣지 않음(묶음 칩과 같은 수준 승계) |
+| 27 | n=2는 두 모드가 같은 모양 — 팝오버를 숨길지 | 그대로 노출(모드 저장은 이후 셀 수에 영향) |
+| 28 | solarized-light 알파 — 상대 기준선 준수 .06/.10 vs 라이트 공통 .10/.15 vs 틴트 0 | .06/.10 별도 블록 |
+| 28 | 다크 row-on .35 단일 vs monokai·dracula·nord만 .5 | .35 단일 |
+| 28 | 프로젝트 추가·제거 시 색 이동 수용 vs `gp:project-hue` 영속 | 결정적 배정(실기 기록으로 판단) |
+
+### 7.3 공통 준수 사항 (23~28)
+
+- **정적 검증만으로 통과 금지** — 각 문서 §7.2 실기 필수(hover 가시성·클램프·점유·대비는 e2e가 못 본다).
+- **fixed 팝오버/카드는 전부 `useOccludesWebview` 점유 등록**(26 `!!entry`, 27 기존 호출에 `|| !!layoutMenu`).
+- **공유 어휘·상수의 정의 문서는 하나**: 메뉴 라벨(24), PromptHistoryButton title(25 §3.3), `projectTint` level 인자(28), 아이콘 Grid2x2/Columns3(27), 클램프 448/248(24).
+- 같은 파일은 순차 납품 — 구현 시 앵커는 줄번호가 아니라 라벨 문자열·심볼로 잡고 각 문서 §5의 밀림 표를 참고.
+- `stores/ui.ts`·`main.tsx`·`cdp.mjs`는 태스크 20~22의 미커밋 변경 위에 얹는다 — HEAD 체크아웃·리베이스 금지.
+
 ## 8. 테마·이미지 창·시스템 정보·Windows 터미널 (29~33) — 2026-09-03
 
 > 근거: 코드 실측 2026-09-03(xterm 6.0.0·portable-pty 0.8.1·sysinfo 0.33 로컬 소스, NuGet ConPTY 패키지 내용 포함).

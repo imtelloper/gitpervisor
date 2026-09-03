@@ -1,10 +1,12 @@
 import {
   CircleCheck,
+  Columns3,
   ExternalLink,
   Eye,
   EyeOff,
   Globe,
   Grid2x2,
+  History,
   Layers,
   LayoutGrid,
   Loader2,
@@ -19,6 +21,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { Project } from "../lib/ipc";
 import { isMac, modLabel } from "../lib/platform";
+import { projectTint, useProjectHues } from "../lib/project-color";
 import {
   attachTerminal,
   createTerminal,
@@ -36,7 +39,7 @@ import {
   useTerminals,
 } from "../stores/terminals";
 import { useOccludesWebview } from "../stores/occlusion";
-import { useUi } from "../stores/ui";
+import { type AggregateLayout, useUi } from "../stores/ui";
 import { EmptyState } from "./common/EmptyState";
 import { BrowserPane } from "./workspace/BrowserPane";
 import {
@@ -49,51 +52,6 @@ import { MenuItem } from "./workspace/TerminalPane";
 
 // 모아보기 토글 단축키 라벨 — mac은 심볼 관례(⌘⇧A), 그 외는 Ctrl+Shift+A
 const hotkeyLabel = isMac ? `${modLabel}⇧A` : `${modLabel}+Shift+A`;
-
-// 프로젝트 색상환 — 균등 분할(30°씩)이 아니다. 균등하면 초록 구간(90~150°)에 여러 칸이 몰려
-// 눈으로 갈리지 않는다. 실제로 구분되는 지점만 골라 12개를 둔다.
-const PROJECT_HUES = [0, 25, 45, 75, 140, 168, 190, 215, 250, 280, 310, 335];
-
-/**
- * 프로젝트 이름 → 색 배정(한 화면 기준).
- *
- * 이름 해시로 자리를 잡되 **이미 쓰인 자리면 다음 빈 자리로 민다.** 해시만 쓰면 한 화면에
- * 같은 색이 두 번 나온다 — 실측: gitpervisor(82°)와 nqvm-vis(80°)가 사실상 같은 초록이었다.
- * 반대로 순번으로만 배정하면 프로젝트가 하나 늘 때 나머지 색이 전부 밀린다. 해시 + 충돌 회피는
- * 둘 다 피한다: 겹치지 않으면 이름이 색을 결정하고(창·세션이 달라도 같은 색), 겹칠 때만 밀린다.
- *
- * 색상(hue)만 돌려준다. 실제 칠은 **반투명 배경**이라(`projectTint`) 테마 배경 위에 얹히므로,
- * 라이트 2종·다크 4종 어디서든 글자 대비를 깨지 않고 칩만 물든다.
- */
-function assignProjectHues(names: string[]): Map<string, number> {
-  const taken = new Set<number>();
-  const out = new Map<string, number>();
-  for (const name of names) {
-    if (out.has(name)) continue;
-    let h = 0;
-    for (let i = 0; i < name.length; i++) h = (Math.imul(h, 31) + name.charCodeAt(i)) | 0;
-    const pref = Math.abs(h) % PROJECT_HUES.length;
-    let slot = pref;
-    // 프로젝트가 팔레트보다 많으면 결국 재사용할 수밖에 없다 — 한 바퀴만 돌고 포기한다.
-    for (let i = 0; i < PROJECT_HUES.length && taken.has(slot); i++) {
-      slot = (pref + i + 1) % PROJECT_HUES.length;
-    }
-    taken.add(slot);
-    out.set(name, PROJECT_HUES[slot]);
-  }
-  return out;
-}
-
-/**
- * 프로젝트 색 배경. 명도·알파는 테마 종류에 따라 갈리므로 CSS 변수로 뺐다(styles.css의
- * `--proj-*` 주석에 이유가 있다 — 같은 알파가 다크·라이트에서 반대로 작동한다).
- *
- * 선택 칩은 더 진하게(`strong`) — 선택 표시는 ring이 하지만 배경까지 같으면 색만 보이고
- * 선택 여부가 안 읽힌다.
- */
-function projectTint(hue: number, strong: boolean): string {
-  return `hsl(${hue} 70% var(--proj-l) / var(${strong ? "--proj-a-on" : "--proj-a-off"}))`;
-}
 
 /** 그리드 한 칸의 원본 메타 — 터미널 pane 또는 브라우저(분할 pane·독립 탭)를 한 목록으로 다룬다. */
 type CellSource =
@@ -136,6 +94,54 @@ const GAP = 6;
 // 호버 강조 없음 — 참조가 고정이라 매 leave마다 새 Set으로 리렌더를 만들지 않는다.
 const NO_HOVER: ReadonlySet<string> = new Set();
 
+/** 그리드 모드의 열 수 — 기존 동작 그대로(정사각에 가깝게). */
+const gridCols = (n: number) => (n <= 1 ? 1 : n <= 4 ? 2 : n <= 9 ? 3 : 4);
+/**
+ * 세로 컬럼은 좌우 한 줄, **4열 상한** — 1100px 창(별도 창 기본 폭 = 메인 최소 폭)에서
+ * 5열부터 셀 폭이 MIN_W(240) 아래로 떨어진다(4열 ≈ 267px, 5열 ≈ 213px).
+ * 하한 1: n=0에서 min(0,4)=0이면 rows = ceil(0/0) = NaN → 아래 `Array(rows)`가 RangeError를
+ * 던진다(트랙 계산은 n===0 EmptyState 분기보다 먼저 돈다). gridCols(0)=1과 같은 하한을 둔다.
+ */
+const colsFor = (mode: AggregateLayout, n: number) =>
+  mode === "columns" ? Math.max(1, Math.min(n, 4)) : gridCols(n);
+/**
+ * 모드·셀 수 → 열 수·행 수·행별 셀 수. 렌더와 `evenTracks(mode)`가 **같은 함수**를 본다 —
+ * 어긋나면 균등값이 저장 검증(길이 대조)에 걸려 렌더만 조용히 균등 폴백하고 스토어엔
+ * 엉뚱한 길이가 남는다(화면은 멀쩡해 보이는 유형).
+ */
+function shapeFor(mode: AggregateLayout, n: number) {
+  const cols = colsFor(mode, n);
+  const rows = Math.max(1, Math.ceil(n / cols));
+  const rowLens = Array.from({ length: rows }, (_, r) =>
+    Math.max(0, Math.min(cols, n - r * cols)),
+  );
+  return { cols, rows, rowLens };
+}
+
+/** hover 팝오버 지연 닫기 — 트리거→팝오버로 건너뛰는 4px 공백에서 닫히지 않게 ms 유예.
+ *  묶음 칩 드롭다운과 자동배치 팝오버가 같은 로직을 쓴다. 언마운트 시 타이머 정리. */
+function useDelayedClose(close: () => void, ms = 150) {
+  const timer = useRef<number | undefined>(undefined);
+  const hold = () => window.clearTimeout(timer.current);
+  const schedule = () => {
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(close, ms);
+  };
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  return { hold, schedule };
+}
+
+// 자동배치 모드 선택 팝오버의 항목 — 아이콘은 lucide, 클래스(lucide-grid-2x2 / lucide-columns-3)가
+// e2e의 "현재 모드 아이콘" 단언 표식이다.
+const LAYOUT_MODES: { mode: AggregateLayout; Icon: typeof Grid2x2; title: string }[] = [
+  { mode: "grid", Icon: Grid2x2, title: "그리드 — 2×2·3×3 균등 배치" },
+  {
+    mode: "columns",
+    Icon: Columns3,
+    title: "세로 컬럼 — 셀을 좌우로 한 줄에 나열(최대 4열, 넘치면 줄바꿈)",
+  },
+];
+
 /**
  * 터미널 모아보기 — 여러 프로젝트/탭에 흩어진 터미널·브라우저를 한 화면에 분할해 동시에 본다.
  * 클로드(AI) 작업 중인 터미널을 기본 선택하고, 상단 칩으로 보고 싶은 것만 골라 그리드로 배치한다.
@@ -146,6 +152,9 @@ const NO_HOVER: ReadonlySet<string> = new Set();
 export function AggregateTerminals() {
   const setAggregateOpen = useUi((s) => s.setAggregateOpen);
   const { data: projects } = useProjects();
+  // 색은 **등록된 전체 프로젝트** 이름순 배정을 그대로 쓴다 — 사이드바 행과 같은 맵이라야
+  // 같은 프로젝트가 어디서든 같은 색이다(화면에 보이는 셀만으로 배정하면 색이 이동한다).
+  const hues = useProjectHues();
   const { data: settings } = useSettings();
   const fontSize = settings?.terminalFontSize ?? 13;
   const terminals = useTerminals((s) => s.terminals);
@@ -161,6 +170,9 @@ export function AggregateTerminals() {
   // 드래그로 조절한 그리드 트랙(shape별 fr 배열) — ui 스토어에 영속돼 여닫아도 유지된다.
   const aggregateTracks = useUi((s) => s.aggregateTracks);
   const setAggregateTracks = useUi((s) => s.setAggregateTracks);
+  // 자동배치 모드(그리드 / 세로 컬럼) — localStorage 영속이라 재시작·별도 창에도 따라온다.
+  const layout = useUi((s) => s.aggregateLayout);
+  const setAggregateLayout = useUi((s) => s.setAggregateLayout);
 
   // 모든 셀 메타 (스토어 기준 — 반응형): 탭별 터미널·브라우저 pane + 독립 브라우저 탭.
   const all = useMemo<CellMeta[]>(() => {
@@ -206,10 +218,8 @@ export function AggregateTerminals() {
     // 어디 소속인지 읽히지 않는다(색 막대와 짝이 되는 그룹핑의 나머지 절반).
     // 이름 오름차순, 같은 프로젝트 안에서는 원래 순서 유지 — Array#sort는 stable이다.
     out.sort((a, b) => a.projName.localeCompare(b.projName, "ko"));
-    // 색은 정렬 뒤에 배정한다 — 배정 순서가 정렬 순서와 같아야 충돌 회피 결과가 결정적이다.
-    const hues = assignProjectHues(out.map((c) => c.projName));
     return out.map((c) => ({ ...c, hue: hues.get(c.projName) ?? 0 }));
-  }, [terminals, projects, byTerminal, browserItems, browserTabIds]);
+  }, [terminals, projects, byTerminal, browserItems, browserTabIds, hues]);
 
   // 선택 집합 — 최초엔 클로드 활동(working/done) 있는 터미널만. 없으면 전부(브라우저 포함).
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
@@ -305,6 +315,12 @@ export function AggregateTerminals() {
 
   // 칩 우클릭 메뉴 — fixed 메뉴가 브라우저 셀의 네이티브 webview에 가려지지 않게 점유 등록.
   const [chipMenu, setChipMenu] = useState<{ x: number; y: number; cell: CellMeta } | null>(null);
+  const togglePanel = usePromptHistory((s) => s.togglePanel);
+  // 열린 메뉴의 셀 하나만 구독한다 — openPanels 전체를 구독하면 어느 셀을 토글하든
+  // 그리드 컨테이너가 통째로 리렌더된다(셀마다 이미 자기 상태를 구독한다).
+  const chipPromptOpen = usePromptHistory((s) =>
+    chipMenu ? !!s.openPanels[chipMenu.cell.id] : false,
+  );
 
   // 칩 호버 중 강조할 셀 — 칩과 그리드 셀은 위치가 떨어져 있어 어느 칩이 어느 셀인지
   // 눈으로 짝을 못 짓는다. 호버한 칩의 셀(묶음 칩이면 프로젝트 전체)에 ring을 띄운다.
@@ -315,15 +331,15 @@ export function AggregateTerminals() {
   const toggleGroupTabs = useUi((s) => s.toggleAggregateGroupTabs);
   const [groupMenu, setGroupMenu] = useState<{ name: string; x: number; y: number } | null>(null);
   // 칩 → 드롭다운으로 마우스가 건너가는 짧은 공백에 닫히지 않게 지연 닫기(타이머) 사용.
-  const groupCloseTimer = useRef<number | undefined>(undefined);
-  const holdGroupOpen = () => window.clearTimeout(groupCloseTimer.current);
-  const scheduleGroupClose = () => {
-    window.clearTimeout(groupCloseTimer.current);
-    groupCloseTimer.current = window.setTimeout(() => setGroupMenu(null), 150);
-  };
-  // 닫기 지연 타이머가 언마운트 후 발화하지 않게 정리(모아보기 닫힘·창 닫힘).
-  useEffect(() => () => window.clearTimeout(groupCloseTimer.current), []);
-  useOccludesWebview(!!chipMenu || !!groupMenu);
+  const { hold: holdGroupOpen, schedule: scheduleGroupClose } = useDelayedClose(() =>
+    setGroupMenu(null),
+  );
+  // 자동배치 모드 선택 팝오버 — 헤더 우측 끝 버튼이라 우측 모서리 정렬(left면 창 밖으로 잘린다).
+  const [layoutMenu, setLayoutMenu] = useState<{ right: number; top: number } | null>(null);
+  const { hold: holdLayoutOpen, schedule: scheduleLayoutClose } = useDelayedClose(() =>
+    setLayoutMenu(null),
+  );
+  useOccludesWebview(!!chipMenu || !!groupMenu || !!layoutMenu);
 
   const shown = all.filter((t) => selected.has(t.id));
   // 렌더 기준 확대 대상 — 상태가 스테일해도(대상이 방금 닫힘·칩 해제) 이번 프레임부터 무시.
@@ -334,8 +350,13 @@ export function AggregateTerminals() {
       setZoomed(null);
   }, [zoomed, all, selected]);
   const n = shown.length;
-  const cols = n <= 1 ? 1 : n <= 4 ? 2 : n <= 9 ? 3 : 4;
-  const rows = Math.max(1, Math.ceil(n / cols));
+  const { cols, rows, rowLens } = shapeFor(layout, n);
+
+  // 버튼이 사라져도(n ≤ 1로 언마운트) React는 mouseleave를 주지 않는다 — 스테일 팝오버를
+  // 안 지우면 셀이 다시 늘 때 호버도 없이 팝오버가 나타난다(확대 스테일 정리와 같은 이유).
+  useEffect(() => {
+    if (n <= 1) setLayoutMenu(null);
+  }, [n]);
 
   // 행 단위로 자른 셀 목록 — 폭은 "행마다 독립"이라 행이 레이아웃의 기본 단위다.
   const rowsOfCells: CellMeta[][] = [];
@@ -345,9 +366,10 @@ export function AggregateTerminals() {
   // 현재 배치의 트랙 크기 — 행 높이(rowFr[r])와 행별 셀 폭(cellFr[r][c], fr 배열).
   // 가로 드래그는 같은 행의 이웃과만 재분배하므로 위/아래 행 폭에 영향이 없다.
   // 재분배(총합 불변)라 그리드가 항상 컨테이너를 정확히 채운다 → 셀이 밖으로 밀려나
-  // 사라질 수 없다. 키는 n — 마지막 행 셀 수까지 n이 결정하므로 모양 충돌이 없다.
+  // 사라질 수 없다. 키는 n — 모드를 키에 넣지 않는다: 모드 전환은 항상 evenTracks(mode)를
+  // 수반해 균등으로 덮으므로 모드별 비율 기억이 정의상 없고, 스토어 setter를 직접 부른 경우
+  // (e2e·별도 창 시작 동기)의 길이 불일치는 아래 검증이 균등 폴백으로 흡수한다.
   const shape = `n${n}`;
-  const rowLens = rowsOfCells.map((r) => r.length);
   const saved = aggregateTracks[shape];
   const rowFr: number[] =
     saved && Array.isArray(saved.rows) && saved.rows.length === rows
@@ -369,13 +391,23 @@ export function AggregateTerminals() {
   const canEven = uneven || !!zoomedId;
 
   /** 셀 크기를 전부 1fr로 되돌린다(+확대 해제). 저장된 트랙을 지우는 게 아니라 균등값으로 덮는다
-   *  — 지우는 API가 따로 없고, 균등값을 써 두면 다음에 열어도 균등으로 복원된다. */
-  const evenTracks = () => {
+   *  — 지우는 API가 따로 없고, 균등값을 써 두면 다음에 열어도 균등으로 복원된다.
+   *  인자는 **대상 모드** — 모드 아이콘 클릭은 새 모드의 모양으로 균등화해야 하는데, 그 순간
+   *  `layout`은 아직 이전 값이다(같은 이벤트 안에서 setState가 반영되기 전). */
+  const evenTracks = (mode: AggregateLayout = layout) => {
+    const s = shapeFor(mode, n);
     setAggregateTracks(shape, {
-      rows: Array(rows).fill(1),
-      cols: rowLens.map((len) => Array(len).fill(1)),
+      rows: Array(s.rows).fill(1),
+      cols: s.rowLens.map((len) => Array(len).fill(1)),
     });
     setZoomed(null);
+  };
+  /** 팝오버의 모드 아이콘 클릭 — 모드 저장 + 그 모드로 즉시 균등 + 팝오버 닫힘. */
+  const pickLayout = (m: AggregateLayout) => {
+    setAggregateLayout(m);
+    evenTracks(m);
+    holdLayoutOpen(); // 예약된 지연 닫기가 뒤늦게 발화해 다음 hover를 지우지 않게
+    setLayoutMenu(null);
   };
 
   // 경계 드래그 — 가로는 r행 안에서 셀 c↔c+1, 세로는 행 r↔r+1 사이 공간 재분배.
@@ -480,7 +512,9 @@ export function AggregateTerminals() {
                       setHovered(NO_HOVER);
                     }}
                     title={`${name} — 탭 ${cells.length}개 (클릭: 전체 표시/숨김, 호버: 목록)`}
-                    style={{ backgroundColor: projectTint(cells[0].hue, selCount > 0) }}
+                    style={{
+                      backgroundColor: projectTint(cells[0].hue, selCount > 0 ? "on" : "off"),
+                    }}
                     className={`flex shrink-0 items-center gap-1 rounded px-2 py-1 text-[11px] text-fg ${
                       selCount === cells.length ? "ring-1 ring-accent" : ""
                     } ${status === "working" ? "ai-working" : status === "done" ? "ai-done" : ""}`}
@@ -513,18 +547,35 @@ export function AggregateTerminals() {
           onCreateTerminal={addTerminal}
           onCreateBrowser={IS_AGGREGATE_WINDOW ? undefined : addBrowser}
         />
-        {/* 셀 크기 균등 복구 — 드래그로 흐트러진 트랙을 되돌린다. 행/열 개수는 셀 수가 자동으로
-            정하므로(cols/rows) 사람이 망가뜨릴 수 있는 것은 fr 비율과 확대 상태뿐이고, 이 버튼은
-            그 둘을 함께 되돌린다. 확대를 같이 풀지 않으면 눌러도 화면이 그대로라 고장으로 보인다. */}
+        {/* 셀 크기 균등 복구 + 모드 선택. 클릭은 지금 모드로 균등 정렬(드래그로 흐트러진 fr 비율과
+            확대 상태를 함께 되돌린다 — 확대를 안 풀면 눌러도 화면이 그대로라 고장으로 보인다),
+            호버는 모드 팝오버.
+            hover를 **래퍼 span이 받는** 이유 두 가지: ① React는 `disabled` 버튼의 onMouseEnter를
+            아예 등록하지 않는다(getListener) — 균등 상태에서 모드를 바꾸는 것이 이 기능의 주 동선인데
+            버튼에 달면 그때 팝오버가 절대 안 열린다. 그래서 `disabled` 대신 `aria-disabled` + 핸들러
+            제거로 바꿨다. ② 버튼→팝오버로 건너가는 4px 공백의 leave를 유예해야 해서 어차피
+            hold/schedule을 양쪽에 달아야 한다 — 래퍼 하나가 자연스러운 앵커다. */}
         {n > 1 && (
-          <button
-            onClick={evenTracks}
-            disabled={!canEven}
-            title="셀 자동배치 — 드래그로 바뀐 칸 비율을 균등 그리드로 되돌립니다"
-            className="flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs text-fg-muted hover:bg-raised hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-muted"
+          <span
+            className="shrink-0"
+            onMouseEnter={(e) => {
+              holdLayoutOpen();
+              const r = e.currentTarget.getBoundingClientRect();
+              setLayoutMenu({ right: window.innerWidth - r.right, top: r.bottom + 4 });
+            }}
+            onMouseLeave={scheduleLayoutClose}
           >
-            <Grid2x2 size={14} /> 자동배치
-          </button>
+            <button
+              onClick={canEven ? () => evenTracks() : undefined}
+              aria-disabled={!canEven}
+              title="셀 자동배치 — 클릭: 지금 모드로 균등 정렬 · 호버: 모드 선택(그리드 / 세로 컬럼)"
+              className={`flex items-center gap-1 rounded px-2 py-1 text-xs text-fg-muted ${
+                canEven ? "hover:bg-raised hover:text-fg" : "opacity-40"
+              }`}
+            >
+              {layout === "columns" ? <Columns3 size={14} /> : <Grid2x2 size={14} />} 자동배치
+            </button>
+          </span>
         )}
         {/* 전체 프롬프트 컬럼 마스터 토글 — 별도 창에만 둔다. 메인 안 모아보기는 바로 위
             TitleBar에 같은 버튼이 있어 한 화면에 두 개가 보이면 안 된다. */}
@@ -748,6 +799,33 @@ export function AggregateTerminals() {
           );
         })()}
 
+      {/* 자동배치 모드 팝오버 — 아이콘 클릭 = 그 모드로 저장 + 즉시 균등. 현재 모드는 탭 모으기
+          ON과 같은 상태색(bg-raised text-accent). 헤더 우측 끝이라 우측 모서리 정렬(NewCellButton
+          관례) — left 기준이면 창 밖으로 잘린다. */}
+      {layoutMenu && n > 1 && (
+        <div
+          className="fixed z-50 flex items-center gap-1 rounded-md border border-edge bg-panel p-1 shadow-xl"
+          style={{ right: layoutMenu.right, top: layoutMenu.top }}
+          onMouseEnter={holdLayoutOpen}
+          onMouseLeave={scheduleLayoutClose}
+        >
+          {LAYOUT_MODES.map(({ mode, Icon, title }) => (
+            <button
+              key={mode}
+              title={title}
+              onClick={() => pickLayout(mode)}
+              className={`rounded p-1 ${
+                layout === mode
+                  ? "bg-raised text-accent"
+                  : "text-fg-muted hover:bg-raised hover:text-fg"
+              }`}
+            >
+              <Icon size={14} />
+            </button>
+          ))}
+        </div>
+      )}
+
       {chipMenu && (
         <ChipMenu
           cell={chipMenu.cell}
@@ -755,6 +833,7 @@ export function AggregateTerminals() {
           y={chipMenu.y}
           shown={selected.has(chipMenu.cell.id)}
           zoomed={zoomedId === chipMenu.cell.id}
+          promptOpen={chipPromptOpen}
           onClose={() => setChipMenu(null)}
           onToggle={() => toggle(chipMenu.cell.id)}
           onZoom={() => {
@@ -763,6 +842,14 @@ export function AggregateTerminals() {
             setSelected((prev) => new Set(prev).add(id)); // 숨김 상태에서도 확대가 바로 보이게
             setZoomed((z) => (z === id ? null : id));
           }}
+          // 프롬프트 컬럼은 **표시 중인 터미널 셀**에만 — 숨김 셀은 켜도 모아보기 안에서 보이는
+          // 변화가 없고(컬럼은 셀 본문 안), 브라우저 셀엔 프롬프트 기록이 없다.
+          // 조건은 컨테이너가, 렌더는 메뉴가(onFloat/onCloseCell과 같은 관례).
+          onTogglePrompt={
+            selected.has(chipMenu.cell.id) && chipMenu.cell.kind === "terminal"
+              ? () => togglePanel(chipMenu.cell.id)
+              : undefined
+          }
           // 별도 창의 변경은 스토어가 메인에 위임한다(stores/terminals.ts terminals://cmd) —
           // 새 터미널·Float·닫기가 여기서도 그대로 동작한다. 예외는 **독립 브라우저 탭 닫기**뿐:
           // closeBrowserTab은 위임 경로가 없는 메인 전용이라 별도 창에선 항목을 빼 둔다.
@@ -809,9 +896,11 @@ function ChipMenu({
   y,
   shown,
   zoomed,
+  promptOpen,
   onClose,
   onToggle,
   onZoom,
+  onTogglePrompt,
   onNewTerminal,
   onFloat,
   onCloseCell,
@@ -821,9 +910,13 @@ function ChipMenu({
   y: number;
   shown: boolean;
   zoomed: boolean;
+  /** onTogglePrompt가 있을 때만 의미 있다(라벨의 상태). */
+  promptOpen?: boolean;
   onClose: () => void;
   onToggle: () => void;
   onZoom: () => void;
+  /** 없으면 항목 자체를 그리지 않는다 — 표시 중 터미널 셀에만 넘어온다(onFloat 관례). */
+  onTogglePrompt?: () => void;
   onNewTerminal?: () => void;
   onFloat?: () => void;
   onCloseCell?: () => void;
@@ -849,7 +942,11 @@ function ChipMenu({
       className="fixed z-50 min-w-52 rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl"
       style={{
         left: Math.min(x, window.innerWidth - 220),
-        top: Math.min(y, window.innerHeight - 200),
+        // 하단 클램프 = 메뉴 실높이. 헤더 24.5 + 항목 6 × 31.5 + 구분선 2 × 8.67 + 패딩·테두리 9.3
+        // ≈ 240 → 8 단위 올림(PaneMenu와 같은 규칙). max(0, …)은 창이 메뉴보다 낮을 때 top이
+        // 음수가 되어 위쪽 항목이 잘리는 것을 막는다(별도 창은 창 크기 제한이 낮다).
+        // ponytail: 항목이 또 늘면 ref 실측으로.
+        top: Math.max(0, Math.min(y, window.innerHeight - 248)),
       }}
       onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
@@ -868,6 +965,13 @@ function ChipMenu({
         label={zoomed ? "확대 해제" : "확대해서 보기"}
         onClick={run(onZoom)}
       />
+      {onTogglePrompt && (
+        <MenuItem
+          icon={<History size={14} />}
+          label={promptOpen ? "프롬프트 목록 닫기" : "프롬프트 목록 열기"}
+          onClick={run(onTogglePrompt)}
+        />
+      )}
       {(onNewTerminal || onFloat || onCloseCell) && (
         <div className="my-1 border-t border-edge" />
       )}
@@ -937,7 +1041,7 @@ function Chip({
       title={`${t.projName} · ${t.title} (우클릭: 메뉴)`}
       // 배경이 프로젝트 색이다 — 정렬로 같은 프로젝트를 붙여 놓아도 경계가 어디인지
       // 한눈에 안 들어와서(3px 막대는 너무 약했다) 칩 전체를 물들인다.
-      style={{ backgroundColor: projectTint(t.hue, on) }}
+      style={{ backgroundColor: projectTint(t.hue, on ? "on" : "off") }}
       // 글자는 선택 여부와 무관하게 text-fg다. 예전처럼 미선택을 fg-muted로 흐리면
       // 물든 배경 위에서 대비가 무너진다(실측 solarized-light 3.5:1 — AA 미달).
       // 선택 표시는 ring + 진한 배경(--proj-a-on)이 한다.
@@ -1188,7 +1292,7 @@ function AggregateCell({
       }`}
     >
       <div
-        style={{ backgroundColor: projectTint(meta.hue, false) }}
+        style={{ backgroundColor: projectTint(meta.hue, "off") }}
         className="flex h-6 shrink-0 items-center gap-1.5 border-b border-edge px-2 text-[11px] text-fg-muted"
       >
         <StatusIcon status={status} />
@@ -1266,7 +1370,7 @@ function BrowserCell({
   return (
     <div className="group/cell relative flex h-full w-full min-h-0 min-w-0 flex-col overflow-hidden rounded border border-edge">
       <div
-        style={{ backgroundColor: projectTint(meta.hue, false) }}
+        style={{ backgroundColor: projectTint(meta.hue, "off") }}
         className="flex h-6 shrink-0 items-center gap-1.5 border-b border-edge px-2 text-[11px] text-fg-muted"
       >
         <Globe size={11} className="shrink-0 text-accent" />

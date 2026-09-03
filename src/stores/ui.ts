@@ -60,6 +60,9 @@ export function viewerTabKey(
   return `${repoId ?? outerId}|${target.mode}|${target.path}|${sha}`;
 }
 
+/** 모아보기 자동배치 모드 — grid(2×2·3×3 …) / columns(좌우 한 줄, 최대 4열). */
+export type AggregateLayout = "grid" | "columns";
+
 export interface UiState {
   selectedProjectId: string | null;
   /** 중앙 뷰어가 표시할 diff 대상 — Changes(worktree/index) 또는 Log(commit)에서 설정 */
@@ -100,18 +103,21 @@ export interface UiState {
   /** 모아보기 칩 바에서 같은 프로젝트의 탭을 칩 하나로 묶어 표시 (localStorage 영속) */
   aggregateGroupTabs: boolean;
   toggleAggregateGroupTabs: () => void;
+  /** 모아보기 자동배치 모드 — grid(2×2·3×3 …) / columns(좌우 한 줄, 최대 4열). localStorage 영속 */
+  aggregateLayout: AggregateLayout;
+  setAggregateLayout: (mode: AggregateLayout) => void;
   /** Log 패널에서 선택된 커밋 (상세 패널 구동) */
   selectedCommitSha: string | null;
   /** 설정 모달 열림 여부 */
   settingsOpen: boolean;
+  /** 설정 모달이 다음에 열릴 때 처음 보여줄 카테고리(1회성 — SettingsDialog가 소비 후 null). */
+  settingsCategory: SettingsCategory | null;
   /** Quick Open(파일 퍼지 검색 모달) 열림 여부 — 세션 상태, 영속 없음 */
   quickOpenOpen: boolean;
   /** Go to Symbol(전역 심볼 검색 모달) 열림 여부 */
   symbolSearchOpen: boolean;
   /** 메모 팝오버 열림 여부 (현재 선택 프로젝트) */
   memoOpen: boolean;
-  /** 설정 모달이 다음에 열릴 때 처음 보여줄 카테고리(1회성 — SettingsDialog가 소비 후 null). */
-  settingsCategory: SettingsCategory | null;
   /** diff 뷰어: 변경 없는 영역 접기 (기본 접기, 끄면 전체 펼침) */
   diffCollapseUnchanged: boolean;
   /** 파일 트리 패널 표시 여부 (localStorage 영속) */
@@ -153,25 +159,25 @@ export interface UiState {
   ) => void;
   selectCommit: (sha: string | null) => void;
   setSettingsOpen: (open: boolean) => void;
+  /** 설정 열기 + 선택적 카테고리 딥링크. setSettingsOpen(true)의 상위 호환. */
+  openSettings: (category?: SettingsCategory) => void;
   setQuickOpenOpen: (open: boolean) => void;
   setSymbolSearchOpen: (open: boolean) => void;
   setMemoOpen: (open: boolean) => void;
   toggleDiffCollapse: () => void;
   toggleFileTree: () => void;
   toggleProjectSort: () => void;
-  /** 설정 열기 + 선택적 카테고리 딥링크. setSettingsOpen(true)의 상위 호환. */
-  openSettings: (category?: SettingsCategory) => void;
   pushToast: (
     kind: Toast["kind"],
     message: string,
     action?: Toast["action"],
+    opts?: ToastOptions,
   ) => void;
   dismissToast: (id: number) => void;
   askConfirm: (req: ConfirmRequest) => void;
   closeConfirm: () => void;
   askPrompt: (req: PromptRequest) => void;
   closePrompt: () => void;
-    opts?: ToastOptions,
   /** repoId: 임베디드 저장소 파일이면 그 저장소의 합성 id(생략하면 선택 프로젝트로 라우팅). */
   openImageEditor: (path: string, repoId?: string) => void;
   closeImageEditor: () => void;
@@ -256,8 +262,12 @@ export const useUi = create<UiState>((set) => ({
     }
   })(),
   aggregateGroupTabs: localStorage.getItem("gp:aggregate-group-tabs") === "1",
+  // 알 수 없는 값(없음·구버전)은 grid — 기존 동작이 기본이다.
+  aggregateLayout:
+    localStorage.getItem("gp:aggregate-layout") === "columns" ? "columns" : "grid",
   selectedCommitSha: null,
   settingsOpen: false,
+  settingsCategory: null,
   quickOpenOpen: false,
   symbolSearchOpen: false,
   memoOpen: false,
@@ -267,7 +277,6 @@ export const useUi = create<UiState>((set) => ({
   projectSortByChanges: localStorage.getItem("gp:project-sort-changes") === "1",
   imageEditorPath: null,
   imageEditorRepoId: null,
-  settingsCategory: null,
   toasts: [],
   confirm: null,
   prompt: null,
@@ -461,8 +470,16 @@ export const useUi = create<UiState>((set) => ({
       localStorage.setItem("gp:aggregate-group-tabs", v ? "1" : "0");
       return { aggregateGroupTabs: v };
     }),
+  // 별도 창은 스토어가 창별이라 라이브 동기가 없다 — 시작 시 localStorage로만 맞춘다
+  // (메인 안 모아보기와 별도 창은 동시에 열리지 않는다: main.tsx가 창이 열리면 메인을 닫는다).
+  setAggregateLayout: (mode) => {
+    localStorage.setItem("gp:aggregate-layout", mode);
+    set({ aggregateLayout: mode });
+  },
   selectCommit: (sha) => set({ selectedCommitSha: sha }),
   setSettingsOpen: (open) => set({ settingsOpen: open }),
+  openSettings: (category) =>
+    set({ settingsOpen: true, settingsCategory: category ?? null }),
   setQuickOpenOpen: (open) => set({ quickOpenOpen: open }),
   setSymbolSearchOpen: (open) => set({ symbolSearchOpen: open }),
   setMemoOpen: (open) => set({ memoOpen: open }),
@@ -478,8 +495,6 @@ export const useUi = create<UiState>((set) => ({
     set((s) => {
       const v = !s.projectSortByChanges;
       localStorage.setItem("gp:project-sort-changes", v ? "1" : "0");
-  openSettings: (category) =>
-    set({ settingsOpen: true, settingsCategory: category ?? null }),
       return { projectSortByChanges: v };
     }),
   pushToast: (kind, message, action, opts) => {

@@ -2,6 +2,7 @@ import {
   ClipboardPaste,
   Copy,
   ExternalLink,
+  History,
   LayoutGrid,
   Maximize2,
   Minimize2,
@@ -24,7 +25,7 @@ import { useOccludesWebview } from "../../stores/occlusion";
 import { usePromptHistory } from "../../stores/promptHistory";
 import { useTerminals } from "../../stores/terminals";
 import { useUi } from "../../stores/ui";
-import { PromptLogButton, PromptSidePanel, ThemeButton } from "./TermSessionControls";
+import { PromptSidePanel } from "./TermSessionControls";
 
 /**
  * 단일 터미널 패널 — xterm 인스턴스(레지스트리 소유)를 이 컨테이너에 붙인다.
@@ -36,12 +37,15 @@ export function TerminalPane({
   paneId,
   active,
   fontSize,
+  controls,
 }: {
   tabId: string;
   projectId: string;
   paneId: string;
   active: boolean;
   fontSize: number;
+  /** 우상단 hover 오버레이의 내용(세션 컨트롤 + PaneControls) — 렌더 위치는 아래 주석 참고. */
+  controls?: React.ReactNode;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const status = useTerminals((s) => s.paneStatus[paneId]) ?? "live";
@@ -49,8 +53,6 @@ export function TerminalPane({
     (s) => s.terminals.find((t) => t.id === tabId)?.maximizedPaneId === paneId,
   );
   const setActivePane = useTerminals((s) => s.setActivePane);
-  const toggleMaximize = useTerminals((s) => s.toggleMaximize);
-  const closePaneAct = useTerminals((s) => s.closePane);
   // 프롬프트 컬럼 열림 — 세션 단위 스토어(모아보기와 공유: 어디서 켜든 같은 세션 = 같은 상태).
   const promptOpen = usePromptHistory((s) => !!s.openPanels[paneId]);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
@@ -84,7 +86,7 @@ export function TerminalPane({
 
   return (
     <div
-      className={`group relative flex h-full w-full ${
+      className={`relative flex h-full w-full ${
         active ? "outline outline-1 -outline-offset-1 outline-accent" : ""
       }`}
       onMouseDown={() => setActivePane(tabId, paneId)}
@@ -96,25 +98,17 @@ export function TerminalPane({
     >
       <div className="relative h-full min-w-0 flex-1">
         <div ref={ref} className="h-full w-full" />
-        {/* 우상단 세션 컨트롤 — 모아보기 셀 헤더와 동일 기능(테마·프롬프트 기록·최대화·닫기).
-            평소엔 숨고 hover 시 표시해 터미널 출력을 가리지 않는다. */}
-        <div className="absolute right-1 top-1 z-10 flex items-center gap-0.5 rounded border border-edge/60 bg-panel/90 p-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
-          <ThemeButton termId={paneId} />
-          <PromptLogButton termId={paneId} />
-          <button
-            onClick={() => toggleMaximize(tabId, paneId)}
-            title={maximized ? "패널 최대화 해제" : "패널 최대화"}
-            className="shrink-0 rounded p-0.5 text-fg-dim hover:bg-raised hover:text-fg"
-          >
-            {maximized ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
-          </button>
-          <button
-            onClick={() => closePaneAct(tabId, paneId)}
-            title="패널 닫기 (Ctrl+Shift+W)"
-            className="shrink-0 rounded p-0.5 text-fg-dim hover:bg-raised hover:text-danger"
-          >
-            <X size={12} />
-          </button>
+        {/* 세션 컨트롤(테마·프롬프트 기록)과 PaneControls를 **이 오버레이 하나에** 담는다 — 예전엔
+            둘이 같은 자리에 따로 떠 있어서 z-30 쪽이 z-10 쪽을 완전히 덮어 클릭이 닿지 않았다.
+            앵커가 pane 루트가 아니라 **xterm 호스트 래퍼**인 이유: pane 루트 기준이면 프롬프트
+            컬럼이 열렸을 때 pane 우상단 = 컬럼 헤더 우측이라, 오버레이가 컬럼 헤더의 X(프롬프트
+            목록 닫기)를 정확히 덮어 컬럼 대신 pane이 닫혔다(맨 오른쪽 버튼이 '패널 닫기').
+            호스트 래퍼는 컬럼 왼쪽 영역이라 겹칠 수가 없다. group/pane은 LeafView 래퍼(조상)에
+            있으므로 hover 조건은 그대로다.
+            focus-within은 팔레트 메뉴가 pane 밖으로 나갔을 때(포인터가 pane을 벗어나도) 오버레이가
+            투명해지지 않게 하는 대비책이다 — 메뉴는 버튼의 형제라 부모 opacity를 그대로 받는다. */}
+        <div className="absolute right-1 top-1 z-30 flex items-center gap-0.5 rounded-md border border-edge bg-panel/95 p-0.5 opacity-0 shadow-lg transition-opacity focus-within:opacity-100 group-hover/pane:opacity-100">
+          {controls}
         </div>
       </div>
       {/* 프롬프트 컬럼 — 여닫힘은 host ResizeObserver가 xterm을 refit해 따라온다. */}
@@ -177,6 +171,10 @@ function PaneMenu({
   onClose: () => void;
 }) {
   const ts = useTerminals();
+  // 프롬프트 컬럼 열림 — 여기서 직접 구독해야 라벨이 상태를 따라간다(다른 창이 같은 세션을
+  // 토글하면 storage 이벤트로 즉시 반영). TerminalPane의 promptOpen과는 스코프가 다르다.
+  const promptOpen = usePromptHistory((s) => !!s.openPanels[paneId]);
+  const togglePanel = usePromptHistory((s) => s.togglePanel);
 
   useEffect(() => {
     const close = () => onClose();
@@ -199,7 +197,12 @@ function PaneMenu({
       className="fixed z-50 min-w-52 rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl"
       style={{
         left: Math.min(x, window.innerWidth - 220),
-        top: Math.min(y, window.innerHeight - 240),
+        // 하단 클램프 = 메뉴 실높이. 항목 13 × 31.5 + 구분선 3 × 8.67 + 패딩·테두리 9.3 ≈ 445 → 8 단위 올림.
+        // 240은 분할·그리드 항목이 붙기 전 값이 그대로 남아 창 아래 절반에서 메뉴가 잘리고 있었다.
+        // max(0, …)은 창이 메뉴보다 낮을 때 — 플로팅 창은 min_inner_size 360×240이라 448px보다
+        // 낮을 수 있고, 그러면 top이 음수가 되어 위쪽 항목(복사·붙여넣기)이 화면 밖으로 잘린다.
+        // ponytail: 상수 클램프 — 항목이 또 늘면 ref 실측(useLayoutEffect)으로 바꾼다.
+        top: Math.max(0, Math.min(y, window.innerHeight - 448)),
       }}
       onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
@@ -260,6 +263,11 @@ function PaneMenu({
         icon={maximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
         label={maximized ? "패널 최대화 해제" : "패널 최대화"}
         onClick={run(() => ts.toggleMaximize(tabId, paneId))}
+      />
+      <MenuItem
+        icon={<History size={14} />}
+        label={promptOpen ? "프롬프트 목록 닫기" : "프롬프트 목록 열기"}
+        onClick={run(() => togglePanel(paneId))}
       />
       <MenuItem
         icon={<ExternalLink size={14} />}

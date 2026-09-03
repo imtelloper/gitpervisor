@@ -25,6 +25,7 @@ import {
 import { BUILTIN_TOKENS, installCustomThemeStyles } from "./lib/theme-apply";
 import { initPreviewRemint } from "./stores/browser";
 import { useCustomThemes } from "./stores/customThemes";
+import { usePromptHistory } from "./stores/promptHistory";
 import { useTerminals } from "./stores/terminals";
 import { useUi } from "./stores/ui";
 import { planSegments, useVideoSplit } from "./stores/videoSplit";
@@ -62,6 +63,7 @@ if (import.meta.env.DEV) {
     terminals: useTerminals,
     videoSplit: useVideoSplit,
     planSegments,
+    promptHistory: usePromptHistory, // 호버 카드 e2e — 기록 생성·컬럼 열기·교체 시뮬레이션
     term: { get: getTerminal }, // 터미널 e2e — xterm 인스턴스·win32Input 플래그 관측
     customThemes: useCustomThemes, // 커스텀 테마 e2e — 정의 upsert/remove
     builtinTokens: BUILTIN_TOKENS, // e2e 19 — styles.css ↔ 정적 사본 짝 검증

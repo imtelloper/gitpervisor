@@ -55,6 +55,13 @@ export async function run({ cdp, report: r, fix }) {
       `(()=>{ const v=document.querySelector('.xterm-scrollable-element'); return v?getComputedStyle(v).backgroundColor:null; })()`,
     );
 
+  // 태스크 28 — 사이드바 행 틴트 대비. 절대 목표(4.5/4.5/3.0)는 틴트 없는 오늘의 행도 못 넘으므로
+  // (darcula fg-dim 2.90:1) 이름만 절대, 나머지는 "현행 bg-selection 위 대비" 기준선으로 본다.
+  // 허용 오차는 hsl→rgb 반올림분(0.1). solarized-light는 selection≈panel이라 보이는 틴트가 전부
+  // 기준선 아래 — 그 테마 특성으로 수용한 예외값(28 §3.4·§8 ①).
+  const TINT_TOL = { default: 0.1, "solarized-light": 0.35 };
+  const fmt = (m) => ["fg", "muted", "dim"].map((k) => m[k].toFixed(2)).join("/");
+
   const orig = await cdp.invoke("get_settings");
   const origTheme = orig.theme || "darcula";
   const origSel = await cdp.eval(`window.__gpv.ui.getState().selectedProjectId`);
@@ -95,6 +102,36 @@ export async function run({ cdp, report: r, fix }) {
       bases[id] = base;
       r.check(`[${id}] --color-base 유효(#rrggbb)`, /^#[0-9a-fA-F]{6}$/.test(base), base);
 
+      // 12 hue × row/row-on을 --color-panel 위에 합성해 실제 테마 토큰으로 WCAG 대비를 계산한다
+      // (사전 계산 대체가 아니라 브라우저 hsl 파싱으로 확정하는 측정 그 자체 — 태스크 28 §7.2).
+      const c = await cdp.eval(`(()=>{
+        const HUES=[0,25,45,75,140,168,190,215,250,280,310,335];
+        const css=getComputedStyle(document.documentElement), tok=(n)=>css.getPropertyValue(n).trim();
+        const hex=(h)=>{ const n=parseInt(h.slice(1),16); return [(n>>16)&255,(n>>8)&255,n&255]; };
+        const lum=([r,g,b])=>{ const f=(c)=>{ c/=255; return c<=0.03928?c/12.92:((c+0.055)/1.055)**2.4; }; return 0.2126*f(r)+0.7152*f(g)+0.0722*f(b); };
+        const ratio=(a,b)=>{ const [x,y]=[lum(a),lum(b)].sort((p,q)=>q-p); return (x+0.05)/(y+0.05); };
+        const probe=document.createElement('div'); document.body.appendChild(probe);
+        const rgba=(v)=>{ probe.style.backgroundColor=v; const m=getComputedStyle(probe).backgroundColor.match(/[\\d.]+/g).map(Number); return m.length===3?[...m,1]:m; };
+        const panel=hex(tok('--color-panel')), sel=hex(tok('--color-selection'));
+        const text={fg:hex(tok('--color-fg')),muted:hex(tok('--color-fg-muted')),dim:hex(tok('--color-fg-dim'))};
+        const out={ baseline:{} }; for (const k in text) out.baseline[k]=ratio(text[k],sel);
+        for (const lv of ['row','row-on']) { const m={fg:99,muted:99,dim:99};
+          for (const h of HUES) { const [r,g,b,a]=rgba('hsl(' + h + ' 70% var(--proj-l) / var(--proj-a-' + lv + '))');
+            const bg=[r,g,b].map((c,i)=>a*c+(1-a)*panel[i]);
+            for (const k in text) m[k]=Math.min(m[k], ratio(text[k],bg)); }
+          out[lv]=m; }
+        probe.remove(); return out; })()`);
+      const tol = TINT_TOL[id] ?? TINT_TOL.default;
+      const okFg = c.row.fg >= 4.5 && c["row-on"].fg >= 4.5;
+      const okRel = ["muted", "dim"].every(
+        (k) => c.row[k] >= c.baseline[k] - tol && c["row-on"][k] >= c.baseline[k] - tol,
+      );
+      r.check(
+        `[${id}] 사이드바 행 틴트 대비 — fg ≥ 4.5 · muted/dim ≥ 선택행 기준선 − ${tol} (12 hue 최악값)`,
+        okFg && okRel,
+        `row=${fmt(c.row)} on=${fmt(c["row-on"])} base=${fmt(c.baseline)}`,
+      );
+
       if (hasXterm) {
         const want = rgbOf(base);
         // refreshTerminalThemes는 동적 import 경유(마이크로태스크)라 잠깐 뒤 반영 — 폴링.
@@ -113,25 +150,6 @@ export async function run({ cdp, report: r, fix }) {
         .join(" "),
     );
 
-    // ── 원복: 원래 테마로 되돌아가는지 확인(스냅샷 teardown 원복과도 호환) ──
-    await cdp.invoke("set_settings", { settings: orig });
-    await invalidateSettings();
-    const restored = await poll(domTheme, (v) => v === origTheme, 20, 250);
-    r.check("원래 테마 복원", restored === origTheme, `theme=${restored}`);
-  } finally {
-    // 방어적 원복 — 위 원복이 예외로 못 갔어도 설정·터미널·선택을 되돌린다.
-    await cdp.try("set_settings", { settings: orig });
-    await invalidateSettings();
-    if (tabId)
-      await cdp
-        .eval(`window.__gpv.terminals.getState().closeTab(${J(tabId)})`)
-        .catch(() => {});
-    if (origSel)
-      await cdp
-        .eval(`window.__gpv.ui.getState().selectProject(${J(origSel)})`)
-        .catch(() => {});
-  }
-}
     // ── 태스크 29 ① 내장 6종 × 18토큰: styles.css ↔ theme-apply.ts BUILTIN_TOKENS 짝 검증 ──
     // 사본이 어긋나면 "새 테마 만들기"의 초기값이 낡은 색으로 시작한다. 위 루프를 건드리지
     // 않으려고 별도 루프로 다시 돈다(전환 비용 < 두 hunk가 얽히는 비용).
@@ -220,3 +238,22 @@ export async function run({ cdp, report: r, fix }) {
       );
     }
 
+    // ── 원복: 원래 테마로 되돌아가는지 확인(스냅샷 teardown 원복과도 호환) ──
+    await cdp.invoke("set_settings", { settings: orig });
+    await invalidateSettings();
+    const restored = await poll(domTheme, (v) => v === origTheme, 20, 250);
+    r.check("원래 테마 복원", restored === origTheme, `theme=${restored}`);
+  } finally {
+    // 방어적 원복 — 위 원복이 예외로 못 갔어도 설정·터미널·선택을 되돌린다.
+    await cdp.try("set_settings", { settings: orig });
+    await invalidateSettings();
+    if (tabId)
+      await cdp
+        .eval(`window.__gpv.terminals.getState().closeTab(${J(tabId)})`)
+        .catch(() => {});
+    if (origSel)
+      await cdp
+        .eval(`window.__gpv.ui.getState().selectProject(${J(origSel)})`)
+        .catch(() => {});
+  }
+}
