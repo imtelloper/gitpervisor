@@ -151,6 +151,11 @@ export default function VideoPlayer({
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [railQuery, setRailQuery] = useState("");
   const [zoomPct, setZoomPct] = useState(100);
+  // 클립 미리보기 — ▷를 누른 클립의 **끝에서 자동 정지**한다.
+  // 경계 검사는 rAF 안에서 하므로 끝 시각은 ref로 든다: state로 잡으면 그 effect가 playing에만
+  // 의존해서 클립을 바꿔도 루프가 옛 값을 계속 본다(닫힌 클로저).
+  const clipEndRef = useRef<number | null>(null);
+  const [clipPlaying, setClipPlaying] = useState<number | null>(null);
   const [cropActive, setCropActive] = useState(false);
   const [crop, setCrop] = useState<CropRect | null>(null);
   // 가림 영역들(원본 video px) — crop과 같은 좌표계, 개수 제한 없음.
@@ -200,6 +205,8 @@ export default function VideoPlayer({
     setCropActive(false);
     setMasks([]);
     setMaskActive(false);
+    clipEndRef.current = null;
+    setClipPlaying(null);
     void mint();
   }, [mint]);
 
@@ -263,7 +270,19 @@ export default function VideoPlayer({
     let raf = 0;
     const tick = () => {
       const el = videoRef.current;
-      if (el) setTime(el.currentTime);
+      if (el) {
+        setTime(el.currentTime);
+        // 클립 끝에서 정지. timeupdate(~4Hz)로 하면 최대 250ms를 넘겨 다음 클립이 먼저 보인다.
+        // ref를 먼저 비워 다음 프레임에 또 들어오지 않게 한다.
+        const end = clipEndRef.current;
+        if (end != null && el.currentTime >= end) {
+          clipEndRef.current = null;
+          el.pause();
+          el.currentTime = end;
+          setTime(end);
+          setClipPlaying(null);
+        }
+      }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
@@ -401,7 +420,33 @@ export default function VideoPlayer({
     if (!el) return;
     el.currentTime = Math.min(Math.max(t, 0), duration || el.duration || 0);
     setTime(el.currentTime);
+    // 사용자가 직접 탐색했는데 옛 클립 경계가 살아 있으면 엉뚱한 데서 갑자기 멈춘다.
+    if (clipEndRef.current != null) {
+      clipEndRef.current = null;
+      setClipPlaying(null);
+    }
   };
+
+  /** 레일의 ▷ — 클립 시작으로 이동해 재생하고 끝에서 멈춘다. 재생 중 다시 누르면 정지. */
+  const playClip = useCallback(
+    (c: RailClip) => {
+      const el = videoRef.current;
+      if (!el) return;
+      if (clipPlaying === c.index && !el.paused) {
+        el.pause();
+        clipEndRef.current = null;
+        setClipPlaying(null);
+        return;
+      }
+      // seekTo를 안 쓴다 — 그쪽은 방금 세운 경계를 도로 지운다.
+      el.currentTime = Math.min(Math.max(c.startMs / 1000, 0), duration || el.duration || 0);
+      setTime(el.currentTime);
+      clipEndRef.current = c.endMs / 1000;
+      setClipPlaying(c.index);
+      void el.play().catch(() => {});
+    },
+    [clipPlaying, duration],
+  );
   const seekBy = (d: number) => seekTo((videoRef.current?.currentTime ?? 0) + d);
   const togglePlay = () => {
     const el = videoRef.current;
@@ -707,7 +752,8 @@ export default function VideoPlayer({
           query={railQuery}
           onQueryChange={setRailQuery}
           onOpen={(p) => openDocWindow(projectId, p)}
-          onSeek={(ms) => seekTo(ms / 1000)}
+          onPlayClip={playClip}
+          playingClip={clipPlaying}
           onSaveAllSplits={() => {
             // 분할 실행은 인스펙터가 폴더명·모드를 들고 있다 — 레일은 거기로 안내만 한다.
             setEditOpen(true);
@@ -749,7 +795,14 @@ export default function VideoPlayer({
               const el = e.currentTarget;
               setTime(el.currentTime);
               // 구간 반복 — timeupdate(~250ms) 정밀도.
-              if (loopOn && inPt != null && outPt != null && el.currentTime >= outPt)
+              // 클립 미리보기 중이면 구간 반복이 이기면 안 된다 — 되감으면 영원히 안 멈춘다.
+              if (
+                clipEndRef.current == null &&
+                loopOn &&
+                inPt != null &&
+                outPt != null &&
+                el.currentTime >= outPt
+              )
                 el.currentTime = inPt;
             }}
             onPlay={() => setPlaying(true)}

@@ -3,7 +3,16 @@
 // 상태를 스스로 갖지 않는다(검색어조차 부모 소유) — 플레이어가 재생 중 rAF로 60fps
 // 리렌더되는 동안 이 레일까지 흔들리면 안 되므로 memo + 안정화된 props가 전제다.
 // 검색은 여기서 이름 부분일치로 거른다 — 부모가 미리 걸러 넘겨도 결과는 같다(멱등).
-import { ChevronsLeft, ChevronsRight, FileVideo2, Play, Save, Scissors, Search } from "lucide-react";
+import {
+  ChevronsLeft,
+  ChevronsRight,
+  FileVideo2,
+  Play,
+  Save,
+  Scissors,
+  Search,
+  Square,
+} from "lucide-react";
 import { memo, useMemo } from "react";
 
 import { fmtTime } from "./VideoPlayer";
@@ -34,7 +43,8 @@ export const LibraryRail = memo(function LibraryRail({
   query,
   onQueryChange,
   onOpen,
-  onSeek,
+  onPlayClip,
+  playingClip = null,
   onSaveAllSplits,
   saveDisabled = false,
   collapsed = false,
@@ -46,7 +56,11 @@ export const LibraryRail = memo(function LibraryRail({
   onQueryChange: (query: string) => void;
   onOpen: (path: string) => void;
   /** 클립 시작으로 탐색 — 초가 아니라 ms 그대로 넘긴다(부모가 단위를 안다). */
-  onSeek: (ms: number) => void;
+  /** 클립 미리보기 — 시작으로 이동해 재생하고 **클립 끝에서 자동 정지**한다.
+   *  재생 중인 클립을 다시 누르면 정지(토글). */
+  onPlayClip: (clip: RailClip) => void;
+  /** 지금 미리보기 중인 클립의 index. 없으면 null. */
+  playingClip?: number | null;
   onSaveAllSplits: () => void;
   saveDisabled?: boolean;
   collapsed?: boolean;
@@ -159,7 +173,10 @@ export const LibraryRail = memo(function LibraryRail({
           </p>
         ) : (
           clips.map((c) => (
-            <div key={c.index} className={`${rowCls} text-fg-muted`}>
+            <div
+              key={c.index}
+              className={`${rowCls} ${playingClip === c.index ? "bg-selection text-fg" : "text-fg-muted"}`}
+            >
               <span
                 className="h-7 w-0.5 shrink-0 rounded"
                 style={{ backgroundColor: c.color }}
@@ -175,11 +192,19 @@ export const LibraryRail = memo(function LibraryRail({
               </span>
               <button
                 type="button"
-                onClick={() => onSeek(c.startMs)}
-                aria-label={`${c.label} 시작 지점으로 이동`}
-                className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-raised hover:text-fg"
+                onClick={() => onPlayClip(c)}
+                aria-label={
+                  playingClip === c.index ? `${c.label} 미리보기 정지` : `${c.label} 구간 재생`
+                }
+                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded hover:bg-raised hover:text-fg ${
+                  playingClip === c.index ? "text-accent" : "text-fg-dim"
+                }`}
               >
-                <Play size={13} />
+                {playingClip === c.index ? (
+                  <Square size={11} fill="currentColor" />
+                ) : (
+                  <Play size={13} />
+                )}
               </button>
             </div>
           ))
