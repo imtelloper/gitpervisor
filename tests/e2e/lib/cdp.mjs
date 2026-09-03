@@ -248,3 +248,40 @@ export async function connect({ port } = {}) {
   cdp.devPort = Number(new URL(page.url).port) || null;
   return cdp;
 }
+
+/**
+ * **라벨로** 창을 골라 붙는다(보조 창 e2e 공용 진입점 — doc-*, sysmon, aggregate 등).
+ *
+ * `connect()` 와 달리 타이틀을 보지 않는다: 문서 창(`doc-<id>`)은 타이틀이 파일명이라
+ * `/gitpervisor/i` 필터에 아예 걸리지 않고, 모아보기·리소스 모니터도 타이틀이 제각각이다.
+ * 그래서 `/json` 의 **모든 페이지**에 붙어 라벨을 물어 정확히 일치하는 것만 채택하고 나머지
+ * 연결은 즉시 닫는다(연결을 남기면 그 창이 닫힐 때 러너 쪽 WebSocket 이 요란하게 죽는다).
+ *
+ * 새 OS 창은 웹뷰 초기화까지 시간이 걸리므로 20회 × 500ms 재시도한다. 못 찾으면 throw —
+ * 호출부가 "창을 못 찾음"과 "창에서 단언 실패"를 구분할 수 있어야 한다.
+ */
+export async function connectLabel(label, { port } = {}) {
+  const explicit = port || Number(process.env.GPV_E2E_PORT) || null;
+  const ports = explicit ? [explicit] : SCAN_PORTS;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    for (const p of ports) {
+      const list = await listTargets(p);
+      if (!list) continue;
+      for (const page of list.filter((t) => t.type === "page")) {
+        const c = await attach(page);
+        if (!c) continue;
+        if ((await c.eval(LABEL_EXPR).catch(() => null)) === label) {
+          c.pageUrl = page.url;
+          c.cdpPort = p;
+          c.devPort = Number(new URL(page.url).port) || null;
+          return c;
+        }
+        c.close();
+      }
+    }
+    await new Promise((res) => setTimeout(res, 500));
+  }
+  throw new Error(
+    `라벨 "${label}" 인 창의 CDP 페이지를 찾지 못했습니다(20회 재시도, 포트 [${ports.join(", ")}]).`,
+  );
+}

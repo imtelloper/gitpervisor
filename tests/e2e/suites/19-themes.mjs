@@ -8,7 +8,8 @@
 // set_settings 원시 invoke는 React Query 캐시를 모르므로, dev 노출 __gpv.queryClient로
 // settings 쿼리를 invalidate해 App의 테마 effect(dataset.theme 의존 체인)를 구동한다.
 
-export const name = "테마 시스템 (6종 전환 / CSS 토큰 / xterm 재적용 / 복원)";
+export const name =
+  "테마 시스템 (6종 전환 / CSS 토큰 / xterm 재적용 / 복원 / 커스텀 테마)";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -131,3 +132,91 @@ export async function run({ cdp, report: r, fix }) {
         .catch(() => {});
   }
 }
+    // ── 태스크 29 ① 내장 6종 × 18토큰: styles.css ↔ theme-apply.ts BUILTIN_TOKENS 짝 검증 ──
+    // 사본이 어긋나면 "새 테마 만들기"의 초기값이 낡은 색으로 시작한다. 위 루프를 건드리지
+    // 않으려고 별도 루프로 다시 돈다(전환 비용 < 두 hunk가 얽히는 비용).
+    const hasCustom = await cdp.eval(
+      `!!(window.__gpv && window.__gpv.customThemes && window.__gpv.builtinTokens)`,
+    );
+    if (!hasCustom) {
+      r.skip("커스텀 테마 (태스크 29)", "__gpv.customThemes/builtinTokens 미노출 — 스킵");
+    } else {
+      for (const id of THEME_IDS) {
+        await cdp.invoke("set_settings", { settings: { ...orig, theme: id } });
+        await invalidateSettings();
+        await poll(domTheme, (v) => v === id, 20, 250);
+        const bad = await cdp.eval(`(()=>{
+          const want = window.__gpv.builtinTokens[${J(id)}];
+          const css = getComputedStyle(document.documentElement);
+          const out = [];
+          for (const k in want) {
+            const got = css.getPropertyValue('--color-' + k).trim().toLowerCase();
+            if (got !== want[k]) out.push(k + ' css=' + got + ' 사본=' + want[k]);
+          }
+          return out; })()`);
+        r.check(
+          `[${id}] 18토큰 == BUILTIN_TOKENS (theme-apply.ts 사본 ↔ styles.css)`,
+          Array.isArray(bad) && bad.length === 0,
+          Array.isArray(bad) ? bad.join(" · ") : String(bad),
+        );
+      }
+
+      // ── 태스크 29 ② 커스텀 테마: 정의 주입 → 선택 → 토큰·xterm·<style> → 삭제 ──
+      const CID = "custom-e2e";
+      await cdp.eval(`window.__gpv.customThemes.getState().upsert({
+        id: ${J(CID)}, name: "E2E 커스텀", base: "dracula",
+        colors: { ...window.__gpv.builtinTokens.dracula, base: "#101010" },
+        updatedAt: Date.now() })`);
+      await cdp.invoke("set_settings", { settings: { ...orig, theme: CID } });
+      await invalidateSettings();
+      const capplied = await poll(domTheme, (v) => v === CID, 20, 250);
+      r.check("[custom] data-theme 반영", capplied === CID, `dataset=${capplied}`);
+
+      const cbase = await poll(cssBase, (v) => v === "#101010", 12, 250);
+      r.check("[custom] --color-base = 사용자 값(#101010)", cbase === "#101010", cbase);
+
+      const hasBlock = await cdp.eval(
+        `(document.getElementById("gp-custom-themes")?.textContent || "").includes('[data-theme="${CID}"]')`,
+      );
+      r.check("[custom] <style id=gp-custom-themes> 블록 존재", hasBlock === true, `block=${hasBlock}`);
+
+      if (hasXterm) {
+        const got = await poll(xtermBg, (v) => v === "rgb(16, 16, 16)", 16, 250);
+        r.check("[custom] 열린 xterm 배경 재적용", got === "rgb(16, 16, 16)", `bg=${got}`);
+      }
+
+      // Monaco 정의는 소비처(DiffViewer 등)가 렌더될 때 ensureMonacoTheme으로 만들어진다 —
+      // 이 스위트는 에디터를 띄우지 않으므로 "레지스트리가 보이면" 확인, 아니면 스킵.
+      // 레지스트리는 monaco 모듈에 없다(`monaco.editor._themeService`는 undefined — 실측
+      // 2026-09-03). **마운트된 에디터**의 `_themeService._knownThemes`로만 닿는다.
+      const mon = await cdp.eval(`(()=>{
+        const m = window.__monaco; if (!m) return "no-monaco";
+        const ed = (m.editor.getEditors ? m.editor.getEditors() : [])[0];
+        if (!ed) return "no-editor";
+        const known = ed._themeService && ed._themeService._knownThemes;
+        if (!known || !known.has) return "unreachable";
+        return { builtin: known.has("gitpervisor-dracula"), custom: known.has("gitpervisor-custom-${CID}") };
+      })()`);
+      if (typeof mon === "string" || !mon) {
+        r.skip("Monaco 커스텀 테마 정의", `${mon} — 에디터 미마운트/레지스트리 조회 불가(수동 확인 대상)`);
+      } else if (!mon.custom) {
+        r.check("Monaco 내장 6종 등록(MONACO_THEMES 루프)", mon.builtin === true, `builtin=${mon.builtin}`);
+        r.skip("Monaco 커스텀 테마 정의", "에디터 미마운트 — ensureMonacoTheme 미호출");
+      } else {
+        r.check("Monaco 커스텀 테마 정의", mon.builtin === true && mon.custom === true, JSON.stringify(mon));
+      }
+
+      // 삭제 → 블록 소멸. dataset.theme는 그대로지만 매칭 블록이 없어 기본(darcula) 값으로 돌아간다.
+      await cdp.eval(`window.__gpv.customThemes.getState().remove(${J(CID)})`);
+      const gone = await cdp.eval(
+        `(document.getElementById("gp-custom-themes")?.textContent || "").includes('[data-theme="${CID}"]')`,
+      );
+      r.check("[custom] 삭제 후 블록 소멸", gone === false, `block=${gone}`);
+      const fellBack = await poll(cssBase, (v) => v === "#1e1f22", 12, 250);
+      r.check(
+        "[custom] 정의 없는 id는 기본 테마 색으로 폴백",
+        fellBack === "#1e1f22",
+        `--color-base=${fellBack}`,
+      );
+    }
+

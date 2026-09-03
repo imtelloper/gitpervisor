@@ -48,6 +48,7 @@ const SUITES = [
   "./suites/30-image-annotate.mjs",
   "./suites/32-disk-usage.mjs",
   "./suites/33-video-split.mjs",
+  "./suites/34-image-doc-window.mjs",
   // 오버레이가 전체화면·포커스를 가져가므로 마지막에 둔다(31-capture.mjs 상단 주석).
   "./suites/31-capture.mjs",
 ];

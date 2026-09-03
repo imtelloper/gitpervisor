@@ -7,6 +7,25 @@ export const name =
   "신규 커맨드 (read_file_base64 / reorder_projects / term_attach / term_project)";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * 채널에 `re`가 나타날 때까지 모아 보며 기다린다(누적 — `text()`는 드레인이라 한 번에 다 읽힌다).
+ *
+ * 고정 대기(옛 800ms)로는 못 버틴다. 번들 ConPTY(태스크 33, OpenConsole 1.24)는 PTY를 열자마자
+ * 터미널에 `ESC[1t ESC[c ESC[?1004h ESC[?9001h` 를 보내 **DA1 응답을 기다린다.** 이 하네스의
+ * 원시 채널은 터미널이 아니라 답하지 않으므로 내부 타임아웃(실측 ~3.4s)이 끝날 때까지 셸 출력이
+ * 통째로 밀린다 — 첫 프롬프트가 term_open 기준 ~5.0s(응답해 주면 ~1.7s)다. 앱 본체는 xterm이
+ * 자동으로 DA1에 답하므로 이 지연이 없다(= 제품 결함이 아니라 하네스의 대기 예산 문제).
+ */
+const waitFor = async (ch, re, budgetMs = 15000) => {
+  let acc = "";
+  for (const end = Date.now() + budgetMs; ; ) {
+    acc += await ch.text();
+    if (re.test(acc) || Date.now() >= end) return acc;
+    await sleep(100);
+  }
+};
+
 // 1x1 PNG — read_file_base64는 확장자로 mime를 정하므로 내용 자체는 무관하다.
 const PNG_B64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
@@ -98,8 +117,9 @@ export async function run({ cdp, report: r, fix }) {
         termId: TID,
         data: "echo ATTACH_BEFORE\r",
       });
-      await sleep(800);
-      r.check("term_attach 전: ch1으로 출력 수신", /ATTACH_BEFORE/.test(await ch1.text()));
+      // `before`는 위 reorder_projects가 쓰는 이름이라 가린다 — 다른 이름으로 둔다.
+      const oldChOut = await waitFor(ch1, /ATTACH_BEFORE/);
+      r.check("term_attach 전: ch1으로 출력 수신", /ATTACH_BEFORE/.test(oldChOut), `${oldChOut.length}B`);
 
       const ch2 = await cdp.openChannel();
       const att = await cdp.try("term_attach", { termId: TID, onData: ch2.ref });
@@ -110,8 +130,7 @@ export async function run({ cdp, report: r, fix }) {
         termId: TID,
         data: "echo ATTACH_AFTER\r",
       });
-      await sleep(800);
-      const newCh = await ch2.text();
+      const newCh = await waitFor(ch2, /ATTACH_AFTER/);
       const oldCh = await ch1.text();
       r.check("term_attach 후: ch2(새 채널) 출력 수신", /ATTACH_AFTER/.test(newCh));
       r.check("term_attach 후: ch1(옛 채널) 출력 안 받음", !/ATTACH_AFTER/.test(oldCh));

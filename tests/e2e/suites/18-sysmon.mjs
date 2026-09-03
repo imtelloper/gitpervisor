@@ -146,4 +146,44 @@ export async function run({ cdp, report: r }) {
     await closeSysmon();
     await sleep(300);
   }
+
+  // ── ③ 시스템 정보 (sys_info_static — 태스크 31 §5-3) ──
+  // 첫 수집은 PowerShell CIM/system_profiler 기동 탓에 수 초 걸린다(그래서 30s 시한).
+  const si = await cdp.try("sys_info_static", { force: false }, { timeoutMs: 30000 });
+  const missing =
+    !si.ok && /not found|not allowed/i.test(`${si.code || ""} ${si.message || ""}`);
+  if (missing) {
+    // Rust 커맨드가 아직 등록되지 않은 단계 — 러너를 깨뜨리지 않고 넘어간다(반영 후엔 아래가 돈다).
+    r.skip("sys_info_static: 커맨드 미등록", `${si.message || ""}`.trim());
+  } else if (!si.ok) {
+    r.check("sys_info_static: 호출 성공", false, `${si.code || ""} ${si.message || ""}`.trim());
+  } else {
+    const d = si.r || {};
+    r.check("sysinfo: os.name 비어있지 않음", typeof d?.os?.name === "string" && d.os.name.length > 0, `${d?.os?.name} ${d?.os?.version || ""}`);
+    r.check("sysinfo: cpu.logicalCores ≥ 1", typeof d?.cpu?.logicalCores === "number" && d.cpu.logicalCores >= 1, `${d?.cpu?.brand} ×${d?.cpu?.logicalCores}`);
+    r.check("sysinfo: memory.totalBytes > 0", typeof d?.memory?.totalBytes === "number" && d.memory.totalBytes > 0, `${d?.memory?.totalBytes}`);
+    r.check("sysinfo: volumes ≥ 1", Array.isArray(d?.volumes) && d.volumes.length >= 1, `${d?.volumes?.length}개`);
+    r.check("sysinfo: notes는 문자열 배열", Array.isArray(d?.notes) && d.notes.every((n) => typeof n === "string"), (d?.notes || []).join(" | "));
+
+    // Windows는 CIM으로 전부 채워져야 한다(비어 있으면 파서·권한 문제 — 조용히 넘기지 않는다).
+    if (process.platform === "win32") {
+      r.check("sysinfo(win): gpus ≥ 1", Array.isArray(d?.gpus) && d.gpus.length >= 1, (d?.gpus || []).map((g) => g.name).join(", "));
+      r.check("sysinfo(win): board 존재", !!d?.board && typeof d.board.product === "string", d?.board ? `${d.board.manufacturer} ${d.board.product}` : "null");
+      r.check("sysinfo(win): cpu.cacheL3Kb > 0", typeof d?.cpu?.cacheL3Kb === "number" && d.cpu.cacheL3Kb > 0, `${d?.cpu?.cacheL3Kb}`);
+    }
+
+    // force:true 는 캐시를 무시하고 재수집 — collectedAtMs 가 앞선다.
+    const forced = await cdp.try("sys_info_static", { force: true }, { timeoutMs: 30000 });
+    r.check(
+      "sysinfo: force 재수집 시 collectedAtMs 증가",
+      forced.ok && typeof forced.r?.collectedAtMs === "number" && forced.r.collectedAtMs >= d.collectedAtMs,
+      forced.ok ? `${d.collectedAtMs} → ${forced.r.collectedAtMs}` : `${forced.code || ""} ${forced.message || ""}`,
+    );
+
+    // 캐시 hit 은 수집 없이 즉답 — CDP 왕복을 빼려고 페이지 안에서 잰다.
+    const ms = await cdp.eval(
+      `(async()=>{ const t=performance.now(); try{ await window.__TAURI_INTERNALS__.invoke('sys_info_static',{force:false}); }catch(e){ return -1; } return performance.now()-t; })()`,
+    );
+    r.check("sysinfo: 캐시 hit < 50ms", typeof ms === "number" && ms >= 0 && ms < 50, `${typeof ms === "number" ? ms.toFixed(1) : ms}ms`);
+  }
 }
