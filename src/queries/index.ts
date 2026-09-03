@@ -504,6 +504,39 @@ export function useVideoProbe(projectId: string | null, path: string | null, ena
   });
 }
 
+/** 타임라인 필름스트립 — 파일당 한 번만 뽑는다(ffmpeg 스폰이라 비싸다). */
+export function useVideoFilmstrip(
+  projectId: string | null,
+  path: string | null,
+  cols: number,
+  height: number,
+  enabled: boolean,
+) {
+  return useQuery({
+    queryKey: ["video-filmstrip", projectId ?? "none", path ?? "none", cols, height],
+    queryFn: () => ipc.videoFilmstrip(projectId!, path!, cols, height),
+    enabled: enabled && !!projectId && !!path,
+    staleTime: Infinity,
+    retry: false,
+  });
+}
+
+/** 오디오 파형 피크 — 오디오 트랙이 없으면 빈 배열이 온다(에러 아님). */
+export function useVideoWaveform(
+  projectId: string | null,
+  path: string | null,
+  buckets: number,
+  enabled: boolean,
+) {
+  return useQuery({
+    queryKey: ["video-waveform", projectId ?? "none", path ?? "none", buckets],
+    queryFn: () => ipc.videoWaveform(projectId!, path!, buckets),
+    enabled: enabled && !!projectId && !!path,
+    staleTime: Infinity,
+    retry: false,
+  });
+}
+
 /** 이미지 파일 미리보기 — 워크트리 파일 바이트(base64). 내용은 watcher invalidate에 맡긴다. */
 export function useFileImage(projectId: string | null, path: string | null) {
   return useQuery({

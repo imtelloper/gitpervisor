@@ -1036,6 +1036,8 @@ pub fn run() {
             commands::video_export,
             commands::video_export_cancel,
             commands::video_capture_frame,
+            commands::video_filmstrip,
+            commands::video_waveform,
             commands::get_target_sizes,
             commands::get_project_sizes,
             commands::clean_target,

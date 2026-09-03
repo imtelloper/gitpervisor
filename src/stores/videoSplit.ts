@@ -232,6 +232,9 @@ export const useVideoSplit = create<VideoSplitState>((set, get) => ({
           mode: opts.mode,
           speed: null,
           crop: null,
+          // 분할은 편집 설정을 쓰지 않는다(패널이 그렇게 고지한다) — 모자이크도 마찬가지.
+          masks: null,
+          maskKind: "mosaic",
           crf: opts.mode === "encode" ? 23 : null,
           maxHeight: null,
           removeAudio: false,
@@ -285,7 +288,10 @@ export const useVideoSplit = create<VideoSplitState>((set, get) => ({
     if (!b || b.cancelled) return;
     set({ batch: { ...b, cancelled: true } });
     // 현재 잡의 종결(cancelled)을 루프가 기다렸다가 빠져나간다 — 완료분은 남는다.
-    if (b.currentJobId) void ipc.videoExportCancel(b.currentJobId).catch(() => {});
+    if (b.currentJobId)
+      void ipc
+        .videoExportCancel(b.currentJobId)
+        .catch((e) => useUi.getState().pushToast("error", errorMessage(e)));
   },
 
   owns: (jobId) => (get().batch?.jobIds.has(jobId) ?? false) || recentlyOwned.has(jobId),

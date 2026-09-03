@@ -536,16 +536,80 @@ async function videoDocBlock({ cdp, r, fix, cdpPort, arr, labels, closeLabel, po
     r.check("영상 doc 창에 내보내기 패널(ExportPanel)이 뜬다", hasPanel === true);
     if (hasPanel !== true) return;
 
+    // ── 가림(모자이크/블러) 영역 ──
+    // 드래그 한 번 = 영역 하나. CropOverlay가 커밋(onChange)을 setState 업데이터 안에서 하면
+    // StrictMode가 업데이터를 두 번 불러 **영역이 두 개** 생긴다(2026-09-03 실제 결함).
+    // crop은 setCrop(c)라 멱등이어서 안 드러났고, 배열에 append하는 가림에서만 터졌다.
+    const dragRegion = (fx, fy, tx, ty) =>
+      vcdp.eval(
+        `(()=>{ const ov = document.querySelector('.cursor-crosshair'); if (!ov) return 'no-overlay';
+           const r = ov.getBoundingClientRect();
+           const at = (px, py) => ({ clientX: r.left + r.width * px, clientY: r.top + r.height * py, bubbles: true, pointerId: 1 });
+           ov.dispatchEvent(new PointerEvent('pointerdown', at(${fx}, ${fy})));
+           window.dispatchEvent(new PointerEvent('pointermove', at(${tx}, ${ty})));
+           window.dispatchEvent(new PointerEvent('pointerup', at(${tx}, ${ty})));
+           return 'ok'; })()`,
+      );
+    const maskCount = () =>
+      vcdp.eval(`document.querySelectorAll('.border-dashed').length`);
+
+    const maskTab = await vcdp.eval(
+      `(()=>{ const t=document.querySelector('[data-tab="mask"]'); if(!t) return false; t.click(); return true; })()`,
+    );
+    if (maskTab !== true) r.skip("가림 영역", "가리기 탭을 찾지 못함");
+    // 탭 전환은 React state 갱신이라 같은 eval 안에서 조회하면 이전 렌더를 본다 — 왕복을 나눈다.
+    await poll(
+      () => vcdp.eval(`[...document.querySelectorAll('button')].some(x=>/가리기/.test(x.textContent||'') && !x.dataset.tab)`),
+      (v) => v === true, 20, 200,
+    );
+    const maskOn = await vcdp.eval(
+      `(()=>{ const b=[...document.querySelectorAll('button')].find(x=>/가리기/.test(x.textContent||'') && !x.dataset.tab);
+         if(!b) return false; b.click(); return true; })()`,
+    );
+    if (maskOn === true) {
+      const d1 = await dragRegion(0.15, 0.2, 0.45, 0.6);
+      const d2 = await dragRegion(0.6, 0.25, 0.85, 0.55);
+      const n = await poll(maskCount, (v) => v >= 2, 20, 200);
+      r.check(
+        "가림: 드래그 2회 → 영역 정확히 2개(StrictMode 이중 커밋 회귀)",
+        n === 2,
+        `drag=${d1}/${d2} boxes=${n}`,
+      );
+      await vcdp.eval(`(()=>{ document.querySelector('[data-tab="export"]')?.click(); return true; })()`);
+      await poll(
+        () => vcdp.eval(`!!document.querySelector('.gpv-export-panel input[type=text]')`),
+        (v) => v === true, 20, 200,
+      );
+      const nameHas = await vcdp.eval(
+        `(()=>{ const i=document.querySelector('.gpv-export-panel input[type=text]'); return i ? i.value : ''; })()`,
+      );
+      r.check("가림이 켜지면 자동 파일명에 .mosaic", /\.mosaic\./.test(String(nameHas)), nameHas);
+      // 원상복구 — 아래 내보내기 단언이 순수 remux 경로를 그대로 쓰게 한다.
+      await vcdp.eval(
+        `(()=>{ const x=[...document.querySelectorAll('button')].find(y=>/모두 해제/.test(y.title||''));
+           if(!x) return false; x.click(); return true; })()`,
+      );
+      await poll(maskCount, (v) => v === 0, 20, 200);
+    } else {
+      r.skip("가림 영역", "가리기 버튼을 찾지 못함");
+    }
+
     // ── 토스트 격리 ──
     await cdp.eval(`window.__gpv.ui.setState({ toasts: [] })`);
     await vcdp.eval(`window.__gpv.ui.setState({ toasts: [] })`);
     // 무손실 복사 + 변경 없음이면 내보내기 버튼이 비활성이다(nothingToDo) — 오디오 제거를 켠다.
+    await vcdp.eval(`(()=>{ document.querySelector('[data-tab="audio"]')?.click(); return true; })()`);
+    await poll(
+      () => vcdp.eval(`!!document.querySelector('.gpv-export-panel input[type=checkbox]')`),
+      (v) => v === true, 20, 200,
+    );
     const checked = await vcdp.eval(
-      `(()=>{ const cb = document.querySelector('input[type=checkbox]'); if (!cb) return false; if (!cb.checked) cb.click(); return true; })()`,
+      `(()=>{ const cb = document.querySelector('.gpv-export-panel input[type=checkbox]');
+         if (!cb) return false; if (!cb.checked) cb.click(); return true; })()`,
     );
     await sleep(300); // 파일명 자동 갱신(suggested → name) 반영
     const clicked = await vcdp.eval(
-      `(()=>{ const b = Array.from(document.querySelectorAll('button')).find(x => x.textContent.trim() === '내보내기');
+      `(()=>{ const b = Array.from(document.querySelectorAll('button')).find(x => x.textContent.trim() === '내보내기' && !x.dataset.tab);
          if (!b) return 'no-button'; if (b.disabled) return 'disabled'; b.click(); return 'ok'; })()`,
     );
     if (!r.check("영상 doc 창에서 내보내기 실행", checked === true && clicked === "ok", `checkbox=${checked} click=${clicked}`))

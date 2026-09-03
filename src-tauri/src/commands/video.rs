@@ -175,11 +175,14 @@ pub(crate) fn find_ffmpeg(app: &AppHandle, state: &AppState) -> Result<FfmpegBin
 // ══════════════════════════ 공용 실행 헬퍼 ══════════════════════════
 
 /// ffprobe·버전 조회 같은 짧은 실행 — run_git 골격 미러(타임아웃 시 그룹째 kill).
-async fn run_capture(
+///
+/// stdout은 **바이트 그대로** 돌려준다. 필름스트립 JPEG·PCM 파형처럼 바이너리를 파이프로
+/// 받는 호출자가 있어서, from_utf8_lossy를 여기서 걸면 그 바이트가 U+FFFD로 망가진다.
+async fn run_capture_bytes<S: AsRef<std::ffi::OsStr>>(
     bin: &Path,
-    args: &[&str],
+    args: &[S],
     timeout_secs: u64,
-) -> Result<(i32, String, String), IpcError> {
+) -> Result<(i32, Vec<u8>, String), IpcError> {
     let mut cmd = Command::new(bin);
     cmd.args(args)
         .stdin(std::process::Stdio::null())
@@ -206,9 +209,19 @@ async fn run_capture(
         .map_err(|e| IpcError::new(ErrorCode::Io, format!("출력 수집 실패: {e}")))?;
     Ok((
         out.status.code().unwrap_or(-1),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
+        out.stdout,
         String::from_utf8_lossy(&out.stderr).into_owned(),
     ))
+}
+
+/// 텍스트 stdout(ffprobe JSON·-version)용 얇은 래퍼.
+async fn run_capture(
+    bin: &Path,
+    args: &[&str],
+    timeout_secs: u64,
+) -> Result<(i32, String, String), IpcError> {
+    let (code, out, err) = run_capture_bytes(bin, args, timeout_secs).await?;
+    Ok((code, String::from_utf8_lossy(&out).into_owned(), err))
 }
 
 // ══════════════════════════ 도구 상태 ══════════════════════════
@@ -345,29 +358,20 @@ fn parse_probe(json: &str) -> Result<VideoMeta, IpcError> {
     })
 }
 
-#[tauri::command]
-pub async fn video_probe(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    project_id: String,
-    rel_path: String,
-) -> Result<VideoMeta, IpcError> {
-    let repo = project_path(&state, &project_id)?;
-    let bin = find_ffmpeg(&app, state.inner())?;
-    let probe = bin.ffprobe.ok_or_else(|| {
+fn need_probe(bin: &FfmpegBin) -> Result<PathBuf, IpcError> {
+    bin.ffprobe.clone().ok_or_else(|| {
         IpcError::new(
             ErrorCode::ToolNotFound,
             "ffprobe를 찾을 수 없습니다 — ffmpeg와 같은 폴더에 있어야 합니다",
         )
-    })?;
-    let src = super::tree::resolve_in_repo(&repo, &rel_path)?;
-    if !src.is_file() {
-        return Err(IpcError::new(ErrorCode::NotFound, "파일을 찾을 수 없습니다"));
-    }
-    let src_s = src.display().to_string();
+    })
+}
+
+/// ffprobe 1회 → VideoMeta. video_probe와 필름스트립(길이를 알아야 fps를 정한다)이 공유한다.
+async fn probe_meta(probe: &Path, src: &str) -> Result<VideoMeta, IpcError> {
     let (code, stdout, stderr) = run_capture(
-        &probe,
-        &["-v", "error", "-print_format", "json", "-show_format", "-show_streams", &src_s],
+        probe,
+        &["-v", "error", "-print_format", "json", "-show_format", "-show_streams", src],
         15,
     )
     .await?;
@@ -379,6 +383,33 @@ pub async fn video_probe(
         });
     }
     parse_probe(&stdout)
+}
+
+/// 레포 안 미디어 원본 해석 — 존재 확인까지. 프로브·필름스트립·파형이 공유한다.
+fn resolve_media(
+    state: &State<'_, AppState>,
+    project_id: &str,
+    rel_path: &str,
+) -> Result<String, IpcError> {
+    let repo = project_path(state, project_id)?;
+    let src = super::tree::resolve_in_repo(&repo, rel_path)?;
+    if !src.is_file() {
+        return Err(IpcError::new(ErrorCode::NotFound, "파일을 찾을 수 없습니다"));
+    }
+    Ok(src.display().to_string())
+}
+
+#[tauri::command]
+pub async fn video_probe(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    project_id: String,
+    rel_path: String,
+) -> Result<VideoMeta, IpcError> {
+    let bin = find_ffmpeg(&app, state.inner())?;
+    let probe = need_probe(&bin)?;
+    let src = resolve_media(&state, &project_id, &rel_path)?;
+    probe_meta(&probe, &src).await
 }
 
 // ══════════════════════════ 내보내기 스펙 → ffmpeg 인자 ══════════════════════════
@@ -413,6 +444,13 @@ pub struct ExportSpec {
     pub crf: Option<u8>,
     pub max_height: Option<u32>,
     pub remove_audio: bool,
+    /// 가릴 영역들 — **원본 프레임 좌표계**(crop과 동일 기준). crop/scale **이전**에 적용된다.
+    /// 비었거나 없으면 마스킹 없음. copy 모드와는 양립 불가(validate_spec이 막는다).
+    #[serde(default)]
+    pub masks: Option<Vec<CropRect>>,
+    /// "mosaic"(픽셀화) | "blur"(박스 블러). masks가 없으면 무시. 기본 mosaic.
+    #[serde(default)]
+    pub mask_kind: Option<String>,
     /// 진행률 분모 — 프론트가 probe에서 넘긴다(백엔드 재프로브 생략).
     pub duration_ms: u64,
     pub has_audio: bool,
@@ -447,6 +485,46 @@ fn fmt_secs(ms: u64) -> String {
 fn evenize(c: &CropRect) -> (u32, u32, u32, u32) {
     let e = |v: u32| v & !1;
     (e(c.x), e(c.y), e(c.w).max(2), e(c.h).max(2))
+}
+
+/// 마스크 그래프 — `(그래프, 출력라벨)`. 마스크가 없으면 None.
+///
+/// `-vf`(선형 체인)로는 표현할 수 없다: 원본을 split해서 한 갈래만 흐리고 다시 overlay로
+/// 합쳐야 하므로 세미콜론 그래프(=filter_complex)가 필요하다. 그래서 마스크가 있으면
+/// 일반 mp4 경로도 `-vf` 대신 filter_complex + 명시적 `-map`으로 넘어간다.
+///
+/// 좌표는 원본 프레임 기준이라 **crop/scale보다 먼저** 걸려야 한다 — 순서가 뒤집히면
+/// crop된 프레임에 원본 좌표를 적용해 엉뚱한 데를 가린다.
+fn build_mask_graph(spec: &ExportSpec) -> Option<(String, String)> {
+    let masks = spec.masks.as_ref()?;
+    if masks.is_empty() {
+        return None;
+    }
+    let mosaic = spec.mask_kind.as_deref() != Some("blur");
+    let n = masks.len();
+    let mut parts: Vec<String> = Vec::new();
+    // split은 원본 1갈래(배경) + 마스크당 1갈래.
+    let srcs: String = (0..n).map(|i| format!("[s{i}]")).collect();
+    parts.push(format!("[0:v]split={}[bg]{srcs}", n + 1));
+
+    let mut base = "[bg]".to_string();
+    for (i, m) in masks.iter().enumerate() {
+        let (x, y, w, h) = evenize(m);
+        let effect = if mosaic {
+            // 짧은 변 기준 ~16블록. 다운스케일 후 neighbor 업스케일 = 픽셀화.
+            let bw = (w / 16).max(1);
+            let bh = (h / 16).max(1);
+            format!("scale={bw}:{bh}:flags=neighbor,scale={w}:{h}:flags=neighbor")
+        } else {
+            // boxblur 반경은 영역보다 작아야 한다 — 짧은 변의 1/8, 최소 2.
+            let r = (w.min(h) / 8).max(2);
+            format!("boxblur={r}:2")
+        };
+        parts.push(format!("[s{i}]crop={w}:{h}:{x}:{y},{effect}[e{i}]"));
+        parts.push(format!("{base}[e{i}]overlay={x}:{y}[o{i}]"));
+        base = format!("[o{i}]");
+    }
+    Some((parts.join(";"), base))
 }
 
 /// atempo는 필터 하나당 0.5~2.0 범위만 안전하다 — 범위 밖은 체인으로 분해.
@@ -493,9 +571,12 @@ fn validate_spec(spec: &ExportSpec) -> Result<(), IpcError> {
                 || spec.crop.is_some()
                 || spec.crf.is_some()
                 || spec.max_height.is_some()
+                || spec.masks.as_ref().is_some_and(|m| !m.is_empty())
                 || ext == "gif"
             {
-                return bad("무손실 복사는 배속·크롭·화질·GIF와 함께 쓸 수 없습니다 (재인코딩 필요)");
+                return bad(
+                    "무손실 복사는 배속·크롭·모자이크·화질·GIF와 함께 쓸 수 없습니다 (재인코딩 필요)",
+                );
             }
         }
         "encode" => {}
@@ -534,6 +615,11 @@ fn build_export_args(src: &str, tmp_out: &str, spec: &ExportSpec) -> Vec<String>
         }
         a.extend(["-avoid_negative_ts".into(), "make_zero".into()]);
     } else {
+        // 마스크(있으면)가 맨 앞 — 원본 좌표계라 crop보다 먼저 걸려야 한다.
+        let mask = build_mask_graph(spec);
+        let vin = mask.as_ref().map(|(_, l)| l.as_str()).unwrap_or("[0:v]");
+        let mprefix = mask.as_ref().map(|(g, _)| format!("{g};")).unwrap_or_default();
+
         // 비디오 필터 체인: crop → scale → setpts (→ gif면 fps/scale/palette).
         let mut vf: Vec<String> = Vec::new();
         if let Some(c) = &spec.crop {
@@ -555,7 +641,7 @@ fn build_export_args(src: &str, tmp_out: &str, spec: &ExportSpec) -> Vec<String>
             a.extend([
                 "-filter_complex".into(),
                 format!(
-                    "[0:v]{},split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5",
+                    "{mprefix}{vin}{},split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5",
                     vf.join(",")
                 ),
                 "-an".into(),
@@ -569,7 +655,19 @@ fn build_export_args(src: &str, tmp_out: &str, spec: &ExportSpec) -> Vec<String>
                 a.extend(["-af".into(), atempo_chain(speed)]);
             }
         } else {
-            if !vf.is_empty() {
+            if mask.is_some() {
+                // filter_complex를 쓰면 자동 스트림 선택이 꺼진다 — 오디오도 명시로 매핑한다.
+                let chain = if vf.is_empty() { "null".to_string() } else { vf.join(",") };
+                a.extend([
+                    "-filter_complex".into(),
+                    format!("{mprefix}{vin}{chain}[v]"),
+                    "-map".into(),
+                    "[v]".into(),
+                ]);
+                if spec.has_audio && !spec.remove_audio {
+                    a.extend(["-map".into(), "0:a?".into()]);
+                }
+            } else if !vf.is_empty() {
                 a.extend(["-vf".into(), vf.join(",")]);
             }
             a.extend([
@@ -639,6 +737,39 @@ struct ExportFinished {
     cancelled: bool,
     error: Option<String>,
     out_rel: String,
+}
+
+/// Windows 제어된 폴더 액세스(랜섬웨어 방지) 안내.
+///
+/// ffmpeg는 OS가 파일 생성을 막아도 그냥 "Error opening output files: No such file or directory"
+/// 라고만 말한다. 기본 보호 폴더가 문서·사진·**비디오**·바탕 화면이라 거기 있는 영상을 편집해
+/// 저장하면 통째로 실패하는데, 원인은 앱 어디에도 안 남고 Defender 이벤트 로그(1123)에만 있다.
+/// 2026-09-03에 `%userprofile%\Videos\...` 영상의 모자이크 내보내기가 정확히 이걸로 죽었다.
+/// 허용 목록은 **exe 단위**라 ffmpeg.exe와 앱 exe를 각각 등록해야 하고, dev 빌드와 설치본도 별개다.
+/// (tree.rs write_io_err가 파일 저장 경로에 대해 같은 안내를 한다.)
+#[cfg(windows)]
+fn cfa_hint(line: &str, out: &Path) -> String {
+    let looks_blocked = line.contains("Error opening output")
+        || line.contains("Permission denied")
+        || line.contains("Operation not permitted");
+    if !looks_blocked {
+        return String::new();
+    }
+    let protected = ["Videos", "Documents", "Pictures", "Desktop", "Music"];
+    let in_protected = std::env::var("USERPROFILE").ok().is_some_and(|home| {
+        let home = Path::new(&home);
+        protected.iter().any(|d| out.starts_with(home.join(d)))
+    });
+    if !in_protected {
+        return String::new();
+    }
+    " — 저장 폴더가 Windows '제어된 폴더 액세스' 보호 대상입니다. Windows 보안 › 바이러스 및 위협 방지 › 랜섬웨어 방지 › 폴더 액세스 제어에서 ffmpeg.exe와 이 앱을 허용 목록에 추가하거나, 다른 폴더에 저장하세요."
+        .into()
+}
+
+#[cfg(not(windows))]
+fn cfa_hint(_line: &str, _out: &Path) -> String {
+    String::new()
 }
 
 /// stderr에서 사람이 읽을 마지막 오류 줄을 뽑는다.
@@ -841,9 +972,23 @@ async fn video_export_inner(
         r
     } else {
         std::fs::remove_file(&tmp).ok();
+        // 실패한 명령을 남긴다 — 토스트는 stderr 마지막 한 줄뿐이라(예: "Error opening output
+        // files: No such file or directory") 어떤 인자로 죽었는지 사후에 알 길이 없었다.
+        // 필터 그래프가 길어질수록(마스크/GIF 팔레트) 이게 유일한 단서다.
+        log::error!(
+            "[video] 내보내기 실패 job={job_id}
+  ffmpeg: {}
+  args: {:?}
+  stderr(tail):
+{}",
+            bin.ffmpeg.display(),
+            args,
+            stderr_tail
+        );
+        let line = last_error_line(&stderr_tail);
         Err(IpcError {
             code: ErrorCode::Io,
-            message: format!("ffmpeg 실패: {}", last_error_line(&stderr_tail)),
+            message: format!("ffmpeg 실패: {}{}", line, cfa_hint(&line, &out)),
             stderr: Some(stderr_tail),
         })
     }
@@ -921,6 +1066,176 @@ pub async fn video_capture_frame(
     }
     std::fs::rename(&tmp, &out)
         .map_err(|e| IpcError::new(ErrorCode::Io, format!("산출물 이동 실패: {e}")))
+}
+
+// ══════════════════════════ 타임라인 필름스트립·파형 ══════════════════════════
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoFilmstrip {
+    /// `data:image/jpeg;base64,…` — 폭 cols*tile_w, 높이 tile_h.
+    pub data_uri: String,
+    pub cols: u32,
+    pub tile_w: u32,
+    pub tile_h: u32,
+}
+
+/// 필름스트립 인자 — ffmpeg **한 번**에 스프라이트 **한 장**. tile 필터가 N프레임을 가로로
+/// 이어 붙이므로 N번 스폰·N번 JPEG 헤더·N번 IPC가 통째로 사라진다.
+///
+/// `fps=cols/duration`이 구간을 정확히 cols등분한다(0, D/N, …, (N-1)D/N에서 샘플).
+///
+/// 출력은 **파이프**다. 임시파일 경로는 두 가지가 걸린다: ① Windows '제어된 폴더 액세스'가
+/// 비디오·문서 폴더 쓰기를 조용히 막고(cfa_hint 참고 — 실제로 내보내기가 이걸로 죽었다)
+/// ② 타임아웃·취소·실패마다 정리 코드가 붙는다. 파이프는 둘 다 없다.
+/// `image2`는 파일명 패턴 muxer라 파이프에는 `image2pipe`를 쓴다.
+fn build_filmstrip_args(src: &str, cols: u32, height: u32, duration_ms: u64) -> Vec<String> {
+    let fps = cols as f64 / (duration_ms.max(1) as f64 / 1000.0);
+    vec![
+        "-hide_banner".into(), "-nostdin".into(), "-v".into(), "error".into(),
+        "-i".into(), src.into(),
+        "-vf".into(), format!("fps={fps:.6},scale=-2:{height},tile={cols}x1"),
+        "-frames:v".into(), "1".into(),
+        "-an".into(), "-sn".into(),
+        "-c:v".into(), "mjpeg".into(), "-q:v".into(), "4".into(),
+        "-f".into(), "image2pipe".into(), "pipe:1".into(),
+    ]
+}
+
+/// JPEG SOF 마커에서 **실제** 픽셀 크기. scale=-2의 반올림 규칙을 여기서 재구현해 추정하면
+/// 1~2px 오차가 셀마다 누적돼 프론트 background-position이 끝에서 크게 어긋난다.
+fn jpeg_size(buf: &[u8]) -> Option<(u32, u32)> {
+    let mut i = 2; // SOI 다음부터. SOF는 SOS보다 앞이라 길이 없는 마커를 만날 일이 없다.
+    while i + 9 < buf.len() {
+        if buf[i] != 0xFF {
+            i += 1;
+            continue;
+        }
+        let marker = buf[i + 1];
+        // 0xC0~0xCF 중 C4(DHT)·C8(JPG)·CC(DAC)는 프레임 헤더가 아니다 — 크기가 안 들어 있다.
+        if (0xC0..=0xCF).contains(&marker) && !matches!(marker, 0xC4 | 0xC8 | 0xCC) {
+            let h = u16::from_be_bytes([buf[i + 5], buf[i + 6]]) as u32;
+            let w = u16::from_be_bytes([buf[i + 7], buf[i + 8]]) as u32;
+            return (w > 0 && h > 0).then_some((w, h));
+        }
+        let len = u16::from_be_bytes([buf[i + 2], buf[i + 3]]) as usize;
+        if len < 2 {
+            return None;
+        }
+        i += 2 + len;
+    }
+    None
+}
+
+#[tauri::command]
+pub async fn video_filmstrip(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    project_id: String,
+    rel_path: String,
+    cols: u32,
+    height: u32,
+) -> Result<VideoFilmstrip, IpcError> {
+    // 프레임 수·타일 높이는 곧 디코딩 비용이자 data URI 크기다 — 프론트 계산 사고(cols=100000)가
+    // 앱을 통째로 멈추게 두지 않는다(validate_spec과 같은 방어선).
+    if !(1..=240).contains(&cols) || !(8..=240).contains(&height) {
+        return Err(IpcError::new(
+            ErrorCode::Io,
+            "필름스트립 인자 범위를 벗어났습니다 (cols 1~240, height 8~240)",
+        ));
+    }
+    let bin = find_ffmpeg(&app, state.inner())?;
+    let probe = need_probe(&bin)?;
+    let src = resolve_media(&state, &project_id, &rel_path)?;
+    let meta = probe_meta(&probe, &src).await?;
+    if !meta.has_video || meta.duration_ms == 0 {
+        return Err(IpcError::new(
+            ErrorCode::Io,
+            "영상 스트림이 없거나 길이를 알 수 없어 필름스트립을 만들 수 없습니다",
+        ));
+    }
+    let args = build_filmstrip_args(&src, cols, height, meta.duration_ms);
+    let (code, jpeg, stderr) = run_capture_bytes(&bin.ffmpeg, &args, 120).await?;
+    if code != 0 || jpeg.is_empty() {
+        return Err(IpcError {
+            code: ErrorCode::Io,
+            message: format!("필름스트립 생성 실패: {}", last_error_line(&stderr)),
+            stderr: Some(stderr),
+        });
+    }
+    let (w, h) = jpeg_size(&jpeg)
+        .ok_or_else(|| IpcError::new(ErrorCode::Io, "필름스트립 이미지를 해석하지 못했습니다"))?;
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&jpeg);
+    Ok(VideoFilmstrip {
+        data_uri: format!("data:image/jpeg;base64,{b64}"),
+        cols,
+        // 마지막 열이 검게 채워졌더라도 스프라이트 폭은 cols*tile_w로 고정이다.
+        tile_w: (w / cols).max(1),
+        tile_h: h,
+    })
+}
+
+/// 파형용 오디오 디코드 인자 — 8kHz 모노 s16le 원시 PCM을 파이프로. 8kHz면 1시간짜리도
+/// 57MB라 메모리에 들고 줄일 수 있고, 피크 포락선에는 그 이상 필요 없다.
+fn build_waveform_args(src: &str) -> Vec<String> {
+    vec![
+        "-hide_banner".into(), "-nostdin".into(), "-v".into(), "error".into(),
+        "-i".into(), src.into(),
+        "-vn".into(), "-f".into(), "s16le".into(), "-ac".into(), "1".into(), "-ar".into(), "8000".into(),
+        "pipe:1".into(),
+    ]
+}
+
+/// s16le 모노 PCM → buckets개 피크(각 0..1). 최대 피크로 정규화해 조용한 소스도 보이게 한다.
+fn reduce_peaks(pcm: &[u8], buckets: usize) -> Vec<f32> {
+    let n = pcm.len() / 2;
+    if n == 0 || buckets == 0 {
+        return Vec::new();
+    }
+    let mut peaks = vec![0f32; buckets];
+    for (i, s) in pcm.chunks_exact(2).enumerate() {
+        // 샘플 수가 buckets보다 적어도(아주 짧은 파일) 0으로 나누지 않는다 — 비율로 배치한다.
+        let b = (i * buckets / n).min(buckets - 1);
+        let v = i16::from_le_bytes([s[0], s[1]]).unsigned_abs() as f32;
+        if v > peaks[b] {
+            peaks[b] = v;
+        }
+    }
+    let max = peaks.iter().copied().fold(0f32, f32::max);
+    if max > 0.0 {
+        for p in &mut peaks {
+            *p /= max;
+        }
+    }
+    peaks
+}
+
+#[tauri::command]
+pub async fn video_waveform(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    project_id: String,
+    rel_path: String,
+    buckets: u32,
+) -> Result<Vec<f32>, IpcError> {
+    if !(1..=4096).contains(&buckets) {
+        return Err(IpcError::new(ErrorCode::Io, "파형 버킷 수 범위를 벗어났습니다 (1~4096)"));
+    }
+    let bin = find_ffmpeg(&app, state.inner())?;
+    let src = resolve_media(&state, &project_id, &rel_path)?;
+    let args = build_waveform_args(&src);
+    let (code, pcm, stderr) = run_capture_bytes(&bin.ffmpeg, &args, 120).await?;
+    // 오디오가 없는 영상은 ffmpeg가 "Output file does not contain any stream"으로 죽는다.
+    // 그건 **정상 파일의 정상 결과**지 오류가 아니다 — Err로 올리면 무음 영상을 열 때마다
+    // 실패 토스트가 뜬다. 빈 벡터가 프론트의 "파형 없음" 계약이다(ipc.ts).
+    if pcm.len() < 2 {
+        if code != 0 {
+            log::debug!("[video] 파형: 오디오 없음 또는 디코드 실패 — {}", last_error_line(&stderr));
+        }
+        return Ok(Vec::new());
+    }
+    Ok(reduce_peaks(&pcm, buckets as usize))
 }
 
 // ══════════════════════════ ffmpeg 획득 (앱 내 다운로드) ══════════════════════════
@@ -1227,6 +1542,8 @@ mod tests {
             crf: None,
             max_height: None,
             remove_audio: false,
+            masks: None,
+            mask_kind: None,
             duration_ms: 60_000,
             has_audio: true,
         }
@@ -1260,6 +1577,62 @@ mod tests {
         let a = build_export_args("/r/a.mp4", "/r/.t.tmp", &s);
         let vf = a.iter().position(|x| x == "-vf").map(|i| a[i + 1].clone()).unwrap();
         assert!(vf.contains("crop=332:200:100:50"), "vf={vf}");
+    }
+
+    /// 마스크는 `-vf`로 표현할 수 없다 — split/overlay 그래프 + 명시적 -map으로 나가야 하고,
+    /// crop보다 **앞**에 걸려야 한다(원본 좌표계). 순서가 뒤집히면 엉뚱한 데를 가린다.
+    #[test]
+    fn masks_build_overlay_graph_before_crop() {
+        let mut spec = base_spec();
+        spec.mode = "encode".into();
+        spec.has_audio = true;
+        spec.masks = Some(vec![
+            CropRect { x: 100, y: 50, w: 320, h: 200 },
+            CropRect { x: 10, y: 11, w: 64, h: 64 },
+        ]);
+        spec.mask_kind = Some("mosaic".into());
+        spec.crop = Some(CropRect { x: 0, y: 0, w: 640, h: 480 });
+        let a = build_export_args("/r/in.mp4", "/r/.t.tmp", &spec);
+
+        assert!(!a.iter().any(|x| x == "-vf"), "마스크가 있으면 -vf가 아니라 filter_complex다: {a:?}");
+        let fc = a.iter().position(|x| x == "-filter_complex").map(|i| a[i + 1].clone()).unwrap();
+        // 원본 1갈래 + 마스크 2갈래
+        assert!(fc.starts_with("[0:v]split=3[bg][s0][s1];"), "fc={fc}");
+        // 픽셀화: 다운스케일 → neighbor 업스케일
+        assert!(fc.contains("[s0]crop=320:200:100:50,scale=20:12:flags=neighbor,scale=320:200:flags=neighbor[e0]"), "fc={fc}");
+        assert!(fc.contains("[bg][e0]overlay=100:50[o0]"), "fc={fc}");
+        assert!(fc.contains("[o0][e1]overlay=10:10[o1]"), "fc={fc}");
+        // crop은 마스크 **뒤**에 붙는다
+        let mask_end = fc.find("[o1]crop=640:480:0:0").unwrap_or_else(|| panic!("fc={fc}"));
+        assert!(fc.find("overlay=10:10").unwrap() < mask_end, "crop이 overlay보다 앞이다: {fc}");
+        assert!(fc.ends_with("[v]"), "fc={fc}");
+        // filter_complex는 자동 스트림 선택을 끈다 — 오디오까지 명시 매핑돼야 한다.
+        let maps: Vec<&String> =
+            a.iter().enumerate().filter(|(i, x)| *x == "-map" && *i + 1 < a.len()).map(|(i, _)| &a[i + 1]).collect();
+        assert_eq!(maps, vec!["[v]", "0:a?"], "a={a:?}");
+    }
+
+    /// 블러는 boxblur, 반경은 짧은 변의 1/8(영역보다 커지면 ffmpeg가 거부한다).
+    #[test]
+    fn blur_mask_uses_boxblur_scaled_to_region() {
+        let mut spec = base_spec();
+        spec.mode = "encode".into();
+        spec.masks = Some(vec![CropRect { x: 8, y: 8, w: 64, h: 32 }]);
+        spec.mask_kind = Some("blur".into());
+        let a = build_export_args("/r/in.mp4", "/r/.t.tmp", &spec);
+        let fc = a.iter().position(|x| x == "-filter_complex").map(|i| a[i + 1].clone()).unwrap();
+        assert!(fc.contains("[s0]crop=64:32:8:8,boxblur=4:2[e0]"), "fc={fc}");
+        // 다른 필터가 없으면 null로 이어 붙여 라벨을 만든다.
+        assert!(fc.ends_with("[o0]null[v]"), "fc={fc}");
+    }
+
+    /// 무손실 복사와 마스크는 양립 불가 — 백엔드도 막는다(프론트 자동 전환의 이중 방어).
+    #[test]
+    fn copy_mode_rejects_masks() {
+        let mut spec = base_spec();
+        spec.mode = "copy".into();
+        spec.masks = Some(vec![CropRect { x: 0, y: 0, w: 32, h: 32 }]);
+        assert!(validate_spec(&spec).is_err());
     }
 
     /// atempo는 0.5~2 범위만 안전 — 4x/0.25x는 체인으로 분해된다.
@@ -1399,5 +1772,73 @@ mod tests {
         let json = r#"{"streams":[{"codec_type":"video","width":10,"height":10,
           "avg_frame_rate":"0/0","r_frame_rate":"25/1"}],"format":{}}"#;
         assert_eq!(parse_probe(json).unwrap().fps, 25.0);
+    }
+
+    /// 필름스트립은 ffmpeg **1회·이미지 1장**이다 — fps는 cols/길이(초)로 구간을 등분하고,
+    /// tile=colsx1이 그걸 가로 스프라이트로 합친다. 출력은 파일이 아니라 파이프(image2pipe).
+    #[test]
+    fn filmstrip_tiles_whole_clip_in_one_sprite() {
+        // 12초 · 40칸 → 3.333333fps(= 0.3초마다 한 장).
+        let a = build_filmstrip_args("/r/a.mp4", 40, 48, 12_000);
+        let vf = a.iter().position(|x| x == "-vf").map(|i| a[i + 1].clone()).unwrap();
+        assert_eq!(vf, "fps=3.333333,scale=-2:48,tile=40x1", "vf={vf}");
+        assert!(a.windows(2).any(|w| w[0] == "-frames:v" && w[1] == "1"), "타일 1장만: {a:?}");
+        assert!(a.windows(2).any(|w| w[0] == "-c:v" && w[1] == "mjpeg"));
+        // image2는 파일명 패턴 muxer라 파이프에 못 쓴다.
+        assert!(a.windows(2).any(|w| w[0] == "-f" && w[1] == "image2pipe"), "a={a:?}");
+        assert_eq!(a.last().unwrap(), "pipe:1");
+        // -i **뒤**에 필터가 와야 한다(입력 옵션으로 새면 무시된다).
+        let i_pos = a.iter().position(|x| x == "-i").unwrap();
+        assert!(i_pos < a.iter().position(|x| x == "-vf").unwrap());
+    }
+
+    /// 길이 0(프로브 실패 잔재)이 fps를 무한대로 만들지 않는다 — 명령 자체가 깨진다.
+    #[test]
+    fn filmstrip_fps_survives_zero_duration() {
+        let a = build_filmstrip_args("/r/a.mp4", 10, 48, 0);
+        let vf = a.iter().position(|x| x == "-vf").map(|i| a[i + 1].clone()).unwrap();
+        assert!(vf.starts_with("fps=10000.000000,"), "vf={vf}");
+    }
+
+    /// tile_w는 scale=-2 반올림을 재구현해 추정하지 않고 산출물 JPEG의 SOF에서 읽는다.
+    /// DHT(0xC4)도 0xC0~0xCF 범위라 프레임 헤더로 오인하면 엉뚱한 값이 나온다(회귀 방지).
+    #[test]
+    fn jpeg_size_reads_sof_and_skips_dht() {
+        let jpg: Vec<u8> = vec![
+            0xFF, 0xD8, // SOI
+            0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00, // APP0(len 4)
+            0xFF, 0xC4, 0x00, 0x03, 0x00, // DHT(len 3) — SOF 아님
+            0xFF, 0xC0, 0x00, 0x11, 0x08, 0x00, 0x38, 0x03, 0xC0, // SOF0 h=56 w=960
+            0x03, 0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01,
+        ];
+        assert_eq!(jpeg_size(&jpg), Some((960, 56)));
+        assert_eq!(jpeg_size(&[0xFF, 0xD8]), None);
+        // 960 / 40칸 = 24px 타일.
+        assert_eq!(960u32 / 40, 24);
+    }
+
+    /// 파형은 8kHz 모노 s16le 원시 PCM을 파이프로 받는다 — 컨테이너·비디오 없이.
+    #[test]
+    fn waveform_args_decode_mono_s16le_pcm() {
+        let a = build_waveform_args("/r/a.mp4");
+        assert!(a.iter().any(|x| x == "-vn"), "a={a:?}");
+        assert!(a.windows(2).any(|w| w[0] == "-f" && w[1] == "s16le"));
+        assert!(a.windows(2).any(|w| w[0] == "-ac" && w[1] == "1"));
+        assert!(a.windows(2).any(|w| w[0] == "-ar" && w[1] == "8000"));
+        assert_eq!(a.last().unwrap(), "pipe:1");
+    }
+
+    /// 버킷별 절대 피크 → 최대값 정규화. 샘플이 버킷보다 적어도 나눗셈이 0으로 가지 않는다.
+    #[test]
+    fn peaks_normalise_and_handle_short_input() {
+        // 4샘플 · 2버킷 → [max(1000,-2000), max(500,4000)] → [2000,4000] → [0.5, 1.0]
+        let pcm: Vec<u8> = [1000i16, -2000, 500, 4000].iter().flat_map(|s| s.to_le_bytes()).collect();
+        assert_eq!(reduce_peaks(&pcm, 2), vec![0.5, 1.0]);
+        // 샘플 1개 · 버킷 4개 — 패닉·0나눗셈 없이 첫 칸만 채운다.
+        assert_eq!(reduce_peaks(&100i16.to_le_bytes(), 4), vec![1.0, 0.0, 0.0, 0.0]);
+        // 완전 무음은 정규화 분모가 0 — NaN을 만들지 않는다.
+        assert_eq!(reduce_peaks(&[0, 0, 0, 0], 2), vec![0.0, 0.0]);
+        // 오디오 없음(빈 PCM)은 빈 벡터 = 프론트의 "파형 없음" 계약.
+        assert!(reduce_peaks(&[], 8).is_empty());
     }
 }

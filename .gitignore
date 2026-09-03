@@ -49,3 +49,9 @@ src-tauri/resources/conpty/**/*.exe
 
 # 동영상 기능 수동 확인용 샘플 — 코드가 참조하지 않는 스크래치 파일이라 커밋하지 않는다.
 test-media/
+
+# tsc/vite가 남기는 부산물 — 커밋 대상이 아니다
+tsconfig.tsbuildinfo
+tsconfig.node.tsbuildinfo
+vite.config.js
+vite.config.d.ts

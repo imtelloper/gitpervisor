@@ -303,11 +303,26 @@ export interface VideoExportSpec {
   mode: "copy" | "encode";
   speed: number | null;
   crop: { x: number; y: number; w: number; h: number } | null;
+  /** 가릴 영역들(원본 video px — crop과 같은 좌표계). crop/scale **이전**에 적용된다. */
+  masks: Array<{ x: number; y: number; w: number; h: number }> | null;
+  /** 가림 방식. masks가 비면 무시된다. */
+  maskKind: "mosaic" | "blur";
   crf: number | null;
   maxHeight: number | null;
   removeAudio: boolean;
   durationMs: number; // 진행률 분모 (probe 값)
   hasAudio: boolean;
+}
+
+/** 타임라인 V1 트랙용 필름스트립 — 프레임 N장을 가로로 이어 붙인 스프라이트 1장.
+ *  N장을 개별 전송하면 base64 오버헤드와 라운드트립이 N배다. 배경 이미지 1장이면
+ *  CSS `background-position`만 옮겨 셀을 그린다. */
+export interface VideoFilmstrip {
+  /** `data:image/jpeg;base64,…` — 폭 cols*tileW, 높이 tileH */
+  dataUri: string;
+  cols: number;
+  tileW: number;
+  tileH: number;
 }
 
 export interface VideoExportProgress {
@@ -1205,6 +1220,20 @@ export const ipc = {
   // 멱등 취소 — 모르는 jobId는 no-op.
   videoExportCancel: (jobId: string) =>
     callMutating<void>("video_export_cancel", { jobId }, 10_000),
+  // 타임라인 필름스트립 — 스프라이트 1장. 재시도 없음(프로세스 스폰).
+  videoFilmstrip: (projectId: string, relPath: string, cols: number, height: number) =>
+    call<VideoFilmstrip>(
+      "video_filmstrip",
+      { projectId, relPath, cols, height },
+      { attempts: 1, timeoutMs: 120_000 },
+    ),
+  // 오디오 파형 피크 — buckets개, 각 0..1. 오디오가 없으면 빈 배열.
+  videoWaveform: (projectId: string, relPath: string, buckets: number) =>
+    call<number[]>(
+      "video_waveform",
+      { projectId, relPath, buckets },
+      { attempts: 1, timeoutMs: 120_000 },
+    ),
   // 현재 프레임 PNG 캡처 — 캔버스 불가(루프백이 cross-origin이라 taint) → ffmpeg 경유.
   videoCaptureFrame: (
     projectId: string,

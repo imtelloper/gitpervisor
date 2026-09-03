@@ -20,24 +20,36 @@ import {
   Repeat,
   RotateCcw,
   RotateCw,
+  Scissors,
   SkipBack,
   SkipForward,
   SlidersHorizontal,
   Volume2,
   VolumeX,
+  X,
 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { markLocalVideoJob } from "../../lib/events";
 import { openDocWindow } from "../../lib/floating";
-import type { VideoExportFinished, VideoExportSpec } from "../../lib/ipc";
+import type { VideoExportFinished, VideoExportSpec, VideoFilmstrip } from "../../lib/ipc";
 import { errorMessage, ipc, isIpcError } from "../../lib/ipc";
-import { useVideoProbe, useVideoToolStatus } from "../../queries";
+import {
+  useDir,
+  useVideoFilmstrip,
+  useVideoProbe,
+  useVideoToolStatus,
+  useVideoWaveform,
+} from "../../queries";
+import { isVideo } from "../../lib/language-map";
 import { useDb } from "../../stores/db";
+import { planSegments, type SplitSegment } from "../../stores/videoSplit";
 import { useOcclusion, useOccludesWebview } from "../../stores/occlusion";
 import { selectBlockingOverlay, useUi } from "../../stores/ui";
 import { EmptyState } from "../common/EmptyState";
 import { CropOverlay, type CropRect } from "./CropOverlay";
+import { LibraryRail, type RailClip, type RailMedia } from "./LibraryRail";
+import { PlayerStatusBar } from "./PlayerStatusBar";
 import { ExportPanel } from "./ExportPanel";
 
 const RATES = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 4];
@@ -56,6 +68,57 @@ export function fmtTime(sec: number): string {
 
 const btnCls =
   "rounded px-1.5 py-1 text-fg-dim hover:bg-raised hover:text-fg disabled:opacity-40";
+
+/** 확정된 영역 배지 — **편집 모드가 아닐 때도** 어디를 지정했는지 화면에 남긴다.
+ *  크롭 사각형이 CropOverlay 안에만 있어서, 가리기로 전환하면 오버레이가 언마운트되며
+ *  사각형이 통째로 사라졌다. 툴바의 `332×536` 숫자만 남아 위치를 알 길이 없었다(2026-09-03). */
+function RegionBox({
+  rect,
+  videoW,
+  videoH,
+  tone,
+  label,
+  onRemove,
+}: {
+  rect: CropRect;
+  videoW: number;
+  videoH: number;
+  /** accent=추출(크롭) · warn=가림. 툴바 버튼 색과 같은 규칙이라 눈으로 연결된다. */
+  tone: "accent" | "warn";
+  label: string;
+  /** 없으면 삭제 버튼을 그리지 않는다(그리기 중엔 드래그를 방해하므로). */
+  onRemove?: () => void;
+}) {
+  const isCrop = tone === "accent";
+  return (
+    <div
+      className={`absolute ${isCrop ? "border border-accent" : "border border-dashed border-warn bg-warn/15"}`}
+      style={{
+        left: `${(rect.x / videoW) * 100}%`,
+        top: `${(rect.y / videoH) * 100}%`,
+        width: `${(rect.w / videoW) * 100}%`,
+        height: `${(rect.h / videoH) * 100}%`,
+      }}
+    >
+      <div
+        className={`pointer-events-none absolute -top-5 left-0 whitespace-nowrap rounded bg-panel px-1 text-[10px] ${
+          isCrop ? "text-accent" : "text-warn"
+        }`}
+      >
+        {label}
+      </div>
+      {onRemove && (
+        <button
+          onClick={onRemove}
+          title={`${label} 제거`}
+          className="pointer-events-auto absolute -right-2 -top-2 grid h-4 w-4 place-items-center rounded-full border border-edge bg-panel text-fg-dim hover:text-fg"
+        >
+          <X size={10} />
+        </button>
+      )}
+    </div>
+  );
+}
 
 export default function VideoPlayer({
   projectId,
@@ -85,8 +148,15 @@ export default function VideoPlayer({
   const [loopOn, setLoopOn] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  const [railCollapsed, setRailCollapsed] = useState(false);
+  const [railQuery, setRailQuery] = useState("");
+  const [zoomPct, setZoomPct] = useState(100);
   const [cropActive, setCropActive] = useState(false);
   const [crop, setCrop] = useState<CropRect | null>(null);
+  // 가림 영역들(원본 video px) — crop과 같은 좌표계, 개수 제한 없음.
+  const [masks, setMasks] = useState<CropRect[]>([]);
+  const [maskKind, setMaskKind] = useState<"mosaic" | "blur">("mosaic");
+  const [maskActive, setMaskActive] = useState(false);
 
   // 확대 오버레이가 네이티브 자식 webview(내장 브라우저) 위에 보이도록 점유 등록.
   useOccludesWebview(expanded);
@@ -94,6 +164,10 @@ export default function VideoPlayer({
   const tool = useVideoToolStatus();
   const canEdit = !!tool.data?.found && !!tool.data?.probeFound;
   const probe = useVideoProbe(projectId, path, canEdit);
+  // 타임라인 트랙 자산 — 파일당 한 번. ffmpeg 스폰이라 **편집 패널이 열렸을 때만** 뽑는다
+  // (뷰어에서 영상 훑기만 하는 사용자에게 매번 ffmpeg를 띄우면 프로세스 위생에 어긋난다).
+  const filmstrip = useVideoFilmstrip(projectId, path, 60, 64, editOpen && !!probe.data);
+  const waveform = useVideoWaveform(projectId, path, 900, editOpen && !!probe.data?.hasAudio);
   const fps = probe.data && probe.data.fps > 0 ? probe.data.fps : 30;
 
   /** 루프백 URL 발급 — 서버가 살아 있으면 같은 URL이 돌아와 멱등(MediaView와 동일). */
@@ -124,6 +198,8 @@ export default function VideoPlayer({
     setLoopOn(false);
     setCrop(null);
     setCropActive(false);
+    setMasks([]);
+    setMaskActive(false);
     void mint();
   }, [mint]);
 
@@ -284,6 +360,9 @@ export default function VideoPlayer({
       mode: "encode",
       speed: null,
       crop: null,
+      // 재생 불가 파일의 mp4 변환 — 편집이 아니라 컨테이너/코덱 정규화라 가림은 없다.
+      masks: null,
+      maskKind: "mosaic",
       crf: null,
       maxHeight: null,
       removeAudio: false,
@@ -376,14 +455,70 @@ export default function VideoPlayer({
   }, []);
   const toggleCrop = useCallback(() => {
     videoRef.current?.pause();
+    setMaskActive(false); // 오버레이는 하나뿐 — 두 모드는 배타다.
     setCropActive((v) => !v);
   }, []);
   const clearCrop = useCallback(() => {
     setCrop(null);
     setCropActive(false);
   }, []);
+  const toggleMask = useCallback(() => {
+    videoRef.current?.pause();
+    setCropActive(false);
+    setMaskActive((v) => !v);
+  }, []);
+  const clearMasks = useCallback(() => {
+    setMasks([]);
+    setMaskActive(false);
+  }, []);
+  const removeMask = useCallback((i: number) => setMasks((p) => p.filter((_, j) => j !== i)), []);
+  const addMask = useCallback(
+    (r: CropRect | null) => r && setMasks((p) => [...p, r]),
+    [],
+  );
   // In/Out 해제(clearRange)와는 무관한 별도 동작 — 구간과 틱은 서로 독립이다.
   const clearTicks = useCallback(() => setTicks([]), []);
+  /** 분할 경계로 잘린 구간 — 틱이 없으면 전체 1개. 타임라인 V1 클립 표시와 같은 근거를 쓴다
+   *  (패널의 "틱 N개 → M개 파일"과 어긋나지 않게 planSegments 하나만 본다). */
+  const segments = useMemo(() => planSegments(ticks, duration), [ticks, duration]);
+
+  // 라이브러리 레일 — 같은 폴더의 다른 영상. 별도 IPC 없이 파일트리가 이미 쓰는 dir 쿼리를
+  // 재사용한다(워처가 신선도를 책임지므로 여기서 재조회 정책을 또 만들 필요가 없다).
+  const dirRel = path.slice(0, Math.max(0, path.lastIndexOf("/")));
+  const dir = useDir(projectId, dirRel);
+  const railMedia: RailMedia[] = useMemo(() => {
+    const prefix = dirRel ? `${dirRel}/` : "";
+    const here = path.slice(prefix.length);
+    const rows = (dir.data ?? [])
+      .filter((e) => !e.isDir && isVideo(e.name))
+      .map((e) => ({
+        path: prefix + e.name,
+        name: e.name,
+        // 현재 파일만 probe 값을 안다 — 나머지는 파일당 ffprobe를 띄우지 않는다(프로세스 위생).
+        sub:
+          e.name === here && probe.data
+            ? `${fmtTime(probe.data.durationMs / 1000)} · ${probe.data.width}×${probe.data.height}`
+            : "",
+        active: e.name === here,
+      }));
+    // 목록을 못 읽었어도(권한·워처 지연) 현재 파일은 항상 보인다.
+    return rows.length > 0 ? rows : [{ path, name: here, sub: "", active: true }];
+  }, [dir.data, dirRel, path, probe.data]);
+
+  const railClips: RailClip[] = useMemo(
+    () =>
+      ticks.length === 0
+        ? []
+        : segments.map((sg, i) => ({
+            index: i + 1,
+            label: `${String(i + 1).padStart(2, "0")} · 클립`,
+            startMs: sg.startMs,
+            endMs: sg.endMs,
+            // 클립 색은 타임라인 마커(앰버)와 달리 클립끼리 구분이 목적이라 색상환을 돈다.
+            color: `hsl(${(i * 67) % 360} 62% 58%)`,
+          })),
+    [segments, ticks.length],
+  );
   const getTime = useCallback(() => videoRef.current?.currentTime ?? 0, []);
 
   // ── 단축키(포커스된 컨테이너 한정) ──
@@ -445,6 +580,7 @@ export default function VideoPlayer({
         break;
       case "Escape":
         if (cropActive) setCropActive(false);
+        else if (maskActive) setMaskActive(false);
         else if (expanded) setExpanded(false);
         else handled = false;
         break;
@@ -525,13 +661,33 @@ export default function VideoPlayer({
           </span>
         )}
         <div className="flex-1" />
-        <button
-          onClick={() => setEditOpen((v) => !v)}
-          title="편집·내보내기 (ffmpeg)"
-          className={`flex items-center gap-1 rounded px-2 py-0.5 hover:bg-raised hover:text-fg ${editOpen ? "bg-raised text-accent" : ""}`}
+        {/* 모드 스위치 — 두 상태(재생/편집)뿐이다. 디자인의 "내보내기" 모드는 편집 인스펙터가
+            이미 가리키는 것과 같아서, 세 번째 칸을 두면 눌러도 아무것도 안 바뀐다. */}
+        <div
+          role="tablist"
+          aria-label="플레이어 모드"
+          className="flex items-stretch overflow-hidden rounded-md border border-edge bg-panel"
         >
-          <SlidersHorizontal size={12} /> 편집
-        </button>
+          <button
+            role="tab"
+            aria-selected={!editOpen}
+            onClick={() => setEditOpen(false)}
+            title="재생만 — 편집 패널을 접습니다"
+            className={`flex items-center gap-1 px-2 py-0.5 ${!editOpen ? "bg-raised text-accent" : "text-fg-dim hover:bg-raised hover:text-fg"}`}
+          >
+            <Play size={11} /> 재생
+          </button>
+          <button
+            role="tab"
+            aria-selected={editOpen}
+            onClick={() => setEditOpen(true)}
+            title="편집·내보내기 (ffmpeg)"
+            disabled={!canEdit}
+            className={`flex items-center gap-1 border-l border-edge px-2 py-0.5 disabled:text-fg-dim/50 ${editOpen ? "bg-raised text-accent" : "text-fg-dim hover:bg-raised hover:text-fg"}`}
+          >
+            <SlidersHorizontal size={11} /> 편집
+          </button>
+        </div>
         <button
           onClick={openExternally}
           title="시스템 기본 앱으로 열기"
@@ -541,13 +697,35 @@ export default function VideoPlayer({
         </button>
       </div>
 
+      {/* 본문 — 좌 라이브러리 레일 | 중앙(스테이지+타임라인) | 우 인스펙터.
+          레일과 인스펙터는 shrink-0 고정폭, 중앙만 min-w-0으로 줄어든다(안 그러면 필름스트립
+          스프라이트가 컨테이너를 밀어 가로 스크롤이 생긴다). */}
+      <div className="flex min-h-0 flex-1">
+        <LibraryRail
+          media={railMedia}
+          clips={railClips}
+          query={railQuery}
+          onQueryChange={setRailQuery}
+          onOpen={(p) => openDocWindow(projectId, p)}
+          onSeek={(ms) => seekTo(ms / 1000)}
+          onSaveAllSplits={() => {
+            // 분할 실행은 인스펙터가 폴더명·모드를 들고 있다 — 레일은 거기로 안내만 한다.
+            setEditOpen(true);
+            pushToast("info", "우측 자르기 탭에서 폴더와 방식을 확인하고 분할 저장을 누르세요.");
+          }}
+          saveDisabled={ticks.length === 0}
+          collapsed={railCollapsed}
+          onToggleCollapse={() => setRailCollapsed((v) => !v)}
+        />
+
+        <div className="flex min-w-0 flex-1 flex-col">
       {/* 영상 영역 */}
       <div
         className="flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-black/40 p-3"
         onClick={(e) => {
           // 빈 영역 클릭 → 재생 토글(크롭 중엔 방해 금지). 컨테이너에 포커스도 준다.
           containerRef.current?.focus();
-          if (!cropActive && e.target === e.currentTarget) togglePlay();
+          if (!cropActive && !maskActive && e.target === e.currentTarget) togglePlay();
         }}
       >
         <div className="relative inline-flex max-h-full max-w-full">
@@ -557,7 +735,7 @@ export default function VideoPlayer({
             preload="metadata"
             onError={onError}
             onClick={() => {
-              if (!cropActive) togglePlay();
+              if (!cropActive && !maskActive) togglePlay();
             }}
             onLoadedMetadata={(e) => {
               const el = e.currentTarget;
@@ -594,6 +772,43 @@ export default function VideoPlayer({
             }}
             className="max-h-full max-w-full"
           />
+          {/* 타임코드 HUD — 프레임 번호까지. 편집 중엔 눈이 스테이지에 있어서, 아래 트랜스포트의
+              숫자를 보려면 시선을 크게 옮겨야 한다(iMovie/Resolve가 오버레이를 두는 이유). */}
+          {editOpen && probe.data && (
+            <div className="pointer-events-none absolute left-2 top-2 z-10 flex items-center gap-2 rounded bg-base/80 px-2 py-1 font-mono text-[11px] text-fg">
+              <span className={`h-1.5 w-1.5 rounded-full ${playing ? "bg-danger" : "bg-fg-dim"}`} />
+              {fmtTime(time)}
+              <span className="text-fg-dim">F {Math.round(time * probe.data.fps)}</span>
+            </div>
+          )}
+          {/* 확정된 영역들 — 결과물 미리보기가 아니라 "여기가 이렇게 처리된다"는 표시다.
+              그리기 오버레이보다 **먼저** 두어 드래그를 방해하지 않는다. */}
+          {probe.data && (crop || masks.length > 0) && (
+            <div className="pointer-events-none absolute inset-0">
+              {/* 크롭은 편집 중이면 CropOverlay가 직접(어둡게 처리까지) 그리므로 겹치지 않게 뺀다. */}
+              {crop && !cropActive && (
+                <RegionBox
+                  rect={crop}
+                  videoW={probe.data.width}
+                  videoH={probe.data.height}
+                  tone="accent"
+                  label="추출"
+                  onRemove={maskActive ? undefined : clearCrop}
+                />
+              )}
+              {masks.map((m, i) => (
+                <RegionBox
+                  key={i}
+                  rect={m}
+                  videoW={probe.data!.width}
+                  videoH={probe.data!.height}
+                  tone="warn"
+                  label={maskKind === "blur" ? "블러" : "모자이크"}
+                  onRemove={maskActive ? undefined : () => removeMask(i)}
+                />
+              ))}
+            </div>
+          )}
           {cropActive && probe.data && (
             <CropOverlay
               videoW={probe.data.width}
@@ -602,12 +817,28 @@ export default function VideoPlayer({
               onChange={setCrop}
             />
           )}
+          {maskActive && probe.data && (
+            // crop=null 고정 — 드래그를 놓을 때마다 새 영역이 커밋돼 배열에 쌓인다.
+            <CropOverlay
+              videoW={probe.data.width}
+              videoH={probe.data.height}
+              crop={null}
+              onChange={addMask}
+              hint="가릴 영역을 드래그하세요 · 여러 번 그리면 여러 곳 (Esc 종료)"
+            />
+          )}
         </div>
       </div>
 
       {/* 타임라인 + 컨트롤 */}
       <div className="shrink-0 border-t border-edge px-3 pb-1.5 pt-2">
         <Timeline
+          onZoomChange={setZoomPct}
+          filmstrip={filmstrip.data ?? null}
+          waveform={waveform.data ?? []}
+          segments={segments}
+          vcodec={probe.data?.vcodec ?? null}
+          acodec={probe.data?.acodec ?? null}
           duration={duration}
           time={time}
           playing={playing}
@@ -619,7 +850,15 @@ export default function VideoPlayer({
           onDragOut={(t) => setOutPt(Math.min(duration, Math.max(t, (inPt ?? 0) + 0.1)))}
           ticks={ticks}
           // 인덱스 자리에 값만 갈아끼운다 — 정렬하면 드래그 중 손에서 마커가 바뀐다.
-          onDragTick={(i, t) => setTicks((p) => p.map((x, j) => (j === i ? t : x)))}
+          // 다른 마커 위로 끌어다 놓으면 중복 틱이 생기고 planSegments가 조용히 병합해
+          // 파일 수가 줄어든다(마커 3개인데 3개 파일). addTick과 같은 100ms 가드를 건다.
+          onDragTick={(i, t) =>
+            setTicks((p) =>
+              p.some((x, j) => j !== i && Math.abs(x - t) < 0.1)
+                ? p
+                : p.map((x, j) => (j === i ? t : x)),
+            )
+          }
           onRemoveTick={(i) => setTicks((p) => p.filter((_, j) => j !== i))}
           // 스크럽 후에도 화살표·프레임 스텝이 바로 듣도록 — 드래그 preventDefault가
           // 브라우저의 클릭-포커스 기본동작을 막아서 명시적으로 포커스를 준다.
@@ -680,6 +919,24 @@ export default function VideoPlayer({
             >
               <Repeat size={13} />
             </button>
+            {/* 분할 틱 — 단축키 T만으로는 발견이 안 된다는 피드백(2026-09-03)으로 추가.
+                틱이 있으면 앰버(타임라인 마커와 같은 색)로 켜지고 개수를 단다. */}
+            <button
+              onClick={addTick}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                clearTicks();
+              }}
+              title="여기에 분할 지점 추가 (T) · 우클릭으로 전체 삭제"
+              className={`${btnCls} flex items-center gap-0.5 ${ticks.length ? "text-warn" : ""}`}
+            >
+              <Scissors size={13} />
+              {ticks.length > 0 && (
+                <span className="font-mono text-[10px] tabular-nums leading-none">
+                  {ticks.length}
+                </span>
+              )}
+            </button>
             {/* 배속 — 세그먼트 컨트롤: « 느리게 · 현재 배속(클릭=1x 복원) · 빠르게 » */}
             <div className="flex items-stretch overflow-hidden rounded-md border border-edge bg-panel">
               <button
@@ -720,10 +977,13 @@ export default function VideoPlayer({
         </div>
       </div>
 
-      {/* 편집·내보내기 패널 — key=path: 파일이 바뀌면 상태(파일명·형식·수정 플래그) 전부 리셋.
-          안 하면 이전 파일용으로 고친 파일명이 남아 새 영상을 엉뚱한 이름으로 내보낸다. */}
-      {editOpen && (
-        <ExportPanel
+        </div>
+
+        {/* 편집·내보내기 인스펙터 — key=path: 파일이 바뀌면 상태(파일명·형식·수정 플래그) 전부
+            리셋. 안 하면 이전 파일용으로 고친 파일명이 남아 새 영상을 엉뚱한 이름으로 내보낸다. */}
+        {editOpen && (
+          <div className="flex w-80 shrink-0 flex-col border-l border-edge bg-panel">
+            <ExportPanel
           key={path}
           projectId={projectId}
           path={path}
@@ -739,9 +999,42 @@ export default function VideoPlayer({
           cropActive={cropActive}
           onToggleCrop={toggleCrop}
           onClearCrop={clearCrop}
-          getTime={getTime}
-        />
-      )}
+          masks={masks}
+          maskKind={maskKind}
+          maskActive={maskActive}
+          onToggleMask={toggleMask}
+          onClearMasks={clearMasks}
+              onSetMaskKind={setMaskKind}
+              getTime={getTime}
+            />
+          </div>
+        )}
+      </div>
+
+      <PlayerStatusBar
+        status={
+          probe.error
+            ? { text: "메타 읽기 실패", tone: "danger" }
+            : !canEdit
+              ? { text: "ffmpeg 없음", tone: "warn" }
+              : { text: "준비됨", tone: "ok" }
+        }
+        items={[
+          { label: "코덱", value: probe.data ? `${probe.data.vcodec ?? "?"} · ${probe.data.acodec ?? "무음"}` : "—" },
+          { label: "해상도", value: probe.data ? `${probe.data.width}×${probe.data.height}` : "—" },
+          { label: "클립", value: `${segments.length}개` },
+          ...(masks.length > 0
+            ? [{ label: "가림", value: `${masks.length}곳 · ${maskKind === "blur" ? "블러" : "모자이크"}`, tone: "warn" as const }]
+            : []),
+        ]}
+        shortcuts={[
+          { keys: "Space", label: "재생" },
+          { keys: "I / O", label: "구간 지정" },
+          { keys: "T", label: "분할" },
+          { keys: "F", label: "확대" },
+        ]}
+        zoomPct={zoomPct}
+      />
     </div>
   );
 }
@@ -802,12 +1095,28 @@ function Timeline({
   onDragTick,
   onRemoveTick,
   onInteract,
+  filmstrip,
+  waveform,
+  segments,
+  vcodec,
+  acodec,
+  onZoomChange,
 }: {
   duration: number;
   time: number;
   playing: boolean;
   inPt: number | null;
   outPt: number | null;
+  /** V1 트랙 배경 — 프레임 N장을 가로로 이어 붙인 스프라이트 1장(video_filmstrip). */
+  filmstrip: VideoFilmstrip | null;
+  /** A1 트랙 — 전체 길이를 buckets개로 압축한 피크(0..1). 오디오가 없으면 빈 배열. */
+  waveform: number[];
+  /** 분할 경계로 잘린 구간들 — 틱이 없으면 전체 1개. planSegments 결과 그대로. */
+  segments: SplitSegment[];
+  vcodec: string | null;
+  acodec: string | null;
+  /** 상태바 확대율 표시용 — 줌은 타임라인 내부 상태라 밖에서 읽을 수 없다. */
+  onZoomChange: (pct: number) => void;
   onSeek: (t: number) => void;
   onDragIn: (t: number) => void;
   onDragOut: (t: number) => void;
@@ -855,6 +1164,51 @@ function Timeline({
   /** 미니맵(전체 축) 기준 %. */
   const fullPct = (t: number) =>
     duration > 0 ? Math.min(100, Math.max(0, (t / duration) * 100)) : 0;
+
+  // 필름스트립·파형은 **영상 전체**를 담은 정적 자산이다. 보이는 창만 잘라 다시 만들지 않고,
+  // 전체 길이만큼 늘린 컨테이너를 창 밖으로 밀어 낸다 — 줌/팬이 순수 CSS 변환이 되어 공짜다.
+  // 스냅 — NLE 관례대로 **마커·플레이헤드·클립 경계**에 붙는다. 픽셀 임계라 줌 배율과 무관하게
+  // 손끝 느낌이 일정하다(시간 임계로 하면 확대할수록 못 맞춘다).
+  const [snap, setSnap] = useState(true);
+  const snapTo = (t: number): number => {
+    if (!snap || barW <= 0) return t;
+    const cands = [
+      0,
+      duration,
+      time,
+      ...(inPt != null ? [inPt] : []),
+      ...(outPt != null ? [outPt] : []),
+      ...segments.map((sg) => sg.startMs / 1000),
+    ];
+    const pxPerSec = barW / vlen;
+    let best = t;
+    let bestPx = 8; // 8px 안쪽이면 붙는다
+    for (const c of cands) {
+      const d = Math.abs(c - t) * pxPerSec;
+      if (d < bestPx) {
+        bestPx = d;
+        best = c;
+      }
+    }
+    return best;
+  };
+
+  // 확대율을 밖(상태바)으로 보고 — 렌더 중 setState를 피해 effect로 흘린다.
+  const zoomPct = Math.round((duration / vlen) * 100);
+  useEffect(() => onZoomChange(zoomPct), [zoomPct, onZoomChange]);
+
+  const stripW = barW * (duration / vlen);
+  const stripX = -(vs / Math.max(duration, 1e-6)) * stripW;
+
+  /** 파형 path — 위아래 대칭 실루엣. 버킷 수는 고정이라 파일당 한 번만 만든다. */
+  const wavePath = useMemo(() => {
+    if (waveform.length === 0) return "";
+    const top = waveform.map((v, i) => `${i},${50 - Math.min(1, Math.max(0, v)) * 48}`);
+    const bottom = waveform
+      .map((v, i) => `${waveform.length - 1 - i},${50 + Math.min(1, Math.max(0, v)) * 48}`)
+      .reverse();
+    return `M${top.join("L")}L${bottom.reverse().join("L")}Z`;
+  }, [waveform]);
 
   const posToTime = (clientX: number): number => {
     const rect = barRef.current?.getBoundingClientRect();
@@ -974,7 +1328,7 @@ function Timeline({
   /** 분할 틱 드래그 — startDrag의 모드 유니언을 늘리지 않는다(인덱스가 필요해 별도 킷). */
   const startTickDrag = (i: number) => (e: React.PointerEvent) =>
     trackPointer(e, (clientX) =>
-      onDragTick(i, Math.min(Math.max(posToTime(clientX), 0), duration)),
+      onDragTick(i, snapTo(Math.min(Math.max(posToTime(clientX), 0), duration))),
     );
 
   /** 미니맵 드래그 — 썸 위를 잡았으면 잡은 지점을 유지하는 **상대** 드래그(스크롤바 관례),
@@ -1030,6 +1384,48 @@ function Timeline({
   return (
     // pt-6: 배지 층, pb-4: 시간 라벨 층
     <div ref={rootRef} className="relative select-none pb-4 pt-6">
+      {/* 도구 행 — 스냅·확대. 줌은 여기(뷰 상태 소유자)에 있어야 미니맵/눈금과 한 소스를 쓴다. */}
+      <div className="mb-1 flex items-center gap-2 text-[11px] text-fg-dim">
+        <label className="flex items-center gap-1" title="마커·플레이헤드·클립 경계에 붙입니다">
+          <input
+            type="checkbox"
+            checked={snap}
+            onChange={(e) => setSnap(e.target.checked)}
+            className="accent-accent"
+          />
+          스냅
+        </label>
+        <div className="flex-1" />
+        <span>타임라인 확대</span>
+        <input
+          type="range"
+          min={0}
+          max={100}
+          value={Math.round((Math.log(duration / vlen) / Math.log(Math.max(duration / MIN_VIEW_SECS, 2))) * 100)}
+          onChange={(e) => {
+            // 로그 스케일 — 1×~수백× 구간을 선형으로 두면 슬라이더 앞쪽 5%가 전부를 차지한다.
+            const f = Number(e.target.value) / 100;
+            const maxZoom = Math.max(duration / MIN_VIEW_SECS, 2);
+            const len = Math.min(duration, duration / Math.pow(maxZoom, f));
+            if (len >= duration - 1e-6) {
+              setView(null);
+              return;
+            }
+            // 현재 위치를 중앙에 두고 창을 만든다 — 확대할수록 보고 있던 프레임에서 멀어지면 안 된다.
+            const ns = Math.min(Math.max(time - len / 2, 0), Math.max(0, duration - len));
+            setView({ s: ns, e: ns + len });
+          }}
+          aria-label="타임라인 확대"
+          className="h-1 w-32 accent-accent"
+        />
+        <button
+          onClick={() => setView(null)}
+          className="rounded border border-edge px-1.5 py-0.5 hover:bg-raised hover:text-fg"
+        >
+          전체 맞춤
+        </button>
+      </div>
+
       {/* 눈금자 막대 */}
       <div
         ref={barRef}
@@ -1053,6 +1449,123 @@ function Timeline({
         {ticks.major.map((t) => (
           <div key={t} className="absolute inset-y-0 w-px bg-base/45" style={{ left: `${pct(t)}%` }} />
         ))}
+      </div>
+
+      {/* ── 트랙 (V1 필름스트립 · A1 파형 · 마커) ────────────────────────────────
+          전부 눈금자와 **같은 pct() 좌표계**를 쓴다 — 줌/팬이 바뀌어도 별도 동기화 없이 붙어 있다.
+          필름스트립·파형은 영상 **전체 길이**를 담은 정적 자산이라, 매 프레임 다시 그리는 대신
+          컨테이너 폭(stripW)과 오프셋(stripX)만 바꿔 밀어 준다(리렌더 비용 0). */}
+      <div className="mt-1.5 space-y-1">
+        {/* V1 — 필름스트립 + 분할 클립 경계 */}
+        <div className="flex items-stretch gap-1.5">
+          <div className="w-16 shrink-0 pt-0.5">
+            <div className="flex items-center gap-1 text-[10px] font-semibold text-fg">
+              <span className="h-2.5 w-0.5 rounded-full bg-accent" />
+              V1
+            </div>
+            <div className="truncate text-[9px] text-fg-dim">{vcodec ?? "비디오"}</div>
+          </div>
+          <div className="relative h-12 flex-1 overflow-hidden rounded-sm border border-edge bg-raised">
+            {filmstrip && barW > 0 && (
+              <div
+                className="absolute inset-y-0 opacity-90"
+                style={{
+                  left: stripX,
+                  width: stripW,
+                  backgroundImage: `url(${filmstrip.dataUri})`,
+                  backgroundSize: "100% 100%",
+                  backgroundRepeat: "no-repeat",
+                }}
+              />
+            )}
+            {/* 클립 경계 — 분할 지점으로 잘린 구간. 현재 위치가 든 클립을 강조한다. */}
+            {segments.map((sg, i) => {
+              const a = sg.startMs / 1000;
+              const b = sg.endMs / 1000;
+              if (!visible(a) && !visible(b) && !(a < vs && b > ve)) return null;
+              const active = time >= a && time < b;
+              return (
+                <div
+                  key={i}
+                  className={`absolute inset-y-0 border-l ${
+                    active ? "border-fg bg-fg/5 ring-1 ring-inset ring-fg/60" : "border-edge/80"
+                  }`}
+                  style={{ left: `${pct(a)}%`, width: `${Math.max(0, pct(b) - pct(a))}%` }}
+                >
+                  {segments.length > 1 && (
+                    <span className="absolute left-1 top-0.5 rounded bg-base/70 px-1 font-mono text-[9px] leading-4 text-fg">
+                      {String(i + 1).padStart(2, "0")}
+                      <span className="ml-1 text-fg-dim">{(b - a).toFixed(1)}s</span>
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+            <div className="absolute inset-y-0 w-px bg-fg" style={{ left: `${pct(time)}%` }} />
+          </div>
+        </div>
+
+        {/* A1 — 파형. 오디오가 없으면 트랙 자체를 그리지 않는다(빈 줄은 정보가 아니다). */}
+        {waveform.length > 0 && (
+          <div className="flex items-stretch gap-1.5">
+            <div className="w-16 shrink-0 pt-0.5">
+              <div className="flex items-center gap-1 text-[10px] font-semibold text-fg">
+                <span className="h-2.5 w-0.5 rounded-full bg-ok" />
+                A1
+              </div>
+              <div className="truncate text-[9px] text-fg-dim">{acodec ?? "오디오"}</div>
+            </div>
+            <div className="relative h-8 flex-1 overflow-hidden rounded-sm border border-edge bg-raised">
+              {barW > 0 && (
+                <div className="absolute inset-y-0" style={{ left: stripX, width: stripW }}>
+                  <svg
+                    viewBox={`0 0 ${waveform.length} 100`}
+                    preserveAspectRatio="none"
+                    className="h-full w-full text-mod"
+                  >
+                    <path d={wavePath} fill="currentColor" />
+                  </svg>
+                </div>
+              )}
+              <div className="absolute inset-y-0 w-px bg-fg" style={{ left: `${pct(time)}%` }} />
+            </div>
+          </div>
+        )}
+
+        {/* 마커 — 분할 지점과 선택 구간. **가림 영역은 여기 두지 않는다**: 마스크는 시간 범위가
+            아니라 영상 전체에 걸리므로, 레인에 스팬으로 그리면 없는 시간 구간을 지어내는 거짓말이 된다. */}
+        <div className="flex items-stretch gap-1.5">
+          <div className="w-16 shrink-0 pt-0.5">
+            <div className="flex items-center gap-1 text-[10px] font-semibold text-fg">
+              <span className="h-2.5 w-0.5 rounded-full bg-warn" />
+              마커
+            </div>
+            <div className="truncate text-[9px] text-fg-dim">분할 · 구간</div>
+          </div>
+          <div className="relative h-6 flex-1 overflow-hidden rounded-sm border border-edge bg-raised">
+            {inPt != null && outPt != null && (
+              <div
+                className="absolute inset-y-0.5 rounded-sm border border-accent bg-accent/20"
+                style={{ left: `${pct(inPt)}%`, width: `${Math.max(0, pct(outPt) - pct(inPt))}%` }}
+              >
+                <span className="absolute left-1 top-0 font-mono text-[9px] leading-5 text-accent">
+                  선택 구간 {(outPt - inPt).toFixed(1)}s
+                </span>
+              </div>
+            )}
+            {splitTicks.map((t, i) =>
+              visible(t) ? (
+                <div key={i} className="absolute inset-y-0" style={{ left: `${pct(t)}%` }}>
+                  <div className="h-full w-px bg-warn" />
+                  <span className="absolute left-1 top-0 whitespace-nowrap font-mono text-[9px] leading-6 text-warn">
+                    {fmtClock(t, 1)}
+                  </span>
+                </div>
+              ) : null,
+            )}
+            <div className="absolute inset-y-0 w-px bg-fg" style={{ left: `${pct(time)}%` }} />
+          </div>
+        </div>
       </div>
 
       {/* 미니맵(전체 축) + 줌 칩 — 줌 상태에서만. 칩을 배지 층에 두면 우측 끝의 드래그 배지를
