@@ -115,6 +115,115 @@ fn encode_logo(bytes: &[u8], rel: &str) -> Option<String> {
     ))
 }
 
+/// 훑지 않을 디렉토리 — 용량이 크고 로고의 **원본**이 있을 곳이 아니다.
+/// `dist`/`build`는 사본이 있지만 원본(`public/`)이 이기도록 아래 점수에서 감점한다.
+const SKIP_DIRS: [&str; 12] = [
+    "node_modules",
+    ".git",
+    "target",
+    "vendor",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "coverage",
+    ".next",
+    ".output",
+    ".cache",
+    "Pods",
+];
+
+/// 얕은 탐색의 상한 — 모노레포에서도 한 자릿수 ms로 끝나게 묶는다.
+const WALK_MAX_DEPTH: usize = 4;
+const WALK_MAX_ENTRIES: usize = 6000;
+
+/// 파일 하나가 로고일 법한 정도. 클수록 좋고, 후보가 아니면 None.
+///
+/// 고정 경로 목록이 못 잡는 모양이 실재한다: 모노레포의 `FRONTEND/public/vis-web-logo.png`는
+/// 디렉토리도(`FRONTEND/public`) 이름도(`vis-web-logo`) 목록에 없다(2026-09-04 실측).
+/// 그래서 경로를 열거하는 대신 **이름 모양 + 위치**로 점수를 매긴다.
+fn logo_score(rel: &str) -> Option<i32> {
+    let lower = rel.to_lowercase();
+    let parts: Vec<&str> = lower.split('/').collect();
+    let (file, dirs) = parts.split_last()?;
+    if dirs.iter().any(|d| SKIP_DIRS.iter().any(|s| s.eq_ignore_ascii_case(d))) {
+        return None;
+    }
+    let (stem, ext) = file.rsplit_once('.')?;
+    let ext_score = match ext {
+        "svg" => 12,
+        "png" => 10,
+        "webp" => 6,
+        "ico" => 4,
+        "jpg" | "jpeg" => 2,
+        _ => return None,
+    };
+    // 이름이 의도를 나른다. `logo`가 최상, 접미 `-logo`는 제품명이 붙은 형태(vis-web-logo).
+    let name_score = if stem == "logo" {
+        100
+    } else if stem.ends_with("-logo") || stem.ends_with("_logo") {
+        90
+    } else if stem.starts_with("logo") {
+        85
+    } else if stem == "icon" || stem == "app-icon" || stem == "app_icon" || stem.ends_with("-icon") {
+        70
+    } else if stem == "favicon" {
+        60
+    } else {
+        return None;
+    };
+    let placed = dirs
+        .iter()
+        .any(|d| matches!(*d, "public" | "assets" | "static" | "resources" | "img" | "images"));
+    // 빌드 산출물은 원본의 사본이다 — 같은 파일이 dist에도 있으면 public 쪽이 이겨야 한다.
+    let built = dirs.iter().any(|d| matches!(*d, "dist" | "build" | "out" | "release"));
+    Some(
+        name_score + ext_score + if placed { 15 } else { 0 } - if built { 40 } else { 0 }
+            - (dirs.len() as i32) * 4,
+    )
+}
+
+/// 고정 목록이 빈손일 때의 폴백 — 얕게 훑어 최고점 하나를 고른다.
+/// 동점이면 경로가 짧은 쪽(= 더 위, 더 단순한 쪽)으로 결정적으로 끊는다.
+fn scan_logo(repo: &Path) -> Option<String> {
+    let mut best: Option<(i32, String)> = None;
+    let mut budget = WALK_MAX_ENTRIES;
+    let mut stack = vec![(repo.to_path_buf(), String::new(), 0usize)];
+    while let Some((dir, rel, depth)) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for e in rd.flatten() {
+            if budget == 0 {
+                return best.map(|(_, r)| r);
+            }
+            budget -= 1;
+            let name = e.file_name().to_string_lossy().into_owned();
+            let child_rel = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+            let Ok(ft) = e.file_type() else { continue };
+            if ft.is_dir() {
+                // 심볼릭 디렉토리는 따라가지 않는다 — 레포 밖으로 새거나 순환한다.
+                if depth + 1 < WALK_MAX_DEPTH
+                    && !SKIP_DIRS.iter().any(|s| s.eq_ignore_ascii_case(&name))
+                {
+                    stack.push((e.path(), child_rel, depth + 1));
+                }
+            } else if ft.is_file() {
+                let Some(score) = logo_score(&child_rel) else { continue };
+                let Ok(meta) = e.metadata() else { continue };
+                if meta.len() < MIN_BYTES || meta.len() > READ_MAX {
+                    continue;
+                }
+                let better = match &best {
+                    None => true,
+                    Some((bs, br)) => score > *bs || (score == *bs && child_rel.len() < br.len()),
+                };
+                if better {
+                    best = Some((score, child_rel));
+                }
+            }
+        }
+    }
+    best.map(|(_, r)| r)
+}
+
 /// 로컬 후보를 순서대로 훑어 **첫 번째로 존재하는 정규 파일**을 로고로 쓴다.
 ///
 /// std::fs 동기 호출인 이유: 후보가 수백 개라 tokio::fs로 하면 항목마다 블로킹 풀 왕복이 생긴다
@@ -148,7 +257,15 @@ fn find_local_logo(repo: &Path) -> Option<ProjectLogo> {
             source: rel,
         });
     }
-    None
+    // 고정 목록이 빈손이면 얕게 훑는다 — 모노레포는 경로를 열거로 맞힐 수 없다.
+    let rel = scan_logo(repo)?;
+    let path = resolve_in_repo(repo, &rel).ok()?;
+    // 탐색은 file_type()으로 심볼릭을 이미 걸렀지만, 컨테인먼트는 여기서 한 번 더 단언한다.
+    if !std::fs::symlink_metadata(&path).ok()?.is_file() {
+        return None;
+    }
+    let bytes = std::fs::read(&path).ok()?;
+    encode_logo(&bytes, &rel).map(|data_uri| ProjectLogo { data_uri, source: rel })
 }
 
 /// **로고가 없는 건 오류가 아니다.** Ok(None)이면 프론트는 조용히 아이콘 자리를 비운다
@@ -172,6 +289,44 @@ mod tests {
 
     /// SSH·HTTPS 양쪽에서 owner가 나와야 한다. 여기서 통과한 문자열이 그대로 캐시 파일명이
     /// 되므로, GitHub이 아닌 원격과 이상한 문자는 반드시 None이어야 한다.
+    /// 모노레포 실측 케이스(nqvm-vis) — 고정 목록이 통째로 빗나가는 모양.
+    /// 제품명이 붙은 `FRONTEND/public/vis-web-logo.png`가, 같은 이름의 dist 사본과
+    /// 더 깊은 서브프로젝트 로고와 app_icon 을 모두 이겨야 한다.
+    #[test]
+    fn score_picks_source_logo_over_build_copy_and_deeper_paths() {
+        let pick = |paths: &[&str]| -> String {
+            let mut best: Option<(i32, &str)> = None;
+            for p in paths {
+                if let Some(s) = logo_score(p) {
+                    if best.is_none_or(|(bs, br)| s > bs || (s == bs && p.len() < br.len())) {
+                        best = Some((s, p));
+                    }
+                }
+            }
+            best.unwrap().1.to_string()
+        };
+        assert_eq!(
+            pick(&[
+                "APPLICATION/vis-forge/dist/vis-forge-logo.png",
+                "APPLICATION/vis-forge/public/vis-forge-logo.png",
+                "APPLICATION/vis-service-manager/resources/app_icon.png",
+                "FRONTEND/app/icon.png",
+                "FRONTEND/public/vis-web-logo.png",
+            ]),
+            "FRONTEND/public/vis-web-logo.png"
+        );
+    }
+
+    /// 훑지 않을 디렉토리와 로고가 아닌 파일은 후보 자체가 되지 않는다.
+    #[test]
+    fn score_rejects_non_logos_and_skipped_dirs() {
+        assert!(logo_score("node_modules/pkg/logo.png").is_none());
+        assert!(logo_score("src/main.rs").is_none());
+        assert!(logo_score("docs/screenshot.png").is_none());
+        assert!(logo_score("public/logo.txt").is_none());
+        assert!(logo_score("public/logo.svg").is_some());
+    }
+
     #[test]
     fn candidate_order_is_most_intentional_first() {
         let c = logo_candidates();
