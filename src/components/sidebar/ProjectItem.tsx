@@ -16,7 +16,7 @@ import { memo } from "react";
 import { formatBytes, relativeTime } from "../../lib/format";
 import type { Project } from "../../lib/ipc";
 import { errorMessage } from "../../lib/ipc";
-import { projectTint } from "../../lib/project-color";
+import type { ProjColor } from "../../lib/project-color";
 import { useNotes, useProjectSize, useStatus } from "../../queries";
 import { useAgentActivity } from "../../stores/agentActivity";
 import { dotStateOf, StatusDot } from "../common/StatusDot";
@@ -34,7 +34,7 @@ export const ProjectItem = memo(function ProjectItem({
   isOver,
   isDragging,
   onPointerDownDrag,
-  hue,
+  color,
 }: {
   project: Project;
   selected: boolean;
@@ -47,8 +47,8 @@ export const ProjectItem = memo(function ProjectItem({
   isDragging?: boolean;
   /** 포인터 드래그 시작(좌클릭 후 임계 이동 시 정렬 드래그로 전환) */
   onPointerDownDrag?: (e: React.PointerEvent, id: string) => void;
-  /** 프로젝트 색상(hue) — 이름순 전체 배정(useProjectHues). 모아보기 칩·셀 헤더와 같은 값. */
-  hue: number;
+  /** 프로젝트 색 — 이름순 전체 배정(useProjectColors). 모아보기 칩·셀 헤더와 같은 값. */
+  color: ProjColor;
 }) {
   const { data: status, isLoading, error } = useStatus(project.id);
   const { data: notes } = useNotes();
@@ -100,21 +100,26 @@ export const ProjectItem = memo(function ProjectItem({
         onPointerDownDrag ? (e) => onPointerDownDrag(e, project.id) : undefined
       }
       // 배경은 프로젝트 색이다 — 색만 보고도 어느 프로젝트인지 기억할 수 있게(모아보기 칩과 같은 색).
-      // hover 강조는 CSS가 하도록 변수 두 개로 넘긴다: 인라인 backgroundColor로 칠하면
-      // 인라인이 hover: 클래스를 이겨 hover가 죽는다. 선택 행은 두 값이 같아 hover 변화가 없다
-      // (오늘의 bg-selection 행과 같은 거동) — 선택 표시는 border-accent가 계속 맡는다.
-      style={
-        {
-          "--tint": projectTint(hue, selected ? "row-on" : "row"),
-          "--tint-hover": projectTint(hue, "row-on"),
-        } as React.CSSProperties
-      }
-      className={`group relative cursor-pointer select-none border-l-2 px-3 py-2 bg-(--tint) hover:bg-(--tint-hover) ${
-        selected ? "border-accent" : "border-transparent"
+      // 인라인 backgroundColor 대신 변수로 넘기는 이유: 인라인은 hover: 클래스를 이겨 강조가 죽는다.
+      // hover는 이제 배경이 아니라 안쪽 링이 맡는다 — 색이 불투명해져 hover용 두 번째 색을 두면
+      // 그 색도 32슬롯 전부 대비 예산을 다시 받아야 한다. fg-dim은 틴트 위 최악 2.12로 3:1
+      // 미달이라 링 색은 fg-muted(최악 3.86)를 쓴다.
+      style={{ "--tint": color.bg } as React.CSSProperties}
+      className={`group relative cursor-pointer select-none px-3 py-2 bg-(--tint) hover:ring-1 hover:ring-inset hover:ring-fg-muted ${
+        selected ? "outline outline-2 -outline-offset-2 outline-accent" : ""
       } ${isDragging ? "opacity-40" : ""} ${
         agent === "working" ? "ai-working" : agent === "done" ? "ai-done" : ""
       }`}
     >
+      {/* 좌측 스트라이프 — 라이트 2종은 흰 패널 위 명도 예산이 없어 행 배경만으로는 최소 ΔE00이
+          1.7~2.2에 그친다(다크는 6.0+). 글자가 얹히지 않는 이 4px 띠는 비텍스트 3:1만 받으면 돼
+          채도를 게멋 끝까지 써서 8.03/7.02까지 벌린다. 선택 시 4→8px — accent outline만으로는
+          부족하다(스트라이프와 accent의 최소 ΔE00이 darcula 4.86 / solarized-light 4.65). */}
+      <span
+        aria-hidden
+        className={`pointer-events-none absolute inset-y-0 left-0 ${selected ? "w-2" : "w-1"}`}
+        style={{ background: color.stripe }}
+      />
       {isOver && (
         <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-0.5 bg-accent" />
       )}
@@ -219,7 +224,10 @@ export const ProjectItem = memo(function ProjectItem({
 
       <div className="mt-0.5 flex items-center gap-2 pl-4 text-xs">
         {status?.error ? (
-          <span className="truncate text-fg-dim" title={status.error}>
+          // 오류 문구만 fg-muted다 — fg-dim은 틴트 위 최악 2.12(darcula)라 "프로젝트 경로를
+          // 찾을 수 없습니다" 같은 실제로 읽어야 하는 문장에는 모자란다. 용량·"변경 없음"은
+          // 의도적 저강조라 fg-dim 그대로 둔다.
+          <span className="truncate text-fg-muted" title={status.error}>
             {status.error}
           </span>
         ) : hasChanges && counts ? (

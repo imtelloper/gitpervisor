@@ -21,7 +21,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { Project } from "../lib/ipc";
 import { isMac, modLabel } from "../lib/platform";
-import { projectTint, useProjectHues } from "../lib/project-color";
+import { NO_COLOR, useProjectColors, type ProjColor } from "../lib/project-color";
 import {
   attachTerminal,
   createTerminal,
@@ -80,7 +80,7 @@ type CellSource =
  * 색을 여기 실어 두는 이유: 배정은 **화면 전체의 프로젝트 집합**을 봐야 결정되는데(충돌 회피),
  * 칩과 셀 헤더는 서로 다른 컴포넌트다. 메타에 실으면 프롭 배관 없이 같은 색이 따라간다.
  */
-type CellMeta = CellSource & { hue: number };
+type CellMeta = CellSource & { color: ProjColor };
 
 type TermMeta = Extract<CellMeta, { kind: "terminal" }>;
 type BrowserMeta = Extract<CellMeta, { kind: "browser" }>;
@@ -154,7 +154,7 @@ export function AggregateTerminals() {
   const { data: projects } = useProjects();
   // 색은 **등록된 전체 프로젝트** 이름순 배정을 그대로 쓴다 — 사이드바 행과 같은 맵이라야
   // 같은 프로젝트가 어디서든 같은 색이다(화면에 보이는 셀만으로 배정하면 색이 이동한다).
-  const hues = useProjectHues();
+  const colors = useProjectColors();
   const { data: settings } = useSettings();
   const fontSize = settings?.terminalFontSize ?? 13;
   const terminals = useTerminals((s) => s.terminals);
@@ -218,8 +218,8 @@ export function AggregateTerminals() {
     // 어디 소속인지 읽히지 않는다(색 막대와 짝이 되는 그룹핑의 나머지 절반).
     // 이름 오름차순, 같은 프로젝트 안에서는 원래 순서 유지 — Array#sort는 stable이다.
     out.sort((a, b) => a.projName.localeCompare(b.projName, "ko"));
-    return out.map((c) => ({ ...c, hue: hues.get(c.projName) ?? 0 }));
-  }, [terminals, projects, byTerminal, browserItems, browserTabIds, hues]);
+    return out.map((c) => ({ ...c, color: colors.get(c.projName) ?? NO_COLOR }));
+  }, [terminals, projects, byTerminal, browserItems, browserTabIds, colors]);
 
   // 선택 집합 — 최초엔 클로드 활동(working/done) 있는 터미널만. 없으면 전부(브라우저 포함).
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
@@ -513,7 +513,7 @@ export function AggregateTerminals() {
                     }}
                     title={`${name} — 탭 ${cells.length}개 (클릭: 전체 표시/숨김, 호버: 목록)`}
                     style={{
-                      backgroundColor: projectTint(cells[0].hue, selCount > 0 ? "on" : "off"),
+                      backgroundColor: cells[0].color.bg,
                     }}
                     className={`flex shrink-0 items-center gap-1 rounded px-2 py-1 text-[11px] text-fg ${
                       selCount === cells.length ? "ring-1 ring-accent" : ""
@@ -1041,10 +1041,11 @@ function Chip({
       title={`${t.projName} · ${t.title} (우클릭: 메뉴)`}
       // 배경이 프로젝트 색이다 — 정렬로 같은 프로젝트를 붙여 놓아도 경계가 어디인지
       // 한눈에 안 들어와서(3px 막대는 너무 약했다) 칩 전체를 물들인다.
-      style={{ backgroundColor: projectTint(t.hue, on ? "on" : "off") }}
+      style={{ backgroundColor: t.color.bg }}
       // 글자는 선택 여부와 무관하게 text-fg다. 예전처럼 미선택을 fg-muted로 흐리면
       // 물든 배경 위에서 대비가 무너진다(실측 solarized-light 3.5:1 — AA 미달).
-      // 선택 표시는 ring + 진한 배경(--proj-a-on)이 한다.
+      // 선택 표시는 ring-accent 하나가 한다 — 색이 불투명해져 선택/미선택 두 벌의 배경색이
+      // 각각 32슬롯 대비 예산을 다시 받아야 하는데, 그럴 명도 여유가 라이트 2종에 없다.
       className={`flex shrink-0 items-center gap-1 rounded px-2 py-1 text-[11px] text-fg ${
         on ? "ring-1 ring-accent" : ""
       } ${
@@ -1292,7 +1293,7 @@ function AggregateCell({
       }`}
     >
       <div
-        style={{ backgroundColor: projectTint(meta.hue, "off") }}
+        style={{ backgroundColor: meta.color.bg }}
         className="flex h-6 shrink-0 items-center gap-1.5 border-b border-edge px-2 text-[11px] text-fg-muted"
       >
         <StatusIcon status={status} />
@@ -1370,7 +1371,7 @@ function BrowserCell({
   return (
     <div className="group/cell relative flex h-full w-full min-h-0 min-w-0 flex-col overflow-hidden rounded border border-edge">
       <div
-        style={{ backgroundColor: projectTint(meta.hue, "off") }}
+        style={{ backgroundColor: meta.color.bg }}
         className="flex h-6 shrink-0 items-center gap-1.5 border-b border-edge px-2 text-[11px] text-fg-muted"
       >
         <Globe size={11} className="shrink-0 text-accent" />

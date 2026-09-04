@@ -8,6 +8,7 @@ import {
   FolderPlus,
   FolderSync,
   HardDrive,
+  Palette,
   Plus,
   RefreshCw,
   StickyNote,
@@ -20,7 +21,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { OpenTarget, Project } from "../../lib/ipc";
 import { errorMessage, ipc } from "../../lib/ipc";
 import { usePanelWidth } from "../../lib/use-panel-width";
-import { useProjectHues } from "../../lib/project-color";
+import { NO_COLOR, useProjectColors } from "../../lib/project-color";
 import {
   useAddProject,
   useProjects,
@@ -78,9 +79,11 @@ export function ProjectList() {
   const selectProject = useUi((s) => s.selectProject);
   const sortByChanges = useUi((s) => s.projectSortByChanges);
   const toggleProjectSort = useUi((s) => s.toggleProjectSort);
+  const projectColorsOn = useUi((s) => s.projectColorsOn);
+  const toggleProjectColors = useUi((s) => s.toggleProjectColors);
   const { width, startResize } = usePanelWidth("gp:projects-width", 240, 170, 440);
-  // 행 배경색 — 이름순 전체 배정이라 표시 순서(정렬·드래그)가 바뀌어도 색은 그대로다.
-  const hues = useProjectHues();
+  // 행 배경·스트라이프 색 — 이름순 전체 배정이라 표시 순서(정렬·드래그)가 바뀌어도 색은 그대로다.
+  const colors = useProjectColors();
   const gitOps = useProjectGitOps();
   const statusById = useMemo(
     () => new Map((statuses ?? []).map((s) => [s.projectId, s])),
@@ -380,6 +383,22 @@ export function ProjectList() {
             <FolderPlus size={13} />
           </button>
           <button
+            onClick={toggleProjectColors}
+            title={
+              projectColorsOn
+                ? "프로젝트 색 구분 끄기 (목록을 단색으로)"
+                : "프로젝트 색 구분 켜기"
+            }
+            aria-pressed={projectColorsOn}
+            className={`shrink-0 rounded p-1 ${
+              projectColorsOn
+                ? "text-accent"
+                : "text-fg-dim hover:bg-raised hover:text-fg"
+            }`}
+          >
+            <Palette size={13} />
+          </button>
+          <button
             onClick={toggleProjectSort}
             title={
               sortByChanges
@@ -409,7 +428,10 @@ export function ProjectList() {
             isOver={overId === p.id && dragId !== p.id}
             isDragging={dragId === p.id}
             onPointerDownDrag={beginDrag}
-            hue={hues.get(p.name) ?? 0}
+            // 색 구분을 끄면 여기서 NO_COLOR로 갈아 끼운다. ProjectItem은 받은 색을 그리기만
+            // 하므로 그쪽도 project-color.ts도 건드릴 필요가 없다(계산은 계속 돌지만 Map 조회
+            // 하나라 무시할 비용이고, 껐다 켤 때 재계산 깜빡임이 없다).
+            color={projectColorsOn ? (colors.get(p.name) ?? NO_COLOR) : NO_COLOR}
           />
         ))}
         {/* 맨 끝에 삽입할 때의 표시선 */}
