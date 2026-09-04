@@ -473,7 +473,6 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
   const pushToast = useUi((s) => s.pushToast);
   const askConfirm = useUi((s) => s.askConfirm);
   const askPrompt = useUi((s) => s.askPrompt);
-  const openImageEditor = useUi((s) => s.openImageEditor);
   const selectDiff = useUi((s) => s.selectDiff);
   // 로컬 .html을 내장 브라우저 탭으로 열기 위한 스토어 액션.
   const openBrowserTab = useBrowsers((s) => s.openBrowser);
@@ -1285,9 +1284,14 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
                     icon={Pencil}
                     label="이미지 편집"
                     onClick={() => {
-                      // 이 트리가 보고 있는 저장소 id를 함께 넘긴다 — 임베디드 저장소 파일이
-                      // 바깥 레포 기준으로 저장되는 것을 막는다(설계 D1).
-                      openImageEditor(menu.path, projectId);
+                      // 더블클릭과 **같은 함수·같은 크기**로 별도 창을 연다 — 여기만 모달로
+                      // 두면 같은 파일이 진입 경로에 따라 다른 UI로 갈린다. 저장소 id를 함께
+                      // 넘기는 이유는 그대로다: 임베디드 저장소 파일이 바깥 레포 기준으로
+                      // 저장되는 것을 막는다(설계 D1).
+                      openDocWindow(projectId, menu.path, {
+                        size: [1180, 860],
+                        edit: true,
+                      });
                       setMenu(null);
                     }}
                   />

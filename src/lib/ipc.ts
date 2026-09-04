@@ -70,6 +70,12 @@ export interface FileDiff {
 export interface FileBytes {
   mime: string;
   base64: string;
+  /**
+   * 읽은 시점의 파일 정체(불투명 문자열). 해석하지 말고 그대로 들고 있다가
+   * `writeFileBytes` 의 `expectedStamp` 로 되돌려 준다 — 그 사이 남이 파일을 바꿨으면
+   * 저장이 CONFLICT 로 거절된다. 메타를 못 읽는 환경에서는 없을 수 있다.
+   */
+  stamp?: string;
 }
 
 /** 중앙 diff 뷰어가 표시할 대상 (설계 §6). */
@@ -800,6 +806,8 @@ export type ErrorCode =
   | "AUTH_FAILED"
   | "IO"
   | "ALREADY_EXISTS"
+  // 읽은 뒤 대상이 바뀌었다(외부 변경). ALREADY_EXISTS 와 달리 **재시도 시 스탬프를 빼야** 한다.
+  | "CONFLICT"
   // ---- API 클라이언트 (commands/http.rs §4.8) ----
   | "NETWORK"
   | "DNS_FAILURE"
@@ -1134,15 +1142,17 @@ export const ipc = {
     callMutating<string>("move_path", { projectId, relPath, destDir }),
   // 이미지 변환·편집 저장 — base64 바이트를 디스크에 쓴다. overwrite=false면 기존 파일 충돌 시
   // ALREADY_EXISTS 오류(프론트가 덮어쓰기 확인). 큰 이미지 대비 타임아웃 넉넉히.
+  // expectedStamp 를 주면 읽은 뒤 파일이 바뀌었는지 대조해 CONFLICT 로 거절한다(생략 = 종전 동작).
   writeFileBytes: (
     projectId: string,
     relPath: string,
     base64: string,
     overwrite: boolean,
+    expectedStamp?: string,
   ) =>
     callMutating<void>(
       "write_file_bytes",
-      { projectId, relPath, base64, overwrite },
+      { projectId, relPath, base64, overwrite, expectedStamp },
       60_000,
     ),
   // Go-to-Definition — 심볼 정의 후보를 휴리스틱 검색(ripgrep). 읽기 레인.

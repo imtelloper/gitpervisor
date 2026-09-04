@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 
 /**
  * 터미널 패널을 별도 OS 창으로 띄운다. 창 생성은 Rust(open_float_window)가 담당한다 —
@@ -39,7 +40,29 @@ const DOC_MAX = 20;
 export interface DocTarget {
   projectId: string;
   path: string;
+  /**
+   * 뜨자마자 이미지 편집기를 연다(뷰어에서 [편집]을 한 번 더 누르지 않게).
+   * **옵셔널이어야 한다** — 이 필드가 생기기 전에 적힌 localStorage 항목이 남아 있고,
+   * readDocs 는 JSON 파싱만 검사하지 필드 유무는 못 본다.
+   */
+  edit?: boolean;
 }
+
+/**
+ * 이 창이 파일 하나짜리 문서 창(`doc-<id>`)인가. 편집기가 모달 카드 대신 창을 꽉 채워야 할지,
+ * [편집] 버튼이 새 창을 열지 이 창에서 열지를 이걸로 가른다.
+ *
+ * props 가 아니라 모듈 상수인 이유: 같은 판별이 ImageEditor 와 ImageView 양쪽에 필요한데
+ * ImageView 는 DiffViewer 를 관통해야 prop 이 닿는다. `IS_FLOAT_UI`(stores/ui.ts)·
+ * `IS_AGGREGATE_WINDOW`(stores/terminals.ts) 와 같은 패턴이다.
+ */
+export const IS_DOC_WINDOW = (() => {
+  try {
+    return getCurrentWebviewWindow().label.startsWith("doc-");
+  } catch {
+    return false;
+  }
+})();
 
 function readDocs(): Record<string, DocTarget> {
   try {
@@ -60,15 +83,16 @@ function readDocs(): Record<string, DocTarget> {
  *
  * `opts.size`는 창 크기 요청(기본은 Rust의 900×760). 이미지처럼 그 창 안에서 편집기까지 여는
  * 대상은 넓게 연다 — 편집기 우측 패널이 고정 폭이라 좁은 창에서는 stage가 눌린다.
+ * `opts.edit`이면 그 창이 뜨자마자 편집기를 연다(뷰어 단계를 건너뛴다).
  */
 export function openDocWindow(
   projectId: string,
   path: string,
-  opts?: { size?: [number, number] },
+  opts?: { size?: [number, number]; edit?: boolean },
 ): void {
   const id = crypto.randomUUID().replace(/-/g, "");
   const docs = readDocs();
-  docs[id] = { projectId, path };
+  docs[id] = { projectId, path, edit: opts?.edit };
   const keys = Object.keys(docs); // 문자열 키라 삽입 순서가 유지된다 → 뒤쪽이 최신
   const kept =
     keys.length > DOC_MAX

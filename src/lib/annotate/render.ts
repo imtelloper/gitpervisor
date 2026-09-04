@@ -311,7 +311,19 @@ function readableOn(bg: string): string {
 
 // ── 모자이크 / 블러 (§5.2) ───────────────────────────────────────────────────
 
-/** 픽셀화 축소본을 담는 재사용 스크래치 캔버스(매 프레임 새로 만들면 GC가 튄다). */
+/**
+ * 모듈 스크래치를 놓아 준다 — 편집기 언마운트에서 부른다.
+ *
+ * 두 스크래치는 모듈 전역이라 편집기를 닫아도 **마지막 크기 그대로 창 수명 동안 남았다**.
+ * doc-* 창은 별도 WebView2라 모듈 인스턴스도 창마다 따로이므로, 창을 열어 둔 채 편집기만
+ * 여닫는 흐름에서 창당 최대 ~15MB가 회수되지 않았다(4K 전면 가림 기준).
+ */
+export function releaseScratch(): void {
+  hlScratch = null;
+  mosaicScratch = null;
+}
+
+/** 픽셀화 축소본·블러 패딩본을 담는 재사용 스크래치 캔버스(매 프레임 새로 만들면 GC가 튄다). */
 let mosaicScratch: HTMLCanvasElement | null = null;
 function mosaicScratchCtx(w: number, h: number): CanvasRenderingContext2D {
   if (!mosaicScratch) mosaicScratch = document.createElement("canvas");
@@ -330,6 +342,9 @@ function mosaicScratchCtx(w: number, h: number): CanvasRenderingContext2D {
  *
  * 배율 보정: 셀 개수를 oriented 크기 기준으로 정하므로(`w / strength`) 프리뷰(s=0.4)와
  * 출력(s=1)에서 **같은 셀 격자**가 나온다. 블러 반경도 배율을 곱해 시각 결과를 맞춘다.
+ *
+ * 합성은 `copy` 다 — 가림은 아래 픽셀을 **남기면 안 되는** 연산이라 알파가 1 미만인 결과를
+ * source-over 로 얹으면 그 비율만큼 원본이 그대로 비친다(§5.2 회귀: e2e 30 (l)).
  */
 function drawMosaic(
   ctx: CanvasRenderingContext2D,
@@ -347,6 +362,11 @@ function drawMosaic(
   ctx.clip();
   ctx.setTransform(1, 0, 0, 1, 0, 0); // 이후는 디바이스 좌표로 되그린다
   ctx.globalAlpha = 1;
+  // 클립 안을 **대체**한다. source-over 로 얹으면 결과 알파가 1 미만인 곳마다
+  // `a×가림 + (1−a)×원본` 이 되어 가려야 할 픽셀이 그대로 비친다 — 투명 배경 PNG 의
+  // 축소본(알파까지 평균된다)과 블러 가장자리가 정확히 그 경우다. 아래 두 경로 모두
+  // 목적지 사각형이 클립을 완전히 덮으므로 copy 가 클립 밖을 건드리지 않는다.
+  ctx.globalCompositeOperation = "copy";
 
   const x0 = Math.max(0, Math.floor((box.x + t.tx) * t.sx));
   const y0 = Math.max(0, Math.floor((box.y + t.ty) * t.sy));
@@ -358,25 +378,29 @@ function drawMosaic(
 
   const strength = Math.max(1, o.strength);
   if (o.mode === "blur") {
-    const px = (strength * (t.sx + t.sy)) / 2;
-    // 가장자리에서 캔버스 밖 투명 픽셀을 빨아들이지 않도록 샘플 영역을 반경만큼 넓힌다.
-    const pad = Math.ceil(px * 2);
-    const sx0 = Math.max(0, x0 - pad);
-    const sy0 = Math.max(0, y0 - pad);
-    const sx1 = Math.min(canvas.width, x1 + pad);
-    const sy1 = Math.min(canvas.height, y1 + pad);
+    // 축 배율이 다르면(비율 고정 해제 리사이즈) **큰 쪽**에 맞춘다 — 가리기가 목적이라
+    // 약해지는 쪽으로 틀리면 안 된다. 등방 배율에서는 종전 평균과 같은 값이다.
+    const px = strength * Math.max(t.sx, t.sy);
+    // 캔버스에서 직접 넓게 떠서 블러하면 안 된다. 필터 블러는 **그리는 소스 사각형 밖을
+    // 투명으로** 보므로 소스 경계에서 결과 알파가 떨어지는데(경계열 ≈0.5, 코너 ≈0.25),
+    // 그 경계는 이미지·크롭 가장자리에서 `Math.max(0, …)` 클램프에 걸려 모자이크 사각형과
+    // 겹쳐 버린다 → 가장자리 수십 px 가 원본과 섞여 남는다(좌상단 가리기가 정확히 이 경우).
+    // 대신 가장자리 복제로 3σ 패딩을 만든 스크래치를 블러한다 — 클립 안 알파가 어디서나 1이다.
+    // (Skia 블러의 지원 반경은 ≈2.82σ 라 3σ 면 커널이 전부 소스 안에 들어온다.)
+    const p = Math.ceil(px * 3) + 1;
+    const pw = dw + p * 2;
+    const ph = dh + p * 2;
+    const s = mosaicScratchCtx(pw, ph);
+    s.imageSmoothingEnabled = false;
+    s.drawImage(canvas, x0, y0, dw, dh, p, p, dw, dh);
+    // 좌·우 한 열을 패딩 폭으로 늘린 뒤, 위·아래를 전폭으로 늘려 모서리까지 채운다.
+    s.drawImage(s.canvas, p, p, 1, dh, 0, p, p, dh);
+    s.drawImage(s.canvas, p + dw - 1, p, 1, dh, p + dw, p, p, dh);
+    s.drawImage(s.canvas, 0, p, pw, 1, 0, 0, pw, p);
+    s.drawImage(s.canvas, 0, p + dh - 1, pw, 1, 0, p + dh, pw, p);
     ctx.filter = `blur(${px}px)`;
-    ctx.drawImage(
-      canvas,
-      sx0,
-      sy0,
-      sx1 - sx0,
-      sy1 - sy0,
-      sx0,
-      sy0,
-      sx1 - sx0,
-      sy1 - sy0,
-    );
+    // 스크래치 **전체**를 그린다 — 부분 소스로 그리면 그 경계에 같은 감쇠가 다시 생긴다.
+    ctx.drawImage(s.canvas, x0 - p, y0 - p);
     ctx.filter = "none";
     return;
   }

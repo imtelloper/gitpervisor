@@ -16,6 +16,11 @@ pub enum ErrorCode {
     Io,
     /// 대상이 이미 존재함 (새 폴더·이미지 변환 저장 충돌). 프론트는 이 코드로 덮어쓰기 확인을 띄운다.
     AlreadyExists,
+    /// 읽은 뒤 대상이 **다른 무언가로 바뀌었다** — 덮어쓰면 남의 변경을 날린다.
+    /// AlreadyExists 와 갈라 두는 이유: 프론트의 복구 동작이 다르다. AlreadyExists 는 그대로
+    /// 재시도하면 되지만, 이쪽은 재시도 시 스탬프 검사를 **꺼야** 하고(안 그러면 무한 반복)
+    /// 사용자에게 물어야 할 문장도 "이미 있습니다"가 아니라 "외부에서 바뀌었습니다"다.
+    Conflict,
     // API 클라이언트 HTTP 엔진 (DOCS/api-client-design.md §4.8)
     Network,
     DnsFailure,

@@ -200,6 +200,9 @@ export default function App() {
           <SettingsDialog />
           <MemoDialog />
           <ConnectionDialog />
+          {/* 제품 경로는 별도 doc 창으로 옮겼지만(ImageView·파일트리 → openDocWindow) 이 마운트는
+              **지우면 안 된다**: e2e 30-image-annotate 가 메인 창에서 useUi.openImageEditor 를
+              직접 불러 편집기를 열고 ~50개 단언을 그 위에서 돌린다. 죽은 코드가 아니다. */}
           {imageEditorPath && (
             <Suspense fallback={null}>
               <ImageEditor />

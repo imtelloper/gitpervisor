@@ -1005,8 +1005,19 @@ export function invalidateAfterMove(qc: ReturnType<typeof useQueryClient>): void
 export function useSaveImage(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (v: { relPath: string; base64: string; overwrite: boolean }) =>
-      ipc.writeFileBytes(projectId, v.relPath, v.base64, v.overwrite),
+    mutationFn: (v: {
+      relPath: string;
+      base64: string;
+      overwrite: boolean;
+      expectedStamp?: string;
+    }) =>
+      ipc.writeFileBytes(
+        projectId,
+        v.relPath,
+        v.base64,
+        v.overwrite,
+        v.expectedStamp,
+      ),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["dir"] });
       void qc.invalidateQueries({ queryKey: ["statuses"] });

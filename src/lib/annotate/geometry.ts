@@ -310,14 +310,34 @@ export function objectBBox(o: AnnoObject): Rect {
   }
 }
 
+/**
+ * (px,py) 를 앵커 기준으로 `deg` 만큼 돈 점. `applyObjectTransform` 이 캔버스에 거는 것과
+ * **같은 회전**이므로, 이 함수와 그 함수는 항상 짝으로 움직여야 한다.
+ *
+ * `deg` 를 음수로 주면 화면 좌표를 객체의 **로컬(회전 이전) 프레임**으로 되돌린다 —
+ * 객체 좌표가 전부 로컬이라(회전은 렌더 시점에만 걸린다) 리사이즈 배율은 그 프레임에서
+ * 구해야 맞는다.
+ */
+export function rotatePoint(
+  px: number,
+  py: number,
+  deg: number,
+  a: { x: number; y: number },
+): { x: number; y: number } {
+  if (normalizeDeg(deg) === 0) return { x: px, y: py };
+  const rad = deg * DEG;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const dx = px - a.x;
+  const dy = py - a.y;
+  return { x: a.x + dx * cos - dy * sin, y: a.y + dx * sin + dy * cos };
+}
+
 /** rot 을 적용한 축정렬 외접 사각형(oriented px). */
 export function objectAABB(o: AnnoObject): Rect {
   const b = objectBBox(o);
   if (normalizeDeg(o.rot) === 0) return b;
   const a = objectAnchor(o);
-  const rad = o.rot * DEG;
-  const cos = Math.cos(rad);
-  const sin = Math.sin(rad);
   const xs: number[] = [];
   const ys: number[] = [];
   for (const [px, py] of [
@@ -326,10 +346,9 @@ export function objectAABB(o: AnnoObject): Rect {
     [b.x + b.w, b.y + b.h],
     [b.x, b.y + b.h],
   ]) {
-    const dx = px - a.x;
-    const dy = py - a.y;
-    xs.push(a.x + dx * cos - dy * sin);
-    ys.push(a.y + dx * sin + dy * cos);
+    const q = rotatePoint(px, py, o.rot, a);
+    xs.push(q.x);
+    ys.push(q.y);
   }
   const x0 = Math.min(...xs);
   const y0 = Math.min(...ys);

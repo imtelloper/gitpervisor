@@ -11,25 +11,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { errorMessage, ipc } from "../../lib/ipc";
 import { useFileImage } from "../../queries";
+import { IS_DOC_WINDOW, openDocWindow } from "../../lib/floating";
+import { WHEEL_STEP, zoomAt, type View } from "../../lib/zoom";
 import { useUi } from "../../stores/ui";
 import { EmptyState } from "../common/EmptyState";
 
-// 배율 한계와 휠 스텝. 지수 스텝이라 어느 배율에서든 한 노치의 체감이 균일하다.
-const MIN_SCALE = 0.05;
-const MAX_SCALE = 16;
-const WHEEL_STEP = 1.1;
+// 줌 상수·수학은 lib/zoom.ts 가 단일 소스다(이미지 편집기와 공유 — 두 벌로 두면 갈라진다).
 const BTN_STEP = 1.4; // 버튼·키보드는 한 번에 더 크게 움직여야 답답하지 않다
 // 이 배율을 넘으면 보간을 끄고 픽셀을 그대로 보여준다(아이콘·픽셀아트가 뭉개지지 않게).
 const PIXELATE_FROM = 2;
-
-const clampScale = (s: number) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, s));
-
-/** 화면 좌표 기준 이미지 배치 — transform-origin은 좌상단(0,0) 고정이 전제다(zoomAt 참고). */
-interface View {
-  scale: number;
-  x: number;
-  y: number;
-}
 
 /** 이미지 파일 미리보기 — 워크트리 파일을 base64 data URL로 렌더. 줌/팬 지원. */
 export default function ImageView({
@@ -226,8 +216,15 @@ function ZoomableImage({
       <div className="flex h-8 shrink-0 items-center gap-1 border-b border-edge px-3 text-xs text-fg-dim">
         {/* 편집 진입 — projectId 를 함께 넘긴다. 임베디드 저장소면 합성 id 라 이게 정답이다(설계 D1). */}
         <button
-          onClick={() => openImageEditor(path, projectId)}
-          title="이미지 편집"
+          // 메인 창에서는 **크기 조절 가능한 별도 창**으로 연다(파일트리 더블클릭과 같은 경로·
+          // 같은 크기). 이미 doc 창 안이면 그 창에서 열어야 한다 — 여기서 또 openDocWindow 를
+          // 부르면 편집을 누를 때마다 창이 하나씩 늘어난다.
+          onClick={() =>
+            IS_DOC_WINDOW
+              ? openImageEditor(path, projectId)
+              : openDocWindow(projectId, path, { size: [1180, 860], edit: true })
+          }
+          title="이미지 편집 (새 창)"
           className="flex items-center gap-1 rounded px-1.5 py-1 hover:bg-raised hover:text-fg"
         >
           <Pencil size={13} /> 편집
@@ -289,21 +286,6 @@ function ZoomableImage({
       </div>
     </div>
   );
-}
-
-/**
- * 컨테이너 좌표 (cx, cy) 아래의 이미지 점을 **그 자리에 둔 채** 배율만 factor배 한다.
- *
- *   o' = c - (c - o) * (s' / s)
- *
- * transform-origin이 0 0이라 이 한 줄로 끝난다(center면 컨테이너 크기가 식에 끼어든다).
- */
-function zoomAt(v: View, cx: number, cy: number, factor: number): View {
-  const scale = clampScale(v.scale * factor);
-  // 한계에 걸리면 요청한 factor와 실제 비율이 달라진다 — 실제 비율로 오프셋을 옮겨야
-  // 최대/최소 배율에서 이미지가 슬금슬금 밀리지 않는다.
-  const k = scale / v.scale;
-  return { scale, x: cx - (cx - v.x) * k, y: cy - (cy - v.y) * k };
 }
 
 function TBtn({

@@ -50,6 +50,16 @@ export function DocWindow({ docId }: { docId: string }) {
   const imageEditorPath = useUi((s) => s.imageEditorPath);
   const projectId = target?.projectId ?? null;
 
+  // "편집" 진입으로 열린 창이면 뜨자마자 편집기를 연다 — 뷰어에서 [편집]을 한 번 더 누르게
+  // 하지 않는다. `target` 은 docId 로만 메모되므로(위 useMemo) 이 효과는 창당 1회다.
+  // 편집기를 닫으면 이 창의 뷰어로 돌아간다(창을 닫지 않는다): 저장에 성공하면 편집기가
+  // 스스로 close() 하는데, 그 결과를 보여 줄 뷰어가 바로 이 창이고 워처로 자동 갱신된다.
+  useEffect(() => {
+    if (target?.edit) {
+      useUi.getState().openImageEditor(target.path, target.projectId);
+    }
+  }, [target]);
+
   // 이 창에도 저장된 테마 적용 — 로드 전엔 main.tsx의 localStorage 선적용 값이 유지된다
   // (FloatingTerminal과 같은 처리).
   useEffect(() => {

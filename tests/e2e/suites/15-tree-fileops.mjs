@@ -113,6 +113,51 @@ export async function run({ cdp, report: r, fix }) {
   });
   r.check("write_file_bytes: overwrite=true → 성공", wbOver.ok, wbOver.code || "");
 
+  // ── expected_stamp: 읽은 뒤 남이 바꿨으면 거절한다 ──
+  //
+  // 종전에는 overwrite=true 면 아무 검사 없이 덮어썼다 — 이미지 편집기를 열어 둔 사이 외부
+  // 도구가 그 파일을 바꾸면 [저장]이 그 변경을 **말없이** 날렸다(가드는 !overwrite 경로 전용).
+  // 스탬프는 read_file_base64 가 준 불투명 문자열이고, 프론트는 그걸 그대로 되돌려 준다.
+  const rd1 = await cdp.try("read_file_base64", P("e2e-newdir/pixel.png"));
+  const stamp1 = rd1.ok && rd1.r ? rd1.r.stamp : null;
+  if (r.check("read_file_base64: stamp 를 함께 준다", !!stamp1, stamp1 || "(없음)")) {
+    // 같은 스탬프로 쓰면 통과해야 한다(정상 저장이 막히면 기능이 죽는다).
+    const wbSame = await cdp.try("write_file_bytes", {
+      ...P("e2e-newdir/pixel.png"),
+      base64: PNG_B64,
+      overwrite: true,
+      expectedStamp: stamp1,
+    });
+    r.check(
+      "write_file_bytes: 스탬프 일치 → 저장 성공",
+      wbSame.ok,
+      wbSame.code || "",
+    );
+    // 방금 쓴 것 자체가 mtime 을 바꿨다 → 옛 스탬프는 이제 stale 이다.
+    const wbStale = await cdp.try("write_file_bytes", {
+      ...P("e2e-newdir/pixel.png"),
+      base64: PNG_B64,
+      overwrite: true,
+      expectedStamp: stamp1,
+    });
+    r.check(
+      "write_file_bytes: 스탬프 불일치 → CONFLICT (무성 덮어쓰기 차단)",
+      !wbStale.ok && wbStale.code === "CONFLICT",
+      wbStale.code || "(ok? — 덮어써 버렸다)",
+    );
+    // 스탬프를 빼면 종전 동작 그대로 통과한다(기존 호출부·"그래도 저장" 재시도 경로).
+    const wbForce = await cdp.try("write_file_bytes", {
+      ...P("e2e-newdir/pixel.png"),
+      base64: PNG_B64,
+      overwrite: true,
+    });
+    r.check(
+      "write_file_bytes: 스탬프 생략 → 종전대로 저장(재시도 경로)",
+      wbForce.ok,
+      wbForce.code || "",
+    );
+  }
+
   const wbBad = await cdp.try("write_file_bytes", {
     ...P("e2e-newdir/x.png"),
     base64: "@@@ not-valid-base64 @@@",

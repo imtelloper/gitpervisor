@@ -232,6 +232,23 @@ const MAX_IMAGE_BYTES: usize = 25 * 1024 * 1024; // 25MB
 pub struct FileBytes {
     pub mime: String,
     pub base64: String,
+    /// 읽은 시점의 파일 정체 — `"<mtime_ms>:<len>"`. 프론트는 해석하지 않고 그대로 들고 있다가
+    /// 되돌려 준다(`write_file_bytes` 의 `expected_stamp`). 그 사이 남이 파일을 바꿨는지
+    /// 판정하는 유일한 근거다. 내용 해시가 아닌 이유: 25MB 를 매 저장마다 되읽지 않으려는 것이고,
+    /// mtime 하나로 안 하는 이유는 파일시스템에 따라 해상도가 초 단위(FAT 는 2초)라
+    /// 같은 초 안의 재기록을 못 잡기 때문이다. 길이가 그 구멍을 메운다.
+    pub stamp: Option<String>,
+}
+
+/// 파일 메타 → 스탬프 문자열. 메타를 못 읽으면 None(=검사 불가, 통과시킨다).
+pub(crate) fn stamp_of(meta: &std::fs::Metadata) -> Option<String> {
+    let ms = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis();
+    Some(format!("{ms}:{}", meta.len()))
 }
 
 /// 워크트리의 파일을 그대로 읽어 (mime, base64)로 반환 — 이미지(png/jpg/webp/svg…) 미리보기용.
@@ -246,6 +263,7 @@ pub async fn read_file_base64(
     let full = repo.join(&rel_path);
     // 크기를 먼저 본다 — 읽고 나서 거절하면 25GB 파일도 일단 메모리에 올렸다가 버린다
     // (read_capped와 같은 이유). 아래 길이 검사는 metadata 이후 커진 경우의 백스톱으로 남긴다.
+    let mut stamp = None;
     if let Ok(m) = tokio::fs::metadata(&full).await {
         if m.len() > MAX_IMAGE_BYTES as u64 {
             return Err(IpcError::new(
@@ -253,6 +271,9 @@ pub async fn read_file_base64(
                 "파일이 너무 큽니다 (25MB 초과)",
             ));
         }
+        // 읽기 **전** 메타로 찍는다. 읽은 뒤에 찍으면 읽는 동안의 변경을 스탬프가 흡수해
+        // "안 바뀐 것처럼" 보인다 — 그 창이 정확히 막으려는 대상이다.
+        stamp = stamp_of(&m);
     }
     let bytes = tokio::fs::read(&full)
         .await
@@ -266,6 +287,7 @@ pub async fn read_file_base64(
     Ok(FileBytes {
         mime: mime_of(&rel_path),
         base64: B64.encode(&bytes),
+        stamp,
     })
 }
 

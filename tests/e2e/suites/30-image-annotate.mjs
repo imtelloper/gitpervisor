@@ -23,6 +23,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const J = (v) => JSON.stringify(v);
 
 const RED = [255, 59, 48]; // DEFAULT_STROKE (#FF3B30)
+const RED_HEX = "#FF3B30";
 const BLUE = [10, 132, 255]; // 팔레트 파랑 (#0A84FF)
 
 /** 페이지에 설치하는 헬퍼 묶음 — 모달 탐색·픽셀 샘플·저장 다이얼로그 구동·합성 포인터. */
@@ -131,6 +132,58 @@ const HELPERS = `(() => {
     x.fillStyle = rightCss;
     x.fillRect(Math.floor(w / 2), 0, w - Math.floor(w / 2), h);
     return c.toDataURL('image/png').split(',')[1];
+  };
+
+  /**
+   * 세로 줄무늬 PNG. 가리기(모자이크/블러) 검증용 고주파 프로브다 — 균일 픽스처는
+   * "가림이 안 걸렸다"와 "제대로 걸렸다"를 구분하지 못한다.
+   * alpha 는 **이미지 전체**의 균일 알파(255=불투명). 반투명이면 알파 있는 원본 위 합성
+   * 누수 프로브가 된다 — 줄마다 알파를 다르게 주면 셀 앨리어싱과 뒤섞여 못 쓴다.
+   */
+  A.stripePng = (w, h, period, alpha) => {
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    const x = c.getContext('2d');
+    x.globalAlpha = (alpha == null ? 255 : alpha) / 255;
+    x.fillStyle = '#ffffff';
+    x.fillRect(0, 0, w, h);
+    x.fillStyle = '#000000';
+    for (let i = 0; i < w; i += period * 2) x.fillRect(i, 0, period, h);
+    return c.toDataURL('image/png').split(',')[1];
+  };
+
+  /**
+   * 한 행에서 **인접 픽셀 최대 급변**(채널 ch: 0=R, 3=alpha)과 알파 최소값.
+   * 가림이 온전하면 결과는 매끄러워 급변이 없다 — 원본의 줄무늬가 조금이라도 살아남으면
+   * 그 주기만큼 큰 델타가 남는다. "전체가 균일한가"로 재면 안 된다: 가장자리 복제 패딩은
+   * 정상 동작에서도 완만한 그라디언트를 만든다.
+   */
+  A.maxAdjDelta = (ctx, y, x0, x1, ch) => {
+    const n = Math.max(0, x1 - x0);
+    if (n < 2) return { d: -1, at: -1, minA: -1 };
+    const d = ctx.getImageData(x0, y, n, 1).data;
+    const k = ch || 0;
+    let max = 0, at = -1, minA = 255;
+    for (let i = 0; i < n; i++) {
+      if (d[i * 4 + 3] < minA) minA = d[i * 4 + 3];
+      if (i === 0) continue;
+      const v = Math.abs(d[i * 4 + k] - d[(i - 1) * 4 + k]);
+      if (v > max) { max = v; at = x0 + i; }
+    }
+    return { d: max, at: at, minA: minA };
+  };
+
+  /** 저장 파일에서 인접 급변을 잰다. */
+  A.savedAdjDelta = async (projectId, relPath, y, x0, x1, ch) => {
+    const ctx = await A.decodeSaved(projectId, relPath);
+    return A.maxAdjDelta(ctx, y, x0, x1, ch);
+  };
+
+  /** 프리뷰 오버레이에서 인접 급변을 잰다. */
+  A.previewAdjDelta = (y, x0, x1, ch) => {
+    const c = A.canvases()[1];
+    return c ? A.maxAdjDelta(c.getContext('2d'), y, x0, x1, ch) : null;
   };
 
   /** 저장 파일을 디코드해 2D 컨텍스트로 돌려준다(같은 파일을 여러 방식으로 훑을 때 재사용). */
@@ -315,6 +368,49 @@ const HELPERS = `(() => {
     }
   };
 
+  /** 드래그 없는 호버(백킹 px). buttons=0 이라 포인터 핸들러의 드래그 분기를 타지 않는다. */
+  A.hover = async (x, y) => {
+    const c = A.canvases()[1];
+    if (!c) return false;
+    const r = c.getBoundingClientRect();
+    c.dispatchEvent(
+      new PointerEvent('pointermove', {
+        bubbles: true, cancelable: true, composed: true,
+        clientX: r.left + (x / c.width) * r.width,
+        clientY: r.top + (y / c.height) * r.height,
+        button: -1, buttons: 0,
+        pointerId: 1002, pointerType: 'mouse', isPrimary: true,
+      }),
+    );
+    await A.frame();
+    return true;
+  };
+
+  /** 주석 캔버스의 인라인 커서(빈 문자열이면 className 의 Tailwind 커서가 산다). */
+  A.cursor = () => {
+    const c = A.canvases()[1];
+    return c ? c.style.cursor : null;
+  };
+
+  /** window 에 keydown 하나. 편집기 단축키는 전부 window 리스너다. */
+  A.key = async (key, opts) => {
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key, bubbles: true, cancelable: true,
+        shiftKey: !!(opts && opts.shift),
+        repeat: !!(opts && opts.repeat),
+      }),
+    );
+    await A.frame();
+    return true;
+  };
+
+  /** 복구 배너가 떠 있는가(§P4). */
+  A.banner = () => {
+    const m = A.modal();
+    return !!(m && /직전에 저장하지 않고 닫은 편집/.test(m.textContent || ''));
+  };
+
   /** 합성 포인터 클릭(백킹 px 좌표) — 점마다 down/up 한 쌍. */
   A.clickCanvas = (pts) => {
     const steps = [];
@@ -462,6 +558,18 @@ const mosaicObj = (id, x, y, w, h, strength) => ({
   strength,
 });
 
+/** 블러 영역. strength 는 블러 반경(oriented px). */
+const blurObj = (id, x, y, w, h, strength) => ({
+  ...mosaicObj(id, x, y, w, h, strength),
+  mode: "blur",
+});
+
+/** 회전된 사각형. rot 은 앵커(중심) 기준 도(度). */
+const rotRectObj = (id, x, y, w, h, color, rot) => ({
+  ...rectObj(id, x, y, w, h, color),
+  rot,
+});
+
 const YELLOW = "#FFCC00"; // 팔레트 노랑 — 형광펜 관례색
 
 // 형광펜 픽셀 기댓값. multiply + globalAlpha 0.35 의 결과는 배경 bg 에 대해
@@ -499,8 +607,12 @@ export async function run({ cdp, report: r, fix }) {
   const SRC = "e2e-anno-src.png";
   /** 좌반(x<100) 검정 / 우반 흰색 — 배경 의존 블렌드(형광펜)와 모자이크 셀 격자용. */
   const TWO = "e2e-anno-two.png";
+  /** 4px 주기 흑백 세로줄 — 가리기가 원본을 실제로 없앴는지 재는 고주파 프로브. */
+  const STRIPE = "e2e-anno-stripe.png";
+  /** 같은 줄무늬인데 전체가 **균일 반투명** — 알파 있는 원본에서의 합성 누수 프로브. */
+  const STRIPE_A = "e2e-anno-stripe-a.png";
   const EMB = "embedded";
-  const created = [SRC, TWO];
+  const created = [SRC, TWO, STRIPE, STRIPE_A];
   let embMade = false;
 
   const closeEditor = () =>
@@ -586,6 +698,27 @@ export async function run({ cdp, report: r, fix }) {
       "픽스처 2색 PNG(200×200, 좌반 검정·우반 흰색) 생성",
       seed2.ok && existsSync(join(fix.repo, TWO)),
       seed2.ok ? "" : seed2.code || "",
+    );
+
+    const seedStripe = async (rel, alphaB) => {
+      const b = await cdp.eval(
+        `window.__gpvAnno.stripePng(200, 200, 4, ${alphaB})`,
+      );
+      const w = await cdp.try("write_file_bytes", {
+        projectId: fix.projectId,
+        relPath: rel,
+        base64: b,
+        overwrite: true,
+      });
+      return w.ok && existsSync(join(fix.repo, rel));
+    };
+    const stripeOk = r.check(
+      "픽스처 줄무늬 PNG(200×200, 4px 주기 흑백) 생성",
+      await seedStripe(STRIPE, 255),
+    );
+    const stripeAOk = r.check(
+      "픽스처 줄무늬 PNG(전체 알파 128) 생성",
+      await seedStripe(STRIPE_A, 128),
     );
 
     const opened = await openEditor(fix.projectId, SRC);
@@ -1019,6 +1152,88 @@ export async function run({ cdp, report: r, fix }) {
       r.skip("(j) 모자이크 배율 보정", "2색 픽스처 또는 편집기 재개 실패");
     }
 
+    // ── (r) 블러가 이미지 경계에 닿아도 저장본에 원본이 남지 않는다 ────────────
+    //
+    // 캔버스 필터 블러는 **그리는 소스 사각형 밖을 투명으로** 본다. 그래서 소스 경계에서
+    // 결과 알파가 떨어지고(경계열 ≈0.5, 코너 ≈0.25), source-over 로 얹으면 그 비율만큼
+    // 아래 깔린 **선명한 원본**이 그대로 비친다. 종전 구현은 소스를 반경만큼 넓혀 이걸
+    // 피했는데, 그 확장이 `Math.max(0, …)` 로 캔버스 경계에서 클램프돼 **이미지·크롭
+    // 가장자리에서는 방어가 통째로 사라졌다** — 스크린샷 좌상단(주소창·계정명) 가리기가
+    // 정확히 그 경우다. 현재는 가장자리 복제로 3σ 패딩을 만든 스크래치를 블러한다.
+    //
+    // 판정: 4px 주기 줄무늬 위에 σ=12 로 가리면 원본 주기가 **한 톨도** 남으면 안 된다.
+    // "행이 균일한가"로 재면 안 된다 — 정상 동작인 가장자리 복제도 완만한 그라디언트를
+    // 만들기 때문이다. 그래서 **인접 픽셀 급변**으로 잰다(줄무늬가 살면 델타가 크게 남는다).
+    if (stripeOk && (await openEditor(fix.projectId, STRIPE))) {
+      await setDoc({
+        objects: [blurObj("l1", 0, 0, 120, 200, 12)],
+        outW: 200,
+        outH: 200,
+      });
+      const pre = await cdp.eval(`window.__gpvAnno.previewAdjDelta(100, 2, 110, 0)`);
+      r.check(
+        "(r-1) 프리뷰: 왼쪽 경계에 닿은 블러 안에 원본 줄무늬가 없다",
+        !!pre && pre.d <= 12 && pre.minA >= 250,
+        `최대 인접델타=${pre ? pre.d : "-"} @x=${pre ? pre.at : "-"} 최소알파=${pre ? pre.minA : "-"}`,
+      );
+
+      const savedL = await saveAs("e2e-anno-blur.png", "e2e-anno-blur.png");
+      created.push("e2e-anno-blur.png");
+      if (r.check("(r) 경계 블러 저장", savedL.ok, savedL.ok ? "" : savedL.why)) {
+        const adj = await cdp.eval(
+          `window.__gpvAnno.savedAdjDelta(${J(fix.projectId)}, "e2e-anno-blur.png", 100, 2, 110, 0)`,
+        );
+        r.check(
+          "(r-2) 저장본: 블러 영역에 원본 줄무늬가 남지 않음(경계 알파 감쇠 누수 회귀)",
+          !!adj && adj.d <= 12 && adj.minA >= 250,
+          `최대 인접델타=${adj ? adj.d : "-"} @x=${adj ? adj.at : "-"} 최소알파=${adj ? adj.minA : "-"} (누수 시 100+)`,
+        );
+        // 사각형 밖(x>120)은 원본 그대로여야 한다 — 가림이 새어 나가지 않았다는 반대편 단언.
+        const out = await cdp.eval(
+          `window.__gpvAnno.savedAdjDelta(${J(fix.projectId)}, "e2e-anno-blur.png", 100, 130, 190, 0)`,
+        );
+        r.check(
+          "(r-3) 사각형 밖은 원본 줄무늬가 그대로(가림이 번지지 않음)",
+          !!out && out.d >= 200,
+          `최대 인접델타=${out ? out.d : "-"}`,
+        );
+      }
+    } else {
+      r.skip("(r) 경계 블러 누수", "줄무늬 픽스처 또는 편집기 재개 실패");
+    }
+
+    // ── (s) 알파 있는 원본에서 가림이 원본을 남기지 않는다(copy 합성) ──────────
+    //
+    // 가림 결과의 알파는 원본 알파를 물려받아 1 미만이 될 수 있다. 이걸 source-over 로
+    // 얹으면 `가림 + (1−a)×원본` 이 되어 투명 배경 PNG(로고·UI 에셋)에서 가려야 할 글자가
+    // 그대로 읽힌다 — 사각형 **한가운데**에서도 샌다는 것이 (l)의 가장자리 누수와 다른 점이다.
+    // 그래서 drawMosaic 은 클립 안을 copy 로 **대체**한다.
+    // 측정 구간은 사각형 안쪽 깊숙이 잡는다(가장자리 복제 그라디언트와 섞이지 않게).
+    if (stripeAOk && (await openEditor(fix.projectId, STRIPE_A))) {
+      await setDoc({
+        objects: [blurObj("m1", 20, 20, 160, 160, 12)],
+        outW: 200,
+        outH: 200,
+      });
+      const savedM = await saveAs("e2e-anno-alpha.png", "e2e-anno-alpha.png");
+      created.push("e2e-anno-alpha.png");
+      if (r.check("(s) 반투명 원본 가림 저장", savedM.ok, savedM.ok ? "" : savedM.why)) {
+        const adjR = await cdp.eval(
+          `window.__gpvAnno.savedAdjDelta(${J(fix.projectId)}, "e2e-anno-alpha.png", 100, 60, 140, 0)`,
+        );
+        const adjA = await cdp.eval(
+          `window.__gpvAnno.savedAdjDelta(${J(fix.projectId)}, "e2e-anno-alpha.png", 100, 60, 140, 3)`,
+        );
+        r.check(
+          "(s-1) 저장본: 반투명 원본의 줄무늬가 사각형 안에 남지 않음(source-over 누수 회귀)",
+          !!adjR && adjR.d <= 6 && !!adjA && adjA.d <= 6,
+          `RGB 인접델타=${adjR ? adjR.d : "-"} 알파 인접델타=${adjA ? adjA.d : "-"} (누수 시 45/24)`,
+        );
+      }
+    } else {
+      r.skip("(s) 반투명 원본 합성 누수", "반투명 줄무늬 픽스처 또는 편집기 재개 실패");
+    }
+
     // ── (k) Esc 계층 2~6 (계층 7은 (c)에서 검증) ────────────────────────────
     if (await openEditor(fix.projectId, SRC)) {
       await setDoc({ objects: [rectObj("k1", 30, 30, 100, 100, "#FF3B30")] });
@@ -1263,6 +1478,295 @@ export async function run({ cdp, report: r, fix }) {
           );
         }
       }
+    }
+
+    // ── (n) 회전된 객체의 리사이즈 (설계 D-A) ──────────────────────────────
+    //
+    // 객체 좌표는 전부 **로컬**(회전 이전)이고 회전은 렌더 시점에만 걸린다. 종전에는 핸들을
+    // objectAABB(회전 외접 사각형) 위에 두고 거기서 뽑은 배율을 그 로컬 좌표에 먹였다 →
+    // 앵커가 포인터로 순간이동했다. 도달 경로는 "이미지를 90° 돌린 뒤 텍스트·뱃지 리사이즈"다.
+    //
+    // 픽스처: rect(60,60,80,40) rot=90. 앵커는 중심 (100,80).
+    //   로컬 동쪽 핸들 (140,80) 을 90° 돌리면 → (100,120).      ← 새 코드가 집는 점
+    //   AABB 는 {80,40,40,80} 이라 그 점은 **남쪽** 핸들이다.    ← 옛 코드가 집던 점
+    // (100,120) → (100,160) 으로 끌면
+    //   새 코드: 로컬 pt=(180,80) → 동쪽 fx=1.5 → x=60 y=60 w=120 h=40  (앵커 고정)
+    //   옛 코드: 남쪽 fy=1.5      → y=70 h=60 w=80               (y 가 튄다)
+    if (await openEditor(fix.projectId, SRC)) {
+      await setDoc({ objects: [rotRectObj("n1", 60, 60, 80, 40, RED_HEX, 90)] });
+      await cdp.eval(`window.__gpv.imageEditor.setTool("select")`);
+      await cdp.eval(`window.__gpvAnno.clickCanvas([[100,80]])`);
+      const selN = await cdp.eval(`window.__gpvAnno.selCount()`);
+      if (r.check("(n-0) 회전 사각형이 선택된다", selN === 1, `selCount=${selN}`)) {
+        await cdp.eval(
+          `window.__gpvAnno.pointerSeq([['down',100,120],['move',100,140],['up',100,160]])`,
+        );
+        // rot 이 90 의 배수인 사각형의 **화면**(축정렬 외접) 사각형. 로컬 좌표만 보면
+        // 앵커 드리프트를 못 잡는다 — 로컬은 맞는데 화면에서 미끄러지는 것이 D-A 의 잔여 결함이었다.
+        const box = await cdp.eval(
+          `(()=>{const a=window.__gpv.imageEditor.getDoc().objects[0]; if(!a) return null;
+             const cx=a.x+a.w/2, cy=a.y+a.h/2;
+             const b = (((a.rot%180)+180)%180===0)
+               ? {x:a.x,y:a.y,w:a.w,h:a.h}
+               : {x:cx-a.h/2,y:cy-a.w/2,w:a.h,h:a.w};
+             return [Math.round(b.x),Math.round(b.y),Math.round(b.w),Math.round(b.h)];})()`,
+        );
+        r.check(
+          "(n-1) 회전 리사이즈: 잡은 변이 포인터(160)를 따라오고 반대 변(40)은 고정",
+          Array.isArray(box) &&
+            Math.abs(box[0] - 80) <= 2 &&
+            Math.abs(box[2] - 40) <= 2 &&
+            Math.abs(box[1] - 40) <= 2 &&
+            Math.abs(box[1] + box[3] - 160) <= 2,
+          `화면 x,y,w,h=${J(box)} — 기대 [80,40,40,120]`,
+        );
+      }
+    } else {
+      r.skip("(n) 회전 리사이즈", "편집기 재개 실패");
+    }
+
+    // ── (o) 마퀴 선택 (설계 D-B) ──────────────────────────────────────────
+    if (await openEditor(fix.projectId, SRC)) {
+      await setDoc({
+        objects: [
+          rectObj("o1", 20, 20, 30, 30, RED_HEX),
+          rectObj("o2", 70, 20, 30, 30, RED_HEX),
+          rectObj("o3", 150, 150, 30, 30, RED_HEX),
+        ],
+      });
+      await cdp.eval(`window.__gpv.imageEditor.setTool("select")`);
+      // 앞의 둘만 감싼다(세 번째는 멀리 있다).
+      await cdp.eval(
+        `window.__gpvAnno.pointerSeq([['down',10,10],['move',60,60],['up',110,60]])`,
+      );
+      const c1 = await cdp.eval(`window.__gpvAnno.selCount()`);
+      r.check("(o-1) 마퀴가 감싼 2개를 선택한다", c1 === 2, `selCount=${c1}`);
+
+      await cdp.eval(
+        `window.__gpvAnno.pointerSeq([['down',140,140],['move',160,160],['up',190,190]], {shift:true})`,
+      );
+      const c2 = await cdp.eval(`window.__gpvAnno.selCount()`);
+      r.check("(o-2) Shift 마퀴는 기존 선택에 누적된다", c2 === 3, `selCount=${c2}`);
+
+      await cdp.eval(`window.__gpvAnno.clickCanvas([[190,10]])`);
+      const c3 = await cdp.eval(`window.__gpvAnno.selCount()`);
+      r.check("(o-3) 빈 곳 클릭은 종전대로 선택 해제", c3 === 0, `selCount=${c3}`);
+
+      // 마퀴를 **연 채로** 저장한다(up 없음) — 그래야 화면에 사각형이 떠 있는 상태의
+      // 저장본을 본다. up 뒤에 저장하면 마퀴가 이미 사라져 아무것도 검증하지 못한다.
+      await cdp.eval(
+        `window.__gpvAnno.pointerSeq([['down',10,10],['move',60,60],['move',110,60]])`,
+      );
+      const savedO = await saveAs("e2e-anno-marquee.png", "e2e-anno-marquee.png");
+      created.push("e2e-anno-marquee.png");
+      if (r.check("(o) 마퀴 상태 저장", savedO.ok, savedO.ok ? "" : savedO.why)) {
+        // (55,10) 은 두 사각형 사이 빈 곳이자 마퀴 테두리가 지나던 자리다.
+        const fO = await cdp.eval(
+          `window.__gpvAnno.readSaved(${J(fix.projectId)}, "e2e-anno-marquee.png", [[55,10],[10,10]])`,
+        );
+        r.check(
+          "(o-4) 저장본에 마퀴 사각형이 없다(화면 크롬은 renderScene 에 없다)",
+          !!fO && isWhite(fO.px[0]) && isWhite(fO.px[1]),
+          fO ? `${show(fO.px[0])} ${show(fO.px[1])}` : "-",
+        );
+      }
+    } else {
+      r.skip("(o) 마퀴 선택", "편집기 재개 실패");
+    }
+
+    // ── (p) 손 피드백: 핸들 커서 · 방향키 nudge · HUD (설계 D-C·D-D·K3) ────
+    if (await openEditor(fix.projectId, SRC)) {
+      await setDoc({ objects: [rectObj("p1", 60, 60, 80, 40, RED_HEX)] });
+      await cdp.eval(`window.__gpv.imageEditor.setTool("select")`);
+      await cdp.eval(`window.__gpvAnno.clickCanvas([[100,80]])`);
+
+      // (p-1) SE 핸들(140,100) 위에서 커서가 바뀐다. 벗어나면 되돌아온다.
+      await cdp.eval(`window.__gpvAnno.hover(140,100)`);
+      const curOn = await cdp.eval(`window.__gpvAnno.cursor()`);
+      await cdp.eval(`window.__gpvAnno.hover(20,190)`);
+      const curOff = await cdp.eval(`window.__gpvAnno.cursor()`);
+      r.check(
+        "(p-1) SE 핸들 호버 → nwse-resize, 벗어나면 해제",
+        curOn === "nwse-resize" && curOff === "",
+        `on=${J(curOn)} off=${J(curOff)}`,
+      );
+
+      // (p-2) 방향키 1px × 3 → +3.
+      for (let i = 0; i < 3; i++) {
+        await cdp.eval(`window.__gpvAnno.key("ArrowRight")`);
+      }
+      const x1 = await cdp.eval(
+        `Math.round(window.__gpv.imageEditor.getDoc().objects[0].x)`,
+      );
+      r.check("(p-2) ArrowRight ×3 → x +3", x1 === 63, `x=${x1} (기대 63)`);
+
+      // (p-2b) 키 한 번 = 히스토리 한 칸 — undo 3회로 원위치.
+      for (let i = 0; i < 3; i++) {
+        await cdp.eval(`window.__gpvAnno.click(/실행 취소/)`);
+      }
+      const xu = await cdp.eval(
+        `Math.round(window.__gpv.imageEditor.getDoc().objects[0].x)`,
+      );
+      r.check("(p-2b) undo 3회로 원위치(키 1회 = 히스토리 1칸)", xu === 60, `x=${xu} (기대 60)`);
+      // undo 는 선택을 비운다(ImageEditor.undo). 방향키는 선택이 있어야 도므로 다시 집는다.
+      await cdp.eval(`window.__gpvAnno.clickCanvas([[100,80]])`);
+
+      // (p-3) Shift+방향키 = 10px.
+      await cdp.eval(`window.__gpvAnno.key("ArrowRight", {shift:true})`);
+      const x2 = await cdp.eval(
+        `Math.round(window.__gpv.imageEditor.getDoc().objects[0].x)`,
+      );
+      r.check("(p-3) Shift+ArrowRight → +10", x2 === 70, `x=${x2} (기대 70)`);
+
+      // (p-3b) auto-repeat 는 무시한다 — HISTORY_LIMIT(50)을 초 단위로 소진하는 것을 막는다.
+      await cdp.eval(`window.__gpvAnno.key("ArrowRight", {repeat:true})`);
+      const x2b = await cdp.eval(
+        `Math.round(window.__gpv.imageEditor.getDoc().objects[0].x)`,
+      );
+      r.check("(p-3b) auto-repeat 방향키는 무시된다", x2b === 70, `x=${x2b} (기대 70)`);
+
+      // (p-4) 우측 패널 입력에 포커스가 있으면 방향키를 잡지 않는다(슬라이더 회귀).
+      const focused = await cdp.eval(
+        `(()=>{const m=window.__gpvAnno.modal(); const i=m&&m.querySelector('input');
+           if(!i) return false; i.focus(); return document.activeElement===i;})()`,
+      );
+      await cdp.eval(`window.__gpvAnno.key("ArrowRight")`);
+      const x3 = await cdp.eval(
+        `Math.round(window.__gpv.imageEditor.getDoc().objects[0].x)`,
+      );
+      await cdp.eval(`document.activeElement && document.activeElement.blur()`);
+      r.check(
+        "(p-4) 입력 포커스 중 방향키는 객체를 안 옮긴다",
+        focused === true && x3 === 70,
+        `focused=${focused} x=${x3} (기대 70)`,
+      );
+
+      // (p-5) HUD 는 화면 크롬 — 저장본에 남지 않는다. 여기서도 드래그를 **연 채로** 저장해
+      // HUD 가 실제로 떠 있는 상태를 본다. 사각형 우하단 바깥이 HUD 자리다.
+      await cdp.eval(`window.__gpv.imageEditor.setTool("rect")`);
+      await cdp.eval(
+        `window.__gpvAnno.pointerSeq([['down',30,120],['move',60,150],['move',90,170]])`,
+      );
+      const savedP = await saveAs("e2e-anno-hud.png", "e2e-anno-hud.png");
+      created.push("e2e-anno-hud.png");
+      if (r.check("(p) 손 피드백 상태 저장", savedP.ok, savedP.ok ? "" : savedP.why)) {
+        // 드래프트 사각형은 (30,120)-(90,170) 이라 HUD 는 그 우하단 (96,176) 부근에 뜬다.
+        const fP = await cdp.eval(
+          `window.__gpvAnno.readSaved(${J(fix.projectId)}, "e2e-anno-hud.png", [[100,180],[120,185]])`,
+        );
+        r.check(
+          "(p-5) 저장본에 HUD 라벨이 없다(드래그 중 상태로 저장)",
+          !!fP && isWhite(fP.px[0]) && isWhite(fP.px[1]),
+          fP ? `${show(fP.px[0])} ${show(fP.px[1])}` : "-",
+        );
+      }
+    } else {
+      r.skip("(p) 손 피드백", "편집기 재개 실패");
+    }
+
+    // ── (q) 세션 내 복구 배너 (설계 K6·K7) ────────────────────────────────
+    if (await openEditor(fix.projectId, SRC)) {
+      await setDoc({
+        objects: [rectObj("q1", 30, 30, 50, 50, RED_HEX)],
+        rotation: 90,
+      });
+      // Esc → "편집기 닫기" 확인 → 확인. (주석이 있으므로 확인창이 뜬다)
+      await cdp.eval(`window.__gpvAnno.esc()`);
+      await sleep(150);
+      const confirmed = await cdp.eval(
+        `(()=>{const st=window.__gpv.ui.getState(); const c=st.confirm; if(!c) return false;
+           st.closeConfirm(); c.onConfirm(); return true;})()`,
+      );
+      await sleep(250);
+
+      if (r.check("(q-0) Esc → 닫기 확인 후 편집기 닫힘", confirmed === true)) {
+        // (q-1) 다시 열면 **문서는 비어 있고** 배너만 뜬다. 자동 복원은 openEditor 의
+        //       fresh() 계약(objects.length===0)을 깨뜨린다 — 이 스위트가 거기 매달려 있다.
+        const reopened = await openEditor(fix.projectId, SRC);
+        const banner = await cdp.eval(`window.__gpvAnno.banner()`);
+        r.check(
+          "(q-1) 재오픈: 문서는 비고 배너만 뜬다(자동 복원 아님)",
+          reopened === true && banner === true,
+          `fresh=${reopened} banner=${banner}`,
+        );
+
+        // (q-2)(q-3) [이어서 하기] → objects·rotation 이 닫기 직전과 일치.
+        const restored = await cdp.eval(
+          `(()=>{const m=window.__gpvAnno.modal(); if(!m) return false;
+             const b=Array.from(m.querySelectorAll('button')).find(x=>/이어서 하기/.test(x.textContent||''));
+             if(!b) return false; b.click(); return true;})()`,
+        );
+        await sleep(200);
+        const d = await getDoc();
+        r.check(
+          "(q-2) 이어서 하기 → objects 복원",
+          restored === true &&
+            d.objects.length === 1 &&
+            Math.round(d.objects[0].x) === 30 &&
+            Math.round(d.objects[0].w) === 50,
+          `objects=${J(d.objects.map((o) => [Math.round(o.x), Math.round(o.w)]))}`,
+        );
+        r.check(
+          "(q-3) 회전도 그대로 복원(델타 이중 적용 없음)",
+          d.rotation === 90,
+          `rotation=${d.rotation} (기대 90)`,
+        );
+        r.check(
+          "(q-3b) 복원 후 배너가 사라진다",
+          (await cdp.eval(`window.__gpvAnno.banner()`)) === false,
+        );
+
+        // (q-4) 저장 성공 시 stash 삭제(설계 R8) — **배너를 무시한 채** 제자리 저장해야
+        // 그 계약이 발동한다. [이어서 하기]는 이미 stash 를 지우므로 그 뒤에 저장하면
+        // 아무것도 검증하지 못한다. 그리고 다른 이름 저장은 원본을 안 건드려 지우지 않는다.
+        await cdp.eval(`window.__gpvAnno.esc()`);
+        await sleep(150);
+        await cdp.eval(
+          `(()=>{const st=window.__gpv.ui.getState(); const c=st.confirm;
+             if(c){st.closeConfirm(); c.onConfirm();} return true;})()`,
+        );
+        await sleep(250);
+        const reopen2 = await openEditor(fix.projectId, SRC);
+        const banner2 = await cdp.eval(`window.__gpvAnno.banner()`);
+        r.check(
+          "(q-4a) 다시 닫으면 다시 stash 된다(배너 재등장)",
+          reopen2 === true && banner2 === true,
+          `fresh=${reopen2} banner=${banner2}`,
+        );
+
+        // 배너를 무시하고 새로 그린 뒤 **원본에 제자리 저장**한다.
+        // 주의: 이 블록이 픽스처 SRC 를 덮어쓴다 — (q) 뒤에 SRC 를 쓰는 케이스를 두지 마라.
+        await setDoc({ objects: [rectObj("q2", 10, 10, 20, 20, RED_HEX)] });
+        const inPlace = await cdp.eval(
+          `(()=>{ if(!window.__gpvAnno.click(/^\\s*저장/)) return 'button'; return 'ok'; })()`,
+        );
+        await sleep(150);
+        await cdp.eval(
+          `(()=>{const st=window.__gpv.ui.getState(); const c=st.confirm;
+             if(c){st.closeConfirm(); c.onConfirm();} return true;})()`,
+        );
+        const closedQ = await poll(
+          () => cdp.eval(`window.__gpv.ui.getState().imageEditorPath`),
+          (v) => v === null,
+        );
+        if (
+          r.check(
+            "(q-4b) 원본에 제자리 저장",
+            inPlace === "ok" && closedQ === null,
+            `click=${inPlace} closed=${closedQ}`,
+          ) &&
+          (await openEditor(fix.projectId, SRC))
+        ) {
+          r.check(
+            "(q-4c) 제자리 저장 후에는 배너가 없다(이중 주석 방지)",
+            (await cdp.eval(`window.__gpvAnno.banner()`)) === false,
+          );
+        } else {
+          r.skip("(q-4c) 저장 후 배너 없음", "저장 또는 재오픈 실패");
+        }
+      }
+    } else {
+      r.skip("(q) 복구 배너", "편집기 재개 실패");
     }
   } finally {
     // 정리 — 편집기·다이얼로그를 닫고 이 스위트가 만든 파일/중첩 레포를 전부 지운다.

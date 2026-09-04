@@ -26,17 +26,26 @@ import {
   hitTestIndex,
   layoutText,
   normalizeRect,
+  normalizeDeg,
   objectAABB,
+  objectAnchor,
+  objectBBox,
+  rotatePoint,
   snapAngle,
   translateObject,
 } from "../../lib/annotate/geometry";
-import { renderScene, type PreviewBackdrop } from "../../lib/annotate/render";
+import {
+  releaseScratch,
+  renderScene,
+  type PreviewBackdrop,
+} from "../../lib/annotate/render";
 import {
   DUPLICATE_OFFSET,
   HIGHLIGHT_OPACITY,
   HIGHLIGHT_WIDTH_SCALE,
   SHIFT_SNAP_DEG,
   TEXT_LINE_HEIGHT,
+  DEFAULT_FONT_FAMILY,
   newObjId,
   type AnnoObject,
   type ObjId,
@@ -56,6 +65,24 @@ const HANDLE_GRAB_CSS = 10;
 const MIN_DRAG = 3;
 
 const SELECT_COLOR = "#4fa3ff";
+
+/**
+ * 핸들 인덱스(0 nw … 7 w)별 커서.
+ *
+ * ponytail: 회전된 객체에서는 핸들 인덱스의 **기본 방향**을 쓰므로 최대 45° 어긋난다.
+ *           정확히 맞추려면 rot 을 45° 단위로 양자화해 인덱스를 돌리면 된다(3줄). 지금은
+ *           회전 객체 자체가 "이미지를 90° 돌린 뒤의 텍스트·뱃지"뿐이라 요구가 없다.
+ */
+const HANDLE_CURSORS = [
+  "nwse-resize",
+  "ns-resize",
+  "nesw-resize",
+  "ew-resize",
+  "nwse-resize",
+  "ns-resize",
+  "nesw-resize",
+  "ew-resize",
+];
 
 /** 도구 단축키(§5.2) — 모달 안에서만, 텍스트 입력 중이 아닐 때만 활성. */
 const TOOL_KEYS: Record<string, Tool> = {
@@ -92,6 +119,11 @@ interface Point {
 type DragState =
   | { mode: "crop" }
   | { mode: "draw"; start: Point }
+  /**
+   * 빈 곳에서 시작한 선택 사각형. `keep` 은 Shift 누적의 기준이 되는 **드래그 시작 시점의**
+   * 선택이다 — 비-Shift 는 pointerdown 에 이미 비우므로 up 에서 스토어를 되읽으면 늦다.
+   */
+  | { mode: "marquee"; start: Point; cur: Point; keep: readonly ObjId[] }
   | { mode: "move"; start: Point; base: AnnoObject[] }
   | {
       mode: "resize";
@@ -117,8 +149,17 @@ export interface AnnotationLayerProps {
   backH: number;
   /** oriented → backing px 배율. */
   scale: number;
-  /** oriented → css px 배율. */
+  /**
+   * oriented → **화면** css px 배율(맞춤 배율 × 줌). 히트 허용오차·핸들 집기 반경·핸들
+   * 그리기 크기가 전부 이 값을 화면 실배율로 믿는다 — 그래서 줌이 여기 곱해져 들어온다.
+   */
   displayScale: number;
+  /**
+   * 부모가 CSS transform 으로 건 줌 배율(기본 1). `displayScale` 에 이미 곱해져 있으므로,
+   * **변환 안쪽 DOM**(텍스트 편집 textarea)만 이 값으로 되나눠 레이아웃 px 를 되찾는다 —
+   * 그 요소는 조상 transform 에 함께 스케일되므로 줌을 두 번 먹으면 안 된다.
+   */
+  zoom?: number;
   /** 이미지에만 걸리는 색보정 필터 — 모자이크 샘플이 출력과 같은 픽셀을 보도록 여기서도 쓴다. */
   filterStr: string;
   objects: readonly AnnoObject[];
@@ -249,6 +290,8 @@ function AnnotationLayerImpl(
     }
 
     drawSelection(ctx, s, liveRef.current);
+    drawMarquee(ctx, s, dragRef.current);
+    drawHud(ctx, s, dragRef.current, draftRef.current, liveRef.current);
     drawCropOverlay(ctx, s, cropPreviewRef.current);
   }, [ensureCache]);
 
@@ -370,8 +413,9 @@ function AnnotationLayerImpl(
           ? s.objects.find((o) => o.id === s.selectedIds[0])
           : undefined;
       if (only) {
-        const bbox = objectAABB(only);
-        const h = hitHandle(bbox, pt, HANDLE_GRAB_CSS / s.displayScale);
+        // 리사이즈 수학이 쓰는 bbox 는 **로컬**이다(회전 외접 사각형이 아니다).
+        const bbox = objectBBox(only);
+        const h = hitHandle(only, pt, HANDLE_GRAB_CSS / s.displayScale);
         if (h >= 0) {
           dragRef.current = { mode: "resize", start: pt, handle: h, base: only, bbox };
           liveRef.current = [only];
@@ -381,8 +425,13 @@ function AnnotationLayerImpl(
       }
       const idx = hitTestIndex(s.objects, pt.x, pt.y, s.displayScale);
       if (idx < 0) {
+        // 빈 곳 = 마퀴 시작. 종전에는 여기서 dragRef 를 비워 드래그가 통째로 no-op 이었다 —
+        // 모든 그래픽 도구가 이 자리에서 고무줄을 그리므로 "이건 그리기 도구가 아니다"라는
+        // 가장 큰 신호였다. 클릭(3px 미만)의 선택 해제는 종전 그대로 여기서 한다.
+        const keep = e.shiftKey ? s.selectedIds : [];
         if (!e.shiftKey && s.selectedIds.length) s.onSelectionChange([]);
-        dragRef.current = null;
+        dragRef.current = { mode: "marquee", start: pt, cur: pt, keep };
+        schedule();
         return;
       }
       const id = s.objects[idx].id;
@@ -448,14 +497,50 @@ function AnnotationLayerImpl(
     schedule();
   };
 
-  const onPointerMove = (e: React.PointerEvent) => {
-    const d = dragRef.current;
-    if (!d) return;
+  /**
+   * 드래그가 없을 때의 호버 커서. **React state 를 쓰지 않는다** — 매 mousemove 리렌더는
+   * useLayoutEffect 의존성을 매번 돌려 schedule 을 폭주시킨다.
+   *
+   * hitTestIndex 는 부르지 않는다(설계 K4): 그 안에서 객체마다 Path2D 를 새로 만들기 때문에
+   * 최고 핫패스에 얹으면 펜 200개 문서에서 프레임당 200개가 생긴다. 핸들 8점 비교는 공짜다.
+   */
+  const updateHoverCursor = (e: React.PointerEvent) => {
+    const c = canvasRef.current;
+    if (!c) return;
     const s = p.current;
-    const pt = toOriented(e);
+    let cur = "";
+    if (!s.cropMode && s.tool === "select" && s.selectedIds.length === 1) {
+      const only = s.objects.find((o) => o.id === s.selectedIds[0]);
+      if (only) {
+        const h = hitHandle(only, toOriented(e), HANDLE_GRAB_CSS / s.displayScale);
+        // 핸들 인덱스는 **로컬**(회전 이전) 방향이라 그대로 쓰면 회전 객체에서 어긋난다.
+        // 8방향이 45° 간격이므로 회전각을 45° 단위로 반올림해 인덱스를 돌린다.
+        if (h >= 0) {
+          const turn = Math.round(normalizeDeg(only.rot) / 45);
+          cur = HANDLE_CURSORS[(h + turn) % 8];
+        }
+      }
+    }
+    // className 의 Tailwind 커서로 되돌리려면 **빈 문자열**이어야 한다.
+    if (c.style.cursor !== cur) c.style.cursor = cur;
+  };
 
+  /**
+   * 드래그 상태를 포인터 위치로 갱신한다.
+   *
+   * **move 와 up 이 같은 함수를 쓴다.** 종전에는 up 이 이 갱신을 하지 않고 마지막
+   * pointermove 가 남긴 값을 그대로 커밋해, 그 사이의 이동이 통째로 사라졌다 — 실제 마우스는
+   * up 직전에 move 를 내보내 서브프레임 손실로 끝나지만, 펜/터치의 리프트나 합성 이벤트에서는
+   * 드래그 구간 전체가 유실된다.
+   */
+  const applyDragAt = (d: DragState, pt: Point, shift: boolean) => {
+    const s = p.current;
     if (d.mode === "crop") {
       s.onCropMove(pt);
+      return;
+    }
+    if (d.mode === "marquee") {
+      d.cur = pt;
       return;
     }
     if (d.mode === "draw") {
@@ -464,20 +549,26 @@ function AnnotationLayerImpl(
         // 드래프트는 커밋 전이므로 제자리 변경한다 — 이벤트마다 복제하면 O(n²).
         appendPenPoint(cur.pts, pt.x, pt.y);
       } else {
-        draftRef.current = makeDraft(s, d.start, pt, e.shiftKey);
+        draftRef.current = makeDraft(s, d.start, pt, shift);
       }
-      schedule();
       return;
     }
     if (d.mode === "move") {
       const dx = pt.x - d.start.x;
       const dy = pt.y - d.start.y;
       liveRef.current = d.base.map((o) => translateObject(o, dx, dy));
-      schedule();
       return;
     }
-    // resize
-    liveRef.current = [resizeObject(d.base, d.bbox, d.handle, pt, e.shiftKey)];
+    liveRef.current = [resizeObject(d.base, d.bbox, d.handle, pt, shift)];
+  };
+
+  const onPointerMove = (e: React.PointerEvent) => {
+    const d = dragRef.current;
+    if (!d) {
+      updateHoverCursor(e);
+      return;
+    }
+    applyDragAt(d, toOriented(e), e.shiftKey);
     schedule();
   };
 
@@ -489,9 +580,24 @@ function AnnotationLayerImpl(
     if (e.currentTarget.hasPointerCapture(e.pointerId)) {
       e.currentTarget.releasePointerCapture(e.pointerId);
     }
+    // 릴리스 좌표를 마지막으로 한 번 더 반영한다. pointercancel 은 제외한다 —
+    // OS 가 제스처를 물린 것이라 그 좌표에는 의미가 없다.
+    if (e.type === "pointerup") applyDragAt(d, toOriented(e), e.shiftKey);
 
     if (d.mode === "crop") {
       s.onCropUp();
+      return;
+    }
+    if (d.mode === "marquee") {
+      const r = marqueeRect(d);
+      // 3px 미만은 클릭 오조작 — 선택 해제는 이미 pointerdown 에서 했다(종전 동작 보존).
+      if (r.w >= MIN_DRAG || r.h >= MIN_DRAG) {
+        const ids = new Set(d.keep);
+        // "닿으면 선택"(Figma 규칙) — objectAABB 교차라 새 기하 코드가 0이다.
+        for (const o of s.objects) if (rectsOverlap(r, objectAABB(o))) ids.add(o.id);
+        s.onSelectionChange([...ids]);
+      }
+      schedule();
       return;
     }
     if (d.mode === "draw") {
@@ -523,6 +629,10 @@ function AnnotationLayerImpl(
     const o = s.objects[idx];
     if (o.kind === "text") beginEditing(o, false);
   };
+
+  // 편집기가 사라지면 모듈 스크래치를 놓아 준다 — 모듈 전역이라 창 수명 동안 마지막 크기
+  // 그대로 남아 있었다(창당 최대 ~15MB). doc-* 창은 별도 WebView2라 창마다 따로 쌓인다.
+  useEffect(() => releaseScratch, []);
 
   // ── 키보드(§5.6) ──────────────────────────────────────────────────────────
 
@@ -575,6 +685,28 @@ function AnnotationLayerImpl(
         if (!s.selectedIds.length) return;
         ev.preventDefault();
         s.onCommit(reorder(s.objects, s.selectedIds, ev.key === "]" ? 1 : -1));
+        return;
+      }
+      if (ev.key.startsWith("Arrow")) {
+        if (!s.selectedIds.length) return;
+        // auto-repeat 를 받으면 초당 ~30 커밋이라 HISTORY_LIMIT(50)이 1.7초에 소진돼
+        // **이전 히스토리가 통째로 날아간다**. 탭 전용으로 둔다(설계 K5).
+        // ponytail: 누르고 있는 동안 이어서 움직이려면 라이브 커밋 경로를 뚫어야 한다(+20줄).
+        if (ev.repeat) {
+          ev.preventDefault();
+          return;
+        }
+        const step = ev.shiftKey ? 10 : 1;
+        const dx =
+          ev.key === "ArrowLeft" ? -step : ev.key === "ArrowRight" ? step : 0;
+        const dy =
+          ev.key === "ArrowUp" ? -step : ev.key === "ArrowDown" ? step : 0;
+        if (!dx && !dy) return;
+        ev.preventDefault();
+        const ids = new Set(s.selectedIds);
+        s.onCommit(
+          s.objects.map((o) => (ids.has(o.id) ? translateObject(o, dx, dy) : o)),
+        );
         return;
       }
       const t = TOOL_KEYS[key];
@@ -643,7 +775,8 @@ function AnnotationLayerImpl(
     ta.setSelectionRange(ta.value.length, ta.value.length);
   }, [editing]);
 
-  const ds = props.displayScale;
+  // textarea 는 transform 안쪽 형제라 레이아웃 px(줌 이전)를 써야 한다 — 줌을 되나눈다.
+  const ds = props.displayScale / Math.max(props.zoom ?? 1, 1e-6);
   const editBox = editing
     ? (() => {
         const m = layoutText({ ...editing.obj, text: editing.text || " " });
@@ -785,9 +918,12 @@ function drawSelection(
 ): void {
   if (!s.selectedIds.length) return;
   const byId = new Map((live ?? []).map((o) => [o.id, o]));
+  // 마퀴로 전체 선택이 가능해진 순간 includes 는 매 프레임 O(N·M) 이 된다 — Set 이 같은
+  // 커밋에 들어와야 하는 이유다(설계 K2).
+  const selSet = new Set(s.selectedIds);
   const sel: AnnoObject[] = [];
   for (const o of s.objects) {
-    if (s.selectedIds.includes(o.id)) sel.push(byId.get(o.id) ?? o);
+    if (selSet.has(o.id)) sel.push(byId.get(o.id) ?? o);
   }
   if (!sel.length) return;
   // 백킹 px / css px — 핸들이 배율과 무관하게 같은 크기로 보이게 한다.
@@ -802,11 +938,31 @@ function drawSelection(
     ctx.strokeRect(b.x * s.scale, b.y * s.scale, b.w * s.scale, b.h * s.scale);
   }
   ctx.setLineDash([]);
+  if (sel.length > 1) {
+    // 합집합 bbox 는 실선 한 겹. **핸들은 그리지 않는다** — 다중 선택 일괄 리사이즈는 넣지
+    // 않기로 했고(설계 §8), 핸들이 보이면 그게 된다고 약속하는 셈이다.
+    let x0 = Infinity;
+    let y0 = Infinity;
+    let x1 = -Infinity;
+    let y1 = -Infinity;
+    for (const o of sel) {
+      const b = objectAABB(o);
+      x0 = Math.min(x0, b.x);
+      y0 = Math.min(y0, b.y);
+      x1 = Math.max(x1, b.x + b.w);
+      y1 = Math.max(y1, b.y + b.h);
+    }
+    ctx.strokeRect(
+      x0 * s.scale,
+      y0 * s.scale,
+      (x1 - x0) * s.scale,
+      (y1 - y0) * s.scale,
+    );
+  }
   if (sel.length === 1) {
-    const b = objectAABB(sel[0]);
     const size = HANDLE_CSS * k;
     ctx.fillStyle = "#ffffff";
-    for (const h of handlePoints(b)) {
+    for (const h of handlePointsOf(sel[0])) {
       const cx = h.x * s.scale;
       const cy = h.y * s.scale;
       ctx.fillRect(cx - size / 2, cy - size / 2, size, size);
@@ -843,25 +999,150 @@ function drawCropOverlay(
   ctx.restore();
 }
 
-/** 8핸들 위치(0 nw, 1 n, 2 ne, 3 e, 4 se, 5 s, 6 sw, 7 w). */
-function handlePoints(b: Rect): Point[] {
+/**
+ * 드래그 중 수치 — 스냅·가이드 대신 넣은 것이다(설계 K3). 마크업의 정렬 대상은 다른 주석이
+ * 아니라 아래 이미지의 UI 요소라 스냅은 "원하는 곳에 못 놓는" 저항이 되지만, 수치는
+ * "내가 지금 무엇을 만들고 있는가"를 그냥 알려 준다.
+ *
+ * **화면 크롬이라 renderScene 을 지나지 않는다** — 저장 파일에 샐 경로가 없다.
+ */
+function drawHud(
+  ctx: CanvasRenderingContext2D,
+  s: AnnotationLayerProps,
+  d: DragState | null,
+  draft: AnnoObject | null,
+  live: readonly AnnoObject[] | null,
+): void {
+  if (!d) return;
+  let text = "";
+  let box: Rect | null = null;
+
+  if (d.mode === "marquee") {
+    const r = marqueeRect(d);
+    if (r.w < MIN_DRAG && r.h < MIN_DRAG) return;
+    text = `${Math.round(r.w)} × ${Math.round(r.h)}`;
+    box = r;
+  } else if (d.mode === "draw" && draft) {
+    // 자유곡선은 폭·높이가 의미를 못 준다 — 아무것도 안 띄운다.
+    if (draft.kind === "pen" || draft.kind === "highlight") return;
+    box = objectAABB(draft);
+    if (draft.kind === "line" || draft.kind === "arrow") {
+      const dx = draft.x2 - draft.x1;
+      const dy = draft.y2 - draft.y1;
+      text = `${Math.round(Math.hypot(dx, dy))} px  ∠${Math.round(
+        (Math.atan2(dy, dx) * 180) / Math.PI,
+      )}°`;
+    } else {
+      text = `${Math.round(box.w)} × ${Math.round(box.h)}`;
+    }
+  } else if (d.mode === "resize" && live && live[0]) {
+    box = objectAABB(live[0]);
+    text = `${Math.round(box.w)} × ${Math.round(box.h)}`;
+  } else if (d.mode === "move" && live && live[0]) {
+    // 델타는 로컬 bbox 차이로 구한다 — 상태에 cur 를 더 들고 다닐 필요가 없다.
+    const from = objectBBox(d.base[0]);
+    const to = objectBBox(live[0]);
+    const dx = Math.round(to.x - from.x);
+    const dy = Math.round(to.y - from.y);
+    // 단순 클릭 선택(pointerdown 이 move 드래그를 세운 직후)에서 "+0 +0" 이 깜빡이는 것을 막는다.
+    if (Math.abs(dx) < MIN_DRAG && Math.abs(dy) < MIN_DRAG) return;
+    text = `${dx >= 0 ? "+" : ""}${dx}  ${dy >= 0 ? "+" : ""}${dy}`;
+    box = objectAABB(live[0]);
+  }
+  if (!text || !box) return;
+
+  const k = s.scale / Math.max(s.displayScale, 1e-6); // 백킹 px / css px
+  const fs = 11 * k;
+  const padX = 5 * k;
+  const padY = 3 * k;
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.font = `${fs}px ${DEFAULT_FONT_FAMILY}`;
+  ctx.textBaseline = "top";
+  const w = ctx.measureText(text).width + padX * 2;
+  const h = fs * 1.35 + padY * 2;
+  let x = (box.x + box.w) * s.scale + 6 * k;
+  let y = (box.y + box.h) * s.scale + 6 * k;
+  // 캔버스 밖으로 나가면 안쪽으로 접는다(확대 상태에서도 항상 보이게).
+  if (x + w > ctx.canvas.width) x = ctx.canvas.width - w;
+  if (y + h > ctx.canvas.height) y = box.y * s.scale - h - 6 * k;
+  x = Math.max(0, x);
+  y = Math.max(0, y);
+  ctx.fillStyle = "rgba(20,20,24,0.85)";
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillText(text, x + padX, y + padY);
+  ctx.restore();
+}
+
+/** 마퀴 드래그의 정규화 사각형(oriented px). */
+function marqueeRect(d: { start: Point; cur: Point }): Rect {
+  return {
+    x: Math.min(d.start.x, d.cur.x),
+    y: Math.min(d.start.y, d.cur.y),
+    w: Math.abs(d.cur.x - d.start.x),
+    h: Math.abs(d.cur.y - d.start.y),
+  };
+}
+
+/** 두 축정렬 사각형이 겹치는가(경계 접촉 포함). */
+function rectsOverlap(a: Rect, b: Rect): boolean {
+  return (
+    a.x <= b.x + b.w && b.x <= a.x + a.w && a.y <= b.y + b.h && b.y <= a.y + a.h
+  );
+}
+
+/** 선택 사각형 — 화면 크롬이라 renderScene 에 없다(저장 파일에 샐 수 없다). */
+function drawMarquee(
+  ctx: CanvasRenderingContext2D,
+  s: AnnotationLayerProps,
+  d: DragState | null,
+): void {
+  if (!d || d.mode !== "marquee") return;
+  const r = marqueeRect(d);
+  if (r.w < MIN_DRAG && r.h < MIN_DRAG) return;
+  const k = s.scale / Math.max(s.displayScale, 1e-6);
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = "rgba(79,163,255,0.12)";
+  ctx.fillRect(r.x * s.scale, r.y * s.scale, r.w * s.scale, r.h * s.scale);
+  ctx.strokeStyle = SELECT_COLOR;
+  ctx.lineWidth = Math.max(1, k);
+  ctx.setLineDash([4 * k, 3 * k]);
+  ctx.strokeRect(r.x * s.scale, r.y * s.scale, r.w * s.scale, r.h * s.scale);
+  ctx.restore();
+}
+
+/**
+ * 8핸들 위치(0 nw, 1 n, 2 ne, 3 e, 4 se, 5 s, 6 sw, 7 w) — **회전 외접 사각형이 아니라
+ * 로컬 bbox 위**에 두고 rot 만큼 돌린다.
+ *
+ * 종전에는 `objectAABB`(회전 외접 사각형)의 모서리를 썼다. rot≠0 이면 그 사각형은 객체보다
+ * 크고 축정렬이라, 거기서 뽑은 배율을 회전 이전 좌표에 먹이면 앵커가 포인터로 순간이동했다.
+ * 회전된 로컬 모서리는 실제 도형의 모서리라 눈에 보이는 것과 집는 것이 같아진다.
+ */
+function handlePointsOf(o: AnnoObject): Point[] {
+  const b = objectBBox(o);
+  const a = objectAnchor(o);
   const mx = b.x + b.w / 2;
   const my = b.y + b.h / 2;
-  return [
-    { x: b.x, y: b.y },
-    { x: mx, y: b.y },
-    { x: b.x + b.w, y: b.y },
-    { x: b.x + b.w, y: my },
-    { x: b.x + b.w, y: b.y + b.h },
-    { x: mx, y: b.y + b.h },
-    { x: b.x, y: b.y + b.h },
-    { x: b.x, y: my },
-  ];
+  return (
+    [
+      [b.x, b.y],
+      [mx, b.y],
+      [b.x + b.w, b.y],
+      [b.x + b.w, my],
+      [b.x + b.w, b.y + b.h],
+      [mx, b.y + b.h],
+      [b.x, b.y + b.h],
+      [b.x, my],
+    ] as const
+  ).map(([x, y]) => rotatePoint(x, y, o.rot, a));
 }
 
 /** 점이 어느 핸들 위인가(oriented px 허용오차). 없으면 -1. */
-function hitHandle(b: Rect, pt: Point, tol: number): number {
-  const hs = handlePoints(b);
+function hitHandle(o: AnnoObject, pt: Point, tol: number): number {
+  const hs = handlePointsOf(o);
   for (let i = 0; i < hs.length; i++) {
     if (Math.abs(hs[i].x - pt.x) <= tol && Math.abs(hs[i].y - pt.y) <= tol) {
       return i;
@@ -1003,9 +1284,18 @@ function resizeObject(
   base: AnnoObject,
   b: Rect,
   handle: number,
-  pt: Point,
+  ptScreen: Point,
   shift: boolean,
 ): AnnoObject {
+  // 객체 좌표는 전부 **로컬(회전 이전)** 이다 — 회전은 렌더 시점에만 걸린다
+  // (geometry.applyObjectTransform). 그러니 배율도 그 프레임에서 구해야 한다.
+  // rot=0 이면 rotatePoint 가 항등이라 종전과 1비트도 다르지 않다.
+  const pt = rotatePoint(
+    ptScreen.x,
+    ptScreen.y,
+    -base.rot,
+    objectAnchor(base),
+  );
   const west = handle === 0 || handle === 6 || handle === 7;
   const east = handle === 2 || handle === 3 || handle === 4;
   const north = handle === 0 || handle === 1 || handle === 2;
@@ -1042,7 +1332,17 @@ function resizeObject(
   const MIN_F = 0.02;
   fx = Math.max(MIN_F, fx);
   fy = Math.max(MIN_F, fy);
-  return scaleObject(base, fx, fy, ox, oy);
+  const out = scaleObject(base, fx, fy, ox, oy);
+  if (normalizeDeg(base.rot) === 0) return out;
+  // 회전 피벗(objectAnchor)은 **기하에서 파생**된다 — 스케일이 그 점을 움직이면 회전 사상
+  // 자체가 바뀌어, 로컬 좌표가 맞아도 화면에서는 잡지 않은 변까지 미끄러진다.
+  // 앵커 이동분 d 를 회전시킨 만큼(=(R−I)d) 되밀어 화면 고정점을 지킨다.
+  const a0 = objectAnchor(base);
+  const a1 = objectAnchor(out);
+  const dx = a1.x - a0.x;
+  const dy = a1.y - a0.y;
+  const r = rotatePoint(dx, dy, base.rot, { x: 0, y: 0 });
+  return translateObject(out, r.x - dx, r.y - dy);
 }
 
 /**

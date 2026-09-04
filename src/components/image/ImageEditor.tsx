@@ -5,6 +5,7 @@ import {
   Crop,
   FlipHorizontal,
   FlipVertical,
+  FileWarning,
   Loader2,
   RotateCcw,
   RotateCw,
@@ -46,7 +47,11 @@ import {
   supportsQuality,
   type ImgFormat,
 } from "../../lib/image-codec";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+
+import { IS_DOC_WINDOW } from "../../lib/floating";
 import { errorMessage, ipc, isIpcError } from "../../lib/ipc";
+import { IDENTITY_VIEW, WHEEL_STEP, zoomAt, type View } from "../../lib/zoom";
 import { useSaveImage } from "../../queries";
 import { useUi } from "../../stores/ui";
 import AnnotationLayer, {
@@ -59,8 +64,39 @@ import AnnotationToolbar from "./AnnotationToolbar";
 const MAX_PREVIEW = 1800;
 // 출력 캔버스 한 변 상한(Chromium 캔버스 한계 가드) — 초과 시 인코딩 전에 명확히 실패시킨다.
 const MAX_OUTPUT_DIM = 16384;
+// 입력 화소수 상한. 8K(33MP)는 통과시키고 초대형 스캔본을 막는 선 — 편집기 하나가 이미지
+// 한 장을 두고 디코드·oriented·프리뷰 3장·저장 캔버스를 동시에 들기 때문이다(설계 §6.3).
+const MAX_INPUT_PIXELS = 100_000_000;
 /** 최근 사용 색 기억 개수(세션 한정). */
 const RECENT_COLORS = 6;
+
+/**
+ * 닫힌 편집 세션의 문서 — **창 수명 동안만** 산다.
+ *
+ * ponytail: 프로세스 메모리라 앱을 껐다 켜면 사라진다. 그게 곧 무효화라 직렬화·스키마 버전·
+ *           마이그레이션·해시 키가 전부 필요 없다. 세션 **간** 복구가 필요해지면 그때
+ *           localStorage 로 올리되, 그 origin 은 `gp:file-draft:*`(복구 불가능한 미저장
+ *           파일 내용)와 5MB 를 나눠 쓰므로 총 바이트 상한을 함께 걸어야 한다(설계 §8).
+ */
+/**
+ * `stamp` 는 닫을 때 그 파일의 정체(`read_file_base64` 가 준 값)다. **반드시 함께 들고
+ * 있어야 한다** — crop·outW/outH 는 그때의 이미지 크기를 전제한 값이라, 그 사이 파일이
+ * 바뀐 뒤 복구하면 크롭이 새 이미지 밖으로 나가 **빈 이미지를 원본 자리에 저장**한다.
+ */
+const stash = new Map<string, { doc: EditorDoc; stamp: string | null }>();
+/** 상한 — 넘으면 가장 오래 안 쓴 키부터 버린다(Map 은 삽입 순서를 유지한다). */
+const STASH_MAX = 8;
+const stashKey = (pid: string, path: string) => `${pid}\u0000${path}`;
+
+function stashPut(key: string, doc: EditorDoc, stamp: string | null): void {
+  stash.delete(key); // 재삽입으로 최근 사용 순서를 갱신한다
+  stash.set(key, { doc, stamp });
+  while (stash.size > STASH_MAX) {
+    const oldest = stash.keys().next().value;
+    if (oldest === undefined) break;
+    stash.delete(oldest);
+  }
+}
 
 const EMPTY_DOC: EditorDoc = {
   objects: [],
@@ -154,6 +190,10 @@ export default function ImageEditor() {
 
   const [img, setImg] = useState<HTMLImageElement | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
+  /** 읽은 시점의 원본 파일 정체 — 제자리 저장에서만 되돌려 준다(§ 무성 덮어쓰기 방지). */
+  const stampRef = useRef<string | null>(null);
+  /** 직전 편집이 stash 에 남아 있는가. **문서는 건드리지 않는다** — 배너만 띄운다. */
+  const [recoverable, setRecoverable] = useState(false);
 
   // ── 편집 문서(히스토리 스냅샷 단위, §5.1) ──
   const [doc, setDoc] = useState<EditorDoc>(EMPTY_DOC);
@@ -178,8 +218,17 @@ export default function ImageEditor() {
   const [recent, setRecent] = useState<string[]>([]);
   const [selectedIds, setSelectedIds] = useState<ObjId[]>([]);
 
+  /**
+   * 화면 확대·이동. **CSS transform 으로만** 건다 — 프리뷰 백킹(previewScale/backW/backH)은
+   * 절대 따라 키우지 않는다. 백킹을 건드리면 주석 캐시 키가 배율을 물고 있어(AnnotationLayer)
+   * 휠 노치마다 전량 재렌더가 돌고, "oriented px == 백킹 px" 를 전제로 한 좌표가 전부 어긋난다.
+   */
+  const [view, setView] = useState<View>(IDENTITY_VIEW);
+
   const previewRef = useRef<HTMLCanvasElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
+  /** 변환이 걸리지 않은 레이아웃 앵커 — 줌 수식의 기준 프레임(rect 가 view 에 흔들리지 않는다). */
+  const boxRef = useRef<HTMLDivElement | null>(null);
   const layerRef = useRef<AnnotationLayerHandle | null>(null);
 
   // ── 문서 갱신 ──────────────────────────────────────────────────────────────
@@ -245,12 +294,29 @@ export default function ImageEditor() {
     setLoadErr(null);
     void (async () => {
       try {
-        const { mime, base64 } = await ipc.readFileBase64(projectId, path);
+        const { mime, base64, stamp } = await ipc.readFileBase64(projectId, path);
         const image = await loadImage(`data:${mime};base64,${base64}`);
         if (!image.naturalWidth || !image.naturalHeight) {
           throw new Error("이미지 크기를 확인할 수 없습니다 (지원되지 않는 형식일 수 있음)");
         }
+        // 입력 상한 — 없으면 캔버스 한계를 넘겨 **빈 화면**이 되거나 조용히 죽는다.
+        // 저장 방향에는 이미 상한이 둘 있는데(MAX_OUTPUT_DIM, Rust 의 64MB) 로드 방향만
+        // 비어 있었다. 8K(33MP)는 통과하고 초대형 스캔본을 막는 선이다.
+        const mp = image.naturalWidth * image.naturalHeight;
+        if (
+          image.naturalWidth > MAX_OUTPUT_DIM ||
+          image.naturalHeight > MAX_OUTPUT_DIM ||
+          mp > MAX_INPUT_PIXELS
+        ) {
+          throw new Error(
+            `이미지가 너무 큽니다 (${image.naturalWidth}×${image.naturalHeight}) — ` +
+              `한 변 ${MAX_OUTPUT_DIM}px · 총 ${Math.round(MAX_INPUT_PIXELS / 1e6)}백만 화소까지 편집할 수 있습니다`,
+          );
+        }
         if (alive) {
+          // 이 스탬프가 "내가 편집을 시작한 그 파일"의 정체다. 저장할 때 되돌려 주면
+          // 그 사이 남이 바꿨는지 Rust 가 판정한다(무성 덮어쓰기 방지).
+          stampRef.current = stamp ?? null;
           setImg(image);
           setFormat(formatOfPath(path) ?? "png");
         }
@@ -278,7 +344,19 @@ export default function ImageEditor() {
     setSelectedIds([]);
     setCropMode(false);
     setTool("select");
-  }, [img]);
+    // **자동 복원하지 않는다.** 안 그린 주석이 떠 있는 것이 사라지는 것만큼 헷갈리고,
+    // e2e 30 의 openEditor 가 "objects.length === 0" 을 기다리는 계약도 깨진다(설계 K7).
+    // 닫을 때와 **같은 파일**일 때만 제안한다. 다르면 항목을 버린다 — 낡은 crop 으로
+    // 복구하면 빈 이미지를 저장하게 되고, 그건 조용한 데이터 손실이다.
+    if (projectId && path) {
+      const key = stashKey(projectId, path);
+      const held = stash.get(key);
+      if (held && held.stamp !== stampRef.current) stash.delete(key);
+      setRecoverable(!!held && held.stamp === stampRef.current);
+    } else {
+      setRecoverable(false);
+    }
+  }, [img, projectId, path]);
 
   const { rotation, flipH, flipV, crop, outW, outH, brightness, contrast, saturate } =
     doc;
@@ -318,6 +396,54 @@ export default function ImageEditor() {
   const dispH = oriented ? Math.max(1, Math.round(oriented.height * fit)) : 0;
   const displayScale = oriented && fit > 0 ? dispW / oriented.width : 1;
   const showStage = !!oriented && fit > 0;
+  /** 화면에 실제로 보이는 배율(맞춤 × 줌) — 주석 레이어가 화면 상수를 계산하는 근거값이다. */
+  const screenScale = displayScale * view.scale;
+
+  // 방향(회전·반전)이 바뀌거나 새 이미지가 들어오면 맞춤으로 되돌린다. 옛 방향에서 쌓은 팬
+  // 오프셋은 그 순간 의미가 없어져 이미지가 화면 밖으로 튀어나간다.
+  useEffect(() => setView(IDENTITY_VIEW), [oriented]);
+
+  // 휠 = 줌. **non-passive 로 직접 등록해야 한다** — React 의 onWheel 은 passive 라
+  // preventDefault 가 무시되고 WebView2 가 페이지째 확대해 버린다(ImageView 와 같은 이유).
+  // ctrlKey 도 함께 받으므로 트랙패드 핀치가 배선 없이 붙는다.
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      const box = boxRef.current;
+      if (!box) return;
+      e.preventDefault();
+      const r = box.getBoundingClientRect(); // 앵커는 변환 밖이라 view 와 무관하게 안정적이다
+      const factor = Math.pow(WHEEL_STEP, -e.deltaY / 100);
+      setView((v) => zoomAt(v, e.clientX - r.left, e.clientY - r.top, factor));
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
+  // 팬은 **가운데 버튼 드래그**다. 좌버튼은 주석 레이어가 그리기·선택·이동·리사이즈·크롭에
+  // 전부 쓰고 있어(포인터 이벤트가 버블링된다) 좌드래그 팬을 얹으면 그리기가 오염된다.
+  const panFrom = useRef<{ x: number; y: number } | null>(null);
+  const onStagePointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 1) return;
+    e.preventDefault(); // 가운데 버튼 오토스크롤 차단
+    panFrom.current = { x: e.clientX, y: e.clientY };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const onStagePointerMove = (e: React.PointerEvent) => {
+    const from = panFrom.current;
+    if (!from) return;
+    const dx = e.clientX - from.x;
+    const dy = e.clientY - from.y;
+    panFrom.current = { x: e.clientX, y: e.clientY };
+    setView((v) => ({ ...v, x: v.x + dx, y: v.y + dy }));
+  };
+  const endPan = (e: React.PointerEvent) => {
+    if (!panFrom.current) return;
+    panFrom.current = null;
+    if (e.currentTarget.hasPointerCapture(e.pointerId))
+      e.currentTarget.releasePointerCapture(e.pointerId);
+  };
 
   // 베이스 캔버스는 방향·크기가 바뀔 때만 다시 그린다(색보정은 CSS 필터, 주석은 위 캔버스).
   useLayoutEffect(() => {
@@ -564,6 +690,25 @@ export default function ImageEditor() {
     return out;
   };
 
+  /**
+   * 복원은 **applyDoc 통째 교체**여야 한다. stash 의 objects 는 "그 rotation/flip 이 이미
+   * 적용된 공간"의 값이라, patchDoc({rotation}) 으로 넣으면 transformObjects 델타가 두 번
+   * 걸린다 — 바로 아래 rotateBy 주석에 한 번 당한 기록이 남아 있는 그 함정이다.
+   * applyDoc 은 transformObjects 를 아예 부르지 않으므로 구조적으로 안전하다.
+   */
+  const restoreStashed = () => {
+    if (!projectId || !path) return;
+    const key = stashKey(projectId, path);
+    const held = stash.get(key);
+    if (held) applyDoc(held.doc, "commit");
+    stash.delete(key);
+    setRecoverable(false);
+  };
+  const discardStashed = () => {
+    if (projectId && path) stash.delete(stashKey(projectId, path));
+    setRecoverable(false);
+  };
+
   const dir = path && path.includes("/") ? path.slice(0, path.lastIndexOf("/") + 1) : "";
   const baseNoExt = (() => {
     if (!path) return "image";
@@ -572,8 +717,16 @@ export default function ImageEditor() {
     return d > 0 ? b.slice(0, d) : b;
   })();
 
-  const writeTo = (relPath: string, overwrite: boolean) => {
+  /**
+   * @param ignoreStamp 외부 변경 확인창에서 "그래도 저장"을 누른 재시도. 스탬프를 빼야
+   *   같은 CONFLICT 가 무한 반복되지 않는다.
+   */
+  const writeTo = (relPath: string, overwrite: boolean, ignoreStamp = false) => {
     if (!oriented || !projectId) return;
+    // 스탬프는 **읽은 그 파일에 제자리로 쓸 때만** 의미가 있다. 다른 이름으로 저장은 대상이
+    // 다른 파일이라 이 스탬프와 아무 관계가 없다 — 붙이면 항상 충돌한다.
+    const stamp =
+      !ignoreStamp && relPath === path ? stampRef.current ?? undefined : undefined;
     setBusy(true);
     // renderOutput()은 동기지만 encodeCanvas는 avif에서 wasm을 동적 로드하므로 프라미스로 처리.
     void Promise.resolve()
@@ -581,9 +734,15 @@ export default function ImageEditor() {
       .then((bytes) => {
         const base64 = bytesToBase64(bytes);
         saveImage.mutate(
-          { relPath, base64, overwrite },
+          { relPath, base64, overwrite, expectedStamp: stamp },
           {
             onSuccess: () => {
+              // 열어 둔 **그 파일**에 구웠을 때만 복구 항목을 버린다 — 다시 열었을 때 같은
+              // objects 를 복원하면 주석이 두 겹이 되기 때문이다. 다른 이름으로 저장했다면
+              // 원본은 한 바이트도 안 바뀌었으므로 복구는 그대로 살려 둔다.
+              if (projectId && path && relPath === path) {
+                stash.delete(stashKey(projectId, path));
+              }
               pushToast("success", `저장됨 — ${relPath.split("/").pop()}`);
               close();
             },
@@ -596,7 +755,19 @@ export default function ImageEditor() {
                   detail: relPath,
                   confirmLabel: "덮어쓰기",
                   danger: true,
-                  onConfirm: () => writeTo(relPath, true),
+                  onConfirm: () => writeTo(relPath, true, ignoreStamp),
+                });
+              } else if (isIpcError(e) && e.code === "CONFLICT") {
+                // 편집을 시작한 뒤 남이 그 파일을 바꿨다. 종전에는 이 저장이 그 변경을
+                // **말없이** 날렸다. 재시도는 반드시 ignoreStamp 로 — 안 그러면 무한 반복.
+                askConfirm({
+                  title: "외부에서 변경됨",
+                  message:
+                    "편집을 시작한 뒤 이 파일이 다른 곳에서 바뀌었습니다. 저장하면 그 변경을 덮어씁니다.",
+                  detail: relPath,
+                  confirmLabel: "그래도 저장",
+                  danger: true,
+                  onConfirm: () => writeTo(relPath, overwrite, true),
                 });
               } else {
                 pushToast("error", errorMessage(e));
@@ -615,14 +786,22 @@ export default function ImageEditor() {
   // "저장": 원본 포맷 그대로면 연 파일을 덮어쓴다(의도된 in-place). 포맷을 바꿨으면 새 형제
   // 파일이 되므로 덮어쓰기는 충돌 확인을 거친다.
   // 주석이 있으면 평탄화가 **비가역**이므로(원본 픽셀도 벡터 문서도 사라진다) 확인을 받는다(§6.1).
+  //
+  // in-place 판정은 **포맷**으로 한다 — 확장자 문자열로 비교하면 안 된다. extOf 는 언제나
+  // 정규 확장자 하나만 돌려주므로(jpeg→jpg) `사진.jpeg`·`사진.PNG` 같은 원본은 대상이
+  // `사진.jpg`·`사진.png` 가 되어 자기 자신과 불일치한다 → overwrite=false 로 나가서
+  // 원본은 그대로 둔 채 형제 파일만 만들거나(.jpeg), 없는 충돌로 덮어쓰기 확인창을 띄운다
+  // (대소문자 무시 파일시스템). "덮어쓰기 예를 눌렀는데 원본이 안 바뀐다"의 원인이었다.
   const saveInPlace = () => {
-    const targetPath = `${dir}${baseNoExt}.${extOf(format)}`;
-    const go = () => writeTo(targetPath, targetPath === path);
+    const inPlace = path !== null && formatOfPath(path) === format;
+    const targetPath = inPlace ? path : `${dir}${baseNoExt}.${extOf(format)}`;
+    const go = () => writeTo(targetPath, inPlace);
     if (doc.objects.length) {
       askConfirm({
         title: "주석을 합쳐 저장",
-        message:
-          "주석이 이미지에 합쳐져 원본을 덮어씁니다. 벡터 편집 정보는 남지 않습니다.",
+        message: inPlace
+          ? "주석이 이미지에 합쳐져 원본을 덮어씁니다. 벡터 편집 정보는 남지 않습니다."
+          : "주석이 합쳐진 새 파일로 저장됩니다(원본은 그대로). 벡터 편집 정보는 남지 않습니다.",
         detail: targetPath,
         confirmLabel: "합쳐서 저장",
         danger: true,
@@ -667,18 +846,66 @@ export default function ImageEditor() {
   /** 주석이 남아 있으면 확인을 받고 닫는다 — 세션을 닫으면 벡터가 사라진다(평탄화 모델). */
   const requestClose = useCallback(() => {
     if (busyRef.current) return;
+    // objects 가 있을 때만 확인을 받고, **실제로 닫는 순간** 문서를 넣어 둔다.
+    // 확인 앞에서 넣으면 사용자가 취소한 뒤 주석을 다 지우고 닫았을 때 옛 문서가 남아
+    // "안 그린 주석"을 복원 제안하게 된다.
     if (docRef.current.objects.length) {
       askConfirm({
         title: "편집기 닫기",
-        message: "닫으면 주석이 사라집니다. 저장하지 않은 편집은 되돌릴 수 없습니다.",
+        message:
+          "닫으면 주석이 편집기에서 사라집니다. **이 창에서** 같은 파일을 다시 열면 복구할 수 있습니다(창을 닫으면 사라집니다).",
         confirmLabel: "닫기",
         danger: true,
-        onConfirm: close,
+        onConfirm: () => {
+          if (projectId && path) {
+            stashPut(stashKey(projectId, path), docRef.current, stampRef.current);
+          }
+          close();
+        },
       });
     } else {
       close();
     }
-  }, [askConfirm, close]);
+  }, [askConfirm, close, projectId, path]);
+
+  /**
+   * doc 창의 X(FloatTitleBar → `win.close()`)는 편집기의 닫기 가드를 **지나지 않는다** —
+   * 확인도 없이 창째 사라지고, stash 는 이 창 수명 스코프라 함께 죽는다. 즉 여기서 막을 수
+   * 있는 것은 "말없이 사라지는 것" 하나뿐이므로 확인을 받는다.
+   *
+   * 확인 후에는 `destroy()` 를 부른다 — `close()` 는 CloseRequested 를 다시 발화시켜
+   * 확인창이 무한히 뜬다. Rust 쪽 CloseRequested 핸들러는 `main` 라벨만 다루므로 간섭 없다.
+   */
+  useEffect(() => {
+    if (!IS_DOC_WINDOW) return;
+    const win = getCurrentWebviewWindow();
+    let off: (() => void) | undefined;
+    let dead = false;
+    void win
+      .onCloseRequested((e) => {
+        if (!docRef.current.objects.length) return;
+        e.preventDefault();
+        askConfirm({
+          title: "창 닫기",
+          message:
+            "저장하지 않은 주석이 있습니다. 창을 닫으면 되돌릴 수 없습니다.",
+          confirmLabel: "닫기",
+          danger: true,
+          onConfirm: () => void win.destroy(),
+        });
+      })
+      .then((f) => {
+        if (dead) f();
+        else off = f;
+      })
+      .catch(() => {
+        /* 창 API 를 못 쓰는 환경 — 종전과 같이 그냥 닫힌다 */
+      });
+    return () => {
+      dead = true;
+      off?.();
+    };
+  }, [askConfirm]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -744,8 +971,21 @@ export default function ImageEditor() {
   void histVer; // 히스토리 깊이 변화로 리렌더되게 하는 의존(값 자체는 쓰지 않는다)
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="flex h-[min(820px,94vh)] w-[min(1180px,96vw)] flex-col overflow-hidden rounded-lg border border-edge bg-panel shadow-2xl">
+    // 래퍼의 클래스 문자열은 **그대로 두어야 한다** — e2e 30·34 가 `div.fixed.inset-0.z-50`
+    // 안의 '이미지 편집' 문구로 편집기를 잡는다. doc 창에서는 인라인 top 으로 FloatTitleBar
+    // (h-8 = 32px)를 비켜 주고, 안쪽 카드만 창을 꽉 채우게 편다. 덮으면 창을 옮기지도 닫지도
+    // 못한다. stage 재적합은 기존 ResizeObserver 가 하므로 리사이즈 코드는 필요 없다.
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+      style={IS_DOC_WINDOW ? { top: 32 } : undefined}
+    >
+      <div
+        className={
+          IS_DOC_WINDOW
+            ? "flex h-full w-full flex-col overflow-hidden bg-panel"
+            : "flex h-[min(820px,94vh)] w-[min(1180px,96vw)] flex-col overflow-hidden rounded-lg border border-edge bg-panel shadow-2xl"
+        }
+      >
         {/* 헤더 */}
         <div className="flex h-11 shrink-0 items-center gap-2 border-b border-edge px-4">
           <span className="font-semibold">이미지 편집</span>
@@ -759,6 +999,25 @@ export default function ImageEditor() {
             </span>
           )}
           <div className="flex-1" />
+          {/* 배율 표시·맞춤 복귀는 **헤더**에 둔다. 우측 패널에 넣으면 e2e 30의 selCount 가
+              "N개 선택" 앞 텍스트 노드를 함께 읽어 오염된다(그 스위트 주석에 남은 기존 함정). */}
+          {showStage && (
+            <>
+              <span
+                title="휠로 확대·축소, 가운데 버튼 드래그로 이동"
+                className="shrink-0 tabular-nums text-[11px] text-fg-dim"
+              >
+                {Math.round(screenScale * 100)}%
+              </span>
+              <button
+                onClick={() => setView(IDENTITY_VIEW)}
+                title="화면에 맞추기"
+                className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-fg-dim hover:bg-raised hover:text-fg"
+              >
+                맞춤
+              </button>
+            </>
+          )}
           <button
             onClick={requestClose}
             className="rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
@@ -767,10 +1026,37 @@ export default function ImageEditor() {
           </button>
         </div>
 
+        {recoverable && (
+          <div className="flex h-7 shrink-0 items-center gap-2 border-b border-edge bg-panel px-3 text-[11px]">
+            <FileWarning size={12} className="shrink-0 text-warn" />
+            <span className="flex-1 truncate text-fg-muted">
+              직전에 저장하지 않고 닫은 편집이 있습니다.
+            </span>
+            <button
+              type="button"
+              onClick={restoreStashed}
+              className="shrink-0 rounded bg-raised px-1.5 py-0.5 text-fg hover:bg-accent hover:text-on-accent"
+            >
+              이어서 하기
+            </button>
+            <button
+              type="button"
+              onClick={discardStashed}
+              className="shrink-0 rounded px-1.5 py-0.5 text-fg-dim hover:bg-raised hover:text-fg"
+            >
+              버리기
+            </button>
+          </div>
+        )}
+
         <div className="flex min-h-0 flex-1">
           {/* 프리뷰 — 이미지(색보정 CSS 필터) 위에 주석 캔버스를 겹친다(§4.3) */}
           <div
             ref={stageRef}
+            onPointerDown={onStagePointerDown}
+            onPointerMove={onStagePointerMove}
+            onPointerUp={endPan}
+            onPointerCancel={endPan}
             className="checkerboard flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden p-4"
           >
             {loadErr ? (
@@ -780,14 +1066,24 @@ export default function ImageEditor() {
                 <Loader2 size={16} className="animate-spin" /> 이미지 불러오는 중…
               </div>
             ) : showStage && oriented ? (
-              <div
-                className="relative shadow-lg"
-                style={{ width: dispW, height: dispH }}
-              >
+              // 바깥은 **변환이 걸리지 않는 앵커**다 — 줌 수식의 기준 프레임이라 rect 가
+              // view 에 따라 흔들리면 안 된다. 확대분은 stage 의 overflow-hidden 이 자른다.
+              <div ref={boxRef} className="relative" style={{ width: dispW, height: dispH }}>
+                <div
+                  className="absolute inset-0 shadow-lg"
+                  style={{
+                    transformOrigin: "0 0",
+                    transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})`,
+                  }}
+                >
                 <canvas
                   ref={previewRef}
                   className="absolute inset-0 h-full w-full"
-                  style={{ filter: filterStr }}
+                  style={{
+                    filter: filterStr,
+                    // 100% 를 넘겨 확대하면 보간을 끄고 픽셀을 그대로 보여준다(뷰어와 같은 규칙).
+                    imageRendering: screenScale >= 2 ? "pixelated" : "auto",
+                  }}
                 />
                 <AnnotationLayer
                   ref={layerRef}
@@ -795,7 +1091,11 @@ export default function ImageEditor() {
                   backW={backW}
                   backH={backH}
                   scale={previewScale}
-                  displayScale={displayScale}
+                  // 줌을 곱해 넘긴다 — 이 prop 의 계약은 "oriented → **화면** css px" 라
+                  // 히트 허용오차·핸들 집기 반경·핸들 그리기 크기가 전부 스스로 맞는다.
+                  // transform 안쪽 DOM(텍스트 편집 textarea)만 zoom 으로 되나눈다.
+                  displayScale={screenScale}
+                  zoom={view.scale}
                   filterStr={filterStr}
                   objects={doc.objects}
                   selectedIds={selectedIds}
@@ -812,6 +1112,7 @@ export default function ImageEditor() {
                   onToolChange={setTool}
                   onSelectionChange={setSelectedIds}
                 />
+                </div>
               </div>
             ) : null}
           </div>
