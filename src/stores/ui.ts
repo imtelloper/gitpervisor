@@ -124,6 +124,9 @@ export interface UiState {
   fileTreeOpen: boolean;
   /** PROJECTS: 변경/활동 있는 프로젝트를 위로 정렬 (localStorage 영속) */
   projectSortByChanges: boolean;
+  /** PROJECTS: 프로젝트별 색 구분(행 배경 틴트 + 좌측 스트라이프) 표시 (localStorage 영속).
+   *  기본 켜짐 — 끄면 목록이 단색이 되어 상태 점·로고만 남는다. */
+  projectColorsOn: boolean;
   /** 이미지 편집기 대상(레포 상대 경로) — 열려 있으면 모달 표시 */
   imageEditorPath: string | null;
   /**
@@ -167,6 +170,7 @@ export interface UiState {
   toggleDiffCollapse: () => void;
   toggleFileTree: () => void;
   toggleProjectSort: () => void;
+  toggleProjectColors: () => void;
   pushToast: (
     kind: Toast["kind"],
     message: string,
@@ -275,6 +279,8 @@ export const useUi = create<UiState>((set) => ({
   // 파일 트리는 기본 열림 — 사용자가 명시적으로 닫은 경우("0")만 닫힌 채 복원
   fileTreeOpen: localStorage.getItem("gp:filetree-open") !== "0",
   projectSortByChanges: localStorage.getItem("gp:project-sort-changes") === "1",
+  // 기본값이 **켜짐**이라 `=== "1"`이 아니라 `!== "0"`이다 — 저장된 적 없으면(null) 켜져야 한다.
+  projectColorsOn: localStorage.getItem("gp:project-colors") !== "0",
   imageEditorPath: null,
   imageEditorRepoId: null,
   toasts: [],
@@ -496,6 +502,12 @@ export const useUi = create<UiState>((set) => ({
       const v = !s.projectSortByChanges;
       localStorage.setItem("gp:project-sort-changes", v ? "1" : "0");
       return { projectSortByChanges: v };
+    }),
+  toggleProjectColors: () =>
+    set((s) => {
+      const v = !s.projectColorsOn;
+      localStorage.setItem("gp:project-colors", v ? "1" : "0");
+      return { projectColorsOn: v };
     }),
   pushToast: (kind, message, action, opts) => {
     const id = ++toastSeq;
