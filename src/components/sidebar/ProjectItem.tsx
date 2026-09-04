@@ -120,11 +120,6 @@ export const ProjectItem = memo(function ProjectItem({
       )}
       <div className="flex items-center gap-2 overflow-hidden">
         <StatusDot state={dot} />
-        <span className="whitespace-nowrap font-medium">{project.name}</span>
-        {agent === "working" && (
-          <span title="Claude Code 작업 중…" className="flex shrink-0">
-            <Loader2
-              size={12}
         {logo.data && (
           <img
             src={logo.data.dataUri}
@@ -135,6 +130,11 @@ export const ProjectItem = memo(function ProjectItem({
             className="h-4 w-4 shrink-0 rounded-sm object-contain"
           />
         )}
+        <span className="whitespace-nowrap font-medium">{project.name}</span>
+        {agent === "working" && (
+          <span title="Claude Code 작업 중…" className="flex shrink-0">
+            <Loader2
+              size={12}
               className="animate-spin text-accent"
               aria-label="Claude Code 작업 중"
             />
