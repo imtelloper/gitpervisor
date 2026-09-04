@@ -18,12 +18,14 @@ import {
   Pause,
   Play,
   Repeat,
+  Redo2,
   RotateCcw,
   RotateCw,
   Scissors,
   SkipBack,
   SkipForward,
   SlidersHorizontal,
+  Undo2,
   Volume2,
   VolumeX,
   X,
@@ -65,6 +67,11 @@ export function fmtTime(sec: number): string {
   const ss = s.toFixed(1).padStart(4, "0");
   return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
 }
+
+/** 파일 전환 리셋 전용 빈 값 — 매번 `[]`를 새로 만들면 히스토리 기준(baseRef)과 참조가
+ *  달라져, 파일을 여는 것만으로 "편집됨" 항목이 하나 쌓인다. */
+const NO_TICKS: number[] = [];
+const NO_MASKS: CropRect[] = [];
 
 const btnCls =
   "rounded px-1.5 py-1 text-fg-dim hover:bg-raised hover:text-fg disabled:opacity-40";
@@ -158,11 +165,87 @@ export default function VideoPlayer({
   const [clipPlaying, setClipPlaying] = useState<number | null>(null);
   // 구간 지정 모드 — 버튼은 켜기만 하고, 실제 지정은 타임라인에서 한다(영역·가리기와 같은 관례).
   const [rangeActive, setRangeActive] = useState(false);
+
   const [cropActive, setCropActive] = useState(false);
   const [crop, setCrop] = useState<CropRect | null>(null);
   // 가림 영역들(원본 video px) — crop과 같은 좌표계, 개수 제한 없음.
   const [masks, setMasks] = useState<CropRect[]>([]);
   const [maskKind, setMaskKind] = useState<"mosaic" | "blur">("mosaic");
+
+  // ── 되돌리기 / 다시 실행 ────────────────────────────────────────────────────
+  // 대상은 **편집 의도**뿐이다: 구간 · 분할 지점 · 크롭 · 가림. 재생 위치·줌·모드는 넣지 않는다
+  // (스크럽 한 번에 히스토리가 수백 개가 되고, 되돌리기가 화면을 제멋대로 움직인다).
+  // 내보내기·분할 저장은 파일을 쓰므로 애초에 되돌릴 수 없다 — 넣지 않는다.
+  const editSnap = useMemo(
+    () => ({ inPt, outPt, ticks, crop, masks, maskKind }),
+    [inPt, outPt, ticks, crop, masks, maskKind],
+  );
+  type EditSnap = typeof editSnap;
+  const pastRef = useRef<EditSnap[]>([]);
+  const futureRef = useRef<EditSnap[]>([]);
+  const baseRef = useRef<EditSnap>(editSnap);
+  // 스택 길이를 state로 둔다 — 버튼 활성 상태의 근거인데, ref 변경만으로는 리렌더가 없다.
+  const [hist, setHist] = useState({ past: 0, future: 0 });
+  const syncHist = () =>
+    setHist({ past: pastRef.current.length, future: futureRef.current.length });
+
+  // 참조 비교로 충분하다 — 되돌릴 때 **같은 배열·객체를 그대로** 되돌려 놓기 때문이다.
+  const sameSnap = (a: EditSnap, b: EditSnap) =>
+    a.inPt === b.inPt &&
+    a.outPt === b.outPt &&
+    a.ticks === b.ticks &&
+    a.crop === b.crop &&
+    a.masks === b.masks &&
+    a.maskKind === b.maskKind;
+
+  // 350ms 멈춘 뒤에 한 항목으로 기록한다. 드래그 한 번은 포인터 이동 수십 번이라,
+  // 그대로 쌓으면 원래대로 가는 데 Ctrl+Z를 수십 번 눌러야 한다.
+  useEffect(() => {
+    if (sameSnap(baseRef.current, editSnap)) return;
+    const t = setTimeout(() => {
+      pastRef.current.push(baseRef.current);
+      if (pastRef.current.length > 200) pastRef.current.shift();
+      futureRef.current = []; // 새 편집이 들어오면 앞선 redo 가지는 버린다(표준 동작)
+      baseRef.current = editSnap;
+      syncHist();
+    }, 350);
+    return () => clearTimeout(t);
+  }, [editSnap]);
+
+  // 파일이 바뀌면 히스토리를 버린다 — 다른 영상의 구간을 이 영상에 되돌려 놓을 수는 없다.
+  useEffect(() => {
+    pastRef.current = [];
+    futureRef.current = [];
+    baseRef.current = { inPt: null, outPt: null, ticks: NO_TICKS, crop: null, masks: NO_MASKS, maskKind };
+    setHist({ past: 0, future: 0 });
+    // maskKind는 파일 전환에 초기화하지 않으므로 현재 값을 그대로 기준에 넣는다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [path]);
+
+  const applySnap = (snap: EditSnap) => {
+    baseRef.current = snap; // 기준을 **먼저** 옮긴다 — 아래 setter가 만든 변화를 새 편집으로 오해하지 않게
+    setInPt(snap.inPt);
+    setOutPt(snap.outPt);
+    setTicks(snap.ticks);
+    setCrop(snap.crop);
+    setMasks(snap.masks);
+    setMaskKind(snap.maskKind);
+    syncHist();
+  };
+  const undo = useCallback(() => {
+    const prev = pastRef.current.pop();
+    if (!prev) return false;
+    futureRef.current.push(baseRef.current);
+    applySnap(prev);
+    return true;
+  }, []);
+  const redo = useCallback(() => {
+    const next = futureRef.current.pop();
+    if (!next) return false;
+    pastRef.current.push(baseRef.current);
+    applySnap(next);
+    return true;
+  }, []);
   const [maskActive, setMaskActive] = useState(false);
 
   // 확대 오버레이가 네이티브 자식 webview(내장 브라우저) 위에 보이도록 점유 등록.
@@ -201,11 +284,11 @@ export default function VideoPlayer({
     setDuration(0);
     setInPt(null);
     setOutPt(null);
-    setTicks([]);
+    setTicks(NO_TICKS);
     setLoopOn(false);
     setCrop(null);
     setCropActive(false);
-    setMasks([]);
+    setMasks(NO_MASKS);
     setMaskActive(false);
     clipEndRef.current = null;
     setClipPlaying(null);
@@ -589,6 +672,20 @@ export default function VideoPlayer({
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
     // 포커스된 버튼의 Space는 그 버튼 활성화가 기대 동작 — 가로채면 키보드 탐색이 깨진다.
     if (tag === "BUTTON" && e.key === " ") return;
+    // 되돌리기/다시 실행은 수정자 양보보다 **앞**이다 — 뒤에 두면 아래 return에 먹힌다.
+    // 앱 어디에도 전역 Ctrl+Z가 없어 가로채도 뺏는 것이 없다(확인함).
+    if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+      const k = e.key.toLowerCase();
+      // Ctrl+Y와 Ctrl+Shift+Z 둘 다 받는다 — 전자는 Windows, 후자는 macOS 관례다.
+      const isRedo = k === "y" || (k === "z" && e.shiftKey);
+      if (isRedo || k === "z") {
+        if (isRedo ? redo() : undo()) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+        return;
+      }
+    }
     if (e.ctrlKey || e.metaKey || e.altKey) return; // 전역 단축키(Ctrl+W 등)에 양보
     let handled = true;
     switch (e.key) {
@@ -1001,6 +1098,36 @@ export default function VideoPlayer({
             >
               구간
             </button>
+            {/* 구간 해제 — 우클릭만으로는 발견이 안 된다. 지정된 상태에서만 나타난다
+                (크롭·가림 해제 X와 같은 규칙). */}
+            {(inPt != null || outPt != null) && (
+              <button
+                onClick={clearRange}
+                title="구간 해제"
+                aria-label="구간 해제"
+                className="-m-1 p-1 text-fg-dim hover:text-fg"
+              >
+                <X size={11} />
+              </button>
+            )}
+            <button
+              onClick={undo}
+              disabled={hist.past === 0}
+              title={`되돌리기 (Ctrl+Z)${hist.past ? ` · ${hist.past}단계` : ""}`}
+              aria-label="되돌리기"
+              className={`${btnCls} disabled:text-fg-dim/40`}
+            >
+              <Undo2 size={13} />
+            </button>
+            <button
+              onClick={redo}
+              disabled={hist.future === 0}
+              title="다시 실행 (Ctrl+Y)"
+              aria-label="다시 실행"
+              className={`${btnCls} disabled:text-fg-dim/40`}
+            >
+              <Redo2 size={13} />
+            </button>
             <button
               onClick={() => setLoopOn((v) => !v)}
               title="구간 반복 (R)"
@@ -1121,7 +1248,8 @@ export default function VideoPlayer({
           { keys: "Space", label: "재생" },
           { keys: "I / O", label: "구간 지정" },
           { keys: "T", label: "분할" },
-          { keys: "F", label: "확대" },
+          { keys: "Ctrl+Z", label: "되돌리기" },
+          { keys: "Ctrl+Y", label: "다시 실행" },
         ]}
         zoomPct={zoomPct}
       />
