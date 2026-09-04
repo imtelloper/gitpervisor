@@ -85,9 +85,31 @@ pub async fn write_file(
             return Err(IpcError::new(ErrorCode::Io, "디렉토리에는 쓸 수 없습니다"));
         }
     }
-    tokio::fs::write(&target, content)
-        .await
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("파일 저장 실패: {e}")))
+    tokio::fs::write(&target, content).await.map_err(write_io_err)
+}
+
+/// 파일 쓰기 io 오류 → 사용자가 **다음 행동을 알 수 있는** IpcError.
+///
+/// `os error 5` 를 그대로 노출하면 원인에 도달할 방법이 없다. 실제로 이 저장소 사용자가
+/// Windows 제어된 폴더 액세스(랜섬웨어 방지)에 막혔는데, 기본 보호 폴더가 문서·사진·비디오·
+/// 바탕 화면이라 "비디오 폴더 밑 이미지 편집 저장"이 통째로 실패했다. 앱 로그에는 아무 단서가
+/// 없고 원인은 Defender 이벤트 로그(1123)에만 남는다 — 그래서 여기서 짚어 준다.
+/// dev 빌드와 설치본은 별개 exe 라 허용 목록에 각각 등록해야 한다.
+fn write_io_err(e: std::io::Error) -> IpcError {
+    if e.kind() != std::io::ErrorKind::PermissionDenied {
+        return IpcError::new(ErrorCode::Io, format!("파일 저장 실패: {e}"));
+    }
+    let hint = if cfg!(windows) {
+        concat!(
+            "파일 저장 실패: 액세스가 거부되었습니다. Windows '제어된 폴더 액세스'",
+            "(랜섬웨어 방지)가 차단했을 수 있습니다 — 문서·사진·비디오·바탕 화면이 기본 보호 대상입니다. ",
+            "Windows 보안 › 랜섬웨어 방지에서 이 앱을 허용하거나 파일을 보호 폴더 밖으로 옮기세요. ",
+            "(읽기 전용 파일이거나 다른 프로그램이 열고 있어도 같은 오류가 납니다.)",
+        )
+    } else {
+        "파일 저장 실패: 권한이 없습니다. 파일·상위 폴더의 쓰기 권한을 확인하세요."
+    };
+    IpcError::new(ErrorCode::Io, hint)
 }
 
 /// 새 폴더 생성 — `rel_path`는 레포 루트 기준 상대 경로(만들 폴더 자신).
@@ -331,6 +353,14 @@ pub async fn move_path(
 /// 바이너리 파일 쓰기 — base64 바이트를 디스크에 쓴다(이미지 변환·편집 저장용).
 /// 새 파일 생성을 허용하되(상위 디렉토리는 존재해야 함), 기존 디렉토리에는 쓰지 않는다.
 /// 경로 탈출(빈 경로·절대경로·`..`·`.git`)을 막는다.
+///
+/// `expected_stamp` 는 호출자가 **그 파일을 읽었을 때**의 정체(`read_file_base64` 가 준
+/// `stamp`)다. 주면 쓰기 직전에 대조해 다르면 `Conflict` 로 거절한다 — 이미지 편집기를 열어 둔
+/// 사이 외부 도구(또는 다른 편집 창)가 같은 파일을 바꿨을 때 [저장]이 그 변경을 **말없이**
+/// 날리던 경로를 막는다. 생략하면 종전과 1비트도 다르지 않다(변환 저장·e2e 등 기존 호출부).
+///
+/// 대상이 아예 없어졌으면 충돌로 보지 않는다 — 다시 만들어 주는 쪽이 덜 놀랍고, 막아 봐야
+/// 사용자가 할 수 있는 일이 저장뿐이다.
 #[tauri::command]
 pub async fn write_file_bytes(
     state: State<'_, AppState>,
@@ -338,6 +368,7 @@ pub async fn write_file_bytes(
     rel_path: String,
     base64: String,
     overwrite: bool,
+    expected_stamp: Option<String>,
 ) -> Result<(), IpcError> {
     let repo = project_path(&state, &project_id)?;
     let target = resolve_in_repo(&repo, &rel_path)?;
@@ -348,6 +379,20 @@ pub async fn write_file_bytes(
         }
         if meta.is_dir() {
             return Err(IpcError::new(ErrorCode::Io, "디렉토리에는 쓸 수 없습니다"));
+        }
+        // 이미 뜬 메타를 그대로 쓴다 — 검사 때문에 파일을 되읽지 않는다.
+        if let Some(want) = expected_stamp.as_deref() {
+            match crate::commands::diff::stamp_of(&meta) {
+                Some(now) if now != want => {
+                    return Err(IpcError::new(
+                        ErrorCode::Conflict,
+                        "이 파일이 편집을 시작한 뒤 외부에서 바뀌었습니다",
+                    ));
+                }
+                // 메타에서 mtime 을 못 얻는 플랫폼/파일시스템 — 검사를 포기하고 통과시킨다.
+                // 저장 자체를 막으면 그런 환경에서 기능이 통째로 죽는다.
+                _ => {}
+            }
         }
     }
     // 덮어쓰기 미허용이면 기존 파일을 보호한다 — 변환/다른 이름 저장의 의도치 않은 데이터 손실 방지.
@@ -365,9 +410,7 @@ pub async fn write_file_bytes(
     if bytes.len() > MAX_WRITE_BYTES {
         return Err(IpcError::new(ErrorCode::Io, "파일이 너무 큽니다 (64MB 초과)"));
     }
-    tokio::fs::write(&target, bytes)
-        .await
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("파일 저장 실패: {e}")))
+    tokio::fs::write(&target, bytes).await.map_err(write_io_err)
 }
 
 /// 한 프로젝트 루트의 결과(또는 오류) — 배치 프리페치용.
@@ -600,14 +643,66 @@ fn decorate_entries(
             })
             .collect()
     };
-    // 디렉토리 우선 + 이름순(대소문자 무시). 정렬 키는 엔트리당 1회만 계산
+    // 디렉토리 우선 + 이름순(대소문자 무시, 숫자는 값으로). 정렬 키는 엔트리당 1회만 계산
     // (비교당 to_lowercase 2회 할당하던 이전 방식 제거).
     let mut keyed: Vec<(bool, String, DirEntry)> = entries
         .into_iter()
         .map(|e| (e.is_dir, e.name.to_lowercase(), e))
         .collect();
-    keyed.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    keyed.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| natural_cmp(&a.1, &b.1)));
     keyed.into_iter().map(|(_, _, e)| e).collect()
+}
+
+/// 사람이 기대하는 이름 순서 — **숫자 묶음은 값으로** 본다.
+///
+/// 사전식은 자릿수가 늘어나는 순간 뒤집힌다: `세트1, 세트10, 세트11, 세트12, 세트2 …`.
+/// 폴더를 세트1~12로 나눠 쓰는 사용에서 이건 그냥 고장이다(2026-09-04 실사용 제보).
+///
+/// 숫자는 파싱하지 않고 **자릿수 → 사전식**으로 비교한다. u64로 파싱하면 30자리 파일명
+/// 하나에 오버플로로 순서가 무너진다. 값이 같으면 선행 0이 적은 쪽(`7` < `007`)을 앞에 둬
+/// 순서가 결정적이다 — 안 그러면 같은 값끼리 비교가 Equal이라 정렬이 불안정해진다.
+fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let mut ai = a.chars().peekable();
+    let mut bi = b.chars().peekable();
+    let take_digits = |it: &mut std::iter::Peekable<std::str::Chars<'_>>| {
+        let mut s = String::new();
+        while let Some(c) = it.peek() {
+            if c.is_ascii_digit() {
+                s.push(*c);
+                it.next();
+            } else {
+                break;
+            }
+        }
+        s
+    };
+    loop {
+        match (ai.peek().copied(), bi.peek().copied()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(x), Some(y)) if x.is_ascii_digit() && y.is_ascii_digit() => {
+                let (na, nb) = (take_digits(&mut ai), take_digits(&mut bi));
+                let (ta, tb) = (na.trim_start_matches('0'), nb.trim_start_matches('0'));
+                let ord = ta
+                    .len()
+                    .cmp(&tb.len())
+                    .then_with(|| ta.cmp(tb))
+                    .then_with(|| na.len().cmp(&nb.len()));
+                if ord != Ordering::Equal {
+                    return ord;
+                }
+            }
+            (Some(x), Some(y)) => {
+                ai.next();
+                bi.next();
+                if x != y {
+                    return x.cmp(&y);
+                }
+            }
+        }
+    }
 }
 
 fn join_rel(base: &str, name: &str) -> String {
@@ -1757,5 +1852,44 @@ mod ignore_tests {
         let c = parse_ignore_output(b"other.log\0");
         assert!(c.is_ignored("other.log"));
         assert!(!c.is_ignored("build.log"), "추적 파일은 절대 미디밍");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 자릿수가 늘어나는 지점에서 사전식이 뒤집히는 것을 막는다 — 실사용 제보 그대로 재현.
+    #[test]
+    fn natural_cmp_orders_numbers_by_value() {
+        let mut v = vec!["세트1", "세트10", "세트11", "세트12", "세트2", "세트9"];
+        v.sort_by(|a, b| natural_cmp(a, b));
+        assert_eq!(v, ["세트1", "세트2", "세트9", "세트10", "세트11", "세트12"]);
+    }
+
+    /// 숫자가 여러 번 나오는 이름, 접두어가 다른 이름, 숫자 없는 이름이 섞여도 안정적이어야 한다.
+    #[test]
+    fn natural_cmp_handles_mixed_and_multi_number_names() {
+        let mut v = vec!["cam10_v2.mp4", "cam2_v10.mp4", "cam2_v2.mp4", "readme.md", "cam2_v2.mkv"];
+        v.sort_by(|a, b| natural_cmp(a, b));
+        assert_eq!(
+            v,
+            ["cam2_v2.mkv", "cam2_v2.mp4", "cam2_v10.mp4", "cam10_v2.mp4", "readme.md"]
+        );
+    }
+
+    /// u64 파싱이면 오버플로로 무너지는 자릿수 — 자릿수 비교라 그냥 통과한다.
+    #[test]
+    fn natural_cmp_survives_numbers_beyond_u64() {
+        let big_a = format!("f{}", "9".repeat(30));
+        let big_b = format!("f{}", "9".repeat(31));
+        assert_eq!(natural_cmp(&big_a, &big_b), std::cmp::Ordering::Less);
+    }
+
+    /// 선행 0은 값이 같으므로, 짧은 쪽을 앞에 둬 순서를 결정적으로 만든다.
+    #[test]
+    fn natural_cmp_is_deterministic_on_leading_zeros() {
+        assert_eq!(natural_cmp("a7", "a007"), std::cmp::Ordering::Less);
+        assert_eq!(natural_cmp("a007", "a7"), std::cmp::Ordering::Greater);
     }
 }
