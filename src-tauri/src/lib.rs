@@ -976,6 +976,7 @@ pub fn run() {
             commands::reveal_path,
             commands::list_dir,
             commands::list_dirs,
+            commands::project_logo,
             commands::list_project_roots,
             commands::list_repo_files,
             commands::write_file,

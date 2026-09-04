@@ -504,6 +504,18 @@ export function useVideoProbe(projectId: string | null, path: string | null, ena
   });
 }
 
+/** 프로젝트 로고 — 프로젝트당 한 번. 로고는 거의 안 바뀌므로 워처 무효화 대상이 아니다.
+ *  실패해도 조용히 없는 것으로 둔다(사이드바에 토스트를 띄울 일이 아니다). */
+export function useProjectLogo(projectId: string | null) {
+  return useQuery({
+    queryKey: ["project-logo", projectId ?? "none"],
+    queryFn: () => ipc.projectLogo(projectId!),
+    enabled: !!projectId,
+    staleTime: Infinity,
+    retry: false,
+  });
+}
+
 /** 타임라인 필름스트립 — 파일당 한 번만 뽑는다(ffmpeg 스폰이라 비싸다). */
 export function useVideoFilmstrip(
   projectId: string | null,

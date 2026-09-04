@@ -325,6 +325,14 @@ export interface VideoFilmstrip {
   tileH: number;
 }
 
+/** 프로젝트 로고 — 레포 안에서 찾은 이미지, 없으면 GitHub 소유자 아바타. 못 찾으면 null. */
+export interface ProjectLogo {
+  /** `data:image/…;base64,…` — 16px로 그려지므로 원본이 작으면 그대로 통과시킨다. */
+  dataUri: string;
+  /** 출처 표시용 — 레포 상대 경로 또는 `github:<owner>`. */
+  source: string;
+}
+
 export interface VideoExportProgress {
   jobId: string;
   projectId: string;
@@ -1220,6 +1228,9 @@ export const ipc = {
   // 멱등 취소 — 모르는 jobId는 no-op.
   videoExportCancel: (jobId: string) =>
     callMutating<void>("video_export_cancel", { jobId }, 10_000),
+  // 프로젝트 로고 — 없으면 null(에러 아님). 파일 탐색 + 최초 1회 네트워크라 재시도 없음.
+  projectLogo: (projectId: string) =>
+    call<ProjectLogo | null>("project_logo", { projectId }, { attempts: 1, timeoutMs: 20_000 }),
   // 타임라인 필름스트립 — 스프라이트 1장. 재시도 없음(프로세스 스폰).
   videoFilmstrip: (projectId: string, relPath: string, cols: number, height: number) =>
     call<VideoFilmstrip>(
