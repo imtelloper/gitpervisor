@@ -585,11 +585,22 @@ async function videoDocBlock({ cdp, r, fix, cdpPort, arr, labels, closeLabel, po
       );
       r.check("가림이 켜지면 자동 파일명에 .mosaic", /\.mosaic\./.test(String(nameHas)), nameHas);
       // 원상복구 — 아래 내보내기 단언이 순수 remux 경로를 그대로 쓰게 한다.
-      await vcdp.eval(
-        `(()=>{ const x=[...document.querySelectorAll('button')].find(y=>/모두 해제/.test(y.title||''));
-           if(!x) return false; x.click(); return true; })()`,
+      // 해제 버튼은 **가리기 탭에 떠 있는 동안**에만 존재한다. 위에서 파일명을 읽으려고
+      // 내보내기 탭으로 옮겨 왔으므로 되돌아가야 한다 — 안 그러면 find가 undefined를 받고
+      // 가림이 남은 채 내보내져, 실패가 두 단언 뒤 "파일명 불일치"로 엉뚱하게 드러난다(실제로 겪음).
+      await vcdp.eval(`(()=>{ document.querySelector('[data-tab="mask"]')?.click(); return true; })()`);
+      await poll(
+        () => vcdp.eval(`!!document.querySelector('[title*="모두 해제"]')`),
+        (v) => v === true,
+        20,
+        200,
       );
-      await poll(maskCount, (v) => v === 0, 20, 200);
+      await vcdp.eval(
+        `(()=>{ const x=document.querySelector('[title*="모두 해제"]'); if(!x) return false; x.click(); return true; })()`,
+      );
+      // poll은 조건 미충족에도 마지막 값을 그냥 돌려준다 — 여기서 단언해야 실패가 제자리에서 난다.
+      const cleared = await poll(maskCount, (v) => v === 0, 20, 200);
+      r.check("가림 해제: 영역 0개로 복귀(이후 단언이 순수 remux 경로를 쓴다)", cleared === 0, `boxes=${cleared}`);
     } else {
       r.skip("가림 영역", "가리기 버튼을 찾지 못함");
     }
