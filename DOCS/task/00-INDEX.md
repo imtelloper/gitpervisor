@@ -252,3 +252,119 @@
 - 32: 키 에코 실측 Enter `\r` / Shift+Enter·Alt+Enter `\u001b\r`, **Claude Code v2.1.258 실물에서 두 키 모두 줄바꿈**. e2e 06 13 pass.
 - 33: 번들 ConPTY 1.24 사이드로드 확인(로그·`term_open {conpty:"bundled"}`·OpenConsole.exe 수). Claude Code는 alt 버퍼+마우스 추적이라 "위 내용 보기"는 **휠 → SGR 마우스 보고 → Claude 자체 스크롤** 경로이며 번들 ConPTY에서 정상 동작 실측(§9.5, PageUp/PageDown 대안). Windows 10 실기는 이 머신에 없어 사용자 검증 항목(TROUBLESHOOTING §10).
 - 전체 러너: **603 pass / 3 fail / 6 skip**(직전 516/5/3). 실패 3건 중 12의 2건은 번들 ConPTY의 DA1 질의를 원시 e2e 채널이 회신하지 못해 첫 출력이 3.4s 밀린 것(제품 결함 아님 — 스위트를 마커 폴링으로 수정, 3/3 통과; 33 §9.6), 14 #2b는 번들 ON/OFF 모두 4/4 통과로 회귀 아님(부하 시 기대값 스냅샷 낡음, 간헐).
+
+## 10. 이미지 편집기 Figma급 재설계 (37~52) — 2026-09-04
+
+> 시안: `designs/image-editor-figma-v2.pen`(8프레임, 텍스트 라벨 741개 전수 인벤토리 기준) · 상위 설계: `DOCS/pro-image-editor-design.md`
+> (**§8 비범위 표는 이 트랙에서 사용자 결정으로 대체** — "축소판 없이 전문 기능 전부", 2회 확정). 근거: 코드 실측 2026-09-04 →
+> 6축(문서모델·렌더·벡터·상호작용·내보내기/스타일·텍스트) 독립 제안 → 3렌즈(정합성·실현가능성/위험·완전성) 교차 심사 → 통합 골격.
+> **문서 상태**: 골격·계약·순서·열린 질문 확정. 태스크 문서 16개 작성 완료(2026-09-04) + 문서 간 정합 검사 1회(계약 이름·§링크·의존·e2e 번호·시안 밖 항목 교정, 미해결은 §10.6).
+>
+> §10 이미지 편집기 Figma급 재설계(태스크 37~52). 사용자 결정: "축소판 없이 전문 기능 전부"(2회 확정) — pro 설계 §8 비범위는 대체, 아키텍처 위험(잠금/숨김 3분기·그룹 AABB 부풀림·블렌드 배경·좌표 드리프트·OOM)은 resolveScene 단일 해석·평탄 DFS 트리·캔버스 병합·크롭 세션 base 재계산·바이트 상한 메모리 원장으로 푼다. 6축 제안을 3렌즈 심사(정합성·실현가능성·완전성)로 통합: 타입은 37 한 곳, 렌더 진입은 renderScene 하나, 트리는 평탄 배열, 패스는 상대 핸들, 마스크는 노드+이미지 2종, 조정은 기존 3필드 유지(시안에 8슬라이더 없음). 시안 designs/image-editor-figma-v2.pen 8프레임·라벨 인벤토리 전수 매핑, 협업 요소 없음, 단축키 Windows 1차(Mac Cmd 대응). Rust 변경: image_doc_*(4+snapshots)·asset_pick_file·font_list/font_read·image_library_get/set·export_*(6)·write_file_bytes stamp 반환·doc 창 빌더 disable_drag_drop_handler·tree.rs `validate_rel_file`/`is_dotgit_component` pub(crate)(52). 신규 의존: npm fit-curve 0.2.0·polygon-clipping 0.15.7·fontkit 2.0.4(MIT, 실측 검증), cargo fontdb 0.24·ttf-parser 0.25(순수 Rust).
+
+| # | 태스크 | 문서 | 규모 | 핵심 판단 | 주요 위험 |
+|---|--------|------|------|-----------|-----------|
+| 37 | 문서 모델 v2 — 노드 유니온·정규화/업그레이드·직렬화 + AnnotationLayer 분할 | [37-image-doc-model-v2.md](37-image-doc-model-v2.md) | **L** | AnnoObject 7종은 교체가 아니라 진화(기하 불변·스타일만 fills/strokes/effects/blend), 타입은 이 태스크 한 곳이 소유하고 타 축은 import. 경계 정규화(normalizeNode)로 e2e 30/34/35 픽스처 0줄 이행. | render shim(첫 fill/stroke만)이 39 전까지 '문서엔 있는데 안 보이는' 기간을 만든다 |
+| 38 | 평탄 트리 연산·resolveScene·기하 골격(bounds 3종·씬 히트테스트·프레임/그룹) | [38-image-tree-scene-geometry.md](38-image-tree-scene-geometry.md) | **L** | 평탄 DFS 배열+parentId(캐시 참조비교·히스토리 배열 공유·선형 렌더 유지). 잠금/숨김은 resolveScene 한 함수가 Scene으로 해석하고 프리뷰·히트·출력이 같은 Scene을 소비 — 3분기 위험 구조적 봉쇄. 그룹은 기하 없음, 회전은 리프에 굽기 → AABB 부풀 자리 없음. | tree.ts 밖 직접 splice가 불변식을 깨면 조용히 순서가 어긋남 — DEV 단언+리뷰 규칙 |
+| 39 | 렌더러 v2 — 캔버스 병합·격리·블렌드 19·마스크·페인트/효과 스택·모자이크 통합·조정 ctx.filter | [39-image-render-v2.md](39-image-render-v2.md) | **XL** | 베이스 캔버스 2장 구조 폐기: renderScene(ctx,scene,t,opts.image) 하나가 이미지+노드를 불투명 합성 — 블렌드·배경 블러·격리 그룹이 배경 픽셀을 요구하므로 오버레이 방식은 형광펜 55줄 재구성을 노드마다 복제한다. [0]=커밋 캐시 DOM(hidden) [1]=씬 → e2e 캔버스 인덱스 계약 유지. | 색보정 틱마다 전체 재렌더(종전 CSS 무료) — 40 실측, 초과 시 위 캐시 규칙 |
+| 40 | 렌더 윈도·디테일 캔버스·타일 출력·샌드위치 캐시·메모리 원장 실측 | [40-image-render-window-perf.md](40-image-render-window-perf.md) | **M** | 백킹 1800 불변(e2e 35 ①). 확대·픽셀 미리보기는 화면 공간 디테일 캔버스 [2](8MP 상한)에 같은 renderScene을 윈도 지정. 출력은 2048² 타일로 작업 메모리 상수화. 전체 출력 캔버스를 화면에 상주시키는 안은 OOM 이력으로 기각. | WebView2 GPU 텍스처는 private bytes 밖 — bytes 카운터 별도 보고 |
+| 41 | 사이드카 영속·자동저장·히스토리 v2(라벨·jumpTo·스냅샷)·에셋 획득 | [41-image-doc-persist-history.md](41-image-doc-persist-history.md) | **L** | persistence_decision 그대로. 히스토리는 전체 스냅샷 유지·상한 200(배열 참조 공유라 5k노드×200=8MB), 라벨·시각·jumpTo, 이전 세션은 로그만(readonly), 명명 스냅샷은 별도 파일 20개. 자동저장이 stash·닫기 확인창을 대체. | e2e 러너 잔존 사이드카 오염 — openEditor 헬퍼 delete 1줄 + run.mjs teardown |
+| 42 | 편집기 셸 — UI 스토어·모드 상태 머신·키 스코프·단축키 표·타이틀바·툴 레일 23·상태바 | [42-image-editor-shell.md](42-image-editor-shell.md) | **L** | 문서·applyDoc 깔때기는 그대로, 창별 zustand UI 스토어 + Mode(design|nodeEdit|crop, 도구와 직교) + window capture 리스너 1개로 앱 전역 키 25곳 무수정 차단. 단축키 표는 이 태스크 하나(vector/text 행 흡수). 툴 id 'vpen'('path'는 kind 이름과 충돌). | 캡처가 과하면 앱 전역 키가 죽어 보임 — consume은 처리 키만, 프로브 e2e 고정 |
+| 43 | SVG 크롬 오버레이·눈금자·가이드·스냅 엔진·스마트 가이드·Alt 측정·측정 도구·픽셀 그리드 | [43-image-chrome-snap.md](43-image-chrome-snap.md) | **L** | 크롬은 화면 공간 SVG(pointer-events:none) 하나 — 디테일 캔버스 [2]가 확대 시 [1] 위에 뜨므로 캔버스 크롬은 편집하려고 확대하는 순간 가려진다. 계산(스냅·스마트 가이드)은 snap.ts 하나, 표시는 ChromeState.extra 프리미티브로 47/48/45가 공유. | 가이드가 문서(EditorDoc.guides)에 들어가 e2e 30 (q-2) 완전 일치 단언 — EMPTY_DOC guides:[] |
+| 44 | 좌측 패널 — 레이어 트리(검색·필터·접기·드래그 순서·이름·눈/자물쇠·뱃지)·히스토리 탭·에셋 탭 슬롯 | [44-image-panels.md](44-image-panels.md) | **L** | 행 데이터는 tree.childrenOf 뷰, 조작은 tree.ts 함수만(직접 splice 금지). 가상화 없음(content-visibility). 히스토리 패널은 41 API(entries/cursor/jumpTo/스냅샷)만 소비. HTML5 DnD는 doc 창 빌더에 disable_drag_drop_handler 1줄이면 산다 — 기각 근거 정정. | 드래그 중 스크롤 컨테이너와 포인터 캡처 충돌 — rAF에서 scrollTop 직접 |
+| 45 | 컨텍스트 바 7종·인스펙터 4탭 셸·속성 탭·필드(Mixed/스크럽)·정렬/분배·팝오버 프리미티브+8종 | [45-image-inspector-popovers.md](45-image-inspector-popovers.md) | **XL** | classifySelection 하나(42 `selection.ts` 소유, 규칙은 45 §3.1)가 컨텍스트 바·인스펙터를 같이 판정. 탭 4개 hidden 마운트(e2e 30 '오른쪽 90' 클릭 계약). 도메인 섹션(벡터/크롭/텍스트/스타일/내보내기)은 46/48/50/51/52 컴포넌트를 마운트만 — 중복 구현 0. 조정 탭은 시안대로(8슬라이더·필터 없음, 기존 3 슬라이더 유지). | XL — 4커밋 분할(Props→ContextBar→Adjust→Popovers), 각 커밋 e2e 30 초록 유지 |
+| 46 | 패스 렌더·기하·변환(패스로)·불리언 4·평탄화·윤곽선화·패스 분리·다각형/말풍선 프리셋 | [46-image-vector-path.md](46-image-vector-path.md) | **L** | 노드+상대 핸들 모델(translateObject 앵커만 이동 관례 계승), 렌더·히트는 Path2D 네이티브. 불리언은 polygon-clipping(0.25px 평탄화→Schneider 재피팅) — 산출물이 픽셀이라 근사가 출력에서 비가시, paper.js 12MB 이중 모델 기각. 윤곽선화는 같은 라이브러리 union. | render drawObject switch에 default 없어 path 누락 시 조용히 안 그려짐 — e2e (a)가 잡음 |
+| 47 | 펜 도구(P)·곡률 토글·노드 편집 모드(스크림·앵커/핸들·5모드·연산·스냅·키보드) | [47-image-vector-pen-node-edit.md](47-image-vector-pen-node-edit.md) | **XL** | 펜은 완료 시 1커밋 후 곧바로 nodeEdit 진입(시안 ③). 히트 우선순위 핸들→앵커→세그먼트(편집 객체 1개 isPointInStroke)→마퀴. 모드는 UI 스토어(문서 아님 — undo로 모드가 빠지지 않게). 크롬은 ChromeState.extra 프리미티브(캔버스 아님, 43 `scrim` 종류 추가). 노드 전용 스냅 상태(`setNodeSnap`)는 두지 않는다 — 42 토글 재사용. | auto 모드 핸들 물질화를 이웃 이동 시 빠뜨리면 곡선이 안 따라옴 — 노드 연산 출구 한 곳 |
+| 48 | 크롭 프로 모드 — 8핸들·비율 7·오버레이 4·직선화(임의 각)·여백 자동 제거·영역 밖 삭제·적용/취소 | [48-image-crop-straighten.md](48-image-crop-straighten.md) | **L** | 직선화는 buildOriented 최내측 회전(캔버스 bbox 확장, θ=0 비트 동일 → e2e 30/34/35 무영향, 90°/반전 델타·renderOutput 무변경). 주석은 크롭 세션 base에서 매 틱 재계산 — 드리프트 구조적 0. 모드는 42의 mode.crop(Tool에 'crop' 없음). 세션 API(`cropSet/cropApply/…`)는 AnnotationLayerHandle이 아니라 ImageEditor 훅 `useCropSession`의 `CropApi`(applyDoc·base·oriented를 쥐는 쪽) — 이름은 계약 그대로. | 45° 극단 oriented +39MB — |θ|>15° constrainToImage 강제(40 원장) |
+| 49 | 텍스트 레이아웃 엔진(줄바꿈·정렬·목록·말줄임·박스 모드)·렌더·textarea 메트릭 계약·Mixed | [49-image-text-layout.md](49-image-text-layout.md) | **L** | Canvas fillText 런 유지(letterSpacing/wordSpacing/fontKerning 실측 동작). 자체 엔진은 줄 나눔·배치·장식만. 세로 메트릭은 alphabetic+CSS 라인박스 공식(4폰트 DOM ±0.5px 실측). 렌더·히트·textarea가 같은 TextLayout을 쓴다. | layoutText 소비자 3곳 동시 교체 — 한 커밋; Mac letterSpacing 미지원 폴백 필요 |
+| 50 | 시스템 폰트 열거(Rust fontdb)·폰트 피커·텍스트 인스펙터/컨텍스트 바·OpenType(fontkit)·텍스트 윤곽선화 | [50-image-fonts-opentype.md](50-image-fonts-opentype.md) | **L** | 폰트 목록은 Rust fontdb(순수 Rust, memmap, 933MB 489파일 전량 읽기 금지) 단일 경로 — queryLocalFonts는 wry 권한 처리 부재. OpenType은 fillText 불가(ctx.font가 feature-settings 거부 실측)라 기능 켠 객체만 fontkit 글리프 Path2D→TextLayout.outline. fontkit(TTC 18개·가변 폰트) > opentype.js. | fontkit 브라우저 번들 Buffer 잔존 여부 — 첫 1시간 스파이크로 확정 |
+| 51 | 스타일 라이브러리(색·텍스트·효과)·컴포넌트/인스턴스·앱 전역 저장소·창 간 동기·에셋 패널 | [51-image-styles-components.md](51-image-styles-components.md) | **L** | 앱 전역 image-library.json 하나(state.rs save_json 재사용 — 손상 격리·원자 rename; localStorage는 K6로 기각). 노드는 값 복사+styleRefs[slot]=StyleId(스냅샷 중복 없음, 렌더는 외부 상태 0). 인스턴스는 children 물질화(렌더·히트·기하·히스토리 변경 0), 재정의는 커밋 시 diff 파생. | 자식 id `${inst}/${child}` — 37 id 규약에 '/' 허용 명시 |
+| 52 | 내보내기 엔진·Rust 토큰 폴더 쓰기·다중 내보내기 모달·인스펙터 내보내기 행·프리셋·슬라이스 도구 | [52-image-export.md](52-image-export.md) | **L** | 레포 밖 쓰기는 Rust가 다이얼로그를 열고 토큰만 돌려주는 확정 원칙(screen-capture-design §5.2) — 레포 안도 같은 토큰 경로. 바이트는 raw body invoke(base64 100MB 사본 회피). 렌더는 40 renderOutput 타일, 게이트는 estimateRenderBytes 하나. 프로필 옵션은 실측 기반(PNG 청크 삽입·JPEG/WebP ICC 제거·P3 캔버스). | WebView2 raw body 본문 상한 미확인 — 64MB 왕복 스모크 선행 |
+
+의존: 37←∅ · 38←37 · 39←38 · 40←39 · 41←37 · 42←38,41 · 43←40,42 · 44←41,42 · 45←42,44 · 46←38,39 · 47←43,46 · 48←42,43 · 49←39,42 · 50←45,46,49,51 · 51←45 · 52←40,45,51
+
+### 10.1 권장 구현 순서·마일스톤
+
+```
+M0  37(커밋0 AL 4모듈 분할 → 커밋1 types v2/schema)
+M1  38 → 39 → 40                  기반: 트리·씬·렌더 병합·타일 출력
+M2  41 → 42 → 43 → 44             영속·셸·크롬·패널
+M3  45 → 51                        인스펙터·팝오버·스타일/컴포넌트
+M4  46 → 47 ∥ 48 ∥ 49 → 50         벡터·크롭 ∥ 텍스트 (병렬 3레인)
+M5  52 → 40 §실측표 확정            내보내기·메모리 원장 마감
+```
+**M1 "그것만 머지해도"**: 기존 편집기가 그대로 동작(30/34/35 초록)하면서 문서가 v2(다중 페인트·효과·블렌드·그룹·마스크)를 저장·렌더한다. 프리뷰==출력이 renderScene 하나로 보장되고 확대 시 원본 픽셀이 보인다.
+**M2**: 편집 문서가 자동 영속(닫아도 안 잃음), 히스토리 라벨/jumpTo, Figma형 셸(레일 23·타이틀바·상태바), 레이어 패널로 그룹/숨김/잠금/순서, 눈금자·가이드·스냅·스마트 가이드. 인스펙터는 아직 기존 필드 수준.
+**M3**: 속성 전부 편집 가능(채우기/선/효과 스택·정렬/분배·위치/크기·블렌드·색 피커·그라디언트), 스타일·컴포넌트 라이브러리·에셋 패널.
+**M4**: 펜·노드 편집·불리언·윤곽선화, 크롭 프로/직선화, 텍스트 엔진·폰트 피커·OpenType. 세 레인은 파일 겹침 0(vector/*, crop.ts, text-*.ts) — 단 geometry.ts는 46이 38 위에 path 케이스를 얹은 뒤에만 다른 레인이 손댄다.
+**M5**: 다중 내보내기·레포 밖 쓰기·슬라이스, 4K 실측표(정상/300%/2x) 기록.
+착수 전: 30/34/35 기준선 격리 실행 기록(R10), e2e 번호 36~43·DOCS/task 37~52 중앙 배정(run.mjs 등록 1줄씩).
+
+### 10.2 벡터 문서 영속 결정
+
+**결정: 앱데이터 사이드카** `app_data_dir/image-docs/<hex sha256(projectId + "\0" + relPath)>.json`(+`<key>.snapshots.json`), Rust 커맨드 4개, 32MB 상한, tmp+rename(state.rs 패턴)·stamp_of/Conflict 재사용. 루트는 `app_data_dir`(이미지 라이브러리 `image-library.json`과 같은 루트 — 사용자 데이터 루트 하나).
+
+근거: (1) 레포 사이드카는 `git status --untracked-files=all`(status.rs:147)에 올라 원 설계 조건 '레포 오염 0' 위반, 자동 무시에 필요한 `.git/info/exclude` 쓰기는 모든 쓰기 커맨드의 `.git` 거부(tree.rs:1753-1767)와 충돌, rename/move/delete가 사이드카를 모른다. (2) 내용 해시 키는 e2e 픽스처가 바이트 동일해 문서를 공유·평탄화 시 키 소실. (3) localStorage는 `gp:file-draft:*` 5MB 경쟁(K6). (4) sha2는 Cargo.toml에 이미 있음.
+
+운영 규칙: 커밋마다 1s 디바운스 자동저장(단일 비행), 닫기·창 unload 전 flush, 열 때 자동 복원(hist.reset), 닫기 확인창 삭제(flush 실패 시만), in-place 평탄화 성공 시 사이드카 삭제(R8), '다른 이름으로'/내보내기는 유지, 앱 내 이름변경/이동/삭제 콜백이 키 추적, 원본 stamp·크기 불일치 시 배너+crop 해제. 에셋(이미지 페인트)은 문서 JSON에 base64 내장(16MB/디코드 16MP). 레포 사이드카 옵트인은 열린 질문.
+
+### 10.3 사용자 결정이 필요한 열린 질문
+
+| 태스크 | 질문 | 설계 기본값(미응답 시) |
+|--------|------|------------------------|
+| 41 | 레포 안 사이드카 `<img>.gpv.json`을 프로젝트별 옵트인으로 제공할지(git 변경목록 노출·rename 미추적 감수) | 아니오 — 앱데이터만. 이식은 내보내기 '.gpv.json 내보내기/가져오기'로 후속 |
+| 45 | 조정 탭에 시안 밖 슬라이더(노출·색온도·색조·선명도·흐림)·필터 6·자동수평을 넣을지(export 축 제안, .pen 라벨 0건) | 아니오 — 기존 밝기/대비/채도 3개 유지. 사용자가 원하면 export-3 설계(SVG 필터 참조, blur 래스터 굽기)로 별도 태스크 |
+| 51 | 에셋 패널 시안 ⑤ 컴포넌트 9종(번호 뱃지·말풍선 주석·지시선·범례 칩·워터마크·측정 라벨·화살표 주석·흐림 영역·프레임 캡션)을 첫 실행 시 시드로 생성할지 | 예 — rect/path/text 조합 시드 스크립트 1회(라이브러리 비어 있을 때만), 사용자가 삭제 가능 |
+| 50 | 시안 ④ 폰트 목록(Inter·Playfair Display·Roboto Mono·Space Grotesk·IBM Plex Sans KR)이 미설치일 때 웹폰트를 번들/로드할지 | 아니오 — 시스템 폰트만 열거, 미설치 항목은 큐레이션 목록에 회색 표시(document.fonts.check) |
+| 52 | 내보내기 저장 위치 기본값 — 원본 폴더(레포 안, git 변경목록 노출) vs 최근 폴더 | 원본 폴더(원 설계 저장 위치 승계), 마지막 선택을 exportDefaults.target에 기억 |
+| 42 | P 키를 베지어 펜으로 재배정(연필=Shift+P) — 출시 키 변경 | 예(Figma 관습·시안 ③ 펜 우선), 릴리스 노트 명시 |
+| 39 | ⑧ 이미지 컨텍스트 바 '채우기·맞춤·늘이기'(배경 이미지 피팅)를 위해 프레임 루트 모델(아트보드≠이미지)을 채택할지 | 아니오 — 캔버스=이미지 경계 계약 유지, 세 버튼 미렌더(not_feasible) |
+| 47 | 노드 편집 '연결·끊기·도형 삽입'(vector 제안, 시안 밖) | 제외 |
+| 46 | 정다각형 인스펙터 `변 수` 필드(시안 라벨 0건 — `isRegularPolygon` 파생, 문서 모델 무변경) | 예 — 정다각형일 때만 표시. 아니오면 필드 1개 삭제 |
+| 45→37 | 시안 ④ 효과 편집 `Blend "곱하기"` 행 — 37 `Effect`에 `blend?: BlendMode` 추가할지 | 아니오 — 행 미렌더. 예면 37 +1필드 · 39 dropShadow gCO · 45 Select 1행(순증) |
+| 42 | 텍스트 편집 단축키(Ctrl+B/I/U·정렬·크기 ±) — 시안 ②⑧ 글리프 없음(49·50 판정으로 42 표에서 제외) | 아니오 — 인스펙터·컨텍스트 바 컨트롤만. 원하면 42 표 행 + 50 핸들러 |
+| 42/51 | 컴포넌트 생성/분리 Ctrl+Alt+K/B(시안 ⑧ 글리프 없음, Figma 관습 — 42 표에 있음) | 예 — 행 유지(Ctrl+Alt+K는 `KeyboardShortcuts.tsx:122` 커밋 폼 충돌을 consume이 막는 부수 효과) |
+
+### 10.4 공통 준수 사항 (37~52)
+
+- 타입·계약은 37 types.ts 한 곳 — 타 태스크는 import만, 같은 개념에 두 이름 금지(계약 §의 이름표가 정본)
+- 렌더 진입은 renderScene(ctx, scene, t, opts) 하나 — 프리뷰 백킹·디테일·출력 타일·내보내기·썸네일 전부. 렌더는 문서 밖 상태를 읽지 않는다(스타일·라이브러리는 노드에 값 복사)
+- 트리는 평탄 DFS 배열+parentId. objects 재배열은 tree.ts 함수만(직접 splice 금지), DEV assertTreeInvariant를 applyDoc 뒤 호출
+- 숨김/잠금/마스크 범위 해석은 resolveScene 한 곳 — hidden ⇒ nodes 제외(렌더·히트·출력 자동 일치), locked ⇒ flags(히트만). Scene 캐시는 단일 슬롯(WeakMap 금지 — 히스토리 잔류)
+- 리프 좌표는 세계 oriented px 하나(중첩 행렬 0). 그룹 회전은 리프에 굽는다. 드래그·크롭·직선화는 base에서 재계산(누적 델타 금지)
+- 화면 크롬은 SVG ChromeOverlay(pointer-events:none)만 — 캔버스 [1]에 strokeRect/fillText 0건. 포인터·커서는 [1]이 받는다. z: 크롬3>박스2>디테일1
+- 단축키는 EDITOR_SHORTCUTS 표 한 곳 + window capture 리스너 1개 — 다른 리스너 추가 금지. 글자 키는 e.code, isComposing 무시
+- 문서 변경은 applyDoc/patchDoc 깔때기만, 커밋마다 라벨(없으면 describeChange). 드래그 1회·키 1회(repeat 무시)=히스토리 1칸
+- 메모리는 40의 원장 표 하나로 합산(축별 계산 금지). 상한은 바이트: layerPool≤2×백킹, fontkit≤24MB, 디테일 8MP, 에셋 16MB/16MP, 내보내기 게이트=estimateRenderBytes.peak
+- Rust: 프론트가 준 절대경로에 쓰는 커맨드 금지(토큰/허용목록), 신규 FS 커맨드는 resolve_in_repo·.git 가드, 동시 invoke는 배치/직렬, 큰 바이트는 raw body(ipc::Request/Response)
+- e2e 30/34/35 계약 유지: 루트 div.fixed.inset-0.z-50 + aria-label='이미지 편집', canvases()[0]/[1] 백킹 크기, 200px 픽스처 oriented==백킹==파일, 도구 title '<라벨> (<키>)'. 허용 수정은 계약 §에 열거된 헬퍼 줄뿐
+- 시안에 없는 기능은 넣지 않는다(비활성 버튼도 없음) — 추가 제안은 열린 질문으로. 협업(아바타·공유·코멘트) 없음. 단축키 Windows 1차, Mac은 Ctrl→Cmd 두 열 표기
+- 근거는 파일:줄, 추측은 '추정'. 착수 첫 단계 프로브: beginLayer 가용(39), raw body 64MB(52), fontkit 번들(50) — 결과로 설계 분기
+- 의도적 천장은 `ponytail:` 주석으로 표시(render shim·분류 휴리스틱·등간격 O(N) 등), 후속 태스크가 삭제 수용 기준을 가진다
+- 번호: e2e 36 layer-tree(38)·37 persist(41)·38 components-styles(51)·39 vector(46 신설, 47·48 절 추가)·40 `40-image-editor-pro-ui.mjs`(42 신설, 43·44·45 절 추가)·41 export(52)·42 doc-schema(37)·43 text(49 신설, 50 절 추가); DOCS/task 37~52. 형식은 30-image-doc-window-editor.md 표본(§1~§7 + 구현 후 §8)
+
+### 10.5 시안에 있으나 이 플랫폼에서 불가·대체
+
+- ⑧ 배경 이미지 '채우기·맞춤·늘이기': '캔버스 경계=이미지 경계' 계약(ImageEditor.tsx:660-691 renderOutput) 위에 있어 프레임 루트 모델 없이는 프리뷰≠저장. 세 버튼 미렌더, 열린 질문으로 승격
+- OpenType 기능을 fillText로: ctx.font이 font-feature-settings를 거부(실측). → 50 fontkit 글리프 패스 경로로 대체(11px 이하 AA 차이 경고). frac는 폰트 GSUB 없으면 합성하지 않음(토글 비활성)
+- 선형 번(linear-burn)의 투명 배경 위 정확 재현: canvas에 없어 invert∘lighter∘invert — 불투명 배경에서만 항등. 투명 PNG는 프리뷰==출력이나 Figma와 다름, occlusionIntegrity 채널로 경고
+- 이전 세션 히스토리 항목('어제 · 이미지 열기')으로 되돌리기: 세션 간 전체 스택 영속은 자동저장마다 200벌. 로그(라벨·시각)만 readonly 표시, 되돌리기는 명명 스냅샷(20개)만
+- 그룹 자체 회전각 보존(회전된 그룹 선택 상자): 리프 좌표 단일 세계 좌표계 대가로 그룹은 기하 없음 — 재선택 시 축정렬 AABB(픽셀 결과는 동일). 필요하면 프레임으로 감싼다
+- 한 텍스트 객체 안 범위(부분) 스타일: 시안 속성이 전부 객체 단위, textarea로 범위 편집 불가. 부분 강조는 객체 분할(자동 폭)
+- 메타데이터 제거 OFF(원본 EXIF/XMP 보존)·AVIF Display P3: 캔버스 재인코딩은 메타데이터를 남기지 않고(실측) AVIF 인코더는 sRGB 태그 — 옵션 체크·비활성+툴팁
+- 래스터 내보내기의 '텍스트 윤곽선화' 옵션: 픽셀 결과가 같아 무의미 — SVG 포맷 채택 시에만 활성. 문서 내 윤곽선화(Ctrl+Shift+O)는 항상 가능(50)
+- macOS(WKWebView) 정확도: ctx.filter(조정·효과)·letterSpacing 미지원(추정) — 조정 탭·텍스트 엔진에 isMac 경고+폴백, Windows 1차 플랫폼에서 정확. 실기 1회 항목
+- queryLocalFonts로 폰트 열거: wry가 권한 프롬프트를 처리하지 않고 WKWebView 미구현 — Rust fontdb 단일 경로(50)
+- 편집 중(textarea) 밑줄/취소선/justify가 확정 렌더와 픽셀 단위 동일: TextMetrics가 underlinePosition을 노출하지 않음 — 확정 렌더가 정본, 50이 폰트 표로 0~1px로 축소
+- 노드 편집 '연결·끊기·도형 삽입', 조정 8슬라이더·필터 6·자동수평, 배율 'height', TextCase 'title', Paint image 'tile': 시안에 없어 제외(열린 질문)
+
+### 10.6 정합 검사 접점(2026-09-04) — 결정 완료(아래 결정 문단)
+
+| 접점 | 내용 | 권고 |
+|---|---|---|
+| 51 → 37 | 51 §4가 `InstanceNode.children: Node[]` **삭제**(자식은 objects 평탄 슬라이스 — 38 §3.1 불변식과 중복 표현)·`GroupNode.detachedFrom?`·`normalizeNode` 보존을 요청. 37 §4·공유 계약은 `children` 유지 | 51안 채택(중복 표현 제거). 37 커밋1에서 반영 — 38 `resolveScene`은 "인스턴스 자식 포함" 문구만 유지 |
+| 45 ↔ 43 | 45 그라디언트 캔버스 핸들 드래그가 `onPointerHit`(43 §4에 **없음**)을 전제. 45는 계약 부재 시 핸들 **미표시**(각도/스케일 필드로 전 기능 도달) | 43 `pointer.ts`에 pointerdown 선점 훅 1개(47 진입 3줄과 같은 자리) 정의 여부 — 43 착수 시 결정 |
+| 45 → 42/44 | 컨텍스트 바 `image` 변형의 진입 조건 `sel ∋ '__base'` — 누가 `'__base'`를 선택에 넣는지 미정(44 배경 행 클릭은 현재 `select([])`, 캔버스 빈 곳 클릭은 해제) | 44 배경 행 클릭 = `select(['__base'])`로 통일, 42 `select`가 `'__base'`를 단독 선택으로만 허용 |
+| 38 ↔ 48 | `rotateNodes` 임의각 규칙 — 38 §3.3 "text/badge `rot` 누적, 나머지 정점 회전"은 축정렬 rect/ellipse/mosaic에 임의각을 적용할 수 없다. 48 §3.2는 "rect·ellipse·mosaic·text·badge = 앵커 이동 + `rot += Δ`, pen/line/arrow/path = 정점 회전"으로 해석 | 48 해석으로 38 §3.3 문구 확정(v1 `Common.rot`이 전 kind에 있음) |
+
+**결정(2026-09-04, 메인 세션 — 문서에 반영 완료)**: (1) 51안 채택 — `InstanceNode.children` 삭제, 자식은 `objects` 평탄 슬라이스, `GroupNode.detachedFrom?`, `normalizeNode` 보존, id에 `/` 허용(37 §4). (2) 43 §4에 `registerPointerHit` 선점 훅 등재 — 45 그라디언트 핸들 표시(45 §6 위험 행 갱신). (3) 44 배경 행 = `select(['__base'])` 단독, 42 `select/selectedIds/classifySelection`이 `'__base'` 의사 id 허용(단독만). (4) 38 §3.3 `rotateNodes` 리프 규칙을 48 §3.2 해석으로 확정(rect·ellipse·mosaic·text·badge 앵커 이동+`rot` 누적, 폴리라인·path 정점 회전). (5) 시안 밖 4건은 §10.3 열린 질문으로 유지.
