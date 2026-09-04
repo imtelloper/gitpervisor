@@ -85,31 +85,9 @@ pub async fn write_file(
             return Err(IpcError::new(ErrorCode::Io, "디렉토리에는 쓸 수 없습니다"));
         }
     }
-    tokio::fs::write(&target, content).await.map_err(write_io_err)
-}
-
-/// 파일 쓰기 io 오류 → 사용자가 **다음 행동을 알 수 있는** IpcError.
-///
-/// `os error 5` 를 그대로 노출하면 원인에 도달할 방법이 없다. 실제로 이 저장소 사용자가
-/// Windows 제어된 폴더 액세스(랜섬웨어 방지)에 막혔는데, 기본 보호 폴더가 문서·사진·비디오·
-/// 바탕 화면이라 "비디오 폴더 밑 이미지 편집 저장"이 통째로 실패했다. 앱 로그에는 아무 단서가
-/// 없고 원인은 Defender 이벤트 로그(1123)에만 남는다 — 그래서 여기서 짚어 준다.
-/// dev 빌드와 설치본은 별개 exe 라 허용 목록에 각각 등록해야 한다.
-fn write_io_err(e: std::io::Error) -> IpcError {
-    if e.kind() != std::io::ErrorKind::PermissionDenied {
-        return IpcError::new(ErrorCode::Io, format!("파일 저장 실패: {e}"));
-    }
-    let hint = if cfg!(windows) {
-        concat!(
-            "파일 저장 실패: 액세스가 거부되었습니다. Windows '제어된 폴더 액세스'",
-            "(랜섬웨어 방지)가 차단했을 수 있습니다 — 문서·사진·비디오·바탕 화면이 기본 보호 대상입니다. ",
-            "Windows 보안 › 랜섬웨어 방지에서 이 앱을 허용하거나 파일을 보호 폴더 밖으로 옮기세요. ",
-            "(읽기 전용 파일이거나 다른 프로그램이 열고 있어도 같은 오류가 납니다.)",
-        )
-    } else {
-        "파일 저장 실패: 권한이 없습니다. 파일·상위 폴더의 쓰기 권한을 확인하세요."
-    };
-    IpcError::new(ErrorCode::Io, hint)
+    tokio::fs::write(&target, content)
+        .await
+        .map_err(|e| IpcError::new(ErrorCode::Io, format!("파일 저장 실패: {e}")))
 }
 
 /// 새 폴더 생성 — `rel_path`는 레포 루트 기준 상대 경로(만들 폴더 자신).
@@ -353,14 +331,6 @@ pub async fn move_path(
 /// 바이너리 파일 쓰기 — base64 바이트를 디스크에 쓴다(이미지 변환·편집 저장용).
 /// 새 파일 생성을 허용하되(상위 디렉토리는 존재해야 함), 기존 디렉토리에는 쓰지 않는다.
 /// 경로 탈출(빈 경로·절대경로·`..`·`.git`)을 막는다.
-///
-/// `expected_stamp` 는 호출자가 **그 파일을 읽었을 때**의 정체(`read_file_base64` 가 준
-/// `stamp`)다. 주면 쓰기 직전에 대조해 다르면 `Conflict` 로 거절한다 — 이미지 편집기를 열어 둔
-/// 사이 외부 도구(또는 다른 편집 창)가 같은 파일을 바꿨을 때 [저장]이 그 변경을 **말없이**
-/// 날리던 경로를 막는다. 생략하면 종전과 1비트도 다르지 않다(변환 저장·e2e 등 기존 호출부).
-///
-/// 대상이 아예 없어졌으면 충돌로 보지 않는다 — 다시 만들어 주는 쪽이 덜 놀랍고, 막아 봐야
-/// 사용자가 할 수 있는 일이 저장뿐이다.
 #[tauri::command]
 pub async fn write_file_bytes(
     state: State<'_, AppState>,
@@ -368,7 +338,6 @@ pub async fn write_file_bytes(
     rel_path: String,
     base64: String,
     overwrite: bool,
-    expected_stamp: Option<String>,
 ) -> Result<(), IpcError> {
     let repo = project_path(&state, &project_id)?;
     let target = resolve_in_repo(&repo, &rel_path)?;
@@ -379,20 +348,6 @@ pub async fn write_file_bytes(
         }
         if meta.is_dir() {
             return Err(IpcError::new(ErrorCode::Io, "디렉토리에는 쓸 수 없습니다"));
-        }
-        // 이미 뜬 메타를 그대로 쓴다 — 검사 때문에 파일을 되읽지 않는다.
-        if let Some(want) = expected_stamp.as_deref() {
-            match crate::commands::diff::stamp_of(&meta) {
-                Some(now) if now != want => {
-                    return Err(IpcError::new(
-                        ErrorCode::Conflict,
-                        "이 파일이 편집을 시작한 뒤 외부에서 바뀌었습니다",
-                    ));
-                }
-                // 메타에서 mtime 을 못 얻는 플랫폼/파일시스템 — 검사를 포기하고 통과시킨다.
-                // 저장 자체를 막으면 그런 환경에서 기능이 통째로 죽는다.
-                _ => {}
-            }
         }
     }
     // 덮어쓰기 미허용이면 기존 파일을 보호한다 — 변환/다른 이름 저장의 의도치 않은 데이터 손실 방지.
@@ -410,7 +365,9 @@ pub async fn write_file_bytes(
     if bytes.len() > MAX_WRITE_BYTES {
         return Err(IpcError::new(ErrorCode::Io, "파일이 너무 큽니다 (64MB 초과)"));
     }
-    tokio::fs::write(&target, bytes).await.map_err(write_io_err)
+    tokio::fs::write(&target, bytes)
+        .await
+        .map_err(|e| IpcError::new(ErrorCode::Io, format!("파일 저장 실패: {e}")))
 }
 
 /// 한 프로젝트 루트의 결과(또는 오류) — 배치 프리페치용.
