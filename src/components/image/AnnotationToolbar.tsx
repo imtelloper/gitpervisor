@@ -20,9 +20,11 @@ import {
 } from "lucide-react";
 
 import {
+  DEFAULT_STROKE,
   PALETTE,
+  solidFill,
   type Tool,
-  type ToolStyle,
+  type DefaultPaint,
 } from "../../lib/annotate/types";
 
 /** 도구 팔레트 정의 — 아이콘·라벨·단축키를 한 곳에 모은다(§5.2 표). */
@@ -73,9 +75,9 @@ export interface AnnotationToolbarProps {
    * 객체의 종류가 들어온다 — 안 그러면 선택 중에는 색·두께를 바꿀 수단이 사라진다.
    */
   propTool: Tool;
-  style: ToolStyle;
+  style: DefaultPaint;
   /** `live` 는 슬라이더 드래그 중 틱 — 히스토리를 매 틱 쌓지 않게 하는 신호다(§5.3). */
-  onStyleChange: (patch: Partial<ToolStyle>, live?: boolean) => void;
+  onStyleChange: (patch: Partial<DefaultPaint>, live?: boolean) => void;
   /** 0–1. 형광펜은 자체 알파를 쓰므로 노출하지 않는다. */
   opacity: number;
   onOpacityChange: (v: number, live?: boolean) => void;
@@ -104,6 +106,13 @@ export default function AnnotationToolbar({
   onUndo,
   onRedo,
 }: AnnotationToolbarProps) {
+  // 툴바는 페인트 스택의 **첫 겹만** 보여 준다(37 §3.4 shim) — 다중 채우기·그라디언트
+  // 편집은 인스펙터(태스크 45)가 붙는다. 그때까지 여기서는 만들 수 없다.
+  const firstStroke = style.strokes.find((f) => f.visible);
+  const strokeColor =
+    firstStroke && firstStroke.type === "solid" ? firstStroke.color : DEFAULT_STROKE;
+  const firstFill = style.fills.find((f) => f.visible);
+  const fillColor = firstFill && firstFill.type === "solid" ? firstFill.color : null;
   const showColor = COLOR_TOOLS.has(propTool);
   const showWidth = WIDTH_TOOLS.has(propTool);
   const showFill = propTool === "rect" || propTool === "ellipse";
@@ -159,8 +168,8 @@ export default function AnnotationToolbar({
               <Swatch
                 key={c}
                 color={c}
-                active={style.stroke.toLowerCase() === c.toLowerCase()}
-                onClick={() => onStyleChange({ stroke: c })}
+                active={strokeColor.toLowerCase() === c.toLowerCase()}
+                onClick={() => onStyleChange({ strokes: [solidFill(c)] })}
               />
             ))}
           </div>
@@ -171,8 +180,8 @@ export default function AnnotationToolbar({
                 <Swatch
                   key={`recent-${c}`}
                   color={c}
-                  active={style.stroke.toLowerCase() === c.toLowerCase()}
-                  onClick={() => onStyleChange({ stroke: c })}
+                  active={strokeColor.toLowerCase() === c.toLowerCase()}
+                  onClick={() => onStyleChange({ strokes: [solidFill(c)] })}
                 />
               ))}
             </div>
@@ -197,9 +206,9 @@ export default function AnnotationToolbar({
           <div className="flex flex-wrap gap-1">
             <button
               title="채우지 않음"
-              onClick={() => onStyleChange({ fill: null })}
+              onClick={() => onStyleChange({ fills: [] })}
               className={`h-5 w-5 rounded border text-[10px] leading-none ${
-                style.fill === null
+                fillColor === null
                   ? "border-accent text-accent"
                   : "border-edge text-fg-dim hover:text-fg"
               }`}
@@ -210,8 +219,8 @@ export default function AnnotationToolbar({
               <Swatch
                 key={`fill-${c}`}
                 color={c}
-                active={(style.fill ?? "").toLowerCase() === c.toLowerCase()}
-                onClick={() => onStyleChange({ fill: c })}
+                active={(fillColor ?? "").toLowerCase() === c.toLowerCase()}
+                onClick={() => onStyleChange({ fills: [solidFill(c)] })}
               />
             ))}
           </div>
@@ -221,10 +230,10 @@ export default function AnnotationToolbar({
       {showRadius && (
         <PropSlider
           label="모서리"
-          value={style.radius}
+          value={style.radius[0]}
           min={0}
           max={80}
-          onChange={(v) => onStyleChange({ radius: v }, true)}
+          onChange={(v) => onStyleChange({ radius: [v, v, v, v] }, true)}
           onEnd={onEditEnd}
         />
       )}

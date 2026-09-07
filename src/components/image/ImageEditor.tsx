@@ -28,14 +28,25 @@ import {
 import { DocHistory } from "../../lib/annotate/history";
 import { renderScene } from "../../lib/annotate/render";
 import {
+  applyPaintPatch,
+  DOC_VERSION,
+  documentColors,
+  normalizeDoc,
+  paintOf,
+  parseImageDoc,
+  serializeImageDoc,
+  type ImageDocEnvelope,
+} from "../../lib/annotate/schema";
+import {
   DEFAULT_OPACITY,
-  DEFAULT_STYLE,
-  type AnnoObject,
+  DEFAULT_PAINT,
+  TOOL_KINDS,
+  type Node,
   type EditorDoc,
   type ObjId,
   type Rect,
   type Tool,
-  type ToolStyle,
+  type DefaultPaint,
 } from "../../lib/annotate/types";
 import {
   bytesToBase64,
@@ -98,18 +109,8 @@ function stashPut(key: string, doc: EditorDoc, stamp: string | null): void {
   }
 }
 
-const EMPTY_DOC: EditorDoc = {
-  objects: [],
-  rotation: 0,
-  flipH: false,
-  flipV: false,
-  crop: null,
-  outW: 0,
-  outH: 0,
-  brightness: 100,
-  contrast: 100,
-  saturate: 100,
-};
+/** 빈 문서 — 경계(normalizeDoc)가 만든다. 필드를 두 곳에서 셀 이유가 없다(37 §4). */
+const EMPTY_DOC: EditorDoc = normalizeDoc({});
 
 /** 회전(0/90/180/270) + 좌우/상하 반전을 적용한 원본 해상도 캔버스를 만든다(필터·크롭 전). */
 function buildOriented(
@@ -148,27 +149,15 @@ function roundTripWarning(path: string): string | null {
   return formatOfPath(path) === null ? "PNG로 저장됩니다" : null;
 }
 
-/** 툴바 속성 변경을 선택된 객체에 반영한다(종류별로 의미 있는 필드만). */
-function restyle(o: AnnoObject, s: Partial<ToolStyle>): AnnoObject {
-  const n: AnnoObject = { ...o };
-  if (s.stroke !== undefined) {
-    // 뱃지의 "색"은 원 채움이다 — 숫자 글자색은 렌더러가 대비로 정한다.
-    if (n.kind === "badge") n.fill = s.stroke;
-    else n.stroke = s.stroke;
-  }
-  if (s.strokeWidth !== undefined) n.strokeWidth = s.strokeWidth;
-  if (s.fill !== undefined && (n.kind === "rect" || n.kind === "ellipse")) {
-    n.fill = s.fill;
-  }
-  if (s.radius !== undefined && n.kind === "rect") n.radius = s.radius;
-  if (s.fontSize !== undefined && (n.kind === "text" || n.kind === "badge")) {
-    n.fontSize = s.fontSize;
-  }
-  if (s.mosaicMode !== undefined && n.kind === "mosaic") n.mode = s.mosaicMode;
-  if (s.mosaicStrength !== undefined && n.kind === "mosaic") {
-    n.strength = s.mosaicStrength;
-  }
-  return n;
+/**
+ * 툴바의 "색" 컨트롤은 kind 마다 다른 슬롯에 앉는다 — v1 `restyle` 의 규칙을 그대로 잇는다:
+ * 뱃지는 원 채움, 텍스트는 글자색(둘 다 `fills`), 나머지는 선(`strokes`).
+ * 나머지 필드는 schema.applyPaintPatch 가 kind 를 보고 거른다.
+ */
+function remapPaintForKind(o: Node, patch: Partial<DefaultPaint>): Partial<DefaultPaint> {
+  if (!patch.strokes || (o.kind !== "badge" && o.kind !== "text")) return patch;
+  const { strokes, ...rest } = patch;
+  return { ...rest, fills: strokes };
 }
 
 /**
@@ -213,7 +202,7 @@ export default function ImageEditor() {
   busyRef.current = busy;
 
   const [tool, setTool] = useState<Tool>("select");
-  const [style, setStyle] = useState<ToolStyle>(DEFAULT_STYLE);
+  const [style, setStyle] = useState<DefaultPaint>(DEFAULT_PAINT);
   const [opacity, setOpacity] = useState(DEFAULT_OPACITY);
   const [recent, setRecent] = useState<string[]>([]);
   const [selectedIds, setSelectedIds] = useState<ObjId[]>([]);
@@ -569,7 +558,7 @@ export default function ImageEditor() {
   const resetAll = () => {
     if (!img || !oriented) return;
     const d = docRef.current;
-    let objs: readonly AnnoObject[] = d.objects;
+    let objs: readonly Node[] = d.objects;
     let w = oriented.width;
     let h = oriented.height;
     if (d.flipH) objs = transformObjects(objs, "flipH", w, h);
@@ -604,38 +593,45 @@ export default function ImageEditor() {
     if (selectedIds.length !== 1) return;
     const o = docRef.current.objects.find((x) => x.id === selectedIds[0]);
     if (!o) return;
+    // 선택 객체의 페인트를 툴바로 끌어온다. 뱃지·텍스트는 "색"이 채우기 슬롯에 있으므로
+    // 툴바가 읽는 strokes 자리로 옮겨 보여 준다(remapPaintForKind 의 역).
+    const p = paintOf(o);
     setStyle((s) => ({
       ...s,
-      stroke: o.kind === "badge" ? o.fill : o.stroke,
+      ...p,
+      strokes:
+        o.kind === "badge" || o.kind === "text"
+          ? p.fills.length
+            ? p.fills
+            : s.strokes
+          : p.strokes.length
+            ? p.strokes
+            : s.strokes,
+      fills: o.kind === "rect" || o.kind === "ellipse" ? p.fills : s.fills,
       strokeWidth: o.strokeWidth || s.strokeWidth,
-      fill: o.kind === "rect" || o.kind === "ellipse" ? o.fill : s.fill,
-      radius: o.kind === "rect" ? o.radius : s.radius,
-      fontSize: o.kind === "text" || o.kind === "badge" ? o.fontSize : s.fontSize,
-      mosaicMode: o.kind === "mosaic" ? o.mode : s.mosaicMode,
-      mosaicStrength: o.kind === "mosaic" ? o.strength : s.mosaicStrength,
     }));
     setOpacity(o.opacity);
   }, [selectedIds]);
 
-  /** 속성 패널이 따를 도구 — 선택 중이면 선택된 객체의 종류(AnnoKind ⊂ Tool). */
-  const propTool: Tool =
-    tool === "select" && selectedIds.length === 1
-      ? doc.objects.find((o) => o.id === selectedIds[0])?.kind ?? tool
-      : tool;
+  /** 속성 패널이 따를 도구 — 선택 중이면 선택된 객체의 종류(NodeKind ⊂ Tool). */
+  const propTool: Tool = (() => {
+    if (tool !== "select" || selectedIds.length !== 1) return tool;
+    const kind = doc.objects.find((o) => o.id === selectedIds[0])?.kind;
+    // path·frame·group·instance 는 도구가 없다(만드는 UI 는 태스크 45·46) — 속성 패널은
+    // 현재 도구를 따른다.
+    return kind && (TOOL_KINDS as readonly string[]).includes(kind) ? (kind as Tool) : tool;
+  })();
 
-  const onStyleChange = (patch: Partial<ToolStyle>, live = false) => {
+  const onStyleChange = (patch: Partial<DefaultPaint>, live = false) => {
     setStyle((s) => ({ ...s, ...patch }));
-    if (patch.stroke) {
-      setRecent((r) =>
-        [patch.stroke!, ...r.filter((c) => c !== patch.stroke)].slice(
-          0,
-          RECENT_COLORS,
-        ),
-      );
+    const picked = patch.strokes?.find((f) => f.visible && f.type === "solid");
+    if (picked && picked.type === "solid") {
+      const c = picked.color;
+      setRecent((r) => [c, ...r.filter((x) => x !== c)].slice(0, RECENT_COLORS));
     }
     if (!selectedIds.length) return;
     const next = docRef.current.objects.map((o) =>
-      selectedIds.includes(o.id) ? restyle(o, patch) : o,
+      selectedIds.includes(o.id) ? applyPaintPatch(o, remapPaintForKind(o, patch)) : o,
     );
     if (live) patchLive({ objects: next });
     else patchDoc({ objects: next });
@@ -954,9 +950,43 @@ export default function ImageEditor() {
     g.__gpv = g.__gpv ?? {};
     g.__gpv.imageEditor = {
       getDoc: () => docRef.current,
-      setDoc: (patch: Partial<EditorDoc>) => patchDoc(patch),
+      // setDoc 은 **경계**다 — v1 리터럴이든 부분 문서든 여기서 완전한 v2 문서가 된다(37 §3.3).
+      // 그래서 30·34·35 의 setDoc 리터럴 21건이 재작성 없이 산다.
+      setDoc: (patch: Partial<EditorDoc>) =>
+        patchDoc(normalizeDoc({ ...docRef.current, ...patch })),
       setTool: (t: Tool) => setTool(t),
       renderOnce: () => layerRef.current?.renderOnce(),
+      /** 직렬화 왕복이 문서를 바꾸지 않는가 — 태스크 41(사이드카 자동저장)의 전제다. */
+      roundTrip: () => {
+        const env: ImageDocEnvelope = {
+          v: 2,
+          projectId: editorRepoId ?? "",
+          relPath: path ?? "",
+          imageStamp: stampRef.current,
+          imageW: docRef.current.outW,
+          imageH: docRef.current.outH,
+          savedAt: 0,
+          doc: docRef.current,
+          foreign: [],
+          log: [],
+        };
+        const back = parseImageDoc(serializeImageDoc(env)).env.doc;
+        const key = (v: unknown): string =>
+          JSON.stringify(v, (_k, x) =>
+            x && typeof x === "object" && !Array.isArray(x)
+              ? Object.fromEntries(Object.entries(x as object).sort())
+              : x,
+          );
+        return key(back) === key(docRef.current);
+      },
+      schema: {
+        normalizeDoc,
+        parse: parseImageDoc,
+        serialize: serializeImageDoc,
+        documentColors,
+        emptyDoc: () => EMPTY_DOC,
+        version: DOC_VERSION,
+      },
     };
     return () => {
       delete g.__gpv?.imageEditor;

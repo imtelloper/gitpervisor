@@ -11,6 +11,7 @@ import {
   applySceneTransform,
   buildObjectPath,
   fontStringOf,
+  isGeomNode,
   layoutText,
   objectAABB,
 } from "./geometry";
@@ -18,14 +19,17 @@ import {
   ARROW_HEAD_SCALE,
   BADGE_RADIUS_SCALE,
   DEFAULT_FONT_FAMILY,
-  type AnnoObject,
+  DEFAULT_STROKE,
+  type Fill,
+  type GeomNode,
+  type Node,
   type BadgeObject,
   type LineObject,
   type MosaicObject,
   type ObjId,
   type PenObject,
   type SceneTransform,
-  type TextObject,
+  type TextNode,
 } from "./types";
 
 export type { SceneTransform } from "./types";
@@ -59,15 +63,42 @@ export interface PreviewBackdrop {
  * @param opts.skipId   텍스트 편집 중인 객체 — textarea 오버레이가 대신 보여주므로 뺀다(§5.5)
  * @param opts.backdrop 프리뷰에서만 준다. 이미지가 대상 캔버스에 없을 때 배경을 재구성한다.
  */
+/**
+ * 페인트 스택의 **첫 보이는 단색**. 그라디언트·이미지 페인트와 2번째 이후 겹은 여기서 사라진다.
+ *
+ * ponytail: 태스크 39(renderScene v2)가 페인트 스택 전체를 그릴 때까지의 천장이다. 그때까지는
+ * 문서에 값이 있어도 화면에 안 나오는 기간이 생기는데, 그 값을 만들 UI 가 아직 없다(45가 39 뒤).
+ */
+function primaryPaint(stack: readonly Fill[]): string | null {
+  for (const f of stack) {
+    if (!f.visible) continue;
+    if (f.type === "solid") return f.color;
+    return null; // 그라디언트·이미지는 39 전까지 그리지 않는다
+  }
+  return null;
+}
+
+function primaryFill(o: GeomNode): string | null {
+  return primaryPaint(o.fills);
+}
+
+function primaryStroke(o: GeomNode): string | null {
+  return o.strokeWidth > 0 ? primaryPaint(o.strokes) : null;
+}
+
 export function renderScene(
   ctx: CanvasRenderingContext2D,
-  objects: readonly AnnoObject[],
+  objects: readonly Node[],
   t: SceneTransform,
   opts?: { skipId?: ObjId; backdrop?: PreviewBackdrop },
 ): void {
   const skip = opts?.skipId;
   for (const o of objects) {
     if (skip && o.id === skip) continue;
+    // 컨테이너의 격리 합성(불투명도·블렌드·효과·마스크)은 태스크 39 가 붙인다 — 지금은
+    // 자손 리프가 문서 순서대로 그려지므로 그룹이 있어도 그림은 같다.
+    if (!isGeomNode(o)) continue;
+    if (!o.visible) continue;
     ctx.save();
     drawObject(ctx, o, t, opts?.backdrop);
     ctx.restore();
@@ -76,7 +107,7 @@ export function renderScene(
 
 function drawObject(
   ctx: CanvasRenderingContext2D,
-  o: AnnoObject,
+  o: GeomNode,
   t: SceneTransform,
   backdrop?: PreviewBackdrop,
 ): void {
@@ -95,10 +126,12 @@ function drawObject(
   applySceneTransform(ctx, t);
   applyObjectTransform(ctx, o);
 
-  ctx.strokeStyle = o.stroke;
+  const stroke = primaryStroke(o);
+  ctx.strokeStyle = stroke ?? "transparent";
   ctx.lineWidth = o.strokeWidth;
-  ctx.lineJoin = "round";
-  ctx.lineCap = "round";
+  ctx.lineJoin = o.join;
+  ctx.lineCap = o.cap;
+  if (o.dash) ctx.setLineDash(o.dash);
 
   switch (o.kind) {
     case "highlight":
@@ -109,21 +142,25 @@ function drawObject(
       ctx.stroke(buildObjectPath(o));
       break;
     case "pen":
-      ctx.stroke(buildObjectPath(o));
+      if (stroke) ctx.stroke(buildObjectPath(o));
       break;
     case "line":
     case "arrow":
-      ctx.stroke(buildObjectPath(o));
-      if (o.kind === "arrow") drawArrowHeads(ctx, o);
+      if (stroke) ctx.stroke(buildObjectPath(o));
+      if (o.kind === "arrow" && stroke) drawArrowHeads(ctx, o, stroke);
       break;
     case "rect":
-    case "ellipse": {
+    case "ellipse":
+    case "path":
+    case "frame": {
       const path = buildObjectPath(o);
-      if (o.fill) {
-        ctx.fillStyle = o.fill;
-        ctx.fill(path);
+      const fill = primaryFill(o);
+      if (fill) {
+        ctx.fillStyle = fill;
+        if (o.kind === "path" && o.fillRule === "evenodd") ctx.fill(path, "evenodd");
+        else ctx.fill(path);
       }
-      if (o.strokeWidth > 0) ctx.stroke(path);
+      if (stroke) ctx.stroke(path);
       break;
     }
     case "text":
@@ -207,7 +244,7 @@ function drawHighlightOnBackdrop(
   applySceneTransform(sc, t);
   applyObjectTransform(sc, o);
   const path = buildObjectPath(o);
-  sc.strokeStyle = o.stroke;
+  sc.strokeStyle = primaryPaint(o.strokes) ?? "transparent";
   sc.lineWidth = o.strokeWidth;
   sc.lineJoin = "round";
   // butt cap 이라야 획 끝이 뭉치지 않는다(출력 경로와 동일, §5.2).
@@ -228,11 +265,17 @@ function drawHighlightOnBackdrop(
   ctx.drawImage(sc.canvas, 0, 0, dw, dh, x0, y0, dw, dh);
 }
 
-/** 화살촉 — 길이 4 × strokeWidth 의 채운 삼각형(§5.2). */
-function drawArrowHeads(ctx: CanvasRenderingContext2D, o: LineObject): void {
-  ctx.fillStyle = o.stroke;
-  drawArrowHead(ctx, o.x1, o.y1, o.x2, o.y2, o.strokeWidth);
-  if (o.head === "both") {
+/** 화살촉 — 길이 4 × strokeWidth 의 채운 삼각형(§5.2). 방향은 `heads`(37)가 정한다. */
+function drawArrowHeads(
+  ctx: CanvasRenderingContext2D,
+  o: LineObject,
+  color: string,
+): void {
+  ctx.fillStyle = color;
+  if (o.heads.end === "arrow") {
+    drawArrowHead(ctx, o.x1, o.y1, o.x2, o.y2, o.strokeWidth);
+  }
+  if (o.heads.start === "arrow") {
     drawArrowHead(ctx, o.x2, o.y2, o.x1, o.y1, o.strokeWidth);
   }
 }
@@ -260,9 +303,9 @@ function drawArrowHead(
 }
 
 /** 여러 줄 텍스트 — 앵커(x,y)가 첫 줄의 좌상단. 레이아웃은 geometry 와 공유한다. */
-function drawText(ctx: CanvasRenderingContext2D, o: TextObject): void {
+function drawText(ctx: CanvasRenderingContext2D, o: TextNode): void {
   const m = layoutText(o);
-  ctx.fillStyle = o.stroke;
+  ctx.fillStyle = primaryFill(o) ?? DEFAULT_STROKE;
   ctx.font = fontStringOf(o.fontSize, o.fontFamily);
   ctx.textAlign = "left";
   ctx.textBaseline = "top";
@@ -274,16 +317,18 @@ function drawText(ctx: CanvasRenderingContext2D, o: TextObject): void {
 /** 번호 뱃지 — 반지름 0.9 × fontSize 의 채운 원 + 가운데 숫자(§5.2). */
 function drawBadge(ctx: CanvasRenderingContext2D, o: BadgeObject): void {
   const r = BADGE_RADIUS_SCALE * o.fontSize;
+  const fill = primaryFill(o) ?? DEFAULT_STROKE;
   ctx.beginPath();
   ctx.arc(o.x, o.y, r, 0, Math.PI * 2);
-  ctx.fillStyle = o.fill;
+  ctx.fillStyle = fill;
   ctx.fill();
-  if (o.strokeWidth > 0) {
-    ctx.strokeStyle = o.stroke;
+  const outline = primaryStroke(o);
+  if (outline) {
+    ctx.strokeStyle = outline;
     ctx.lineWidth = o.strokeWidth;
     ctx.stroke();
   }
-  ctx.fillStyle = readableOn(o.fill);
+  ctx.fillStyle = readableOn(fill);
   ctx.font = fontStringOf(o.fontSize, DEFAULT_FONT_FAMILY, 700);
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";

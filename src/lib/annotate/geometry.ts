@@ -12,11 +12,21 @@ import {
   HIT_TOLERANCE_CSS,
   PEN_MIN_DIST,
   TEXT_LINE_HEIGHT,
-  type AnnoObject,
+  type GeomNode,
+  type Node,
+  type PathNode,
   type Rect,
   type SceneTransform,
-  type TextObject,
+  type TextNode,
 } from "./types";
+
+/**
+ * 기하가 있는 노드인가. `group`/`instance` 는 기하가 없어 이 모듈의 함수를 못 받는다 —
+ * 컨테이너 AABB 는 자손 합집합으로 파생한다(태스크 38 `tree.nodeAABB`).
+ */
+export function isGeomNode(n: Node): n is GeomNode {
+  return n.kind !== "group" && n.kind !== "instance";
+}
 
 const DEG = Math.PI / 180;
 
@@ -120,7 +130,7 @@ export interface TextLayout {
 }
 
 /** 텍스트 객체의 줄 나눔과 실측 크기(앵커 기준 좌상단 정렬). */
-export function layoutText(o: TextObject): TextLayout {
+export function layoutText(o: TextNode): TextLayout {
   const ctx = scratchCtx();
   ctx.font = fontStringOf(o.fontSize, o.fontFamily);
   const lines = o.text.length ? o.text.split("\n") : [""];
@@ -161,30 +171,81 @@ function penPath(pts: readonly number[]): Path2D {
   return p;
 }
 
-/** 모서리 반경 사각형 — Path2D.roundRect 는 런타임 편차가 있어 arcTo 로 직접 만든다. */
+/**
+ * 모서리 반경 사각형 — Path2D.roundRect 는 런타임 편차가 있어 arcTo 로 직접 만든다.
+ * 반경은 [tl, tr, br, bl] 넷을 각각 받는다(시안 ① `↖8 ↗8 ↘8 ↙8`).
+ */
 function roundRectPath(
   p: Path2D,
   x: number,
   y: number,
   w: number,
   h: number,
-  radius: number,
+  radius: readonly [number, number, number, number],
 ): void {
-  const r = Math.max(0, Math.min(radius, Math.min(Math.abs(w), Math.abs(h)) / 2));
-  if (r <= 0) {
+  const lim = Math.min(Math.abs(w), Math.abs(h)) / 2;
+  const tl = Math.max(0, Math.min(radius[0], lim));
+  const tr = Math.max(0, Math.min(radius[1], lim));
+  const br = Math.max(0, Math.min(radius[2], lim));
+  const bl = Math.max(0, Math.min(radius[3], lim));
+  if (tl <= 0 && tr <= 0 && br <= 0 && bl <= 0) {
     p.rect(x, y, w, h);
     return;
   }
-  p.moveTo(x + r, y);
-  p.lineTo(x + w - r, y);
-  p.arcTo(x + w, y, x + w, y + r, r);
-  p.lineTo(x + w, y + h - r);
-  p.arcTo(x + w, y + h, x + w - r, y + h, r);
-  p.lineTo(x + r, y + h);
-  p.arcTo(x, y + h, x, y + h - r, r);
-  p.lineTo(x, y + r);
-  p.arcTo(x, y, x + r, y, r);
+  p.moveTo(x + tl, y);
+  p.lineTo(x + w - tr, y);
+  p.arcTo(x + w, y, x + w, y + tr, tr);
+  p.lineTo(x + w, y + h - br);
+  p.arcTo(x + w, y + h, x + w - br, y + h, br);
+  p.lineTo(x + bl, y + h);
+  p.arcTo(x, y + h, x, y + h - bl, bl);
+  p.lineTo(x, y + tl);
+  p.arcTo(x, y, x + tl, y, tl);
   p.closePath();
+}
+
+/** 패스 서브패스를 Path2D 로 — 정점의 상대 핸들이 곧 3차 베지어 제어점이다. */
+function pathNodePath(o: PathNode): Path2D {
+  const p = new Path2D();
+  for (const sub of o.subpaths) {
+    const v = sub.verts;
+    if (v.length === 0) continue;
+    p.moveTo(v[0].x, v[0].y);
+    for (let i = 1; i < v.length; i++) {
+      const a = v[i - 1];
+      const b = v[i];
+      p.bezierCurveTo(a.x + a.outX, a.y + a.outY, b.x + b.inX, b.y + b.inY, b.x, b.y);
+    }
+    if (sub.closed && v.length > 1) {
+      const a = v[v.length - 1];
+      const b = v[0];
+      p.bezierCurveTo(a.x + a.outX, a.y + a.outY, b.x + b.inX, b.y + b.inY, b.x, b.y);
+      p.closePath();
+    }
+  }
+  return p;
+}
+
+/** 패스 정점·핸들 전부를 감싸는 사각형(제어점 포함 — 실제 곡선보다 넉넉하다). */
+function pathBounds(o: PathNode): Rect {
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  for (const sub of o.subpaths) {
+    for (const v of sub.verts) {
+      const xs = [v.x, v.x + v.inX, v.x + v.outX];
+      const ys = [v.y, v.y + v.inY, v.y + v.outY];
+      for (let i = 0; i < 3; i++) {
+        x0 = Math.min(x0, xs[i]);
+        y0 = Math.min(y0, ys[i]);
+        x1 = Math.max(x1, xs[i]);
+        y1 = Math.max(y1, ys[i]);
+      }
+    }
+  }
+  if (!Number.isFinite(x0)) return { x: 0, y: 0, w: 0, h: 0 };
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
 }
 
 /**
@@ -192,7 +253,7 @@ function roundRectPath(
  * 화살촉·텍스트 글리프처럼 "장식"에 해당하는 부분은 포함하지 않는다 — 렌더러가 덧그리고,
  * 히트테스트는 본체만 있으면 충분하다.
  */
-export function buildObjectPath(o: AnnoObject): Path2D {
+export function buildObjectPath(o: GeomNode): Path2D {
   const p = new Path2D();
   switch (o.kind) {
     case "pen":
@@ -230,13 +291,18 @@ export function buildObjectPath(o: AnnoObject): Path2D {
       p.arc(o.x, o.y, r, 0, Math.PI * 2);
       return p;
     }
+    case "path":
+      return pathNodePath(o);
+    case "frame":
+      roundRectPath(p, o.x, o.y, o.w, o.h, o.radius);
+      return p;
   }
 }
 
 // ── 앵커 · 바운딩 박스 ───────────────────────────────────────────────────────
 
 /** 회전 피벗. 도형은 중심, 텍스트·뱃지는 앵커 자신, 선은 중점. */
-export function objectAnchor(o: AnnoObject): { x: number; y: number } {
+export function objectAnchor(o: GeomNode): { x: number; y: number } {
   switch (o.kind) {
     case "pen":
     case "highlight": {
@@ -249,10 +315,15 @@ export function objectAnchor(o: AnnoObject): { x: number; y: number } {
     case "rect":
     case "ellipse":
     case "mosaic":
+    case "frame":
       return { x: o.x + o.w / 2, y: o.y + o.h / 2 };
     case "text":
     case "badge":
       return { x: o.x, y: o.y };
+    case "path": {
+      const b = pathBounds(o);
+      return { x: b.x + b.w / 2, y: b.y + b.h / 2 };
+    }
   }
 }
 
@@ -276,7 +347,7 @@ function inflate(r: Rect, by: number): Rect {
 }
 
 /** 회전 전(로컬) 바운딩 박스 — 선 두께까지 포함한다. */
-export function objectBBox(o: AnnoObject): Rect {
+export function objectBBox(o: GeomNode): Rect {
   switch (o.kind) {
     case "pen":
     case "highlight":
@@ -307,6 +378,10 @@ export function objectBBox(o: AnnoObject): Rect {
       const r = BADGE_RADIUS_SCALE * o.fontSize + o.strokeWidth / 2;
       return { x: o.x - r, y: o.y - r, w: r * 2, h: r * 2 };
     }
+    case "path":
+      return inflate(pathBounds(o), o.strokeWidth / 2);
+    case "frame":
+      return inflate(normalizeRect(o.x, o.y, o.x + o.w, o.y + o.h), o.strokeWidth / 2);
   }
 }
 
@@ -334,7 +409,7 @@ export function rotatePoint(
 }
 
 /** rot 을 적용한 축정렬 외접 사각형(oriented px). */
-export function objectAABB(o: AnnoObject): Rect {
+export function objectAABB(o: GeomNode): Rect {
   const b = objectBBox(o);
   if (normalizeDeg(o.rot) === 0) return b;
   const a = objectAnchor(o);
@@ -363,7 +438,7 @@ export function objectAABB(o: AnnoObject): Rect {
  */
 export function applyObjectTransform(
   ctx: CanvasRenderingContext2D,
-  o: AnnoObject,
+  o: GeomNode,
 ): void {
   if (normalizeDeg(o.rot) === 0) return;
   const a = objectAnchor(o);
@@ -372,29 +447,30 @@ export function applyObjectTransform(
   ctx.translate(-a.x, -a.y);
 }
 
-/** 내부를 채우는 객체인가(= isPointInPath 로 집을 수 있는가). */
-function hasInterior(o: AnnoObject): boolean {
+/**
+ * 내부를 채우는 객체인가(= isPointInPath 로 집을 수 있는가).
+ *
+ * v1 의 `fill !== null` 판정과 결과가 같다 — 정규화가 `fill:null` 을 빈 `fills` 로 보낸다.
+ * 텍스트·모자이크는 채우기 스택과 무관하게 몸통 전체가 집힌다(글자·가림 영역).
+ */
+function hasInterior(o: GeomNode): boolean {
   switch (o.kind) {
-    case "rect":
-    case "ellipse":
-      return o.fill !== null;
     case "text":
-    case "badge":
     case "mosaic":
       return true;
     default:
-      return false;
+      return o.fills.some((f) => f.visible);
   }
 }
 
 /** 테두리를 그리는 객체인가(= isPointInStroke 로 집을 수 있는가). */
-function hasOutline(o: AnnoObject): boolean {
+function hasOutline(o: GeomNode): boolean {
   switch (o.kind) {
     case "text":
     case "mosaic":
       return false;
     default:
-      return true;
+      return o.strokes.some((f) => f.visible) && o.strokeWidth > 0;
   }
 }
 
@@ -406,7 +482,7 @@ function hasOutline(o: AnnoObject): boolean {
  * @returns 히트한 인덱스, 없으면 -1.
  */
 export function hitTestIndex(
-  objects: readonly AnnoObject[],
+  objects: readonly Node[],
   x: number,
   y: number,
   scale: number,
@@ -415,6 +491,8 @@ export function hitTestIndex(
   const tol = HIT_TOLERANCE_CSS / Math.max(scale, 1e-6);
   for (let i = objects.length - 1; i >= 0; i--) {
     const o = objects[i];
+    // 그룹·인스턴스는 기하가 없다 — 자손 리프가 대신 집힌다(선택 단위 승격은 태스크 38 hitTest).
+    if (!isGeomNode(o)) continue;
     const path = buildObjectPath(o);
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -434,11 +512,11 @@ export function hitTestIndex(
 
 /** hitTestIndex 의 객체 반환 버전. */
 export function hitTest(
-  objects: readonly AnnoObject[],
+  objects: readonly Node[],
   x: number,
   y: number,
   scale: number,
-): AnnoObject | null {
+): Node | null {
   const i = hitTestIndex(objects, x, y, scale);
   return i < 0 ? null : objects[i];
 }
@@ -482,15 +560,17 @@ export function transformPoint(
  * @param h 변환 이전 oriented 높이
  */
 export function transformObjects(
-  objects: readonly AnnoObject[],
+  objects: readonly Node[],
   delta: OrientDelta,
   w: number,
   h: number,
-): AnnoObject[] {
+): Node[] {
   const isFlip = delta === "flipH" || delta === "flipV";
   const P = (x: number, y: number) => transformPoint(x, y, delta, w, h);
-  return objects.map((o): AnnoObject => {
+  return objects.map((o): Node => {
     const rotOfShape = normalizeDeg(isFlip ? -o.rot : o.rot);
+    // 컨테이너는 기하가 없다 — 자손 리프가 각자 옮겨지면 그룹도 따라 움직인 것과 같다.
+    if (!isGeomNode(o)) return o;
     switch (o.kind) {
       case "pen":
       case "highlight": {
@@ -510,11 +590,34 @@ export function transformObjects(
       }
       case "rect":
       case "ellipse":
-      case "mosaic": {
+      case "mosaic":
+      case "frame": {
         const a = P(o.x, o.y);
         const b = P(o.x + o.w, o.y + o.h);
         const r = normalizeRect(a.x, a.y, b.x, b.y);
         return { ...o, x: r.x, y: r.y, w: r.w, h: r.h, rot: rotOfShape };
+      }
+      case "path": {
+        // 정점과 핸들을 함께 옮긴다. 핸들은 **상대** 좌표라 원점을 뺀 차분으로 변환한다
+        // (평행이동 성분이 두 번 들어가면 곡선이 어긋난다).
+        const o0 = P(0, 0);
+        const D = (dx: number, dy: number) => {
+          const q = P(dx, dy);
+          return { x: q.x - o0.x, y: q.y - o0.y };
+        };
+        return {
+          ...o,
+          rot: rotOfShape,
+          subpaths: o.subpaths.map((sub) => ({
+            closed: sub.closed,
+            verts: sub.verts.map((v) => {
+              const q = P(v.x, v.y);
+              const i = D(v.inX, v.inY);
+              const t = D(v.outX, v.outY);
+              return { ...v, x: q.x, y: q.y, inX: i.x, inY: i.y, outX: t.x, outY: t.y };
+            }),
+          })),
+        };
       }
       case "text":
       case "badge": {
@@ -531,11 +634,11 @@ export function transformObjects(
 }
 
 /** 객체를 평행이동한 새 객체(드래그 이동·복제). */
-export function translateObject(
-  o: AnnoObject,
+export function translateObject<T extends GeomNode>(
+  o: T,
   dx: number,
   dy: number,
-): AnnoObject {
+): T {
   switch (o.kind) {
     case "pen":
     case "highlight": {
@@ -554,6 +657,15 @@ export function translateObject(
         y1: o.y1 + dy,
         x2: o.x2 + dx,
         y2: o.y2 + dy,
+      };
+    case "path":
+      // 핸들은 상대 좌표라 그대로 둔다 — 정점만 옮기면 곡선 모양이 보존된다.
+      return {
+        ...o,
+        subpaths: o.subpaths.map((sub) => ({
+          closed: sub.closed,
+          verts: sub.verts.map((v) => ({ ...v, x: v.x + dx, y: v.y + dy })),
+        })),
       };
     default:
       return { ...o, x: o.x + dx, y: o.y + dy };
