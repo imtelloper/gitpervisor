@@ -6,7 +6,7 @@ import {
   objectAnchor,
   objectBBox,
   rotatePoint,
-  isGeomNode,
+  selectBox,
 } from "../../../lib/annotate/geometry";
 import {
   DEFAULT_FONT_FAMILY,
@@ -56,12 +56,28 @@ export function drawSelection(
   // 커밋에 들어와야 하는 이유다(설계 K2).
   const selSet = new Set(s.selectedIds);
   const sel: GeomNode[] = [];
-  for (const o of s.objects) {
-    // 컨테이너(그룹·인스턴스)는 기하가 없다 — 선택 상자는 태스크 38 selectBox 가 자손
-    // 합집합으로 그린다. 여기서는 리프만 본다.
-    if (selSet.has(o.id) && isGeomNode(o)) sel.push(byId.get(o.id) ?? o);
+  // **씬**을 본다 — 숨긴 노드에 선택 상자가 남으면 "보이는 것 ≠ 선택된 것"이 된다.
+  for (const o of s.scene.nodes) {
+    if (selSet.has(o.id)) sel.push(byId.get(o.id) ?? o);
   }
-  if (!sel.length) return;
+  if (!sel.length) {
+    // 컨테이너(그룹·인스턴스)만 골랐을 때 — 기하가 없으니 자손 합집합을 실선 하나로 그린다.
+    const box = selectBox(s.scene, s.selectedIds);
+    if (box.rect.w <= 0 && box.rect.h <= 0) return;
+    const kk = s.scale / Math.max(s.displayScale, 1e-6);
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.strokeStyle = SELECT_COLOR;
+    ctx.lineWidth = Math.max(1, kk);
+    ctx.strokeRect(
+      box.rect.x * s.scale,
+      box.rect.y * s.scale,
+      box.rect.w * s.scale,
+      box.rect.h * s.scale,
+    );
+    ctx.restore();
+    return;
+  }
   // 백킹 px / css px — 핸들이 배율과 무관하게 같은 크기로 보이게 한다.
   const k = s.scale / Math.max(s.displayScale, 1e-6);
   ctx.save();

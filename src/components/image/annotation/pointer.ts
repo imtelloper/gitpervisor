@@ -2,7 +2,7 @@
 
 import {
   appendPenPoint,
-  hitTestIndex,
+  hitTest,
   isGeomNode,
   normalizeDeg,
   objectAABB,
@@ -126,7 +126,7 @@ export function createPointerHandlers(ctx: PointerCtx) {
       // 1) 단일 선택 상태면 리사이즈 핸들을 먼저 본다(핸들이 객체 위에 있을 수 있다).
       const only =
         s.selectedIds.length === 1
-          ? s.objects.find((o): o is GeomNode => o.id === s.selectedIds[0] && isGeomNode(o))
+          ? s.scene.nodes.find((o) => o.id === s.selectedIds[0])
           : undefined;
       if (only) {
         // 리사이즈 수학이 쓰는 bbox 는 **로컬**이다(회전 외접 사각형이 아니다).
@@ -139,8 +139,10 @@ export function createPointerHandlers(ctx: PointerCtx) {
           return;
         }
       }
-      const idx = hitTestIndex(s.objects, pt.x, pt.y, s.displayScale);
-      if (idx < 0) {
+      // 씬 히트 — 숨김은 애초에 씬에 없고, 잠금은 flags 로 걸러진다. 그룹이 있으면 최상위
+      // 조상이 돌아온다(클릭 = 그룹 단위, 시안 ① ⇧클릭 규칙).
+      const hitId = hitTest(s.scene, pt.x, pt.y, s.displayScale);
+      if (!hitId) {
         // 빈 곳 = 마퀴 시작. 종전에는 여기서 dragRef 를 비워 드래그가 통째로 no-op 이었다 —
         // 모든 그래픽 도구가 이 자리에서 고무줄을 그리므로 "이건 그리기 도구가 아니다"라는
         // 가장 큰 신호였다. 클릭(3px 미만)의 선택 해제는 종전 그대로 여기서 한다.
@@ -150,7 +152,7 @@ export function createPointerHandlers(ctx: PointerCtx) {
         schedule();
         return;
       }
-      const id = s.objects[idx].id;
+      const id = hitId;
       let ids: ObjId[];
       if (e.shiftKey) {
         ids = s.selectedIds.includes(id)
@@ -306,8 +308,9 @@ export function createPointerHandlers(ctx: PointerCtx) {
       if (r.w >= MIN_DRAG || r.h >= MIN_DRAG) {
         const ids = new Set(d.keep);
         // "닿으면 선택"(Figma 규칙) — objectAABB 교차라 새 기하 코드가 0이다.
-        for (const o of s.objects) {
-          if (isGeomNode(o) && rectsOverlap(r, objectAABB(o))) ids.add(o.id);
+        // 마퀴도 씬을 본다 — 숨긴 노드가 "닿으면 선택"으로 되살아나지 않게.
+        for (const o of s.scene.nodes) {
+          if (!s.scene.flags.get(o.id)?.locked && rectsOverlap(r, objectAABB(o))) ids.add(o.id);
         }
         s.onSelectionChange([...ids]);
       }
@@ -338,10 +341,11 @@ export function createPointerHandlers(ctx: PointerCtx) {
     const r = c.getBoundingClientRect();
     const x = ((e.clientX - r.left) / Math.max(1, r.width)) * s.oriented.width;
     const y = ((e.clientY - r.top) / Math.max(1, r.height)) * s.oriented.height;
-    const idx = hitTestIndex(s.objects, x, y, s.displayScale);
-    if (idx < 0) return;
-    const o = s.objects[idx];
-    if (o.kind === "text") beginEditing(o, false);
+    // 더블클릭은 그룹 안으로 들어간다(deep) — 텍스트를 바로 편집할 수 있어야 한다.
+    const hitId = hitTest(s.scene, x, y, s.displayScale, { deep: true });
+    if (!hitId) return;
+    const o = s.scene.nodes.find((n) => n.id === hitId);
+    if (o && o.kind === "text") beginEditing(o, false);
   };
 
   return { onPointerDown, onPointerMove, onPointerUp, onDoubleClick };

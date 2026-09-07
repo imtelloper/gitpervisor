@@ -27,6 +27,21 @@ import {
 } from "../../lib/annotate/geometry";
 import { DocHistory } from "../../lib/annotate/history";
 import { renderScene } from "../../lib/annotate/render";
+import { resolveScene } from "../../lib/annotate/scene";
+import {
+  assertTreeInvariant,
+  group as treeGroup,
+  makeMask as treeMakeMask,
+  maskScope as treeMaskScope,
+  nodeAABB as treeNodeAABB,
+  remove as treeRemove,
+  reorder as treeReorder,
+  reparent as treeReparent,
+  rotateNodes as treeRotate,
+  subtreeRange as treeSubtreeRange,
+  translateSubtree as treeTranslate,
+  ungroup as treeUngroup,
+} from "../../lib/annotate/tree";
 import {
   applyPaintPatch,
   DOC_VERSION,
@@ -229,6 +244,9 @@ export default function ImageEditor() {
    */
   const applyDoc = useCallback(
     (next: EditorDoc, mode: "commit" | "replace" = "commit") => {
+      // 트리 불변식은 **커밋 경로 한 곳**에서 본다 — objects 를 직접 splice 한 코드가 있으면
+      // 여기서 즉시 터진다(태스크 38 §3.1). DEV 전용이라 배포 빌드에는 없다.
+      if (import.meta.env.DEV) assertTreeInvariant(next.objects);
       docRef.current = next;
       if (mode === "commit") histRef.current.commit(next);
       else histRef.current.replace(next);
@@ -237,6 +255,9 @@ export default function ImageEditor() {
     },
     [],
   );
+
+  /** 숨김·잠금·마스크가 풀린 씬. 렌더·히트·선택이 전부 이걸 본다(38 §3.2). */
+  const scene = useMemo(() => resolveScene(doc), [doc]);
 
   const patchDoc = useCallback(
     (patch: Partial<EditorDoc>, mode: "commit" | "replace" = "commit") =>
@@ -677,7 +698,8 @@ export default function ImageEditor() {
     // D2: 필터를 반드시 복구한다 — 안 그러면 밝기·대비·채도가 주석까지 물들인다.
     ctx.filter = "none";
     // 크롭 원점 이동 + 리사이즈 배율만 주면 크롭 밖 주석은 캔버스 경계에서 자동으로 잘린다(§3.1).
-    renderScene(ctx, d.objects, {
+    // 저장도 프리뷰와 **같은 씬**을 지난다 — 숨긴 노드가 파일에만 남는 사고가 구조적으로 없다.
+    renderScene(ctx, resolveScene(d), {
       tx: -sx,
       ty: -sy,
       sx: out.width / sw,
@@ -979,6 +1001,44 @@ export default function ImageEditor() {
           );
         return key(back) === key(docRef.current);
       },
+      /** 씬 요약 — 숨김이 빠졌는지, 무엇이 잠겼는지, 컨테이너 범위가 맞는지(38 §7). */
+      scene: () => {
+        const sc = resolveScene(docRef.current);
+        return {
+          nodeIds: sc.nodes.map((n) => n.id),
+          lockedIds: [...sc.flags.entries()].filter(([, f]) => f.locked).map(([id]) => id),
+          containers: sc.containers.map((c) => ({ id: c.id, range: c.range })),
+        };
+      },
+      /**
+       * 트리 연산 — 패널·단축키(태스크 42·44)가 붙기 전에 연산 자체를 검증한다.
+       * 전부 문서에 **커밋**하므로 히스토리·불변식 검사도 함께 지난다.
+       */
+      tree: {
+        group: (ids: ObjId[], kind: "group" | "frame" = "group") => {
+          const r = treeGroup(docRef.current.objects, ids, kind);
+          patchDoc({ objects: r.objects });
+          return r.id;
+        },
+        ungroup: (id: ObjId) => patchDoc({ objects: treeUngroup(docRef.current.objects, id) }),
+        reorder: (ids: ObjId[], dir: 1 | -1 | "front" | "back") =>
+          patchDoc({ objects: treeReorder(docRef.current.objects, ids, dir) }),
+        reparent: (ids: ObjId[], parent: ObjId | null, index: number) =>
+          patchDoc({ objects: treeReparent(docRef.current.objects, ids, parent, index) }),
+        remove: (ids: ObjId[]) => patchDoc({ objects: treeRemove(docRef.current.objects, ids) }),
+        makeMask: (ids: ObjId[]) => {
+          const r = treeMakeMask(docRef.current.objects, ids);
+          patchDoc({ objects: r.objects });
+          return r.maskId;
+        },
+        maskScope: (maskId: ObjId) => treeMaskScope(docRef.current.objects, maskId),
+        subtreeRange: (id: ObjId) => treeSubtreeRange(docRef.current.objects, id),
+        nodeAABB: (id: ObjId) => treeNodeAABB(docRef.current.objects, id),
+        translate: (ids: ObjId[], dx: number, dy: number) =>
+          patchDoc({ objects: treeTranslate(docRef.current.objects, ids, dx, dy) }),
+        rotate: (ids: ObjId[], deg: number, cx: number, cy: number) =>
+          patchDoc({ objects: treeRotate(docRef.current.objects, ids, deg, { x: cx, y: cy }) }),
+      },
       schema: {
         normalizeDoc,
         parse: parseImageDoc,
@@ -1117,6 +1177,7 @@ export default function ImageEditor() {
                 />
                 <AnnotationLayer
                   ref={layerRef}
+                  scene={scene}
                   oriented={oriented}
                   backW={backW}
                   backH={backH}

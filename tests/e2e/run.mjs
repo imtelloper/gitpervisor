@@ -50,6 +50,8 @@ const SUITES = [
   "./suites/33-video-split.mjs",
   "./suites/34-image-doc-window.mjs",
   "./suites/35-image-editor-zoom.mjs",
+  "./suites/36-image-layer-tree.mjs",
+  "./suites/42-image-doc-schema.mjs",
   // 오버레이가 전체화면·포커스를 가져가므로 마지막에 둔다(31-capture.mjs 상단 주석).
   "./suites/31-capture.mjs",
 ];
@@ -170,7 +172,18 @@ async function main() {
   console.log(`  픽스처: ${fix.repo}  →  projectId ${fix.projectId}\n`);
 
   // 스위트 순차 실행(공유 앱·픽스처 → 직렬). 한 스위트가 throw 해도 다음으로 진행.
-  for (const path of SUITES) {
+  //
+  // GPV_E2E_ONLY=30,34 처럼 부분집합을 지정하면 그 스위트만 돈다. 한 기능을 고치는 동안
+  // 기준선을 반복 확인하려면 전체 44 스위트를 다시 도는 비용이 너무 크다(설계 R10 "격리 실행").
+  // 셋업·픽스처·teardown 은 그대로라 결과 해석 조건은 전체 실행과 같다.
+  const only = (process.env.GPV_E2E_ONLY || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const suites = only.length ? SUITES.filter((p) => only.some((o) => p.includes(`/${o}-`))) : SUITES;
+  if (only.length) console.log(`  부분 실행: ${suites.length}개 스위트 (GPV_E2E_ONLY=${only.join(",")})
+`);
+  for (const path of suites) {
     const mod = await import(path);
     report.suite(mod.name || path);
     try {

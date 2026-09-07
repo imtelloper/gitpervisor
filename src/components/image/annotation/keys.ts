@@ -1,11 +1,12 @@
 // 키보드 단축키(설계 §5.2·§5.6) — 복제·삭제·z-order·화살표 이동·도구 전환.
 
 import { isGeomNode, translateObject } from "../../../lib/annotate/geometry";
+// z-order 는 tree.ts 만 만진다 — 배열을 직접 splice 하면 그룹 자손이 부모를 두고 흩어진다.
+import { reorder } from "../../../lib/annotate/tree";
 import {
   DUPLICATE_OFFSET,
   newObjId,
   type Node,
-  type ObjId,
   type Tool,
 } from "../../../lib/annotate/types";
 import { useUi } from "../../../stores/ui";
@@ -118,26 +119,4 @@ export function createKeyHandler(ctx: KeyCtx): (ev: KeyboardEvent) => void {
   };
 }
 
-/** z-order 한 칸 이동(`[` 뒤로, `]` 앞으로). */
-function reorder(
-  objects: readonly Node[],
-  ids: readonly ObjId[],
-  dir: 1 | -1,
-): Node[] {
-  const next = objects.slice();
-  // 앞으로 보낼 때는 뒤에서부터, 뒤로 보낼 때는 앞에서부터 옮겨야 서로 자리를 뺏지 않는다.
-  const order =
-    dir === 1
-      ? next.map((_, i) => i).reverse()
-      : next.map((_, i) => i);
-  for (const i of order) {
-    const o = next[i];
-    if (!o || !ids.includes(o.id)) continue;
-    const j = i + dir;
-    if (j < 0 || j >= next.length) continue;
-    if (ids.includes(next[j].id)) continue;
-    next[i] = next[j];
-    next[j] = o;
-  }
-  return next;
-}
+

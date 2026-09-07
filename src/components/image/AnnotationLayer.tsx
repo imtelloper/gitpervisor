@@ -30,6 +30,7 @@ import {
   renderScene,
   type PreviewBackdrop,
 } from "../../lib/annotate/render";
+import { sceneOfNodes, type Scene } from "../../lib/annotate/scene";
 import {
   type GeomNode,
   type Node,
@@ -92,6 +93,11 @@ export interface AnnotationLayerProps {
   /** 이미지에만 걸리는 색보정 필터 — 모자이크 샘플이 출력과 같은 픽셀을 보도록 여기서도 쓴다. */
   filterStr: string;
   objects: readonly Node[];
+  /**
+   * 숨김·잠금·마스크가 풀린 씬(태스크 38). 렌더·히트·선택 상자가 **이것만** 본다 —
+   * `objects` 는 커밋과 트리 연산이 쓰는 원본이다.
+   */
+  scene: Scene;
   selectedIds: readonly ObjId[];
   tool: Tool;
   style: DefaultPaint;
@@ -170,14 +176,15 @@ function AnnotationLayerImpl(
     ctx.globalCompositeOperation = "source-over";
     ctx.clearRect(0, 0, cv.width, cv.height);
     const objs = excluded.size
-      ? s.objects.filter((o) => !excluded.has(o.id))
-      : s.objects;
+      ? s.scene.nodes.filter((o) => !excluded.has(o.id))
+      : s.scene.nodes;
     if (objs.length) {
       seedMosaicSources(ctx, objs, s);
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.filter = "none";
-      renderScene(ctx, objs, sceneTransform(s.scale), {
+      renderScene(ctx, s.scene, sceneTransform(s.scale), {
         backdrop: previewBackdrop(s),
+        skipIds: excluded,
       });
     }
     cacheSrcRef.current = s.objects;
@@ -204,15 +211,15 @@ function AnnotationLayerImpl(
     if (cache) ctx.drawImage(cache, 0, 0);
 
     // 아직 커밋되지 않은 것들은 매 프레임 새로 그린다(캐시에는 없다).
-    const live: Node[] = [];
+    const live: GeomNode[] = [];
     if (liveRef.current) live.push(...liveRef.current);
     if (draftRef.current) live.push(draftRef.current);
     if (live.length) {
       seedMosaicSources(ctx, live, s);
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.filter = "none";
-      // 드래그 중인 형광펜도 커밋본과 같은 배경 합성을 거쳐야 프리뷰가 튀지 않는다.
-      renderScene(ctx, live, sceneTransform(s.scale), {
+      // 드래그 중인 것은 아직 문서에 없다 — 임시 씬으로 감싸 **같은 렌더 진입**을 쓴다.
+      renderScene(ctx, sceneOfNodes(live), sceneTransform(s.scale), {
         backdrop: previewBackdrop(s),
       });
     }
@@ -426,7 +433,7 @@ function previewBackdrop(s: AnnotationLayerProps): PreviewBackdrop {
  */
 function seedMosaicSources(
   ctx: CanvasRenderingContext2D,
-  objects: readonly Node[],
+  objects: readonly GeomNode[],
   s: AnnotationLayerProps,
 ): void {
   const t = sceneTransform(s.scale);

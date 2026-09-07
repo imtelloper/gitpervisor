@@ -521,17 +521,24 @@ async function videoDocBlock({ cdp, r, fix, cdpPort, arr, labels, closeLabel, po
     );
 
     // [편집] → ExportPanel. 이 창에도 편집 UI가 있어야 태스크의 "편집이 그대로 된다"가 성립.
-    await vcdp.eval(
-      `(()=>{ const b = Array.from(document.querySelectorAll('button')).find(x => /편집/.test(x.textContent || '')); if (b) b.click(); return !!b; })()`,
-    );
+    //
+    // 클릭은 **폴링 안에서 매 회차** 하고, 시한은 30초다. `편집` 탭은 `disabled={!canEdit}` 이고
+    // canEdit 은 `video_tool_status`(ffmpeg 를 스폰해 버전을 읽는다) 응답에 달려 있다. 그 호출은
+    // background 레인이라 부하가 걸린 기계에서는 5초를 넘길 수 있는데, 종전 코드는 클릭을 한 번만
+    // 하고 5초만 기다려 **비활성 버튼에 클릭을 흘리고** 실패했다(원인 불명으로 보이던 간헐 실패).
     const hasPanel = await poll(
       () =>
         vcdp.eval(
-          `Array.from(document.querySelectorAll('button')).some(b => b.textContent.trim() === '내보내기')`,
+          `(()=>{
+             if (Array.from(document.querySelectorAll('button')).some(b => b.textContent.trim() === '내보내기')) return true;
+             const b = Array.from(document.querySelectorAll('button')).find(x => /편집/.test(x.textContent || ''));
+             if (b && !b.disabled) b.click();
+             return false;
+           })()`,
         ),
       (v) => v === true,
-      20,
-      250,
+      60,
+      500,
     );
     r.check("영상 doc 창에 내보내기 패널(ExportPanel)이 뜬다", hasPanel === true);
     if (hasPanel !== true) return;

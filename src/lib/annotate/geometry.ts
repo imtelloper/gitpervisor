@@ -6,6 +6,7 @@
 // 좌표 규약: 빌더가 만드는 Path2D 는 **객체 로컬 좌표**(= rot 을 적용하지 않은 oriented px)다.
 // rot 은 applyObjectTransform() 이 ctx 의 CTM 으로 걸며, 렌더와 히트테스트가 같은 함수를 쓴다.
 
+import type { Scene } from "./scene";
 import {
   ARROW_HEAD_SCALE,
   BADGE_RADIUS_SCALE,
@@ -14,6 +15,7 @@ import {
   TEXT_LINE_HEIGHT,
   type GeomNode,
   type Node,
+  type ObjId,
   type PathNode,
   type Rect,
   type SceneTransform,
@@ -253,7 +255,23 @@ function pathBounds(o: PathNode): Rect {
  * 화살촉·텍스트 글리프처럼 "장식"에 해당하는 부분은 포함하지 않는다 — 렌더러가 덧그리고,
  * 히트테스트는 본체만 있으면 충분하다.
  */
+const pathMemo = new WeakMap<GeomNode, Path2D>();
+
+/**
+ * 로컬 좌표 Path2D. **노드 참조로 메모**한다 — 커밋된 노드는 불변이라(types.ts 규약) 같은
+ * 참조면 같은 경로다. 드래그 중 라이브 객체는 매 틱 새 참조라 종전처럼 매번 만든다(비용 동일).
+ *
+ * 이 메모가 있어야 hover 히트테스트를 매 pointermove 마다 부를 수 있다(태스크 43 스냅·커서).
+ */
 export function buildObjectPath(o: GeomNode): Path2D {
+  const memo = pathMemo.get(o);
+  if (memo) return memo;
+  const built = buildObjectPathUncached(o);
+  pathMemo.set(o, built);
+  return built;
+}
+
+function buildObjectPathUncached(o: GeomNode): Path2D {
   const p = new Path2D();
   switch (o.kind) {
     case "pen":
@@ -510,17 +528,6 @@ export function hitTestIndex(
   return -1;
 }
 
-/** hitTestIndex 의 객체 반환 버전. */
-export function hitTest(
-  objects: readonly Node[],
-  x: number,
-  y: number,
-  scale: number,
-): Node | null {
-  const i = hitTestIndex(objects, x, y, scale);
-  return i < 0 ? null : objects[i];
-}
-
 // ── 회전 · 반전 델타 아핀 (§3.2) ─────────────────────────────────────────────
 
 /** oriented 공간을 바꾸는 연산. `w`,`h` 는 **변환 이전**의 oriented 크기다. */
@@ -720,4 +727,310 @@ export function decimatePoints(
     out.push(pts[n - 2], pts[n - 1]);
   }
   return out;
+}
+
+// ── 씬 기하 (태스크 38) ──────────────────────────────────────────────────────
+//
+// 여기부터는 **Scene**(scene.ts 가 숨김·잠금·마스크를 푼 결과) 위에서 동작한다. 문서 배열을
+// 직접 받는 함수와 섞이지 않게 구획을 나눠 둔다 — 씬을 안 지나면 숨긴 노드가 살아난다.
+
+/**
+ * 효과가 노드 밖으로 번지는 거리(oriented px).
+ *
+ * 흐림 반경 규약은 렌더(태스크 39)와 **같은 상수**를 쓴다: 섀도 blur B → 1.5B, 레이어 블러
+ * 반경 R → 1.5R. 이너 섀도는 안쪽이라 0, 배경 블러는 노드 영역 안의 배경만 건드리므로 0이다.
+ */
+export function effectReach(node: GeomNode): number {
+  let reach = 0;
+  for (const e of node.effects) {
+    if (!e.visible) continue;
+    if (e.type === "drop-shadow") {
+      reach = Math.max(reach, Math.hypot(e.x, e.y) + 1.5 * e.blur + Math.max(0, e.spread));
+    } else if (e.type === "layer-blur") {
+      reach = Math.max(reach, 1.5 * e.radius);
+    }
+  }
+  return reach;
+}
+
+function intersectRect(a: Rect, b: Rect): Rect {
+  const x0 = Math.max(a.x, b.x);
+  const y0 = Math.max(a.y, b.y);
+  const x1 = Math.min(a.x + a.w, b.x + b.w);
+  const y1 = Math.min(a.y + a.h, b.y + b.h);
+  return { x: x0, y: y0, w: Math.max(0, x1 - x0), h: Math.max(0, y1 - y0) };
+}
+
+/**
+ * 화면에 실제로 나타나는 범위 — AABB ⊕ 효과 여백, 프레임 클립으로 잘린 뒤.
+ * 태스크 39 의 격리 스크래치 크기와 43 의 선택 크롬 여백이 이 값을 믿는다.
+ */
+export function visualBounds(scene: Scene, id: ObjId): Rect {
+  const node = scene.nodes.find((n) => n.id === id);
+  if (!node) return { x: 0, y: 0, w: 0, h: 0 };
+  const box = objectAABB(node);
+  const r = effectReach(node);
+  let out = r > 0 ? { x: box.x - r, y: box.y - r, w: box.w + r * 2, h: box.h + r * 2 } : box;
+  // 조상 프레임이 내용을 자르면 거기서 잘린다.
+  for (const c of scene.containers) {
+    if (!c.clip) continue;
+    const at = scene.nodes.indexOf(node);
+    if (at < c.range[0] || at >= c.range[1]) continue;
+    out = intersectRect(out, c.clip);
+  }
+  return out;
+}
+
+/**
+ * 선택 상자. 리프 하나면 **회전 상자**(로컬 bbox + rot), 여럿이거나 컨테이너면 축정렬 합집합이다.
+ * 그룹 자체의 회전각은 보존하지 않는다(INDEX §10.5 — 리프 세계 좌표 단일의 대가).
+ */
+export function selectBox(
+  scene: Scene,
+  ids: readonly ObjId[],
+): { rect: Rect; rot: number } {
+  const picked = scene.nodes.filter((n) => ids.includes(n.id));
+  if (picked.length === 1) {
+    return { rect: objectBBox(picked[0]), rot: picked[0].rot };
+  }
+  // 컨테이너가 선택됐으면 그 자손이 씬에 있으므로 owner 를 타고 모은다.
+  const wanted = new Set(ids);
+  const inSelection = (n: GeomNode): boolean => {
+    let cur: ObjId | null = n.id;
+    for (let guard = 0; cur && guard <= scene.nodes.length; guard++) {
+      if (wanted.has(cur)) return true;
+      cur = scene.owner.get(cur) ?? null;
+    }
+    return false;
+  };
+  let box: Rect | null = null;
+  for (const n of scene.nodes) {
+    if (!inSelection(n)) continue;
+    const b = objectAABB(n);
+    box = box
+      ? {
+          x: Math.min(box.x, b.x),
+          y: Math.min(box.y, b.y),
+          w: Math.max(box.x + box.w, b.x + b.w) - Math.min(box.x, b.x),
+          h: Math.max(box.y + box.h, b.y + b.h) - Math.min(box.y, b.y),
+        }
+      : b;
+  }
+  return { rect: box ?? { x: 0, y: 0, w: 0, h: 0 }, rot: 0 };
+}
+
+/**
+ * 씬 히트테스트 — 위(뒤)에서부터 첫 적중.
+ *
+ * 기본은 적중 리프의 **최상위 조상**을 돌려준다(클릭 = 그룹 단위, Figma 관례). 더블클릭이나
+ * `scope` 를 주면 그 안으로 들어간다. 잠긴 노드는 건너뛰고, 마스크 범위 밖 픽셀은 적중하지 않는다.
+ */
+export function hitTest(
+  scene: Scene,
+  x: number,
+  y: number,
+  scale: number,
+  opts?: { deep?: boolean; scope?: ObjId | null },
+): ObjId | null {
+  const ctx = scratchCtx();
+  const tol = HIT_TOLERANCE_CSS / Math.max(scale, 1e-6);
+  const scope = opts?.scope ?? null;
+  for (let i = scene.nodes.length - 1; i >= 0; i--) {
+    const o = scene.nodes[i];
+    if (scene.flags.get(o.id)?.locked) continue;
+    if (scope !== null && !isInside(scene, o.id, scope)) continue;
+    if (!maskAllows(scene, i, x, y, ctx)) continue;
+    const path = buildObjectPath(o);
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    applyObjectTransform(ctx, o);
+    let hit = hasInterior(o) && ctx.isPointInPath(path, x, y);
+    if (!hit && hasOutline(o)) {
+      ctx.lineWidth = Math.max(o.strokeWidth, tol);
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      hit = ctx.isPointInStroke(path, x, y);
+    }
+    ctx.restore();
+    if (!hit) continue;
+    if (opts?.deep || scope !== null) return o.id;
+    return topOwnerOf(scene, o.id);
+  }
+  return null;
+}
+
+/** 자기 또는 조상 중에 `ancestor` 가 있는가. */
+function isInside(scene: Scene, id: ObjId, ancestor: ObjId): boolean {
+  let cur: ObjId | null = scene.owner.get(id) ?? null;
+  for (let guard = 0; cur && guard <= scene.nodes.length; guard++) {
+    if (cur === ancestor) return true;
+    cur = scene.owner.get(cur) ?? null;
+  }
+  return false;
+}
+
+/** 최상위 조상(없으면 자기). */
+function topOwnerOf(scene: Scene, id: ObjId): ObjId {
+  let cur = id;
+  for (let guard = 0; guard <= scene.nodes.length; guard++) {
+    const p = scene.owner.get(cur) ?? null;
+    if (p === null) return cur;
+    cur = p;
+  }
+  return cur;
+}
+
+/** 마스크가 가리는 범위 안의 노드는 마스크 모양 밖에서 적중하지 않는다. */
+function maskAllows(
+  scene: Scene,
+  sceneIndex: number,
+  x: number,
+  y: number,
+  ctx: CanvasRenderingContext2D,
+): boolean {
+  for (const c of scene.containers) {
+    const m = c.mask;
+    if (!m) continue;
+    if (sceneIndex < m.range[0] || sceneIndex >= m.range[1]) continue;
+    const mask = scene.nodes.find((n) => n.id === m.maskId);
+    if (!mask) continue;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    applyObjectTransform(ctx, mask);
+    const inside = ctx.isPointInPath(buildObjectPath(mask), x, y);
+    ctx.restore();
+    if (inside === m.invert) return false;
+  }
+  return true;
+}
+
+/** 인스펙터가 읽고 쓰는 위치·크기(태스크 45). 피벗은 `objectAnchor` 다. */
+export function objectFrame(node: GeomNode): { x: number; y: number; w: number; h: number; rot: number } {
+  switch (node.kind) {
+    case "rect":
+    case "ellipse":
+    case "mosaic":
+    case "frame":
+      return { x: node.x, y: node.y, w: node.w, h: node.h, rot: node.rot };
+    default: {
+      // 선 두께를 뺀 기하 자체의 상자 — 폭을 물으면 도형 크기를 답해야 한다.
+      const b = objectBBox(node);
+      const pad = node.kind === "text" ? 0 : node.strokeWidth / 2;
+      return { x: b.x + pad, y: b.y + pad, w: Math.max(0, b.w - pad * 2), h: Math.max(0, b.h - pad * 2), rot: node.rot };
+    }
+  }
+}
+
+/**
+ * 프레임을 그대로 맞춘다 — 이동은 평행이동, 크기는 기준점(좌상단) 고정 배율.
+ * 기하 종류별 특수 코드를 여기 두지 않으려고 `translateObject` + 배율 합성으로만 만든다.
+ */
+export function setObjectFrame(
+  node: GeomNode,
+  f: Partial<{ x: number; y: number; w: number; h: number; rot: number }>,
+): GeomNode {
+  const cur = objectFrame(node);
+  let out: GeomNode = node;
+  const nw = f.w === undefined ? cur.w : Math.max(0, f.w);
+  const nh = f.h === undefined ? cur.h : Math.max(0, f.h);
+  if ((nw !== cur.w || nh !== cur.h) && cur.w > 0 && cur.h > 0) {
+    const fx = nw / cur.w;
+    const fy = nh / cur.h;
+    out = scaleGeom(out, fx, fy, cur.x, cur.y);
+  }
+  const after = objectFrame(out);
+  const dx = (f.x === undefined ? cur.x : f.x) - after.x;
+  const dy = (f.y === undefined ? cur.y : f.y) - after.y;
+  if (dx !== 0 || dy !== 0) out = translateObject(out, dx, dy);
+  if (f.rot !== undefined) out = { ...out, rot: normalizeDeg(f.rot) };
+  return out;
+}
+
+/** (ox,oy) 기준 배율. 텍스트·뱃지는 크기 자체가 글자 크기라 fontSize 를 함께 키운다. */
+function scaleGeom(o: GeomNode, fx: number, fy: number, ox: number, oy: number): GeomNode {
+  const sx = (x: number) => ox + (x - ox) * fx;
+  const sy = (y: number) => oy + (y - oy) * fy;
+  const k = Math.sqrt(Math.abs(fx * fy)) || 1;
+  switch (o.kind) {
+    case "pen":
+    case "highlight": {
+      const pts = o.pts.slice();
+      for (let i = 0; i + 1 < pts.length; i += 2) {
+        pts[i] = sx(pts[i]);
+        pts[i + 1] = sy(pts[i + 1]);
+      }
+      return { ...o, pts };
+    }
+    case "line":
+    case "arrow":
+      return { ...o, x1: sx(o.x1), y1: sy(o.y1), x2: sx(o.x2), y2: sy(o.y2) };
+    case "rect":
+    case "ellipse":
+    case "mosaic":
+    case "frame": {
+      const r = normalizeRect(sx(o.x), sy(o.y), sx(o.x + o.w), sy(o.y + o.h));
+      return { ...o, x: r.x, y: r.y, w: r.w, h: r.h };
+    }
+    case "path":
+      return {
+        ...o,
+        subpaths: o.subpaths.map((sub) => ({
+          closed: sub.closed,
+          verts: sub.verts.map((v) => ({
+            ...v,
+            x: sx(v.x),
+            y: sy(v.y),
+            inX: v.inX * fx,
+            inY: v.inY * fy,
+            outX: v.outX * fx,
+            outY: v.outY * fy,
+          })),
+        })),
+      };
+    case "text":
+    case "badge":
+      return { ...o, x: sx(o.x), y: sy(o.y), fontSize: Math.max(4, o.fontSize * k) };
+  }
+}
+
+/**
+ * 프레임이 리사이즈될 때 자식을 제약(시안 ① `좌·상 고정`)대로 재배치한다.
+ * `scale` 은 비례, `stretch` 는 양끝을 프레임 변에 붙인다.
+ */
+export function applyConstraints(child: GeomNode, oldFrame: Rect, newFrame: Rect): GeomNode {
+  const f = objectFrame(child);
+  const { h, v } = child.constraints;
+  const axis = (
+    mode: "left" | "right" | "top" | "bottom" | "center" | "scale" | "stretch",
+    pos: number,
+    size: number,
+    o0: number,
+    s0: number,
+    o1: number,
+    s1: number,
+  ): { pos: number; size: number } => {
+    const leadOld = pos - o0;
+    const trailOld = o0 + s0 - (pos + size);
+    switch (mode) {
+      case "left":
+      case "top":
+        return { pos: o1 + leadOld, size };
+      case "right":
+      case "bottom":
+        return { pos: o1 + s1 - trailOld - size, size };
+      case "center": {
+        const centerRatio = (pos + size / 2 - o0) / (s0 || 1);
+        return { pos: o1 + centerRatio * s1 - size / 2, size };
+      }
+      case "scale": {
+        const k = s1 / (s0 || 1);
+        return { pos: o1 + leadOld * k, size: size * k };
+      }
+      case "stretch":
+        return { pos: o1 + leadOld, size: Math.max(0, s1 - leadOld - trailOld) };
+    }
+  };
+  const hx = axis(h, f.x, f.w, oldFrame.x, oldFrame.w, newFrame.x, newFrame.w);
+  const vy = axis(v, f.y, f.h, oldFrame.y, oldFrame.h, newFrame.y, newFrame.h);
+  return setObjectFrame(child, { x: hx.pos, y: vy.pos, w: hx.size, h: vy.size });
 }

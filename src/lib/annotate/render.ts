@@ -11,10 +11,10 @@ import {
   applySceneTransform,
   buildObjectPath,
   fontStringOf,
-  isGeomNode,
   layoutText,
   objectAABB,
 } from "./geometry";
+import type { Scene } from "./scene";
 import {
   ARROW_HEAD_SCALE,
   BADGE_RADIUS_SCALE,
@@ -22,7 +22,6 @@ import {
   DEFAULT_STROKE,
   type Fill,
   type GeomNode,
-  type Node,
   type BadgeObject,
   type LineObject,
   type MosaicObject,
@@ -88,17 +87,17 @@ function primaryStroke(o: GeomNode): string | null {
 
 export function renderScene(
   ctx: CanvasRenderingContext2D,
-  objects: readonly Node[],
+  scene: Scene,
   t: SceneTransform,
-  opts?: { skipId?: ObjId; backdrop?: PreviewBackdrop },
+  opts?: { skipId?: ObjId; skipIds?: ReadonlySet<ObjId>; backdrop?: PreviewBackdrop },
 ): void {
   const skip = opts?.skipId;
-  for (const o of objects) {
+  const skips = opts?.skipIds;
+  // 숨긴 노드는 scene.nodes 에 **아예 없다** — 프리뷰·저장·히트가 자동으로 일치한다(38 §3.2).
+  // 컨테이너의 격리 합성(불투명도·블렌드·효과·마스크)은 태스크 39 가 scene.containers 로 붙인다.
+  for (const o of scene.nodes) {
     if (skip && o.id === skip) continue;
-    // 컨테이너의 격리 합성(불투명도·블렌드·효과·마스크)은 태스크 39 가 붙인다 — 지금은
-    // 자손 리프가 문서 순서대로 그려지므로 그룹이 있어도 그림은 같다.
-    if (!isGeomNode(o)) continue;
-    if (!o.visible) continue;
+    if (skips?.has(o.id)) continue;
     ctx.save();
     drawObject(ctx, o, t, opts?.backdrop);
     ctx.restore();
