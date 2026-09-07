@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { FitAddon } from "@xterm/addon-fit";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
 import type { ITheme } from "@xterm/xterm";
 import { Terminal } from "@xterm/xterm";
@@ -22,7 +23,7 @@ import {
 } from "./terminal";
 import { themeOf } from "./themes";
 
-// 이 모듈은 **무거운 xterm 엔진**이다(@xterm/xterm + addon-fit + addon-webgl + css ≈ 441kB).
+// 이 모듈은 **무거운 xterm 엔진**이다(@xterm/xterm + addon-fit + addon-webgl + addon-unicode11 + css).
 // 경량 코어(./terminal)에서 첫 터미널 탭이 열릴 때만 동적 import되어, 콜드 스타트 번들에서
 // xterm을 제외한다. 레지스트리·인스턴스 조작·exit 구독은 코어가 소유한다(여기선 import만).
 
@@ -213,6 +214,13 @@ export function createTerminalImpl(opts: {
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
+
+  // xterm 코어에는 Unicode v6 폭 표만 들어있어 astral emoji(U+1F300~U+1FAFF)를 **1칸**으로 센다.
+  // Claude Code 같은 TUI는 Unicode 9+ 기준(2칸)으로 폭을 재고 그 폭에 맞춰 잘라 보내므로,
+  // 그대로 두면 한 줄에 emoji 개수만큼 열이 어긋나고 WebGL 렌더러가 emoji에 대해서는
+  // rescaling을 건너뛰기 때문에(allowRescaling의 !isEmoji 가드) 글자 위로 번진다.
+  term.loadAddon(new Unicode11Addon());
+  term.unicode.activeVersion = "11";
 
   // 인스턴스는 여기서 만든다(레지스트리 등록은 아래 open 직전) — 아래 CSI/키 핸들러가
   // `win32Input`을 읽고 쓰려면 클로저에 인스턴스가 이미 있어야 한다.
