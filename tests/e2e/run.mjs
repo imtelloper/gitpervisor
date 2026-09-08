@@ -51,6 +51,7 @@ const SUITES = [
   "./suites/34-image-doc-window.mjs",
   "./suites/35-image-editor-zoom.mjs",
   "./suites/36-image-layer-tree.mjs",
+  "./suites/37-image-doc-persist.mjs",
   "./suites/42-image-doc-schema.mjs",
   // 오버레이가 전체화면·포커스를 가져가므로 마지막에 둔다(31-capture.mjs 상단 주석).
   "./suites/31-capture.mjs",

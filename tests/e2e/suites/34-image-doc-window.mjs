@@ -256,6 +256,10 @@ export async function run({ cdp, report: r, fix, port }) {
     // 이미지 더블클릭이 부르는 것과 **같은 호출**이다(FileTreePanel onDouble → openDocWindow).
     // 더블클릭 자체는 트리 행 DOM에 의존해 취약하므로 계약(호출)을 직접 구동한다.
     const before = arr(await labels());
+    // 사이드카에 남은 편집 문서를 먼저 지운다 — 태스크 41 자동 복원이 이 스위트의
+    // "새로 연 편집기는 비어 있다" 전제를 깬다(직전 회차가 남긴 문서가 되살아난다).
+    // (편집기가 닫혀 있어 __gpv.imageDocs 훅이 없다 — 커맨드를 직접 부른다.)
+    await cdp.try("image_doc_delete", { projectId: fix.projectId, relPath: SRC });
     await cdp.eval(
       `window.__gpv.openDocWindow(${J(fix.projectId)}, ${J(SRC)}, { size: [1180, 860] })`,
     );
@@ -334,17 +338,22 @@ export async function run({ cdp, report: r, fix, port }) {
       .eval(`(()=>{ const u=window.__gpv.ui.getState(); u.toasts.forEach(t=>u.dismissToast(t.id)); })()`)
       .catch(() => {});
 
-    // 주석 1개 — 이후 저장 픽셀 단언과 ConfirmHost 확인(Esc 계층 7)에 함께 쓴다.
+    // 주석 1개 — 이후 저장 픽셀 단언과 ConfirmHost 확인(평탄화)에 함께 쓴다.
     await dcdp.eval(`window.__gpvDoc.setDoc(${J({ objects: [rectObj("d1", 40, 40, 120, 120, "#FF3B30")] })})`);
     const preview = await dcdp.eval(`window.__gpvDoc.px(100, 100)`);
     r.check("doc 창 편집기 프리뷰에 주석이 그려짐", near(preview, RED), show(preview));
 
-    // ConfirmHost — 주석이 남은 채 Esc 면 확인 다이얼로그가 **이 창에** 떠야 한다.
-    await dcdp.eval(`window.__gpvDoc.esc()`);
-    const confirmDom = await dcdp.eval(`window.__gpvDoc.overlay(/편집기 닫기/)`);
+    // ConfirmHost — 확인 다이얼로그가 **이 창에** 그려지는지 본다.
+    //
+    // v1 은 "주석이 남은 채 Esc" 로 이걸 확인했다. 태스크 41 이 닫기 확인창을 없앴으므로
+    // (문서가 사이드카에 남아 닫아도 잃는 것이 없다) 남아 있는 비가역 동작 — 제자리
+    // 평탄화 저장 — 으로 같은 증거를 잡는다. 확인은 취소해 편집기를 열어 둔 채 다음으로 간다.
+    await dcdp.eval(`window.__gpvDoc.click(/^\\s*저장\\s*\\(/)`);
+    await sleep(200);
+    const confirmDom = await dcdp.eval(`window.__gpvDoc.overlay(/레이어를 이미지에 굽기/)`);
     const stillOpen = await dcdp.eval(`window.__gpv.ui.getState().imageEditorPath !== null`);
     r.check(
-      "doc 창에 ConfirmHost 마운트(Esc 계층 7 확인 다이얼로그가 그려진다)",
+      "doc 창에 ConfirmHost 마운트(평탄화 확인 다이얼로그가 그려진다)",
       confirmDom === true && stillOpen === true,
       `confirmDOM=${confirmDom} 편집기유지=${stillOpen}`,
     );

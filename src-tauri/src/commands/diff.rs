@@ -291,7 +291,7 @@ pub async fn read_file_base64(
     })
 }
 
-fn mime_of(path: &str) -> String {
+pub(crate) fn mime_of(path: &str) -> String {
     let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     match ext.as_str() {
         "png" => "image/png",

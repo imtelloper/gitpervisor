@@ -361,6 +361,10 @@ pub async fn move_path(
 ///
 /// 대상이 아예 없어졌으면 충돌로 보지 않는다 — 다시 만들어 주는 쪽이 덜 놀랍고, 막아 봐야
 /// 사용자가 할 수 있는 일이 저장뿐이다.
+///
+/// 성공하면 **쓴 직후의 새 stamp** 를 돌려준다. 저장하는 순간 파일 정체가 바뀌므로, 이걸 안 주면
+/// 편집기가 다음 저장을 위해 파일을 통째로 되읽어야 한다(25MB 이미지). 메타를 못 읽는
+/// 파일시스템에서는 `None`(= 이후 검사 불가, 종전과 동일).
 #[tauri::command]
 pub async fn write_file_bytes(
     state: State<'_, AppState>,
@@ -369,7 +373,7 @@ pub async fn write_file_bytes(
     base64: String,
     overwrite: bool,
     expected_stamp: Option<String>,
-) -> Result<(), IpcError> {
+) -> Result<Option<String>, IpcError> {
     let repo = project_path(&state, &project_id)?;
     let target = resolve_in_repo(&repo, &rel_path)?;
     // 최종 경로 메타는 링크를 따라가지 않고 본다 — 기존 심볼릭/정션으로 레포 밖에 쓰지 못하게.
@@ -410,7 +414,12 @@ pub async fn write_file_bytes(
     if bytes.len() > MAX_WRITE_BYTES {
         return Err(IpcError::new(ErrorCode::Io, "파일이 너무 큽니다 (64MB 초과)"));
     }
-    tokio::fs::write(&target, bytes).await.map_err(write_io_err)
+    tokio::fs::write(&target, bytes).await.map_err(write_io_err)?;
+    Ok(tokio::fs::metadata(&target)
+        .await
+        .ok()
+        .as_ref()
+        .and_then(crate::commands::diff::stamp_of))
 }
 
 /// 한 프로젝트 루트의 결과(또는 오류) — 배치 프리페치용.
@@ -1750,7 +1759,7 @@ fn is_reserved_win_name(os: &OsStr) -> bool {
 
 /// 파일/폴더 작업용 경로 검증 — 빈 경로·절대경로·`..`·(모든 컴포넌트의) `.git`·예약 장치명 거부.
 /// 컨테인먼트(레포 밖 탈출)는 정규화로 별도 검증한다([resolve_in_repo]).
-fn validate_rel_file(rel: &str) -> Result<(), IpcError> {
+pub(crate) fn validate_rel_file(rel: &str) -> Result<(), IpcError> {
     let p = Path::new(rel);
     if rel.is_empty()
         || p.is_absolute()

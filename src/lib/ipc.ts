@@ -78,6 +78,30 @@ export interface FileBytes {
   stamp?: string;
 }
 
+/**
+ * 이미지 편집기 벡터 문서 사이드카의 종류 (commands/image_doc.rs).
+ * `'doc'` = 문서 1벌, `'snapshots'` = 명명 스냅샷 배열(자동저장이 스냅샷을 매번 다시 쓰지 않게 분리).
+ */
+export type ImageDocKind = "doc" | "snapshots";
+
+/** 사이드카 1개의 내용과 정체 (image_doc_read). */
+export interface ImageDocRead {
+  /** 저장된 적 없으면 null — 오류가 아니라 "아직 편집하지 않은 이미지"다. */
+  json: string | null;
+  /**
+   * 읽은 시점의 사이드카 정체(불투명 문자열). 해석하지 말고 그대로 들고 있다가
+   * `imageDocWrite` 의 `expectedStamp` 로 되돌려 준다 — 그 사이 다른 창이 저장했으면
+   * CONFLICT 로 거절된다.
+   */
+  stamp: string | null;
+}
+
+/** 레포 밖에서 고른 이미지 바이트 (asset_pick_file). 경로는 프론트에 노출되지 않는다. */
+export interface AssetBytes {
+  mime: string;
+  base64: string;
+}
+
 /** 중앙 diff 뷰어가 표시할 대상 (설계 §6). */
 export type DiffTarget =
   | { mode: "worktree"; path: string } // 인덱스(없으면 HEAD) ↔ 워크트리
@@ -1143,6 +1167,8 @@ export const ipc = {
   // 이미지 변환·편집 저장 — base64 바이트를 디스크에 쓴다. overwrite=false면 기존 파일 충돌 시
   // ALREADY_EXISTS 오류(프론트가 덮어쓰기 확인). 큰 이미지 대비 타임아웃 넉넉히.
   // expectedStamp 를 주면 읽은 뒤 파일이 바뀌었는지 대조해 CONFLICT 로 거절한다(생략 = 종전 동작).
+  // 성공 시 새 stamp(메타를 못 읽는 환경이면 null) — 저장 직후 파일 정체가 바뀌므로,
+  // 다음 저장의 expectedStamp 로 그대로 쓴다(되읽지 않는다).
   writeFileBytes: (
     projectId: string,
     relPath: string,
@@ -1150,11 +1176,45 @@ export const ipc = {
     overwrite: boolean,
     expectedStamp?: string,
   ) =>
-    callMutating<void>(
+    callMutating<string | null>(
       "write_file_bytes",
       { projectId, relPath, base64, overwrite, expectedStamp },
       60_000,
     ),
+
+  // ---- 이미지 편집기 벡터 문서 사이드카 (commands/image_doc.rs, 태스크 41) ----
+  // 레포가 아니라 앱 데이터에 저장된다 — 레포 오염 0. 키는 sha256(projectId \0 relPath).
+  // 없으면 json:null 을 돌려준다(오류 아님). 재시도 없음, 큰 문서 대비 타임아웃 넉넉히.
+  imageDocRead: (projectId: string, relPath: string, kind: ImageDocKind) =>
+    call<ImageDocRead>(
+      "image_doc_read",
+      { projectId, relPath, kind },
+      { timeoutMs: 30_000, attempts: 1 },
+    ),
+  // 새 stamp를 돌려준다. expectedStamp 를 주면 그 사이 다른 창이 저장했는지 대조해 CONFLICT 로
+  // 거절한다(생략 = 무조건 덮어쓰기). 32MB 초과는 IO 오류.
+  imageDocWrite: (
+    projectId: string,
+    relPath: string,
+    kind: ImageDocKind,
+    json: string,
+    expectedStamp?: string,
+  ) =>
+    callMutating<string>(
+      "image_doc_write",
+      { projectId, relPath, kind, json, expectedStamp },
+      60_000,
+    ),
+  // 앱 안에서 이름변경·이동한 뒤 문서를 따라 옮긴다(문서·스냅샷 둘 다). 문서가 없으면 no-op.
+  imageDocMove: (projectId: string, from: string, to: string) =>
+    callMutating<void>("image_doc_move", { projectId, from, to }),
+  // 이미지를 지웠거나 제자리 평탄화 저장이 끝났을 때 문서를 버린다. 없으면 no-op.
+  imageDocDelete: (projectId: string, relPath: string) =>
+    callMutating<void>("image_doc_delete", { projectId, relPath }),
+  // 레포 밖 이미지 1개 선택 → 바이트만(경로 미노출·16MB 상한). 취소하면 null.
+  // 다이얼로그가 열려 있는 동안 응답이 없으므로 타임아웃을 길게 잡는다.
+  assetPickFile: () =>
+    callMutating<AssetBytes | null>("asset_pick_file", {}, 600_000),
   // Go-to-Definition — 심볼 정의 후보를 휴리스틱 검색(ripgrep). 읽기 레인.
   // lane: 예열(prefetch)은 background — 사용자 클릭/호버(interactive)에 슬롯을 양보한다.
   findDefinition: (

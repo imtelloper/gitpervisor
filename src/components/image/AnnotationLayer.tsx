@@ -21,6 +21,7 @@ import {
   useState,
 } from "react";
 
+import type { ImageStore } from "../../lib/annotate/imageStore";
 import { releaseScratch, renderScene } from "../../lib/annotate/render";
 import { sceneOfNodes, type Scene } from "../../lib/annotate/scene";
 import {
@@ -85,6 +86,13 @@ export interface AnnotationLayerProps {
   /** 이미지에만 걸리는 색보정 필터 — 모자이크 샘플이 출력과 같은 픽셀을 보도록 여기서도 쓴다. */
   filterStr: string;
   objects: readonly Node[];
+  /** 이미지 페인트 소스의 디코드 캐시(39 §3.6). 없으면 이미지 채우기가 안 그려진다. */
+  store: ImageStore;
+  /**
+   * 에셋 디코드가 끝날 때마다 오르는 값. 디코드는 비동기라 **문서는 그대로인데** 그릴 수 있는
+   * 비트맵만 늘어난다 — 커밋 캐시 키에 넣지 않으면 첫 프레임의 빈 자리가 그대로 굳는다.
+   */
+  assetsVer: number;
   /**
    * 숨김·잠금·마스크가 풀린 씬(태스크 38). 렌더·히트·선택 상자가 **이것만** 본다 —
    * `objects` 는 커밋과 트리 연산이 쓰는 원본이다.
@@ -102,7 +110,7 @@ export interface AnnotationLayerProps {
   /** 진행 중인 크롭 드래그를 버린다(Esc 계층 3) — 에디터 쪽 시작점·라이브 사각형도 함께 지운다. */
   onCropCancel: () => void;
   /** 커밋 시점에만 부른다(§5.3) — 히스토리 스냅샷이 여기서 쌓인다. */
-  onCommit: (next: Node[]) => void;
+  onCommit: (next: Node[], label?: string) => void;
   onToolChange: (t: Tool) => void;
   onSelectionChange: (ids: ObjId[]) => void;
 }
@@ -154,7 +162,7 @@ function AnnotationLayerImpl(
     const excluded = new Set<ObjId>();
     if (liveRef.current) for (const o of liveRef.current) excluded.add(o.id);
     if (editingRef.current) excluded.add(editingRef.current.obj.id);
-    const key = `${s.backW}x${s.backH}|${s.scale}|${s.filterStr}|${[...excluded].join(",")}`;
+    const key = `${s.backW}x${s.backH}|${s.scale}|${s.filterStr}|${s.assetsVer}|${[...excluded].join(",")}`;
     if (
       cacheRef.current &&
       cacheSrcRef.current === s.objects &&
@@ -182,6 +190,7 @@ function AnnotationLayerImpl(
       background: "image",
       filter: s.filterStr,
       skipIds: excluded,
+      store: s.store,
     });
     cacheSrcRef.current = s.objects;
     cacheImgRef.current = s.oriented;
@@ -216,6 +225,7 @@ function AnnotationLayerImpl(
       // 배경(이미지 + 커밋 노드)은 이미 캐시로 깔려 있어 가림·multiply 가 그대로 성립한다.
       renderScene(ctx, sceneOfNodes(live), sceneTransform(s.scale), {
         background: "transparent",
+        store: s.store,
       });
     }
 

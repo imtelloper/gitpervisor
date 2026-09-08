@@ -656,7 +656,11 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
     for (const p of paths) {
       if (parentDir(p) === destDir) continue; // 제자리 — 멀티선택에 섞여 있으면 건너뛴다
       try {
-        moved.push([p, await ipc.movePath(projectId, p, destDir)]);
+        const to = await ipc.movePath(projectId, p, destDir);
+        // 이름 바꾸기와 같은 이유로 사이드카 편집 문서도 따라간다(41 §3.1) — 실패해도 이동
+        // 자체는 성공이므로 삼킨다. 폴더 이동이면 그 안의 문서는 남지만 조용히 무시된다.
+        await ipc.imageDocMove(projectId, p, to).catch(() => {});
+        moved.push([p, to]);
         ok++;
       } catch (e) {
         errors.push(`${p.split("/").pop()}: ${errorMessage(e)}`);

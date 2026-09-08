@@ -177,6 +177,10 @@ export async function run({ cdp, report: r, fix }) {
 
     await closeEditor();
     await sleep(200);
+    // 사이드카에 남은 편집 문서를 먼저 지운다 — 태스크 41 자동 복원이 이 스위트의
+    // "새로 연 편집기는 비어 있다" 전제를 깬다(직전 회차가 남긴 문서가 되살아난다).
+    // (편집기가 닫혀 있어 __gpv.imageDocs 훅이 없다 — 커맨드를 직접 부른다.)
+    await cdp.try("image_doc_delete", { projectId: fix.projectId, relPath: SRC });
     await cdp.eval(`window.__gpv.ui.getState().openImageEditor(${J(SRC)}, ${J(fix.projectId)})`);
     const ready = await poll(
       () => cdp.eval(`window.__gpvTree.ready()`).catch(() => false),

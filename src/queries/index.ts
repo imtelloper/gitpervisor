@@ -953,7 +953,12 @@ export function useCreateFile(projectId: string) {
 export function useDeletePath(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (relPath: string) => ipc.deletePath(projectId, relPath),
+    mutationFn: async (relPath: string) => {
+      await ipc.deletePath(projectId, relPath);
+      // 이미지가 사라졌으면 사이드카 편집 문서도 버린다 — 안 그러면 같은 이름의 새 이미지가
+      // 나중에 그 자리에 들어왔을 때 남의 주석이 되살아난다(41 §3.1: 키는 경로 정체다).
+      await ipc.imageDocDelete(projectId, relPath).catch(() => {});
+    },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["dir"] });
       void qc.invalidateQueries({ queryKey: ["statuses"] });
@@ -971,8 +976,13 @@ export function useDeletePath(projectId: string) {
 export function useRenamePath(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (v: { relPath: string; newName: string }) =>
-      ipc.renamePath(projectId, v.relPath, v.newName),
+    mutationFn: async (v: { relPath: string; newName: string }) => {
+      const newRel = await ipc.renamePath(projectId, v.relPath, v.newName);
+      // 사이드카 키가 경로라 이름만 바꿔도 편집 문서와의 연결이 끊긴다 — 사용자 눈에는
+      // "이름 바꿨더니 주석이 통째로 사라졌다"로 보인다(41 §3.1).
+      await ipc.imageDocMove(projectId, v.relPath, newRel).catch(() => {});
+      return newRel;
+    },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["dir"] });
       void qc.invalidateQueries({ queryKey: ["statuses"] });

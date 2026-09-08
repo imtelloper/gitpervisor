@@ -26,6 +26,8 @@ import {
   type OrientDelta,
 } from "../../lib/annotate/geometry";
 import { DocHistory } from "../../lib/annotate/history";
+import { ensureAssets, imageStore } from "../../lib/annotate/imageStore";
+import { useImageDocPersist } from "../../lib/annotate/persist";
 import {
   estimateRenderBytes,
   renderOutput as renderOutputTiled,
@@ -46,11 +48,13 @@ import {
   translateSubtree as treeTranslate,
   ungroup as treeUngroup,
 } from "../../lib/annotate/tree";
+import { acquireFromFile } from "../../lib/annotate/assets";
 import {
   applyPaintPatch,
   DOC_VERSION,
   documentColors,
   normalizeDoc,
+  normalizeNode,
   paintOf,
   parseImageDoc,
   serializeImageDoc,
@@ -59,6 +63,7 @@ import {
 import {
   DEFAULT_OPACITY,
   DEFAULT_PAINT,
+  newObjId,
   TOOL_KINDS,
   type Node,
   type EditorDoc,
@@ -99,34 +104,6 @@ const MAX_OUTPUT_DIM = 16384;
 const MAX_INPUT_PIXELS = 100_000_000;
 /** 최근 사용 색 기억 개수(세션 한정). */
 const RECENT_COLORS = 6;
-
-/**
- * 닫힌 편집 세션의 문서 — **창 수명 동안만** 산다.
- *
- * ponytail: 프로세스 메모리라 앱을 껐다 켜면 사라진다. 그게 곧 무효화라 직렬화·스키마 버전·
- *           마이그레이션·해시 키가 전부 필요 없다. 세션 **간** 복구가 필요해지면 그때
- *           localStorage 로 올리되, 그 origin 은 `gp:file-draft:*`(복구 불가능한 미저장
- *           파일 내용)와 5MB 를 나눠 쓰므로 총 바이트 상한을 함께 걸어야 한다(설계 §8).
- */
-/**
- * `stamp` 는 닫을 때 그 파일의 정체(`read_file_base64` 가 준 값)다. **반드시 함께 들고
- * 있어야 한다** — crop·outW/outH 는 그때의 이미지 크기를 전제한 값이라, 그 사이 파일이
- * 바뀐 뒤 복구하면 크롭이 새 이미지 밖으로 나가 **빈 이미지를 원본 자리에 저장**한다.
- */
-const stash = new Map<string, { doc: EditorDoc; stamp: string | null }>();
-/** 상한 — 넘으면 가장 오래 안 쓴 키부터 버린다(Map 은 삽입 순서를 유지한다). */
-const STASH_MAX = 8;
-const stashKey = (pid: string, path: string) => `${pid}\u0000${path}`;
-
-function stashPut(key: string, doc: EditorDoc, stamp: string | null): void {
-  stash.delete(key); // 재삽입으로 최근 사용 순서를 갱신한다
-  stash.set(key, { doc, stamp });
-  while (stash.size > STASH_MAX) {
-    const oldest = stash.keys().next().value;
-    if (oldest === undefined) break;
-    stash.delete(oldest);
-  }
-}
 
 /** 빈 문서 — 경계(normalizeDoc)가 만든다. 필드를 두 곳에서 셀 이유가 없다(37 §4). */
 const EMPTY_DOC: EditorDoc = normalizeDoc({});
@@ -200,8 +177,6 @@ export default function ImageEditor() {
   const [loadErr, setLoadErr] = useState<string | null>(null);
   /** 읽은 시점의 원본 파일 정체 — 제자리 저장에서만 되돌려 준다(§ 무성 덮어쓰기 방지). */
   const stampRef = useRef<string | null>(null);
-  /** 직전 편집이 stash 에 남아 있는가. **문서는 건드리지 않는다** — 배너만 띄운다. */
-  const [recoverable, setRecoverable] = useState(false);
 
   // ── 편집 문서(히스토리 스냅샷 단위, §5.1) ──
   const [doc, setDoc] = useState<EditorDoc>(EMPTY_DOC);
@@ -210,6 +185,35 @@ export default function ImageEditor() {
   const histRef = useRef<DocHistory>(new DocHistory(EMPTY_DOC));
   // canUndo/canRedo 는 클래스 내부 상태라 리렌더 트리거가 따로 필요하다.
   const [histVer, setHistVer] = useState(0);
+
+  /**
+   * 편집 문서 영속(41). 커밋마다 1초 디바운스로 앱 데이터 사이드카에 쓰고, 열 때 되살린다.
+   * 훅이 매 렌더 새 객체를 주므로 ref 로 미러해 effect·콜백이 최신 것을 보게 한다.
+   */
+  const persist = useImageDocPersist(editorRepoId ?? null, path ?? null, histRef, {
+    imageStamp: stampRef.current,
+    imageW: img?.naturalWidth ?? 0,
+    imageH: img?.naturalHeight ?? 0,
+  });
+  const persistRef = useRef(persist);
+  persistRef.current = persist;
+
+  // 이미지 페인트 디코드 캐시. `doc.assets` 참조를 키로 하는 WeakMap 위에 얹혀 있어
+  // 여러 번 만들어도 같은 캐시를 본다(39 §3.6) — 참조만 안정시켜 재렌더를 줄인다.
+  const store = useMemo(() => imageStore(doc), [doc]);
+  const storeRef = useRef(store);
+  storeRef.current = store;
+  /** 디코드가 끝날 때마다 오른다 — 커밋 캐시를 한 번 무효화해 진짜 그림이 나오게 한다. */
+  const [assetsVer, setAssetsVer] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    void ensureAssets(doc).then(() => {
+      if (alive) setAssetsVer((v) => v + 1);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [doc.assets]);
 
   // ── 문서 밖 UI 상태 ──
   const [cropMode, setCropMode] = useState(false);
@@ -246,13 +250,18 @@ export default function ImageEditor() {
    * 히스토리 조작은 setState 업데이터 **밖**에서 한다.
    */
   const applyDoc = useCallback(
-    (next: EditorDoc, mode: "commit" | "replace" = "commit") => {
+    (next: EditorDoc, mode: "commit" | "replace" = "commit", label?: string) => {
       // 트리 불변식은 **커밋 경로 한 곳**에서 본다 — objects 를 직접 splice 한 코드가 있으면
       // 여기서 즉시 터진다(태스크 38 §3.1). DEV 전용이라 배포 빌드에는 없다.
       if (import.meta.env.DEV) assertTreeInvariant(next.objects);
       docRef.current = next;
-      if (mode === "commit") histRef.current.commit(next);
-      else histRef.current.replace(next);
+      if (mode === "commit") {
+        histRef.current.commit(next, label);
+        // 커밋 = 사용자가 "한 일" 하나 — 여기서만 자동저장을 예약한다(드래그 중 틱은 replace).
+        persistRef.current?.markDirty();
+      } else {
+        histRef.current.replace(next);
+      }
       setDoc(next);
       setHistVer((v) => v + 1);
     },
@@ -266,12 +275,15 @@ export default function ImageEditor() {
   const orientedRef = useRef<HTMLCanvasElement | null>(null);
   const filterStrRef = useRef("none");
 
+  /** 사이드카 복원 뒤 원본이 바뀌어 있었는가 — 배너로 한 번 알린다. */
+  const [imageChanged, setImageChanged] = useState(false);
+
   /** 숨김·잠금·마스크가 풀린 씬. 렌더·히트·선택이 전부 이걸 본다(38 §3.2). */
   const scene = useMemo(() => resolveScene(doc), [doc]);
 
   const patchDoc = useCallback(
-    (patch: Partial<EditorDoc>, mode: "commit" | "replace" = "commit") =>
-      applyDoc({ ...docRef.current, ...patch }, mode),
+    (patch: Partial<EditorDoc>, mode: "commit" | "replace" = "commit", label?: string) =>
+      applyDoc({ ...docRef.current, ...patch }, mode, label),
     [applyDoc],
   );
 
@@ -364,18 +376,32 @@ export default function ImageEditor() {
     setSelectedIds([]);
     setCropMode(false);
     setTool("select");
-    // **자동 복원하지 않는다.** 안 그린 주석이 떠 있는 것이 사라지는 것만큼 헷갈리고,
-    // e2e 30 의 openEditor 가 "objects.length === 0" 을 기다리는 계약도 깨진다(설계 K7).
-    // 닫을 때와 **같은 파일**일 때만 제안한다. 다르면 항목을 버린다 — 낡은 crop 으로
-    // 복구하면 빈 이미지를 저장하게 되고, 그건 조용한 데이터 손실이다.
-    if (projectId && path) {
-      const key = stashKey(projectId, path);
-      const held = stash.get(key);
-      if (held && held.stamp !== stampRef.current) stash.delete(key);
-      setRecoverable(!!held && held.stamp === stampRef.current);
-    } else {
-      setRecoverable(false);
-    }
+
+    // 사이드카에 저장해 둔 편집 문서를 **자동으로** 되살린다(41 §3.3). v1 은 창 수명 stash 에
+    // 넣고 배너로 물었는데, 그건 창을 닫으면 사라지는 임시 보관이었다. 이제 파일로 남으므로
+    // 물어볼 이유가 없다 — 닫아도 잃는 것이 없다.
+    let alive = true;
+    void (async () => {
+      const restored = await persistRef.current
+        ?.load(stampRef.current, img.naturalWidth, img.naturalHeight)
+        .catch(() => null);
+      if (!alive || !restored) return;
+      const next = restored.imageChanged
+        ? // 원본이 바뀌었으면 크롭·출력 크기는 새 이미지 기준으로 되돌린다 — 낡은 crop 으로
+          // 저장하면 엉뚱한 영역이 잘려 나간다(조용한 데이터 손실).
+          { ...restored.doc, crop: null, outW: img.naturalWidth, outH: img.naturalHeight }
+        : restored.doc;
+      docRef.current = next;
+      histRef.current.reset(next, "이미지 열기", restored.log);
+      setDoc(next);
+      setHistVer((v) => v + 1);
+      setImageChanged(restored.imageChanged);
+      // 되돌린 crop 을 사이드카에도 반영한다 — 저장하지 않으면 열 때마다 같은 배너가 뜬다.
+      if (restored.imageChanged) persistRef.current?.markDirty();
+    })();
+    return () => {
+      alive = false;
+    };
   }, [img, projectId, path]);
 
   const { rotation, flipH, flipV, crop, outW, outH, brightness, contrast, saturate } =
@@ -696,26 +722,8 @@ export default function ImageEditor() {
       background: opaqueBg ? "#ffffff" : "image",
       filter: filterStr,
       image: base,
+      store: storeRef.current,
     });
-  };
-
-  /**
-   * 복원은 **applyDoc 통째 교체**여야 한다. stash 의 objects 는 "그 rotation/flip 이 이미
-   * 적용된 공간"의 값이라, patchDoc({rotation}) 으로 넣으면 transformObjects 델타가 두 번
-   * 걸린다 — 바로 아래 rotateBy 주석에 한 번 당한 기록이 남아 있는 그 함정이다.
-   * applyDoc 은 transformObjects 를 아예 부르지 않으므로 구조적으로 안전하다.
-   */
-  const restoreStashed = () => {
-    if (!projectId || !path) return;
-    const key = stashKey(projectId, path);
-    const held = stash.get(key);
-    if (held) applyDoc(held.doc, "commit");
-    stash.delete(key);
-    setRecoverable(false);
-  };
-  const discardStashed = () => {
-    if (projectId && path) stash.delete(stashKey(projectId, path));
-    setRecoverable(false);
   };
 
   const dir = path && path.includes("/") ? path.slice(0, path.lastIndexOf("/") + 1) : "";
@@ -738,7 +746,8 @@ export default function ImageEditor() {
       !ignoreStamp && relPath === path ? stampRef.current ?? undefined : undefined;
     setBusy(true);
     // renderOutput()은 동기지만 encodeCanvas는 avif에서 wasm을 동적 로드하므로 프라미스로 처리.
-    void Promise.resolve()
+    // 에셋 디코드를 먼저 끝낸다 — 안 그러면 회색 자리가 저장 파일에 그대로 굳는다(39 §3.6).
+    void ensureAssets(docRef.current)
       .then(() => encodeCanvas(renderOutput(), format, quality))
       .then((bytes) => {
         const base64 = bytesToBase64(bytes);
@@ -746,11 +755,11 @@ export default function ImageEditor() {
           { relPath, base64, overwrite, expectedStamp: stamp },
           {
             onSuccess: () => {
-              // 열어 둔 **그 파일**에 구웠을 때만 복구 항목을 버린다 — 다시 열었을 때 같은
-              // objects 를 복원하면 주석이 두 겹이 되기 때문이다. 다른 이름으로 저장했다면
-              // 원본은 한 바이트도 안 바뀌었으므로 복구는 그대로 살려 둔다.
+              // 열어 둔 **그 파일**에 구웠을 때만 편집 문서를 버린다 — 레이어가 이미지에
+              // 들어갔으므로 다시 열 때 복원하면 주석이 두 겹이 된다. '다른 이름으로'는
+              // 원본이 한 바이트도 안 바뀌었으니 문서를 살려 둔다(41 §3.3 R8).
               if (projectId && path && relPath === path) {
-                stash.delete(stashKey(projectId, path));
+                void persistRef.current?.deleteDoc();
               }
               pushToast("success", `저장됨 — ${relPath.split("/").pop()}`);
               close();
@@ -807,7 +816,7 @@ export default function ImageEditor() {
     const go = () => writeTo(targetPath, inPlace);
     if (doc.objects.length) {
       askConfirm({
-        title: "주석을 합쳐 저장",
+        title: "레이어를 이미지에 굽기",
         message: inPlace
           ? "주석이 이미지에 합쳐져 원본을 덮어씁니다. 벡터 편집 정보는 남지 않습니다."
           : "주석이 합쳐진 새 파일로 저장됩니다(원본은 그대로). 벡터 편집 정보는 남지 않습니다.",
@@ -842,7 +851,7 @@ export default function ImageEditor() {
   const copyToClipboard = () => {
     if (!oriented) return;
     setBusy(true);
-    void Promise.resolve()
+    void ensureAssets(docRef.current)
       .then(() => encodeCanvas(renderOutput(false), "png"))
       .then((bytes) => writeImage(bytes))
       .then(() => pushToast("success", "클립보드에 복사됨 (PNG)"))
@@ -852,38 +861,37 @@ export default function ImageEditor() {
 
   // ── 닫기 · Esc 계층(§5.4) ─────────────────────────────────────────────────
 
-  /** 주석이 남아 있으면 확인을 받고 닫는다 — 세션을 닫으면 벡터가 사라진다(평탄화 모델). */
-  const requestClose = useCallback(() => {
-    if (busyRef.current) return;
-    // objects 가 있을 때만 확인을 받고, **실제로 닫는 순간** 문서를 넣어 둔다.
-    // 확인 앞에서 넣으면 사용자가 취소한 뒤 주석을 다 지우고 닫았을 때 옛 문서가 남아
-    // "안 그린 주석"을 복원 제안하게 된다.
-    if (docRef.current.objects.length) {
-      askConfirm({
-        title: "편집기 닫기",
-        message:
-          "닫으면 주석이 편집기에서 사라집니다. **이 창에서** 같은 파일을 다시 열면 복구할 수 있습니다(창을 닫으면 사라집니다).",
-        confirmLabel: "닫기",
-        danger: true,
-        onConfirm: () => {
-          if (projectId && path) {
-            stashPut(stashKey(projectId, path), docRef.current, stampRef.current);
-          }
-          close();
-        },
-      });
-    } else {
-      close();
-    }
-  }, [askConfirm, close, projectId, path]);
 
   /**
-   * doc 창의 X(FloatTitleBar → `win.close()`)는 편집기의 닫기 가드를 **지나지 않는다** —
-   * 확인도 없이 창째 사라지고, stash 는 이 창 수명 스코프라 함께 죽는다. 즉 여기서 막을 수
-   * 있는 것은 "말없이 사라지는 것" 하나뿐이므로 확인을 받는다.
+   * 닫기 — 확인하지 않는다. 편집 문서는 사이드카에 남고 다음에 열 때 그대로 돌아온다.
+   * 저장에 실패했을 때만(충돌·IO) 물어본다 — 그때는 진짜로 잃을 수 있기 때문이다.
+   */
+  const requestClose = useCallback(() => {
+    if (busyRef.current) return;
+    void (async () => {
+      await persistRef.current?.flush();
+      if (persistRef.current?.state === "error") {
+        askConfirm({
+          title: "편집 문서를 저장하지 못했습니다",
+          message:
+            "이 창의 편집 내용을 파일로 남기지 못했습니다. 그래도 닫으면 마지막 저장 이후 변경분을 잃습니다.",
+          confirmLabel: "그래도 닫기",
+          danger: true,
+          onConfirm: close,
+        });
+        return;
+      }
+      close();
+    })();
+  }, [askConfirm, close]);
+
+  /**
+   * doc 창의 X(FloatTitleBar → `win.close()`)는 편집기의 닫기 가드를 지나지 않는다 —
+   * 창이 그냥 사라진다. 이제 잃을 것은 "마지막 디바운스가 아직 안 쓴 변경분"뿐이므로,
+   * **확인 대신 flush** 한다. 저장에 실패했을 때만 물어본다.
    *
-   * 확인 후에는 `destroy()` 를 부른다 — `close()` 는 CloseRequested 를 다시 발화시켜
-   * 확인창이 무한히 뜬다. Rust 쪽 CloseRequested 핸들러는 `main` 라벨만 다루므로 간섭 없다.
+   * `destroy()` 를 부르는 이유: `close()` 는 CloseRequested 를 다시 발화시켜 무한 루프가 된다.
+   * Rust 쪽 CloseRequested 핸들러는 `main` 라벨만 다루므로 간섭 없다.
    */
   useEffect(() => {
     if (!IS_DOC_WINDOW) return;
@@ -892,16 +900,24 @@ export default function ImageEditor() {
     let dead = false;
     void win
       .onCloseRequested((e) => {
-        if (!docRef.current.objects.length) return;
+        const p = persistRef.current;
+        if (!p || p.state === "clean") return;
         e.preventDefault();
-        askConfirm({
-          title: "창 닫기",
-          message:
-            "저장하지 않은 주석이 있습니다. 창을 닫으면 되돌릴 수 없습니다.",
-          confirmLabel: "닫기",
-          danger: true,
-          onConfirm: () => void win.destroy(),
-        });
+        void (async () => {
+          await p.flush();
+          if (persistRef.current?.state === "error") {
+            askConfirm({
+              title: "편집 문서를 저장하지 못했습니다",
+              message:
+                "이 창의 편집 내용을 파일로 남기지 못했습니다. 그래도 닫으면 마지막 저장 이후 변경분을 잃습니다.",
+              confirmLabel: "그래도 닫기",
+              danger: true,
+              onConfirm: () => void win.destroy(),
+            });
+            return;
+          }
+          void win.destroy();
+        })();
       })
       .then((f) => {
         if (dead) f();
@@ -915,6 +931,61 @@ export default function ImageEditor() {
       off?.();
     };
   }, [askConfirm]);
+
+  // 클립보드 이미지 붙여넣기 → 에셋 + 이미지 채우기 사각형 하나(41 §3.5).
+  // 상한 검사는 annotate/assets.ts 한 곳에만 있다 — 세 획득 경로가 각자 세면 언젠가
+  // 한 곳이 빠지고, 그 경로로 들어온 파일이 사이드카 32MB 상한에서 저장을 통째로 막는다.
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      const ui = useUi.getState();
+      if (ui.prompt || ui.confirm) return;
+      const el = document.activeElement as HTMLElement | null;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) {
+        return; // 텍스트 편집 중에는 글자가 붙어야 한다
+      }
+      // preventDefault 는 **여기서** 불러야 한다 — await 를 하나라도 지나면 이벤트가 이미
+      // 끝나 기본 붙여넣기가 그대로 나간다.
+      const file = Array.from(e.clipboardData?.files ?? []).find((f) =>
+        f.type.startsWith("image/"),
+      );
+      if (!file) return;
+      e.preventDefault();
+      void (async () => {
+        const doc = docRef.current;
+        try {
+          const got = await acquireFromFile(doc, file);
+          // 이미지 밖으로 튀어나오지 않게 자연 크기를 캔버스 안에 맞춘다 — 20MP 스크린샷이
+          // 200px 이미지 위에 붙으면 화면 어디에도 안 보인다.
+          const fit = Math.min(1, doc.outW / got.w, doc.outH / got.h);
+          const w = Math.max(1, Math.round(got.w * fit));
+          const h = Math.max(1, Math.round(got.h * fit));
+          const node = normalizeNode({
+            id: newObjId(),
+            kind: "rect",
+            x: Math.round((doc.outW - w) / 2),
+            y: Math.round((doc.outH - h) / 2),
+            w,
+            h,
+            strokeWidth: 0,
+            // Fill 은 flat 이다(Paint & {visible, blend}) — {paint:…} 로 감싸면 정규화가
+            // type 을 못 찾아 solid 로 떨어진다.
+            fills: [{ type: "image", assetId: got.id, mode: "fill", visible: true }],
+          });
+          if (!node) return;
+          applyDoc(
+            { ...doc, assets: got.assets, objects: [...doc.objects, node] },
+            "commit",
+            "이미지 붙여넣기",
+          );
+          setSelectedIds([node.id]);
+        } catch (err) {
+          pushToast("error", errorMessage(err));
+        }
+      })();
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [applyDoc, pushToast]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -961,6 +1032,10 @@ export default function ImageEditor() {
     if (!import.meta.env.DEV) return;
     const g = window as unknown as { __gpv?: Record<string, unknown> };
     g.__gpv = g.__gpv ?? {};
+    g.__gpv.imageDocs = {
+      read: (pid: string, rel: string) => ipc.imageDocRead(pid, rel, "doc"),
+      delete: (pid: string, rel: string) => ipc.imageDocDelete(pid, rel),
+    };
     g.__gpv.imageEditor = {
       getDoc: () => docRef.current,
       // setDoc 은 **경계**다 — v1 리터럴이든 부분 문서든 여기서 완전한 v2 문서가 된다(37 §3.3).
@@ -1003,6 +1078,7 @@ export default function ImageEditor() {
           image: img,
           background: "image",
           filter: filterStrRef.current,
+          store: storeRef.current,
         });
         const x = Math.round((win.x - work.x) * devScale);
         const y = Math.round((win.y - work.y) * devScale);
@@ -1014,6 +1090,35 @@ export default function ImageEditor() {
       /** 내보내기 배율 게이트·예상 용량의 단일 출처(40 §3.3). */
       estimate: (outW: number, outH: number) =>
         estimateRenderBytes(resolveScene(docRef.current), { outW, outH }),
+      /** 히스토리 v2 — 라벨·커서·점프·스냅샷(41 §7). */
+      history: {
+        entries: () =>
+          histRef.current.entries.map((e) => ({
+            label: e.label,
+            at: e.at,
+            readonly: e.readonly,
+          })),
+        cursor: () => histRef.current.cursor,
+        jumpTo: (i: number) => {
+          const d = histRef.current.jumpTo(i);
+          if (!d) return false;
+          docRef.current = d;
+          setDoc(d);
+          setHistVer((v) => v + 1);
+          persistRef.current?.markDirty();
+          return true;
+        },
+        snapshot: (name: string) => persistRef.current?.saveSnapshot(name),
+        listSnapshots: () => persistRef.current?.listSnapshots(),
+        loadSnapshot: async (i: number) => {
+          const d = await persistRef.current?.loadSnapshot(i);
+          if (!d) return false;
+          applyDoc(d, "commit", "스냅샷 복원");
+          return true;
+        },
+        state: () => persistRef.current?.state ?? "clean",
+        flush: () => persistRef.current?.flush(),
+      },
       /** 씬 요약 — 숨김이 빠졌는지, 무엇이 잠겼는지, 컨테이너 범위가 맞는지(38 §7). */
       scene: () => {
         const sc = resolveScene(docRef.current);
@@ -1063,6 +1168,7 @@ export default function ImageEditor() {
     };
     return () => {
       delete g.__gpv?.imageEditor;
+      delete g.__gpv?.imageDocs;
     };
   }, [patchDoc]);
 
@@ -1129,25 +1235,20 @@ export default function ImageEditor() {
           </button>
         </div>
 
-        {recoverable && (
+        {/* 편집 문서는 자동으로 되살아난다(41 §3.3) — 물어볼 것이 없다. 대신 **원본이 바뀐**
+            경우만 알린다: 그때는 크롭·출력 크기를 새 이미지 기준으로 되돌렸다는 뜻이다. */}
+        {imageChanged && (
           <div className="flex h-7 shrink-0 items-center gap-2 border-b border-edge bg-panel px-3 text-[11px]">
             <FileWarning size={12} className="shrink-0 text-warn" />
             <span className="flex-1 truncate text-fg-muted">
-              직전에 저장하지 않고 닫은 편집이 있습니다.
+              편집 문서를 저장한 뒤 원본 이미지가 바뀌었습니다 — 크롭과 출력 크기를 초기화했습니다.
             </span>
             <button
               type="button"
-              onClick={restoreStashed}
-              className="shrink-0 rounded bg-raised px-1.5 py-0.5 text-fg hover:bg-accent hover:text-on-accent"
-            >
-              이어서 하기
-            </button>
-            <button
-              type="button"
-              onClick={discardStashed}
+              onClick={() => setImageChanged(false)}
               className="shrink-0 rounded px-1.5 py-0.5 text-fg-dim hover:bg-raised hover:text-fg"
             >
-              버리기
+              확인
             </button>
           </div>
         )}
@@ -1195,6 +1296,8 @@ export default function ImageEditor() {
                   zoom={view.scale}
                   filterStr={filterStr}
                   objects={doc.objects}
+                  store={store}
+                  assetsVer={assetsVer}
                   selectedIds={selectedIds}
                   tool={tool}
                   style={style}
@@ -1205,7 +1308,7 @@ export default function ImageEditor() {
                   onCropMove={onCropMove}
                   onCropUp={onCropUp}
                   onCropCancel={onCropCancel}
-                  onCommit={(objects) => patchDoc({ objects })}
+                  onCommit={(objects, label) => patchDoc({ objects }, "commit", label)}
                   onToolChange={setTool}
                   onSelectionChange={setSelectedIds}
                 />

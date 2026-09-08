@@ -406,11 +406,6 @@ const HELPERS = `(() => {
   };
 
   /** 복구 배너가 떠 있는가(§P4). */
-  A.banner = () => {
-    const m = A.modal();
-    return !!(m && /직전에 저장하지 않고 닫은 편집/.test(m.textContent || ''));
-  };
-
   /** 합성 포인터 클릭(백킹 px 좌표) — 점마다 down/up 한 쌍. */
   A.clickCanvas = (pts) => {
     const steps = [];
@@ -630,6 +625,10 @@ export async function run({ cdp, report: r, fix }) {
   const openEditor = async (repoId, p) => {
     await closeEditor();
     await sleep(200);
+    // 사이드카에 남은 편집 문서를 먼저 지운다 — 태스크 41 자동 복원이 이 스위트의
+    // "새로 연 편집기는 비어 있다" 전제를 깬다(직전 회차가 남긴 문서가 되살아난다).
+    // (편집기가 닫혀 있어 __gpv.imageDocs 훅이 없다 — 커맨드를 직접 부른다.)
+    await cdp.try("image_doc_delete", { projectId: repoId, relPath: p });
     await cdp.eval(
       `window.__gpv.ui.getState().openImageEditor(${J(p)}, ${J(repoId)})`,
     );
@@ -754,7 +753,7 @@ export async function run({ cdp, report: r, fix }) {
     );
     r.check(
       "(a) 주석 있는 '저장' → 평탄화 확인 다이얼로그(§6.1)",
-      clickedSave === true && !!conf && /주석/.test(conf.title) && conf.danger,
+      clickedSave === true && !!conf && /레이어를 이미지에 굽기/.test(conf.title) && conf.danger,
       conf ? conf.title : "(다이얼로그 없음)",
     );
     await cdp.eval(`window.__gpv.ui.getState().closeConfirm()`);
@@ -870,23 +869,26 @@ export async function run({ cdp, report: r, fix }) {
         `rotation=${docR.rotation} x=${Math.round(docR.objects[0].x)}`,
       );
 
-      // Esc 계층 7 — 주석이 남은 채 닫으면 확인을 받는다(§5.4)
+      // Esc 계층 7 — 주석이 남아 있어도 **묻지 않고** 닫는다. 문서는 사이드카에 남아
+      // 다음에 열 때 그대로 돌아오므로 물어볼 이유가 없다(41 §3.3). v1 은 여기서
+      // "주석이 남아 있습니다" 확인창을 띄웠다 — 그 확인창이 통째로 사라졌다.
       await cdp.eval(
         `window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}))`,
       );
-      await sleep(200);
+      const closedC = await poll(
+        () => cdp.eval(`window.__gpv.ui.getState().imageEditorPath`),
+        (v) => v === null,
+        20,
+        150,
+      );
       const escConf = await cdp.eval(
         `(()=>{ const c = window.__gpv.ui.getState().confirm; return c ? c.title : null; })()`,
       );
-      const stillOpen = await cdp.eval(
-        `window.__gpv.ui.getState().imageEditorPath !== null`,
-      );
       r.check(
-        "(c) Esc 계층 7: 주석 있는 채 닫기 → 확인 다이얼로그(작업물 보호)",
-        !!escConf && stillOpen === true,
-        escConf || "(없음)",
+        "(c) Esc 계층 7: 주석이 있어도 확인 없이 닫힌다(사이드카에 남으므로 — 41 §3.3)",
+        escConf === null && closedC === null,
+        `confirm=${escConf} path=${closedC}`,
       );
-      await cdp.eval(`window.__gpv.ui.getState().closeConfirm()`);
     } else {
       r.skip("(c) 회전 좌표 변환 / (h) undo·redo", "편집기 재개 실패");
     }
@@ -1668,109 +1670,92 @@ export async function run({ cdp, report: r, fix }) {
       r.skip("(p) 손 피드백", "편집기 재개 실패");
     }
 
-    // ── (q) 세션 내 복구 배너 (설계 K6·K7) ────────────────────────────────
+    // ── (q) 닫아도 잃지 않는다 — 사이드카 자동 복원(41 §3.3) ──────────────
+    //
+    // v1 은 창 수명 stash + "이어서 하기" 배너였다. 태스크 41 이 앱 데이터 사이드카로
+    // 옮기면서 배너도 닫기 확인창도 사라졌다 — 닫아도 잃는 것이 없으면 물어볼 이유가 없다.
+    // 라벨·점프·스냅샷·충돌·에셋 상한은 스위트 37 이 본다. 여기서는 두 가지만 지킨다.
     if (await openEditor(fix.projectId, SRC)) {
       await setDoc({
         objects: [rectObj("q1", 30, 30, 50, 50, RED_HEX)],
         rotation: 90,
       });
-      // Esc → "편집기 닫기" 확인 → 확인. (주석이 있으므로 확인창이 뜬다)
+      await cdp.eval(`window.__gpv.imageEditor.history.flush()`).catch(() => {});
       await cdp.eval(`window.__gpvAnno.esc()`);
-      await sleep(150);
-      const confirmed = await cdp.eval(
-        `(()=>{const st=window.__gpv.ui.getState(); const c=st.confirm; if(!c) return false;
-           st.closeConfirm(); c.onConfirm(); return true;})()`,
+      const closedQ0 = await poll(
+        () => cdp.eval(`window.__gpv.ui.getState().imageEditorPath`),
+        (v) => v === null,
+        20,
+        150,
       );
-      await sleep(250);
+      r.check("(q-0) Esc → 확인창 없이 바로 닫힌다", closedQ0 === null, `path=${closedQ0}`);
 
-      if (r.check("(q-0) Esc → 닫기 확인 후 편집기 닫힘", confirmed === true)) {
-        // (q-1) 다시 열면 **문서는 비어 있고** 배너만 뜬다. 자동 복원은 openEditor 의
-        //       fresh() 계약(objects.length===0)을 깨뜨린다 — 이 스위트가 거기 매달려 있다.
-        const reopened = await openEditor(fix.projectId, SRC);
-        const banner = await cdp.eval(`window.__gpvAnno.banner()`);
-        r.check(
-          "(q-1) 재오픈: 문서는 비고 배너만 뜬다(자동 복원 아님)",
-          reopened === true && banner === true,
-          `fresh=${reopened} banner=${banner}`,
-        );
-
-        // (q-2)(q-3) [이어서 하기] → objects·rotation 이 닫기 직전과 일치.
-        const restored = await cdp.eval(
-          `(()=>{const m=window.__gpvAnno.modal(); if(!m) return false;
-             const b=Array.from(m.querySelectorAll('button')).find(x=>/이어서 하기/.test(x.textContent||''));
-             if(!b) return false; b.click(); return true;})()`,
-        );
-        await sleep(200);
-        const d = await getDoc();
-        r.check(
-          "(q-2) 이어서 하기 → objects 복원",
-          restored === true &&
-            d.objects.length === 1 &&
-            Math.round(d.objects[0].x) === 30 &&
-            Math.round(d.objects[0].w) === 50,
-          `objects=${J(d.objects.map((o) => [Math.round(o.x), Math.round(o.w)]))}`,
-        );
-        r.check(
-          "(q-3) 회전도 그대로 복원(델타 이중 적용 없음)",
-          d.rotation === 90,
-          `rotation=${d.rotation} (기대 90)`,
-        );
-        r.check(
-          "(q-3b) 복원 후 배너가 사라진다",
-          (await cdp.eval(`window.__gpvAnno.banner()`)) === false,
-        );
-
-        // (q-4) 저장 성공 시 stash 삭제(설계 R8) — **배너를 무시한 채** 제자리 저장해야
-        // 그 계약이 발동한다. [이어서 하기]는 이미 stash 를 지우므로 그 뒤에 저장하면
-        // 아무것도 검증하지 못한다. 그리고 다른 이름 저장은 원본을 안 건드려 지우지 않는다.
-        await cdp.eval(`window.__gpvAnno.esc()`);
-        await sleep(150);
+      // **openEditor 를 쓰지 않는다** — 그 헬퍼는 사이드카를 지우고 빈 문서를 기다린다.
+      // 여기서 보려는 것이 정확히 "지우지 않았을 때 되살아나는가"다.
+      const rawOpen = async () => {
         await cdp.eval(
-          `(()=>{const st=window.__gpv.ui.getState(); const c=st.confirm;
-             if(c){st.closeConfirm(); c.onConfirm();} return true;})()`,
+          `window.__gpv.ui.getState().openImageEditor(${J(SRC)}, ${J(fix.projectId)})`,
         );
-        await sleep(250);
-        const reopen2 = await openEditor(fix.projectId, SRC);
-        const banner2 = await cdp.eval(`window.__gpvAnno.banner()`);
-        r.check(
-          "(q-4a) 다시 닫으면 다시 stash 된다(배너 재등장)",
-          reopen2 === true && banner2 === true,
-          `fresh=${reopen2} banner=${banner2}`,
+        return poll(
+          () => cdp.eval(`window.__gpvAnno.ready()`).catch(() => false),
+          (v) => v === true,
         );
+      };
+      const reopened = await rawOpen();
+      const back = await poll(
+        () => cdp.eval(`window.__gpv.imageEditor.getDoc()`).catch(() => null),
+        (v) => v && v.objects.length === 1,
+        20,
+        200,
+      );
+      r.check(
+        "(q-1) 재오픈: 배너·확인 없이 objects 와 회전이 그대로 돌아온다",
+        reopened === true &&
+          !!back &&
+          back.objects.length === 1 &&
+          Math.round(back.objects[0].x) === 30 &&
+          Math.round(back.objects[0].w) === 50 &&
+          back.rotation === 90,
+        back
+          ? `objects=${J(back.objects.map((o) => [Math.round(o.x), Math.round(o.w)]))} rotation=${back.rotation}`
+          : "(문서 없음)",
+      );
 
-        // 배너를 무시하고 새로 그린 뒤 **원본에 제자리 저장**한다.
-        // 주의: 이 블록이 픽스처 SRC 를 덮어쓴다 — (q) 뒤에 SRC 를 쓰는 케이스를 두지 마라.
-        await setDoc({ objects: [rectObj("q2", 10, 10, 20, 20, RED_HEX)] });
-        const inPlace = await cdp.eval(
-          `(()=>{ if(!window.__gpvAnno.click(/^\\s*저장/)) return 'button'; return 'ok'; })()`,
+      // (q-2) 제자리 평탄화 저장은 문서를 버린다(R8) — 안 그러면 다시 열었을 때
+      // 이미 구워진 주석 위에 같은 주석이 한 겹 더 올라간다.
+      // 주의: 이 블록이 픽스처 SRC 를 덮어쓴다 — (q) 뒤에 SRC 를 쓰는 케이스를 두지 마라.
+      await setDoc({ objects: [rectObj("q2", 10, 10, 20, 20, RED_HEX)], rotation: 0 });
+      const inPlace = await cdp.eval(
+        `(()=>{ if(!window.__gpvAnno.click(/^\s*저장/)) return 'button'; return 'ok'; })()`,
+      );
+      await sleep(150);
+      await cdp.eval(
+        `(()=>{const st=window.__gpv.ui.getState(); const c=st.confirm;
+           if(c){st.closeConfirm(); c.onConfirm();} return true;})()`,
+      );
+      const closedQ = await poll(
+        () => cdp.eval(`window.__gpv.ui.getState().imageEditorPath`),
+        (v) => v === null,
+      );
+      if (
+        r.check(
+          "(q-2) 원본에 제자리 저장",
+          inPlace === "ok" && closedQ === null,
+          `click=${inPlace} closed=${closedQ}`,
+        ) &&
+        (await rawOpen())
+      ) {
+        const after = await cdp.eval(`window.__gpv.imageEditor.getDoc().objects.length`);
+        r.check(
+          "(q-3) 제자리 저장 후 다시 열면 문서가 비어 있다(주석 이중 적용 방지)",
+          after === 0,
+          `objects=${after}`,
         );
-        await sleep(150);
-        await cdp.eval(
-          `(()=>{const st=window.__gpv.ui.getState(); const c=st.confirm;
-             if(c){st.closeConfirm(); c.onConfirm();} return true;})()`,
-        );
-        const closedQ = await poll(
-          () => cdp.eval(`window.__gpv.ui.getState().imageEditorPath`),
-          (v) => v === null,
-        );
-        if (
-          r.check(
-            "(q-4b) 원본에 제자리 저장",
-            inPlace === "ok" && closedQ === null,
-            `click=${inPlace} closed=${closedQ}`,
-          ) &&
-          (await openEditor(fix.projectId, SRC))
-        ) {
-          r.check(
-            "(q-4c) 제자리 저장 후에는 배너가 없다(이중 주석 방지)",
-            (await cdp.eval(`window.__gpvAnno.banner()`)) === false,
-          );
-        } else {
-          r.skip("(q-4c) 저장 후 배너 없음", "저장 또는 재오픈 실패");
-        }
+      } else {
+        r.skip("(q-3) 저장 후 문서 없음", "저장 또는 재오픈 실패");
       }
     } else {
-      r.skip("(q) 복구 배너", "편집기 재개 실패");
+      r.skip("(q) 사이드카 자동 복원", "편집기 재개 실패");
     }
 
     // ── (t) 렌더러 v2: 페인트 스택 · 블렌드 · 마스크 · 효과 ────────────────

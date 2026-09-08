@@ -171,21 +171,27 @@ fn load_json_at<T: serde::de::DeserializeOwned>(path: &Path, key: &str) -> Optio
     }
 }
 
-/// 파일 1개에 키 1개를 **원자적으로** 쓴다 — tmp에 쓰고 rename.
+/// 바이트를 **원자적으로** 쓴다 — tmp에 쓰고 rename.
 /// 쓰기 도중 전원이 나가도 기존 파일은 손상되지 않는다(rename은 일어나거나 일어나지 않거나 둘 뿐).
+/// 이미지 편집 문서 사이드카(commands/image_doc.rs)도 같은 락·같은 절차를 탄다.
+pub(crate) fn save_bytes_at(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
+    let _guard = SAVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path)
+}
+
+/// 파일 1개에 키 1개를 원자적으로 쓴다(`{"<키>": <값>}` 포맷).
 fn save_json_at<T: serde::Serialize>(
     path: &Path,
     key: &str,
     value: &T,
 ) -> Result<(), std::io::Error> {
     let json = serde_json::to_vec_pretty(&serde_json::json!({ key: value }))?;
-    let _guard = SAVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, json)?;
-    std::fs::rename(&tmp, path)
+    save_bytes_at(path, &json)
 }
 
 /// 사용자 데이터 1건 읽기 — 없거나 손상이면 None(호출자가 기본값을 정한다).

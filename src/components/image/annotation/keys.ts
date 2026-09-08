@@ -68,7 +68,7 @@ export function createKeyHandler(ctx: KeyCtx): (ev: KeyboardEvent) => void {
       }
       if (!copies.length) return;
       ev.preventDefault();
-      s.onCommit([...s.objects, ...copies]);
+      s.onCommit([...s.objects, ...copies], copies.length === 1 ? "복제" : `${copies.length}개 복제`);
       s.onSelectionChange(copies.map((o) => o.id));
       return;
     }
@@ -84,12 +84,16 @@ export function createKeyHandler(ctx: KeyCtx): (ev: KeyboardEvent) => void {
     if (ev.key === "[" || ev.key === "]") {
       if (!s.selectedIds.length) return;
       ev.preventDefault();
-      s.onCommit(reorder(s.objects, s.selectedIds, ev.key === "]" ? 1 : -1));
+      // describeChange 는 개수가 같은 배열을 "속성 변경"으로 본다 — 순서는 여기서만 안다.
+      s.onCommit(
+        reorder(s.objects, s.selectedIds, ev.key === "]" ? 1 : -1),
+        ev.key === "]" ? "앞으로" : "뒤로",
+      );
       return;
     }
     if (ev.key.startsWith("Arrow")) {
       if (!s.selectedIds.length) return;
-      // auto-repeat 를 받으면 초당 ~30 커밋이라 HISTORY_LIMIT(50)이 1.7초에 소진돼
+      // auto-repeat 를 받으면 초당 ~30 커밋이라 HISTORY_LIMIT(200)이 7초에 소진돼
       // **이전 히스토리가 통째로 날아간다**. 탭 전용으로 둔다(설계 K5).
       // ponytail: 누르고 있는 동안 이어서 움직이려면 라이브 커밋 경로를 뚫어야 한다(+20줄).
       if (ev.repeat) {
