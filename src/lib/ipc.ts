@@ -8,6 +8,8 @@ export interface Project {
   path: string;
   order: number;
   addedAt: string;
+  /** 수동 지정 로고의 레포 상대경로. 없거나 null이면 자동 감지(태스크 54). */
+  logo?: string | null;
 }
 
 export type ChangeKind =
@@ -245,6 +247,17 @@ export interface Settings {
   lspWorkspaceTsserver: boolean; // 워크스페이스 node_modules/typescript 사용 — 기본 false(공급망)
   // 동영상 편집 (video.rs)
   videoFfmpegPath: string | null; // null/빈값 = 자동 발견(PATH → 관리 설치본). 지정 시 그것만.
+  // 로컬 LLM (태스크 59 §3.6 — llm/*.rs)
+  llmProvider: "managed" | "external"; // managed=앱이 llama-server 관리, external=Ollama 등
+  llmModel: string; // 카탈로그 id 또는 "custom"
+  llmCustomModelPath: string | null;
+  llmExternalUrl: string | null; // 예: http://localhost:11434/v1
+  llmExternalModel: string | null; // 외부 서버의 모델 이름(예: qwen3:4b)
+  llmExternalKey: string | null; // 로컬 서버 키라 키링 미사용(§7)
+  llmGpuLayers: number; // -ngl, 기본 99
+  llmContext: number; // -c, 저장 시 2048..32768 클램프
+  llmLanguage: string; // "ko" | "en" — 요약·번역 기본 언어
+  llmBackend: "auto" | "cpu"; // Windows Vulkan 폴백이 "cpu"를 기록
 }
 
 /** 포맷 결과 (commands/format.rs format_source). */
@@ -839,7 +852,10 @@ export type ErrorCode =
   | "TLS_ERROR"
   | "CANCELLED"
   | "INVALID_URL"
-  | "TOOL_NOT_FOUND";
+  | "TOOL_NOT_FOUND"
+  // 같은 자원에 이미 요청이 진행 중 — 로컬 LLM은 한 번에 한 요청만 받는다(error.rs ErrorCode::Busy).
+  // 61 번역 카드가 이 코드로 "대기 중"을 표시하고 3초 간격으로 재시도한다.
+  | "BUSY";
 
 // ---- API 클라이언트 전송 계약 (commands/http.rs §4.9 / §5.1) ----
 // 백엔드 HttpRequest의 camelCase serde와 1:1 정합. lib/apiclient.ts에서 조립한
@@ -1626,4 +1642,196 @@ export const ipc = {
     }),
   clearQuarantine: (paths: string[]) =>
     callMutating<void>("clear_quarantine", { paths }, 60_000),
+
+  // ---- 메모 순서 (commands/notes.rs) ----
+  // 메모 배열 순서가 곧 사용자 순서다(표시는 그 역순) — 드래그로 정한 순서를 그대로 영속화한다.
+  reorderMemos: (projectId: string, orderedIds: string[]) =>
+    callMutating<void>("reorder_memos", { projectId, orderedIds }),
+
+  // ---- 프로젝트 로고 수동 지정 (commands/logo.rs, 태스크 54) ----
+  // relPath = 레포 상대경로(forward-slash), null이면 해제 → 자동 감지로 복귀.
+  // 쓸 수 없는 파일은 저장 전에 Io 에러로 거절된다(토스트).
+  setProjectLogo: (id: string, relPath: string | null) =>
+    callMutating<Project>("set_project_logo", { id, relPath }),
+
+  // ---- 로컬 LLM (llm/*.rs, 태스크 59) ----
+  // 대화는 src/lib/llm.ts의 chat()만 쓴다(60·61의 유일한 계약) — 여기 것은 그 아래 계층이다.
+  // Channel은 **호출마다 새로** 만든다. 재사용하면 인덱스 카운터가 어긋나 출력이 무증상으로
+  // 영구 정지한다(CLAUDE.md).
+  llmStatus: () =>
+    call<LlmStatus>("llm_status", {}, { lane: "background", attempts: 1, timeoutMs: 8_000 }),
+  // 런타임(11~35MB) 다운로드 — 설정 버튼 클릭으로만("클릭이 곧 동의").
+  llmRuntimeEnsure: (onProgress?: (p: LlmProgress) => void) => {
+    const ch = new Channel<string>();
+    if (onProgress) {
+      ch.onmessage = (raw) => {
+        try {
+          onProgress(JSON.parse(raw) as LlmProgress);
+        } catch {
+          /* 형식 오류 무시 */
+        }
+      };
+    }
+    return invoke<LlmStatus>("llm_runtime_ensure", { onProgress: ch });
+  },
+  // GGUF 모델(1.8~5.0GB) 다운로드. 재시도 절대 금지 — 중복 실행은 GB 단위 낭비다.
+  llmModelDownload: (modelId: string, onProgress?: (p: LlmProgress) => void) => {
+    const ch = new Channel<string>();
+    if (onProgress) {
+      ch.onmessage = (raw) => {
+        try {
+          onProgress(JSON.parse(raw) as LlmProgress);
+        } catch {
+          /* 형식 오류 무시 */
+        }
+      };
+    }
+    return invoke<LlmStatus>("llm_model_download", { modelId, onProgress: ch });
+  },
+  // name = "runtime" | "runtime-cpu" | 모델 id. 없으면 백엔드 no-op(멱등).
+  llmDownloadCancel: (name: string) => invoke<void>("llm_download_cancel", { name }),
+  llmModelDelete: (modelId: string) => callMutating<LlmStatus>("llm_model_delete", { modelId }),
+  // 서버 수동 종료 — 멱등. 유휴 10분·앱 종료에도 자동으로 내려간다.
+  llmStop: () => invoke<void>("llm_stop"),
+  // 스트리밍 채팅. 토큰과 진행(모델 로드)이 **다른 채널**이다 — 한 채널에 섞으면
+  // `{"phase":…}`처럼 생긴 토큰과 구분할 수 없다.
+  llmChat: (
+    req: LlmChatReq,
+    onToken: (delta: string) => void,
+    onProgress?: (p: LlmChatProgress) => void,
+  ) => {
+    const tokens = new Channel<string>();
+    tokens.onmessage = onToken;
+    const progress = new Channel<string>();
+    progress.onmessage = (raw) => {
+      try {
+        onProgress?.(JSON.parse(raw) as LlmChatProgress);
+      } catch {
+        /* 형식 오류 무시 */
+      }
+    };
+    return invoke<ChatDone>("llm_chat", { req, onToken: tokens, onProgress: progress });
+  },
+  // 진행 중 요청 취소 — id가 다르면 no-op(늦은 취소가 다음 요청을 죽이지 않는다).
+  llmCancel: (requestId: string) => invoke<void>("llm_cancel", { requestId }),
+
+  // ---- 작업 리포트 (report.rs, 태스크 60) ----
+  // 히트맵은 1년치를 **프로젝트마다** 부른다 — background 레인·재시도 없음(다음 무효화가 재조회).
+  gitActivity: (projectId: string, since: string, until: string, mine: boolean) =>
+    call<DayCount[]>("git_activity", { projectId, since, until, mine }, {
+      lane: "background",
+      attempts: 1,
+      timeoutMs: 20_000,
+    }),
+  // 요약 입력 커밋(최대 200) — 카드가 클릭 시 부르므로 interactive 레인.
+  commitsBetween: (projectId: string, since: string, until: string, mine: boolean) =>
+    call<Commit[]>("commits_between", { projectId, since, until, mine }, {
+      attempts: 1,
+      timeoutMs: 20_000,
+    }),
+  // Claude Code 전사 스캔 — 프로젝트에 따라 수백 MB를 훑을 수 있어 넉넉히(설계 §5.2 실기 대상).
+  claudePrompts: (projectPath: string, since: string, until: string) =>
+    call<PromptDump>("claude_prompts", { projectPath, since, until }, {
+      lane: "background",
+      attempts: 1,
+      timeoutMs: 60_000,
+    }),
+  reportGetAll: () =>
+    call<ReportMap>("report_get_all", {}, { attempts: 1, timeoutMs: 10_000 }),
+  reportSet: (key: string, record: ReportRecord) =>
+    callMutating<void>("report_set", { key, record }),
+  reportDelete: (key: string) => callMutating<void>("report_delete", { key }),
 };
+
+// ---- 로컬 LLM 타입 (llm/acquire.rs · chat.rs, 태스크 59) ----
+
+/** 다운로드 진행 — ffmpeg/LSP와 같은 형식(SettingsDialog의 phase 매핑을 재사용한다). */
+export interface LlmProgress {
+  name: string; // "runtime" | "runtime-cpu" | 모델 id
+  phase: "download" | "verify" | "extract" | "done" | "error";
+  percent: number | null;
+  message: string | null;
+}
+
+/**
+ * 첫 요청의 서버 기동·모델 로드 진행(20~60초). 토큰이 흐르기 시작하면 더 오지 않는다.
+ *
+ * Windows Vulkan 기동이 실패하면 CPU 빌드(18MB) 다운로드가 **같은 채널로** 흐른다 —
+ * 그때는 `LlmProgress` 모양이라 두 모양을 다 받는다(`phase`로 갈린다).
+ */
+export type LlmChatProgress = { phase: "loading"; seconds: number } | LlmProgress;
+
+export interface LlmModelStatus {
+  id: string;
+  label: string;
+  repo: string;
+  file: string;
+  size: number;
+  minRam: number;
+  note: string;
+  present: boolean;
+  path: string | null;
+}
+
+export interface LlmServerStatus {
+  model: string;
+  port: number;
+  ready: boolean;
+  idleSecs: number;
+}
+
+export interface LlmStatus {
+  runtime: string | null; // 설치된 빌드 태그("b10809")
+  runtimePath: string | null;
+  runtimeSize: number; // 아직 없을 때 버튼에 적을 다운로드 크기(바이트)
+  runtimeSupported: boolean; // 이 플랫폼에 관리형 스펙이 있는가
+  models: LlmModelStatus[];
+  server: LlmServerStatus | null;
+  customModelOk: boolean;
+}
+
+export interface LlmChatReq {
+  messages: { role: "system" | "user" | "assistant"; content: string }[];
+  maxTokens?: number;
+  temperature?: number;
+  requestId: string;
+}
+
+export interface ChatDone {
+  text: string;
+  promptTokens: number;
+  completionTokens: number;
+  /** finish_reason === "length" — max_tokens에서 잘렸다. */
+  truncated: boolean;
+}
+
+// ---- 작업 리포트 타입 (report.rs, 태스크 60) ----
+
+/** 히트맵 한 칸 — 날짜(YYYY-MM-DD)와 그 날의 건수. 커밋·프롬프트 두 시리즈가 같은 모양이다. */
+export interface DayCount {
+  date: string;
+  count: number;
+}
+
+/** Claude Code 전사의 사용자 프롬프트 1건(at = 전사 원본 UTC ISO). */
+export interface PromptItem {
+  at: string;
+  text: string;
+}
+
+export interface PromptDump {
+  items: PromptItem[];
+  /** 기간 전체의 날짜별 개수 — items는 상한(2000)에 잘려도 이쪽은 온전하다. */
+  days: DayCount[];
+}
+
+/** 저장된 요약 1건. 키는 `lib/report.ts`의 `reportKey()`가 만든다. */
+export interface ReportRecord {
+  text: string;
+  generatedAt: string;
+  /** 입력(커밋 sha + 프롬프트 시각) SHA-1 — 달라지면 "입력이 바뀜" 뱃지. */
+  inputHash: string;
+  model: string;
+}
+
+export type ReportMap = Record<string, ReportRecord>;

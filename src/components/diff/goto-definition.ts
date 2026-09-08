@@ -11,7 +11,7 @@
 //    (useUi.selectDiff)로 해당 파일을 뷰어에 열고 그 줄로 이동.
 import { monaco } from "./monaco-setup";
 
-import type { DefMatch } from "../../lib/ipc";
+import type { DefMatch, DiffTarget } from "../../lib/ipc";
 import { ipc } from "../../lib/ipc";
 import { extToLang, lspActive } from "../../lib/lsp/client";
 import { languageOf } from "../../lib/language-map";
@@ -21,7 +21,14 @@ const SCHEME = "gitpervisor-def";
 
 // 현재 뷰어가 보여주는 파일의 컨텍스트(검색 대상 프로젝트 + 언어 판정용 확장자).
 // 모델 URI는 @monaco-editor/react가 자동 생성(inmemory)이라 파일 경로를 모르므로 모듈 변수로 전달.
-let ctx: { projectId: string; ext: string } | null = null;
+// open: 정의로 점프할 때 쓸 열기 함수. 모달 안 뷰어(Git 모달)는 여기로 자기 로컬 선택을 넘겨
+// 전역 selectDiff(뷰어 탭 업서트 + 모아보기 닫기)를 피한다 — 없으면 전역 selectDiff.
+export interface DefContext {
+  projectId: string;
+  ext: string;
+  open?: (target: DiffTarget, repoId: string) => void;
+}
+let ctx: DefContext | null = null;
 
 /** 현재 파일의 언어 서버가 활성이면 휴리스틱 provider는 물러난다(§3.6 상호배타 게이트). */
 function gatedByLsp(): boolean {
@@ -29,12 +36,24 @@ function gatedByLsp(): boolean {
   const lang = extToLang(ctx.ext);
   return lang != null && lspActive(ctx.projectId, lang);
 }
-export function setDefContext(projectId: string, ext: string) {
-  ctx = { projectId, ext };
+export function setDefContext(
+  projectId: string,
+  ext: string,
+  open?: DefContext["open"],
+) {
+  ctx = { projectId, ext, open };
 }
 /** 현재 뷰어 컨텍스트(projectId·ext) — 참조 찾기 등 재사용용. */
-export function getDefContext(): { projectId: string; ext: string } | null {
+export function getDefContext(): DefContext | null {
   return ctx;
+}
+/**
+ * 뷰어가 언마운트될 때 **자기 앞의 컨텍스트를 되돌린다.** 모듈 전역이라 뷰어가 둘 이상 떠 있으면
+ * (Git 모달이 메인 뷰어 위에 뜬다) 나중에 마운트한 쪽이 이기는데, 그대로 두면 모달을 닫은 뒤에도
+ * 정의 검색이 모달의 프로젝트를 가리킨 채 남는다.
+ */
+export function restoreDefContext(prev: DefContext | null) {
+  ctx = prev;
 }
 
 // 심볼→결과 캐시(같은 심볼 반복 호버 시 백엔드 재호출 회피). 키에 projectId·ext 포함.
@@ -268,7 +287,10 @@ export function registerGotoDefinition() {
       // 정의 검색은 현재 파일의 저장소(ctx.projectId) 안에서 이뤄지고 반환 경로도 그 저장소
       // 기준 상대경로다 — 임베디드 저장소면 합성 id를 diff repo로 전달해야 엉뚱한(outer) 저장소의
       // 동일 상대경로 파일로 점프하지 않는다.
-      useUi.getState().selectDiff({ mode: "file", path, line, column }, ctx?.projectId);
+      const target: DiffTarget = { mode: "file", path, line, column };
+      // 모달 안 뷰어는 자기 로컬 선택으로 연다(전역을 안 건드린다 — 태스크 55 §3.1).
+      if (ctx?.open) ctx.open(target, ctx.projectId);
+      else useUi.getState().selectDiff(target, ctx?.projectId);
       return true;
     },
   });

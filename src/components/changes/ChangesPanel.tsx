@@ -226,9 +226,13 @@ function Group({
 function RepoChanges({
   projectId,
   outerProjectId,
+  onSelect,
+  active,
 }: {
   projectId: string;
   outerProjectId: string;
+  onSelect?: (target: DiffTarget, repoId: string) => void;
+  active?: { target: DiffTarget; repoId: string } | null;
 }) {
   const { data: status } = useStatus(projectId);
   const selectedDiff = useUi((s) => s.selectedDiff);
@@ -298,8 +302,14 @@ function RepoChanges({
 
   // 이 저장소가 지금 뷰어에 뜬 diff의 대상 저장소일 때만 행을 선택 표시한다.
   // (diff repo가 지정 안 됐으면 outer로 간주 — 트리/로그에서 연 diff의 하이라이트 유지.)
-  const activeDiff =
-    (selectedDiffRepoId ?? outerProjectId) === projectId ? selectedDiff : null;
+  // onSelect가 오면 선택이 호출자 로컬이다(Git 모달, 태스크 55) — 전역 selectedDiff를 보지 않는다.
+  const activeDiff = onSelect
+    ? active?.repoId === projectId
+      ? active.target
+      : null
+    : (selectedDiffRepoId ?? outerProjectId) === projectId
+      ? selectedDiff
+      : null;
 
   // 평탄화 — **펼쳐진** 그룹의 행만(범위 선택이 숨은 행을 휩쓸어 의도치 않게 롤백하는 것 방지).
   const flatRows = groups.flatMap((g) =>
@@ -340,7 +350,7 @@ function RepoChanges({
               ? { mode: "file", path: row.change.path }
               : { mode: "worktree", path: row.change.path };
         // 이 저장소(projectId)를 diff 대상으로 지정 — 임베디드면 그 저장소로 라우팅.
-        selectDiff(target, projectId);
+        (onSelect ?? selectDiff)(target, projectId);
       }
     }
   };
@@ -627,9 +637,13 @@ function RepoChanges({
 function NestedRepoSection({
   nested,
   outerProjectId,
+  onSelect,
+  active,
 }: {
   nested: RepoStatus;
   outerProjectId: string;
+  onSelect?: (target: DiffTarget, repoId: string) => void;
+  active?: { target: DiffTarget; repoId: string } | null;
 }) {
   const count = changeCount(nested);
   const hasChanges = count > 0;
@@ -681,6 +695,8 @@ function NestedRepoSection({
             <RepoChanges
               projectId={nested.projectId}
               outerProjectId={outerProjectId}
+              onSelect={onSelect}
+              active={active}
             />
             <CommitForm projectId={nested.projectId} bindShortcut={false} />
           </>
@@ -689,7 +705,27 @@ function NestedRepoSection({
   );
 }
 
-export function ChangesPanel({ projectId }: { projectId: string }) {
+/**
+ * onSelect·active: 주면 파일 클릭이 **호출자 로컬 선택**이 된다 — 전역 selectDiff(뷰어 탭 업서트 +
+ * 모아보기 닫기)를 부르지 않고 행 강조도 전역이 아닌 active를 본다(Git 모달, 태스크 55).
+ * 사이드바는 주지 않으므로 동작이 그대로다.
+ *
+ * embedded: 모달 안 렌더(Git 모달). 사이드바와 **영속 상태·전역 단축키를 공유하면 안 된다**:
+ *  - 접힘 키(gp:changes-collapsed)를 공유하면 사이드바를 접어 둔 사용자에게 모달이 28px 띠로 떠
+ *    목록도 커밋 폼도 없다 → 접기 자체를 빼고 고정 폭으로 그린다.
+ *  - Ctrl+K 커밋 단축키를 이 폼도 받으면 사이드바 폼과 **둘 다** 커밋된다(CommitForm 주석).
+ */
+export function ChangesPanel({
+  projectId,
+  onSelect,
+  active,
+  embedded,
+}: {
+  projectId: string;
+  onSelect?: (target: DiffTarget, repoId: string) => void;
+  active?: { target: DiffTarget; repoId: string } | null;
+  embedded?: boolean;
+}) {
   const { data: statuses } = useStatuses();
   const status = statuses?.find((s) => s.projectId === projectId);
   // 이 프로젝트에 속한 임베디드 저장소들 — 상대경로 순으로 안정 정렬.
@@ -706,7 +742,7 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
   // 최상위·임베디드 모두 변경이 없고 임베디드 저장소 자체도 없을 때만 "변경 없음".
   const isEmpty = status && !status.error && total === 0 && nested.length === 0;
 
-  if (collapsed)
+  if (collapsed && !embedded)
     return (
       <CollapsedPanelStrip
         title="Changes"
@@ -717,7 +753,8 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
 
   return (
     <div
-      style={{ width }}
+      // 모달은 사이드바의 접힘·폭을 따르지 않는다 — 고정 288px(설계 §3.2).
+      style={{ width: embedded ? 288 : width }}
       className="relative flex h-full shrink-0 flex-col border-r border-edge bg-panel"
     >
       <div className="flex items-center gap-2 border-b border-edge px-3 py-2">
@@ -726,13 +763,15 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
           {status ? `${total} files` : "…"}
         </span>
         <div className="flex-1" />
-        <button
-          title="패널 접기"
-          onClick={toggleCollapsed}
-          className="rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
-        >
-          <ChevronsLeft size={14} />
-        </button>
+        {!embedded && (
+          <button
+            title="패널 접기"
+            onClick={toggleCollapsed}
+            className="rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
+          >
+            <ChevronsLeft size={14} />
+          </button>
+        )}
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto py-1">
@@ -746,20 +785,29 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
           </div>
         ) : status ? (
           <>
-            <RepoChanges projectId={projectId} outerProjectId={projectId} />
+            <RepoChanges
+              projectId={projectId}
+              outerProjectId={projectId}
+              onSelect={onSelect}
+              active={active}
+            />
             {nested.map((n) => (
               <NestedRepoSection
                 key={n.projectId}
                 nested={n}
                 outerProjectId={projectId}
+                onSelect={onSelect}
+                active={active}
               />
             ))}
           </>
         ) : null}
       </div>
 
-      <CommitForm projectId={projectId} />
-      <ResizeHandle onMouseDown={startResize} />
+      {/* 전역 Ctrl+K는 최상위 폼 하나만 처리한다 — 모달 폼까지 받으면 사이드바 폼과 둘 다 커밋된다. */}
+      <CommitForm projectId={projectId} bindShortcut={!embedded} />
+      {/* 폭 핸들은 사이드바의 영속 폭(gp:changes-width)을 쓰므로 모달에서는 빼 둔다(고정 폭). */}
+      {!embedded && <ResizeHandle onMouseDown={startResize} />}
     </div>
   );
 }

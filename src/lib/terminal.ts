@@ -128,6 +128,66 @@ async function sessionExists(termId: string): Promise<boolean> {
   }
 }
 
+/** 새 터미널이 뜨자마자 PTY에 넣을 입력 — 지금은 Claude Code 세션 띄우기 하나뿐.
+ *  `\r`이 Enter다(키 입력과 같은 경로라 셸 종류를 안 탄다). */
+export const CLAUDE_LAUNCH = "claude\r";
+
+/** 예약된 초기 입력 — `paneId → {명령, 예약시각}`.
+ *
+ *  **localStorage에 두는 이유**: 모아보기 별도 창에서 새 터미널을 요청하면 `openTerminal`은
+ *  메인에 위임되고, 같은 pane을 두 창이 그리므로 `term_open`을 어느 창이 잡을지는 마운트
+ *  순서가 정한다. 예약이 요청한 창의 메모리에만 있으면 다른 창이 spawn한 경우 명령이 사라진다
+ *  → 창 간 전달 관례(`gp:doc-windows` 등)를 따라 스토리지에 두고 **open을 수행한 창이 소비**한다.
+ *
+ *  60초 만료: 소비되지 않고 남은 예약은 다음 부팅의 세션 복구가 같은 paneId를 **새 open**으로
+ *  되살릴 때(attach가 아니다 — commands/terminal.rs) 다시 소비돼, 재시작할 때마다 그 탭이
+ *  claude를 또 띄운다. 예약 시각으로 그 부수효과를 잘라낸다. */
+const INITIAL_KEY = "gp:term-initial-input";
+const INITIAL_TTL_MS = 60_000;
+type InitialInputs = Record<string, { data: string; at: number }>;
+
+function readInitialInputs(): InitialInputs {
+  try {
+    return (JSON.parse(localStorage.getItem(INITIAL_KEY) || "{}") ??
+      {}) as InitialInputs;
+  } catch {
+    return {}; // 손상 값은 없는 것으로
+  }
+}
+
+function writeInitialInputs(all: InitialInputs): void {
+  try {
+    localStorage.setItem(INITIAL_KEY, JSON.stringify(all));
+  } catch {
+    /* localStorage 불가 환경 — 예약 없이 그냥 빈 터미널이 뜬다 */
+  }
+}
+
+/** paneId가 처음 열릴 때 PTY에 보낼 입력을 예약한다. `openTerminal` 직후 같은 틱에 부른다
+ *  (pane 마운트는 다음 커밋이라 예약이 항상 먼저 저장된다). */
+export function queueInitialInput(paneId: string, data: string): void {
+  const now = Date.now();
+  // 소비되지 않은 만료 예약은 함께 버린다 — 위임 실패 등으로 영영 안 열리는 pane의 항목이
+  // 쌓이지 않게(이 함수 말고는 남의 키를 지울 사람이 없다).
+  const all: InitialInputs = Object.fromEntries(
+    Object.entries(readInitialInputs()).filter(
+      ([, v]) => now - v.at < INITIAL_TTL_MS,
+    ),
+  );
+  all[paneId] = { data, at: now };
+  writeInitialInputs(all);
+}
+
+/** 예약을 꺼내며 지운다(1회성). 만료됐으면 지우기만 하고 null. */
+export function takeInitialInput(paneId: string): string | null {
+  const all = readInitialInputs();
+  const item = all[paneId];
+  if (!item) return null;
+  delete all[paneId];
+  writeInitialInputs(all);
+  return Date.now() - item.at < INITIAL_TTL_MS ? item.data : null;
+}
+
 /** 열린 모든 터미널에 현재 테마(CSS 변수 + themes.ts 보정)를 재적용한다.
  *  테마는 Terminal 생성 시 1회만 적용되므로, 전환 시 App/SettingsDialog가 호출한다.
  *  레지스트리가 비면(= 엔진 미로드 포함) no-op — 엔진을 불필요하게 로드하지 않는다. */

@@ -1,11 +1,18 @@
 import { ensureMonacoTheme, monaco } from "./monaco-setup";
 import {
+  getDefContext,
   registerGotoDefinition,
+  restoreDefContext,
   setDefContext,
   warmDefinitionCache,
 } from "./goto-definition";
 import { registerFindReferences } from "./find-references";
-import { registerFormatProviders, setFormatContext } from "./format-provider";
+import {
+  getFormatContext,
+  registerFormatProviders,
+  restoreFormatContext,
+  setFormatContext,
+} from "./format-provider";
 import { clearLintMarkers, refreshLintMarkers } from "./lint-markers";
 import { registerPythonOutline } from "./python-outline";
 
@@ -36,6 +43,7 @@ import { errorMessage, ipc } from "../../lib/ipc";
 import type { DiffTarget } from "../../lib/ipc";
 import { isMod } from "../../lib/platform";
 import { isImage, isOffice, isPlayable, languageOf } from "../../lib/language-map";
+import { translateRequest } from "../../lib/translate";
 import { useDiff, useSettings, useWriteFile } from "../../queries";
 import { useUi } from "../../stores/ui";
 import { EmptyState } from "../common/EmptyState";
@@ -176,9 +184,17 @@ const DIFF_OPTIONS = {
 export default function DiffViewer({
   projectId,
   target,
+  onOpenFile,
 }: {
   projectId: string;
   target: DiffTarget;
+  /**
+   * 뷰어 안에서 **다른 파일을 열 때** 쓸 함수("편집" 버튼·정의 이동). 안 주면 전역 selectDiff —
+   * 그건 뷰어 탭을 업서트하고 모아보기를 닫으므로, 모달 안 뷰어(Git 모달)는 자기 로컬 선택을
+   * 넘겨 전역을 건드리지 않는다(태스크 55 §3.1). 신원이 매 렌더 바뀌지 않게 useCallback으로 넘길 것
+   * — 정의 이동 opener가 모듈 컨텍스트로 들고 있다.
+   */
+  onOpenFile?: (target: DiffTarget, repoId: string) => void;
 }) {
   const { data: diff, isLoading, error } = useDiff(projectId, target);
   const { data: settings } = useSettings();
@@ -281,10 +297,19 @@ export default function DiffViewer({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+  // 두 컨텍스트는 모듈 전역이라 뷰어가 둘 이상 떠 있으면(Git 모달이 메인 뷰어 위에 뜬다) 나중에
+  // 마운트한 쪽이 이긴다 — 언마운트에서 직전 값을 되돌리지 않으면 모달을 닫은 뒤에도 정의 검색·
+  // 포맷이 **모달의 프로젝트**를 가리킨 채 남는다.
   useEffect(() => {
-    setDefContext(projectId, path.split(".").pop() ?? "");
+    const prevDef = getDefContext();
+    const prevFmt = getFormatContext();
+    setDefContext(projectId, path.split(".").pop() ?? "", onOpenFile);
     setFormatContext(projectId, path);
-  }, [projectId, path]);
+    return () => {
+      restoreDefContext(prevDef);
+      restoreFormatContext(prevFmt);
+    };
+  }, [projectId, path, onOpenFile]);
   // 파일 내용이 로드되면 import 심볼 정의를 백그라운드로 예열 — Ctrl+호버 첫 반응 가속.
   // setDefContext 효과 뒤에 선언돼 컨텍스트가 잡힌 상태에서 돈다. 캐시가 중복을 걸러낸다.
   const warmedKeyRef = useRef("");
@@ -461,6 +486,25 @@ export default function DiffViewer({
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () =>
       saveRef.current(),
     );
+    // 우클릭 → "선택 영역 번역"(태스크 61). Monaco 컨텍스트 메뉴는 네이티브 DOM이라 항목 클릭
+    // 시점엔 마우스 좌표가 없다 — 메뉴를 연 그 이벤트에서 미리 잡아 카드 위치로 쓴다.
+    let ctxPos = { x: 0, y: 0 };
+    editor.onContextMenu((e) => {
+      ctxPos = { x: e.event.posx, y: e.event.posy };
+    });
+    // precondition이 선택 없을 때 항목을 **비활성**으로 보인다(Monaco 관례 — 앱 메뉴와 다르다).
+    editor.addAction({
+      id: "gp.translate",
+      label: "선택 영역 번역",
+      contextMenuGroupId: "9_cutcopypaste",
+      contextMenuOrder: 9,
+      precondition: "editorHasSelection",
+      run: (ed) => {
+        const sel = ed.getSelection();
+        const text = sel ? (ed.getModel()?.getValueInRange(sel) ?? "") : "";
+        if (text) useUi.getState().openTranslate(translateRequest(text, ctxPos.x, ctxPos.y));
+      },
+    });
     // go-to-def로 줄 지정해 열렸으면 해당 심볼로 스크롤 + 선택(마운트 시점 1회).
     revealTarget(editor);
     lintRef.current(); // 열람 시 1회 린트
@@ -577,7 +621,7 @@ export default function DiffViewer({
         )}
         {canEditFromDiff && (
           <button
-            onClick={() => selectDiff({ mode: "file", path }, projectId)}
+            onClick={() => (onOpenFile ?? selectDiff)({ mode: "file", path }, projectId)}
             title="이 파일을 편집 가능한 뷰로 열기"
             className="flex shrink-0 items-center gap-1 rounded px-2 py-0.5 text-xs text-fg-dim hover:bg-raised hover:text-fg"
           >

@@ -19,8 +19,8 @@ import { errorMessage } from "../../lib/ipc";
 import type { ProjColor } from "../../lib/project-color";
 import { useNotes, useProjectSize, useStatus } from "../../queries";
 import { useAgentActivity } from "../../stores/agentActivity";
+import { ProjectLogo } from "../common/ProjectLogo";
 import { dotStateOf, StatusDot } from "../common/StatusDot";
-import { useProjectLogo } from "../../queries";
 
 // memo — 부모(ProjectList)의 로컬 상태 변화(컨텍스트 메뉴 열림/닫힘, 사이드바 폭 드래그 등)가
 // 모든 항목으로 재렌더 캐스케이드되지 않게 한다. 콜백은 id를 인자로 받는 안정 참조라야 효과가 있다.
@@ -54,9 +54,6 @@ export const ProjectItem = memo(function ProjectItem({
   const { data: notes } = useNotes();
   const hasNote = !!notes?.[project.id]?.some((m) => m.text.trim());
   const dot = dotStateOf(status, isLoading);
-  // 로고는 있으면 좋은 것이지 상태 정보가 아니다 — StatusDot을 대체하지 않고 이름 앞에 덧붙인다.
-  // (점은 clean/dirty/conflict/error를 나르고, 로고는 그걸 표현할 수 없다.)
-  const logo = useProjectLogo(project.id);
   const agent = useAgentActivity((s) => s.byProject[project.id]);
   const size = useProjectSize(project.id);
 
@@ -125,16 +122,9 @@ export const ProjectItem = memo(function ProjectItem({
       )}
       <div className="flex items-center gap-2 overflow-hidden">
         <StatusDot state={dot} />
-        {logo.data && (
-          <img
-            src={logo.data.dataUri}
-            alt=""
-            title={`로고: ${logo.data.source}`}
-            // alt=""·aria-hidden: 프로젝트 이름이 바로 옆에 있어 스크린리더에 두 번 읽힐 이유가 없다.
-            aria-hidden
-            className="h-4 w-4 shrink-0 rounded-sm object-contain"
-          />
-        )}
+        {/* 로고는 있으면 좋은 것이지 상태 정보가 아니다 — StatusDot을 대체하지 않고 이름 앞에 덧붙인다.
+            (점은 clean/dirty/conflict/error를 나르고, 로고는 그걸 표현할 수 없다.) */}
+        <ProjectLogo projectId={project.id} />
         <span className="whitespace-nowrap font-medium">{project.name}</span>
         {agent === "working" && (
           <span title="Claude Code 작업 중…" className="flex shrink-0">

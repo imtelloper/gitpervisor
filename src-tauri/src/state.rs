@@ -18,8 +18,12 @@ pub const SETTINGS_FILE: &str = "settings.json";
 pub const SETTINGS_KEY: &str = "settings";
 pub const NOTES_FILE: &str = "notes.json";
 pub const NOTES_KEY: &str = "notes";
+pub const REPORTS_FILE: &str = "reports.json";
+pub const REPORTS_KEY: &str = "reports";
 
 pub type Notes = HashMap<String, Vec<Memo>>;
+/// 작업 리포트 요약 (`"<projectId>|<period>|<since>"` → 요약). 태스크 60 §3.4.
+pub type Reports = HashMap<String, crate::report::ReportRecord>;
 
 pub struct AppState {
     pub projects: RwLock<Vec<Project>>,
@@ -36,6 +40,8 @@ pub struct AppState {
     pub monitor: Mutex<Monitor>,
     /// 프로젝트별 메모 (projectId → 메모).
     pub notes: RwLock<Notes>,
+    /// 생성된 작업 요약 (리포트 키 → 요약) — 태스크 60 §3.4.
+    pub reports: RwLock<Reports>,
     /// 임베디드 브라우저 자식 webview 레지스트리 (browserId → 마지막 bounds). browser.rs §.
     pub browser: Mutex<BrowserReg>,
     /// API 클라이언트 in-flight HTTP 요청 레지스트리 (requestId → AbortHandle). http.rs §4.9.
@@ -58,10 +64,16 @@ pub struct AppState {
     /// 디스크 용량 분석 스캔 상태·결과(arena) — Monitor와 별도 뮤텍스라 몇 분짜리 스캔이
     /// 2초 폴링을 막지 않는다. Arc: 스캔 워커·리포터 스레드가 들고 간다. disk_scan.rs §.
     pub disk_scan: Arc<Mutex<DiskScanState>>,
+    /// 로컬 LLM 서버 세션 — llama-server는 모델 하나가 수 GB를 mmap하므로 **단일**이다(태스크 59).
+    pub llm: Mutex<Option<crate::llm::server::LlmSession>>,
+    /// 진행 중인 LLM 요청 (requestId → AbortHandle). v1은 한 번에 한 요청 — 두 번째는 Busy.
+    pub llm_inflight: Mutex<Option<(String, futures::future::AbortHandle)>>,
+    /// 진행 중인 LLM 다운로드 취소 토큰 ("runtime"·"runtime-cpu"·모델 id → token).
+    pub llm_downloads: Mutex<HashMap<String, tokio_util::sync::CancellationToken>>,
 }
 
 impl AppState {
-    pub fn new(projects: Vec<Project>, settings: Settings, notes: Notes) -> Self {
+    pub fn new(projects: Vec<Project>, settings: Settings, notes: Notes, reports: Reports) -> Self {
         Self {
             projects: RwLock::new(projects),
             settings: RwLock::new(settings),
@@ -71,6 +83,7 @@ impl AppState {
             redock_skip: Mutex::new(HashSet::new()),
             monitor: Mutex::new(Monitor::new()),
             notes: RwLock::new(notes),
+            reports: RwLock::new(reports),
             browser: Mutex::new(BrowserReg::default()),
             http: Mutex::new(HttpReg::default()),
             freshness: RwLock::new(HashMap::new()),
@@ -80,6 +93,9 @@ impl AppState {
             video: Mutex::new(crate::commands::VideoReg::default()),
             ignore_cache: Mutex::new(HashMap::new()),
             disk_scan: Arc::new(Mutex::new(DiskScanState::default())),
+            llm: Mutex::new(None),
+            llm_inflight: Mutex::new(None),
+            llm_downloads: Mutex::new(HashMap::new()),
         }
     }
 
@@ -257,6 +273,14 @@ pub fn load_notes(app: &AppHandle) -> Notes {
 
 pub fn save_notes(app: &AppHandle, notes: &Notes) -> Result<(), IpcError> {
     save_json(app, NOTES_FILE, NOTES_KEY, notes, "메모")
+}
+
+pub fn load_reports(app: &AppHandle) -> Reports {
+    load_json(app, REPORTS_FILE, REPORTS_KEY).unwrap_or_default()
+}
+
+pub fn save_reports(app: &AppHandle, reports: &Reports) -> Result<(), IpcError> {
+    save_json(app, REPORTS_FILE, REPORTS_KEY, reports, "작업 요약")
 }
 
 #[cfg(test)]

@@ -4,7 +4,7 @@
 // 여기로 뽑았다. 세션 단위 컨트롤의 상태는 전부 **세션(termId=paneId) 단위 스토어**
 // (termThemes/promptHistory)라 어디서 그리든 같은 세션 = 같은 상태다. 마스터 토글만 창의
 // 모든 세션을 대상으로 하며, 메인 타이틀바와 모아보기 별도 창 헤더가 함께 쓴다.
-import { Check, History, Palette, Trash2, X } from "lucide-react";
+import { Check, GitBranch, History, Palette, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { copyText } from "../../lib/clipboard";
@@ -155,6 +155,24 @@ export function PromptLogButton({ termId }: { termId: string }) {
       {count > 0 && (
         <span className="text-[9px] leading-none tabular-nums">{count}</span>
       )}
+    </button>
+  );
+}
+
+/**
+ * 이 세션의 프로젝트에 대한 Git 변경·로그 모달(GitDialog)을 여는 버튼 — 모아보기에는
+ * Changes·Log 패널이 없으므로 여기가 유일한 동선이다(태스크 55).
+ * 세션 단위가 아니라 **프로젝트 단위** 기능이라 termId가 아닌 projectId를 받는다.
+ */
+export function GitDialogButton({ projectId }: { projectId: string }) {
+  const open = useUi((s) => s.openGitDialog);
+  return (
+    <button
+      onClick={() => open(projectId)}
+      title="Git 변경·로그 보기"
+      className="flex shrink-0 items-center rounded p-0.5 text-fg-dim hover:bg-raised hover:text-fg"
+    >
+      <GitBranch size={12} />
     </button>
   );
 }

@@ -30,6 +30,7 @@ import {
 import { useOps } from "../../stores/ops";
 import { useTerminals } from "../../stores/terminals";
 import { useUi } from "../../stores/ui";
+import { ProjectLogo } from "../common/ProjectLogo";
 
 const OP_LABEL: Partial<Record<RepoOpState, string>> = {
   merging: "MERGE 진행 중",
@@ -89,6 +90,7 @@ export function Toolbar({ project }: { project: Project }) {
       >
         <FolderTree size={16} />
       </button>
+      <ProjectLogo projectId={project.id} />
       <span className="font-semibold">{project.name}</span>
 
       {branchLabel && (

@@ -7,9 +7,17 @@ import { isIpcError, errorMessage, ipc } from "../../lib/ipc";
 import { useUi } from "../../stores/ui";
 
 // 파일뷰 Editor 모델은 경로 없는 자동 URI라 URI에서 역산 불가 — 모듈 컨텍스트로 주입(setDefContext 관례).
-let ctx: { projectId: string; relPath: string } | null = null;
+type FormatContext = { projectId: string; relPath: string };
+let ctx: FormatContext | null = null;
 export function setFormatContext(projectId: string, relPath: string): void {
   ctx = { projectId, relPath };
+}
+/** 현재 컨텍스트 — 뷰어가 겹칠 때(모달 위 뷰어) 언마운트에서 되돌리려고 읽는다(getDefContext 관례). */
+export function getFormatContext(): FormatContext | null {
+  return ctx;
+}
+export function restoreFormatContext(prev: FormatContext | null): void {
+  ctx = prev;
 }
 
 // document 포맷 provider를 등록할 언어(tsx/jsx는 typescript/javascript에 포함).

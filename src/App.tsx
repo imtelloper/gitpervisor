@@ -11,6 +11,8 @@ import { PromptHost } from "./components/common/PromptDialog";
 import { ConnectionDialog } from "./components/db/ConnectionDialog";
 import { EmptyState } from "./components/common/EmptyState";
 import { Toasts } from "./components/common/Toast";
+import { TranslateHost } from "./components/common/TranslateCard";
+import { GitDialog } from "./components/git/GitDialog";
 import { GitGate } from "./components/GitGate";
 import { GlobalShortcuts, KeyboardShortcuts } from "./components/KeyboardShortcuts";
 import { QuickOpenHost } from "./components/quickopen/QuickOpenHost";
@@ -22,6 +24,7 @@ import { MemoDialog } from "./components/memo/MemoDialog";
 import { SettingsDialog } from "./components/settings/SettingsDialog";
 import { ProjectList } from "./components/sidebar/ProjectList";
 import { ProjectPathMissing } from "./components/ProjectPathMissing";
+import { ReportView } from "./components/report/ReportView";
 import { StatusBar } from "./components/StatusBar";
 import { TitleBar } from "./components/TitleBar";
 import { HealthBanner } from "./components/common/HealthBanner";
@@ -58,6 +61,7 @@ export default function App() {
   const selectProject = useUi((s) => s.selectProject);
   const fileTreeOpen = useUi((s) => s.fileTreeOpen);
   const aggregateOpen = useUi((s) => s.aggregateOpen);
+  const reportOpen = useUi((s) => s.reportOpen);
   const imageEditorPath = useUi((s) => s.imageEditorPath);
   const searchOpen = useSearch((s) => s.open);
 
@@ -165,6 +169,8 @@ export default function App() {
               <main className="flex min-w-0 flex-1 flex-col">
                 {aggregateOpen ? (
                   <AggregateTerminals />
+                ) : reportOpen ? (
+                  <ReportView />
                 ) : selected && pathMissing ? (
                   <ProjectPathMissing project={selected} />
                 ) : selected ? (
@@ -194,11 +200,14 @@ export default function App() {
           </div>
           <Toasts />
           <ConfirmHost />
+          {/* 터미널·뷰어 우클릭 번역 카드(태스크 61) — 창마다 useUi가 별개라 창마다 마운트한다. */}
+          <TranslateHost />
           <PromptHost />
           <QuickOpenHost />
           <SymbolSearch />
           <SettingsDialog />
           <MemoDialog />
+          <GitDialog />
           <ConnectionDialog />
           {/* 제품 경로는 별도 doc 창으로 옮겼지만(ImageView·파일트리 → openDocWindow) 이 마운트는
               **지우면 안 된다**: e2e 30-image-annotate 가 메인 창에서 useUi.openImageEditor 를

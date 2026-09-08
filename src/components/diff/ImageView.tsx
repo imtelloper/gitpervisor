@@ -7,11 +7,13 @@ import {
   Plus,
   Scan,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { errorMessage, ipc } from "../../lib/ipc";
-import { useFileImage } from "../../queries";
+import { useDir, useFileImage } from "../../queries";
 import { IS_DOC_WINDOW, openDocWindow } from "../../lib/floating";
+import { isImage } from "../../lib/language-map";
+import { joinPath, parentDir } from "../../lib/path";
 import { WHEEL_STEP, zoomAt, type View } from "../../lib/zoom";
 import { useUi } from "../../stores/ui";
 import { EmptyState } from "../common/EmptyState";
@@ -20,6 +22,86 @@ import { EmptyState } from "../common/EmptyState";
 const BTN_STEP = 1.4; // 버튼·키보드는 한 번에 더 크게 움직여야 답답하지 않다
 // 이 배율을 넘으면 보간을 끄고 픽셀을 그대로 보여준다(아이콘·픽셀아트가 뭉개지지 않게).
 const PIXELATE_FROM = 2;
+
+/**
+ * 같은 폴더의 형제 이미지 내비게이션(↑↓·←→). 트리와 **같은 목록**(백엔드 dirs-first 자연 정렬)에서
+ * 이미지만 뽑는다 — 화면 순서와 어긋나지 않게. 트리가 이미 펼친 폴더면 캐시 히트라 즉시,
+ * 아니면 list_dir 1회.
+ *
+ * doc 창은 대상이 창 수명 동안 고정이라 넘길 수 없다(태스크 56 §3.4 — v1 범위 밖). 여기서 막지
+ * 않으면 replaceDiff가 그 창의 별개 스토어만 바꾸고(화면은 그대로) 공유 localStorage의
+ * 뷰어 탭 대상까지 조용히 갈아 끼운다. projectId=null → 쿼리 자체가 비활성.
+ *
+ * 로딩·실패 화면도 같은 훅을 쓴다 — 안 그러면 디코드 못 하는 파일 하나에서 내비가 끊겨
+ * 트리로 되돌아가야 한다(§1 "트리를 다시 클릭할 필요가 없다").
+ */
+function useSiblingNav(projectId: string, path: string) {
+  const replaceDiff = useUi((s) => s.replaceDiff);
+  const dir = parentDir(path);
+  const { data: entries } = useDir(IS_DOC_WINDOW ? null : projectId, dir);
+  const siblings = useMemo(
+    () =>
+      (entries ?? [])
+        .filter((e) => !e.isDir && isImage(e.name))
+        .map((e) => joinPath(dir, e.name)),
+    [entries, dir],
+  );
+  const idx = siblings.indexOf(path);
+  /** d칸 뒤/앞 이미지로 — 끝에서는 멈춘다(순환 없음). 탭은 늘지 않는다(replaceDiff). */
+  const go = (d: 1 | -1) => {
+    const next = idx >= 0 ? siblings[idx + d] : undefined;
+    if (next) replaceDiff({ mode: "file", path: next });
+  };
+  /** 화살표만 처리한다. true = 처리함(호출자는 자기 키 처리를 건너뛴다). */
+  const navKey = (e: React.KeyboardEvent) => {
+    // 수식키 조합은 앱 전역 단축키에 양보한다(Ctrl+Shift+↑↓ = 프로젝트 이동 등).
+    const plain = !e.ctrlKey && !e.metaKey && !e.altKey;
+    if (!plain) return false;
+    if (e.key === "ArrowDown" || e.key === "ArrowRight") go(1);
+    else if (e.key === "ArrowUp" || e.key === "ArrowLeft") go(-1);
+    else return false;
+    e.preventDefault(); // 화살표가 박스를 스크롤하지 않게
+    return true;
+  };
+  return { idx, siblings, go, navKey };
+}
+
+/**
+ * 로딩·실패 화면을 감싸는 최소 껍데기 — 포커스 가능한 박스 + 화살표 + "n / N".
+ * 그림이 없어도 ↑/↓로 다음 이미지로 빠져나갈 수 있어야 한다.
+ */
+function NavShell({
+  projectId,
+  path,
+  children,
+}: {
+  projectId: string;
+  path: string;
+  children: React.ReactNode;
+}) {
+  const { idx, siblings, navKey } = useSiblingNav(projectId, path);
+  const boxRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    boxRef.current?.focus({ preventScroll: true });
+  }, []);
+  return (
+    <div
+      ref={boxRef}
+      tabIndex={0}
+      onKeyDown={navKey}
+      className="flex h-full flex-col outline-none"
+    >
+      {idx >= 0 && siblings.length >= 2 && (
+        <div className="flex h-8 shrink-0 items-center justify-end border-b border-edge px-3 text-xs text-fg-dim">
+          <span className="tabular-nums">
+            {idx + 1} / {siblings.length}
+          </span>
+        </div>
+      )}
+      <div className="min-h-0 flex-1">{children}</div>
+    </div>
+  );
+}
 
 /** 이미지 파일 미리보기 — 워크트리 파일을 base64 data URL로 렌더. 줌/팬 지원. */
 export default function ImageView({
@@ -31,14 +113,23 @@ export default function ImageView({
 }) {
   const { data, isLoading, error } = useFileImage(projectId, path);
 
-  if (isLoading) return <EmptyState title="이미지 불러오는 중…" />;
+  // 로딩·실패도 NavShell로 감싼다 — 전환 중 포커스가 body로 떨어지면 연타가 끊기고,
+  // 못 여는 파일에서는 화살표가 아예 죽는다.
+  if (isLoading)
+    return (
+      <NavShell projectId={projectId} path={path}>
+        <EmptyState title="이미지 불러오는 중…" />
+      </NavShell>
+    );
   if (error || !data)
     return (
-      <EmptyState
-        icon={FileWarning}
-        title="이미지를 불러오지 못했습니다"
-        desc={error ? errorMessage(error) : undefined}
-      />
+      <NavShell projectId={projectId} path={path}>
+        <EmptyState
+          icon={FileWarning}
+          title="이미지를 불러오지 못했습니다"
+          desc={error ? errorMessage(error) : undefined}
+        />
+      </NavShell>
     );
 
   // key={path} — 파일이 바뀌면 줌/오프셋이 초기 상태(맞춤)로 되돌아간다.
@@ -75,6 +166,17 @@ function ZoomableImage({
   // 지금이 "맞춤" 상태인가 — 컨테이너 리사이즈 때 다시 맞출지 판단한다. 렌더에 쓰이지 않고
   // 리스너에서 최신값을 읽어야 하므로 state가 아니라 ref.
   const atFit = useRef(true);
+
+  // 같은 폴더의 형제 이미지(↑/↓·←/→) — 로딩·실패 화면과 같은 훅을 공유한다(위 NavShell).
+  const { idx, siblings, navKey } = useSiblingNav(projectId, path);
+
+  // 마운트 시 박스에 포커스 — 지금껏 아무도 focus()를 부르지 않아 한 번 클릭하기 전엔 키가
+  // 안 먹었다. key={path}라 이미지가 바뀔 때마다 리마운트돼 포커스가 따라온다(연타 가능).
+  // 훔치는 범위는 리마운트 시점뿐이다: 저장 후 무효화는 path가 그대로라 리마운트되지 않고,
+  // 뷰어 탭이 hidden이면 focus()는 애초에 무효라 뒤에서 열린 이미지가 포커스를 가져가지 않는다.
+  useEffect(() => {
+    boxRef.current?.focus({ preventScroll: true });
+  }, []);
 
   /** 컨테이너에 꼭 맞는 배율과 중앙 정렬 오프셋. 원본이 작으면 확대하지 않는다(1배 상한). */
   const fitView = useCallback((): View | null => {
@@ -158,6 +260,8 @@ function ZoomableImage({
   }, []);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
+    // 화살표(형제 이미지 이동)가 먼저 — 수식키 양보 규칙은 navKey 안에 있다.
+    if (navKey(e)) return;
     if (e.key === "+" || e.key === "=") zoomCenter(BTN_STEP);
     else if (e.key === "-" || e.key === "_") zoomCenter(1 / BTN_STEP);
     else if (e.key === "0") applyFit();
@@ -192,23 +296,25 @@ function ZoomableImage({
 
   if (decodeFailed)
     return (
-      <EmptyState
-        icon={FileWarning}
-        title="이 형식은 표시할 수 없습니다"
-        desc="현재 플랫폼의 웹뷰가 이 이미지 형식을 디코드하지 못합니다. 파일 자체는 정상일 수 있습니다."
-        action={
-          <button
-            onClick={() =>
-              void ipc
-                .runExecutable(projectId, path)
-                .catch((e) => pushToast("error", errorMessage(e)))
-            }
-            className="flex items-center gap-1.5 rounded border border-edge px-3 py-1.5 text-xs text-fg-muted hover:bg-raised hover:text-fg"
-          >
-            <ExternalLink size={13} /> 외부 앱으로 열기
-          </button>
-        }
-      />
+      <NavShell projectId={projectId} path={path}>
+        <EmptyState
+          icon={FileWarning}
+          title="이 형식은 표시할 수 없습니다"
+          desc="현재 플랫폼의 웹뷰가 이 이미지 형식을 디코드하지 못합니다. 파일 자체는 정상일 수 있습니다."
+          action={
+            <button
+              onClick={() =>
+                void ipc
+                  .runExecutable(projectId, path)
+                  .catch((e) => pushToast("error", errorMessage(e)))
+              }
+              className="flex items-center gap-1.5 rounded border border-edge px-3 py-1.5 text-xs text-fg-muted hover:bg-raised hover:text-fg"
+            >
+              <ExternalLink size={13} /> 외부 앱으로 열기
+            </button>
+          }
+        />
+      </NavShell>
     );
 
   return (
@@ -230,6 +336,12 @@ function ZoomableImage({
           <Pencil size={13} /> 편집
         </button>
         <div className="flex-1" />
+        {/* 같은 폴더에서 몇 번째 이미지인가 — ↑/↓로 넘길 게 남았는지 알려 준다(2장 이상일 때만). */}
+        {idx >= 0 && siblings.length >= 2 && (
+          <span className="mr-1 tabular-nums text-fg-dim">
+            {idx + 1} / {siblings.length}
+          </span>
+        )}
         <TBtn label="축소 (−)" onClick={() => zoomCenter(1 / BTN_STEP)}>
           <Minus size={13} />
         </TBtn>

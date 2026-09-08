@@ -9,7 +9,11 @@ import {
 } from "../../stores/terminals";
 import { BrowserPane } from "./BrowserPane";
 import { PaneControls } from "./PaneControls";
-import { PromptLogButton, ThemeButton } from "./TermSessionControls";
+import {
+  GitDialogButton,
+  PromptLogButton,
+  ThemeButton,
+} from "./TermSessionControls";
 import { TerminalPane } from "./TerminalPane";
 
 interface ViewProps {
@@ -126,6 +130,7 @@ function LeafView({
           <>
             <ThemeButton termId={leaf.paneId} />
             <PromptLogButton termId={leaf.paneId} />
+            <GitDialogButton projectId={tab.projectId} />
             <span className="mx-0.5 h-3 w-px bg-edge" />
             {controls}
           </>

@@ -3,6 +3,7 @@ import {
   Copy,
   ExternalLink,
   History,
+  Languages,
   LayoutGrid,
   Maximize2,
   Minimize2,
@@ -19,8 +20,10 @@ import {
   createTerminal,
   disposeTerminal,
   fitTerminal,
+  getTerminal,
   pasteIntoTerminal,
 } from "../../lib/terminal";
+import { translateRequest } from "../../lib/translate";
 import { useOccludesWebview } from "../../stores/occlusion";
 import { usePromptHistory } from "../../stores/promptHistory";
 import { useTerminals } from "../../stores/terminals";
@@ -175,6 +178,12 @@ function PaneMenu({
   // 토글하면 storage 이벤트로 즉시 반영). TerminalPane의 promptOpen과는 스코프가 다르다.
   const promptOpen = usePromptHistory((s) => !!s.openPanels[paneId]);
   const togglePanel = usePromptHistory((s) => s.togglePanel);
+  const openTranslate = useUi((s) => s.openTranslate);
+  // 메뉴가 **열린 순간**의 선택(태스크 61) — 선택이 없으면 비활성이 아니라 항목 자체가 없다.
+  const [selection] = useState(() => {
+    const term = getTerminal(paneId)?.term;
+    return term?.hasSelection() ? term.getSelection() : "";
+  });
 
   useEffect(() => {
     const close = () => onClose();
@@ -202,7 +211,8 @@ function PaneMenu({
         // max(0, …)은 창이 메뉴보다 낮을 때 — 플로팅 창은 min_inner_size 360×240이라 448px보다
         // 낮을 수 있고, 그러면 top이 음수가 되어 위쪽 항목(복사·붙여넣기)이 화면 밖으로 잘린다.
         // ponytail: 상수 클램프 — 항목이 또 늘면 ref 실측(useLayoutEffect)으로 바꾼다.
-        top: Math.max(0, Math.min(y, window.innerHeight - 448)),
+        // 번역 항목(선택이 있을 때만)이 한 줄 더 붙으므로 그때는 32px을 더 잡는다.
+        top: Math.max(0, Math.min(y, window.innerHeight - (selection ? 480 : 448))),
       }}
       onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
@@ -219,6 +229,13 @@ function PaneMenu({
         hint="Ctrl+V"
         onClick={run(() => void pasteIntoTerminal(paneId))}
       />
+      {selection && (
+        <MenuItem
+          icon={<Languages size={14} />}
+          label="선택 영역 번역"
+          onClick={run(() => openTranslate(translateRequest(selection, x, y)))}
+        />
+      )}
       <div className="my-1 border-t border-edge" />
       <MenuItem
         icon={<SplitSquareHorizontal size={14} />}
@@ -307,7 +324,9 @@ export function MenuItem({
       }`}
     >
       <span className="shrink-0">{icon}</span>
-      <span className="flex-1">{label}</span>
+      {/* 줄바꿈 금지 — 세 메뉴(PaneMenu·ChipMenu·묶음 드롭다운)의 하단 클램프가 한 줄 31.5px를
+          전제로 계산돼 있다. flex-1은 min-width:auto라 min-w-0이 있어야 실제로 줄어든다. */}
+      <span className="min-w-0 flex-1 truncate">{label}</span>
       {hint && <span className="shrink-0 text-[11px] text-fg-dim">{hint}</span>}
     </button>
   );

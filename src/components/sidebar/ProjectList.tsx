@@ -8,6 +8,7 @@ import {
   FolderPlus,
   FolderSync,
   HardDrive,
+  ImageOff,
   Palette,
   Plus,
   RefreshCw,
@@ -29,6 +30,7 @@ import {
   useProjectGitOps,
   useRemoveProjectFull,
   useReorderProjects,
+  useSetProjectLogo,
   useStatuses,
   useUpdateProjectPath,
 } from "../../queries";
@@ -74,6 +76,7 @@ export function ProjectList() {
   const addProject = useAddProject();
   const handleRemove = useRemoveProjectFull();
   const updatePath = useUpdateProjectPath();
+  const setLogo = useSetProjectLogo();
   const refreshSizes = useRefreshProjectSizes();
   const selectedProjectId = useUi((s) => s.selectedProjectId);
   const selectProject = useUi((s) => s.selectProject);
@@ -162,6 +165,10 @@ export function ProjectList() {
         // 포인터 Y가 어느 항목의 위쪽 절반에 있는지로 "그 항목 앞에 삽입"을 정한다. 끝이면 null.
         let target: string | null = null;
         for (const el of cont.querySelectorAll<HTMLElement>("[data-project-id]")) {
+          // 끌고 있는 행 자신은 후보에서 뺀다 — 넣어 두면 그 행의 위쪽 절반에서 놓았을 때
+          // over === id 가 되고, 아래 up()이 splice 후 indexOf에서 -1을 받아 **맨 끝으로** 보낸다
+          // (그 상태에선 삽입선도 안 떠서 이유가 안 보인다). 빼면 다음 행이 잡혀 제자리다.
+          if (el.dataset.projectId === id) continue;
           const r = el.getBoundingClientRect();
           if (ev.clientY < r.top + r.height / 2) {
             target = el.dataset.projectId ?? null;
@@ -507,6 +514,17 @@ export function ProjectList() {
               setMenu(null);
             }}
           />
+          {/* 지정돼 있을 때만 — 해제하면 자동 감지 로고로 돌아간다(태스크 54). */}
+          {menu.project.logo && (
+            <MenuItem
+              icon={ImageOff}
+              label="로고 해제"
+              onClick={() => {
+                setLogo.mutate({ id: menu.project.id, relPath: null });
+                setMenu(null);
+              }}
+            />
+          )}
           <div className="my-1 border-t border-edge" />
           <MenuItem
             icon={Trash2}

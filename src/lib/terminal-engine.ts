@@ -19,6 +19,7 @@ import {
   ensureExitListener,
   pasteIntoTerminal,
   registry,
+  takeInitialInput,
   type TermInstance,
 } from "./terminal";
 import { themeOf } from "./themes";
@@ -204,7 +205,7 @@ export function createTerminalImpl(opts: {
       '"Cascadia Code", Consolas, "D2Coding", "Noto Sans Mono CJK KR", "Nanum Gothic Coding", monospace',
     cursorBlink: true,
     scrollback: 5000,
-    // Unicode11Addon(아래)이 `term.unicode`를 건드리는데 그게 proposed API다 — 이 플래그가
+    // Unicode11Addon(아래 :223)이 `term.unicode`를 건드리는데 그게 proposed API다 — 이 플래그가
     // 없으면 `loadAddon`이 "You must set the allowProposedApi option to true"로 **던지고**,
     // createTerminalImpl이 통째로 중단돼 **터미널이 하나도 안 뜬다**(0036d06 이후 실측).
     allowProposedApi: true,
@@ -640,6 +641,42 @@ export function createTerminalImpl(opts: {
   void opened.then(() => {
     if (writeChains.get(opts.id) === opened) writeChains.delete(opts.id);
   });
+
+  // 예약된 초기 입력("Claude Code 세션으로 새 터미널" — lib/terminal.ts queueInitialInput)을
+  // 이 창이 소비한다. attach는 남의 세션을 이어받는 것뿐이라 소비하지 않는다 — open한 창이 보낸다.
+  const initial = opts.attach ? null : takeInitialInput(opts.id);
+  if (initial) {
+    // **셸이 프롬프트를 찍은 뒤에** 보낸다. 프롬프트 전에 쓰면 셸 초기화가 삼킬 수 있다
+    // (pwsh PSReadLine). 단 `onWriteParsed` 첫 발화 = 셸 출력이 아니다 — Windows ConPTY는
+    // spawn 직후 `\x1b[?9001h`를 무조건 보낸다(:238-243). 그 발화에 보내면 우리가 피하려던
+    // 극초기 구간 그대로다. 그래서 **화면에 글자가 생겼는지**로 판정한다.
+    let off: { dispose: () => void } | null = null;
+    let timer = 0;
+    const send = () => {
+      off?.dispose();
+      off = null;
+      clearTimeout(timer);
+      // 실패한 open에는 보내지 않는다 — 세션이 없어 쓰기는 버려지고 프롬프트 기록에 유령
+      // 항목만 남는다(실패 배너 writeln 자체가 파싱을 유발해 여기까지 온다).
+      void startCmd.then(
+        () => ptyWrite(opts.id, initial),
+        () => {},
+      );
+    };
+    const hasGlyph = () => {
+      const b = term.buffer.active;
+      const end = b.baseY + term.rows;
+      for (let i = 0; i <= end; i++) {
+        if (b.getLine(i)?.translateToString(true).trim()) return true;
+      }
+      return false;
+    };
+    off = term.onWriteParsed(() => {
+      if (hasGlyph()) send();
+    });
+    // 끝내 아무 글자도 안 찍는 셸(조용한 초기화)에서도 명령을 잃지 않게 상한을 둔다.
+    timer = window.setTimeout(send, 3000);
+  }
 
   // 입력 → PTY stdin
   // 주의: 여기서 IME 미러를 리셋하면 안 된다 — onData에는 키 입력만 아니라 xterm의 "자동응답"

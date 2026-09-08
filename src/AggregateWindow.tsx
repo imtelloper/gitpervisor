@@ -3,7 +3,9 @@ import { useEffect } from "react";
 import { AggregateTerminals } from "./components/AggregateTerminals";
 import { ConfirmHost } from "./components/common/ConfirmDialog";
 import { Toasts } from "./components/common/Toast";
+import { TranslateHost } from "./components/common/TranslateCard";
 import { FloatTitleBar } from "./components/FloatTitleBar";
+import { GitDialog } from "./components/git/GitDialog";
 import { announceAggregateWindow } from "./lib/aggregate-window";
 import { refreshTerminalThemes } from "./lib/terminal";
 import { useSettings } from "./queries";
@@ -47,6 +49,10 @@ export function AggregateWindow() {
           (웹뷰 = 별도 JS 컨텍스트) 메인 창의 호스트가 여기 대신 그려 주지 않는다(SysMonitorWindow와 동일). */}
       <ConfirmHost />
       <Toasts />
+      {/* 셀 헤더의 Git 버튼이 여는 변경·로그 모달도 같은 이유로 이 창에 마운트한다(태스크 55). */}
+      <GitDialog />
+      {/* 칩 메뉴의 '선택 영역 번역' 카드도 이 창 안에 뜬다(태스크 61). */}
+      <TranslateHost />
     </div>
   );
 }

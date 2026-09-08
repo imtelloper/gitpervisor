@@ -1,5 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { LayoutGrid, ShieldAlert, StickyNote } from "lucide-react";
+import { CalendarDays, LayoutGrid, ShieldAlert, StickyNote } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { openAggregateWindow } from "../lib/aggregate-window";
@@ -60,8 +60,9 @@ export function TitleBar() {
       {/* 가운데: 드래그 영역 */}
       <div data-tauri-drag-region className="h-full flex-1" />
 
-      {/* 우: 모아보기 토글 + 전체 프롬프트 히스토리 + 메모장 + 시스템 모니터 */}
+      {/* 우: 모아보기 토글 + 작업 리포트 + 전체 프롬프트 히스토리 + 메모장 + 시스템 모니터 */}
       <AggregateButton />
+      <ReportButton />
       <PromptHistoryButton />
       <GlobalMemoButton />
       <SysMonitor />
@@ -120,6 +121,27 @@ function AggregateButton() {
       }`}
     >
       <LayoutGrid size={11} /> 모아보기
+    </button>
+  );
+}
+
+/** 작업 리포트 토글 — 잔디 + 기간 요약(태스크 60). 프로젝트가 하나도 없으면 보일 게 없어 숨긴다. */
+function ReportButton() {
+  const reportOpen = useUi((s) => s.reportOpen);
+  const toggleReport = useUi((s) => s.toggleReport);
+  const { data: projects } = useProjects();
+  if (!projects?.length) return null;
+  return (
+    <button
+      onClick={toggleReport}
+      title="작업 리포트 — 잔디(활동 히트맵)와 일간·주간·월간 요약"
+      className={`mr-2.5 flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] ${
+        reportOpen
+          ? "bg-raised text-accent"
+          : "text-fg-muted hover:bg-raised hover:text-fg"
+      }`}
+    >
+      <CalendarDays size={11} /> 리포트
     </button>
   );
 }

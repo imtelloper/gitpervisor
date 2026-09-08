@@ -7,6 +7,7 @@ import {
   Code2,
   Palette,
   SlidersHorizontal,
+  Sparkles,
   TerminalSquare,
   Wrench,
 } from "lucide-react";
@@ -19,6 +20,7 @@ export type SettingsCategory =
   | "codetools"
   | "terminal"
   | "notify"
+  | "ai"
   | "maintenance"
   | "update";
 
@@ -29,6 +31,7 @@ export const CATEGORIES: { id: SettingsCategory; label: string; icon: LucideIcon
   { id: "terminal", label: "터미널", icon: TerminalSquare },
   { id: "notify", label: "알림", icon: Bell },
   { id: "maintenance", label: "유지보수", icon: Wrench },
+  { id: "ai", label: "AI", icon: Sparkles },
   { id: "update", label: "업데이트", icon: ArrowUpCircle },
 ];
 
@@ -44,7 +47,9 @@ export interface SettingIndexEntry {
   parentToggle?: keyof Settings;
 }
 
-// Settings 22필드 전부(key 지정) + 시크릿 2 + 즉시 액션 3 = 27항목.
+// Settings 전 필드(key 지정) + 시크릿 2 + 즉시 액션(다운로드·테스트·유지보수·업데이트).
+// **완전성 가드(E2E 29 ⑤)가 getSettings 런타임 키를 이 배열의 non-null key와 대조한다** —
+// Settings에 필드를 더하면 여기도 한 줄 더해야 스위트가 통과한다.
 export const SETTINGS_INDEX: SettingIndexEntry[] = [
   // 일반
   { category: "general", key: "remoteRefreshMinutes", label: "원격 새로고침 주기", keywords: ["remote", "fetch", "새로고침", "주기", "pull"] },
@@ -83,6 +88,21 @@ export const SETTINGS_INDEX: SettingIndexEntry[] = [
   { category: "maintenance", key: null, id: "crashLog", label: "진단 / 크래시 로그", keywords: ["crash", "panic", "로그", "log", "진단"] },
   { category: "maintenance", key: null, id: "quarantine", label: "macOS 격리 도구", keywords: ["quarantine", "격리", "macos", "brew"] },
   { category: "notify", key: null, id: "healthAlert", label: "시스템 메모리 경보 표시", keywords: ["health", "메모리", "memory", "경보", "alert", "배너", "banner", "oom", "다시 보지 않기"] },
+  // AI (로컬 LLM — 태스크 59). 다운로드·테스트는 즉시 액션(key null).
+  { category: "ai", key: null, id: "llmRuntimeDownload", label: "AI 런타임 다운로드", keywords: ["llama", "llama.cpp", "런타임", "runtime", "다운로드", "download", "설치", "ai"] },
+  { category: "ai", key: "llmModel", label: "AI 모델", keywords: ["model", "모델", "qwen", "gguf", "ai", "llm"] },
+  { category: "ai", key: null, id: "llmModelDownload", label: "AI 모델 다운로드", keywords: ["model", "모델", "다운로드", "download", "gguf", "qwen"] },
+  { category: "ai", key: null, id: "llmTest", label: "AI 테스트", keywords: ["test", "테스트", "ai", "응답", "확인"] },
+  { category: "ai", key: null, id: "llmDeleteModels", label: "AI 모델 삭제", keywords: ["delete", "삭제", "모델", "model", "용량", "정리"] },
+  { category: "ai", key: "llmProvider", label: "AI 제공자", keywords: ["provider", "제공자", "ollama", "lm studio", "외부", "external", "managed"] },
+  { category: "ai", key: "llmCustomModelPath", label: "사용자 지정 GGUF 경로", keywords: ["custom", "gguf", "경로", "path", "모델"] },
+  { category: "ai", key: "llmExternalUrl", label: "외부 서버 URL", keywords: ["url", "ollama", "external", "외부", "11434", "openai"] },
+  { category: "ai", key: "llmExternalModel", label: "외부 서버 모델 이름", keywords: ["external", "외부", "모델", "model", "ollama"] },
+  { category: "ai", key: "llmExternalKey", label: "외부 서버 API 키", keywords: ["key", "키", "api", "external", "외부"] },
+  { category: "ai", key: "llmGpuLayers", label: "GPU 레이어", keywords: ["gpu", "ngl", "레이어", "layers", "vram", "오프로드"] },
+  { category: "ai", key: "llmContext", label: "컨텍스트 길이", keywords: ["context", "컨텍스트", "ctx", "토큰", "길이"] },
+  { category: "ai", key: "llmLanguage", label: "AI 출력 언어", keywords: ["language", "언어", "한국어", "english", "번역", "요약"] },
+  { category: "ai", key: "llmBackend", label: "AI 백엔드", keywords: ["backend", "백엔드", "vulkan", "cpu", "gpu", "폴백"] },
   // 업데이트 (즉시 액션 — key null)
   { category: "update", key: null, id: "appUpdate", label: "앱 업데이트", keywords: ["update", "업데이트", "버전", "version", "새 버전", "설치", "upgrade"] },
   { category: "update", key: null, id: "autoUpdateCheck", label: "시작 시 자동 확인", keywords: ["auto", "자동", "확인", "check", "업데이트"] },

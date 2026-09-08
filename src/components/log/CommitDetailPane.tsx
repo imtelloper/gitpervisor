@@ -3,6 +3,8 @@ import { Copy } from "lucide-react";
 
 import { KIND_BADGE } from "../../lib/change-kind";
 import { splitPath } from "../../lib/format";
+import { errorMessage } from "../../lib/ipc";
+import type { DiffTarget } from "../../lib/ipc";
 import { usePanelWidth } from "../../lib/use-panel-width";
 import { useCommitDetail } from "../../queries";
 import { useUi } from "../../stores/ui";
@@ -16,12 +18,26 @@ function copyText(text: string, ok: string) {
     .catch(() => pushToast("error", "복사에 실패했습니다"));
 }
 
-/** Log 패널 우측: 선택 커밋의 전체 메시지 + 변경 파일 트리. 파일 클릭 → 중앙 뷰어에 커밋 diff. */
-export function CommitDetailPane({ projectId }: { projectId: string }) {
-  const sha = useUi((s) => s.selectedCommitSha);
+/** Log 패널 우측: 선택 커밋의 전체 메시지 + 변경 파일 트리. 파일 클릭 → 중앙 뷰어에 커밋 diff.
+ *  onSelect·active를 주면 그 클릭이 호출자 로컬 선택이 된다(Git 모달, 태스크 55 — ChangesPanel과 동일).
+ *  selectedSha를 주면 커밋 선택도 호출자 로컬이다 — 전역 selectedCommitSha를 쓰면 모달(프로젝트 B)과
+ *  하단 Log 패널(프로젝트 A)이 서로의 선택을 덮어써 남의 저장소 sha를 조회하게 된다. */
+export function CommitDetailPane({
+  projectId,
+  onSelect,
+  active,
+  selectedSha,
+}: {
+  projectId: string;
+  onSelect?: (target: DiffTarget, repoId: string) => void;
+  active?: { target: DiffTarget; repoId: string } | null;
+  selectedSha?: string | null;
+}) {
+  const storeSha = useUi((s) => s.selectedCommitSha);
+  const sha = selectedSha !== undefined ? selectedSha : storeSha;
   const selectedDiff = useUi((s) => s.selectedDiff);
   const selectDiff = useUi((s) => s.selectDiff);
-  const { data, isLoading } = useCommitDetail(projectId, sha);
+  const { data, isLoading, error } = useCommitDetail(projectId, sha);
   const { width, startResize } = usePanelWidth(
     "gp:commit-detail-width",
     320,
@@ -35,6 +51,16 @@ export function CommitDetailPane({ projectId }: { projectId: string }) {
       <Shell width={width} startResize={startResize}>
         <div className="flex h-full items-center justify-center p-3 text-xs text-fg-dim">
           커밋을 선택하세요
+        </div>
+      </Shell>
+    );
+  }
+  // 실패를 안 그리면(예: 다른 저장소의 sha) 로딩도 데이터도 아닌 상태라 "커밋 상세 …"에 영영 멈춘다.
+  if (error) {
+    return (
+      <Shell width={width} startResize={startResize}>
+        <div className="p-3 text-xs leading-5 text-fg-dim">
+          커밋을 불러오지 못했습니다 — {errorMessage(error)}
         </div>
       </Shell>
     );
@@ -97,15 +123,20 @@ export function CommitDetailPane({ projectId }: { projectId: string }) {
         {files.map((f) => {
           const badge = KIND_BADGE[f.kind];
           const { dir, base } = splitPath(f.path);
+          // onSelect가 오면 강조도 전역이 아닌 로컬 active를 본다.
+          const shown = onSelect ? active?.target : selectedDiff;
           const selected =
-            selectedDiff?.mode === "commit" &&
-            selectedDiff.sha === commit.sha &&
-            selectedDiff.path === f.path;
+            shown?.mode === "commit" &&
+            shown.sha === commit.sha &&
+            shown.path === f.path;
           return (
             <div
               key={f.path}
               onClick={() =>
-                selectDiff({ mode: "commit", sha: commit.sha, path: f.path })
+                (onSelect ?? selectDiff)(
+                  { mode: "commit", sha: commit.sha, path: f.path },
+                  projectId,
+                )
               }
               title={f.origPath ? `${f.origPath} → ${f.path}` : f.path}
               className={`flex cursor-pointer items-center gap-2 px-2 py-1 text-xs ${

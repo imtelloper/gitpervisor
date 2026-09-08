@@ -53,6 +53,15 @@ const SUITES = [
   "./suites/36-image-layer-tree.mjs",
   "./suites/37-image-doc-persist.mjs",
   "./suites/42-image-doc-schema.mjs",
+  "./suites/46-image-arrow-nav.mjs",
+  // E2E_NET=1 일 때만 실제로 돈다(런타임 다운로드에 네트워크 필요) — 아니면 전부 skip.
+  "./suites/47-llm-runtime.mjs",
+  "./suites/44-project-logo.mjs",
+  "./suites/45-git-dialog.mjs",
+  // 잔디·요약. 자기 전용 레포를 따로 만들어 쓴다(공유 픽스처엔 앞선 스위트의 오늘 커밋이 쌓인다).
+  "./suites/48-report.mjs",
+  // 번역 본문 단언은 LLM(런타임+모델)이 준비된 경우에만 — 아니면 그 부분만 skip 한다.
+  "./suites/49-translate.mjs",
   // 오버레이가 전체화면·포커스를 가져가므로 마지막에 둔다(31-capture.mjs 상단 주석).
   "./suites/31-capture.mjs",
 ];
@@ -182,8 +191,7 @@ async function main() {
     .map((s) => s.trim())
     .filter(Boolean);
   const suites = only.length ? SUITES.filter((p) => only.some((o) => p.includes(`/${o}-`))) : SUITES;
-  if (only.length) console.log(`  부분 실행: ${suites.length}개 스위트 (GPV_E2E_ONLY=${only.join(",")})
-`);
+  if (only.length) console.log(`  부분 실행: ${suites.length}개 스위트 (GPV_E2E_ONLY=${only.join(",")})\n`);
   for (const path of suites) {
     const mod = await import(path);
     report.suite(mod.name || path);

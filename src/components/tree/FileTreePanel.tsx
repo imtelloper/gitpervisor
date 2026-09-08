@@ -7,6 +7,7 @@ import {
   FilePlus,
   FolderPlus,
   Globe,
+  Image as ImageIcon,
   ImageDown,
   Link,
   Pencil,
@@ -43,6 +44,7 @@ import { openDocWindow } from "../../lib/floating";
 import { errorMessage, ipc, isIpcError } from "../../lib/ipc";
 import type { ChangeKind, DirEntry, FileChange, RepoStatus } from "../../lib/ipc";
 import { isHtml, isImage, isVideo } from "../../lib/language-map";
+import { joinPath, parentDir } from "../../lib/path";
 import { usePanelCollapsed, usePanelWidth } from "../../lib/use-panel-width";
 import {
   invalidateAfterMove,
@@ -55,6 +57,7 @@ import {
   useProjects,
   useRenamePath,
   useSaveImage,
+  useSetProjectLogo,
   useStatus,
 } from "../../queries";
 import { isPreviewUrl, useBrowsers } from "../../stores/browser";
@@ -64,10 +67,6 @@ import { useTreeState } from "../../stores/treeState";
 import { useUi } from "../../stores/ui";
 import { CollapsedPanelStrip } from "../common/CollapsedPanelStrip";
 import { ResizeHandle } from "../common/ResizeHandle";
-
-function joinPath(base: string, name: string): string {
-  return base ? `${base}/${name}` : name;
-}
 
 const INDENT = 12;
 
@@ -413,12 +412,6 @@ function MenuItem({
   );
 }
 
-/** rel 경로의 부모 디렉토리(없으면 빈 문자열=루트). */
-function parentDir(rel: string): string {
-  const i = rel.lastIndexOf("/");
-  return i >= 0 ? rel.slice(0, i) : "";
-}
-
 // ── 드래그 이동 고스트 ──
 // 커서를 따라다니는 라벨은 pointermove마다 갱신된다 — FileTreePanel state로 두면 이동 한 번에
 // 트리 전체(수백 행)가 프레임마다 리렌더된다. 고스트만 자기 state를 갖고, 부모는 핸들로
@@ -482,6 +475,7 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
   const deletePath = useDeletePath(projectId);
   const renamePath = useRenamePath(projectId);
   const saveImage = useSaveImage(projectId);
+  const setLogo = useSetProjectLogo();
   const qc = useQueryClient();
   // 저장된 확장 폴더를 invoke 1개로 워밍 — 프로젝트 전환 직후에도 트리가 즉시 뜬다.
   useExpandedDirsPrefetch(projectId);
@@ -1109,6 +1103,9 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
     }
   }
 
+  // 로고로 지정할 수 있는지 — 변환·편집(menuIsImage)과 달리 **svg를 포함한다**.
+  // 로고는 `<img>`로 그리기만 하므로 캔버스 래스터화 제약이 없다(태스크 54).
+  const menuIsLogoable = menu ? !menu.isDir && isImage(menu.name) : false;
   // 이미지 변환/편집 대상은 캔버스가 안정적으로 래스터화하는 파일만 — SVG(벡터·무내재크기)는 제외.
   const menuIsImage = menu
     ? !menu.isDir && isImage(menu.name) && !/\.svg$/i.test(menu.name)
@@ -1307,6 +1304,21 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
                       onClick={() => void convert(menu, f.id)}
                     />
                   ))}
+                  <div className="my-1 border-t border-edge/60" />
+                </>
+              )}
+              {menuIsLogoable && (
+                <>
+                  <MenuItem
+                    icon={ImageIcon}
+                    label="프로젝트 로고로 지정"
+                    onClick={() => {
+                      // menu.path는 outer 레포 기준 상대경로 — 임베디드 저장소 파일도 같은 기준이라
+                      // 패널 prop인 projectId와 그대로 맞는다.
+                      setLogo.mutate({ id: projectId, relPath: menu.path });
+                      setMenu(null);
+                    }}
+                  />
                   <div className="my-1 border-t border-edge/60" />
                 </>
               )}

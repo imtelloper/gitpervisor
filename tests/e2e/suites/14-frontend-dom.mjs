@@ -44,6 +44,8 @@ export async function run({ cdp, report: r, fix }) {
   const origLogOpen = await uGet("logOpen");
   const origLogHeight = await uGet("logHeight");
   const origLayout = await uGet("aggregateLayout"); // #11d가 바꾼다 — finally에서 원복
+  const origGroupTabs = await uGet("aggregateGroupTabs"); // #11e가 켠다 — finally에서 원복
+  let origProjectColors = null; // #12가 켤 수 있다(사용자 설정) — finally에서 원복
   let tabId = null;
   // 픽스처 탭의 리프 paneId — #2a(세션 컨트롤)·이후 블록들이 함께 쓴다. 재선언 금지
   // (try 스코프에 const로 다시 선언하면 그 앞 블록이 TDZ ReferenceError로 죽는다).
@@ -51,6 +53,10 @@ export async function run({ cdp, report: r, fix }) {
   let tabClosed = false;
   let newTabId = null; // #11c 새 터미널 버튼이 만든 탭 — 정리 대상
   let newTabClosed = false;
+  // #13이 만든 Claude 세션 탭(워크스페이스 '+' · 모아보기 '+') — 성공 시 그 자리에서 닫고 null로
+  // 되돌린다. 중간에 죽으면 finally가 거둔다(claude가 실제로 떴다면 closeTab이 PTY 트리를 끝낸다).
+  let claudeTabId = null;
+  let aggClaudeTabId = null;
 
   // 보이는 첫 .xterm 을 고르는 페이지 안 표현식. 비활성 탭도 hidden 클래스로 **마운트된 채**
   // 남으므로(WorkspaceTabs.tsx의 active?…:"hidden") 문서 순서 첫 .xterm 은 사용자가 볼 수 없는
@@ -230,20 +236,32 @@ export async function run({ cdp, report: r, fix }) {
       // pane이 닫히고 PTY가 죽었다. 앵커를 xterm 호스트 래퍼로 옮겨 겹침 자체를 없앤다.
       await clickLog();
       await poll(panelState, (v) => v.ls && v.dom, 12, 250);
-      const geo = await cdp.eval(`(()=>{
+      const geo = await cdp.eval(`(async()=>{
         const pane = ${VIS_XTERM}?.closest('[class~="group/pane"]');
         if (!pane) return { err: 'pane 래퍼 없음' };
         const ov = pane.querySelector('.z-30');
         const x = pane.querySelector('button[title="프롬프트 목록 닫기"]');
         if (!ov || !x) return { err: '오버레이/컬럼 X 없음 ov=' + !!ov + ' x=' + !!x };
+        // 컬럼이 막 열린 직후엔 레이아웃이 아직 앉지 않아 X 버튼의 rect가 옮겨진다 — 그 순간의
+        // 좌표로 한 번만 물으면 헤더 div 같은 엉뚱한 요소가 잡힌다(실측 4회 중 3회 뒤집힘,
+        // 바로 뒤 실클릭 단언은 매번 PASS). rect를 매번 다시 재며 자리가 앉을 때까지 폴링한다.
+        let top = null, b = x.getBoundingClientRect();
+        for (let i = 0; i < 8; i++) {
+          b = x.getBoundingClientRect();
+          top = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+          if (top && x.contains(top)) break;
+          await new Promise((r) => setTimeout(r, 250));
+        }
         // 컬럼 루트 = X 버튼 → 헤더 div → PromptSidePanel 루트(TermSessionControls).
         const c = x.parentElement.parentElement.getBoundingClientRect();
-        const o = ov.getBoundingClientRect(), b = x.getBoundingClientRect();
-        const top = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+        const o = ov.getBoundingClientRect();
         return {
           ovRight: o.right, ovWidth: o.width, colLeft: c.left, colWidth: c.width,
           hitX: !!top && x.contains(top),
-          topTitle: top ? ((top.closest('button') || {}).title ?? null) : null,
+          xRect: [Math.round(b.left), Math.round(b.top), Math.round(b.width), Math.round(b.height)],
+          topTitle: top
+            ? ((top.closest('button') || {}).title ?? (top.tagName + '.' + (top.className || '').toString().slice(0, 60)))
+            : null,
         };
       })()`);
       r.check(
@@ -254,7 +272,7 @@ export async function run({ cdp, report: r, fix }) {
       r.check(
         "컬럼 헤더 X 중심 elementFromPoint = 그 X 버튼",
         geo.hitX === true,
-        geo.err || `top="${geo.topTitle}"`,
+        geo.err || `top="${geo.topTitle}" xRect=${JSON.stringify(geo.xRect)}`,
       );
       // 실클릭 — elementFromPoint가 돌려준 **최상단** 요소를 누른다. 오버레이가 덮고 있었다면
       // 여기서 '패널 닫기'가 눌려 pane이 사라진다(그게 이 단언이 잡는 회귀다).
@@ -310,13 +328,17 @@ export async function run({ cdp, report: r, fix }) {
       const t = await import(url);
       const inv = (c, a) => window.__TAURI_INTERNALS__.invoke(c, a);
       // PTY가 응답할 때까지 기다린다 — term_open 완료 전 write는 NOT_FOUND로 튄다.
+      // **이 스위트가 연 pane**(termId === paneId)만 본다. "첫 live"를 집으면 사용자가 띄워 둔
+      // 20여 개 중 아무거나 걸린다 — 그 인스턴스의 term.cols(숨은 탭이라 옛 값)와 실제 ConPTY
+      // 폭이 애초에 다르고(실측 233 vs 275) 이 단언이 실행마다 뒤집혔다. 남의 셸에 Write-Host를
+      // 쏘는 부작용도 같이 사라진다.
       let inst = null;
       for (let i = 0; i < 60; i++) {
-        inst = t.listTerminals().find((x) => x.status === "live");
+        inst = t.listTerminals().find((x) => x.id === ${J(paneId)} && x.status === "live");
         if (inst) { try { await inv("term_write", { termId: inst.id, data: "\\r" }); break; } catch (e) { inst = null; } }
         await new Promise((r) => setTimeout(r, 300));
       }
-      if (!inst) return { skip: "살아있는 터미널이 응답하지 않음" };
+      if (!inst) return { skip: "이 스위트가 연 터미널이 응답하지 않음" };
       const want = inst.term.cols;
       const read = () => {
         const b = inst.term.buffer.active;
@@ -354,9 +376,20 @@ export async function run({ cdp, report: r, fix }) {
       const shrunk = await ask("GPVB");
       t.reattachAllTerminals();
       await new Promise((r) => setTimeout(r, 1500));
-      const after = await ask("GPVC");
-      return { want, before, shrunk, after };
-    // 페이지 안 예산이 최악 ~55s(PTY 대기 18s + 폭 질문 3회 × 9s + 1.5s)라 cdp.eval 기본 60s
+      // resyncTerminalSizeImpl → ConPTY 반영은 비동기라 단발 측정은 원래 경합한다(실측 4회 중
+      // 1회 "축소 40 → 복구 64", 기대 67). 판정 대상 폭이 될 때까지 다시 묻는다 — 태그를 바꾸는
+      // 이유는 grab()이 버퍼 전체를 훑어 같은 태그의 옛 답을 먼저 집을 수 있어서다.
+      let after = await ask("GPVC");
+      for (let i = 0; i < 6 && after !== inst.term.cols; i++) {
+        await new Promise((r) => setTimeout(r, 500));
+        after = await ask("GPVC" + i);
+      }
+      // 판정 기준은 **지금**의 xterm 열수다. 처음에 잡아 둔 want는 앞 테스트가 프롬프트 컬럼을
+      // 닫아 pane이 넓어진 직후 값이라(fit이 아직 안 돈 233) reattach가 제대로 되돌린 275와
+      // 어긋난다 — 실측 두 번 다 같은 233/275였다. 이 단언이 지키려는 불변식은 "PTY 폭 ==
+      // 이 창 xterm 폭"이지 "테스트 시작 시점의 폭"이 아니다.
+      return { want: inst.term.cols, want0: want, before, shrunk, after };
+    // 페이지 안 예산이 최악 ~112s(PTY 대기 18s + 폭 질문 3+6회 × 9s + 대기)라 cdp.eval 기본 60s
     // 시한에 아슬아슬하게 걸린다 — 부하가 큰 머신에선 실제로 걸렸다. 넉넉히 잡는다.
     })()`, { timeoutMs: 180000 });
     if (resync?.skip) {
@@ -370,7 +403,7 @@ export async function run({ cdp, report: r, fix }) {
       r.check(
         "모아보기 반환 후 PTY 폭 복구(reattach가 크기도 되돌린다)",
         resync?.after === resync?.want,
-        `xterm ${resync?.want}열 · 축소 ${resync?.shrunk} → 복구 ${resync?.after}`,
+        `xterm ${resync?.want}열(시작 시점 ${resync?.want0}) · 축소 ${resync?.shrunk} → 복구 ${resync?.after}`,
       );
     }
 
@@ -855,6 +888,103 @@ export async function run({ cdp, report: r, fix }) {
       await cdp.eval(`window.__gpv.ui.getState().setAggregateLayout("grid")`);
     }
 
+    // ── #11e 묶음 칩 우클릭 → "'{프로젝트}' 탭 N개 모두 닫기" (태스크 53) ──
+    // 모아보기 열림 + 픽스처 셀 ≥ 2인 지금 이어서 한다(#11d와 같은 전제). 확인까지 누르면 픽스처
+    // 프로젝트 탭이 **전부** 닫히므로, 뒤 절(#12 칩 색)이 볼 탭은 이 블록 끝에서 하나 되살린다.
+    const groupName = await cdp.eval(
+      `(window.__gpv.queryClient.getQueryData(["projects"])||[]).find(p=>p.id===${J(fix.projectId)})?.name ?? null`,
+    );
+    if (!groupName) {
+      r.skip("묶음 칩 모두 닫기", "픽스처 프로젝트 이름 조회 실패 — 스킵");
+    } else {
+      // 탭 모으기는 스토어가 아니라 **헤더 버튼 클릭**으로 켠다(스테일 스토어 함정 — 태스크 24 §2.5).
+      const GROUP_BTN = `[...document.querySelectorAll('button')].find(b => /탭 모으기/.test(b.textContent||''))`;
+      const groupWasOn =
+        (await cdp.eval(`localStorage.getItem('gp:aggregate-group-tabs')`)) === "1";
+      if (!groupWasOn) {
+        await cdp.eval(`${GROUP_BTN}?.click()`);
+        await sleep(300);
+      }
+      // 묶음 칩 title = "이름 — 탭 N개 (클릭: …)" — 개별 칩("이름 · 제목 …")과 확실히 갈린다.
+      const CHIP_G = `[...document.querySelectorAll('button')].find(b => (b.title||'').startsWith(${J(groupName)} + ' — 탭 '))`;
+      const chipTitle = await poll(() => cdp.eval(`(${CHIP_G})?.title ?? null`), (v) => !!v, 12, 250);
+      const chipN = Number(/— 탭 (\d+)개/.exec(chipTitle || "")?.[1] ?? 0);
+      // 드롭다운 안 '모두 닫기' 항목 — 묶음 드롭다운만 이 문구를 갖는다(ChipMenu와 구분).
+      const CLOSE_ALL = `(()=>{ const m=[...document.querySelectorAll('div.fixed.z-50')].find(d => /모두 닫기/.test(d.textContent||''));
+        return m ? [...m.querySelectorAll('button')].find(x => /모두 닫기$/.test((x.textContent||'').trim())) : null; })()`;
+      await cdp.eval(`(()=>{ const c=${CHIP_G}; if(!c) return false; const r=c.getBoundingClientRect();
+        c.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,clientX:r.left+4,clientY:r.bottom+2})); return true; })()`);
+      const closeLabel = await poll(
+        () => cdp.eval(`(()=>{ const b=${CLOSE_ALL}; return b ? b.textContent.trim() : null; })()`),
+        (v) => !!v,
+        10,
+        250,
+      );
+      const menuN = Number(/탭 (\d+)개 모두 닫기/.exec(closeLabel || "")?.[1] ?? -1);
+      // 기대값은 **스토어에서** 센다 — 칩 title의 N과 비교하면 둘 다 같은 cells.length라
+      // 항상 참인 동어반복이 된다(잘못 센 N을 못 잡는다). 셀 = 탭 레이아웃의 리프 전부
+      // (터미널·브라우저 pane) + 그 프로젝트의 독립 브라우저 탭.
+      const expectedN = await cdp.eval(`(()=>{
+        const leaves = (p) => (p.kind === 'leaf' ? 1 : leaves(p.a) + leaves(p.b));
+        const ts = window.__gpv.terminals.getState().terminals
+          .filter(t => t.projectId === ${J(fix.projectId)});
+        const panes = ts.reduce((n, t) => n + leaves(t.layout), 0);
+        const bs = window.__gpv.browsers?.getState?.();
+        const solo = bs ? bs.tabIds.filter(id => bs.items[id]?.projectId === ${J(fix.projectId)}).length : 0;
+        return panes + solo;
+      })()`);
+      r.check(
+        "묶음 칩 우클릭 → '탭 N개 모두 닫기' (N = 그 프로젝트 셀 수)",
+        !!closeLabel && chipN >= 2 && menuN === chipN && menuN === expectedN,
+        `chip=${J(chipTitle)} label=${J(closeLabel)} 스토어기대=${expectedN}`,
+      );
+      const clickedAll = await cdp.eval(`(()=>{ const b=${CLOSE_ALL}; if (b) { b.click(); return true; } return false; })()`);
+      // 확인 다이얼로그(ConfirmHost, z-[60]) — danger 버튼 "모두 닫기" + 프로세스 종료 안내.
+      const DANGER_OK = `[...document.querySelectorAll('button')].find(x => (x.textContent||'').trim()==='모두 닫기' && /bg-danger/.test(x.className||''))`;
+      const dlgText = await poll(
+        () => cdp.eval(`(()=>{ const b=${DANGER_OK}; return b ? (b.closest('div.fixed')?.innerText || '') : null; })()`),
+        (v) => !!v,
+        10,
+        250,
+      );
+      r.check(
+        "→ 확인 다이얼로그(danger '모두 닫기') + 프로세스 종료 안내",
+        clickedAll && /실행 중인 프로세스가 종료됩니다/.test(dlgText || ""),
+        J((dlgText || "").replace(/\n/g, " ").slice(0, 120)),
+      );
+      await cdp.eval(`${DANGER_OK}?.click()`);
+      const leftTabs = await poll(
+        () =>
+          cdp.eval(
+            `window.__gpv.terminals.getState().terminals.filter(t=>t.projectId===${J(fix.projectId)}).length`,
+          ),
+        (n) => n === 0,
+        17,
+        300,
+      );
+      const chipGone = await poll(() => cdp.eval(`!(${CHIP_G})`), (v) => v === true, 10, 250);
+      r.check(
+        "확인 → 그 프로젝트 탭 전부 닫힘 · 묶음 칩 소멸",
+        leftTabs === 0 && chipGone === true,
+        `남은탭=${leftTabs} 칩소멸=${chipGone}`,
+      );
+      // **닫기가 실제로 성공했을 때만** 정리 플래그를 내리고 tabId를 교체한다. 실패했는데도
+      // 갈아 끼우면 픽스처 탭(#2, 살아 있는 PTY)의 id를 잃어 finally가 못 닫는다.
+      if (leftTabs === 0) {
+        // 픽스처 탭(#2)·#11c 탭이 이 묶음에 함께 있었다 — 정리 대상에서 뺀다.
+        // (탭 모으기 원복은 finally — 중간에 죽어도 사용자 설정이 남지 않게.)
+        tabClosed = true;
+        newTabClosed = true;
+        // #12가 볼 픽스처 칩·탭을 하나 되살린다(이 절이 전부 닫았다).
+        const reopened = await cdp.eval(
+          `window.__gpv.terminals.getState().openTerminal(${J(fix.projectId)})`,
+        );
+        tabId = reopened.tabId;
+        tabClosed = false;
+        await sleep(300);
+      }
+    }
+
     // 모아보기 닫고 새 탭 정리 — 이후 검증이 원래 상태에서 돌게.
     await cdp.eval(`window.__gpv.ui.getState().setAggregateOpen(false)`);
     await poll(() => uGet("aggregateOpen"), (v) => v === false, 12, 300);
@@ -865,6 +995,15 @@ export async function run({ cdp, report: r, fix }) {
     }
 
     // ── #12 프로젝트 색: 사이드바 행 배경 == 모아보기 칩 색(같은 프로젝트) · 정렬 토글 뒤 불변 (태스크 28) ──
+    // 색 구분은 사용자가 끌 수 있는 토글이다(PROJECTS 헤더 팔레트 버튼, `gp:project-colors`).
+    // 꺼져 있으면 행이 투명해 이 절이 통째로 실패한다 — 기능 검증이지 사용자 설정 검증이 아니므로
+    // 여기서 켜고 finally에서 원래 값으로 되돌린다.
+    origProjectColors = await cdp.eval(`localStorage.getItem('gp:project-colors')`);
+    if (origProjectColors === "0") {
+      await cdp.eval(`window.__gpv.ui.getState().toggleProjectColors()`);
+      await poll(() => uGet("projectColorsOn"), (v) => v === true, 12, 200);
+      await sleep(200);
+    }
     const bgOf = (elExpr) =>
       cdp.eval(`(()=>{ const el=${elExpr}; return el ? getComputedStyle(el).backgroundColor : null; })()`);
     const rgb3 = (s) => (s && s.match(/^rgba?\((\d+), (\d+), (\d+)/)?.slice(1, 4).join(",")) || null;
@@ -876,9 +1015,26 @@ export async function run({ cdp, report: r, fix }) {
     const rowBg = await bgOf(rowExpr);
     r.check(
       "사이드바 행: --tint 인라인 변수 + 배경 실제 적용(bg-(--tint) 규칙 생성)",
-      /^hsl\(\d+ 70% var\(--proj-l\) \/ var\(--proj-a-row/.test(rowTint) && !!rowBg && rowBg !== "rgba(0, 0, 0, 0)",
+      /^#[0-9a-f]{6}$/.test(rowTint.trim()) && !!rowBg && rowBg !== "rgba(0, 0, 0, 0)",
       `tint=${rowTint} bg=${rowBg}`,
     );
+    // 슬롯 배정 — N개 이름이 N슬롯에 중복 없이 들어가야 한다(옛 12슬롯은 26개 중 16쌍이 동일색이었다).
+    // N은 구현(PROJECT_HUES)에서 읽는다 — 손사본 32를 두면 슬롯 수를 바꿔도 조용히 통과한다.
+    const slots = await cdp.eval(`(()=>{const a=window.__gpv.projectColor, N=a.PROJECT_HUES.length;
+      const n=Array.from({length:N},(_,i)=>'zz'+i);
+      return { uniq:new Set(a.assignProjectSlots(n).values()).size, hues:N };})()`);
+    r.check(
+      "N개 이름 → 슬롯 중복 0",
+      slots.uniq === slots.hues && slots.hues > 0,
+      `unique=${slots.uniq}/${slots.hues}`,
+    );
+    // 32는 이 저장소에서 **의도적으로 박은 유일한 슬롯 상수**다 — 26개 프로젝트가 6종 테마에서
+    // ΔE00 > 5로 갈리는 최소 슬롯 수(DOCS/task/36 §3.1). `>=`가 아니라 `===`인 이유: 늘리는
+    // 것도 안전하지 않다(hue 간격이 좁아져 ΔE00 보증이 깨진다). 축소·확대 양방향을 다 물고,
+    // 바꿀 때는 ΔE00 전수를 다시 재고 이 줄도 함께 고치는 것이 의도 표명이다.
+    // (e2e 19의 `c.n === c.hues`는 팔레트↔hue 정합만 본다 — projectPalette가 PROJECT_HUES.map
+    // 이라 항진명제라서 슬롯 **수** 핀이 못 된다. 수를 무는 자리는 여기 하나다.)
+    r.check("슬롯 수 == 32 (ΔE00 > 5 보증 — 축소·확대 양방향)", slots.hues === 32, `hues=${slots.hues}`);
     // 모아보기 칩 — 개별 칩 title "이름 · 제목 (우클릭: 메뉴)" 또는 묶음 칩 "이름 — 탭 N개 …" 둘 다 이름으로 시작
     await cdp.eval(`window.__gpv.ui.getState().setAggregateOpen(true)`);
     await poll(() => uGet("aggregateOpen"), (v) => v === true, 12, 300);
@@ -899,6 +1055,128 @@ export async function run({ cdp, report: r, fix }) {
     r.check("변경 우선 정렬 토글 뒤 행 색 불변", rgb3(rowBgSorted) === rgb3(rowBg), `${rowBg} → ${rowBgSorted}`);
     if ((await uGet("projectSortByChanges")) !== sort0)
       await cdp.eval(`window.__gpv.ui.getState().toggleProjectSort()`); // 원복(localStorage 영속이라 반드시)
+
+    // ── #13 "Claude Code 세션으로 새 터미널" (태스크 58) ──
+    // 셸이 뜨면 예약(localStorage gp:term-initial-input)을 open한 창이 소비해 `claude⏎`를 넣는다.
+    // 단언은 **에코까지** — claude 미설치 머신이면 뒤이어 not found가 찍히지만 그것도 통과다.
+    // 버퍼는 normal을 읽는다: claude가 실제로 뜨면 대체화면으로 넘어가 active에는 그 줄이 없다.
+    const termEcho = (pid) =>
+      cdp.eval(`(()=>{ const i = window.__gpv.term.get(${J(pid)}); if (!i) return null;
+        const b = i.term.buffer.normal; let s='';
+        for (let k=0;k<b.length;k++) s += (b.getLine(k)?.translateToString(true) || '') + '\\n';
+        return s; })()`);
+    const reserved = (pid) =>
+      cdp.eval(`(()=>{ try { return !!JSON.parse(localStorage.getItem('gp:term-initial-input')||'{}')[${J(pid)}]; }
+        catch { return false; } })()`);
+    const newTabSince = (before) =>
+      poll(
+        () =>
+          cdp.eval(
+            `window.__gpv.terminals.getState().terminals.map(t=>t.id).find(id=>!${J(before)}.includes(id)) || null`,
+          ),
+        (v) => !!v,
+        12,
+        300,
+      );
+    const paneOf = (id) =>
+      cdp.eval(
+        `(window.__gpv.terminals.getState().terminals.find(t=>t.id===${J(id)})||{}).activePaneId ?? null`,
+      );
+
+    // 이 절은 **픽스처가 선택된 상태**를 전제한다 — '+'는 selectedProjectId에 탭을 만들고
+    // 모아보기 경로는 목록 첫 항목을 고른다. 앞 절들이 선택을 옮겼을 수 있어 다시 세운다(#11c 관례).
+    await ensureFixture();
+    const tabs13 = await cdp.eval(`window.__gpv.terminals.getState().terminals.map(t=>t.id)`);
+    await cdp.eval(
+      `[...document.querySelectorAll('button')].find(b => (b.title||'')==='새 탭')?.click()`,
+    );
+    await sleep(300);
+    const NEW_TAB_MENU = `[...document.querySelectorAll('div.fixed.z-50')].find(d => /새 터미널/.test(d.textContent||''))`;
+    const tabMenuLabels = await cdp.eval(
+      `(()=>{ const m=${NEW_TAB_MENU}; return m ? [...m.querySelectorAll('button')].map(b=>b.textContent.trim()) : null; })()`,
+    );
+    const iNewTerm = tabMenuLabels?.indexOf("새 터미널") ?? -1;
+    r.check(
+      "'+' 메뉴: 'Claude Code 세션으로 새 터미널' — '새 터미널' 바로 다음",
+      iNewTerm >= 0 && tabMenuLabels[iNewTerm + 1] === "Claude Code 세션으로 새 터미널",
+      J(tabMenuLabels),
+    );
+    const clickedClaude = await cdp.eval(`(()=>{ const m=${NEW_TAB_MENU};
+      const b = m && [...m.querySelectorAll('button')].find(x => (x.textContent||'').trim()==='Claude Code 세션으로 새 터미널');
+      if (b) { b.click(); return true; } return false; })()`);
+    claudeTabId = clickedClaude ? await newTabSince(tabs13) : null;
+    const claudePane = claudeTabId ? await paneOf(claudeTabId) : null;
+    // 예약은 pane 마운트 직후 소비된다 — 바로 읽은 값은 참고용(엔진 청크 로드 타이밍에 좌우된다).
+    const seenReserve = claudePane ? await reserved(claudePane) : false;
+    // 체인이 길다: sessionExists → term_open 등록 → 셸 프롬프트 → ptyWrite → PSReadLine 에코.
+    // 이 스위트의 새 pane 대기 관례(#2b)와 같은 60×300 = 18초를 준다(33×300은 부하 시 모자랐다).
+    const echoed = claudePane
+      ? await poll(() => termEcho(claudePane), (s) => !!s && /claude/i.test(s), 60, 300)
+      : null;
+    const claudeProj = claudeTabId
+      ? await cdp.eval(
+          `(window.__gpv.terminals.getState().terminals.find(t=>t.id===${J(claudeTabId)})||{}).projectId ?? null`,
+        )
+      : null;
+    r.check(
+      "Claude 항목 → 새 터미널 생성 + 셸에 `claude` 입력(에코)",
+      !!claudeTabId &&
+        claudeProj === fix.projectId &&
+        !!echoed &&
+        /claude/i.test(echoed),
+      `tab=${String(claudeTabId).slice(0, 8)} proj=${claudeProj === fix.projectId} 예약관측=${seenReserve}`,
+    );
+    // 소비되면 그 paneId 항목이 지워진다 — 남아 있으면 다음 부팅 세션 복구가 claude를 또 띄운다.
+    const stillReserved = claudePane
+      ? await poll(() => reserved(claudePane), (v) => v === false, 17, 300)
+      : null;
+    r.check(
+      "초기 입력 예약은 소비돼 localStorage에서 사라진다",
+      stillReserved === false,
+      `남음=${stillReserved}`,
+    );
+
+    // 모아보기 '+' 메뉴의 같은 항목 — 종류 선택 후 프로젝트 선택 단계가 하나 더 있다(#11c 경로).
+    await cdp.eval(`window.__gpv.ui.getState().setAggregateOpen(true)`);
+    await poll(() => uGet("aggregateOpen"), (v) => v === true, 12, 300);
+    const tabs13b = await cdp.eval(`window.__gpv.terminals.getState().terminals.map(t=>t.id)`);
+    await cdp.eval(`(()=>{ const b = [...document.querySelectorAll('button')].find(x => /새 터미널/.test(x.title||''));
+      if (b) b.click(); })()`);
+    await sleep(350);
+    const aggPicked = await cdp.eval(`(()=>{ const m=document.querySelector('div.fixed.z-50');
+      const b = m && [...m.querySelectorAll('button')].find(x => (x.textContent||'').trim()==='Claude Code 세션 터미널');
+      if (b) { b.click(); return true; } return false; })()`);
+    await sleep(350);
+    // 프로젝트가 2개 이상이면 목록이 이어 뜬다 — 선택 프로젝트(=픽스처)가 맨 위라 첫 항목 클릭.
+    if (!(await cdp.eval(`window.__gpv.terminals.getState().terminals.length > ${tabs13b.length}`))) {
+      await cdp.eval(`(()=>{ const m=document.querySelector('div.fixed.z-50'); const b=m&&m.querySelector('button'); if (b) b.click(); })()`);
+    }
+    aggClaudeTabId = aggPicked ? await newTabSince(tabs13b) : null;
+    const aggClaudePane = aggClaudeTabId ? await paneOf(aggClaudeTabId) : null;
+    const aggEchoed = aggClaudePane
+      ? await poll(() => termEcho(aggClaudePane), (s) => !!s && /claude/i.test(s), 60, 300)
+      : null;
+    const aggProj = aggClaudeTabId
+      ? await cdp.eval(
+          `(window.__gpv.terminals.getState().terminals.find(t=>t.id===${J(aggClaudeTabId)})||{}).projectId ?? null`,
+        )
+      : null;
+    r.check(
+      "모아보기 '+' → 'Claude Code 세션 터미널' → 셸에 `claude` 입력(에코)",
+      !!aggClaudeTabId &&
+        aggProj === fix.projectId &&
+        !!aggEchoed &&
+        /claude/i.test(aggEchoed),
+      `tab=${String(aggClaudeTabId).slice(0, 8)} proj=${aggProj === fix.projectId} picked=${aggPicked}`,
+    );
+    await cdp.eval(`window.__gpv.ui.getState().setAggregateOpen(false)`);
+    await poll(() => uGet("aggregateOpen"), (v) => v === false, 12, 300);
+    for (const id of [claudeTabId, aggClaudeTabId]) {
+      if (id) await cdp.eval(`window.__gpv.terminals.getState().closeTab(${J(id)})`);
+    }
+    claudeTabId = null;
+    aggClaudeTabId = null;
+    await sleep(400);
 
     // 터미널 탭 닫기 — 이후 Log 핸들이 패널 divider(.cursor-row-resize)와 안 헷갈리게.
     await cdp.eval(`window.__gpv.terminals.getState().closeTab(${J(tabId)})`);
@@ -936,6 +1214,13 @@ export async function run({ cdp, report: r, fix }) {
       r.check("Log 높이 localStorage 영속", lsH === h1, `ls=${lsH}`);
     }
   } finally {
+    // #12가 켠 프로젝트 색 토글 원복(사용자 설정이라 반드시 — localStorage에 남는다).
+    if (origProjectColors === "0")
+      await cdp
+        .eval(
+          `(()=>{ const s=window.__gpv.ui.getState(); if (s.projectColorsOn) s.toggleProjectColors(); return true; })()`,
+        )
+        .catch(() => {});
     // 정리 — 만든 터미널 탭 닫고, 모아보기/뷰어/Log/선택 상태 원복.
     await cdp.eval(`window.__gpv.ui.getState().setAggregateOpen(false)`).catch(() => {});
     await cdp.eval(`window.__gpv.ui.getState().selectDiff(null)`).catch(() => {});
@@ -948,6 +1233,17 @@ export async function run({ cdp, report: r, fix }) {
       await cdp.eval(`window.__gpv.terminals.getState().closeTab(${J(tabId)})`).catch(() => {});
     if (newTabId && !newTabClosed)
       await cdp.eval(`window.__gpv.terminals.getState().closeTab(${J(newTabId)})`).catch(() => {});
+    for (const id of [claudeTabId, aggClaudeTabId])
+      if (id)
+        await cdp.eval(`window.__gpv.terminals.getState().closeTab(${J(id)})`).catch(() => {});
+    // #13이 남겼을 수 있는 초기 입력 예약(60초 만료라 무해하지만 잔재를 남기지 않는다).
+    await cdp.eval(`localStorage.removeItem('gp:term-initial-input')`).catch(() => {});
+    // #11e가 켠 탭 모으기 원복(사용자 설정이라 localStorage에 남는다).
+    await cdp
+      .eval(
+        `if (window.__gpv.ui.getState().aggregateGroupTabs !== ${J(origGroupTabs)}) window.__gpv.ui.getState().toggleAggregateGroupTabs()`,
+      )
+      .catch(() => {});
     // #11d가 바꾼 자동배치 모드 원복(사용자 설정이라 localStorage에 남는다).
     if (origLayout)
       await cdp

@@ -9,6 +9,8 @@ import { errorMessage, ipc } from "../../lib/ipc";
 import { refreshTerminalThemes } from "../../lib/terminal";
 import { useProjects, useSetSettings, useSettings } from "../../queries";
 import { useUi } from "../../stores/ui";
+import { chat } from "../../lib/llm";
+import { AiSection } from "./sections/AiSection";
 import { AppearanceSection } from "./sections/AppearanceSection";
 import { CodeToolsSection } from "./sections/CodeToolsSection";
 import { GeneralSection } from "./sections/GeneralSection";
@@ -38,6 +40,13 @@ function buildCleaned(f: Settings): Settings {
     smtpFrom: f.smtpFrom?.trim() || null,
     smtpTo: f.smtpTo?.trim() || null,
     videoFfmpegPath: f.videoFfmpegPath && f.videoFfmpegPath.trim() ? f.videoFfmpegPath.trim() : null,
+    // 로컬 LLM (태스크 59 §3.6) — 컨텍스트는 2048..32768, 나머지 문자열은 trim→null.
+    llmContext: Math.min(32768, Math.max(2048, Math.floor(f.llmContext || 8192))),
+    llmGpuLayers: Math.min(999, Math.max(0, Math.floor(f.llmGpuLayers || 0))),
+    llmCustomModelPath: f.llmCustomModelPath?.trim() || null,
+    llmExternalUrl: f.llmExternalUrl?.trim() || null,
+    llmExternalModel: f.llmExternalModel?.trim() || null,
+    llmExternalKey: f.llmExternalKey?.trim() || null,
   };
 }
 
@@ -76,6 +85,13 @@ export function SettingsDialog() {
   const [lspStatus, setLspStatus] = useState("");
   const [ffmpegBusy, setFfmpegBusy] = useState(false);
   const [ffmpegStatus, setFfmpegStatus] = useState("");
+  // AI(태스크 59) — 2.5GB 다운로드 중 카테고리를 옮겨도 진행이 살아 있도록 셸이 소유한다(§3.6 I1).
+  const [llmRuntimeBusy, setLlmRuntimeBusy] = useState(false);
+  const [llmRuntimeStatus, setLlmRuntimeStatus] = useState("");
+  const [llmModelBusy, setLlmModelBusy] = useState<string | null>(null);
+  const [llmModelStatus, setLlmModelStatus] = useState("");
+  const [llmTestBusy, setLlmTestBusy] = useState(false);
+  const [llmTestOutput, setLlmTestOutput] = useState("");
   const [slackSecret, setSlackSecret] = useState("");
   const [smtpSecret, setSmtpSecret] = useState("");
   const [slackHas, setSlackHas] = useState(false);
@@ -270,6 +286,90 @@ export function SettingsDialog() {
     setFfmpegBusy(false);
   }
 
+  // ---- AI (태스크 59) ----
+  // 다운로드 진행 phase → 한국어 상태 줄. ffmpeg 매핑과 같은 형식이라 그대로 재사용한다.
+  const llmPhase = (p: { phase: string; percent: number | null; message: string | null }) => {
+    if (p.phase === "download") return `받는 중${p.percent != null ? ` ${p.percent}%` : "…"}`;
+    if (p.phase === "verify") return "무결성 검증 중…";
+    if (p.phase === "extract") return "압축 해제 중…";
+    if (p.phase === "error") return `⚠ ${p.message ?? "실패"}`;
+    return "완료 ✓";
+  };
+  const refreshLlm = () => void qc.invalidateQueries({ queryKey: ["llm-status"] });
+
+  async function downloadLlmRuntime() {
+    setLlmRuntimeBusy(true);
+    setLlmRuntimeStatus("다운로드 준비…");
+    try {
+      await ipc.llmRuntimeEnsure((p) => setLlmRuntimeStatus(llmPhase(p)));
+      setLlmRuntimeStatus("설치 완료 ✓");
+    } catch (e) {
+      setLlmRuntimeStatus(`⚠ ${errorMessage(e)}`);
+    }
+    setLlmRuntimeBusy(false);
+    refreshLlm();
+  }
+
+  async function downloadLlmModel(id: string) {
+    setLlmModelBusy(id);
+    setLlmModelStatus("다운로드 준비…");
+    try {
+      await ipc.llmModelDownload(id, (p) => setLlmModelStatus(llmPhase(p)));
+      setLlmModelStatus("설치 완료 ✓");
+    } catch (e) {
+      setLlmModelStatus(`⚠ ${errorMessage(e)}`);
+    }
+    setLlmModelBusy(null);
+    refreshLlm();
+  }
+
+  // GB 단위 재다운로드가 걸린 파괴적 동작 — 반드시 확인을 받는다(§7).
+  function deleteLlmModel(id: string, label: string) {
+    useUi.getState().askConfirm({
+      title: "모델 삭제",
+      message: `${label}을(를) 지웁니다. 다시 쓰려면 처음부터 내려받아야 합니다.`,
+      confirmLabel: "삭제",
+      danger: true,
+      onConfirm: () => {
+        void ipc
+          .llmModelDelete(id)
+          .then(() => setLlmModelStatus("삭제했습니다"))
+          .catch((e) => useUi.getState().pushToast("error", errorMessage(e)))
+          .finally(refreshLlm);
+      },
+    });
+  }
+
+  // 테스트 — 저장 전 폼 값이 아니라 **저장된 설정**으로 돈다(백엔드가 settings를 읽는다).
+  // 그래서 먼저 persist한 뒤 보낸다(알림 테스트 I4와 같은 이유).
+  function testLlm() {
+    setLlmTestBusy(true);
+    setLlmTestOutput("");
+    void persist().then((ok) => {
+      if (!ok) {
+        setLlmTestBusy(false);
+        return;
+      }
+      let acc = "";
+      void chat(
+        [{ role: "user", content: "안녕하세요. 한 문장으로 자기소개해 주세요." }],
+        (delta) => {
+          acc += delta;
+          setLlmTestOutput(acc);
+        },
+        {
+          maxTokens: 200,
+          onProgress: (_phase, message) => setLlmTestOutput(message ?? ""),
+        },
+      )
+        .catch((e) => setLlmTestOutput(`⚠ ${errorMessage(e)}`))
+        .finally(() => {
+          setLlmTestBusy(false);
+          refreshLlm();
+        });
+    });
+  }
+
   const noResults = matched != null && matched.length === 0;
 
   return (
@@ -371,6 +471,24 @@ export function SettingsDialog() {
               <div className={category === "maintenance" ? "space-y-4" : "hidden"}>
                 <MaintenanceSection hl={hl} />
               </div>
+            )}
+            {category === "ai" && (
+              <AiSection
+                form={form}
+                update={update}
+                hl={hl}
+                runtimeBusy={llmRuntimeBusy}
+                runtimeStatus={llmRuntimeStatus}
+                onRuntimeDownload={() => void downloadLlmRuntime()}
+                modelBusy={llmModelBusy}
+                modelStatus={llmModelStatus}
+                onModelDownload={(id) => void downloadLlmModel(id)}
+                onModelDelete={deleteLlmModel}
+                onCancel={(name) => void ipc.llmDownloadCancel(name)}
+                testBusy={llmTestBusy}
+                testOutput={llmTestOutput}
+                onTest={testLlm}
+              />
             )}
             {category === "update" && <UpdateSection hl={hl} />}
           </div>

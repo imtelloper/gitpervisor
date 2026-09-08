@@ -5,11 +5,13 @@ import {
   Globe,
   Plus,
   Send,
+  Sparkles,
   Terminal as TerminalIcon,
   X,
 } from "lucide-react";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 
+import { CLAUDE_LAUNCH, queueInitialInput } from "../../lib/terminal";
 import { useSettings } from "../../queries";
 import { useAgentActivity } from "../../stores/agentActivity";
 import { useApiClient } from "../../stores/apiclient";
@@ -157,6 +159,12 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
         ))}
         <NewTabControls
           onNewTerminal={() => openTerminal(projectId)}
+          // 예약 → 마운트 순서: openTerminal은 동기로 스토어를 갱신하고 pane 마운트(= PTY spawn)는
+          // 다음 커밋이라, 같은 틱의 이 예약이 항상 먼저 저장된다.
+          onNewClaude={() => {
+            const { paneId } = openTerminal(projectId);
+            queueInitialInput(paneId, CLAUDE_LAUNCH);
+          }}
           onNewBrowser={() => openBrowser(projectId)}
           onNewApiClient={() => openApiClient(projectId)}
         />
@@ -278,10 +286,12 @@ function TabMenu({
  *  구분되지 않아 하나로 합쳤다(터미널도 메뉴에서 한 번 더 눌러야 하는 비용은 감수). */
 function NewTabControls({
   onNewTerminal,
+  onNewClaude,
   onNewBrowser,
   onNewApiClient,
 }: {
   onNewTerminal: () => void;
+  onNewClaude: () => void;
   onNewBrowser: () => void;
   onNewApiClient: () => void;
 }) {
@@ -323,6 +333,15 @@ function NewTabControls({
               label="새 터미널"
               onClick={() => {
                 onNewTerminal();
+                setMenu(null);
+              }}
+            />
+            {/* 새 터미널과 같되, 셸이 뜨면 `claude`를 입력해 바로 Claude Code 세션으로 들어간다. */}
+            <MenuItem
+              icon={<Sparkles size={14} />}
+              label="Claude Code 세션으로 새 터미널"
+              onClick={() => {
+                onNewClaude();
                 setMenu(null);
               }}
             />

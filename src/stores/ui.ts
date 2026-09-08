@@ -40,6 +40,16 @@ export interface PromptRequest {
   onConfirm: (value: string) => void;
 }
 
+/** 선택 텍스트 번역 카드 요청(태스크 61) — x·y는 카드를 띄울 메뉴 좌표. */
+export interface TranslateRequest {
+  /** 번역할 원문 — 8,000자로 이미 잘려 들어온다(lib/translate.ts translateRequest). */
+  text: string;
+  x: number;
+  y: number;
+  /** 원문이 잘렸는가 — 카드가 "잘림" 뱃지를 보인다. */
+  truncated: boolean;
+}
+
 /** 뷰어에 열린 파일 탭 하나 — 같은 파일이라도 모드(diff/파일)가 다르면 별개 탭. */
 export interface ViewerFileTab {
   key: string;
@@ -106,6 +116,9 @@ export interface UiState {
   /** 모아보기 자동배치 모드 — grid(2×2·3×3 …) / columns(좌우 한 줄, 최대 4열). localStorage 영속 */
   aggregateLayout: AggregateLayout;
   setAggregateLayout: (mode: AggregateLayout) => void;
+  /** 작업 리포트(잔디 + 기간 요약) 전체 뷰 — 모아보기와 같은 층. 세션 상태, 영속 없음(태스크 60) */
+  reportOpen: boolean;
+  toggleReport: () => void;
   /** Log 패널에서 선택된 커밋 (상세 패널 구동) */
   selectedCommitSha: string | null;
   /** 설정 모달 열림 여부 */
@@ -142,6 +155,12 @@ export interface UiState {
   prompt: PromptRequest | null;
   selectProject: (id: string | null) => void;
   selectDiff: (target: DiffTarget | null, repoId?: string | null) => void;
+  /**
+   * 활성 뷰어 탭의 대상을 **제자리에서** 바꾼다 — 탭 수가 늘지 않는다(이미지 뷰어 ↑/↓ 내비게이션).
+   * selectDiff는 키가 다르면 탭을 추가하므로 이미지 50장을 넘기면 탭도 50개가 된다.
+   * 저장소 라우팅(repoId)은 현재 것을 그대로 쓴다 — 같은 폴더 안에서의 이동이기 때문.
+   */
+  replaceDiff: (target: DiffTarget) => void;
   /** 뷰어 파일 탭 닫기 — 활성 탭이었으면 이웃 탭으로 전환(없으면 선택 해제). */
   closeViewerTab: (key: string) => void;
   /** 프로젝트 제거 시 그 프로젝트의 뷰어 탭·활성 파일 정리(고아 방지). */
@@ -185,6 +204,18 @@ export interface UiState {
   /** repoId: 임베디드 저장소 파일이면 그 저장소의 합성 id(생략하면 선택 프로젝트로 라우팅). */
   openImageEditor: (path: string, repoId?: string) => void;
   closeImageEditor: () => void;
+  /** 터미널 세션 헤더의 Git 버튼이 여는 변경·로그 모달 대상(태스크 55). null = 닫힘. */
+  gitDialog: { projectId: string } | null;
+  openGitDialog: (projectId: string) => void;
+  closeGitDialog: () => void;
+  /**
+   * 선택 텍스트 번역 카드(태스크 61). null = 닫힘.
+   * **selectBlockingOverlay에는 넣지 않는다** — 화면을 덮지 않는 카드라, 점유는 TranslateHost가
+   * useOccludesWebview로 등록한다(26 호버 카드와 같은 층).
+   */
+  translate: TranslateRequest | null;
+  openTranslate: (req: TranslateRequest) => void;
+  closeTranslate: () => void;
 }
 
 let toastSeq = 0;
@@ -234,6 +265,7 @@ export const selectBlockingOverlay = (s: UiState): boolean =>
   s.quickOpenOpen ||
   s.symbolSearchOpen ||
   !!s.imageEditorPath ||
+  !!s.gitDialog ||
   !!s.confirm ||
   !!s.prompt;
 
@@ -269,6 +301,7 @@ export const useUi = create<UiState>((set) => ({
   // 알 수 없는 값(없음·구버전)은 grid — 기존 동작이 기본이다.
   aggregateLayout:
     localStorage.getItem("gp:aggregate-layout") === "columns" ? "columns" : "grid",
+  reportOpen: false,
   selectedCommitSha: null,
   settingsOpen: false,
   settingsCategory: null,
@@ -322,17 +355,21 @@ export const useUi = create<UiState>((set) => ({
           m.useTerminals.getState().setActiveTab(outerId, "viewer"),
         );
       const closeAggregate = s.aggregateOpen;
+      // 리포트 뷰도 같은 층이라 같이 닫는다 — 안 그러면 연 파일이 리포트에 가려 안 보인다.
+      const closeReport = s.reportOpen;
       if (!outerId)
         return {
           selectedDiff: target,
           selectedDiffRepoId: repoId ?? null,
           ...(closeAggregate && { aggregateOpen: false }),
+          ...(closeReport && { reportOpen: false }),
         };
       const key = viewerTabKey(target, repoId ?? null, outerId);
       const tab: ViewerFileTab = { key, outerId, repoId: repoId ?? null, target };
       const idx = s.viewerTabs.findIndex((t) => t.key === key);
       return {
         ...(closeAggregate && { aggregateOpen: false }),
+        ...(closeReport && { reportOpen: false }),
         selectedDiff: target,
         selectedDiffRepoId: repoId ?? null,
         // 프로젝트별 "마지막 활성 파일" 갱신 — 전환 후 복귀 시 이 파일로 돌아온다.
@@ -344,6 +381,32 @@ export const useUi = create<UiState>((set) => ({
           idx >= 0
             ? s.viewerTabs.map((t, i) => (i === idx ? tab : t))
             : [...s.viewerTabs, tab],
+      };
+    }),
+  // 활성 탭의 대상만 갈아 끼운다(탭 수 불변). 이미 열려 있던 대상으로 돌아가면 그 탭을 제거해
+  // 탭 바에 같은 파일이 둘 생기지 않게 한다. 활성 대상이 없으면 아무것도 하지 않는다.
+  replaceDiff: (target) =>
+    set((s) => {
+      const repoId = s.selectedDiffRepoId;
+      const outerId = s.selectedProjectId;
+      if (!outerId || !s.selectedDiff) return {};
+      const oldKey = viewerTabKey(s.selectedDiff, repoId, outerId);
+      const key = viewerTabKey(target, repoId, outerId);
+      const tab: ViewerFileTab = { key, outerId, repoId, target };
+      const i = s.viewerTabs.findIndex((t) => t.key === oldKey);
+      const dup = s.viewerTabs.findIndex((t) => t.key === key);
+      return {
+        selectedDiff: target,
+        activeDiffByProject: {
+          ...s.activeDiffByProject,
+          [outerId]: { target, repoId },
+        },
+        viewerTabs:
+          i < 0
+            ? [...s.viewerTabs, tab]
+            : s.viewerTabs
+                .map((t, j) => (j === i ? tab : t))
+                .filter((_, j) => !(dup >= 0 && dup !== i && j === dup)),
       };
     }),
   closeViewerTab: (key) =>
@@ -460,6 +523,7 @@ export const useUi = create<UiState>((set) => ({
   setAggregateOpen: (open) => set({ aggregateOpen: open }),
   setAggregateWindowOpen: (open) => set({ aggregateWindowOpen: open }),
   toggleAggregate: () => set((s) => ({ aggregateOpen: !s.aggregateOpen })),
+  toggleReport: () => set((s) => ({ reportOpen: !s.reportOpen })),
   setAggregateTracks: (shape, tracks) =>
     set((s) => {
       const next = { ...s.aggregateTracks, [shape]: tracks };
@@ -527,18 +591,31 @@ export const useUi = create<UiState>((set) => ({
     set({ imageEditorPath: path, imageEditorRepoId: repoId ?? null }),
   closeImageEditor: () =>
     set({ imageEditorPath: null, imageEditorRepoId: null }),
+  gitDialog: null,
+  openGitDialog: (projectId) => set({ gitDialog: { projectId } }),
+  closeGitDialog: () => set({ gitDialog: null }),
+  translate: null,
+  openTranslate: (req) => set({ translate: req }),
+  closeTranslate: () => set({ translate: null }),
 }));
 
 // 뷰어 탭 + 프로젝트별 활성 파일 영속 — 두 슬라이스가 바뀔 때만 기록(참조 비교로 잦은 UI 변화 무시).
-// 플로팅 창은 뷰어가 없어 스킵(메인 창 상태를 덮어쓰지 않게).
-const IS_FLOAT_UI = (() => {
+//
+// **메인 창만 기록한다.** 보조 창(플로팅·모아보기·문서 창)의 store는 그 창이 열린 순간의
+// localStorage 스냅샷이고 그 뒤 메인 창이 연 탭은 반영되지 않는다 — 보조 창에서 selectDiff가
+// 한 번이라도 불리면(모아보기 창의 Git 모달 안 DiffViewer, doc 창의 "편집" 등) 그 낡은 스냅샷이
+// 통째로 기록돼 **메인 창이 그 뒤 연 탭이 재시작 후 전부 사라진다.**
+const SKIP_VIEWER_PERSIST = (() => {
   try {
-    return getCurrentWebviewWindow().label.startsWith("float-");
+    const label = getCurrentWebviewWindow().label;
+    return (
+      label.startsWith("float-") || label.startsWith("doc-") || label === "aggregate"
+    );
   } catch {
     return false;
   }
 })();
-if (!IS_FLOAT_UI) {
+if (!SKIP_VIEWER_PERSIST) {
   let prevTabs = persistedViewer.viewerTabs;
   let prevActive = persistedViewer.activeDiffByProject;
   useUi.subscribe((s) => {

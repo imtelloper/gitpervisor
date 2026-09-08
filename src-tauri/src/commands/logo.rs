@@ -13,12 +13,13 @@ use std::path::Path;
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
 use serde::Serialize;
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 use super::projects::project_path;
 use super::tree::resolve_in_repo;
-use crate::error::IpcError;
-use crate::state::AppState;
+use crate::error::{ErrorCode, IpcError};
+use crate::git::types::Project;
+use crate::state::{self, AppState};
 
 /// 사이드바 로고 1건. `source`는 툴팁에 그대로 보여 줄 출처다 —
 /// 레포 상대 경로(`public/logo.png`).
@@ -268,6 +269,71 @@ fn find_local_logo(repo: &Path) -> Option<ProjectLogo> {
     encode_logo(&bytes, &rel).map(|data_uri| ProjectLogo { data_uri, source: rel })
 }
 
+/// 수동 지정 로고 1건을 읽는다. 자동 감지와 방어는 같고 `MIN_BYTES`만 적용하지 않는다 —
+/// 사용자가 직접 고른 파일이므로 자리표시자일 리 없고, 작은 svg 아이콘이 흔하다.
+/// None = 못 읽음(삭제·이동·형식 불가) → 호출부가 자동 감지로 폴백하거나 지정을 거부한다.
+fn read_manual_logo(repo: &Path, rel: &str) -> Option<ProjectLogo> {
+    let meta = std::fs::symlink_metadata(repo.join(rel)).ok()?;
+    // 심볼릭 링크 거부 — find_local_logo와 같은 방어(임의 파일 유출 통로가 된다).
+    if !meta.is_file() || meta.len() > READ_MAX {
+        return None;
+    }
+    let path = resolve_in_repo(repo, rel).ok()?;
+    let bytes = std::fs::read(&path).ok()?;
+    encode_logo(&bytes, rel).map(|data_uri| ProjectLogo {
+        data_uri,
+        // 상대경로 그대로가 툴팁 "로고: assets/icon.png"이 된다.
+        source: rel.to_string(),
+    })
+}
+
+/// 트리에서 고른 이미지를 그 프로젝트의 로고로 못박는다. `rel_path = None`이면 해제(자동 감지 복귀).
+///
+/// **검증이 저장보다 먼저다** — 저장한 뒤에 표시가 안 되는 상태를 만들지 않는다.
+#[tauri::command]
+pub async fn set_project_logo(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    rel_path: Option<String>,
+) -> Result<Project, IpcError> {
+    if let Some(rel) = &rel_path {
+        let repo = project_path(&state, &id)?;
+        if read_manual_logo(&repo, rel).is_none() {
+            return Err(IpcError::new(
+                ErrorCode::Io,
+                "로고로 쓸 수 없는 파일 — png/jpeg는 4MiB, 그 외 형식은 200KiB까지",
+            ));
+        }
+    }
+
+    let project = {
+        let mut projects = state.projects.write().unwrap_or_else(|e| e.into_inner());
+        let Some(p) = projects.iter_mut().find(|p| p.id == id) else {
+            return Err(IpcError::new(
+                ErrorCode::NotFound,
+                "프로젝트를 찾을 수 없습니다",
+            ));
+        };
+        p.logo = rel_path;
+        p.clone()
+    };
+
+    state::save_projects(&app, &state.projects.read().unwrap_or_else(|e| e.into_inner()))?;
+
+    // 창마다 QueryClient가 따로다 — 지정한 창의 무효화는 모아보기 별도 창에 닿지 않고,
+    // `project-logo`는 staleTime Infinity라 그 창은 옛 로고를 영영 그린다(태스크 54 §1).
+    // 신호만 보내고 진실은 각 창이 다시 읽는다(tree://ignore-ready와 같은 모양).
+    #[derive(Clone, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct LogoChanged {
+        project_id: String,
+    }
+    let _ = app.emit("project://logo-changed", LogoChanged { project_id: id });
+
+    Ok(project)
+}
+
 /// **로고가 없는 건 오류가 아니다.** Ok(None)이면 프론트는 조용히 아이콘 자리를 비운다
 /// (토스트 금지 — 대부분의 레포에 로고가 없다).
 #[tauri::command]
@@ -276,11 +342,29 @@ pub async fn project_logo(
     project_id: String,
 ) -> Result<Option<ProjectLogo>, IpcError> {
     let repo = project_path(&state, &project_id)?;
+    // 수동 지정이 자동 감지를 이긴다. 임베디드 저장소 합성 id(`<outer>::<rel>`)는 목록에 없으니
+    // 자연히 None이 되어 기존 자동 감지 경로로 간다.
+    let manual = state
+        .projects
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|p| p.id == project_id)
+        .and_then(|p| p.logo.clone());
     // 후보 전수 stat + 디코드는 블로킹 1회로 묶는다(tree.rs read_dir_raw와 같은 이유).
-    Ok(tokio::task::spawn_blocking(move || find_local_logo(&repo))
-        .await
-        .ok()
-        .flatten())
+    Ok(tokio::task::spawn_blocking(move || {
+        if let Some(rel) = manual {
+            if let Some(logo) = read_manual_logo(&repo, &rel) {
+                return Some(logo);
+            }
+            // 지정 파일이 사라졌다 — 빈 아이콘 대신 자동 감지로 돌아간다.
+            log::warn!("지정 로고를 읽을 수 없어 자동 감지로 폴백합니다: {rel}");
+        }
+        find_local_logo(&repo)
+    })
+    .await
+    .ok()
+    .flatten())
 }
 
 #[cfg(test)]

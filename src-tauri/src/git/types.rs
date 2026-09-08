@@ -8,6 +8,10 @@ pub struct Project {
     pub path: String,
     pub order: u32,
     pub added_at: String,
+    /// 수동 지정 로고의 레포 상대경로(forward-slash). None = 자동 감지(commands/logo.rs).
+    /// `#[serde(default)]` — 이 필드가 없는 옛 projects.json이 그대로 읽혀야 한다(격리 금지).
+    #[serde(default)]
+    pub logo: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -237,6 +241,28 @@ pub struct Settings {
     pub lsp_workspace_tsserver: bool,
     /// ffmpeg 명시 경로 (null/빈값 = 자동 발견: PATH → 관리 설치본). 지정 시 그것만(폴백 금지).
     pub video_ffmpeg_path: Option<String>,
+    // ---- 로컬 LLM (태스크 59 §3.6) ----
+    /// "managed"(앱이 llama-server를 관리) | "external"(이미 쓰는 Ollama/LM Studio 등)
+    pub llm_provider: String,
+    /// 카탈로그 id(llm/acquire.rs MODELS) 또는 "custom".
+    pub llm_model: String,
+    /// llm_model == "custom"일 때 쓸 절대경로 .gguf.
+    pub llm_custom_model_path: Option<String>,
+    /// 외부 OpenAI 호환 base URL — 예: http://localhost:11434/v1
+    pub llm_external_url: Option<String>,
+    /// 외부 서버의 모델 이름 — 예: qwen3:4b
+    pub llm_external_model: Option<String>,
+    /// 외부 서버 API 키. 시크릿이지만 **로컬 서버용**이라 키링을 쓰지 않는다(§7).
+    /// 원격 OpenAI 호환 서비스를 지원하게 되면 notify_set_secret 관례로 옮긴다.
+    pub llm_external_key: Option<String>,
+    /// GPU 오프로드 레이어 수(-ngl). 기본 99 = 가능한 만큼 전부.
+    pub llm_gpu_layers: u32,
+    /// 컨텍스트 길이(-c). 저장 시 2048..32768로 클램프한다.
+    pub llm_context: u32,
+    /// 요약·번역 기본 출력 언어 ("ko" | "en").
+    pub llm_language: String,
+    /// "auto" | "cpu" — Windows Vulkan 초기화 실패 시 폴백이 여기에 "cpu"를 기록한다.
+    pub llm_backend: String,
 }
 
 impl Default for Settings {
@@ -265,6 +291,16 @@ impl Default for Settings {
             lsp_enabled_projects: Vec::new(),
             lsp_workspace_tsserver: false,
             video_ffmpeg_path: None,
+            llm_provider: "managed".to_string(),
+            llm_model: "qwen3-4b-q4".to_string(),
+            llm_custom_model_path: None,
+            llm_external_url: None,
+            llm_external_model: None,
+            llm_external_key: None,
+            llm_gpu_layers: 99,
+            llm_context: 8192,
+            llm_language: "ko".to_string(),
+            llm_backend: "auto".to_string(),
         }
     }
 }

@@ -136,6 +136,7 @@ pub async fn add_project(
             path: canonical_str,
             order,
             added_at: chrono::Utc::now().to_rfc3339(),
+            logo: None,
         };
         projects.push(project.clone());
         project

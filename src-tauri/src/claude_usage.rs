@@ -44,7 +44,8 @@ struct UsageFile {
     updated_at: i64,
 }
 
-fn home_dir() -> Option<PathBuf> {
+/// pub(crate): 작업 리포트(report.rs)가 같은 전사 경로 규약을 쓴다.
+pub(crate) fn home_dir() -> Option<PathBuf> {
     std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from)
@@ -82,7 +83,8 @@ pub fn claude_usage() -> Option<ClaudeUsage> {
 
 /// 프로젝트 cwd → Claude Code 트랜스크립트 디렉토리명(경로 구분자·콜론·점을 `-`로).
 /// 예: `C:\Users\a\proj` → `C--Users-a-proj` (Claude Code 규약).
-fn encode_project_dir(path: &str) -> String {
+/// pub(crate): 작업 리포트(report.rs)의 프롬프트 수집이 같은 규약을 쓴다.
+pub(crate) fn encode_project_dir(path: &str) -> String {
     path.chars()
         .map(|c| if matches!(c, '/' | '\\' | ':' | '.') { '-' } else { c })
         .collect()

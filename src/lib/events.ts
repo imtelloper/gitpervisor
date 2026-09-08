@@ -83,9 +83,20 @@ function invalidateVideoOutputs(qc: QueryClient) {
   void qc.invalidateQueries({ queryKey: ["file-image"] });
 }
 
+/**
+ * 로고 수동 지정/해제 구독(태스크 54) — 메인(attachRepoEvents)과 모아보기 별도 창(main.tsx)이
+ * 부른다. `project-logo`는 staleTime Infinity라 지정한 창 밖에서는 스스로 다시 읽지 않는다.
+ */
+export function attachLogoEvents(qc: QueryClient) {
+  void listen<RepoChanged>("project://logo-changed", (e) => {
+    void qc.invalidateQueries({ queryKey: ["project-logo", e.payload.projectId] });
+  });
+}
+
 /** 백엔드 이벤트 구독 — 앱 시작 시 1회. 이벤트는 신호일 뿐, 진실은 상태 재조회 (§10). */
 export function attachRepoEvents(qc: QueryClient) {
   attachVideoEvents(qc);
+  attachLogoEvents(qc);
 
   // v5 기본은 visibilitychange만 본다 — 데스크톱 창은 항상 visible이라
   // 실제 포커스 복귀 갱신(설계 §9)을 위해 window focus 이벤트에 연결한다.
@@ -120,6 +131,8 @@ export function attachRepoEvents(qc: QueryClient) {
       void qc.invalidateQueries({ queryKey: ["statuses"] });
       void qc.invalidateQueries({ queryKey: ["diff"] });
       void qc.invalidateQueries({ queryKey: ["log"] });
+      // 리포트 히트맵도 커밋을 세므로 로그와 같은 신호에 딸려 간다(태스크 60 §3.5).
+      void qc.invalidateQueries({ queryKey: ["activity"] });
       void qc.invalidateQueries({ queryKey: ["branches"] });
       void qc.invalidateQueries({ queryKey: ["repo-files"] }); // Quick Open 파일 목록
       // 파일트리 즉각 반영 — react-query는 마운트된(=펼쳐진) 폴더만 refetch한다.
@@ -145,6 +158,13 @@ export function attachRepoEvents(qc: QueryClient) {
     void qc.invalidateQueries({ queryKey: ["statuses"] });
   });
 
+  // 백엔드가 스스로 설정을 고쳐 쓴 경우(태스크 59 — Windows Vulkan 기동 실패 시 llmBackend="cpu").
+  // 알리지 않으면 열려 있는 설정 폼이 옛 값을 그대로 저장해 그 기록을 도로 덮는다.
+  // 메인 창만 구독한다 — 설정 편집은 여기서만 한다.
+  void listen("settings://changed", () => {
+    void qc.invalidateQueries({ queryKey: ["settings"] });
+  });
+
   void listen<OpProgress>("repo://op-progress", (e) => {
     useOps.getState().progress(e.payload.projectId, e.payload.line);
   });
@@ -161,6 +181,7 @@ export function attachRepoEvents(qc: QueryClient) {
     }
     void qc.invalidateQueries({ queryKey: ["statuses"] });
     void qc.invalidateQueries({ queryKey: ["log"] });
+    void qc.invalidateQueries({ queryKey: ["activity"] });
     void qc.invalidateQueries({ queryKey: ["branches"] });
   });
 }

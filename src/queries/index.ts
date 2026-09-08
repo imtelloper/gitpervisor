@@ -3,6 +3,7 @@ import {
   keepPreviousData,
   useInfiniteQuery,
   useMutation,
+  useQueries,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
@@ -14,6 +15,8 @@ import type {
   ProcSortKey,
   Project,
   ProjectSize,
+  ReportMap,
+  ReportRecord,
   RepoStatus,
   TargetSize,
 } from "../lib/ipc";
@@ -216,6 +219,36 @@ export function useDeleteMemo() {
         return next;
       });
     },
+  });
+}
+
+/** 메모 드래그 정렬 — 낙관적으로 캐시 배열을 백엔드와 같은 규칙(rank·미포함은 꼬리)으로 재정렬. */
+export function useReorderMemos() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      projectId,
+      orderedIds,
+    }: {
+      projectId: string;
+      orderedIds: string[];
+    }) => ipc.reorderMemos(projectId, orderedIds),
+    onMutate: ({ projectId, orderedIds }) => {
+      const rank = new Map(orderedIds.map((id, i) => [id, i]));
+      const tail = orderedIds.length;
+      patchNotes(qc, (old) => ({
+        ...old,
+        // Array#sort는 안정(ES2019+) — 미포함 메모끼리의 순서는 그대로다.
+        [projectId]: [...(old[projectId] ?? [])].sort(
+          (a, b) => (rank.get(a.id) ?? tail) - (rank.get(b.id) ?? tail),
+        ),
+      }));
+    },
+    onError: (e) => {
+      void qc.invalidateQueries({ queryKey: keys.notes });
+      useUi.getState().pushToast("error", errorMessage(e));
+    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: keys.notes }),
   });
 }
 
@@ -1128,4 +1161,123 @@ export function usePushFlow(projectId: string) {
     }
     push.mutate(false);
   };
+}
+
+/** 프로젝트 로고 수동 지정/해제(태스크 54) — `useProjectLogo` 캐시(`staleTime: Infinity`)를
+ *  무효화해 이 창의 사이드바·툴바가 재시작 없이 갱신된다. 다른 창(모아보기 별도 창)은
+ *  QueryClient가 따로라 여기서 못 닿으므로 백엔드가 `project://logo-changed`를 쏜다
+ *  (events.ts `attachLogoEvents`). */
+export function useSetProjectLogo() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, relPath }: { id: string; relPath: string | null }) =>
+      ipc.setProjectLogo(id, relPath),
+    onSuccess: (project, { relPath }) => {
+      qc.setQueryData<Project[]>(keys.projects, (old) =>
+        (old ?? []).map((p) => (p.id === project.id ? project : p)),
+      );
+      void qc.invalidateQueries({ queryKey: ["project-logo", project.id] });
+      useUi
+        .getState()
+        .pushToast("success", relPath ? "로고를 지정했습니다" : "로고를 해제했습니다");
+    },
+    onError: (e) => useUi.getState().pushToast("error", errorMessage(e)),
+  });
+}
+
+// ---- 작업 리포트 (태스크 60) ----
+
+/** 히트맵 갱신 주기 — 커밋은 `repo://changed`가 `["activity"]`를 무효화해 즉시 반영된다(events.ts). */
+const REPORT_STALE_MS = 5 * 60_000;
+
+/**
+ * 히트맵 첫 시리즈 — 프로젝트별 날짜별 커밋 수. "전체"면 프로젝트 수만큼 쿼리가 뜨므로
+ * 키에 `until`을 넣지 않는다(항상 오늘 — 넣으면 자정마다 캐시가 통째로 날아간다).
+ */
+export function useActivities(
+  projects: Project[],
+  since: string,
+  until: string,
+  mine: boolean,
+) {
+  return useQueries({
+    queries: projects.map((p) => ({
+      queryKey: ["activity", p.id, since, mine] as const,
+      queryFn: () => ipc.gitActivity(p.id, since, until, mine),
+      staleTime: REPORT_STALE_MS,
+    })),
+  });
+}
+
+/** 히트맵 둘째 시리즈 — 프로젝트별 날짜별 프롬프트 수(전사 스캔이라 경로가 키다). */
+export function usePromptDumps(
+  projects: Project[],
+  since: string,
+  until: string,
+) {
+  return useQueries({
+    queries: projects.map((p) => ({
+      queryKey: ["prompts", p.path, since, until] as const,
+      queryFn: () => ipc.claudePrompts(p.path, since, until),
+      staleTime: REPORT_STALE_MS,
+    })),
+  });
+}
+
+/** 카드 입력 — 선택 기간의 커밋(≤200). */
+export function useCommitsBetween(
+  projectId: string,
+  since: string,
+  until: string,
+  mine: boolean,
+) {
+  return useQuery({
+    queryKey: ["commits-between", projectId, since, until, mine] as const,
+    queryFn: () => ipc.commitsBetween(projectId, since, until, mine),
+    staleTime: REPORT_STALE_MS,
+  });
+}
+
+/** 카드 입력 — 선택 기간의 프롬프트 원문(히트맵의 1년 쿼리와 기간이 달라 키가 갈린다). */
+export function usePrompts(projectPath: string, since: string, until: string) {
+  return useQuery({
+    queryKey: ["prompts", projectPath, since, until] as const,
+    queryFn: () => ipc.claudePrompts(projectPath, since, until),
+    staleTime: REPORT_STALE_MS,
+  });
+}
+
+/** 저장된 요약 전체 — 리포트 뷰를 열면 즉시 본문이 보이도록 1회 로드해 캐시. */
+export function useReports() {
+  return useQuery({
+    queryKey: ["reports"] as const,
+    queryFn: ipc.reportGetAll,
+    staleTime: Infinity,
+  });
+}
+
+/** 요약 저장 — 캐시를 직접 갱신한다(전체 재조회 불필요, 항목이 수천 개일 수 있다). */
+export function useSetReport() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ key, record }: { key: string; record: ReportRecord }) =>
+      ipc.reportSet(key, record),
+    onSuccess: (_r, { key, record }) =>
+      qc.setQueryData<ReportMap>(["reports"], (old) => ({ ...old, [key]: record })),
+    onError: (e) => useUi.getState().pushToast("error", errorMessage(e)),
+  });
+}
+
+export function useDeleteReport() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (key: string) => ipc.reportDelete(key),
+    onSuccess: (_r, key) =>
+      qc.setQueryData<ReportMap>(["reports"], (old) => {
+        const next = { ...old };
+        delete next[key];
+        return next;
+      }),
+    onError: (e) => useUi.getState().pushToast("error", errorMessage(e)),
+  });
 }

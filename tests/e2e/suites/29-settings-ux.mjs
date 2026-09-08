@@ -16,10 +16,10 @@ export async function run({ cdp, report: r }) {
   await cdp.eval(`window.__gpv.ui.getState().setSettingsOpen(true)`);
   await sleep(400);
   const shell = await cdp.eval(`(() => ({
-    cats: [...document.querySelectorAll('button')].filter(b => /^(일반|모양|코드 도구|터미널|알림|유지보수)$/.test(b.textContent.trim())).length,
+    cats: [...document.querySelectorAll('button')].filter(b => /^(일반|모양|코드 도구|터미널|알림|유지보수|AI)$/.test(b.textContent.trim())).length,
     search: !!document.querySelector('input[placeholder="설정 검색…"]'),
   }))()`);
-  r.check("사이드바 6카테고리 + 검색 입력", shell.cats === 6 && shell.search, JSON.stringify(shell));
+  r.check("사이드바 7카테고리 + 검색 입력", shell.cats === 7 && shell.search, JSON.stringify(shell));
 
   // ── ① 카테고리 전환 시 form 편집값 유지 ──
   const setNum = (v) => cdp.eval(`(() => { const i=[...document.querySelectorAll('input[type=number]')].find(x=>x.value); const set=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set; set.call(i,'${v}'); i.dispatchEvent(new Event('input',{bubbles:true})); })()`);

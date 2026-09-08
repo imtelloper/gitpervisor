@@ -11,7 +11,7 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { SysMonitorWindow } from "./components/sysmon/SysMonitorWindow";
 import { FloatingTerminal } from "./FloatingTerminal";
 import { installMacCopyInterceptor } from "./lib/clipboard";
-import { attachRepoEvents } from "./lib/events";
+import { attachLogoEvents, attachRepoEvents } from "./lib/events";
 import { setupErrorLogging } from "./lib/logging";
 import { watchAggregateWindow } from "./lib/aggregate-window";
 import { docTarget, openDocWindow, warmFloatingWindowPool } from "./lib/floating";
@@ -93,6 +93,8 @@ const docId = label.startsWith("doc-") ? label.slice("doc-".length) : null;
 if (label === "aggregate") {
   // 터미널 모아보기 전용 창 — 메인의 살아있는 PTY에 재연결해 보여주는 "터미널 벽".
   const aggQc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // 셀 헤더의 로고는 메인 창에서 지정한다 — 이 창의 캐시는 그 무효화를 못 듣는다(태스크 54 §1).
+  attachLogoEvents(aggQc);
   root.render(
     <React.StrictMode>
       <QueryClientProvider client={aggQc}>

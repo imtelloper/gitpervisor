@@ -178,7 +178,7 @@
 | 25 | 플로팅 창 타이틀바 히스토리 마스터 토글 + 토스트 호스트 | [25-float-window-history.md](25-float-window-history.md) | **S** | 기존 `PromptHistoryButton`을 FloatTitleBar actions(되돌리기 왼쪽)에 그대로 — 플로팅 창의 `useTerminals`가 창별 독립 스토어라 대상이 저절로 "이 창의 pane만". `<Toasts/>`를 FloatWorkspace 루트에 마운트해 복사 토스트 무음 해소. title 문구 "전체 프롬프트 목록 펼치기/접기 — 이 창의 모든 터미널 우측…"(세 사용처 공통, prop 없음). ~14 LOC | 되돌리기 실패는 여전히 console.error(오픈 이슈). 플로팅 창 e2e는 러너 CDP가 메인 하나라 `cdp.mjs` export+라벨 attach 헬퍼가 필요(다른 세션이 편집 중인 파일) |
 | 26 | 프롬프트 컬럼 호버 카드(비상호작용 툴팁) | [26-history-hover-card.md](26-history-hover-card.md) | **S~M** | 항목 native `title` → `pointer-events-none fixed z-50 role="tooltip"` 카드(DragGhost 계열). 리스트 단위 hover 상태 하나, 최초 150ms·항목 간 즉시 전환, 컨테이너 leave/scroll 숨김, `list.find` 가드, `useOccludesWebview(!!entry)`. 가로 `W=max(240,min(480,left−16))` 항목 왼쪽, 세로 50% 뒤집기 + 앵커 쪽 여유로 `maxHeight`(30줄 카드 ≈676px는 720px 창 60vh도 넘침). 헤더·푸터 `fg-muted`(상위 설계 fg-dim은 darcula 2.90:1). Escape·스크롤 없음 | 좁은 셀 깜빡임 루프는 pointer-events-none으로 정의상 소멸 — e2e가 computed `pointerEvents==="none"`으로 실측. React는 `mouseover/mouseout`에서 enter/leave를 합성 — e2e 이벤트 선택 주의 |
 | 27 | 모아보기 자동배치 모드(그리드 / 세로 컬럼) | [27-aggregate-layout-mode.md](27-aggregate-layout-mode.md) | **S~M** | `useUi.aggregateLayout`(`gp:aggregate-layout`) + `shapeFor(mode,n)` 순수 함수 하나로 렌더와 `evenTracks(mode)`가 같은 rows/rowLens(columns = `min(n,4)` — 1100px에서 5열부터 MIN_W 미달). 트랙 키 `n${n}` 유지·마이그레이션 없음(아이콘 클릭 = 항상 균등). hover는 래퍼 span, 버튼은 `disabled`→`aria-disabled`(React 19.2.7 `getListener`가 disabled 버튼의 onMouseEnter를 거른다). 묶음 칩과 공유 `useDelayedClose(150)`, 점유 `|| !!layoutMenu` | "균등 상태에서 팝오버가 안 열림"은 정적 검증으로 절대 안 보이는 유형 — e2e가 aria-disabled 상태에서 `mouseover` 유도로 열림 단언. 렌더↔evenTracks 모양 불일치는 저장 검증에 가려지는 조용한 버그 → shapeFor 단일화 |
-| 28 | 프로젝트 색 공유 모듈 + 사이드바 행 배경 | [28-project-colors.md](28-project-colors.md) | **S~M** | `lib/project-color.ts` 신설(팔레트·`assignProjectHues` + 슬롯 소진 시 `taken.clear()`·`projectTint(hue, "off"\|"on"\|"row"\|"row-on")`·`useProjectHues()` 전체 프로젝트 이름순 배정)로 사이드바 행·모아보기 칩·셀 헤더가 한 맵을 본다. 행 배경은 `--tint/--tint-hover` 변수 + `bg-(--tint) hover:bg-(--tint-hover)`(Tailwind 4.3 실증). **대비 목표 재정의**: 절대 4.5/4.5/3.0은 오늘의 행도 못 넘어(darcula dim 2.90) "fg ≥ 4.5 + muted/dim은 현행 bg-selection 기준선 이상" — 초기 알파 다크 .28/.35·라이트 .10/.15·solarized-light .06/.10 | Tailwind가 조립 클래스를 스캔 못 해 배경 투명인데 tsc는 통과하는 유형(e2e computed backgroundColor 가드). solarized-light는 selection≈panel이라 보이는 틴트가 전부 기준선 아래 — 거의 안 보이는 알파 vs 선택행 fg-muted 4.04→3.72 중 택일 |
+| 28 | 프로젝트 색 공유 모듈 + 사이드바 행 배경 | [28-project-colors.md](28-project-colors.md) | **S~M** | `lib/project-color.ts` 신설(팔레트·`assignProjectHues` + 슬롯 소진 시 `taken.clear()`·`projectTint(hue, "off"\|"on"\|"row"\|"row-on")`·`useProjectHues()` 전체 프로젝트 이름순 배정)로 사이드바 행·모아보기 칩·셀 헤더가 한 맵을 본다. 행 배경은 `--tint/--tint-hover` 변수 + `bg-(--tint) hover:bg-(--tint-hover)`(Tailwind 4.3 실증). **대비 목표 재정의**: 절대 4.5/4.5/3.0은 오늘의 행도 못 넘어(darcula dim 2.90) "fg ≥ 4.5 + muted/dim은 현행 bg-selection 기준선 이상" — 초기 알파 다크 .28/.35·라이트 .10/.15·solarized-light .06/.10 **(→ 36이 대체 — 12슬롯은 26개 중 16쌍이 ΔE00 0.00이었고 알파 틴트로는 채도와 대비를 동시에 못 만족한다. 골격만 승계, 색 생성은 32슬롯 불투명 OKLCH로 교체. §9)** | Tailwind가 조립 클래스를 스캔 못 해 배경 투명인데 tsc는 통과하는 유형(e2e computed backgroundColor 가드). solarized-light는 selection≈panel이라 보이는 틴트가 전부 기준선 아래 — 거의 안 보이는 알파 vs 선택행 fg-muted 4.04→3.72 중 택일 |
 
 ### 7.1 권장 구현 순서
 
@@ -202,15 +202,15 @@
 | 26 | `__gpv.promptHistory` DEV 노출(main.tsx 1줄) | 노출(videoSplit 관례, release 미포함) |
 | 27 | 팝오버 열기 지연 150ms를 처음부터(헤더를 스칠 때 점유 acquire로 브라우저 셀 깜빡임) | 넣지 않음(묶음 칩과 같은 수준 승계) |
 | 27 | n=2는 두 모드가 같은 모양 — 팝오버를 숨길지 | 그대로 노출(모드 저장은 이후 셀 수에 영향) |
-| 28 | solarized-light 알파 — 상대 기준선 준수 .06/.10 vs 라이트 공통 .10/.15 vs 틴트 0 | .06/.10 별도 블록 |
-| 28 | 다크 row-on .35 단일 vs monokai·dracula·nord만 .5 | .35 단일 |
-| 28 | 프로젝트 추가·제거 시 색 이동 수용 vs `gp:project-hue` 영속 | 결정적 배정(실기 기록으로 판단) |
+| 28 | ~~solarized-light 알파 — 상대 기준선 준수 .06/.10 vs 라이트 공통 .10/.15 vs 틴트 0~~ | **소멸(→ 36)** — 알파 축이 없어졌다. 36은 solarized-light에서 fg-muted 4.17 ≥ 기준선 4.04로 예외 없이 통과 |
+| 28 | ~~다크 row-on .35 단일 vs monokai·dracula·nord만 .5~~ | **소멸(→ 36)** — row/row-on 두 레벨이 단일 색으로 합쳐졌다 |
+| 28 | 프로젝트 추가·제거 시 색 이동 수용 vs `gp:project-hue` 영속 | **→ 36 §3.1**: 결정적 배정 유지. churn이 5.63/최악 11 → 실측 1.11~1.25/최악 3으로 떨어져 영속화가 사는 값이 거의 없다 |
 
 ### 7.3 공통 준수 사항 (23~28)
 
 - **정적 검증만으로 통과 금지** — 각 문서 §7.2 실기 필수(hover 가시성·클램프·점유·대비는 e2e가 못 본다).
 - **fixed 팝오버/카드는 전부 `useOccludesWebview` 점유 등록**(26 `!!entry`, 27 기존 호출에 `|| !!layoutMenu`).
-- **공유 어휘·상수의 정의 문서는 하나**: 메뉴 라벨(24), PromptHistoryButton title(25 §3.3), `projectTint` level 인자(28), 아이콘 Grid2x2/Columns3(27), 클램프 448/248(24).
+- **공유 어휘·상수의 정의 문서는 하나**: 메뉴 라벨(24), PromptHistoryButton title(25 §3.3), ~~`projectTint` level 인자(28)~~ → **`ProjColor{bg,stripe}`·`PROJECT_HUES` 32슬롯·`FLOORS`(36 §4.1)**, 아이콘 Grid2x2/Columns3(27), 클램프 448/248(24).
 - 같은 파일은 순차 납품 — 구현 시 앵커는 줄번호가 아니라 라벨 문자열·심볼로 잡고 각 문서 §5의 밀림 표를 참고.
 - `stores/ui.ts`·`main.tsx`·`cdp.mjs`는 태스크 20~22의 미커밋 변경 위에 얹는다 — HEAD 체크아웃·리베이스 금지.
 
@@ -221,7 +221,7 @@
 
 | # | 태스크 | 문서 | 규모 | 핵심 판단 | 주요 위험 |
 |---|--------|------|------|-----------|-----------|
-| 29 | 사용자 정의 테마(색 조합) | [29-custom-themes.md](29-custom-themes.md) | **M** | 기반 테마 + 18토큰 오버라이드. 정의는 localStorage `gp:custom-themes`(선례 `gp:term-themes`), 적용은 `<style id="gp-custom-themes">`에 `:root[data-theme="custom-…"]` 블록 생성 → `dataset.theme` 관례·xterm `readTheme`·보조 창 코드 무변경. Monaco는 기반 규칙 복사 + 토큰 colors로 동적 defineTheme. Rust 0 | `BUILTIN_TOKENS` 사본이 styles.css와 어긋남(e2e 19 짝 검증), 라이트 기반의 틴트 5변수 사본, `.ai-working` 라이트 글로우 미적용(장식) |
+| 29 | 사용자 정의 테마(색 조합) | [29-custom-themes.md](29-custom-themes.md) | **M** | 기반 테마 + 18토큰 오버라이드. 정의는 localStorage `gp:custom-themes`(선례 `gp:term-themes`), 적용은 `<style id="gp-custom-themes">`에 `:root[data-theme="custom-…"]` 블록 생성 → `dataset.theme` 관례·xterm `readTheme`·보조 창 코드 무변경. Monaco는 기반 규칙 복사 + 토큰 colors로 동적 defineTheme. Rust 0 | `BUILTIN_TOKENS` 사본이 styles.css와 어긋남(e2e 19 짝 검증) — **36 이후 폭발 반경 확대: 이 상수가 프로젝트 팔레트 전체의 입력이다(36 §6)**, ~~라이트 기반의 틴트 5변수 사본~~(**36이 `LIGHT_TINT`/`TINT`를 삭제해 해소**), `.ai-working` 라이트 글로우 미적용(장식) |
 | 30 | 이미지 더블클릭 → 별도 창 보기·편집 | [30-image-doc-window-editor.md](30-image-doc-window-editor.md) | **S~M** | doc 창은 이미 이미지를 보여준다 — 빠진 건 그 창의 `ImageEditor`·Toasts·Confirm·Prompt 호스트와 더블클릭 진입, 저장 후 메인 `file-image` 무효화(워처 `repo://changed`에 추가), doc 창 수명(`is_aux`에 `doc-`) | 편집기 청크 인라인(lazy 유지), 900×760에서 편집기 좁음(이미지는 1180×860 인자) |
 | 31 | 리소스 모니터 "시스템 정보" 탭 | [31-sysmon-system-info.md](31-sysmon-system-info.md) | **M** | sysinfo 공통 + Windows PowerShell CIM 1회 호출(6클래스 JSON) + Linux /sys,/proc + macOS sysctl/system_profiler. 신규 크레이트 0, 프로세스 수명 캐시, 항목 단위 실패(`notes`). 탭 배열 리터럴 1곳이 확장 지점 | PowerShell 기동 1~3s(캐시), `AdapterRAM` 4GB 캡(레지스트리 qwMemorySize 우선), 모니터 뮤텍스 미점유(지역 System) |
 | 32 | 터미널 Shift/Alt+Enter 줄바꿈(Claude Code) | [32-terminal-enter-modifiers.md](32-terminal-enter-modifiers.md) | **S** | xterm은 Shift+Enter를 `\r`로, Alt+Enter를 `ESC CR`로 보내고 ConPTY는 `ESC CR`을 두 키로 쪼갠다. portable-pty가 ConPTY를 `WIN32_INPUT_MODE`로 만들어 `?9001h`를 요청하므로, Windows에선 Enter+수식을 **win32-input-mode 키 레코드(ALT)** 로, 그 외엔 `\x1b\r`로 보낸다 | Shift+Enter를 ALT로 보내는 트레이드오프(pwsh AddLine 대신 무동작 — 현재도 AddLine은 안 됨), ConPTY 레코드 해석은 키 에코 실측으로 확정 |
@@ -252,6 +252,57 @@
 - 32: 키 에코 실측 Enter `\r` / Shift+Enter·Alt+Enter `\u001b\r`, **Claude Code v2.1.258 실물에서 두 키 모두 줄바꿈**. e2e 06 13 pass.
 - 33: 번들 ConPTY 1.24 사이드로드 확인(로그·`term_open {conpty:"bundled"}`·OpenConsole.exe 수). Claude Code는 alt 버퍼+마우스 추적이라 "위 내용 보기"는 **휠 → SGR 마우스 보고 → Claude 자체 스크롤** 경로이며 번들 ConPTY에서 정상 동작 실측(§9.5, PageUp/PageDown 대안). Windows 10 실기는 이 머신에 없어 사용자 검증 항목(TROUBLESHOOTING §10).
 - 전체 러너: **603 pass / 3 fail / 6 skip**(직전 516/5/3). 실패 3건 중 12의 2건은 번들 ConPTY의 DA1 질의를 원시 e2e 채널이 회신하지 못해 첫 출력이 3.4s 밀린 것(제품 결함 아님 — 스위트를 마커 폴링으로 수정, 3/3 통과; 33 §9.6), 14 #2b는 번들 ON/OFF 모두 4/4 통과로 회귀 아님(부하 시 기대값 스냅샷 낡음, 간헐).
+
+> **정정(2026-09-04 · 36 §9.10)**: `#2b`의 "부하 시 스냅샷 낡음"이라는 원인 추정은 반증됐다 — 진짜 원인은
+> 프로브가 `listTerminals().find(status==='live')`로 **사용자가 띄워 둔 첫 live 터미널**을 집어 남의 셸을 재고
+> 있던 테스트 격리 결함 + 기준 `want`를 fit 이전 값으로 잡은 것이다. paneId 고정 + 현재 xterm 열수 기준으로
+> 교체해 3회 연속 PASS. 같은 패스에서 `컬럼 헤더 X 중심 elementFromPoint` 간헐도 근본 수정(원인 = 컬럼이 막
+> 열린 직후의 낡은 X 버튼 rect, 4회 연속 PASS).
+> **따라서 전체 러너 총계 603/3/6은 낡았다** — 36 작업은 13·14·19 부분 실행만 했고 전체는 다시 돌리지 않았다.
+
+## 9. 프로젝트 색 재설계 (36) — 2026-09-04
+
+> 근거: 코드 실측 2026-09-04(워킹트리 기준). 13 에이전트 조사·설계·심사·종합 → 구현 → 정적 검증 2갈래 →
+> CDP 실기 → 정정. **태스크 28을 대체한다** — 28의 골격(색 정의가 `lib/project-color.ts` 한 곳, 사이드바 행·
+> 모아보기 칩·셀 헤더가 같은 맵, 등록 전체 이름순 배정, `--tint`/`bg-(--tint)`, "선택 행 기준선 이상" 대비 목표)은
+> 승계하고 색 생성만 교체했다. §7의 28행과 §7.2의 28 열린 질문에 대체 표시를 달아 뒀다. **Rust 변경 0.**
+
+| # | 태스크 | 문서 | 규모 | 핵심 판단 | 주요 위험 |
+|---|--------|------|------|-----------|-----------|
+| 36 | 프로젝트 색 재설계: 32슬롯 불투명 OKLCH + 좌측 스트라이프 | [36-project-color-32slot.md](36-project-color-32slot.md) | **M** | **"비슷하다"가 아니라 같았다** — 12슬롯에 프로젝트 26개라 13번째부터 hue를 재사용해 26개 중 **16쌍이 ΔE00 0.00**이었고, 다크 알파 틴트(`hsl(h 70% 26% / .28)`)는 합성 후 채도가 거의 안 남았다. 알파는 못 올린다 — 대비와 정확히 반대로 움직인다(실측 .6에서 darcula 3.07 하락). 네 가지를 바꾼다: 슬롯 12→**32 + 이중 해싱**(step 홀수 → N=32와 서로소, 32칸 전수 방문. churn 5.63/11 → 1.11~1.25/3), 알파 틴트 → **불투명 OKLCH를 JS가 `#rrggbb`로 계산**(CSS `oklch()`는 게멋 매핑이 브라우저 몫이라 칠해지는 값을 코드가 모른다 = 대비 증명 불가), 행 명도를 **테마 토큰에서 이분탐색으로 유도**(대비비는 배경 휘도에 단조 → 통과 구간이 단일 구간 → 극단에 최악 hue가 붙는다 ⇒ **테마별 하드코딩 0개**, 커스텀 테마도 같은 경로), 라이트 2종의 배경 ΔE 천장 2.2를 **좌측 4px 스트라이프**로 우회(글자가 안 얹혀 비텍스트 3:1만 받으므로 채도를 게멋 끝까지 → 8.03/7.02). 선택 표시는 `border-l-2 border-accent` → 스트라이프 4→8px + accent outline(accent 단독 불가 — 스트라이프와 최소 ΔE00 darcula 4.86/sol-light 4.65). 실측 6테마 × 32슬롯 × 8토큰 = **1,536건 위반 0**, 26개·325쌍 max(배경,띠) 최소 **7.02** | **정적 검증이 전부 통과한 채 살아 있던 결함 2종**(§9.9): 테마 라이브 프리뷰 동결(옛 CSS 변수는 `data-theme`를 자동으로 따라갔는데 값을 JS로 옮기며 저장값을 읽어 프리뷰 중 행만 얼어붙음 — monokai→light에서 대비 1.00), 팔레트 캐시 미무효화(커스텀 테마 편집이 id를 보존해 옛 팔레트 영구 잔존 — 대비 보증이 통째로 무효). **e2e 19가 팔레트를 재구현하면 FAIL 없이 옛 값을 계속 재며 PASS**한다(옛 판이 그랬다) → 앱 함수 직접 호출로 교체. `BUILTIN_TOKENS` 사본의 폭발 반경이 커졌다(이제 팔레트 전체의 입력) |
+
+### 9.1 열린 질문
+
+| 태스크 | 질문 | 설계 기본값 |
+|--------|------|------------|
+| 36 | 사이드바 인상이 통째로 바뀐다(배경↔패널 ΔE00 2.5~7.8 → 9.8~16.0, 행 사이로 패널이 안 비침). 되돌리는 노브는 `CAP`(채도만 내려 대비 예산을 안 쓴다 — 첫 후보)과 `MARGIN`(명도를 패널 쪽으로) 둘이고, 당긴 만큼 구분이 나빠진다 | 지금 값으로 써 보고 판단 |
+| 36 | 모아보기 칩의 선택/비선택 배경 차이 소멸(알파 .5→.92 → `ring-accent`만). 되살리려면 라이트 2종에 없는 톤 예산이 필요하고 e2e 14 `#12` 단언을 "hue 동일"로 승격해야 한다(삭제 금지) | ring만 |
+| 36 | `.ai-working` 다크 알파 .26 → .19(대비 회복분과 맞바꿈). .26 유지 시 monokai fg-muted 3.02→2.63, dracula 3.52→3.11 | .19 |
+| 36 | 적록색각이상은 개선되지 않는다(천장: 12개 4.80, 26개 2.41). 다음 카드는 스트라이프 위 2글자 모노그램 | 넣지 않음 |
+| 36 | 프로젝트 33개 이상 계획이 있는가(33번째부터 정확히 1쌍 중복. 40+면 다크 톤 3단 확장 필요 — 라이트는 불가라 비대칭) | 32까지만 보증 |
+| 36 | 커스텀 테마 **편집 중**(저장 전) 프리뷰가 행 색에 안 붙는다. 고치려면 `projectPalette(themeId)`가 "활성 테마에서만 옳은 함수"가 돼 e2e 19·14 계약이 깨진다 | 보수적으로 남긴다 |
+
+### 9.2 구현 상태(2026-09-03)
+
+**구현·검증 완료(미커밋).** 9파일 345 insertions / 183 deletions. `tsc --noEmit` exit 0(4회), `npm run build`
+exit 0(신규 경고 0), Rust 변경 0.
+
+- 정적: 6테마 × 32슬롯 × 8토큰 **1,536건 위반 0**(기준선 아래 0, 절대하한 4.5/3.0/2.0 위반 0, 고유색 32/32).
+  최소 여유 **+0.061**(darcula fg-dim). solarized-light의 **기존 미달이 해소**돼(fg-muted 4.17 ≥ 기준선 4.04)
+  e2e 19의 `TINT_TOL` 0.35 예외를 삭제했다. 커스텀 테마 퍼즈 24,000건 중 전제 통과 2,146건 → 하한 위반 0.
+- 실기(CDP 29222, DOM 25행): 배경·스트라이프 **25/25 고유**, 알파 잔존 0, **렌더 픽셀 == 계산값**
+  (ffmpeg raw RGB 샘플링, 최대 ΔE 0.00), 6테마 전환 후 옛 팔레트 잔존 0, 모아보기 칩 == 행 완전일치.
+  `projectPalette` 첫 호출 3.6ms / 캐시 0ms.
+- e2e(부분 실행 13·14·19): 정정 후 **ALL GREEN 133 pass / 0 fail / 2 skip**. 14 단독 68 pass / 0 fail / 1 skip.
+  검증 중 **14의 선행 간헐 2건을 근본 수정**했다(위 §8.3 정정 참조).
+- **미검증**: 첫 페인트 플래시(앱 재시작 필요), 모아보기 별도 창 칩 색(살아있는 PTY 소유권), `.ai-working`
+  α .19 육안(작업 중 프로젝트 부재), 실제 프로젝트 추가·33번째 경계 실기(합성 이름으로 대체), 제거 churn 재측정,
+  **전체 e2e 러너**.
+- ⚠ **어떤 팔레트 hex 표도 회귀 기준선이 아니다** — 기준선이 필요하면
+  `window.__gpv.projectColor.projectPalette(<theme>)`를 직접 불러 재라(36 §7.4). 설계 단계 명세의 hex 384개는
+  프로토타입과 구현의 이분탐색 종료 L이 <0.002 어긋나 **127/384가 다르다**(대부분 채널 ±1, 최대 3).
+  지각 차이 0, 판정 전부 동일. 그 명세(`SPEC.md`)는 **레포에 없다** — 세션 스크래치패드 산출물이다.
+
 
 ## 10. 이미지 편집기 Figma급 재설계 (37~52) — 2026-09-04
 
@@ -368,3 +419,93 @@ M5  52 → 40 §실측표 확정            내보내기·메모리 원장 마�
 | 38 ↔ 48 | `rotateNodes` 임의각 규칙 — 38 §3.3 "text/badge `rot` 누적, 나머지 정점 회전"은 축정렬 rect/ellipse/mosaic에 임의각을 적용할 수 없다. 48 §3.2는 "rect·ellipse·mosaic·text·badge = 앵커 이동 + `rot += Δ`, pen/line/arrow/path = 정점 회전"으로 해석 | 48 해석으로 38 §3.3 문구 확정(v1 `Common.rot`이 전 kind에 있음) |
 
 **결정(2026-09-04, 메인 세션 — 문서에 반영 완료)**: (1) 51안 채택 — `InstanceNode.children` 삭제, 자식은 `objects` 평탄 슬라이스, `GroupNode.detachedFrom?`, `normalizeNode` 보존, id에 `/` 허용(37 §4). (2) 43 §4에 `registerPointerHit` 선점 훅 등재 — 45 그라디언트 핸들 표시(45 §6 위험 행 갱신). (3) 44 배경 행 = `select(['__base'])` 단독, 42 `select/selectedIds/classifySelection`이 `'__base'` 의사 id 허용(단독만). (4) 38 §3.3 `rotateNodes` 리프 규칙을 48 §3.2 해석으로 확정(rect·ellipse·mosaic·text·badge 앵커 이동+`rot` 누적, 폴리라인·path 정점 회전). (5) 시안 밖 4건은 §10.3 열린 질문으로 유지.
+
+## 11. 모아보기 묶음 닫기 · 프로젝트 로고 · Git 모달 · 이미지 ↑↓ · 메모 정렬 · Claude 세션 · 로컬 LLM(요약·잔디·번역) (53~61) — 2026-09-07
+
+> 근거: 코드 실측 2026-09-07(워킹트리 기준, 4갈래 병렬 조사 + 메인 세션 대조) + 외부 실측(llama.cpp `b10809` 자산 이름·
+> HuggingFace tree API sha256·`llama-server` README). 요구 8건 → 태스크 9개(LLM 요구를 런타임/요약·잔디/번역 셋으로 분리).
+> **문서 상태: 설계**. Rust 변경은 54(필드 1·커맨드 1)·57(커맨드 1)·59(모듈 신설)·60(커맨드 6) — 53·55·56·58·61은 Rust 0.
+
+| # | 태스크 | 문서 | 규모 | 핵심 판단 | 주요 위험 |
+|---|--------|------|------|-----------|-----------|
+| 53 | 탭 모으기 묶음 칩 우클릭 → 묶음 탭 전부 닫기 | [53-aggregate-group-close-all.md](53-aggregate-group-close-all.md) | **S** | "탭 모으기"는 모아보기 칩 바의 프로젝트 묶음 토글이고 묶음은 객체가 아니라 파생값(`groupByProject`). 우클릭은 이미 드롭다운을 연다 → 드롭다운 끝에 `MenuItem danger` 1개, 확인 후 셀마다 기존 `closePane`/`closeBrowserTab`(별도 창 위임은 `closePane`이 이미 됨). 스토어·위임 프로토콜 변경 0 | 별도 창에서 셀 N개 = 이벤트 N개의 순서(실기 1회, 어긋나면 `closeTab` 위임 3줄) |
+| 54 | 프로젝트 로고 지정(트리 이미지 우클릭) + 툴바·모아보기 셀 헤더 표시 | [54-project-logo-override.md](54-project-logo-override.md) | **S~M** | **로고 자동 감지·사이드바 `<img>`는 이미 있다**(`logo.rs`, `useProjectLogo`). 빠진 건 수동 지정뿐 → `Project.logo: Option<String>`(상대경로, serde 하위호환) + `set_project_logo`(저장 전 `encode_logo`로 검증) + `project_logo`가 수동 우선·실패 시 자동 폴백. `ProjectLogo` 공용 컴포넌트로 사이드바·툴바·셀 헤더 3곳. `["project-logo"]`의 첫 무효화 지점 | `Project` 스키마 변경 → `projects.json` 격리 위험(Option+default로 양방향 안전, 실기 확인). webp 등 200KiB 초과는 codec 부재로 거부 — 토스트로 이유 |
+| 55 | 터미널 세션 헤더 Git 버튼 → 변경·로그 모달 | [55-terminal-git-dialog.md](55-terminal-git-dialog.md) | **M** | 조각(`ChangesPanel`·`CommitList`·`CommitDetailPane`·`DiffViewer`)은 전부 있으나 선택이 전역 `selectDiff`라 **모아보기를 닫아 버린다** → 두 컴포넌트에 optional `onSelect`·`active` prop으로 모달 로컬 선택, 우측 `DiffViewer`. `MemoDialog` 껍데기 복제, `selectBlockingOverlay` 등록(브라우저 셀 위), `App`+`AggregateWindow` 마운트. `BranchesPane` 제외 | 점유 계약 누락 시 브라우저 셀 뒤에 숨는다(e2e가 `selectBlockingOverlay` 직접 단언). `DiffViewer` 내부의 전역 `selectDiff` 경로(정의 이동)는 v1 수용 |
+| 56 | 이미지 뷰어 ↑/↓ 이전·다음 이미지 | [56-image-viewer-arrow-nav.md](56-image-viewer-arrow-nav.md) | **S** | 박스에 `tabIndex`·`onKeyDown`은 있는데 **아무도 포커스를 안 준다** → 리마운트(`key={path}`) 시 `focus()` + ↑↓(←→) 처리. 형제는 `useDir(projectId, parentDir)` 캐시(트리와 같은 키·자연 정렬)에서 이미지만. **탭이 늘지 않게 `replaceDiff`**(활성 탭 제자리 교체, 중복 제거) 신설. 툴바 `n / N` | 포커스 훔치기 범위(리마운트 시점·hidden 무효로 한정). 임베디드 저장소 파일은 `keys.dir(합성id)` (검증 필요) — 실패 시 우아한 비활성 |
+| 57 | 메모장 목록 드래그 정렬 | [57-memo-tab-reorder.md](57-memo-tab-reorder.md) | **S** | 순서는 이미 `notes.json`의 `Vec`가 영속하는데 UI가 `createdAt` 정렬로 무시하고 있었다 → 표시 = `reverse()`(기존 표시와 비트 동일, 마이그레이션 0), `reorder_memos`(안정 정렬 rank·tail = `reorder_projects` 복제), `ProjectList` 포인터 드래그 복제. HTML5 DnD 금지 관례 준수 | 후속이 `add_memo`를 `insert(0)`로 바꾸면 규칙이 깨진다 — 주석+e2e |
+| 58 | "Claude Code 세션으로 새 터미널" | [58-claude-session-terminal.md](58-claude-session-terminal.md) | **S** | `term_open`에 명령 인자가 없고 `ptyWrite`는 비공개. 셸 무관하게 **키 입력과 같은 경로**로 `"claude\r"`를 open 완료·첫 출력 파싱(`onWriteParsed`) 뒤 1회 쓴다. 예약은 **localStorage**(`gp:term-initial-input`) — 별도 창이 요청해도 spawn한 창이 소비. 60초 만료로 세션 복구 시 재실행 방지. 메뉴 2곳(워크스페이스 `+`·모아보기 `+`) | 셸 초기화가 입력 버퍼를 비우는 경우 유실(pwsh/cmd/zsh 실기, 실패 시 300ms 지연) |
+| 59 | 로컬 LLM 런타임 + 모델 다운로드 + 설정 AI 페이지 + 스트리밍 IPC | [59-local-llm-runtime.md](59-local-llm-runtime.md) | **L** | **AI 통합 0건에서 시작.** llama.cpp `llama-server`(Windows vulkan 35MB·mac 11MB·Linux cpu 17MB, `b10809` 자산 실측)를 ffmpeg식 관리형 다운로드(스트리밍 %·sha256·원자), GGUF는 HF tree API sha256 고정(Qwen3-4B Q4 2.5GB 기본, 카탈로그 배열 1곳). 프로세스는 `LspSession` 이식(단일·유휴 10분·kill_all·**Linux `systemd-run --scope`로 cgroup 분리**·난수 `--api-key`). `llm_chat(on_token: Channel)`이 SSE→토큰 스트림, 한 번에 한 요청. 외부 OpenAI 호환 URL 모드(Ollama)로 흡수. `lib/llm.ts`가 60·61의 유일한 계약 | Windows Vulkan 부재(RDP/VM) 자동 cpu 폴백 (검증 필요). 모델 mmap의 메모리 경보 오탐. e2e 29 카테고리 수 6→7 갱신 필수 |
+| 60 | 작업 리포트(일/주/월 요약) + 잔디 히트맵 | [60-work-report-heatmap.md](60-work-report-heatmap.md) | **L** | 프롬프트 소스는 앱 PTY 히스토리가 아니라 **Claude Code 전사**(`~/.claude/projects/<encoded>/*.jsonl`, 경로 규약은 `claude_usage.rs`가 보유) — 앱 히스토리는 세션 한정·캡·삭제라 제외. Rust 3커맨드(`git_activity --since/--until/--author`, `commits_between`, `claude_prompts`) + `reports.json` 사이드 테이블. 모아보기와 같은 층의 전체 뷰(`reportOpen`), 53주×7 히트맵(`color-mix` accent 5단계), 카드별 스트리밍 요약·입력 해시로 "다시 생성". "잔디"는 **표시**(자동 커밋 아님) | 전사 필드 가정(`type`·`content`·`timestamp`·`tool_result`) — 실파일로 첫 단계 확정. 토큰 예산 초과 잘림(맵-리듀스는 업그레이드 경로). UTC/로컬 날짜 통일 |
+| 61 | 로컬 LLM 번역(터미널·뷰어 선택 우클릭) | [61-llm-translate.md](61-llm-translate.md) | **S~M** | `PaneMenu`·`ChipMenu`·Monaco 액션 3진입 → 창별 `useUi.translate` → 비차단 고정 카드(26 호버 카드 층, `useOccludesWebview`) 스트리밍. 방향 자동(한글 비율 ≥ 0.2 → 영어) + 토글. Busy면 3초 폴링 대기. 호스트를 4창(메인·모아보기·플로팅·doc)에 마운트 | Busy 폴링과 60 배치 경합(대기 표시로 수용). Monaco 메뉴 그룹 id (검증 필요) |
+
+### 11.1 권장 구현 순서
+
+```
+53 → 57 → 56 → 58        (S군 자기완결 — 서로 파일 겹침 0, 병행 가능)
+   → 54 → 55              (55 헤더가 54의 ProjectLogo를 쓴다; 둘 다 AggregateTerminals 셀 헤더 — 순차)
+   → 59 → [60 ∥ 61]       (59 계약 확정 뒤 병행 — 파일 겹침 0: report/* vs common/TranslateCard·PaneMenu·DiffViewer)
+```
+- **53↔58↔54↔55**: 넷 다 `AggregateTerminals.tsx`를 만진다(53 드롭다운, 58 `NewCellButton`, 54·55 셀 헤더). 같은 파일 순차 납품 —
+  앵커는 줄번호가 아니라 라벨 문자열(`'…'에 새 터미널 열기`, `PromptLogButton termId={meta.id}`)로.
+- **59 선행 게이트**: 런타임 다운로드 + Qwen3-4B로 "테스트" 응답 실측(토큰/s·첫 응답 지연)이 60·61의 프롬프트 예산·타임아웃의 입력이다.
+  60 착수 첫 단계는 이 머신의 실제 전사 파일로 `claude_prompts` 파서 확정.
+- **e2e 번호 배정**: 44 project-logo(54) · 45 git-dialog(55) · 46 image-arrow-nav(56) · 47 llm-runtime(59) · 48 report(60) ·
+  49 translate(61); 53은 14 `#11e`, 58은 14 `#13`, 57은 05 절 추가. 36~41·43은 §10이 예약 중이라 건너뛴다.
+- Rust 재빌드는 54·57(작은 것)과 59·60(큰 것) 두 번으로 묶는다.
+
+### 11.2 사용자 결정이 필요한 열린 질문
+
+| 태스크 | 질문 | 설계 기본값(미응답 시) |
+|--------|------|------------------------|
+| 60 | **"잔디 심기" = 활동 히트맵 표시**로 해석했다. 커밋을 자동 생성해 GitHub 잔디를 채우는 뜻이었는가 | 히트맵 표시. 자동 커밋은 하지 않음(저장소 이력 오염) |
+| 60 | 프롬프트 히스토리 = Claude Code 전사(지속·프로젝트 귀속). 앱 자체 PTY 히스토리(비-Claude 셸)도 지속화해 포함할지 | 후속 — 전사만 |
+| 59 | 기본 모델 Qwen3-4B Q4(2.5GB, RAM 8GB) vs 8B(5GB) | 4B 기본, 이 머신엔 8B 권장 뱃지 |
+| 59 | CUDA 빌드(645MB) 옵션 | 제외 — Vulkan |
+| 59 | 외부 서버 키를 OS 키링에 | 아니오(로컬 서버 키) |
+| 55 | 로그 탭에 브랜치 패널 포함 | 제외 — "changes와 log"만 |
+| 54 | 모아보기 칩·워크스페이스 탭 칩에도 로고 | 넣지 않음(칩 N개 소음) |
+| 56 | doc 창(더블클릭 별도 창)에서도 ↑↓ | v1 제외(6줄이면 추가 가능) |
+| 56 | ←/→도 같이 | 포함 |
+| 58 | 실행 명령을 설정으로(`claude --continue` 등) | 상수 `"claude\r"` |
+| 58 | 탭 제목 "Claude N" | 그대로 "터미널 N"(글로우가 구분) |
+| 53 | 브라우저만인 묶음도 확인창 | 항상 확인 |
+| 61 | 마크다운 뷰·메모장 선택도 번역 진입점 | 후속 |
+
+### 11.4 구현 상태 (2026-09-08)
+
+**53~61 아홉 태스크 전부 구현·검증 완료(미커밋).** 각 문서 §8에 상세. 정적 검증: `npx tsc --noEmit` exit 0,
+`cargo test --lib` **226 passed / 0 failed**(기준선 222 + 신규 4), 신규 e2e 6개 `node --check` 통과.
+e2e 실측(부분 실행 05·14·29·44·45·46·48·49, RAM 44%): **처음 22 fail → 최종 1 fail**(남은 1건은 LLM 런타임
+미설치로 skip되는 요약 생성 경로). 실행 이력은 각 문서 §8.
+
+**검증에서 잡힌 것 중 정적 검증이 절대 못 잡는 유형** — 이 절이 이번 라운드의 요점이다:
+
+| 발견 | 성격 |
+|---|---|
+| **`allowProposedApi` 누락으로 앱의 터미널이 하나도 안 뜬다** — 커밋 `0036d06`(main 포함)이 `Unicode11Addon`을 붙이며 옵션을 안 켜, `loadAddon`이 던지고 `createTerminalImpl`이 통째로 중단됐다. **이번 태스크들과 무관한 기존 회귀**이며, e2e에서 터미널 스위트 10여 건이 무더기로 깨져 발견됐다(CDP로 `createTerminal`을 직접 불러 확정) | 릴리스 차단급 · 타 커밋 |
+| **잔디와 카드가 같은 날에 다른 커밋 수를 보인다**(60) — `git log --since/--until`은 커미터 날짜로 거르는데 표시는 `%aI`(작성 날짜)다. 설계 §6이 "한계"로 적어 둔 것이 실제 화면에서 어긋났다 | 설계 문서의 한계 메모가 실제 결함이었던 경우 |
+| **Ctrl+K가 커밋을 두 번 한다**(55) — 모달이 두 번째 `CommitForm`을 전역 단축키에 함께 바인딩 | 두 인스턴스 공존이 만드는 결함 |
+| **보조 창이 메인 창의 뷰어 탭을 통째로 덮어쓴다**(55) — `gp:viewer-tabs` 영속 구독이 `float-*`만 제외했는데, 모아보기 창의 모달이 처음으로 `selectDiff` 경로를 열었다 | 데이터 손실 |
+| **모듈 전역 컨텍스트를 복원하지 않는다**(55) — 모달이 정의 이동·포매터 컨텍스트를 덮은 뒤 닫혀도 메인 뷰어가 모달 프로젝트를 계속 가리킨다 | 언마운트 복원 누락 |
+| **스트리밍 응답의 한글이 깨진다**(59) — SSE를 네트워크 청크마다 `from_utf8_lossy`로 디코드 | 정상 경로가 한국어인 기능 |
+| **외부 LLM 서버 URL에 `/v1`이 두 번 붙는다**(59) — 안내 문구와 코드가 서로 다른 규약을 가정 | 수용 조건 도달 불가 |
+| **메모를 집었다 제자리에 놓으면 맨 끝으로 간다**(57) — 드롭 대상 스캔이 끌고 있는 행 자신을 후보에 남긴다. **같은 잠복 결함이 출시된 사이드바 프로젝트 정렬에도 있어 함께 고쳤다** | 가장 흔한 제스처 |
+| **"셸 첫 출력 후 전송" 가드가 Windows에서 무의미**(58) — ConPTY가 spawn 직후 `\x1b[?9001h`를 보내 첫 발화가 셸 출력이 아니다 | 설계 가정이 플랫폼에서 성립 안 함 |
+| **배치 요약이 활동 없는 프로젝트에서 영원히 멈춘다**(60) — 이른 반환이 `finally`를 안 타 대기열이 전진하지 않는다 | 제어 흐름 |
+
+**e2e에서 반복된 테스트 자체의 결함**(코드는 멀쩡한데 테스트가 틀린 유형): 원시 invoke로 만든 픽스처를
+`["projects"]`에 반영하지 않아 화면이 그 프로젝트를 모름(44·48), 자기 자신과 비교해 항상 참인 단언(53·55),
+전체 회차에서만 깨지는 픽스처 전제(55 — 04가 HEAD를 옮긴다), 두 비동기 시리즈 중 하나만 기다린 폴링(48),
+사용자 설정(`gp:project-colors="0"`)을 전제하지 않은 단언(14 #12).
+
+**미검증으로 남은 것**: 로컬 LLM의 실제 기동·요약·번역(런타임 35MB + 모델 1.8GB 다운로드가 선행돼야 한다 —
+59 §8), 별도 창·플로팅 창의 실기 표시, 각 문서 §5.2의 나머지 실기 항목.
+
+### 11.3 공통 준수 사항 (53~61)
+
+- **점유 계약**: 전체 화면 모달(55 `gitDialog`)은 `selectBlockingOverlay`에, 비차단 고정 카드(61)는 `useOccludesWebview`에 — 둘 중 하나는 반드시. 60의 리포트 뷰는 모아보기와 같은 층(모달 아님)이라 해당 없음.
+- **창 간 상태는 localStorage 경유**(58 초기 입력·기존 `gp:doc-windows`) — `useUi`·`useTerminals`는 창마다 별개 인스턴스다. 별도 창에서 스토어를 직접 바꾸면 저장되지 않는다(53은 위임된 `closePane`만 쓴다).
+- **Channel은 호출마다 새로**(59 `llm_chat`·다운로드 진행) — 재사용은 무증상 영구 정지(CLAUDE.md).
+- **공급망**: 59는 "발견 우선(외부 URL) + 검증된 폴백(관리형 다운로드, 버전 pin + 코드 고정 sha256)" — 17·ffmpeg와 같은 원칙. 다운로드 버튼 옆에 크기·출처를 적는다(클릭이 곧 동의).
+- **정적 검증만으로 통과 금지**: 53 위임 순서, 54 `projects.json` 호환, 56 포커스, 58 셸별 입력 타이밍, 59 Vulkan 폴백·유휴 종료·고아 0, 60 전사 파서 — 각 문서 §5.2 실기 필수.
+- 같은 개념에 두 이름 금지: `ProjectLogo`(54), `GitDialogButton`/`openGitDialog`(55), `replaceDiff`(56), `queueInitialInput`(58), `lib/llm.ts chat`(59), `reportOpen`(60), `openTranslate`(61)가 정본 이름.

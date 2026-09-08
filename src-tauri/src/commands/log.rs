@@ -11,7 +11,9 @@ use crate::state::AppState;
 
 /// 로그 출력 포맷 — 필드는 US(0x1f), 커밋은 `-z`(NUL)로 구분 (parse_log와 한 쌍).
 /// 필드 순서: sha, parents, author, email, ISO date, subject, body, refs.
-const LOG_FORMAT: &str = "--pretty=format:%H\x1f%P\x1f%an\x1f%ae\x1f%aI\x1f%s\x1f%b\x1f%D";
+/// pub(crate): 작업 리포트의 `commits_between`이 같은 포맷을 써야 같은 파서를 태울 수 있다.
+pub(crate) const LOG_FORMAT: &str =
+    "--pretty=format:%H\x1f%P\x1f%an\x1f%ae\x1f%aI\x1f%s\x1f%b\x1f%D";
 
 const DEFAULT_LIMIT: u32 = 200;
 const MAX_LIMIT: u32 = 1000;

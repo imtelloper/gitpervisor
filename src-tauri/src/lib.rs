@@ -6,10 +6,12 @@ mod error;
 mod fetch_scheduler;
 mod git;
 mod health;
+mod llm;
 mod lsp;
 mod monitor;
 mod notifications;
 mod proc_icons;
+mod report;
 mod state;
 mod sysinfo_static;
 mod tools;
@@ -711,6 +713,7 @@ pub(crate) fn shutdown_children(app: &tauri::AppHandle) {
         // 자식 **프로세스**부터 보낸다(좀비 셸/서버 방지, 설계 §16.8 + 태스크 17).
         shutdown_step("terminals", || commands::kill_all(state));
         shutdown_step("lsp", || commands::lsp_kill_all(state));
+        shutdown_step("llm", || llm::llm_kill_all(state));
         shutdown_step("browser", || commands::browser_kill_all(app, state));
         shutdown_step("video", || commands::video_kill_all(state));
         shutdown_step("capture", commands::capture_release_all);
@@ -918,11 +921,14 @@ pub fn run() {
             let projects = state::load_projects(app.handle());
             let settings = state::load_settings(app.handle());
             let notes = state::load_notes(app.handle());
+            let reports = state::load_reports(app.handle());
             // 저장된 git 경로를 부팅 시 적용 (이후 set_settings로 갱신)
             git::runner::set_git_override(settings.git_path.as_ref().map(PathBuf::from));
-            app.manage(AppState::new(projects.clone(), settings, notes));
+            app.manage(AppState::new(projects.clone(), settings, notes, reports));
             // LSP 유휴 서버 리퍼 — 10분 방치된 언어 서버 종료(태스크 17 §3.4).
             commands::lsp_spawn_idle_reaper(app.handle().clone());
+            // 로컬 LLM 유휴 리퍼 — 10분 방치된 llama-server 종료(태스크 59 §3.3).
+            llm::llm_spawn_idle_reaper(app.handle().clone());
             // DB 탐색기 — 연결 메타 로드 + 활성 연결 상태 (M6 §17)
             let db_conns = db::load_connections(app.handle());
             app.manage(db::DbState::new(db_conns));
@@ -977,6 +983,7 @@ pub fn run() {
             commands::list_dir,
             commands::list_dirs,
             commands::project_logo,
+            commands::set_project_logo,
             commands::list_project_roots,
             commands::list_repo_files,
             commands::write_file,
@@ -1006,6 +1013,7 @@ pub fn run() {
             commands::add_memo,
             commands::update_memo,
             commands::delete_memo,
+            commands::reorder_memos,
             open_float_window,
             float_pool_warm,
             float_pool_ready,
@@ -1090,6 +1098,22 @@ pub fn run() {
             health::health_snapshot,
             health::health_prev_session,
             reset_close_guard,
+            // 로컬 LLM (태스크 59) — 커맨드는 commands/를 거치지 않고 llm 모듈 경로로 등록한다.
+            llm::acquire::llm_status,
+            llm::acquire::llm_runtime_ensure,
+            llm::acquire::llm_model_download,
+            llm::acquire::llm_download_cancel,
+            llm::acquire::llm_model_delete,
+            llm::chat::llm_chat,
+            llm::chat::llm_cancel,
+            llm::server::llm_stop,
+            // 작업 리포트(태스크 60) — 히트맵·요약 입력·요약 저장.
+            report::git_activity,
+            report::commits_between,
+            report::claude_prompts,
+            report::report_get_all,
+            report::report_set,
+            report::report_delete,
         ])
         .on_window_event(|window, event| {
             // 메인 창을 실수로 닫는 경로가 두 개 있다: 최대화 버튼 옆 X 오클릭, 그리고 Alt+F4.

@@ -6,6 +6,7 @@ import { Undo2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { Toasts } from "./components/common/Toast";
+import { TranslateHost } from "./components/common/TranslateCard";
 import { FloatTitleBar } from "./components/FloatTitleBar";
 import { PaneTreeRoot } from "./components/workspace/PaneTree";
 import { PromptHistoryButton } from "./components/workspace/TermSessionControls";
@@ -236,6 +237,8 @@ function FloatWorkspace({
           컨텍스트) 메인 창의 호스트가 여기 대신 그려 주지 않는다(AggregateWindow와 같은 이유).
           확인 모달은 이 창에 askConfirm 경로가 없어 달지 않는다. */}
       <Toasts />
+      {/* PaneMenu가 이 창에서도 열린다 — '선택 영역 번역' 카드는 그 창 안에 떠야 한다(태스크 61). */}
+      <TranslateHost />
     </div>
   );
 }

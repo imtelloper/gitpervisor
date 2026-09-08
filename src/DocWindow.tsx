@@ -7,6 +7,7 @@ import { ConfirmHost } from "./components/common/ConfirmDialog";
 import { EmptyState } from "./components/common/EmptyState";
 import { PromptHost } from "./components/common/PromptDialog";
 import { Toasts } from "./components/common/Toast";
+import { TranslateHost } from "./components/common/TranslateCard";
 import { FloatTitleBar } from "./components/FloatTitleBar";
 import { attachVideoEvents } from "./lib/events";
 import { docTarget } from "./lib/floating";
@@ -136,6 +137,8 @@ export function DocWindow({ docId }: { docId: string }) {
       <Toasts />
       <ConfirmHost />
       <PromptHost />
+      {/* 뷰어 Monaco의 '선택 영역 번역' 카드(태스크 61) — 여기 없으면 이 창에서만 무반응이다. */}
+      <TranslateHost />
       {imageEditorPath && (
         <Suspense fallback={null}>
           <ImageEditor />

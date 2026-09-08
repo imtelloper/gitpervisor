@@ -7,12 +7,14 @@ import {
   Globe,
   Grid2x2,
   History,
+  Languages,
   Layers,
   LayoutGrid,
   Loader2,
   Maximize2,
   Minimize2,
   Plus,
+  Sparkles,
   Terminal as TerminalIcon,
   X,
 } from "lucide-react";
@@ -24,10 +26,14 @@ import { isMac, modLabel } from "../lib/platform";
 import { NO_COLOR, useProjectColors, type ProjColor } from "../lib/project-color";
 import {
   attachTerminal,
+  CLAUDE_LAUNCH,
   createTerminal,
   detachTerminalKeepPty,
   fitTerminal,
+  getTerminal,
+  queueInitialInput,
 } from "../lib/terminal";
+import { translateRequest } from "../lib/translate";
 import { useProjects, useSettings } from "../queries";
 import { useAgentActivity } from "../stores/agentActivity";
 import { useBrowsers } from "../stores/browser";
@@ -41,8 +47,10 @@ import {
 import { useOccludesWebview } from "../stores/occlusion";
 import { type AggregateLayout, useUi } from "../stores/ui";
 import { EmptyState } from "./common/EmptyState";
+import { ProjectLogo } from "./common/ProjectLogo";
 import { BrowserPane } from "./workspace/BrowserPane";
 import {
+  GitDialogButton,
   PromptHistoryButton,
   PromptLogButton,
   PromptSidePanel,
@@ -162,6 +170,7 @@ export function AggregateTerminals() {
   const closePane = useTerminals((s) => s.closePane);
   const floatPane = useTerminals((s) => s.floatPane);
   const askConfirm = useUi((s) => s.askConfirm);
+  const openTranslate = useUi((s) => s.openTranslate);
   const byTerminal = useAgentActivity((s) => s.byTerminal);
   const browserItems = useBrowsers((s) => s.items);
   const browserTabIds = useBrowsers((s) => s.tabIds);
@@ -294,9 +303,12 @@ export function AggregateTerminals() {
   // 새 터미널 생성 + 즉시 그리드 편입. initedRef 선행 — 터미널 0개에서 첫 생성 시
   // 초기 자동선택 효과가 뒤늦게 selected를 덮어쓰는 경합 차단. 스토어 갱신은 동기라
   // 신규 paneId만 selected에 넣으면 셀 마운트→PTY spawn→attach는 기존 경로로 완결된다.
-  const addTerminal = (projectId: string) => {
+  const addTerminal = (projectId: string, claude?: boolean) => {
     initedRef.current = true;
     const { paneId } = openTerminal(projectId);
+    // 셸이 뜨면 `claude`를 넣어 Claude Code 세션으로 들어간다. 별도 창에서도 paneId는 이 창이
+    // 만들므로(위임은 id를 그대로 싣는다) 예약 키가 맞고, 실제 소비는 term_open을 잡은 창이 한다.
+    if (claude) queueInitialInput(paneId, CLAUDE_LAUNCH);
     setSelected((prev) => new Set(prev).add(paneId));
     setZoomed(null); // 확대 중이었다면 해제 — 새 셀이 보이지 않으면 생성 실패로 오인한다
   };
@@ -541,7 +553,7 @@ export function AggregateTerminals() {
         {/* 별도 창에서도 만들 수 있다 — 이 창의 스토어는 변경을 메인에 위임하므로
             (stores/terminals.ts terminals://cmd) 메인이 만들고 결과가 storage로 돌아온다.
             브라우저만 제외: 브라우저 스토어에는 storage 따라가기가 없어 위임해도 이 창 그리드에
-            안 뜬다 → onCreateBrowser를 안 넘겨 "새 터미널" 전용 버튼이 된다. */}
+            안 뜬다 → onCreateBrowser를 안 넘겨 터미널 두 종류(일반·Claude)만 남는다. */}
         <NewCellButton
           projects={projects}
           onCreateTerminal={addTerminal}
@@ -753,6 +765,32 @@ export function AggregateTerminals() {
         (() => {
           const cells = all.filter((c) => c.projName === groupMenu.name);
           if (cells.length === 0) return null;
+          // 닫을 수 있는 셀 = ChipMenu의 단일 닫기 조건을 셀마다 그대로 적용한 것 —
+          // 별도 창의 독립 브라우저 탭(tabId null)만 빠진다(closeBrowserTab에 위임 경로 없음).
+          const closable = cells.filter(
+            (c) => !(IS_AGGREGATE_WINDOW && c.tabId == null),
+          );
+          const closeAll = () => {
+            // 확인창이 뜨는 동안 hover 지연 닫기 타이머와 경합하지 않게 드롭다운을 먼저 닫는다.
+            // 강조도 같이 지운다 — 드롭다운이 사라지면 mouseleave가 안 와서 ring이 박제된다
+            // (확인창을 취소해도 다음 칩을 호버할 때까지 남는다).
+            setGroupMenu(null);
+            setHovered(NO_HOVER);
+            const procs = closable.filter((c) => c.kind === "terminal").length;
+            askConfirm({
+              title: "탭 모두 닫기",
+              // 단일 브라우저 닫기는 확인이 없지만 묶음은 여러 개를 한 번에 없애므로 항상 확인한다.
+              message:
+                `'${groupMenu.name}' 탭 ${closable.length}개를 닫을까요?` +
+                (procs ? ` 터미널 ${procs}개의 실행 중인 프로세스가 종료됩니다.` : ""),
+              confirmLabel: "모두 닫기",
+              danger: true,
+              onConfirm: () =>
+                closable.forEach((c) =>
+                  c.tabId != null ? closePane(c.tabId, c.id) : closeBrowserTab(c.id),
+                ),
+            });
+          };
           return (
             <div
               className="fixed z-50 flex max-h-[60vh] min-w-44 max-w-80 flex-col gap-1 overflow-y-auto rounded-md border border-edge bg-panel p-1.5 shadow-xl"
@@ -795,6 +833,16 @@ export function AggregateTerminals() {
                 label={`'${groupMenu.name}'에 새 터미널 열기`}
                 onClick={() => addTerminal(cells[0].projectId)}
               />
+              {/* 묶음 단위 닫기 — 종류가 섞이므로 "터미널/브라우저"가 아니라 "탭"으로 부른다.
+                  닫을 수 있는 셀이 없으면(별도 창 + 독립 브라우저 탭뿐) 항목 자체를 뺀다. */}
+              {closable.length > 0 && (
+                <MenuItem
+                  icon={<X size={13} />}
+                  label={`'${groupMenu.name}' 탭 ${closable.length}개 모두 닫기`}
+                  danger
+                  onClick={closeAll}
+                />
+              )}
             </div>
           );
         })()}
@@ -850,6 +898,21 @@ export function AggregateTerminals() {
               ? () => togglePanel(chipMenu.cell.id)
               : undefined
           }
+          // 번역(태스크 61)도 같은 판정 + **선택이 있을 때만** — 없으면 항목 자체를 그리지 않는다.
+          onTranslate={
+            selected.has(chipMenu.cell.id) &&
+            chipMenu.cell.kind === "terminal" &&
+            getTerminal(chipMenu.cell.id)?.term.hasSelection()
+              ? () =>
+                  openTranslate(
+                    translateRequest(
+                      getTerminal(chipMenu.cell.id)?.term.getSelection() ?? "",
+                      chipMenu.x,
+                      chipMenu.y,
+                    ),
+                  )
+              : undefined
+          }
           // 별도 창의 변경은 스토어가 메인에 위임한다(stores/terminals.ts terminals://cmd) —
           // 새 터미널·Float·닫기가 여기서도 그대로 동작한다. 예외는 **독립 브라우저 탭 닫기**뿐:
           // closeBrowserTab은 위임 경로가 없는 메인 전용이라 별도 창에선 항목을 빼 둔다.
@@ -901,6 +964,7 @@ function ChipMenu({
   onToggle,
   onZoom,
   onTogglePrompt,
+  onTranslate,
   onNewTerminal,
   onFloat,
   onCloseCell,
@@ -917,6 +981,8 @@ function ChipMenu({
   onZoom: () => void;
   /** 없으면 항목 자체를 그리지 않는다 — 표시 중 터미널 셀에만 넘어온다(onFloat 관례). */
   onTogglePrompt?: () => void;
+  /** 선택이 있는 표시 중 터미널 셀에만 넘어온다(태스크 61). */
+  onTranslate?: () => void;
   onNewTerminal?: () => void;
   onFloat?: () => void;
   onCloseCell?: () => void;
@@ -945,8 +1011,8 @@ function ChipMenu({
         // 하단 클램프 = 메뉴 실높이. 헤더 24.5 + 항목 6 × 31.5 + 구분선 2 × 8.67 + 패딩·테두리 9.3
         // ≈ 240 → 8 단위 올림(PaneMenu와 같은 규칙). max(0, …)은 창이 메뉴보다 낮을 때 top이
         // 음수가 되어 위쪽 항목이 잘리는 것을 막는다(별도 창은 창 크기 제한이 낮다).
-        // ponytail: 항목이 또 늘면 ref 실측으로.
-        top: Math.max(0, Math.min(y, window.innerHeight - 248)),
+        // ponytail: 항목이 또 늘면 ref 실측으로. 번역 항목(선택이 있을 때만)은 32px을 더 잡는다.
+        top: Math.max(0, Math.min(y, window.innerHeight - (onTranslate ? 280 : 248))),
       }}
       onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
@@ -970,6 +1036,13 @@ function ChipMenu({
           icon={<History size={14} />}
           label={promptOpen ? "프롬프트 목록 닫기" : "프롬프트 목록 열기"}
           onClick={run(onTogglePrompt)}
+        />
+      )}
+      {onTranslate && (
+        <MenuItem
+          icon={<Languages size={14} />}
+          label="선택 영역 번역"
+          onClick={run(onTranslate)}
         />
       )}
       {(onNewTerminal || onFloat || onCloseCell) && (
@@ -1069,29 +1142,39 @@ function Chip({
   );
 }
 
-/** 새 셀 추가 — "+" 하나로 종류(터미널/브라우저)를 고르고, 프로젝트가 여러 개면 이어서 고른다.
+/** "+" 메뉴가 만들 수 있는 것 — 그리드 셀 종류 + "초기 입력만 다른" Claude Code 세션 터미널.
+ *  라벨은 메뉴 행과 프로젝트 선택 머리말 두 곳이 같은 문구를 써야 해서 한 곳에 모은다. */
+type NewCellKind = PaneKind | "claude";
+const NEW_CELL_LABEL: Record<NewCellKind, string> = {
+  terminal: "새 터미널",
+  browser: "새 브라우저",
+  claude: "Claude Code 세션 터미널",
+};
+
+/** 새 셀 추가 — "+" 하나로 종류(터미널 / Claude Code 세션 터미널 / 브라우저)를 고르고,
+ *  프로젝트가 여러 개면 이어서 고른다.
  *  탭 스트립의 NewTabControls와 같은 방식으로 통일했다(버튼 두 개는 무엇을 하는지 구분이 안 됐다).
  *  API 클라이언트는 그리드가 지원하는 셀 종류가 아니라 여기 메뉴엔 없다.
  *
  *  프로젝트가 1개면 종류만 고르면 바로 생성한다(모호성 없음). 0개(또는 로딩 전)면 비활성.
  *  메뉴는 버튼 rect 기준 fixed 위치 + 백드롭 패턴 — 헤더(h-10) 밖으로 넘칠 때 클리핑을 벗어난다.
  *
- *  `onCreateBrowser`를 생략하면(별도 창 — 브라우저는 위임해도 이 창 그리드에 안 뜬다) **터미널
- *  전용**이 된다: 고를 종류가 하나뿐이라 그 단계를 건너뛰고 바로 프로젝트 목록으로 간다. */
+ *  `onCreateBrowser`를 생략하면(별도 창 — 브라우저는 위임해도 이 창 그리드에 안 뜬다) 브라우저
+ *  항목만 빠진다. 터미널 종류가 둘이라 종류 선택 단계 자체는 건너뛸 수 없다. */
 function NewCellButton({
   projects,
   onCreateTerminal,
   onCreateBrowser,
 }: {
   projects: Project[] | undefined;
-  onCreateTerminal: (projectId: string) => void;
+  onCreateTerminal: (projectId: string, claude?: boolean) => void;
   onCreateBrowser?: (projectId: string) => void;
 }) {
   const selectedProjectId = useUi((s) => s.selectedProjectId);
   // 버튼이 헤더 우측 끝이라 좌측 기준(left)이면 메뉴가 창 밖으로 잘린다 — 우측 모서리 정렬
   const [menu, setMenu] = useState<{ right: number; y: number } | null>(null);
   // 2단계: null이면 종류 고르는 중, 값이 있으면 그 종류로 프로젝트 고르는 중
-  const [kind, setKind] = useState<PaneKind | null>(null);
+  const [kind, setKind] = useState<NewCellKind | null>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
   // 열린 동안 그리드의 모든 네이티브 webview를 숨긴다(점유 레지스트리가 단일 진실).
   useOccludesWebview(!!menu);
@@ -1107,13 +1190,13 @@ function NewCellButton({
     setMenu(null);
     setKind(null);
   };
-  const create = (k: PaneKind, projectId: string) => {
-    if (k === "terminal") onCreateTerminal(projectId);
-    else onCreateBrowser?.(projectId);
+  const create = (k: NewCellKind, projectId: string) => {
+    if (k === "browser") onCreateBrowser?.(projectId);
+    else onCreateTerminal(projectId, k === "claude");
     close();
   };
   // 종류 선택 → 프로젝트가 하나뿐이면 바로 만들고, 여러 개면 프로젝트 목록으로 넘어간다.
-  const pickKind = (k: PaneKind) => {
+  const pickKind = (k: NewCellKind) => {
     if (ordered.length === 1) create(k, ordered[0].id);
     else setKind(k);
   };
@@ -1122,15 +1205,6 @@ function NewCellButton({
     if (menu) {
       close();
       return;
-    }
-    // 터미널 전용 모드는 pickKind와 같은 판정을 버튼 클릭에서 미리 한다 — 종류가 하나뿐이라
-    // 그 단계를 건너뛰고, 프로젝트도 하나면 메뉴를 열 것 없이 바로 만든다.
-    if (!onCreateBrowser) {
-      if (ordered.length === 1) {
-        create("terminal", ordered[0].id);
-        return;
-      }
-      setKind("terminal");
     }
     const r = btnRef.current?.getBoundingClientRect();
     if (r) setMenu({ right: window.innerWidth - r.right, y: r.bottom + 4 });
@@ -1148,7 +1222,7 @@ function NewCellButton({
             ? "프로젝트를 추가하면 새 터미널·브라우저를 열 수 있습니다"
             : onCreateBrowser
               ? "새 터미널 · 새 브라우저 — 이 화면에 바로 연다"
-              : "새 터미널 — 이 화면에 바로 연다"
+              : "새 터미널 · Claude Code 세션 터미널 — 이 화면에 바로 연다"
         }
         className="ml-1 flex shrink-0 items-center rounded p-1 text-fg-muted hover:bg-raised hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
       >
@@ -1165,20 +1239,29 @@ function NewCellButton({
               <>
                 <MenuRow
                   icon={<TerminalIcon size={14} />}
-                  label="새 터미널"
+                  label={NEW_CELL_LABEL.terminal}
                   onClick={() => pickKind("terminal")}
                 />
+                {/* 새 터미널과 같되, 셸이 뜨면 `claude`를 입력해 바로 Claude Code 세션으로 간다. */}
                 <MenuRow
-                  icon={<Globe size={14} />}
-                  label="새 브라우저"
-                  onClick={() => pickKind("browser")}
+                  icon={<Sparkles size={14} />}
+                  label={NEW_CELL_LABEL.claude}
+                  onClick={() => pickKind("claude")}
                 />
+                {/* 별도 창은 브라우저를 위임해도 이 창 그리드에 안 뜬다 — 그 창에선 항목을 뺀다. */}
+                {onCreateBrowser && (
+                  <MenuRow
+                    icon={<Globe size={14} />}
+                    label={NEW_CELL_LABEL.browser}
+                    onClick={() => pickKind("browser")}
+                  />
+                )}
               </>
             ) : (
               <>
                 {/* 어떤 종류를 만드는 중인지 잊지 않게 머리말로 남긴다 */}
                 <div className="px-3 py-1 text-[11px] text-fg-dim">
-                  {kind === "terminal" ? "새 터미널" : "새 브라우저"} — 프로젝트 선택
+                  {NEW_CELL_LABEL[kind]} — 프로젝트 선택
                 </div>
                 {ordered.map((p) => (
                   <button
@@ -1297,12 +1380,15 @@ function AggregateCell({
         className="flex h-6 shrink-0 items-center gap-1.5 border-b border-edge px-2 text-[11px] text-fg-muted"
       >
         <StatusIcon status={status} />
+        {/* h-6 헤더라 14px — 16px은 빡빡하다(태스크 54). */}
+        <ProjectLogo projectId={meta.projectId} size={14} />
         <span className="min-w-0 flex-1 truncate">
           <span className="font-medium text-fg">{meta.projName}</span>
           <span className="text-fg-dim"> · {meta.title}</span>
         </span>
         <ThemeButton termId={meta.id} />
         <PromptLogButton termId={meta.id} />
+        <GitDialogButton projectId={meta.projectId} />
         <button
           onClick={onZoom}
           title={
@@ -1375,10 +1461,12 @@ function BrowserCell({
         className="flex h-6 shrink-0 items-center gap-1.5 border-b border-edge px-2 text-[11px] text-fg-muted"
       >
         <Globe size={11} className="shrink-0 text-accent" />
+        <ProjectLogo projectId={meta.projectId} size={14} />
         <span className="min-w-0 flex-1 truncate">
           <span className="font-medium text-fg">{meta.projName}</span>
           <span className="text-fg-dim"> · {meta.title}</span>
         </span>
+        <GitDialogButton projectId={meta.projectId} />
         <HideButton onClick={onHide} what="브라우저" />
         {/* 분할 pane(tabId 있음)은 closePane이라 위임을 탄다. 독립 브라우저 탭은 closeBrowserTab —
             위임 경로가 없는 메인 전용이라 별도 창에선 X를 감춘다(ChipMenu와 같은 규칙). */}

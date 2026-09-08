@@ -7,6 +7,7 @@ import {
   useAddMemo,
   useDeleteMemo,
   useNotes,
+  useReorderMemos,
   useUpdateMemo,
 } from "../../queries";
 
@@ -45,11 +46,11 @@ export function MemoPanel({
   const updateMemo = useUpdateMemo();
   const deleteMemo = useDeleteMemo();
 
-  // 생성 시각 내림차순(새 메모가 위) — 편집 중 재정렬 없이 안정적
-  const memos = useMemo(() => {
-    const list = notes?.[scopeId] ?? [];
-    return [...list].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  }, [notes, scopeId]);
+  // 배열 순서가 정본(notes.json Vec). add_memo가 push하므로 역순 = 새 메모가 위 — 종전 createdAt 내림차순과 동일한 표시.
+  const memos = useMemo(
+    () => [...(notes?.[scopeId] ?? [])].reverse(),
+    [notes, scopeId],
+  );
 
   // 마지막으로 보던 메모를 스코프별로 기억한다 — 전역/프로젝트가 서로를 덮지 않게 키를 나눈다.
   const activeKey = `gp:memo-active:${scopeId}`;
@@ -141,6 +142,72 @@ export function MemoPanel({
     setText("");
     setTimeout(() => taRef.current?.focus(), 0);
   }
+  // ── 드래그 순서 정렬 (포인터 기반, ProjectList와 같은 방식) ──
+  // HTML5 drag&drop은 WebView2에서 불안정하다. 좌클릭 후 임계(5px)를 넘게 움직이면 드래그로
+  // 전환 → 항목 중점 기준으로 삽입 위치(overId, null=맨 끝) 표시 → 떼면 재정렬한다.
+  const reorder = useReorderMemos();
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [overId, setOverId] = useState<string | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  // 드래그가 성립하면 뒤따르는 click 한 번을 up()이 캡처 단계에서 삼킨다(아래 주석).
+  function beginDrag(e: React.PointerEvent, id: string) {
+    if (e.button !== 0) return; // 좌클릭만
+    const startY = e.clientY;
+    let dragging = false;
+    let over: string | null = null;
+
+    const move = (ev: PointerEvent) => {
+      if (!dragging) {
+        if (Math.abs(ev.clientY - startY) < 5) return; // 클릭/드래그 구분 임계
+        dragging = true;
+        setDragId(id);
+      }
+      const cont = listRef.current;
+      if (!cont) return;
+      let target: string | null = null;
+      for (const el of cont.querySelectorAll<HTMLElement>("[data-memo-id]")) {
+        // 끌고 있는 행 자신은 후보에서 뺀다 — 넣어 두면 그 행의 위쪽 절반에서 놓았을 때
+        // over === id 가 되고, 아래 up()이 splice 후 indexOf에서 -1을 받아 **맨 끝으로** 보낸다
+        // (표시선도 안 뜨는 상태라 사용자는 이유를 못 본다). 빼면 바로 다음 행이 잡혀 제자리다.
+        if (el.dataset.memoId === id) continue;
+        const r = el.getBoundingClientRect();
+        if (ev.clientY < r.top + r.height / 2) {
+          target = el.dataset.memoId ?? null;
+          break;
+        }
+      }
+      over = target;
+      setOverId(target);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      setDragId(null);
+      setOverId(null);
+      if (!dragging) return; // 임계 미달 = 단순 클릭 → onClick이 선택 처리
+      // 드래그 뒤 따라오는 click 한 번을 **캡처 단계에서** 삼킨다. 행의 onClick만 막으면
+      // 부족하다 — 포인터를 모달 배경 위에서 놓으면 click은 pointerdown(행)과 pointerup(배경)의
+      // 공통 조상인 배경 div로 가고, 그 onClick이 메모장을 닫아 버린다(MemoDialog.tsx).
+      const swallow = (ev: MouseEvent) => ev.stopPropagation();
+      window.addEventListener("click", swallow, { capture: true, once: true });
+      // click이 아예 안 오는 경우(창 밖에서 놓기 등)를 위해 같은 태스크에서 걷어낸다.
+      setTimeout(
+        () => window.removeEventListener("click", swallow, { capture: true }),
+        0,
+      );
+      const ids = memos.map((m) => m.id);
+      const fromIdx = ids.indexOf(id);
+      if (fromIdx === -1) return;
+      ids.splice(fromIdx, 1);
+      let at = over == null ? ids.length : ids.indexOf(over);
+      if (at === -1) at = ids.length;
+      ids.splice(at, 0, id);
+      // 표시가 배열의 역순이므로 저장할 순서도 되뒤집는다.
+      reorder.mutate({ projectId: scopeId, orderedIds: ids.reverse() });
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
   function handleDelete() {
     if (!active) return;
     const idx = memos.findIndex((m) => m.id === active.id);
@@ -161,15 +228,23 @@ export function MemoPanel({
           <span className="text-[11px] text-fg-dim">{memos.length}</span>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto">
           {memos.map((m) => (
             <button
               key={m.id}
+              data-memo-id={m.id}
+              onPointerDown={(e) => beginDrag(e, m.id)}
               onClick={() => selectMemo(m.id)}
-              className={`block w-full border-b border-edge/40 px-3 py-2 text-left ${
+              className={`relative block w-full border-b border-edge/40 px-3 py-2 text-left ${
                 active?.id === m.id ? "bg-selection" : "hover:bg-raised"
-              }`}
+              } ${dragId === m.id ? "opacity-40" : ""}`}
             >
+              {overId === m.id && dragId !== m.id && (
+                <span
+                  aria-hidden
+                  className="pointer-events-none absolute inset-x-0 top-0 h-0.5 bg-accent"
+                />
+              )}
               <div className="truncate text-[13px] text-fg">
                 {memoTitle(m.text)}
               </div>
@@ -178,6 +253,8 @@ export function MemoPanel({
               </div>
             </button>
           ))}
+          {/* 맨 끝에 삽입할 때의 표시선 */}
+          {dragId && overId === null && <div className="mx-2 h-0.5 bg-accent" />}
           {memos.length === 0 && (
             <div className="px-3 py-4 text-[12px] leading-5 text-fg-dim">
               메모가 없습니다.

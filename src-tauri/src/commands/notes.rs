@@ -64,6 +64,31 @@ pub fn update_memo(
     Ok(result)
 }
 
+/// 드래그로 정한 메모 순서를 영속화한다 — ordered_ids 순서대로 재배열.
+/// 목록에 없는 id는 상대 순서를 유지한 채 뒤로 보낸다(reorder_projects의 tail 규칙과 동일).
+#[tauri::command]
+pub fn reorder_memos(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    project_id: String,
+    ordered_ids: Vec<String>,
+) -> Result<(), IpcError> {
+    {
+        let mut notes = state.notes.write().unwrap_or_else(|e| e.into_inner());
+        if let Some(list) = notes.get_mut(&project_id) {
+            let rank: std::collections::HashMap<&str, usize> = ordered_ids
+                .iter()
+                .enumerate()
+                .map(|(i, id)| (id.as_str(), i))
+                .collect();
+            let tail = ordered_ids.len();
+            // sort_by_key는 안정 정렬 — ordered_ids에 없는 메모끼리의 순서는 그대로 남는다.
+            list.sort_by_key(|m| rank.get(m.id.as_str()).copied().unwrap_or(tail));
+        }
+    }
+    persist(&app, &state)
+}
+
 /// 메모 삭제. 프로젝트의 메모가 모두 없어지면 키도 제거.
 #[tauri::command]
 pub fn delete_memo(

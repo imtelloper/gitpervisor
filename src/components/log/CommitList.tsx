@@ -40,8 +40,18 @@ function RefChip({ label }: { label: string }) {
   );
 }
 
-/** Log 패널 중앙: 커밋 리스트 + 무한 스크롤(더 보기). */
-export function CommitList({ projectId }: { projectId: string }) {
+/** Log 패널 중앙: 커밋 리스트 + 무한 스크롤(더 보기).
+ *  selectedSha·onSelectCommit을 주면 커밋 선택이 **호출자 로컬**이 된다(Git 모달, 태스크 55 —
+ *  ChangesPanel의 onSelect·active와 같은 관례). 안 주면 전역 스토어로 하단 Log 패널과 통신한다. */
+export function CommitList({
+  projectId,
+  selectedSha,
+  onSelectCommit,
+}: {
+  projectId: string;
+  selectedSha?: string | null;
+  onSelectCommit?: (sha: string) => void;
+}) {
   const {
     data,
     isLoading,
@@ -50,8 +60,10 @@ export function CommitList({ projectId }: { projectId: string }) {
     hasNextPage,
     isFetchingNextPage,
   } = useLog(projectId);
-  const selectedCommitSha = useUi((s) => s.selectedCommitSha);
-  const selectCommit = useUi((s) => s.selectCommit);
+  const storeSha = useUi((s) => s.selectedCommitSha);
+  const storeSelectCommit = useUi((s) => s.selectCommit);
+  const selectedCommitSha = onSelectCommit ? (selectedSha ?? null) : storeSha;
+  const selectCommit = onSelectCommit ?? storeSelectCommit;
   const [menu, setMenu] = useState<CommitMenu | null>(null);
 
   // 메뉴 열림 동안 바깥 클릭 / Esc 로 닫는다 (FileTreePanel과 동일 패턴).
