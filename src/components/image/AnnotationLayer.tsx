@@ -21,15 +21,7 @@ import {
   useState,
 } from "react";
 
-import {
-  applyObjectTransform,
-  applySceneTransform,
-} from "../../lib/annotate/geometry";
-import {
-  releaseScratch,
-  renderScene,
-  type PreviewBackdrop,
-} from "../../lib/annotate/render";
+import { releaseScratch, renderScene } from "../../lib/annotate/render";
 import { sceneOfNodes, type Scene } from "../../lib/annotate/scene";
 import {
   type GeomNode,
@@ -126,8 +118,15 @@ function AnnotationLayerImpl(
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   // 커밋 레이어 캐시(§4.4) — 문서가 바뀔 때만 renderScene 전체를 돌린다.
+  // 커밋 캐시는 **DOM 에 올린다**(visibility:hidden). e2e 30·34·35 가 canvases()[0] 을 백킹
+    // 크기로 단언하는데, v1 에서 그 자리에 있던 베이스 이미지 캔버스가 씬으로 합쳐졌기 때문이다.
   const cacheRef = useRef<HTMLCanvasElement | null>(null);
   const cacheKeyRef = useRef("");
+  /**
+   * 캐시가 담은 이미지. 병합(39 §3.1) 이후 캐시에는 **이미지도** 들어 있어서, 좌우 반전처럼
+   * 크기가 그대로인 방향 변경은 키 문자열만으로는 안 잡힌다 — 참조로 직접 비교한다.
+   */
+  const cacheImgRef = useRef<CanvasImageSource | null>(null);
   const cacheSrcRef = useRef<readonly Node[] | null>(null);
 
   const rafRef = useRef(0);
@@ -159,12 +158,13 @@ function AnnotationLayerImpl(
     if (
       cacheRef.current &&
       cacheSrcRef.current === s.objects &&
+      cacheImgRef.current === s.oriented &&
       cacheKeyRef.current === key
     ) {
       return cacheRef.current;
     }
-    const cv = cacheRef.current ?? document.createElement("canvas");
-    cacheRef.current = cv;
+    const cv = cacheRef.current;
+    if (!cv) return null;
     if (cv.width !== s.backW || cv.height !== s.backH) {
       cv.width = s.backW;
       cv.height = s.backH;
@@ -175,19 +175,16 @@ function AnnotationLayerImpl(
     ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = "source-over";
     ctx.clearRect(0, 0, cv.width, cv.height);
-    const objs = excluded.size
-      ? s.scene.nodes.filter((o) => !excluded.has(o.id))
-      : s.scene.nodes;
-    if (objs.length) {
-      seedMosaicSources(ctx, objs, s);
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.filter = "none";
-      renderScene(ctx, s.scene, sceneTransform(s.scale), {
-        backdrop: previewBackdrop(s),
-        skipIds: excluded,
-      });
-    }
+    // 이미지도 **같은 캔버스**에 그린다 — 그래야 형광펜 multiply·가림 샘플링이 재구성 없이
+    // 성립한다. 조정 필터는 이미지에만 걸린다(renderScene 안 한 곳, D2).
+    renderScene(ctx, s.scene, sceneTransform(s.scale), {
+      image: s.oriented,
+      background: "image",
+      filter: s.filterStr,
+      skipIds: excluded,
+    });
     cacheSrcRef.current = s.objects;
+    cacheImgRef.current = s.oriented;
     cacheKeyRef.current = key;
     return cv;
   }, []);
@@ -215,12 +212,10 @@ function AnnotationLayerImpl(
     if (liveRef.current) live.push(...liveRef.current);
     if (draftRef.current) live.push(draftRef.current);
     if (live.length) {
-      seedMosaicSources(ctx, live, s);
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.filter = "none";
       // 드래그 중인 것은 아직 문서에 없다 — 임시 씬으로 감싸 **같은 렌더 진입**을 쓴다.
+      // 배경(이미지 + 커밋 노드)은 이미 캐시로 깔려 있어 가림·multiply 가 그대로 성립한다.
       renderScene(ctx, sceneOfNodes(live), sceneTransform(s.scale), {
-        backdrop: previewBackdrop(s),
+        background: "transparent",
       });
     }
 
@@ -377,6 +372,15 @@ function AnnotationLayerImpl(
 
   return (
     <>
+      {/* [0] 커밋 캐시 — 화면에는 안 보이지만 DOM 에 있어야 한다. e2e 가 canvases()[0] 의
+          백킹 크기를 단언하고, 무엇보다 이 캔버스가 v1 의 베이스 이미지 자리를 잇는다.
+          `visibility:hidden` 은 getImageData 를 막지 않는다(규격). */}
+      <canvas
+        ref={cacheRef}
+        aria-hidden
+        className="pointer-events-none absolute inset-0 h-full w-full"
+        style={{ visibility: "hidden" }}
+      />
       <canvas
         ref={canvasRef}
         onPointerDown={onPointerDown}
@@ -389,7 +393,12 @@ function AnnotationLayerImpl(
             ? "cursor-crosshair"
             : "cursor-default"
         }`}
-        style={{ touchAction: "none" }}
+        style={{
+          touchAction: "none",
+          // 100%를 넘겨 확대하면 보간을 끄고 픽셀을 그대로 보여준다(뷰어와 같은 규칙).
+          // v1 에서 베이스 캔버스가 하던 일 — 씬 캔버스로 옮겨 왔다.
+          imageRendering: props.displayScale >= 2 ? "pixelated" : "auto",
+        }}
       />
       <TextEditOverlay
         editing={editing}
@@ -411,45 +420,6 @@ export default AnnotationLayer;
 
 function sceneTransform(scale: number): SceneTransform {
   return { tx: 0, ty: 0, sx: scale, sy: scale };
-}
-
-/**
- * 프리뷰 배경(§4.3) — 이미지는 아래 base 캔버스에 있고 오버레이는 투명하다. 배경 픽셀이 있어야
- * 성립하는 블렌드(형광펜 multiply)를 렌더러가 재구성할 수 있게 소스를 넘긴다.
- */
-function previewBackdrop(s: AnnotationLayerProps): PreviewBackdrop {
-  return { image: s.oriented, filter: s.filterStr };
-}
-
-/**
- * 모자이크가 샘플링할 이미지 픽셀을 대상 캔버스의 해당 영역에만 심는다.
- *
- * renderScene 의 모자이크는 "대상 ctx 자신"을 되읽는데(§5.2), 프리뷰에서는 이미지가 아래쪽
- * base 캔버스에 있어 오버레이에는 아무것도 없다. 그래서 모자이크 사각형으로 **클립한 채**
- * 이미지를 먼저 그려 넣는다. 색보정 필터를 함께 걸어 출력 경로와 같은 픽셀을 보게 한다.
- *
- * 알려진 한계: blur 모드는 사각형 바깥을 패딩해 샘플링하므로 가장자리에서 투명을 조금
- * 빨아들인다(프리뷰에서만, 경계 몇 px). 출력 경로에는 이미지가 전면에 있어 발생하지 않는다.
- */
-function seedMosaicSources(
-  ctx: CanvasRenderingContext2D,
-  objects: readonly GeomNode[],
-  s: AnnotationLayerProps,
-): void {
-  const t = sceneTransform(s.scale);
-  for (const o of objects) {
-    if (o.kind !== "mosaic") continue;
-    ctx.save();
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.filter = s.filterStr;
-    applySceneTransform(ctx, t);
-    applyObjectTransform(ctx, o);
-    ctx.beginPath();
-    ctx.rect(o.x, o.y, o.w, o.h);
-    ctx.clip();
-    ctx.drawImage(s.oriented, 0, 0);
-    ctx.restore();
-  }
 }
 
 

@@ -1,337 +1,512 @@
-// 주석 렌더러 — 프리뷰와 저장이 **똑같이** 부르는 단 하나의 함수(§4.1).
+// 주석 렌더러 v2 — 프리뷰·저장·내보내기가 **똑같이** 부르는 단 하나의 진입.
 //
-// 프리뷰 오버레이 캔버스와 renderOutput() 이 같은 renderScene() 을 호출하고 SceneTransform 만
-// 다르게 준다. "프리뷰와 저장 결과가 다르다" 클래스의 버그가 구조적으로 불가능해진다.
+// v1 은 캔버스를 둘로 나눠 썼다(아래: 이미지, 위: 투명 주석 오버레이). 그 구조에서는 배경이
+// 있어야 성립하는 합성(형광펜 multiply·모자이크 샘플링)을 렌더러가 **매번 재구성**해야 했고,
+// 노드 종류가 늘 때마다 그 재구성이 종류마다 복제됐다. 그래서 블렌드·효과·그룹 불투명도는
+// 아예 만들 수 없었다(DOCS/pro-image-editor-design.md §8 이 기각한 이유).
 //
-// 기하 정의는 geometry.ts 가 단일 소스다 — 여기서는 색·블렌드·장식(화살촉·글리프·모자이크)만
-// 얹는다.
+// v2 는 **씬 캔버스 하나**에 이미지와 노드를 함께 그린다. 그러면 multiply 도, 배경 블러도,
+// 그룹 격리도 전부 캔버스 표준 합성 그대로 성립한다 — 재구성 코드가 사라진다.
+//
+// 진입은 `renderScene(ctx, scene, t, opts)` 하나다. 배열을 넘기면 컴파일 에러다(38 Scene).
+// 화면 크롬(선택 상자·핸들·가이드)은 여기 **없다** — SVG 오버레이가 그린다(태스크 43).
+//
+// 배경: DOCS/task/39-image-render-v2.md
 
 import {
+  backgroundBlur,
+  dropShadow,
+  innerShadow,
+  layerBlur,
+  pixelate,
+  releaseEffectScratch,
+} from "./effects";
+import {
   applyObjectTransform,
+  effectReach,
   applySceneTransform,
   buildObjectPath,
   fontStringOf,
   layoutText,
   objectAABB,
+  objectBBox,
 } from "./geometry";
-import type { Scene } from "./scene";
+import { layerPool, type LayerPool } from "./layers";
+import { fillPaint, gradientOf, strokePaint } from "./paint";
+import { imageStore, type ImageStore } from "./imageStore";
+import type { MaskScope, Scene, SceneContainer } from "./scene";
 import {
-  ARROW_HEAD_SCALE,
   BADGE_RADIUS_SCALE,
   DEFAULT_FONT_FAMILY,
   DEFAULT_STROKE,
+  type BadgeObject,
+  type BlendMode,
+  type EditorDoc,
   type Fill,
   type GeomNode,
-  type BadgeObject,
-  type LineObject,
-  type MosaicObject,
   type ObjId,
-  type PenObject,
+  type Rect,
   type SceneTransform,
   type TextNode,
 } from "./types";
 
 export type { SceneTransform } from "./types";
 
-/**
- * 프리뷰 전용 배경 정보(§4.3). 프리뷰는 이미지가 **아래쪽 base 캔버스**에 있고 주석 캔버스는
- * 투명하므로, 배경 픽셀을 필요로 하는 블렌드(형광펜 multiply)가 그대로는 성립하지 않는다.
- * 이걸 넘기면 렌더러가 배경을 재구성해 출력 경로와 같은 픽셀을 만든다.
- *
- * **출력 경로는 이 옵션을 넘기지 않는다** — 이미지가 이미 대상 캔버스에 있어 블렌드가 그대로
- * 성립하고, 넘기지 않은 경우의 코드 경로는 종전과 1비트도 다르지 않다.
- */
-export interface PreviewBackdrop {
-  /** 회전·반전이 적용된 원본 캔버스(= oriented px 공간, 원점 0,0). */
-  image: CanvasImageSource;
-  /** 이미지에만 걸리는 색보정 필터 문자열 — base 캔버스의 CSS 필터와 같은 값. */
-  filter: string;
+/** 렌더 옵션 — 프리뷰 백킹·디테일 캔버스·출력 타일·썸네일이 같은 함수를 이 옵션만 바꿔 부른다. */
+export interface RenderOpts {
+  /** oriented 원본 캔버스. 없으면 노드만 그린다(투명 배경 — 썸네일·에셋 미리보기). */
+  image?: CanvasImageSource;
+  /** 'image'(기본) · 'transparent' · CSS 색(jpeg 출력의 흰 바탕). */
+  background?: "image" | "transparent" | string;
+  /** 이미지에만 거는 조정 필터(밝기·대비·채도). 주석에는 물들지 않는다(D2). */
+  filter?: string;
+  /** 텍스트 편집 중인 노드 — textarea 오버레이가 대신 보여 준다. */
+  skipId?: ObjId;
+  /** 라이브 미리보기로 따로 그리는 노드들(커밋 캐시에서 뺀다). */
+  skipIds?: ReadonlySet<ObjId>;
+  /** 부분 렌더 — 생략은 전부, `[]` 는 노드 0개(배경만). 태스크 52 레이어별 내보내기. */
+  nodeIds?: readonly ObjId[];
+  /** 에셋(이미지 페인트) 디코드 캐시. 없으면 빈 저장소로 그린다(회색 플레이스홀더). */
+  store?: ImageStore;
 }
 
-/**
- * 대상 ctx 에 주석 객체를 그린다. 이미지는 호출부가 **이미 그려 둔 상태**여야 한다
- * (모자이크가 그 픽셀을 샘플링하기 때문).
- *
- * 계약:
- * - 진입 시 `ctx.filter` 는 반드시 `"none"` 이어야 한다. 색보정 필터는 이미지에만 적용된다 —
- *   필터가 남아 있으면 밝기·대비·채도가 마크업까지 물들인다(설계 D2).
- * - 진입 시 CTM 은 항등이어야 한다(`t` 가 전체 변환을 담는다).
- * - 함수는 객체마다 save/restore 로 감싸므로 ctx 상태를 남기지 않는다.
- *
- * @param t      oriented px → 대상 캔버스 px. 프리뷰 `{0,0,s,s}`, 출력 `{−crop.x,−crop.y,outW/sw,outH/sh}`
- * @param opts.skipId   텍스트 편집 중인 객체 — textarea 오버레이가 대신 보여주므로 뺀다(§5.5)
- * @param opts.backdrop 프리뷰에서만 준다. 이미지가 대상 캔버스에 없을 때 배경을 재구성한다.
- */
-/**
- * 페인트 스택의 **첫 보이는 단색**. 그라디언트·이미지 페인트와 2번째 이후 겹은 여기서 사라진다.
- *
- * ponytail: 태스크 39(renderScene v2)가 페인트 스택 전체를 그릴 때까지의 천장이다. 그때까지는
- * 문서에 값이 있어도 화면에 안 나오는 기간이 생기는데, 그 값을 만들 UI 가 아직 없다(45가 39 뒤).
- */
-function primaryPaint(stack: readonly Fill[]): string | null {
-  for (const f of stack) {
-    if (!f.visible) continue;
-    if (f.type === "solid") return f.color;
-    return null; // 그라디언트·이미지는 39 전까지 그리지 않는다
+/** 격리 레이어 풀 — 상한은 **바이트**다(40 §3.5). 백킹이 커지면 그만큼 늘려 잡는다. */
+let pool: LayerPool | null = null;
+let poolBytes = 0;
+function poolFor(ctx: CanvasRenderingContext2D): LayerPool {
+  const want = Math.max(2 * ctx.canvas.width * ctx.canvas.height * 4, 8 * 1024 * 1024);
+  if (!pool || poolBytes !== want) {
+    pool?.releaseAll();
+    pool = layerPool(want);
+    poolBytes = want;
   }
-  return null;
+  return pool;
 }
 
-function primaryFill(o: GeomNode): string | null {
-  return primaryPaint(o.fills);
+/**
+ * 모듈 스크래치를 놓아 준다 — 편집기 언마운트에서 부른다.
+ *
+ * 스크래치는 모듈 전역이라 편집기를 닫아도 **마지막 크기 그대로 창 수명 동안 남는다**.
+ * doc-* 창은 별도 WebView2라 창마다 따로 쌓인다(4K 전면 가림에서 창당 ~15MB).
+ */
+export function releaseScratch(): void {
+  pool?.releaseAll();
+  pool = null;
+  poolBytes = 0;
+  releaseEffectScratch();
 }
 
-function primaryStroke(o: GeomNode): string | null {
-  return o.strokeWidth > 0 ? primaryPaint(o.strokes) : null;
-}
+// ── 진입 ────────────────────────────────────────────────────────────────────
 
 export function renderScene(
   ctx: CanvasRenderingContext2D,
   scene: Scene,
   t: SceneTransform,
-  opts?: { skipId?: ObjId; skipIds?: ReadonlySet<ObjId>; backdrop?: PreviewBackdrop },
+  opts?: RenderOpts,
 ): void {
-  const skip = opts?.skipId;
-  const skips = opts?.skipIds;
-  // 숨긴 노드는 scene.nodes 에 **아예 없다** — 프리뷰·저장·히트가 자동으로 일치한다(38 §3.2).
-  // 컨테이너의 격리 합성(불투명도·블렌드·효과·마스크)은 태스크 39 가 scene.containers 로 붙인다.
-  for (const o of scene.nodes) {
-    if (skip && o.id === skip) continue;
-    if (skips?.has(o.id)) continue;
-    ctx.save();
-    drawObject(ctx, o, t, opts?.backdrop);
-    ctx.restore();
-  }
-}
+  const o = opts ?? {};
+  const store = o.store ?? EMPTY_STORE;
+  const p = poolFor(ctx);
 
-function drawObject(
-  ctx: CanvasRenderingContext2D,
-  o: GeomNode,
-  t: SceneTransform,
-  backdrop?: PreviewBackdrop,
-): void {
-  // 모자이크는 대상 캔버스 픽셀을 되읽어야 하므로 디바이스 좌표로 따로 처리한다.
-  if (o.kind === "mosaic") {
-    drawMosaic(ctx, o, t);
-    return;
-  }
-  // 형광펜 multiply 는 배경 픽셀이 있어야 성립한다 — 프리뷰에서는 마스킹 합성으로 재현한다.
-  if (o.kind === "highlight" && backdrop) {
-    drawHighlightOnBackdrop(ctx, o, t, backdrop);
-    return;
-  }
-
-  ctx.globalAlpha = Math.max(0, Math.min(1, o.opacity));
-  applySceneTransform(ctx, t);
-  applyObjectTransform(ctx, o);
-
-  const stroke = primaryStroke(o);
-  ctx.strokeStyle = stroke ?? "transparent";
-  ctx.lineWidth = o.strokeWidth;
-  ctx.lineJoin = o.join;
-  ctx.lineCap = o.cap;
-  if (o.dash) ctx.setLineDash(o.dash);
-
-  switch (o.kind) {
-    case "highlight":
-      // 알파만 낮추면 겹치는 획마다 진해져 실제 형광펜과 다르게 보인다. multiply 는 흰 배경 위
-      // 글자를 가리지 않고 색만 입힌다. butt cap 이라야 획 끝이 뭉치지 않는다(§5.2).
-      ctx.globalCompositeOperation = "multiply";
-      ctx.lineCap = "butt";
-      ctx.stroke(buildObjectPath(o));
-      break;
-    case "pen":
-      if (stroke) ctx.stroke(buildObjectPath(o));
-      break;
-    case "line":
-    case "arrow":
-      if (stroke) ctx.stroke(buildObjectPath(o));
-      if (o.kind === "arrow" && stroke) drawArrowHeads(ctx, o, stroke);
-      break;
-    case "rect":
-    case "ellipse":
-    case "path":
-    case "frame": {
-      const path = buildObjectPath(o);
-      const fill = primaryFill(o);
-      if (fill) {
-        ctx.fillStyle = fill;
-        if (o.kind === "path" && o.fillRule === "evenodd") ctx.fill(path, "evenodd");
-        else ctx.fill(path);
-      }
-      if (stroke) ctx.stroke(path);
-      break;
-    }
-    case "text":
-      drawText(ctx, o);
-      break;
-    case "badge":
-      drawBadge(ctx, o);
-      break;
-  }
-}
-
-// ── 형광펜 프리뷰 합성 (§5.2, D2) ────────────────────────────────────────────
-
-/** 형광펜 마스킹용 재사용 스크래치(모자이크와 따로 — 같은 프레임에 둘 다 쓰일 수 있다). */
-let hlScratch: HTMLCanvasElement | null = null;
-function hlScratchCtx(w: number, h: number): CanvasRenderingContext2D {
-  if (!hlScratch) hlScratch = document.createElement("canvas");
-  if (hlScratch.width !== w || hlScratch.height !== h) {
-    hlScratch.width = w;
-    hlScratch.height = h;
-  }
-  const ctx = hlScratch.getContext("2d")!;
+  // ① 배경 — 이미지가 씬 캔버스에 **함께** 있어야 multiply·배경 블러·그룹 격리가 성립한다.
+  const bg = o.background ?? (o.image ? "image" : "transparent");
+  ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.filter = "none";
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = "source-over";
-  ctx.clearRect(0, 0, w, h);
-  return ctx;
+  ctx.filter = "none";
+  if (bg !== "transparent" && bg !== "image") {
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+  }
+  ctx.restore();
+
+  if (o.image && bg !== "transparent") {
+    ctx.save();
+    // 벡터 모양으로 이미지 자르기(시안 ⑦) — 클립을 먼저 걸고 이미지를 그린다.
+    if (scene.imageMask) applyImageMask(ctx, scene, t);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    // 조정은 **여기 한 곳**에서만 걸린다(D2: 주석에 물들지 않는다).
+    ctx.filter = o.filter && o.filter !== "none" ? o.filter : "none";
+    applySceneTransform(ctx, t);
+    ctx.drawImage(o.image, 0, 0);
+    ctx.restore();
+  }
+
+  // ② 노드 — 컨테이너 범위를 만나면 격리 합성한다.
+  const only = o.nodeIds ? new Set(o.nodeIds) : null;
+  renderRange(ctx, scene, t, 0, scene.nodes.length, o, store, p, only, null, new Set());
+}
+
+const EMPTY_STORE: ImageStore = {
+  get: () => null,
+  ensure: async () => {},
+};
+
+/** 씬 노드 구간을 그린다. 컨테이너를 만나면 레이어로 빼서 한 번에 얹는다. */
+function renderRange(
+  ctx: CanvasRenderingContext2D,
+  scene: Scene,
+  t: SceneTransform,
+  start: number,
+  end: number,
+  o: RenderOpts,
+  store: ImageStore,
+  p: LayerPool,
+  only: Set<ObjId> | null,
+  skipMask: ObjId | null,
+  /**
+   * 지금 열려 있는 컨테이너들. 이게 없으면 `renderContainer` 가 자기 범위를 그리려고 다시
+   * `renderRange` 를 부를 때 **자기 자신을 또 잡아** 무한 재귀가 된다(그룹 하나만 있어도).
+   */
+  open: Set<ObjId>,
+): void {
+  let i = start;
+  while (i < end) {
+    const c = containerAt(scene, i, start, end, open);
+    if (c) {
+      renderContainer(ctx, scene, t, c, o, store, p, only, open);
+      i = c.range[1];
+      continue;
+    }
+    const node = scene.nodes[i];
+    i++;
+    if (skipMask && node.id === skipMask) continue;
+    if (o.skipId && node.id === o.skipId) continue;
+    if (o.skipIds?.has(node.id)) continue;
+    if (only && !only.has(node.id)) continue;
+    renderNode(ctx, node, t, store, p);
+  }
+}
+
+/** `i` 에서 시작하는 컨테이너 중 **가장 바깥**(범위가 큰 것). 중첩은 재귀가 푼다. */
+function containerAt(
+  scene: Scene,
+  i: number,
+  start: number,
+  end: number,
+  open: Set<ObjId>,
+): SceneContainer | null {
+  let best: SceneContainer | null = null;
+  for (const c of scene.containers) {
+    if (open.has(c.id)) continue;
+    if (c.range[0] !== i || c.range[1] > end || c.range[0] < start) continue;
+    // 같은 자리에서 시작하는 컨테이너가 여럿이면 바깥부터 — 안쪽은 재귀에서 다시 잡힌다.
+    if (!best || c.range[1] > best.range[1]) best = c;
+  }
+  return best;
 }
 
 /**
- * 프리뷰에서 형광펜 획을 **출력 경로와 같은 픽셀**로 얹는다.
+ * 컨테이너 격리 합성 — 자식을 스크래치에 먼저 합치고, 그 결과를 불투명도·블렌드·효과·마스크를
+ * 걸어 **한 번에** 얹는다.
  *
- * 왜 필요한가: 블렌드 규격상 backdrop 알파가 0이면 multiply 결과는 소스 그대로다. 프리뷰 오버레이
- * 캔버스는 투명이라 multiply 가 source-over 로 퇴화해, 검정 위 노란 형광펜이 프리뷰에서는 보이고
- * 저장 파일에서는 사라진다(출력 캔버스에는 이미지가 같이 있어 진짜 multiply 가 걸린다).
- *
- * 어떻게: 획 bbox 크기 스크래치에
- *   ① 색보정 필터를 건 이미지 → ② 지금까지 오버레이에 그려진 주석(= 현재 보이는 배경 완성)
- *   → ③ multiply + alpha 로 획 → ④ destination-in 으로 같은 획을 불투명 스트로크(획 영역만 남김)
- * 를 차례로 하고, 결과를 오버레이에 source-over 로 얹는다. 획 내부(커버리지 1)에서 얹히는
- * 픽셀은 불투명한 `0.65·bg + 0.35·bg·color/255` 라서 아래 base 캔버스와 합성해도 출력과 같다.
- *
- * ②를 함께 깔기 때문에 형광펜끼리 겹칠 때의 누적 진해짐도 출력과 같이 재현된다.
- *
- * 알려진 한계: 안티에일리어싱 가장자리(커버리지 a<1)에서 ③의 색이 이미 a 만큼 옅어진 뒤 ④가
- * 알파에도 a 를 곱해, 출력의 `bg·(1 − 0.35a + …)` 대신 `a²` 항이 남는다. 획 경계 1px 대의
- * 미세한 차이라 눈에 띄지 않고, 획 내부는 정확히 일치한다.
+ * `beginLayer()` 가 있으면 이걸 브라우저가 해 주지만 WebView2(Chrome 152)에는 없다(실측).
  */
-function drawHighlightOnBackdrop(
+function renderContainer(
   ctx: CanvasRenderingContext2D,
-  o: PenObject,
+  scene: Scene,
   t: SceneTransform,
-  backdrop: PreviewBackdrop,
+  c: SceneContainer,
+  o: RenderOpts,
+  store: ImageStore,
+  p: LayerPool,
+  only: Set<ObjId> | null,
+  open: Set<ObjId>,
 ): void {
-  const canvas = ctx.canvas;
-  const box = objectAABB(o);
-  // 안티에일리어싱이 bbox 를 몇 px 넘어가므로 여유를 준다.
-  const pad = 2;
-  const x0 = Math.max(0, Math.floor((box.x + t.tx) * t.sx) - pad);
-  const y0 = Math.max(0, Math.floor((box.y + t.ty) * t.sy) - pad);
-  const x1 = Math.min(canvas.width, Math.ceil((box.x + box.w + t.tx) * t.sx) + pad);
-  const y1 = Math.min(canvas.height, Math.ceil((box.y + box.h + t.ty) * t.sy) + pad);
-  const dw = x1 - x0;
-  const dh = y1 - y0;
-  if (dw <= 0 || dh <= 0) return;
+  const w = ctx.canvas.width;
+  const h = ctx.canvas.height;
+  const layer = p.acquire(w, h);
+  const inner = layer.canvas;
+  layer.setTransform(1, 0, 0, 1, 0, 0);
+  layer.globalAlpha = 1;
+  layer.globalCompositeOperation = "source-over";
+  layer.filter = "none";
+  layer.clearRect(0, 0, w, h);
 
-  const sc = hlScratchCtx(dw, dh);
-  // ① 이미지(색보정 적용) — oriented 공간을 스크래치 원점으로 되민다.
-  sc.filter = backdrop.filter;
-  sc.translate(-x0, -y0);
-  applySceneTransform(sc, t);
-  sc.drawImage(backdrop.image, 0, 0);
-  sc.setTransform(1, 0, 0, 1, 0, 0);
-  sc.filter = "none";
-  // ② 이미 오버레이에 그려진 주석(이 획보다 아래 z-order).
-  sc.drawImage(canvas, x0, y0, dw, dh, 0, 0, dw, dh);
+  // 자식을 레이어에 — 안쪽 컨테이너는 재귀가 다시 격리한다. 자기 자신은 `open` 이 막는다.
+  open.add(c.id);
+  renderRange(layer, scene, t, c.range[0], c.range[1], o, store, p, only, c.mask?.maskId ?? null, open);
+  open.delete(c.id);
 
-  // ③ 진짜 multiply — 배경이 불투명해졌으므로 이제 성립한다.
-  sc.translate(-x0, -y0);
-  applySceneTransform(sc, t);
-  applyObjectTransform(sc, o);
-  const path = buildObjectPath(o);
-  sc.strokeStyle = primaryPaint(o.strokes) ?? "transparent";
-  sc.lineWidth = o.strokeWidth;
-  sc.lineJoin = "round";
-  // butt cap 이라야 획 끝이 뭉치지 않는다(출력 경로와 동일, §5.2).
-  sc.lineCap = "butt";
-  sc.globalAlpha = Math.max(0, Math.min(1, o.opacity));
-  sc.globalCompositeOperation = "multiply";
-  sc.stroke(path);
+  // 마스크: 마스크 노드의 알파로 잘라 낸다(모양 마스크는 채우기 알파가 곧 모양이다).
+  if (c.mask) applyMask(layer, scene, c.mask, t);
+  // 프레임 clipsContent — 잘라내기는 마스크와 같은 자리에서 한다.
+  if (c.clip) clipToRect(layer, c.clip, t);
 
-  // ④ 획 영역만 남긴다(canvas clip 은 채움 영역만 받으므로 스트로크에는 마스킹을 쓴다).
-  sc.globalAlpha = 1;
-  sc.globalCompositeOperation = "destination-in";
-  sc.stroke(path);
+  // 효과는 얹기 직전에 — 레이어 블러와 이너 섀도는 **레이어 안**에서, 드롭 섀도만 얹는 드로우에.
+  // 이너 섀도를 씬 캔버스에 걸면 source-atop 이 아래 픽셀 전부에 물든다(effects.ts 계약 ③).
+  const src: CanvasImageSource = inner;
+  for (const e of c.effects) {
+    if (e.type === "layer-blur") layerBlur(layer, inner, e.radius, t);
+    if (e.type === "inner-shadow" && c.clip) {
+      // 안쪽 가장자리가 정의되는 것은 프레임(clipsContent)뿐이다. 기하 없는 그룹의
+      // "안쪽"은 자손 실루엣이라 경로가 없다 — 45가 값을 노출할 때 함께 정한다.
+      const path = new Path2D();
+      path.rect((c.clip.x + t.tx) * t.sx, (c.clip.y + t.ty) * t.sy, c.clip.w * t.sx, c.clip.h * t.sy);
+      innerShadow(layer, path, e, t, p);
+    }
+  }
 
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = Math.max(0, Math.min(1, c.opacity));
+  // pass-through 컨테이너가 여기까지 온 것은 불투명도·효과·마스크 때문이다 — 블렌드는 기본값.
+  ctx.globalCompositeOperation = gcoOf(c.blend === "pass-through" ? "normal" : c.blend);
+  for (const e of c.effects) {
+    if (e.type === "drop-shadow") dropShadow(ctx, src, e, t);
+  }
+  if (c.blend === "linear-burn") drawLinearBurn(ctx, src, ctx.globalAlpha);
+  else ctx.drawImage(src, 0, 0);
+  ctx.restore();
+  p.release(layer);
+}
+
+// ── 노드 ────────────────────────────────────────────────────────────────────
+
+/** 노드 하나 — 효과·비표준 블렌드가 있으면 레이어로 빼서 한 번에 얹는다. */
+function renderNode(
+  ctx: CanvasRenderingContext2D,
+  node: GeomNode,
+  t: SceneTransform,
+  store: ImageStore,
+  p: LayerPool,
+): void {
+  const effects = node.effects.filter((e) => e.visible);
+  // 가림(모자이크)은 **대상 픽셀을 되읽는다** — 빈 레이어에 그리면 읽을 배경이 없어 아무것도
+  // 가려지지 않는다. 그래서 효과·블렌드가 붙어도 레이어로 빼지 않는다(39 §3.7).
+  const needsLayer =
+    node.kind !== "mosaic" &&
+    (effects.length > 0 || (node.blend !== "normal" && node.blend !== "pass-through"));
+  if (!needsLayer) {
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, Math.min(1, node.opacity));
+    ctx.globalCompositeOperation = gcoOf(node.blend);
+    paintNode(ctx, node, t, store);
+    ctx.restore();
+    return;
+  }
+
+  const w = ctx.canvas.width;
+  const h = ctx.canvas.height;
+  const layer = p.acquire(w, h);
+  layer.setTransform(1, 0, 0, 1, 0, 0);
+  layer.globalAlpha = 1;
+  layer.globalCompositeOperation = "source-over";
+  layer.filter = "none";
+  layer.clearRect(0, 0, w, h);
+  paintNode(layer, node, t, store);
+
+  for (const e of effects) {
+    if (e.type === "layer-blur") layerBlur(layer, layer.canvas, e.radius, t);
+    if (e.type === "inner-shadow") {
+      const path = devicePathOf(node, t);
+      innerShadow(layer, path, e, t, p);
+    }
+  }
+
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = Math.max(0, Math.min(1, node.opacity));
+  ctx.globalCompositeOperation = gcoOf(node.blend);
+  for (const e of effects) {
+    if (e.type === "drop-shadow") dropShadow(ctx, layer.canvas, e, t);
+  }
+  if (node.blend === "linear-burn") drawLinearBurn(ctx, layer.canvas, ctx.globalAlpha);
+  else ctx.drawImage(layer.canvas, 0, 0);
+  ctx.restore();
+  p.release(layer);
+}
+
+/** 실제 그리기 — 채우기 스택 → 선 스택. 배경을 읽는 종류(모자이크)는 따로 간다. */
+function paintNode(
+  ctx: CanvasRenderingContext2D,
+  node: GeomNode,
+  t: SceneTransform,
+  store: ImageStore,
+): void {
+  if (node.kind === "mosaic") {
+    drawMosaic(ctx, node, t);
+    return;
+  }
+  if (node.kind === "text") {
+    drawText(ctx, node, t, store);
+    return;
+  }
+  if (node.kind === "badge") {
+    drawBadge(ctx, node, t, store);
+    return;
+  }
+  ctx.save();
+  applySceneTransform(ctx, t);
+  applyObjectTransform(ctx, node);
+  const path = buildObjectPath(node);
+  fillPaint(ctx, node, path, t, store);
+  strokePaint(ctx, node, path, t, store);
+  ctx.restore();
+}
+
+/** 디바이스 좌표 경로 — 이너 섀도처럼 CTM 을 안 타는 연산에 쓴다. */
+function devicePathOf(node: GeomNode, t: SceneTransform): Path2D {
+  const m = new DOMMatrix()
+    .scaleSelf(t.sx, t.sy)
+    .translateSelf(t.tx, t.ty);
+  const out = new Path2D();
+  out.addPath(buildObjectPath(node), m);
+  return out;
+}
+
+/** 캔버스에 없는 블렌드 하나 — `invert ∘ lighter ∘ invert`(39 §3.4). 불투명 배경에서 정확하다. */
+function drawLinearBurn(ctx: CanvasRenderingContext2D, src: CanvasImageSource, alpha: number): void {
+  const w = ctx.canvas.width;
+  const h = ctx.canvas.height;
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  // 배경을 반전 → 소스를 반전해 더함(lighter) → 전체를 다시 반전.
+  ctx.globalCompositeOperation = "difference";
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, w, h);
+  ctx.globalCompositeOperation = "lighter";
+  ctx.globalAlpha = alpha;
+  ctx.filter = "invert(1)";
+  ctx.drawImage(src, 0, 0);
+  ctx.filter = "none";
+  ctx.globalCompositeOperation = "difference";
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, w, h);
+  ctx.restore();
+}
+
+/** 문서 블렌드 → canvas 합성 이름. `linear-dodge` 만 이름이 다르고, `linear-burn` 은 없다. */
+function gcoOf(b: BlendMode): GlobalCompositeOperation {
+  if (b === "linear-dodge") return "lighter";
+  if (b === "linear-burn" || b === "pass-through" || b === "normal") return "source-over";
+  return b as GlobalCompositeOperation;
+}
+
+// ── 마스크 ──────────────────────────────────────────────────────────────────
+
+/** 컨테이너 마스크 — 마스크 노드의 알파로 레이어를 잘라 낸다. */
+export function applyMask(
+  ctx: CanvasRenderingContext2D,
+  scene: Scene,
+  mask: MaskScope,
+  t: SceneTransform,
+): void {
+  const node = scene.nodes.find((n) => n.id === mask.maskId);
+  if (!node) return;
+  ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.filter = "none";
   ctx.globalAlpha = 1;
-  ctx.globalCompositeOperation = "source-over";
-  ctx.drawImage(sc.canvas, 0, 0, dw, dh, x0, y0, dw, dh);
+  // 반전 마스크는 "모양 **밖**을 남긴다" — destination-out 이 그대로 그 뜻이다.
+  ctx.globalCompositeOperation = mask.invert ? "destination-out" : "destination-in";
+  applySceneTransform(ctx, t);
+  applyObjectTransform(ctx, node);
+  ctx.fillStyle = "#000000";
+  ctx.fill(buildObjectPath(node));
+  ctx.restore();
 }
 
-/** 화살촉 — 길이 4 × strokeWidth 의 채운 삼각형(§5.2). 방향은 `heads`(37)가 정한다. */
-function drawArrowHeads(
-  ctx: CanvasRenderingContext2D,
-  o: LineObject,
-  color: string,
-): void {
-  ctx.fillStyle = color;
-  if (o.heads.end === "arrow") {
-    drawArrowHead(ctx, o.x1, o.y1, o.x2, o.y2, o.strokeWidth);
+/** 벡터 모양으로 이미지 자르기(시안 ⑦) — 이미지를 그리기 **전에** 클립을 건다. */
+function applyImageMask(ctx: CanvasRenderingContext2D, scene: Scene, t: SceneTransform): void {
+  const m = scene.imageMask;
+  if (!m) return;
+  const node = scene.nodes.find((n) => n.id === m.id);
+  if (!node) return;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  applySceneTransform(ctx, t);
+  applyObjectTransform(ctx, node);
+  const path = buildObjectPath(node);
+  if (!m.invert) {
+    ctx.clip(path);
+    return;
   }
-  if (o.heads.start === "arrow") {
-    drawArrowHead(ctx, o.x2, o.y2, o.x1, o.y1, o.strokeWidth);
-  }
+  // 반전: 캔버스 전체에서 모양을 뺀 영역(evenodd 두 겹).
+  const outer = new Path2D();
+  outer.rect(-1e6, -1e6, 2e6, 2e6);
+  outer.addPath(path);
+  ctx.clip(outer, "evenodd");
 }
 
-function drawArrowHead(
+function clipToRect(ctx: CanvasRenderingContext2D, r: Rect, t: SceneTransform): void {
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalCompositeOperation = "destination-in";
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = "#000000";
+  ctx.fillRect((r.x + t.tx) * t.sx, (r.y + t.ty) * t.sy, r.w * t.sx, r.h * t.sy);
+  ctx.restore();
+}
+
+// ── 텍스트 · 뱃지 ───────────────────────────────────────────────────────────
+
+/** 채우기 스택 첫 겹의 스타일(단색 또는 그라디언트). 글자·뱃지 원처럼 경로가 하나인 곳에 쓴다. */
+function firstPaintStyle(
   ctx: CanvasRenderingContext2D,
-  fromX: number,
-  fromY: number,
-  toX: number,
-  toY: number,
-  strokeWidth: number,
-): void {
-  const len = ARROW_HEAD_SCALE * strokeWidth;
-  const dx = toX - fromX;
-  const dy = toY - fromY;
-  if (dx === 0 && dy === 0) return;
-  const a = Math.atan2(dy, dx);
-  const spread = Math.PI / 7; // 좌우 ≈25.7° → 전체 ≈51°
-  ctx.beginPath();
-  ctx.moveTo(toX, toY);
-  ctx.lineTo(toX - len * Math.cos(a - spread), toY - len * Math.sin(a - spread));
-  ctx.lineTo(toX - len * Math.cos(a + spread), toY - len * Math.sin(a + spread));
-  ctx.closePath();
-  ctx.fill();
+  fills: readonly Fill[],
+  bbox: Rect,
+  t: SceneTransform,
+  fallback: string,
+): string | CanvasGradient | CanvasPattern {
+  for (const f of fills) {
+    if (!f.visible) continue;
+    if (f.type === "solid") return f.color;
+    const g = gradientOf(ctx, f, bbox, t);
+    if (g) return g;
+  }
+  return fallback;
 }
 
 /** 여러 줄 텍스트 — 앵커(x,y)가 첫 줄의 좌상단. 레이아웃은 geometry 와 공유한다. */
-function drawText(ctx: CanvasRenderingContext2D, o: TextNode): void {
+function drawText(
+  ctx: CanvasRenderingContext2D,
+  o: TextNode,
+  t: SceneTransform,
+  store: ImageStore,
+): void {
+  void store;
   const m = layoutText(o);
-  ctx.fillStyle = primaryFill(o) ?? DEFAULT_STROKE;
+  ctx.save();
+  applySceneTransform(ctx, t);
+  applyObjectTransform(ctx, o);
+  ctx.globalAlpha = 1;
+  // 글자색은 **채우기 스택**이다(v1 의 stroke 자리 — 37 §3.3 매핑표).
+  ctx.fillStyle = firstPaintStyle(ctx, o.fills, objectBBox(o), t, DEFAULT_STROKE);
   ctx.font = fontStringOf(o.fontSize, o.fontFamily);
   ctx.textAlign = "left";
   ctx.textBaseline = "top";
   for (let i = 0; i < m.lines.length; i++) {
     ctx.fillText(m.lines[i], o.x, o.y + i * m.lineHeight);
   }
+  ctx.restore();
 }
 
-/** 번호 뱃지 — 반지름 0.9 × fontSize 의 채운 원 + 가운데 숫자(§5.2). */
-function drawBadge(ctx: CanvasRenderingContext2D, o: BadgeObject): void {
+/** 번호 뱃지 — 반지름 0.9 × fontSize 의 채운 원 + 가운데 숫자. */
+function drawBadge(
+  ctx: CanvasRenderingContext2D,
+  o: BadgeObject,
+  t: SceneTransform,
+  store: ImageStore,
+): void {
   const r = BADGE_RADIUS_SCALE * o.fontSize;
-  const fill = primaryFill(o) ?? DEFAULT_STROKE;
-  ctx.beginPath();
-  ctx.arc(o.x, o.y, r, 0, Math.PI * 2);
-  ctx.fillStyle = fill;
-  ctx.fill();
-  const outline = primaryStroke(o);
-  if (outline) {
-    ctx.strokeStyle = outline;
-    ctx.lineWidth = o.strokeWidth;
-    ctx.stroke();
-  }
-  ctx.fillStyle = readableOn(fill);
+  ctx.save();
+  applySceneTransform(ctx, t);
+  applyObjectTransform(ctx, o);
+  const path = buildObjectPath(o);
+  fillPaint(ctx, o, path, t, store);
+  strokePaint(ctx, o, path, t, store);
+  // 숫자 색은 원 색의 대비로 정한다 — 사용자가 고르는 값이 아니다(시안에 항목이 없다).
+  const solid = o.fills.find((f) => f.visible && f.type === "solid");
+  ctx.fillStyle = readableOn(solid && solid.type === "solid" ? solid.color : DEFAULT_STROKE);
   ctx.font = fontStringOf(o.fontSize, DEFAULT_FONT_FAMILY, 700);
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillText(String(o.n), o.x, o.y);
+  ctx.restore();
+  void r;
 }
 
 /** 배경색 위에서 읽히는 글자색(밝기 기준 흰/검 이분). */
@@ -353,109 +528,252 @@ function readableOn(bg: string): string {
   return (r * 299 + g * 587 + b * 114) / 1000 > 150 ? "#1C1C1E" : "#FFFFFF";
 }
 
-// ── 모자이크 / 블러 (§5.2) ───────────────────────────────────────────────────
+// ── 가림(모자이크·블러) ─────────────────────────────────────────────────────
 
 /**
- * 모듈 스크래치를 놓아 준다 — 편집기 언마운트에서 부른다.
+ * 가림은 **대상 ctx 자신의 픽셀**을 샘플링한다. v2 에서는 이미지가 같은 캔버스에 있으므로
+ * 프리뷰에서 원본을 따로 심어 줄 필요가 없다(v1 의 `seedMosaicSources` 가 사라진 이유).
  *
- * 두 스크래치는 모듈 전역이라 편집기를 닫아도 **마지막 크기 그대로 창 수명 동안 남았다**.
- * doc-* 창은 별도 WebView2라 모듈 인스턴스도 창마다 따로이므로, 창을 열어 둔 채 편집기만
- * 여닫는 흐름에서 창당 최대 ~15MB가 회수되지 않았다(4K 전면 가림 기준).
- */
-export function releaseScratch(): void {
-  hlScratch = null;
-  mosaicScratch = null;
-}
-
-/** 픽셀화 축소본·블러 패딩본을 담는 재사용 스크래치 캔버스(매 프레임 새로 만들면 GC가 튄다). */
-let mosaicScratch: HTMLCanvasElement | null = null;
-function mosaicScratchCtx(w: number, h: number): CanvasRenderingContext2D {
-  if (!mosaicScratch) mosaicScratch = document.createElement("canvas");
-  if (mosaicScratch.width !== w || mosaicScratch.height !== h) {
-    mosaicScratch.width = w;
-    mosaicScratch.height = h;
-  }
-  const ctx = mosaicScratch.getContext("2d")!;
-  ctx.clearRect(0, 0, w, h);
-  return ctx;
-}
-
-/**
- * 모자이크/블러는 **대상 ctx 자신의 픽셀을 샘플링**한다(renderScene 은 이미지가 그려진 뒤에
- * 불린다). getImageData 를 쓰지 않으므로 taint 걱정이 없다.
- *
- * 배율 보정: 셀 개수를 oriented 크기 기준으로 정하므로(`w / strength`) 프리뷰(s=0.4)와
- * 출력(s=1)에서 **같은 셀 격자**가 나온다. 블러 반경도 배율을 곱해 시각 결과를 맞춘다.
- *
- * 합성은 `copy` 다 — 가림은 아래 픽셀을 **남기면 안 되는** 연산이라 알파가 1 미만인 결과를
- * source-over 로 얹으면 그 비율만큼 원본이 그대로 비친다(§5.2 회귀: e2e 30 (l)).
+ * 셀 격자·블러 반경은 oriented 기준이라 프리뷰(s<1)와 출력(s=1)에서 같은 결과가 나온다.
+ * 합성이 `copy` 인 것과 3σ 가장자리 복제 패딩은 effects.ts 로 옮겼다 — 그 두 가지가 없으면
+ * 가려야 할 픽셀이 비친다(e2e 30 (r)(s) 가 지키는 계약).
  */
 function drawMosaic(
   ctx: CanvasRenderingContext2D,
-  o: MosaicObject,
+  o: Extract<GeomNode, { kind: "mosaic" }>,
   t: SceneTransform,
 ): void {
-  const canvas = ctx.canvas;
   const box = objectAABB(o); // rot 이 걸려도 외접 사각형을 샘플링하고 클립으로 잘라낸다
-
-  // 회전된 영역이라도 정확한 모양만 남도록 먼저 클립을 건다(clip 은 CTM 을 바꿔도 유지된다).
+  ctx.save();
   applySceneTransform(ctx, t);
   applyObjectTransform(ctx, o);
   ctx.beginPath();
   ctx.rect(o.x, o.y, o.w, o.h);
   ctx.clip();
-  ctx.setTransform(1, 0, 0, 1, 0, 0); // 이후는 디바이스 좌표로 되그린다
-  ctx.globalAlpha = 1;
-  // 클립 안을 **대체**한다. source-over 로 얹으면 결과 알파가 1 미만인 곳마다
-  // `a×가림 + (1−a)×원본` 이 되어 가려야 할 픽셀이 그대로 비친다 — 투명 배경 PNG 의
-  // 축소본(알파까지 평균된다)과 블러 가장자리가 정확히 그 경우다. 아래 두 경로 모두
-  // 목적지 사각형이 클립을 완전히 덮으므로 copy 가 클립 밖을 건드리지 않는다.
-  ctx.globalCompositeOperation = "copy";
-
-  const x0 = Math.max(0, Math.floor((box.x + t.tx) * t.sx));
-  const y0 = Math.max(0, Math.floor((box.y + t.ty) * t.sy));
-  const x1 = Math.min(canvas.width, Math.ceil((box.x + box.w + t.tx) * t.sx));
-  const y1 = Math.min(canvas.height, Math.ceil((box.y + box.h + t.ty) * t.sy));
-  const dw = x1 - x0;
-  const dh = y1 - y0;
-  if (dw <= 0 || dh <= 0) return;
-
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
   const strength = Math.max(1, o.strength);
-  if (o.mode === "blur") {
-    // 축 배율이 다르면(비율 고정 해제 리사이즈) **큰 쪽**에 맞춘다 — 가리기가 목적이라
-    // 약해지는 쪽으로 틀리면 안 된다. 등방 배율에서는 종전 평균과 같은 값이다.
-    const px = strength * Math.max(t.sx, t.sy);
-    // 캔버스에서 직접 넓게 떠서 블러하면 안 된다. 필터 블러는 **그리는 소스 사각형 밖을
-    // 투명으로** 보므로 소스 경계에서 결과 알파가 떨어지는데(경계열 ≈0.5, 코너 ≈0.25),
-    // 그 경계는 이미지·크롭 가장자리에서 `Math.max(0, …)` 클램프에 걸려 모자이크 사각형과
-    // 겹쳐 버린다 → 가장자리 수십 px 가 원본과 섞여 남는다(좌상단 가리기가 정확히 이 경우).
-    // 대신 가장자리 복제로 3σ 패딩을 만든 스크래치를 블러한다 — 클립 안 알파가 어디서나 1이다.
-    // (Skia 블러의 지원 반경은 ≈2.82σ 라 3σ 면 커널이 전부 소스 안에 들어온다.)
-    const p = Math.ceil(px * 3) + 1;
-    const pw = dw + p * 2;
-    const ph = dh + p * 2;
-    const s = mosaicScratchCtx(pw, ph);
-    s.imageSmoothingEnabled = false;
-    s.drawImage(canvas, x0, y0, dw, dh, p, p, dw, dh);
-    // 좌·우 한 열을 패딩 폭으로 늘린 뒤, 위·아래를 전폭으로 늘려 모서리까지 채운다.
-    s.drawImage(s.canvas, p, p, 1, dh, 0, p, p, dh);
-    s.drawImage(s.canvas, p + dw - 1, p, 1, dh, p + dw, p, p, dh);
-    s.drawImage(s.canvas, 0, p, pw, 1, 0, 0, pw, p);
-    s.drawImage(s.canvas, 0, p + dh - 1, pw, 1, 0, p + dh, pw, p);
-    ctx.filter = `blur(${px}px)`;
-    // 스크래치 **전체**를 그린다 — 부분 소스로 그리면 그 경계에 같은 감쇠가 다시 생긴다.
-    ctx.drawImage(s.canvas, x0 - p, y0 - p);
-    ctx.filter = "none";
-    return;
+  if (o.mode === "blur") backgroundBlur(ctx, box, strength, t);
+  else pixelate(ctx, box, strength, t);
+  ctx.restore();
+}
+
+// ── 저장 전 구조 점검 ───────────────────────────────────────────────────────
+
+/**
+ * 픽셀이 아니라 **구조**를 본다 — 가림이 새는 배치와, 이 플랫폼에서 Figma 와 달라지는 합성.
+ * 저장·내보내기 확인창이 한 줄로 띄운다(40 §3.6). 차단은 아니다.
+ */
+export function occlusionIntegrity(scene: Scene): { warnings: string[] } {
+  const warnings: string[] = [];
+  const byId = new Map(scene.nodes.map((n) => [n.id, n]));
+  for (const c of scene.containers) {
+    const translucent = c.opacity < 1 || (c.blend !== "normal" && c.blend !== "pass-through");
+    if (!translucent) continue;
+    for (let i = c.range[0]; i < c.range[1]; i++) {
+      const n = scene.nodes[i];
+      if (n?.kind === "mosaic") {
+        warnings.push(
+          `가림 영역이 반투명 그룹 안에 있습니다 — 아래 원본이 비칩니다(그룹 불투명도 ${Math.round(c.opacity * 100)}%).`,
+        );
+        break;
+      }
+    }
+  }
+  for (const n of byId.values()) {
+    if (n.blend === "linear-burn") {
+      warnings.push(
+        "선형 번은 이 플랫폼의 캔버스에 없어 반전 합성으로 흉내 냅니다 — 투명 배경 위에서는 Figma 와 다릅니다.",
+      );
+      break;
+    }
+  }
+  return { warnings };
+}
+
+/** 문서의 에셋 디코드를 보장한다 — 출력·내보내기 전에 반드시 await(52 계약). */
+export function ensureAssets(doc: EditorDoc): Promise<void> {
+  return imageStore(doc).ensure(doc);
+}
+
+// ── 렌더 윈도 · 타일 출력 (태스크 40) ───────────────────────────────────────
+
+/** 디테일 캔버스 한 장의 상한(픽셀). 넘으면 배율을 한 단계 낮춘다(40 §3.1). */
+export const MAX_DETAIL_PX = 8_000_000;
+
+/** 출력 타일 한 변의 기본 디바이스 px — 작업 메모리를 출력 크기와 무관하게 묶는다. */
+const DEFAULT_TILE_PX = 2048;
+
+/** 씬 전체에서 노드가 자기 경계 밖으로 번지는 최대 거리(oriented px). */
+function sceneReach(scene: Scene): number {
+  let r = 0;
+  for (const n of scene.nodes) {
+    r = Math.max(r, effectReach(n));
+    // 가림은 배경을 3σ 까지 빨아들인다 — 창 경계가 그 안쪽을 지나면 스크롤마다 결과가 달라진다.
+    if (n.kind === "mosaic") r = Math.max(r, n.mode === "blur" ? 3 * n.strength : n.strength);
+  }
+  return Math.ceil(r);
+}
+
+function intersect(a: Rect, b: Rect): Rect {
+  const x0 = Math.max(a.x, b.x);
+  const y0 = Math.max(a.y, b.y);
+  const x1 = Math.min(a.x + a.w, b.x + b.w);
+  const y1 = Math.min(a.y + a.h, b.y + b.h);
+  return { x: x0, y: y0, w: Math.max(0, x1 - x0), h: Math.max(0, y1 - y0) };
+}
+
+/**
+ * 창(win)만 그린다 — 화면 디테일 캔버스와 출력 타일이 같은 함수를 쓴다.
+ *
+ * **클램프 사고를 구조로 없앤다**(40 §3.2): 배경 의존 효과(가림·배경 블러)는 캔버스 경계에서
+ * 값을 클램프하는데, 창만 그리면 그 경계가 이미지 한가운데를 지나 팬할 때마다 결과가 달라진다.
+ * 그래서 작업 캔버스를 `win ⊕ reach` 로 잡고 이미지 경계와 교차시킨다 — 어떤 가시 픽셀에서도
+ * 경계는 `reach` 이상 떨어져 있거나(안전), 진짜 이미지 가장자리다(가장자리 복제가 맞는 곳).
+ *
+ * `win` 이 이미지 전체면 확장 없이 한 번에 그린다 — 프리뷰 백킹·1x 출력은 종전 경로 그대로다.
+ */
+export function renderRegion(
+  scene: Scene,
+  win: Rect,
+  devScale: number,
+  opts: RenderOpts & { into?: CanvasRenderingContext2D; imageSize?: { w: number; h: number } },
+): { ctx: CanvasRenderingContext2D; work: Rect } {
+  const img = opts.imageSize ?? sizeOfImage(opts.image);
+  const bounds: Rect = img ? { x: 0, y: 0, w: img.w, h: img.h } : win;
+  const reach = sceneReach(scene);
+  const grown: Rect = {
+    x: win.x - reach,
+    y: win.y - reach,
+    w: win.w + reach * 2,
+    h: win.h + reach * 2,
+  };
+  const work = img ? intersect(grown, bounds) : grown;
+  const w = Math.max(1, Math.ceil(work.w * devScale));
+  const h = Math.max(1, Math.ceil(work.h * devScale));
+
+  let ctx = opts.into ?? null;
+  if (!ctx) {
+    const cv = document.createElement("canvas");
+    cv.width = w;
+    cv.height = h;
+    ctx = cv.getContext("2d")!;
+  } else if (ctx.canvas.width !== w || ctx.canvas.height !== h) {
+    ctx.canvas.width = w;
+    ctx.canvas.height = h;
+  }
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  renderScene(ctx, scene, { tx: -work.x, ty: -work.y, sx: devScale, sy: devScale }, opts);
+  return { ctx, work };
+}
+
+function sizeOfImage(img: CanvasImageSource | undefined): { w: number; h: number } | null {
+  if (!img) return null;
+  const any = img as { width?: number; height?: number; naturalWidth?: number; naturalHeight?: number };
+  const w = any.naturalWidth ?? any.width ?? 0;
+  const h = any.naturalHeight ?? any.height ?? 0;
+  return w > 0 && h > 0 ? { w, h } : null;
+}
+
+/**
+ * 저장·내보내기 출력 — **타일로** 그린다.
+ *
+ * 종전에는 출력 캔버스를 통째로 만들고 한 번에 그렸다. 2x(5760×3210)면 렌더 중 작업 메모리가
+ * 출력 크기에 비례해 늘고, 3x 는 166MB 다. 타일이면 작업 캔버스가 타일 하나 + reach 로 묶인다
+ * (CLAUDE.md 의 저메모리 강제 종료 이력이 이 상한을 요구한다).
+ */
+export function renderOutput(
+  scene: Scene,
+  o: {
+    crop: Rect | null;
+    outW: number;
+    outH: number;
+    nodeIds?: readonly ObjId[];
+    background: RenderOpts["background"];
+    filter?: string;
+    tileDevicePx?: number;
+    image: CanvasImageSource;
+    store?: ImageStore;
+  },
+): HTMLCanvasElement {
+  const img = sizeOfImage(o.image);
+  const srcW = o.crop ? o.crop.w : img?.w ?? o.outW;
+  const srcH = o.crop ? o.crop.h : img?.h ?? o.outH;
+  const sx = o.crop ? o.crop.x : 0;
+  const sy = o.crop ? o.crop.y : 0;
+
+  const out = document.createElement("canvas");
+  out.width = Math.max(1, Math.round(o.outW));
+  out.height = Math.max(1, Math.round(o.outH));
+  const ctx = out.getContext("2d")!;
+  const scale = out.width / Math.max(1, srcW);
+  const scaleY = out.height / Math.max(1, srcH);
+
+  // 배율이 축마다 다르면(비율 고정 해제 리사이즈) 타일 좌표가 어긋난다 — 그때는 한 장으로 간다.
+  const tile = o.tileDevicePx ?? DEFAULT_TILE_PX;
+  const single = Math.abs(scale - scaleY) > 1e-6 || (out.width <= tile && out.height <= tile);
+  if (single) {
+    renderScene(
+      ctx,
+      scene,
+      { tx: -sx, ty: -sy, sx: scale, sy: scaleY },
+      { image: o.image, background: o.background, filter: o.filter, nodeIds: o.nodeIds, store: o.store },
+    );
+    return out;
   }
 
-  // pixelate — 셀 개수는 oriented 크기로 정해 배율에 불변.
-  const cw = Math.max(1, Math.round(dw / Math.max(1, strength * t.sx)));
-  const ch = Math.max(1, Math.round(dh / Math.max(1, strength * t.sy)));
-  const small = mosaicScratchCtx(cw, ch);
-  small.imageSmoothingEnabled = true;
-  small.drawImage(canvas, x0, y0, dw, dh, 0, 0, cw, ch);
-  ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(small.canvas, 0, 0, cw, ch, x0, y0, dw, dh);
-  ctx.imageSmoothingEnabled = true;
+  const stepSrc = tile / scale; // 타일 한 변에 해당하는 oriented px
+  for (let ty = 0; ty < srcH; ty += stepSrc) {
+    for (let tx = 0; tx < srcW; tx += stepSrc) {
+      const win: Rect = {
+        x: sx + tx,
+        y: sy + ty,
+        w: Math.min(stepSrc, srcW - tx),
+        h: Math.min(stepSrc, srcH - ty),
+      };
+      const { ctx: work, work: rect } = renderRegion(scene, win, scale, {
+        image: o.image,
+        background: o.background,
+        filter: o.filter,
+        nodeIds: o.nodeIds,
+        store: o.store,
+        imageSize: img ?? undefined,
+      });
+      // 작업 캔버스에서 **창에 해당하는 부분만** 오려 붙인다(확장분은 효과 계산용이다).
+      const cutX = Math.round((win.x - rect.x) * scale);
+      const cutY = Math.round((win.y - rect.y) * scale);
+      const cutW = Math.max(1, Math.round(win.w * scale));
+      const cutH = Math.max(1, Math.round(win.h * scale));
+      ctx.drawImage(
+        work.canvas,
+        cutX,
+        cutY,
+        cutW,
+        cutH,
+        Math.round(tx * scale),
+        Math.round(ty * scale),
+        cutW,
+        cutH,
+      );
+    }
+  }
+  return out;
+}
+
+/**
+ * 내보내기 전 메모리 추정 — 배율 게이트와 "예상 용량" 표시의 **단일 출처**(40 §3.3).
+ * 인코더 리드백(toBlob 이 만드는 1× 출력 사본)까지 센다 — 그게 빠지면 2x 저장에서 실제 피크를
+ * 크게 낮춰 잡는다.
+ */
+export function estimateRenderBytes(
+  scene: Scene,
+  o: { outW: number; outH: number; tileDevicePx?: number },
+): { peak: number; output: number; work: number } {
+  void scene;
+  const output = Math.max(1, o.outW) * Math.max(1, o.outH) * 4;
+  const tile = o.tileDevicePx ?? DEFAULT_TILE_PX;
+  const tiled = o.outW > tile || o.outH > tile;
+  const work = tiled ? tile * tile * 4 * 2 : output; // 타일 + 격리 레이어 1장
+  const readback = output; // toBlob 인코더가 뜨는 사본
+  return { peak: output + work + readback, output, work };
 }

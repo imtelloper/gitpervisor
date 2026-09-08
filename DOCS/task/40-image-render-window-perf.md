@@ -125,5 +125,10 @@ e2e 훅: `window.__gpv.imageEditor.renderRegion(win, devScale): ImageData` · `d
 
 - **e2e 35 신규 (d)**: (d-1) `view.scale=4` → `detail().active && level>=1`, 디테일 캔버스 픽셀 == `readSaved`(원본 픽셀); (d-2) **윈도 불변**: 팬 두 위치에서 `renderRegion` 겹침 영역 ImageData 델타 0(모자이크·배경 블러·그림자 포함 픽스처); (d-3) `pixelPreview=2` 200px 픽스처 → 디테일 `w===400`·정수 배율; (d-4) 상한: 큰 뷰포트 합성(`stage` 훅) → `level` 강등; (d-5) 백킹 `[0][1]` 크기 불변(35 (a) 재확인); (d-6) 디테일 활성 중 포인터 합성 → 선택 동작(`[1]`이 받는다).
 - **e2e 30 신규**: (w-1) 1x 저장본 == 타일 경계 델타 0(2048 경계를 걸치는 4K 픽스처는 무거워 200px 픽스처에 `tileDevicePx: 64`로 강제); (w-2) 2x 저장본 픽셀 위치 = 프리뷰×2; (s-2) 샌드위치 캐시 정확성.
+- **프로브 실측(2026-09-07, dev 앱 WebView2 / Chrome 152.0.0.0 · Windows 11)**:
+  `'beginLayer' in CanvasRenderingContext2D.prototype` = **false** → 39 §3.3 은 **P2(layerPool) 경로**로 확정.
+  `globalCompositeOperation = 'linear-burn'` **거부**(값이 안 바뀜) → 39 §3.4 invert∘lighter∘invert 필요.
+  표준 블렌드 17종 + `lighter` 전부 수용 · `createConicGradient` 있음(원뿔 그라디언트 직접 지원) ·
+  분리(비부착) 캔버스에서 `ctx.filter` 동작. 나머지 행(메모리·프레임 시간)은 4K 실기에서 채운다.
 - **실측표(이 절에 채운다)**: 4K PNG 열기 — 정상 / 300% 확대 / 2x 저장 피크 — private bytes·프레임 시간(조정 슬라이더 틱·드래그)·`HAS_LAYERS` 값·격리 깊이 3 풀 바이트. 목표 ≤200/≤230/≤450MB. 부하 낮은 상태 3회 중앙값.
 - **회귀**: 30(91)·34(32)·35(13) 무변경 통과(윈도==이미지 경로 비트 동일).

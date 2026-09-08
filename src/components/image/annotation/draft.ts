@@ -68,8 +68,9 @@ export function makeDraft(
       return {
         ...common,
         kind: "highlight",
-        // 형광펜의 multiply 는 값이다(37) — 렌더가 kind 로 특수 분기하지 않는다.
+        // 형광펜의 multiply·butt cap 은 **값**이다(37) — 렌더가 kind 로 특수 분기하지 않는다.
         blend: "multiply",
+        cap: "butt",
         strokeWidth: s.style.strokeWidth * HIGHLIGHT_WIDTH_SCALE,
         opacity: HIGHLIGHT_OPACITY,
         pts: [a.x, a.y],

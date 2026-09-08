@@ -26,7 +26,11 @@ import {
   type OrientDelta,
 } from "../../lib/annotate/geometry";
 import { DocHistory } from "../../lib/annotate/history";
-import { renderScene } from "../../lib/annotate/render";
+import {
+  estimateRenderBytes,
+  renderOutput as renderOutputTiled,
+  renderRegion,
+} from "../../lib/annotate/render";
 import { resolveScene } from "../../lib/annotate/scene";
 import {
   assertTreeInvariant,
@@ -229,7 +233,6 @@ export default function ImageEditor() {
    */
   const [view, setView] = useState<View>(IDENTITY_VIEW);
 
-  const previewRef = useRef<HTMLCanvasElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
   /** 변환이 걸리지 않은 레이아웃 앵커 — 줌 수식의 기준 프레임(rect 가 view 에 흔들리지 않는다). */
   const boxRef = useRef<HTMLDivElement | null>(null);
@@ -255,6 +258,13 @@ export default function ImageEditor() {
     },
     [],
   );
+
+  /**
+   * e2e 훅이 읽는 최신 값 미러 — 훅 effect 의 의존성을 늘리지 않으려고 ref 로 둔다
+   * (의존성에 넣으면 조정 슬라이더 틱마다 훅이 재설치된다).
+   */
+  const orientedRef = useRef<HTMLCanvasElement | null>(null);
+  const filterStrRef = useRef("none");
 
   /** 숨김·잠금·마스크가 풀린 씬. 렌더·히트·선택이 전부 이걸 본다(38 §3.2). */
   const scene = useMemo(() => resolveScene(doc), [doc]);
@@ -455,16 +465,8 @@ export default function ImageEditor() {
       e.currentTarget.releasePointerCapture(e.pointerId);
   };
 
-  // 베이스 캔버스는 방향·크기가 바뀔 때만 다시 그린다(색보정은 CSS 필터, 주석은 위 캔버스).
-  useLayoutEffect(() => {
-    const c = previewRef.current;
-    if (!c || !oriented || !showStage) return;
-    c.width = backW;
-    c.height = backH;
-    const ctx = c.getContext("2d")!;
-    ctx.clearRect(0, 0, backW, backH);
-    ctx.drawImage(oriented, 0, 0, backW, backH);
-  }, [oriented, backW, backH, showStage]);
+  orientedRef.current = oriented ?? null;
+  filterStrRef.current = filterStr;
 
   // 유효 소스(크롭이 있으면 크롭, 아니면 방향 캔버스) — 리사이즈 비율 기준.
   const effW = crop ? crop.w : oriented?.width ?? 0;
@@ -677,35 +679,24 @@ export default function ImageEditor() {
   const renderOutput = (opaqueBg = format === "jpeg"): HTMLCanvasElement => {
     const base = oriented!;
     const d = docRef.current;
-    const sx = d.crop ? d.crop.x : 0;
-    const sy = d.crop ? d.crop.y : 0;
     const sw = d.crop ? d.crop.w : base.width;
     const sh = d.crop ? d.crop.h : base.height;
-    const out = document.createElement("canvas");
-    out.width = Math.max(1, Math.round(d.outW || sw));
-    out.height = Math.max(1, Math.round(d.outH || sh));
-    if (out.width > MAX_OUTPUT_DIM || out.height > MAX_OUTPUT_DIM) {
+    const outW = Math.max(1, Math.round(d.outW || sw));
+    const outH = Math.max(1, Math.round(d.outH || sh));
+    if (outW > MAX_OUTPUT_DIM || outH > MAX_OUTPUT_DIM) {
       throw new Error(`출력 크기가 너무 큽니다 (한 변 ${MAX_OUTPUT_DIM}px 초과)`);
     }
-    const ctx = out.getContext("2d")!;
-    // jpeg/avif 등 비투명 포맷에서 투명 배경이 검게 나오지 않도록 흰색 채움.
-    if (opaqueBg) {
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(0, 0, out.width, out.height);
-    }
-    ctx.filter = filterStr;
-    ctx.drawImage(base, sx, sy, sw, sh, 0, 0, out.width, out.height);
-    // D2: 필터를 반드시 복구한다 — 안 그러면 밝기·대비·채도가 주석까지 물들인다.
-    ctx.filter = "none";
-    // 크롭 원점 이동 + 리사이즈 배율만 주면 크롭 밖 주석은 캔버스 경계에서 자동으로 잘린다(§3.1).
-    // 저장도 프리뷰와 **같은 씬**을 지난다 — 숨긴 노드가 파일에만 남는 사고가 구조적으로 없다.
-    renderScene(ctx, resolveScene(d), {
-      tx: -sx,
-      ty: -sy,
-      sx: out.width / sw,
-      sy: out.height / sh,
+    // 이미지·조정·주석이 **프리뷰와 같은 renderScene** 을 지난다. 큰 출력은 타일로 그려
+    // 작업 메모리가 출력 크기에 비례해 늘지 않는다(태스크 40 §3.3).
+    // jpeg/avif 등 비투명 포맷은 흰 바탕을 배경으로 준다(투명이 검게 나오지 않게).
+    return renderOutputTiled(resolveScene(d), {
+      crop: d.crop,
+      outW,
+      outH,
+      background: opaqueBg ? "#ffffff" : "image",
+      filter: filterStr,
+      image: base,
     });
-    return out;
   };
 
   /**
@@ -1001,6 +992,28 @@ export default function ImageEditor() {
           );
         return key(back) === key(docRef.current);
       },
+      /**
+       * 창(win)만 렌더한 결과 — **윈도 불변** 검증용(40 §7 (d-2)). 서로 다른 두 창의 겹침
+       * 픽셀이 달라지면 가림·효과가 창 경계에 의존한다는 뜻이다(클램프 사고).
+       */
+      renderRegion: (win: { x: number; y: number; w: number; h: number }, devScale: number) => {
+        const img = orientedRef.current;
+        if (!img) return null;
+        const { ctx, work } = renderRegion(resolveScene(docRef.current), win, devScale, {
+          image: img,
+          background: "image",
+          filter: filterStrRef.current,
+        });
+        const x = Math.round((win.x - work.x) * devScale);
+        const y = Math.round((win.y - work.y) * devScale);
+        const w = Math.max(1, Math.round(win.w * devScale));
+        const h = Math.max(1, Math.round(win.h * devScale));
+        const d = ctx.getImageData(x, y, w, h).data;
+        return { w, h, data: Array.from(d.slice(0, Math.min(d.length, 4 * 64))) };
+      },
+      /** 내보내기 배율 게이트·예상 용량의 단일 출처(40 §3.3). */
+      estimate: (outW: number, outH: number) =>
+        estimateRenderBytes(resolveScene(docRef.current), { outW, outH }),
       /** 씬 요약 — 숨김이 빠졌는지, 무엇이 잠겼는지, 컨테이너 범위가 맞는지(38 §7). */
       scene: () => {
         const sc = resolveScene(docRef.current);
@@ -1166,15 +1179,8 @@ export default function ImageEditor() {
                     transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})`,
                   }}
                 >
-                <canvas
-                  ref={previewRef}
-                  className="absolute inset-0 h-full w-full"
-                  style={{
-                    filter: filterStr,
-                    // 100% 를 넘겨 확대하면 보간을 끄고 픽셀을 그대로 보여준다(뷰어와 같은 규칙).
-                    imageRendering: screenScale >= 2 ? "pixelated" : "auto",
-                  }}
-                />
+                {/* 이미지는 이제 **씬 캔버스**가 그린다(태스크 39 §3.1 병합) — 별도 베이스
+                    캔버스도, CSS 필터도 없다. 조정은 renderScene 안에서 이미지에만 걸린다. */}
                 <AnnotationLayer
                   ref={layerRef}
                   scene={scene}

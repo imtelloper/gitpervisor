@@ -738,8 +738,11 @@ export async function run({ cdp, report: r, fix }) {
     const aOut = await annoPx(10, 10);
     r.check("(a) 프리뷰: 주석 안쪽이 빨강", near(aIn, RED), show(aIn));
     r.check(
-      "(a) 프리뷰: 주석 밖은 투명(오버레이 분리, §4.3)",
-      Array.isArray(aOut) && aOut[3] === 0,
+      // 태스크 39 에서 프리뷰 캔버스를 합쳤다 — 씬 캔버스가 이미지까지 그리므로 주석 밖은
+      // **투명이 아니라 원본 픽셀**(이 픽스처에서는 흰색)이다. 그래야 형광펜 multiply·가림
+      // 샘플링이 재구성 없이 성립한다(39 §3.1).
+      "(a) 프리뷰: 주석 밖은 원본 그대로(씬 캔버스 병합, 39 §3.1)",
+      isWhite(aOut),
       show(aOut),
     );
 
@@ -839,8 +842,9 @@ export async function run({ cdp, report: r, fix }) {
       const afterTR = await annoPx(180, 20);
       const afterTL = await annoPx(20, 20);
       r.check(
+        // 여기도 같은 이유로 "빈 곳 = 흰색"이다(39 §3.1 병합 이전에는 알파 0 이었다).
         "(c) 프리뷰: 주석이 이미지와 함께 우상단으로 돎",
-        near(afterTR, RED) && Array.isArray(afterTL) && afterTL[3] === 0,
+        near(afterTR, RED) && isWhite(afterTL),
         `TR=${show(afterTR)} TL=${show(afterTL)}`,
       );
 
@@ -1768,6 +1772,190 @@ export async function run({ cdp, report: r, fix }) {
     } else {
       r.skip("(q) 복구 배너", "편집기 재개 실패");
     }
+
+    // ── (t) 렌더러 v2: 페인트 스택 · 블렌드 · 마스크 · 효과 ────────────────
+    //
+    // 태스크 39 가 캔버스를 합치면서 생긴 능력들이다. 전부 **프리뷰 == 저장** 으로 본다 —
+    // 두 경로가 같은 renderScene 을 지나는지가 이 태스크의 핵심 계약이기 때문이다.
+    {
+      const node = (over) => ({
+        id: "t1",
+        kind: "rect",
+        parentId: null,
+        x: 40,
+        y: 40,
+        w: 120,
+        h: 120,
+        ...over,
+      });
+      const BLUE_HEX = "#0A84FF";
+      const solid = (color, opacity = 1) => ({
+        type: "solid",
+        color,
+        opacity,
+        visible: true,
+        blend: "normal",
+      });
+
+      // (t-1) 다중 채우기 — 빨강 위에 파랑 50%. 첫 겹만 그리던 shim 이 살아 있으면 순수 빨강이다.
+      await setDoc({
+        objects: [node({ fills: [solid(RED_HEX), solid(BLUE_HEX, 0.5)], strokeWidth: 0 })],
+      });
+      const two = await annoPx(100, 100);
+      r.check(
+        "(t-1) 다중 채우기: 두 겹이 실제로 합성된다(첫 겹만 그리면 순수 빨강)",
+        Array.isArray(two) && two[2] > 90 && two[0] > 90 && two[3] > 250,
+        show(two),
+      );
+
+      // (t-2) 그룹 불투명도 — 흰 배경 위 빨강 50% = (255,157,151) 근처.
+      await setDoc({
+        objects: [
+          { id: "g1", kind: "group", parentId: null, opacity: 0.5 },
+          node({ id: "t2", parentId: "g1", fills: [solid(RED_HEX)], strokeWidth: 0 }),
+        ],
+      });
+      const half = await annoPx(100, 100);
+      r.check(
+        "(t-2) 그룹 불투명도 50%: 격리 합성 뒤 한 번만 얹힌다",
+        Array.isArray(half) && half[0] > 240 && half[1] > 120 && half[1] < 190 && half[3] > 250,
+        show(half),
+      );
+
+      // (t-3) 블렌드 multiply — 빨강 위에 파랑을 곱하면 어두워진다(흰 배경만으로는 못 본다).
+      await setDoc({
+        objects: [
+          node({ id: "t3a", fills: [solid(RED_HEX)], strokeWidth: 0 }),
+          node({ id: "t3b", fills: [solid(BLUE_HEX)], strokeWidth: 0, blend: "multiply" }),
+        ],
+      });
+      const mul = await annoPx(100, 100);
+      r.check(
+        "(t-3) multiply: 빨강 × 파랑이 실제로 곱해진다(어두워진다)",
+        Array.isArray(mul) && mul[0] < 60 && mul[1] < 90 && mul[2] < 90 && mul[3] > 250,
+        show(mul),
+      );
+
+      // (t-4) 마스크 — 원 마스크 아래 사각형. 원 밖은 원본(흰색), 안은 빨강.
+      await setDoc({
+        objects: [
+          { id: "g2", kind: "group", parentId: null },
+          {
+            id: "m1",
+            kind: "ellipse",
+            parentId: "g2",
+            x: 70,
+            y: 70,
+            w: 60,
+            h: 60,
+            fills: [solid("#000000")],
+            strokeWidth: 0,
+            mask: { mode: "shape", invert: false },
+          },
+          node({ id: "t4", parentId: "g2", fills: [solid(RED_HEX)], strokeWidth: 0 }),
+        ],
+      });
+      const inMask = await annoPx(100, 100);
+      const outMask = await annoPx(45, 45);
+      r.check(
+        "(t-4) 마스크: 모양 안은 칠해지고 밖은 원본이 그대로 보인다",
+        near(inMask, RED) && isWhite(outMask),
+        `in=${show(inMask)} out=${show(outMask)}`,
+      );
+
+      // (t-5) 드롭 섀도 — 노드 아래쪽 바깥에 회색이 깔린다.
+      await setDoc({
+        objects: [
+          node({
+            id: "t5",
+            fills: [solid(RED_HEX)],
+            strokeWidth: 0,
+            effects: [
+              {
+                type: "drop-shadow",
+                x: 0,
+                y: 8,
+                blur: 6,
+                spread: 0,
+                color: "#000000",
+                opacity: 0.6,
+                visible: true,
+              },
+            ],
+          }),
+        ],
+      });
+      const below = await annoPx(100, 166);
+      const above = await annoPx(100, 30);
+      r.check(
+        "(t-5) 드롭 섀도: 아래쪽 바깥이 어두워지고 위쪽은 원본 그대로",
+        Array.isArray(below) && below[0] < 235 && isWhite(above),
+        `below=${show(below)} above=${show(above)}`,
+      );
+
+      // (u-1) 그라디언트 — 왼쪽 끝은 빨강, 오른쪽 끝은 파랑에 가깝다.
+      await setDoc({
+        objects: [
+          node({
+            id: "u1",
+            strokeWidth: 0,
+            fills: [
+              {
+                type: "linear",
+                stops: [
+                  { pos: 0, color: RED_HEX, opacity: 1 },
+                  { pos: 1, color: BLUE_HEX, opacity: 1 },
+                ],
+                angle: 0,
+                scale: 1,
+                visible: true,
+                blend: "normal",
+              },
+            ],
+          }),
+        ],
+      });
+      const gl = await annoPx(45, 100);
+      const gr = await annoPx(155, 100);
+      r.check(
+        "(u-1) 선형 그라디언트: 왼쪽이 빨강 쪽, 오른쪽이 파랑 쪽",
+        Array.isArray(gl) && Array.isArray(gr) && gl[0] > gr[0] && gr[2] > gl[2],
+        `left=${show(gl)} right=${show(gr)}`,
+      );
+
+      // (u-2) 4반경 — 코너가 깎여 원본이 보인다.
+      await setDoc({
+        objects: [node({ id: "u2", fills: [solid(RED_HEX)], strokeWidth: 0, radius: [40, 0, 0, 0] })],
+      });
+      const cornerTL = await annoPx(43, 43);
+      const cornerTR = await annoPx(157, 43);
+      r.check(
+        "(u-2) 모서리 반경 4개: 지정한 코너만 깎인다",
+        isWhite(cornerTL) && near(cornerTR, RED),
+        `TL=${show(cornerTL)} TR=${show(cornerTR)}`,
+      );
+
+      // (u-3) 선 정렬 — inside 는 경로 **안쪽**만 칠한다(바깥 1px 은 원본).
+      await setDoc({
+        objects: [
+          node({
+            id: "u3",
+            fills: [],
+            strokes: [solid(BLUE_HEX)],
+            strokeWidth: 6,
+            strokeAlign: "inside",
+          }),
+        ],
+      });
+      const justOutside = await annoPx(37, 100);
+      const justInside = await annoPx(42, 100);
+      r.check(
+        "(u-3) 선 정렬 inside: 경로 바깥은 원본, 안쪽에 선이 있다",
+        isWhite(justOutside) && Array.isArray(justInside) && justInside[2] > 150,
+        `out=${show(justOutside)} in=${show(justInside)}`,
+      );
+    }
+
   } finally {
     // 정리 — 편집기·다이얼로그를 닫고 이 스위트가 만든 파일/중첩 레포를 전부 지운다.
     await cdp.eval(`window.__gpv.ui.getState().closeConfirm()`).catch(() => {});

@@ -293,7 +293,9 @@ function normBase(r: Rec, kind: KnownKind): NodeBase {
     strokeWidth: Math.max(0, num(r.strokeWidth, container ? 0 : DEFAULT_STROKE_WIDTH)),
     strokeAlign: pick(r.strokeAlign, ALIGNS, "center"),
     dash: Array.isArray(r.dash) && r.dash.length ? numArray(r.dash) : null,
-    cap: pick(r.cap, CAPS, "round"),
+    // 형광펜은 butt cap 이라야 획 끝이 뭉치지 않는다(v1 렌더가 kind 로 강제하던 규칙 —
+    // 이제 문서 값이라 렌더가 종류를 몰라도 같은 그림이 나온다).
+    cap: pick(r.cap, CAPS, kind === "highlight" ? "butt" : "round"),
     join: pick(r.join, JOINS, "round"),
     miterLimit: num(r.miterLimit, 4),
     heads: normHeads(r),

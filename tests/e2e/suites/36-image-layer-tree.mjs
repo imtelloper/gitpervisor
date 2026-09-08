@@ -301,8 +301,12 @@ export async function run({ cdp, report: r, fix }) {
     const hiddenPx = await cdp.eval(`window.__gpvTree.px(100, 100)`);
     const sceneAfterHide = await cdp.eval(`window.__gpvTree.ed().scene()`);
     r.check(
-      "(c-2) 숨기면 프리뷰에서 사라지고 씬 노드 목록에서도 빠진다",
-      hiddenPx[3] === 0 && sceneAfterHide.nodeIds.length === 0,
+      // 태스크 39 가 프리뷰 캔버스를 합친 뒤로 "사라진다" 는 **원본이 그대로 보인다**는 뜻이다
+      // (씬 캔버스가 이미지까지 그린다). 흰 픽스처라 흰색이 나와야 한다.
+      "(c-2) 숨기면 프리뷰에서 사라지고(원본이 보인다) 씬 노드 목록에서도 빠진다",
+      Array.isArray(hiddenPx) &&
+        hiddenPx[0] > 250 && hiddenPx[1] > 250 && hiddenPx[2] > 250 &&
+        sceneAfterHide.nodeIds.length === 0,
       `px=${J(hiddenPx)} nodeIds=${J(sceneAfterHide.nodeIds)}`,
     );
     await cdp.eval(`window.__gpvTree.click(100, 100)`);
