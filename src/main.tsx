@@ -22,6 +22,13 @@ import {
   installTerminalCopyFallback,
   reattachAllTerminals,
 } from "./lib/terminal";
+import {
+  assignProjectSlots,
+  FG,
+  FLOORS,
+  projectPalette,
+  PROJECT_HUES,
+} from "./lib/project-color";
 import { BUILTIN_TOKENS, installCustomThemeStyles } from "./lib/theme-apply";
 import { initPreviewRemint } from "./stores/browser";
 import { useCustomThemes } from "./stores/customThemes";
@@ -67,6 +74,10 @@ if (import.meta.env.DEV) {
     term: { get: getTerminal }, // 터미널 e2e — xterm 인스턴스·win32Input 플래그 관측
     customThemes: useCustomThemes, // 커스텀 테마 e2e — 정의 upsert/remove
     builtinTokens: BUILTIN_TOKENS, // e2e 19 — styles.css ↔ 정적 사본 짝 검증
+    // 프로젝트 색 — e2e 19(32슬롯 대비 전수)·14(슬롯 배정 중복 0). 노출이 없으면 테스트가
+    // 팔레트를 자기 사본으로 재게 되고, 사본은 구현이 바뀌어도 조용히 옛 값으로 통과한다.
+    // FG·FLOORS도 같은 이유로 낀다 — 재는 토큰 목록과 하한까지 구현 쪽 단일 출처를 쓴다.
+    projectColor: { PROJECT_HUES, projectPalette, assignProjectSlots, FG, FLOORS },
     openDocWindow, // 문서 창 e2e 34 — 더블클릭이 부르는 것과 같은 계약을 직접 구동
   };
 }
