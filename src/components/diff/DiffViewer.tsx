@@ -151,7 +151,13 @@ function clearFileDraft(editorKey: string) {
   }
 }
 
-/** 단일 파일 보기(트리 클릭)용 — diff 전용 옵션 제외. 편집 가능(readOnly는 동적). */
+/**
+ * 단일 파일 보기(트리 클릭)용 — diff 전용 옵션 제외. 편집 가능(readOnly는 동적).
+ *
+ * Monaco 자체 메뉴(`contextmenu`)는 **여기서 끄지 않는다.** 상수에 `contextmenu: false`를 두면
+ * 이 컴포넌트를 쓰는 모든 곳(Git 모달·문서 창)에서 우클릭 메뉴가 사라져 "선택 영역 번역"
+ * (태스크 61)이 통째로 죽는다 — 대체 메뉴가 있는 곳(뷰어 탭)만 `suppressContextMenu`로 끈다.
+ */
 const FILE_OPTIONS = {
   automaticLayout: true,
   minimap: { enabled: false },
@@ -181,10 +187,24 @@ const DIFF_OPTIONS = {
   hover: { delay: 150 },
 } as const;
 
+/** 에디터의 현재 선택 텍스트(없으면 ""). 번역 액션·pane 메뉴가 같은 값을 본다. */
+function selectedText(editor: monaco.editor.ICodeEditor): string {
+  const sel = editor.getSelection();
+  return sel ? (editor.getModel()?.getValueInRange(sel) ?? "") : "";
+}
+
+/**
+ * 우클릭 메뉴가 **열린 순간**의 선택을 바깥에서 읽는 통로(`selectionRef`).
+ * 전역 싱글턴이 아니라 패널마다 하나씩 — 뷰어는 패널이 여럿이라 마지막 마운트가 이기면 안 된다.
+ */
+export type SelectionRef = { current: (() => string) | null };
+
 export default function DiffViewer({
   projectId,
   target,
   onOpenFile,
+  suppressContextMenu = false,
+  selectionRef,
 }: {
   projectId: string;
   target: DiffTarget;
@@ -195,6 +215,13 @@ export default function DiffViewer({
    * — 정의 이동 opener가 모듈 컨텍스트로 들고 있다.
    */
   onOpenFile?: (target: DiffTarget, repoId: string) => void;
+  /**
+   * Monaco 자체 우클릭 메뉴를 끈다 — **대체 메뉴가 있는 호출부만** 켠다(뷰어 탭의 pane 메뉴).
+   * Git 모달·문서 창은 대체가 없으므로 넘기지 않는다(끄면 "선택 영역 번역"이 사라진다).
+   */
+  suppressContextMenu?: boolean;
+  /** 끈 자리를 메울 메뉴가 선택 텍스트를 읽는 통로. 마운트된 에디터의 선택을 준다. */
+  selectionRef?: SelectionRef;
 }) {
   const { data: diff, isLoading, error } = useDiff(projectId, target);
   const { data: settings } = useSettings();
@@ -207,10 +234,11 @@ export default function DiffViewer({
   const options = useMemo(
     () => ({
       ...DIFF_OPTIONS,
+      contextmenu: !suppressContextMenu,
       fontSize: settings?.diffFontSize ?? 13,
       hideUnchangedRegions: { enabled: collapseUnchanged },
     }),
-    [settings?.diffFontSize, collapseUnchanged],
+    [settings?.diffFontSize, collapseUnchanged, suppressContextMenu],
   );
   const isFileView = target.mode === "file";
   // 이미지 파일은 모드와 무관하게 워크트리 파일을 이미지로 렌더(텍스트 diff 대신).
@@ -225,8 +253,13 @@ export default function DiffViewer({
   // 이미지·미디어는 편집 불가.
   const editable = isFileView && !isImageView && !isMediaView && !isOfficeView;
   const fileOptions = useMemo(
-    () => ({ ...FILE_OPTIONS, readOnly: !editable, fontSize: settings?.diffFontSize ?? 13 }),
-    [settings?.diffFontSize, editable],
+    () => ({
+      ...FILE_OPTIONS,
+      contextmenu: !suppressContextMenu,
+      readOnly: !editable,
+      fontSize: settings?.diffFontSize ?? 13,
+    }),
+    [settings?.diffFontSize, editable, suppressContextMenu],
   );
 
   const path = target.path;
@@ -460,6 +493,7 @@ export default function DiffViewer({
 
   const onFileMount: OnMount = useCallback((editor) => {
     editorRef.current = editor;
+    if (selectionRef) selectionRef.current = () => selectedText(editor);
     // 파일뷰 에디터는 항상 편집 가능 — options.readOnly가 마운트 시 안 먹는 경우가 있어
     // 에디터 API로 명시 적용한다(편집 보장).
     editor.updateOptions({ readOnly: false });
@@ -500,8 +534,7 @@ export default function DiffViewer({
       contextMenuOrder: 9,
       precondition: "editorHasSelection",
       run: (ed) => {
-        const sel = ed.getSelection();
-        const text = sel ? (ed.getModel()?.getValueInRange(sel) ?? "") : "";
+        const text = selectedText(ed);
         if (text) useUi.getState().openTranslate(translateRequest(text, ctxPos.x, ctxPos.y));
       },
     });
@@ -509,7 +542,7 @@ export default function DiffViewer({
     revealTarget(editor);
     lintRef.current(); // 열람 시 1회 린트
     lspOpenRef.current(); // LSP didOpen(옵트인 + 지원 언어일 때만 서버 기동)
-  }, [revealTarget]);
+  }, [revealTarget, selectionRef]);
 
   // 파일뷰 언마운트 시 마커 정리(모델 dispose가 원 방어 — 이중 방어 + 대기 중 디바운스 취소).
   useEffect(() => {
@@ -519,6 +552,7 @@ export default function DiffViewer({
       // 300ms 분량의 편집이 사라진다 — 초안이 막으려는 바로 그 상황이다.
       window.clearTimeout(lintTimerRef.current);
       window.clearTimeout(lspChangeTimerRef.current);
+      if (selectionRef) selectionRef.current = null; // dispose된 에디터를 가리킨 채 남기지 않는다
       if (lspModelRef.current) lspCloseDoc(lspModelRef.current); // LSP didClose(전체 언마운트)
       const model = editorRef.current?.getModel();
       if (model) clearLintMarkers(model);
@@ -560,13 +594,17 @@ export default function DiffViewer({
   // 한 번 뒤집었다 되돌려 강제로 재계산시킨다(동기 호출이라 그 자체로 깜빡임 없음).
   // 접기가 적용된 직후 에디터를 다시 노출해 펼쳐진 중간 프레임이 보이지 않게 한다.
   const handleMount: DiffOnMount = useCallback((editor) => {
+    // diff는 좌우 두 에디터다 — 선택이 있는 쪽을 준다(수정본 우선).
+    if (selectionRef)
+      selectionRef.current = () =>
+        selectedText(editor.getModifiedEditor()) || selectedText(editor.getOriginalEditor());
     editor.onDidUpdateDiff(() => {
       const want = collapseRef.current;
       editor.updateOptions({ hideUnchangedRegions: { enabled: !want } });
       editor.updateOptions({ hideUnchangedRegions: { enabled: want } });
       requestAnimationFrame(() => setPendingCollapse(false));
     });
-  }, []);
+  }, [selectionRef]);
 
   const stateBadge =
     !isFileView && diff

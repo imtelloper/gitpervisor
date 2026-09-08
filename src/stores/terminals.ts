@@ -3,6 +3,15 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { create } from "zustand";
 
 import { openFloatingWindow } from "../lib/floating";
+import {
+  collectPanes,
+  removePane,
+  replaceLeaf,
+  setRatioAt,
+  splitAt,
+  type Pane as PaneOf,
+  type SplitDir,
+} from "../lib/pane-tree";
 import { detachTerminalKeepPty, disposeTerminal, onTermExit } from "../lib/terminal";
 import { usePromptHistory } from "./promptHistory";
 import { useTermThemes } from "./termThemes";
@@ -49,15 +58,21 @@ export const sendTerminalsCmd = (cmd: TerminalsCmd) =>
     console.error("메인 위임 실패:", e),
   );
 
-export type SplitDir = "row" | "col"; // row=좌우 분할, col=상하 분할
+export type { SplitDir };
 
 /** 리프 패널의 내용 종류 — 터미널(PTY) 또는 브라우저(웹뷰). */
 export type PaneKind = "terminal" | "browser";
 
-/** 한 탭의 분할 레이아웃 트리. 리프 = 패널(paneId). content로 터미널/웹 구분. */
-export type Pane =
-  | { kind: "leaf"; paneId: string; content: PaneKind }
-  | { kind: "split"; id: string; dir: SplitDir; ratio: number; a: Pane; b: Pane };
+/** 터미널 트리의 리프 payload — **영속 데이터의 형태 그 자체**라 필드명을 바꾸면
+ *  저장된 레이아웃이 로드되지 않는다. */
+export interface TermLeaf {
+  paneId: string;
+  content: PaneKind;
+}
+
+/** 한 탭의 분할 레이아웃 트리. 리프 = 패널(paneId). content로 터미널/웹 구분.
+ *  트리 자체와 순수 함수는 뷰어와 공유한다(`lib/pane-tree.ts`) — 여긴 리프 payload만 정한다. */
+export type Pane = PaneOf<TermLeaf>;
 
 export interface TermTab {
   id: string;
@@ -73,39 +88,8 @@ export interface TermTab {
 type PaneStatus = "live" | "exited";
 
 // ---- 레이아웃 트리 헬퍼 ----
-function collectPanes(node: Pane): string[] {
-  return node.kind === "leaf"
-    ? [node.paneId]
-    : [...collectPanes(node.a), ...collectPanes(node.b)];
-}
-
-function splitAt(
-  node: Pane,
-  target: string,
-  dir: SplitDir,
-  newPaneId: string,
-  newFirst: boolean,
-  content: PaneKind,
-): Pane {
-  if (node.kind === "leaf") {
-    if (node.paneId !== target) return node;
-    const oldLeaf: Pane = node;
-    const newLeaf: Pane = { kind: "leaf", paneId: newPaneId, content };
-    return {
-      kind: "split",
-      id: crypto.randomUUID(),
-      dir,
-      ratio: 0.5,
-      a: newFirst ? newLeaf : oldLeaf,
-      b: newFirst ? oldLeaf : newLeaf,
-    };
-  }
-  return {
-    ...node,
-    a: splitAt(node.a, target, dir, newPaneId, newFirst, content),
-    b: splitAt(node.b, target, dir, newPaneId, newFirst, content),
-  };
-}
+// 순수 함수(collectPanes·splitAt·replaceLeaf·removePane·setRatioAt)는 lib/pane-tree.ts로
+// 옮겨 뷰어와 공유한다. 아래는 터미널 전용(리프의 content를 다루는 것들)만 남는다.
 
 /** 노드 배열을 한 방향(dir)으로 균형 분할 트리로 묶는다(절반씩 재귀 → 칸이 고르게 나뉜다). */
 function makeBalanced(nodes: Pane[], dir: SplitDir): Pane {
@@ -134,16 +118,6 @@ function buildGrid(paneIds: string[], cols: number): Pane {
   return makeBalanced(rows, "col");
 }
 
-/** 트리에서 target 리프를 subtree로 교체한다(탭의 나머지 레이아웃은 그대로 유지). */
-function replaceLeaf(node: Pane, target: string, subtree: Pane): Pane {
-  if (node.kind === "leaf") return node.paneId === target ? subtree : node;
-  return {
-    ...node,
-    a: replaceLeaf(node.a, target, subtree),
-    b: replaceLeaf(node.b, target, subtree),
-  };
-}
-
 /** 리프의 content(터미널↔브라우저)만 바꾼다. */
 function setContentAt(node: Pane, target: string, content: PaneKind): Pane {
   if (node.kind === "leaf")
@@ -167,25 +141,6 @@ function migrateLeafContent(node: Pane): Pane {
   if (node.kind === "leaf")
     return { ...node, content: node.content ?? "terminal" };
   return { ...node, a: migrateLeafContent(node.a), b: migrateLeafContent(node.b) };
-}
-
-function removePane(node: Pane, target: string): Pane | null {
-  if (node.kind === "leaf") return node.paneId === target ? null : node;
-  const a = removePane(node.a, target);
-  const b = removePane(node.b, target);
-  if (a === null) return b; // 형제가 분할 자리를 차지
-  if (b === null) return a;
-  return { ...node, a, b };
-}
-
-function setRatioAt(node: Pane, splitId: string, ratio: number): Pane {
-  if (node.kind === "leaf") return node;
-  if (node.id === splitId) return { ...node, ratio };
-  return {
-    ...node,
-    a: setRatioAt(node.a, splitId, ratio),
-    b: setRatioAt(node.b, splitId, ratio),
-  };
 }
 
 export { collectByContent, collectPanes };
@@ -372,7 +327,13 @@ export const useTerminals = create<TerminalsState>((set, get) => ({
         t.id === tabId
           ? {
               ...t,
-              layout: splitAt(t.layout, paneId, dir, newPaneId, newFirst, content),
+              layout: splitAt(
+                t.layout,
+                paneId,
+                dir,
+                { kind: "leaf", paneId: newPaneId, content },
+                newFirst,
+              ),
               activePaneId: newPaneId,
               maximizedPaneId: null,
             }

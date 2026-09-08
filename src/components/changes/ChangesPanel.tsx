@@ -28,7 +28,7 @@ import {
   useUnstageFiles,
 } from "../../queries";
 import { useOccludesWebview } from "../../stores/occlusion";
-import { useUi } from "../../stores/ui";
+import { selectActiveDiff, useUi } from "../../stores/ui";
 import { CollapsedPanelStrip } from "../common/CollapsedPanelStrip";
 import { ResizeHandle } from "../common/ResizeHandle";
 import { CommitForm } from "./CommitForm";
@@ -235,8 +235,8 @@ function RepoChanges({
   active?: { target: DiffTarget; repoId: string } | null;
 }) {
   const { data: status } = useStatus(projectId);
-  const selectedDiff = useUi((s) => s.selectedDiff);
-  const selectedDiffRepoId = useUi((s) => s.selectedDiffRepoId);
+  // 전역 강조 기준 = **활성 뷰어 패널**이 보는 파일(분할 시 패널을 옮기면 강조도 따라간다).
+  const activeGlobal = useUi(selectActiveDiff);
   const selectDiff = useUi((s) => s.selectDiff);
   const pushToast = useUi((s) => s.pushToast);
   const stage = useStageFiles(projectId);
@@ -307,8 +307,8 @@ function RepoChanges({
     ? active?.repoId === projectId
       ? active.target
       : null
-    : (selectedDiffRepoId ?? outerProjectId) === projectId
-      ? selectedDiff
+    : activeGlobal && (activeGlobal.repoId ?? outerProjectId) === projectId
+      ? activeGlobal.target
       : null;
 
   // 평탄화 — **펼쳐진** 그룹의 행만(범위 선택이 숨은 행을 휩쓸어 의도치 않게 롤백하는 것 방지).

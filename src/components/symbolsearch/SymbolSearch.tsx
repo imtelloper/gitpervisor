@@ -2,7 +2,7 @@ import { useCallback } from "react";
 
 import { ipc } from "../../lib/ipc";
 import { useTerminals } from "../../stores/terminals";
-import { useUi } from "../../stores/ui";
+import { selectActiveDiff, useUi } from "../../stores/ui";
 import { QuickPick, type QuickPickItem } from "../common/QuickPick";
 
 type Sym = { path: string; line: number; column: number };
@@ -17,13 +17,13 @@ export function SymbolSearch() {
   const setOpen = useUi((s) => s.setSymbolSearchOpen);
   const selectedProjectId = useUi((s) => s.selectedProjectId);
   const aggregateOpen = useUi((s) => s.aggregateOpen);
-  const selectedDiff = useUi((s) => s.selectedDiff);
+  const activeDiff = useUi(selectActiveDiff);
   const selectDiff = useUi((s) => s.selectDiff);
 
-  // 현재 뷰어 파일 확장자 — 랭킹 부스트 힌트(필터 아님)
+  // 현재 뷰어 파일 확장자 — 랭킹 부스트 힌트(필터 아님). 분할 시 활성 패널의 파일 기준.
   const extHint =
-    selectedDiff?.mode === "file"
-      ? (selectedDiff.path.split(".").pop() ?? null)
+    activeDiff?.target.mode === "file"
+      ? (activeDiff.target.path.split(".").pop() ?? null)
       : null;
 
   const source = useCallback(

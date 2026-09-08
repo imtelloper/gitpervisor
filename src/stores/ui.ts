@@ -4,6 +4,14 @@ import { create } from "zustand";
 // 타입만 가져온다(import type) — 런타임 import가 아니라서 settings-index ↔ ui 순환이 생기지 않는다.
 import type { SettingsCategory } from "../components/settings/settings-index";
 import type { DiffTarget } from "../lib/ipc";
+import {
+  collectPanes,
+  removePane,
+  setRatioAt,
+  splitAt,
+  type Pane,
+  type SplitDir,
+} from "../lib/pane-tree";
 
 export interface Toast {
   id: number;
@@ -73,9 +81,31 @@ export function viewerTabKey(
 /** 모아보기 자동배치 모드 — grid(2×2·3×3 …) / columns(좌우 한 줄, 최대 4열). */
 export type AggregateLayout = "grid" | "columns";
 
+/** 뷰어 분할 트리의 리프 payload — 무엇을 보여줄지는 리프가 아니라 viewerByPane이 쥔다(§3.2). */
+export interface ViewerLeaf {
+  paneId: string;
+}
+
+/** 한 뷰어 패널이 보고 있는 대상. */
+export interface ViewerPaneTarget {
+  target: DiffTarget;
+  repoId: string | null;
+}
+
+/**
+ * 뷰어 분할 상한. Monaco는 인스턴스당 비용이 커서 터미널처럼 무제한으로 두지 않는다 —
+ * 4분할이면 "나란히 보기"는 충족된다.
+ * ponytail: 상한 4 — 실사용에서 부족하면 이 상수만 올린다.
+ */
+export const VIEWER_MAX_PANES = 4;
+
 export interface UiState {
   selectedProjectId: string | null;
-  /** 중앙 뷰어가 표시할 diff 대상 — Changes(worktree/index) 또는 Log(commit)에서 설정 */
+  /**
+   * **활성 뷰어 패널이 보고 있는 대상의 미러**(태스크 64). 단일 진실은
+   * `viewerByPane[viewerActivePaneId]`이고, 읽는 쪽은 `selectActiveDiff`를 쓴다.
+   * 쓰는 곳은 전부 아래 `writeActivePane`/`mirror` 한 군데를 지난다.
+   */
   selectedDiff: DiffTarget | null;
   /**
    * selectedDiff를 조회할 저장소 id. 임베디드(중첩) 저장소의 파일을 클릭하면 그 저장소의
@@ -83,6 +113,14 @@ export interface UiState {
    * null이면 현재 선택 프로젝트(outer)를 쓴다.
    */
   selectedDiffRepoId: string | null;
+  /** 뷰어 분할 레이아웃(기본 = 리프 1개). 터미널 탭과 **같은 트리**를 쓴다(lib/pane-tree.ts). */
+  viewerLayout: Pane<ViewerLeaf>;
+  /** 포커스된 뷰어 패널 — selectDiff의 라우팅 대상이자 파일 탭 바·단축키의 기준. */
+  viewerActivePaneId: string;
+  /** 설정 시 그 패널만 전체 표시(전이 상태 — 영속하지 않는다). */
+  viewerMaximizedPaneId: string | null;
+  /** 패널별로 무엇을 보고 있나. 없거나 null이면 빈 패널("파일을 선택하세요"). */
+  viewerByPane: Record<string, ViewerPaneTarget | null>;
   /**
    * 뷰어에 열린 파일 탭들(PyCharm식) — selectDiff로 연 대상이 쌓이고, go-to-definition으로
    * 점프해도 이전 파일이 탭으로 남아 되돌아갈 수 있다. 프로젝트별로 필터해 표시(outerId).
@@ -163,6 +201,14 @@ export interface UiState {
   replaceDiff: (target: DiffTarget) => void;
   /** 뷰어 파일 탭 닫기 — 활성 탭이었으면 이웃 탭으로 전환(없으면 선택 해제). */
   closeViewerTab: (key: string) => void;
+  /** 뷰어 패널 분할 — 새 패널이 활성이 된다(비어 있는 상태로). 상한(4) 도달 시 무시. */
+  splitViewerPane: (paneId: string, dir: SplitDir, newFirst: boolean) => void;
+  /** 뷰어 패널 닫기 — 마지막 하나는 닫지 않는다(빈 화면이 되지 않게). */
+  closeViewerPane: (paneId: string) => void;
+  /** 활성 뷰어 패널 전환 — selectDiff·탭 바·변경 목록 강조가 이 패널을 따라간다. */
+  setViewerActivePane: (paneId: string) => void;
+  toggleViewerMaximize: (paneId: string) => void;
+  setViewerRatio: (splitId: string, ratio: number) => void;
   /** 프로젝트 제거 시 그 프로젝트의 뷰어 탭·활성 파일 정리(고아 방지). */
   closeProjectViewerTabs: (projectId: string) => void;
   /**
@@ -208,6 +254,10 @@ export interface UiState {
   gitDialog: { projectId: string } | null;
   openGitDialog: (projectId: string) => void;
   closeGitDialog: () => void;
+  /** 터미널 세션 헤더의 파일 트리 버튼이 여는 파일 트리 모달 대상(태스크 62). null = 닫힘. */
+  fileTreeDialog: { projectId: string } | null;
+  openFileTreeDialog: (projectId: string) => void;
+  closeFileTreeDialog: () => void;
   /**
    * 선택 텍스트 번역 카드(태스크 61). null = 닫힘.
    * **selectBlockingOverlay에는 넣지 않는다** — 화면을 덮지 않는 카드라, 점유는 TranslateHost가
@@ -224,23 +274,67 @@ let toastSeq = 0;
 // 재시작 시 이 loader가 localStorage에서 복원한다. worktree/index 대상은 재시작 후 stale일 수 있으나
 // DiffViewer가 없는/안 바뀐 파일을 무해하게 처리한다(사용자가 닫으면 됨).
 const VIEWER_KEY = "gp:viewer-tabs";
+
+/** 영속 레이아웃 검증 — 손상 값은 throw 하지 않고 기본(단일 리프)으로 강등한다. */
+function isViewerPane(v: unknown): v is Pane<ViewerLeaf> {
+  if (!v || typeof v !== "object") return false;
+  const n = v as Record<string, unknown>;
+  if (n.kind === "leaf") return typeof n.paneId === "string";
+  return (
+    n.kind === "split" &&
+    typeof n.id === "string" &&
+    (n.dir === "row" || n.dir === "col") &&
+    typeof n.ratio === "number" &&
+    isViewerPane(n.a) &&
+    isViewerPane(n.b)
+  );
+}
+
+/** 패널 상태가 없거나 손상됐을 때의 기본 — 빈 리프 하나. */
+function freshViewerPanes(): Pick<
+  UiState,
+  "viewerLayout" | "viewerActivePaneId" | "viewerByPane"
+> {
+  const paneId = crypto.randomUUID();
+  return {
+    viewerLayout: { kind: "leaf", paneId },
+    viewerActivePaneId: paneId,
+    viewerByPane: {},
+  };
+}
+
 function loadPersistedViewer(): {
   viewerTabs: ViewerFileTab[];
   activeDiffByProject: UiState["activeDiffByProject"];
-} {
+} & Pick<UiState, "viewerLayout" | "viewerActivePaneId" | "viewerByPane"> {
   try {
     const raw = localStorage.getItem(VIEWER_KEY);
     const p = raw ? JSON.parse(raw) : null;
-    if (!p || typeof p !== "object") return { viewerTabs: [], activeDiffByProject: {} };
+    if (!p || typeof p !== "object")
+      return { viewerTabs: [], activeDiffByProject: {}, ...freshViewerPanes() };
+    // 레이아웃과 활성 패널은 짝이어야 한다 — 활성 id가 트리에 없으면 통째로 기본값으로.
+    const layout = isViewerPane(p.viewerLayout) ? p.viewerLayout : null;
+    const paneOk =
+      layout !== null &&
+      typeof p.viewerActivePaneId === "string" &&
+      collectPanes(layout).includes(p.viewerActivePaneId);
     return {
       viewerTabs: Array.isArray(p.viewerTabs) ? p.viewerTabs : [],
       activeDiffByProject:
         p.activeDiffByProject && typeof p.activeDiffByProject === "object"
           ? p.activeDiffByProject
           : {},
+      ...(paneOk
+        ? {
+            viewerLayout: layout,
+            viewerActivePaneId: p.viewerActivePaneId as string,
+            viewerByPane:
+              p.viewerByPane && typeof p.viewerByPane === "object" ? p.viewerByPane : {},
+          }
+        : freshViewerPanes()),
     };
   } catch {
-    return { viewerTabs: [], activeDiffByProject: {} };
+    return { viewerTabs: [], activeDiffByProject: {}, ...freshViewerPanes() };
   }
 }
 const persistedViewer = loadPersistedViewer();
@@ -249,6 +343,16 @@ const initialProjectId = localStorage.getItem("gp:selected-project");
 const initialActive = initialProjectId
   ? persistedViewer.activeDiffByProject[initialProjectId]
   : null;
+// 패널별 파일도 그대로 복원한다. 구버전 영속(패널 기록 없음)에서 올라왔으면 마지막 활성
+// 파일을 단일 패널에 시드해 지금까지의 복원 동작을 그대로 유지한다.
+const initialByPane: UiState["viewerByPane"] =
+  persistedViewer.viewerByPane[persistedViewer.viewerActivePaneId] !== undefined
+    ? persistedViewer.viewerByPane
+    : {
+        ...persistedViewer.viewerByPane,
+        [persistedViewer.viewerActivePaneId]: initialActive ?? null,
+      };
+const initialEntry = initialByPane[persistedViewer.viewerActivePaneId] ?? null;
 
 /**
  * 화면 전체를 덮는 차단성 모달이 열려 있는가 — 네이티브 자식 webview 점유 판정용
@@ -266,14 +370,48 @@ export const selectBlockingOverlay = (s: UiState): boolean =>
   s.symbolSearchOpen ||
   !!s.imageEditorPath ||
   !!s.gitDialog ||
+  !!s.fileTreeDialog ||
   !!s.confirm ||
   !!s.prompt;
+
+/**
+ * **지금 보고 있는 파일** = 활성 뷰어 패널이 보는 것(태스크 64 §3.2).
+ * 읽는 쪽(변경 목록 강조·파일 탭 바·심볼 검색 힌트 …)은 전부 이걸 쓴다.
+ */
+export const selectActiveDiff = (s: UiState): ViewerPaneTarget | null =>
+  s.viewerByPane[s.viewerActivePaneId] ?? null;
+
+/** 활성 패널이 바뀌었을 때의 selectedDiff 미러 값. */
+const mirror = (e: ViewerPaneTarget | null) => ({
+  selectedDiff: e?.target ?? null,
+  selectedDiffRepoId: e?.repoId ?? null,
+});
+
+/**
+ * 활성 패널에 대상을 쓴다 — `selectDiff` 계열의 **유일한** 기록 경로.
+ * selectedDiff/selectedDiffRepoId는 여기서만 따라 움직이는 미러다(위 필드 주석).
+ */
+function writeActivePane(
+  s: UiState,
+  target: DiffTarget | null,
+  repoId: string | null,
+): Pick<UiState, "selectedDiff" | "selectedDiffRepoId" | "viewerByPane"> {
+  const entry = target ? { target, repoId } : null;
+  return {
+    ...mirror(entry),
+    viewerByPane: { ...s.viewerByPane, [s.viewerActivePaneId]: entry },
+  };
+}
 
 export const useUi = create<UiState>((set) => ({
   // 마지막 선택 프로젝트를 복원한다 — 재시작 시 그 프로젝트(+복구된 터미널 탭)로 바로 진입
   selectedProjectId: initialProjectId,
-  selectedDiff: initialActive?.target ?? null,
-  selectedDiffRepoId: initialActive?.repoId ?? null,
+  selectedDiff: initialEntry?.target ?? null,
+  selectedDiffRepoId: initialEntry?.repoId ?? null,
+  viewerLayout: persistedViewer.viewerLayout,
+  viewerActivePaneId: persistedViewer.viewerActivePaneId,
+  viewerMaximizedPaneId: null,
+  viewerByPane: initialByPane,
   viewerTabs: persistedViewer.viewerTabs,
   activeDiffByProject: persistedViewer.activeDiffByProject,
   logOpen: false,
@@ -329,8 +467,11 @@ export const useUi = create<UiState>((set) => ({
       const restored = id ? s.activeDiffByProject[id] : null;
       return {
         selectedProjectId: id,
-        selectedDiff: restored?.target ?? null,
-        selectedDiffRepoId: restored?.repoId ?? null,
+        ...mirror(restored ?? null),
+        // 다른 패널이 들고 있던 파일은 **이전 프로젝트**의 것이다 — 그대로 두면 새 프로젝트
+        // 기준으로 경로가 풀려 엉뚱한 파일을 그린다. 활성 패널만 복원하고 나머지는 비운다
+        // (레이아웃은 유지 — 빈 패널로 남는다).
+        viewerByPane: { [s.viewerActivePaneId]: restored ?? null },
         selectedCommitSha: null,
         memoOpen: false,
         // 이미지 편집기는 프로젝트별 상대 경로라 프로젝트가 바뀌면 닫는다(엉뚱한 프로젝트에 쓰기 방지).
@@ -343,9 +484,12 @@ export const useUi = create<UiState>((set) => ({
   // repoId: 임베디드 저장소 파일이면 그 저장소의 합성 id, 아니면 생략(outer로 라우팅).
   // 대상을 뷰어 탭으로도 업서트한다 — 같은 키의 탭이 있으면 target만 갱신(file 모드의
   // line 이동이 기존 탭에서 일어나게), 없으면 뒤에 추가. null은 선택만 해제(탭 유지).
+  //
+  // **라우팅은 여기 한 곳에서 한다**(태스크 64 §3.3) — 파일을 여는 호출부 11곳(변경 목록·트리·
+  // 검색·심볼·QuickOpen·정의 이동·탭 바·단축키)은 그대로 두고, 대상은 **활성 패널**로 간다.
   selectDiff: (target, repoId) =>
     set((s) => {
-      if (!target) return { selectedDiff: null, selectedDiffRepoId: null };
+      if (!target) return writeActivePane(s, null, null);
       const outerId = s.selectedProjectId;
       // 모아보기 중 파일을 열면(사이드바 트리·퀵오픈·심볼검색·정의 이동) 모아보기를 닫고
       // 그 프로젝트를 뷰어 탭으로 전환한다 — 안 그러면 연 파일이 모아보기에 가려 안 보인다.
@@ -359,8 +503,7 @@ export const useUi = create<UiState>((set) => ({
       const closeReport = s.reportOpen;
       if (!outerId)
         return {
-          selectedDiff: target,
-          selectedDiffRepoId: repoId ?? null,
+          ...writeActivePane(s, target, repoId ?? null),
           ...(closeAggregate && { aggregateOpen: false }),
           ...(closeReport && { reportOpen: false }),
         };
@@ -370,8 +513,7 @@ export const useUi = create<UiState>((set) => ({
       return {
         ...(closeAggregate && { aggregateOpen: false }),
         ...(closeReport && { reportOpen: false }),
-        selectedDiff: target,
-        selectedDiffRepoId: repoId ?? null,
+        ...writeActivePane(s, target, repoId ?? null),
         // 프로젝트별 "마지막 활성 파일" 갱신 — 전환 후 복귀 시 이 파일로 돌아온다.
         activeDiffByProject: {
           ...s.activeDiffByProject,
@@ -387,16 +529,17 @@ export const useUi = create<UiState>((set) => ({
   // 탭 바에 같은 파일이 둘 생기지 않게 한다. 활성 대상이 없으면 아무것도 하지 않는다.
   replaceDiff: (target) =>
     set((s) => {
-      const repoId = s.selectedDiffRepoId;
+      const cur = selectActiveDiff(s);
+      const repoId = cur?.repoId ?? null;
       const outerId = s.selectedProjectId;
-      if (!outerId || !s.selectedDiff) return {};
-      const oldKey = viewerTabKey(s.selectedDiff, repoId, outerId);
+      if (!outerId || !cur) return {};
+      const oldKey = viewerTabKey(cur.target, repoId, outerId);
       const key = viewerTabKey(target, repoId, outerId);
       const tab: ViewerFileTab = { key, outerId, repoId, target };
       const i = s.viewerTabs.findIndex((t) => t.key === oldKey);
       const dup = s.viewerTabs.findIndex((t) => t.key === key);
       return {
-        selectedDiff: target,
+        ...writeActivePane(s, target, repoId),
         activeDiffByProject: {
           ...s.activeDiffByProject,
           [outerId]: { target, repoId },
@@ -414,9 +557,10 @@ export const useUi = create<UiState>((set) => ({
       const closing = s.viewerTabs.find((t) => t.key === key);
       if (!closing) return s;
       const viewerTabs = s.viewerTabs.filter((t) => t.key !== key);
+      const cur = selectActiveDiff(s);
       const activeKey =
-        s.selectedDiff && s.selectedProjectId
-          ? viewerTabKey(s.selectedDiff, s.selectedDiffRepoId, s.selectedProjectId)
+        cur && s.selectedProjectId
+          ? viewerTabKey(cur.target, cur.repoId, s.selectedProjectId)
           : null;
       if (activeKey !== key) return { viewerTabs };
       // 활성 탭을 닫음 — 같은 프로젝트의 이웃(원래 자리, 없으면 마지막) 탭으로 전환
@@ -430,8 +574,8 @@ export const useUi = create<UiState>((set) => ({
       else delete activeDiffByProject[closing.outerId];
       return {
         viewerTabs,
-        selectedDiff: next?.target ?? null,
-        selectedDiffRepoId: next?.repoId ?? null,
+        // 닫은 탭을 보던 것은 **활성 패널**이다 — 이웃 탭으로 그 패널만 옮긴다.
+        ...writeActivePane(s, next?.target ?? null, next?.repoId ?? null),
         activeDiffByProject,
       };
     }),
@@ -481,15 +625,20 @@ export const useUi = create<UiState>((set) => ({
         viewerTabs.push({ ...t, key, target });
       }
 
-      const cur = s.selectedDiff;
-      let selectedDiff = cur;
-      let selChanged = false;
-      if (s.selectedProjectId === projectId && isOuterRel(s.selectedDiffRepoId) && cur) {
-        const np = mapPath(cur.path);
-        if (np !== null) {
-          selectedDiff = { ...cur, path: np };
-          selChanged = true;
+      // 패널이 보고 있는 경로도 전부 옮긴다 — 안 하면 그 패널만 죽은 경로를 가리킨 채 남는다.
+      let panesChanged = false;
+      const viewerByPane: UiState["viewerByPane"] = {};
+      for (const [pid, e] of Object.entries(s.viewerByPane)) {
+        const np =
+          e && s.selectedProjectId === projectId && isOuterRel(e.repoId)
+            ? mapPath(e.target.path)
+            : null;
+        if (np === null || !e) {
+          viewerByPane[pid] = e;
+          continue;
         }
+        panesChanged = true;
+        viewerByPane[pid] = { ...e, target: { ...e.target, path: np } };
       }
 
       let activeDiffByProject = s.activeDiffByProject;
@@ -507,13 +656,75 @@ export const useUi = create<UiState>((set) => ({
       }
 
       // 옮길 것이 없으면 상태를 그대로 — 뷰어 탭 영속·리렌더를 헛돌리지 않는다.
-      if (!tabsChanged && !selChanged && !actChanged) return s;
+      if (!tabsChanged && !panesChanged && !actChanged) return s;
       return {
         viewerTabs: tabsChanged ? viewerTabs : s.viewerTabs,
-        selectedDiff,
+        viewerByPane: panesChanged ? viewerByPane : s.viewerByPane,
+        ...mirror(
+          (panesChanged ? viewerByPane : s.viewerByPane)[s.viewerActivePaneId] ?? null,
+        ),
         activeDiffByProject,
       };
     }),
+  // ── 뷰어 분할(태스크 64) — 트리 조작은 lib/pane-tree.ts의 순수 함수가 한다 ──
+  splitViewerPane: (paneId, dir, newFirst) =>
+    set((s) => {
+      // Monaco 인스턴스가 패널 수만큼 생긴다 — 상한에서 조용히 무시(메뉴도 비활성으로 보인다).
+      if (collectPanes(s.viewerLayout).length >= VIEWER_MAX_PANES) return {};
+      const newPaneId = crypto.randomUUID();
+      return {
+        viewerLayout: splitAt(
+          s.viewerLayout,
+          paneId,
+          dir,
+          { kind: "leaf", paneId: newPaneId },
+          newFirst,
+        ),
+        // 새 패널이 활성 — 다음에 여는 파일이 여기 뜬다(빈 상태로 시작).
+        viewerActivePaneId: newPaneId,
+        viewerMaximizedPaneId: null,
+        viewerByPane: { ...s.viewerByPane, [newPaneId]: null },
+        ...mirror(null),
+      };
+    }),
+
+  closeViewerPane: (paneId) =>
+    set((s) => {
+      const layout = removePane(s.viewerLayout, paneId);
+      if (!layout) return {}; // 마지막 하나 — 뷰어가 통째로 사라지지 않게 무시
+      const remaining = collectPanes(layout);
+      const viewerByPane = { ...s.viewerByPane };
+      delete viewerByPane[paneId];
+      const active = remaining.includes(s.viewerActivePaneId)
+        ? s.viewerActivePaneId
+        : remaining[remaining.length - 1];
+      return {
+        viewerLayout: layout,
+        viewerByPane,
+        viewerActivePaneId: active,
+        viewerMaximizedPaneId:
+          s.viewerMaximizedPaneId && remaining.includes(s.viewerMaximizedPaneId)
+            ? s.viewerMaximizedPaneId
+            : null,
+        ...mirror(viewerByPane[active] ?? null),
+      };
+    }),
+
+  setViewerActivePane: (paneId) =>
+    set((s) =>
+      s.viewerActivePaneId === paneId
+        ? {}
+        : { viewerActivePaneId: paneId, ...mirror(s.viewerByPane[paneId] ?? null) },
+    ),
+
+  toggleViewerMaximize: (paneId) =>
+    set((s) => ({
+      viewerMaximizedPaneId: s.viewerMaximizedPaneId === paneId ? null : paneId,
+    })),
+
+  setViewerRatio: (splitId, ratio) =>
+    set((s) => ({ viewerLayout: setRatioAt(s.viewerLayout, splitId, ratio) })),
+
   toggleLog: () => set((s) => ({ logOpen: !s.logOpen })),
   setLogHeight: (h) => {
     const v = Math.max(120, Math.min(h, window.innerHeight - 200));
@@ -594,6 +805,9 @@ export const useUi = create<UiState>((set) => ({
   gitDialog: null,
   openGitDialog: (projectId) => set({ gitDialog: { projectId } }),
   closeGitDialog: () => set({ gitDialog: null }),
+  fileTreeDialog: null,
+  openFileTreeDialog: (projectId) => set({ fileTreeDialog: { projectId } }),
+  closeFileTreeDialog: () => set({ fileTreeDialog: null }),
   translate: null,
   openTranslate: (req) => set({ translate: req }),
   closeTranslate: () => set({ translate: null }),
@@ -618,14 +832,34 @@ const SKIP_VIEWER_PERSIST = (() => {
 if (!SKIP_VIEWER_PERSIST) {
   let prevTabs = persistedViewer.viewerTabs;
   let prevActive = persistedViewer.activeDiffByProject;
+  // 분할 레이아웃도 같은 항목에 넣는다 — 재시작 후 패널 배치와 각 패널의 파일이 돌아온다.
+  let prevLayout = persistedViewer.viewerLayout;
+  let prevPane = persistedViewer.viewerActivePaneId;
+  let prevByPane = initialByPane;
   useUi.subscribe((s) => {
-    if (s.viewerTabs === prevTabs && s.activeDiffByProject === prevActive) return;
+    if (
+      s.viewerTabs === prevTabs &&
+      s.activeDiffByProject === prevActive &&
+      s.viewerLayout === prevLayout &&
+      s.viewerActivePaneId === prevPane &&
+      s.viewerByPane === prevByPane
+    )
+      return;
     prevTabs = s.viewerTabs;
     prevActive = s.activeDiffByProject;
+    prevLayout = s.viewerLayout;
+    prevPane = s.viewerActivePaneId;
+    prevByPane = s.viewerByPane;
     try {
       localStorage.setItem(
         VIEWER_KEY,
-        JSON.stringify({ viewerTabs: s.viewerTabs, activeDiffByProject: s.activeDiffByProject }),
+        JSON.stringify({
+          viewerTabs: s.viewerTabs,
+          activeDiffByProject: s.activeDiffByProject,
+          viewerLayout: s.viewerLayout,
+          viewerActivePaneId: s.viewerActivePaneId,
+          viewerByPane: s.viewerByPane,
+        }),
       );
     } catch {
       /* localStorage 불가 환경 무시 */

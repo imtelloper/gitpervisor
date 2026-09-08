@@ -1,11 +1,12 @@
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{sync_channel, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
-use tauri::ipc::Channel;
+use tauri::ipc::{Channel, Response};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use super::projects::project_path;
@@ -18,6 +19,24 @@ use crate::state::AppState;
 /// (빌드 로그·테스트 출력)에는 절대 걸리지 않는다. `yes`, 크래시 루프에 빠진 dev 서버,
 /// 거대 파일 `cat` 처럼 **끝없이 쏟아내는** 경우에만 발동한다.
 const PTY_BYTES_PER_SEC: usize = 8 * 1024 * 1024;
+
+/// 펌프가 PTY 출력을 모으는 시간(ms) — 이 시간이 지나면 모인 만큼 한 번에 Channel로 보낸다.
+///
+/// **키우지 마라. 이 값이 곧 에코 지연의 하한이 된다.** 터미널에는 로컬 에코가 없어 사용자가
+/// 보는 지연은 왕복 전체인데, 그 왕복 p50이 실측 3~5ms다. 4ms는 이미 있는 지연보다 작아
+/// 대화형 입력에서 체감되지 않으면서, 1MB 출력의 IPC 메시지 수를 수천 개에서 수십 개로 줄인다
+/// (16ms를 넘기면 사람이 느낀다 — 태스크 63 §6).
+const FLUSH_MS: u64 = 4;
+
+/// 한 Channel 메시지의 상한. 여기 닿으면 `FLUSH_MS`를 기다리지 않고 즉시 보낸다.
+/// 리더의 읽기 버퍼와 같은 크기라 "읽은 것 하나"는 절대 쪼개지지 않는다.
+const MAX_CHUNK: usize = 65536;
+
+/// 리더→펌프 큐 깊이. **무제한으로 두면 안 된다.** Pacer가 상한을 넘겨 펌프를 재우는 동안
+/// 리더가 계속 읽어 큐에 쌓으면, 적체 장소가 Tauri의 `ChannelDataIpcQueue`에서 이 큐로 옮겨질
+/// 뿐 메모리는 똑같이 무한히 는다. 큐가 차면 리더의 `send`가 막히고 → PTY 버퍼가 차고 →
+/// 셸의 write가 막힌다(기존과 같은 유닉스 흐름 제어). 32 × 최대 64KB = 최악 2MB.
+const PUMP_QUEUE: usize = 32;
 
 /// 지금 써도 되는 예산. 메모리 경보 중에는 조인다.
 ///
@@ -84,10 +103,14 @@ impl Pacer {
 /// 열려 있는 PTY 세션. Rust가 수명의 단일 진실 — 프론트 탭/프로젝트 전환과 무관하게 살아있다.
 /// 필드는 같은 모듈(term_write/resize/close)에서만 접근한다.
 pub struct TerminalSession {
-    /// 키 입력을 PTY stdin으로
-    writer: Box<dyn Write + Send>,
-    /// 리사이즈용 마스터 핸들
-    master: Box<dyn MasterPty + Send>,
+    /// 키 입력을 PTY stdin으로.
+    ///
+    /// **Arc로 감싸 전역 세션 락 밖에서 쓴다**(태스크 63 §4 P2). 예전에는 `term_write`가
+    /// `state.terminals`의 전역 뮤텍스를 쥔 채 `write_all`+`flush`를 했다 — 한 세션의 ConPTY
+    /// 입력 버퍼가 차서 write가 막히면 **나머지 터미널 전부의 키 입력이 함께 막혔다.**
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    /// 리사이즈용 마스터 핸들. writer와 같은 이유로 Arc — `term_resize`도 전역 락을 짧게만 쥔다.
+    master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     /// kill용 자식 프로세스 (리더 스레드와 공유 — EOF 시 wait로 종료코드 수집)
     child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
     /// 셸의 pid. portable-pty가 spawn 시 setsid()를 하므로 이 값이 곧 세션 id이자 프로세스 그룹 id다.
@@ -100,7 +123,12 @@ pub struct TerminalSession {
     closed: Arc<AtomicBool>,
     /// 출력 sink — 현재 이 PTY를 그리는 웹뷰의 Channel. term_attach가 이 sink를 다른 창의
     /// Channel로 교체해 살아있는 세션을 별도 OS 창(플로팅)으로 옮긴다.
-    sink: Arc<Mutex<Option<Channel<Vec<u8>>>>>,
+    ///
+    /// 페이로드는 `Response`(= `InvokeResponseBody::Raw`)다. `Vec<u8>`이면 serde가 **JSON 숫자
+    /// 배열**(`[27,91,...]`, 원시의 ~3.5배)을 만들고, 그게 8,192자를 넘는 순간 fetch 경로로
+    /// 다시 실려 최악 조합이 된다. Raw면 1KB 미만은 지금처럼 eval 1홉, 그 이상은 fetch로
+    /// **ArrayBuffer 그대로** 간다 — JSON 직렬화·파싱이 통째로 사라진다(태스크 63 §4 P0).
+    sink: Arc<Mutex<Option<Channel<Response>>>>,
     /// 이 PTY가 속한 프로젝트 — 플로팅 창이 이 값으로 새 분할 패널의 cwd를 잡는다.
     project_id: String,
 }
@@ -136,7 +164,7 @@ pub fn term_open(
     project_id: String,
     cols: u16,
     rows: u16,
-    on_data: Channel<Vec<u8>>,
+    on_data: Channel<Response>,
 ) -> Result<TermOpened, IpcError> {
     let path = project_path(&state, &project_id)?;
     if !path.is_dir() {
@@ -195,32 +223,86 @@ pub fn term_open(
     // 출력 sink를 Arc<Mutex>로 — 플로팅 분리 시 term_attach가 이 sink를 새 창 Channel로 바꾼다.
     let sink = Arc::new(Mutex::new(Some(on_data)));
 
+    // 출력은 **리더 + 펌프** 두 스레드로 나눈다(태스크 63 §4 P0).
+    //
+    // 리더는 지금처럼 블로킹 read만 하고 큐에 넘기고, 펌프가 `FLUSH_MS` 동안 모아 한 번만
+    // Channel::send 한다. 왜 스레드를 더 쓰는가: portable_pty의 리더에는 타임아웃 read가 없어
+    // "시간축 합치기"를 리더 안에서 할 수 없다(폴링은 CPU를 태우고 플랫폼별 분기가 생긴다).
+    // 대기만 하는 스레드라 실질 비용이 없고, 기존 "세션당 스레드 1개" 모델의 자연스러운 확장이다.
+    let (tx, rx) = sync_channel::<Vec<u8>>(PUMP_QUEUE);
+    {
+        let sink = Arc::clone(&sink);
+        std::thread::spawn(move || {
+            let mut pacer = Pacer::new(Instant::now());
+            let mut buf: Vec<u8> = Vec::with_capacity(MAX_CHUNK);
+            let mut deadline = Instant::now();
+            // 모아 둔 것을 한 번에 보낸다. sink가 None(의도적 종료)이면 조용히 버린다 — 기존과 같다.
+            let mut flush = |buf: &mut Vec<u8>| {
+                if buf.is_empty() {
+                    return;
+                }
+                let n = buf.len();
+                let chunk = std::mem::replace(buf, Vec::with_capacity(MAX_CHUNK));
+                if let Some(ch) = sink.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+                    // 창이 닫혀 send가 실패해도 루프를 끊지 않는다 — 플로팅 분리 중
+                    // (detach↔attach 사이)의 짧은 공백을 위해서다.
+                    let _ = ch.send(Response::new(chunk));
+                }
+                // 속도 제한(Pacer 주석 참고) — 넘치면 여기서 잠깐 잔다. 그동안 리더는 큐가
+                // 차면 막히고, PTY 버퍼가 차고, 셸의 write가 막힌다(역압 경로는 예전 그대로).
+                // 예산은 매번 읽는다(원자값 1회 로드) — 경보가 뜨면 즉시 조여진다.
+                if let Some(d) = pacer.take(n, Instant::now(), pty_budget()) {
+                    std::thread::sleep(d);
+                }
+            };
+            loop {
+                // 모은 게 없으면 무한 대기(빈 채로 깨어날 이유가 없다), 있으면 남은 창 시간만.
+                let got = if buf.is_empty() {
+                    rx.recv().ok()
+                } else {
+                    match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                        Ok(v) => Some(v),
+                        Err(RecvTimeoutError::Timeout) => {
+                            flush(&mut buf);
+                            continue;
+                        }
+                        Err(RecvTimeoutError::Disconnected) => None,
+                    }
+                };
+                let Some(v) = got else {
+                    // 리더가 EOF로 끝났다 — **남은 버퍼를 마저 보내고** 끝낸다(마지막 출력 유실 금지).
+                    flush(&mut buf);
+                    break;
+                };
+                if buf.is_empty() {
+                    deadline = Instant::now() + Duration::from_millis(FLUSH_MS);
+                }
+                buf.extend_from_slice(&v);
+                if buf.len() >= MAX_CHUNK {
+                    flush(&mut buf);
+                }
+            }
+        });
+    }
+
     // 전용 std 스레드에서 블로킹 read 루프 — tokio 실행기/메인스레드를 막지 않는다(설계 §16.2).
     {
         let app = app.clone();
         let child = Arc::clone(&child);
         let closed = Arc::clone(&closed);
-        let sink = Arc::clone(&sink);
         let term_id = term_id.clone();
         std::thread::spawn(move || {
-            // 64KB — 예전엔 8KB였다. 읽기는 있는 만큼만 가져오므로 지연은 그대로이고, 출력이
-            // 쏟아질 때 Channel send 횟수(=Tauri ChannelDataIpcQueue 엔트리 수)만 1/8로 준다.
-            let mut buf = [0u8; 65536];
-            let mut pacer = Pacer::new(Instant::now());
+            // 64KB — 상한일 뿐이다. read()는 "그 순간 있는 만큼"만 돌려주므로 이 크기가
+            // Channel send 횟수를 줄여주지는 않는다(그 일은 위 펌프의 시간축 합치기가 한다).
+            let mut buf = [0u8; MAX_CHUNK];
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break, // EOF — 셸 종료
                     Ok(n) => {
-                        // 현재 sink로 전송. 창이 닫혀 send가 실패해도 PTY는 살린다 —
-                        // 플로팅 분리 중(detach↔attach 사이)의 짧은 공백을 위해 루프를 끊지 않는다.
-                        // 의도적 종료는 sink를 None으로 비워 죽은 Channel에 계속 쏘지 않게 한다.
-                        if let Some(ch) = sink.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-                            let _ = ch.send(buf[..n].to_vec());
-                        }
-                        // 속도 제한(Pacer 주석 참고) — 넘치면 여기서 잠깐 잔다.
-                        // 예산은 매번 읽는다(원자값 1회 로드) — 경보가 뜨면 즉시 조여진다.
-                        if let Some(d) = pacer.take(n, Instant::now(), pty_budget()) {
-                            std::thread::sleep(d);
+                        // 큐가 차면 여기서 막힌다 — 그게 역압이다(PTY 버퍼 → 셸의 write).
+                        // send 실패는 펌프가 사라진 경우뿐이라 더 읽을 이유가 없다.
+                        if tx.send(buf[..n].to_vec()).is_err() {
+                            break;
                         }
                     }
                     // EINTR은 정상적인 시그널 인터럽트다. 여기서 루프를 끊으면 아직 살아있는 셸에
@@ -229,6 +311,9 @@ pub fn term_open(
                     Err(_) => break,
                 }
             }
+            // 펌프에게 즉시 종료를 알린다 — 이 drop이 늦으면(아래 wait()가 오래 걸린다)
+            // 셸의 마지막 출력이 최대 wait 시간만큼 화면에 늦게 뜬다.
+            drop(tx);
             let code = child
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -251,8 +336,8 @@ pub fn term_open(
     }
 
     let session = TerminalSession {
-        writer,
-        master: pair.master,
+        writer: Arc::new(Mutex::new(writer)),
+        master: Arc::new(Mutex::new(pair.master)),
         child,
         pid,
         closed,
@@ -298,14 +383,18 @@ pub fn term_write(
     term_id: String,
     data: String,
 ) -> Result<(), IpcError> {
-    let mut terms = state.terminals.lock().unwrap_or_else(|e| e.into_inner());
-    let session = terms
-        .get_mut(&term_id)
-        .ok_or_else(|| IpcError::new(ErrorCode::NotFound, "터미널 세션을 찾을 수 없습니다"))?;
-    session
-        .writer
-        .write_all(data.as_bytes())
-        .and_then(|_| session.writer.flush())
+    // 전역 락은 **Arc 복제까지만** 쥔다. 예전에는 이 락 아래에서 write_all+flush를 했고,
+    // 한 세션의 ConPTY 입력 버퍼가 차면 터미널 13개의 키 입력이 함께 막혔다(태스크 63 §3.4).
+    let writer = {
+        let terms = state.terminals.lock().unwrap_or_else(|e| e.into_inner());
+        terms
+            .get(&term_id)
+            .map(|s| Arc::clone(&s.writer))
+            .ok_or_else(|| IpcError::new(ErrorCode::NotFound, "터미널 세션을 찾을 수 없습니다"))?
+    };
+    let mut w = writer.lock().unwrap_or_else(|e| e.into_inner());
+    w.write_all(data.as_bytes())
+        .and_then(|_| w.flush())
         .map_err(|e| IpcError::new(ErrorCode::Io, format!("터미널 입력 실패: {e}")))
 }
 
@@ -315,7 +404,7 @@ pub fn term_write(
 pub fn term_attach(
     state: State<'_, AppState>,
     term_id: String,
-    on_data: Channel<Vec<u8>>,
+    on_data: Channel<Response>,
 ) -> Result<(), IpcError> {
     let terms = state.terminals.lock().unwrap_or_else(|e| e.into_inner());
     let session = terms
@@ -344,19 +433,22 @@ pub fn term_resize(
     cols: u16,
     rows: u16,
 ) -> Result<(), IpcError> {
-    let terms = state.terminals.lock().unwrap_or_else(|e| e.into_inner());
-    let session = terms
-        .get(&term_id)
-        .ok_or_else(|| IpcError::new(ErrorCode::NotFound, "터미널 세션을 찾을 수 없습니다"))?;
-    session
-        .master
-        .resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("터미널 리사이즈 실패: {e}")))
+    // term_write와 같은 이유로 전역 락은 Arc 복제까지만 쥔다.
+    let master = {
+        let terms = state.terminals.lock().unwrap_or_else(|e| e.into_inner());
+        terms
+            .get(&term_id)
+            .map(|s| Arc::clone(&s.master))
+            .ok_or_else(|| IpcError::new(ErrorCode::NotFound, "터미널 세션을 찾을 수 없습니다"))?
+    };
+    let m = master.lock().unwrap_or_else(|e| e.into_inner());
+    m.resize(PtySize {
+        rows,
+        cols,
+        pixel_width: 0,
+        pixel_height: 0,
+    })
+    .map_err(|e| IpcError::new(ErrorCode::Io, format!("터미널 리사이즈 실패: {e}")))
 }
 
 /// 세션 종료 — child kill 후 레지스트리에서 제거(드롭이 writer·master를 닫는다).

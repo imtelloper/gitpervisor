@@ -7,7 +7,7 @@ import { errorMessage } from "../../lib/ipc";
 import type { DiffTarget } from "../../lib/ipc";
 import { usePanelWidth } from "../../lib/use-panel-width";
 import { useCommitDetail } from "../../queries";
-import { useUi } from "../../stores/ui";
+import { selectActiveDiff, useUi } from "../../stores/ui";
 import { ResizeHandle } from "../common/ResizeHandle";
 
 /** 클립보드 복사 + 토스트 (커밋 메시지·해시). */
@@ -35,7 +35,7 @@ export function CommitDetailPane({
 }) {
   const storeSha = useUi((s) => s.selectedCommitSha);
   const sha = selectedSha !== undefined ? selectedSha : storeSha;
-  const selectedDiff = useUi((s) => s.selectedDiff);
+  const activeDiff = useUi(selectActiveDiff);
   const selectDiff = useUi((s) => s.selectDiff);
   const { data, isLoading, error } = useCommitDetail(projectId, sha);
   const { width, startResize } = usePanelWidth(
@@ -124,7 +124,7 @@ export function CommitDetailPane({
           const badge = KIND_BADGE[f.kind];
           const { dir, base } = splitPath(f.path);
           // onSelect가 오면 강조도 전역이 아닌 로컬 active를 본다.
-          const shown = onSelect ? active?.target : selectedDiff;
+          const shown = onSelect ? active?.target : activeDiff?.target;
           const selected =
             shown?.mode === "commit" &&
             shown.sha === commit.sha &&

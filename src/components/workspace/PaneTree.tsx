@@ -1,15 +1,18 @@
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 
 import { useBrowsers } from "../../stores/browser";
 import {
   collectPanes,
   useTerminals,
   type Pane,
+  type TermLeaf,
   type TermTab,
 } from "../../stores/terminals";
 import { BrowserPane } from "./BrowserPane";
 import { PaneControls } from "./PaneControls";
+import { SplitView } from "./SplitView";
 import {
+  FileTreeButton,
   GitDialogButton,
   PromptLogButton,
   ThemeButton,
@@ -78,7 +81,25 @@ function PaneView(props: ViewProps) {
       />
     );
   }
-  return <SplitView {...props} node={props.node} />;
+  return <TermSplitView {...props} node={props.node} />;
+}
+
+/** 분할 노드 — 공용 SplitView에 터미널 스토어의 비율/드래그 액션을 물린다. */
+function TermSplitView({
+  node,
+  tab,
+  ...rest
+}: ViewProps & { node: Extract<Pane, { kind: "split" }> }) {
+  const setRatio = useTerminals((s) => s.setRatio);
+  const setDraggingSplit = useTerminals((s) => s.setDraggingSplit);
+  return (
+    <SplitView<TermLeaf>
+      node={node}
+      setRatio={(splitId, ratio) => setRatio(tab.id, splitId, ratio)}
+      setDraggingSplit={setDraggingSplit}
+      render={(child) => <PaneView node={child} tab={tab} {...rest} />}
+    />
+  );
 }
 
 /** 리프 한 칸 — content에 따라 터미널/브라우저를 렌더하고, 위에 패널 툴바를 띄운다. */
@@ -131,6 +152,7 @@ function LeafView({
             <ThemeButton termId={leaf.paneId} />
             <PromptLogButton termId={leaf.paneId} />
             <GitDialogButton projectId={tab.projectId} />
+            <FileTreeButton projectId={tab.projectId} />
             <span className="mx-0.5 h-3 w-px bg-edge" />
             {controls}
           </>
@@ -140,122 +162,3 @@ function LeafView({
   );
 }
 
-function SplitView({
-  node,
-  tab,
-  projectId,
-  fontSize,
-  multi,
-}: ViewProps & { node: Extract<Pane, { kind: "split" }> }) {
-  const isRow = node.dir === "row";
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  return (
-    <div
-      ref={containerRef}
-      className={`flex h-full w-full ${isRow ? "flex-row" : "flex-col"}`}
-    >
-      <div
-        style={{ flexBasis: `${node.ratio * 100}%` }}
-        className="min-h-0 min-w-0 shrink-0 grow-0 overflow-hidden"
-      >
-        <PaneView
-          node={node.a}
-          tab={tab}
-          projectId={projectId}
-          fontSize={fontSize}
-          multi={multi}
-        />
-      </div>
-
-      <Divider
-        dir={node.dir}
-        tabId={tab.id}
-        splitId={node.id}
-        containerRef={containerRef}
-      />
-
-      <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
-        <PaneView
-          node={node.b}
-          tab={tab}
-          projectId={projectId}
-          fontSize={fontSize}
-          multi={multi}
-        />
-      </div>
-    </div>
-  );
-}
-
-function Divider({
-  dir,
-  tabId,
-  splitId,
-  containerRef,
-}: {
-  dir: "row" | "col";
-  tabId: string;
-  splitId: string;
-  containerRef: React.RefObject<HTMLDivElement | null>;
-}) {
-  const setRatio = useTerminals((s) => s.setRatio);
-  const setDraggingSplit = useTerminals((s) => s.setDraggingSplit);
-  const isRow = dir === "row";
-
-  // 드래그 도중 이 divider가 사라져도(패널 닫기/탭 전환/최대화) 리스너·rAF를 정리하고
-  // draggingSplit이 true로 고착(브라우저 웹뷰 영구 숨김)되지 않게 하는 언마운트 안전망.
-  const teardownRef = useRef<(() => void) | null>(null);
-  useEffect(() => () => teardownRef.current?.(), []);
-
-  const onPointerDown = (e: React.PointerEvent) => {
-    e.preventDefault();
-    // 드래그 중엔 브라우저 웹뷰를 숨겨 리사이즈 잔상을 막는다
-    setDraggingSplit(true);
-    // pointermove는 프레임당 여러 번 발화한다 — setRatio(스토어 갱신=워크스페이스 트리
-    // 재렌더)를 rAF로 합쳐(coalesce) 프레임당 최대 1회만 커밋해 드래그 중 재렌더 폭주를 막는다.
-    let raf = 0;
-    let pending = 0;
-    const flush = () => {
-      raf = 0;
-      setRatio(tabId, splitId, pending);
-    };
-    const move = (ev: PointerEvent) => {
-      const el = containerRef.current;
-      if (!el) return;
-      const r = el.getBoundingClientRect();
-      const ratio = isRow
-        ? (ev.clientX - r.left) / r.width
-        : (ev.clientY - r.top) / r.height;
-      pending = Math.min(0.9, Math.max(0.1, ratio));
-      if (!raf) raf = requestAnimationFrame(flush);
-    };
-    const teardown = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      if (raf) cancelAnimationFrame(raf);
-      teardownRef.current = null;
-      setDraggingSplit(false);
-    };
-    const up = () => {
-      if (raf) {
-        cancelAnimationFrame(raf);
-        raf = 0;
-        setRatio(tabId, splitId, pending); // 마지막 위치를 확정 커밋
-      }
-      teardown();
-    };
-    teardownRef.current = teardown;
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  };
-
-  return (
-    <div
-      onPointerDown={onPointerDown}
-      className={`shrink-0 bg-edge transition-colors hover:bg-accent ${
-        isRow ? "w-[3px] cursor-col-resize" : "h-[3px] cursor-row-resize"
-      }`}
-    />
-  );
-}

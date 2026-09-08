@@ -35,7 +35,48 @@ import { themeOf } from "./themes";
 // 패닉 격리를 위해 async로 바꾸면서 그 보장이 사라졌다. 이 파일의 송신은 키 입력·IME 델타·
 // 붙여넣기·xterm 자동응답까지 전부 fire-and-forget이라, 체이닝하지 않으면 빠르게 친 키가
 // 뒤바뀐다("ls" → "sl"). 호출자 입장에선 여전히 fire-and-forget이다(await도 throw도 없다).
+//
+// **대기 중에 들어온 입력은 이어붙여 한 번에 보낸다**(태스크 63 §4 P1). 예전에는 키마다 이전
+// 왕복이 끝나기를 기다린 뒤 다음을 보냈고, 그래서 **정지 1회의 비용이 대기 중인 키 개수만큼
+// 곱해졌다** — IPC 펌프가 993ms 막힌 사이 8키를 치면 그 8키가 993ms 뒤부터 다시 하나씩 왕복해
+// 지속 타이핑이 187 → 26 키/초로 무너졌다(실측). 지금은 1왕복으로 나간다.
+//
+// 순서 불변식은 그대로다: 이어붙이기는 순서를 보존하고, 한 번의 `term_write` 안에서는 Rust가
+// `write_all`로 순서대로 쓴다. **대기 자체를 없앤 게 아니다** — 없애면 다시 "ls"가 "sl"이 된다.
 const writeChains = new Map<string, Promise<void>>();
+// 지금 나가 있는 전송이 끝나기를 기다리는 입력(termId → 이어붙인 문자열).
+const pendingWrites = new Map<string, string>();
+// 대기분 상한 — 거대 붙여넣기가 한 문자열로 무한히 부풀지 않게. 넘으면 더 모으지 않고
+// 체인에 이어 내보낸다(순서는 그대로).
+const PENDING_MAX = 1024 * 1024;
+
+/** 실제 전송. `after`가 있으면 그 뒤에 잇는다(순서 보장). 완료 시 그동안 모인 입력을 한 번에 보낸다. */
+function sendWrite(termId: string, data: string, after?: Promise<void>) {
+  const next = (after ?? Promise.resolve())
+    .then(() =>
+      invoke("term_write", { termId, data }).then(
+        () => {},
+        () => {}, // 실패해도 체인을 끊지 않는다 — 한 번 실패가 이후 입력을 전부 막으면 안 된다
+      ),
+    )
+    .then(() => {
+      // 내가 마지막 전송일 때만 대기분을 넘겨받는다(그 사이 다른 전송이 걸렸으면 그쪽이 맡는다).
+      if (writeChains.get(termId) === next) flushPending(termId);
+    });
+  writeChains.set(termId, next);
+}
+
+/** 모인 입력을 한 번에 내보낸다. 없으면 체인 항목을 지운다 —
+ *  터미널을 오래 여닫아도 맵이 자라지 않고, 다음 입력이 대기 없이 즉시 나간다. */
+function flushPending(termId: string) {
+  const data = pendingWrites.get(termId);
+  if (data === undefined) {
+    writeChains.delete(termId);
+    return;
+  }
+  pendingWrites.delete(termId);
+  sendWrite(termId, data);
+}
 
 // PTY 리사이즈 송신 — 입력과 같은 이유로 **termId별 순서를 보장한다**. `term_resize`도 async
 // 커맨드라 연속 리사이즈(드래그·창 전환)가 워커에서 뒤바뀌면 마지막 크기가 아니라 이전 크기가
@@ -82,17 +123,19 @@ function ptyWrite(termId: string, data: string) {
   // (자동응답 걸러내기는 prompt-capture가 담당). 이 줄이 던지면 아래 term_write가 통째로
   // 건너뛰어져 그 키가 PTY로 안 나가므로, capturePtyInput 안에서 전부 삼킨다.
   capturePtyInput(termId, data);
-  const next = (writeChains.get(termId) ?? Promise.resolve()).then(() =>
-    invoke("term_write", { termId, data }).then(
-      () => {},
-      () => {}, // 실패해도 체인을 끊지 않는다 — 한 번 실패가 이후 입력을 전부 막으면 안 된다
-    ),
-  );
-  writeChains.set(termId, next);
-  // 큐가 비면 항목을 지운다 — 터미널을 오래 여닫아도 맵이 자라지 않는다.
-  void next.then(() => {
-    if (writeChains.get(termId) === next) writeChains.delete(termId);
-  });
+  const inflight = writeChains.get(termId);
+  // 나가 있는 전송이 없으면 즉시 보낸다 — 조용할 때 지연 증가는 0이다.
+  if (!inflight) {
+    sendWrite(termId, data);
+    return;
+  }
+  const pending = (pendingWrites.get(termId) ?? "") + data;
+  if (pending.length > PENDING_MAX) {
+    pendingWrites.delete(termId);
+    sendWrite(termId, pending, inflight);
+    return;
+  }
+  pendingWrites.set(termId, pending);
 }
 
 // Shift/Alt+Enter를 win32-input-mode로 보낼 때 실을 수식 상태(ControlKeyState).
@@ -635,11 +678,11 @@ export function createTerminalImpl(opts: {
     () => {},
     () => {},
   );
-  // 첫 키 입력도 같은 레이스가 가능하므로 쓰기 체인을 open으로 시드한다. 시드가 마지막이면
-  // 지워 맵이 자라지 않게 한다(ptyWrite의 정리 규칙과 동일).
+  // 첫 키 입력도 같은 레이스가 가능하므로 쓰기 체인을 open으로 시드한다. open이 끝나면 그동안
+  // 모인 입력을 한 번에 내보낸다(없으면 항목을 지운다 — ptyWrite의 정리 규칙과 동일).
   writeChains.set(opts.id, opened);
   void opened.then(() => {
-    if (writeChains.get(opts.id) === opened) writeChains.delete(opts.id);
+    if (writeChains.get(opts.id) === opened) flushPending(opts.id);
   });
 
   // 예약된 초기 입력("Claude Code 세션으로 새 터미널" — lib/terminal.ts queueInitialInput)을

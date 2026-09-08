@@ -5,7 +5,7 @@ import { isMod } from "../lib/platform";
 import { usePushFlow, useRefreshAll, useSyncOp } from "../queries";
 import { useSearch } from "../stores/search";
 import { useTerminals } from "../stores/terminals";
-import { useUi, viewerTabKey } from "../stores/ui";
+import { selectActiveDiff, useUi, viewerTabKey } from "../stores/ui";
 
 /**
  * 항상-마운트 전역 단축키 — KeyboardShortcuts는 모아보기가 열리거나 프로젝트 미선택이면
@@ -79,15 +79,29 @@ export function KeyboardShortcuts({ projectId }: { projectId: string }) {
         useSearch.getState().setOpen(true);
         return;
       }
-      if (!e.ctrlKey) return;
+      // 아래 분기들은 전부 **Ctrl(+Shift) 전용**이다 — Alt가 눌린 조합은 여기서 통째로 막는다.
+      // **Windows의 AltGr은 ctrlKey=true + altKey=true로 온다**: 국제 키보드로 `@`·`\`·`|`·`€`를
+      // 치면 커밋·push·pull이 사용자 의도 없이 나갔다(Ctrl+Alt+Shift+K → 업스트림 설정 확인창
+      // 실측 재현). 분기마다 !altKey를 붙이면 나중에 추가되는 분기가 또 빠뜨리므로 게이트로 막는다.
+      // Alt를 **쓰는** 단축키(mod+Alt+N = Go to Symbol)는 이 위에서 이미 처리하고 return 한다.
+      if (!e.ctrlKey || e.altKey) return;
       const k = e.key.toLowerCase();
-      // Ctrl+Shift+D/E/W: 터미널 패널 분할/닫기 — 어느 탭(Viewer/DB 등)을 보고 있어도 동작.
+      // Ctrl+Shift+D/E/W: 패널 분할/닫기. Viewer 탭이면 뷰어 패널, 그 밖(DB·브라우저 등)이면 터미널.
       // 대상 터미널 탭을 해석: 활성 터미널 → 이 프로젝트의 마지막 터미널 → 없으면 새로 연다.
       // (기존 버그: 활성 탭이 터미널이 아니면 그냥 무시돼서 단축키가 "안 먹는" 것처럼 보였다.)
       if (e.shiftKey && (k === "d" || k === "e" || k === "w")) {
         e.preventDefault();
         const pid = pidRef.current; // 현재 선택 프로젝트 (클로저 고착 방지)
         const ts = useTerminals.getState();
+        // Viewer를 보고 있으면 **뷰어 패널**을 나눈다(태스크 64 §3.6). 터미널 탭에서는 불변.
+        if ((ts.activeTab[pid] ?? "viewer") === "viewer") {
+          const ui = useUi.getState();
+          const pane = ui.viewerActivePaneId;
+          if (k === "d") ui.splitViewerPane(pane, "row", false);
+          else if (k === "e") ui.splitViewerPane(pane, "col", false);
+          else ui.closeViewerPane(pane);
+          return;
+        }
         let tab = ts.terminals.find((t) => t.id === ts.activeTab[pid]);
         if (!tab) {
           const terms = ts.terminals.filter((t) => t.projectId === pid);
@@ -107,14 +121,15 @@ export function KeyboardShortcuts({ projectId }: { projectId: string }) {
       // Ctrl+W(Shift 없음): 뷰어에서 현재 보고 있는 파일 탭 닫기. 터미널을 보고 있을 때는
       // activeTab이 viewer가 아니므로 건너뛴다(터미널 포커스의 Ctrl+W는 xterm 엔진이
       // 직접 소비해 패널을 닫는다 — terminal-engine.ts).
-      if (k === "w" && !e.shiftKey && !e.altKey) {
+      if (k === "w" && !e.shiftKey) {
         const pid = pidRef.current;
         const ts = useTerminals.getState();
         if ((ts.activeTab[pid] ?? "viewer") !== "viewer") return;
         const ui = useUi.getState();
-        if (!ui.selectedDiff) return; // 열린 파일 없음 — 조용히 무시
+        const cur = selectActiveDiff(ui); // 활성 패널이 보고 있는 파일
+        if (!cur) return; // 열린 파일 없음 — 조용히 무시
         e.preventDefault();
-        const key = viewerTabKey(ui.selectedDiff, ui.selectedDiffRepoId, pid);
+        const key = viewerTabKey(cur.target, cur.repoId, pid);
         if (ui.viewerTabs.some((t) => t.key === key)) ui.closeViewerTab(key);
         else ui.selectDiff(null); // 탭 없이 열린 선택(엣지) — 선택만 해제
         return;

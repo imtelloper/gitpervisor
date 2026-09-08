@@ -50,6 +50,7 @@ import { EmptyState } from "./common/EmptyState";
 import { ProjectLogo } from "./common/ProjectLogo";
 import { BrowserPane } from "./workspace/BrowserPane";
 import {
+  FileTreeButton,
   GitDialogButton,
   PromptHistoryButton,
   PromptLogButton,
@@ -1389,6 +1390,7 @@ function AggregateCell({
         <ThemeButton termId={meta.id} />
         <PromptLogButton termId={meta.id} />
         <GitDialogButton projectId={meta.projectId} />
+        <FileTreeButton projectId={meta.projectId} />
         <button
           onClick={onZoom}
           title={
@@ -1467,6 +1469,7 @@ function BrowserCell({
           <span className="text-fg-dim"> · {meta.title}</span>
         </span>
         <GitDialogButton projectId={meta.projectId} />
+        <FileTreeButton projectId={meta.projectId} />
         <HideButton onClick={onHide} what="브라우저" />
         {/* 분할 pane(tabId 있음)은 closePane이라 위임을 탄다. 독립 브라우저 탭은 closeBrowserTab —
             위임 경로가 없는 메인 전용이라 별도 창에선 X를 감춘다(ChipMenu와 같은 규칙). */}

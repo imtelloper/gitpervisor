@@ -5,7 +5,7 @@ import { openDocWindow } from "../../lib/floating";
 import type { DiffTarget } from "../../lib/ipc";
 import { useOccludesWebview } from "../../stores/occlusion";
 import type { ViewerFileTab } from "../../stores/ui";
-import { useUi, viewerTabKey } from "../../stores/ui";
+import { selectActiveDiff, useUi, viewerTabKey } from "../../stores/ui";
 
 /** 탭 표기 — 파일명 + 모드 힌트(diff/staged/커밋은 배지로 구분, 파일 보기는 이름만). */
 function tabLabel(target: DiffTarget): { name: string; hint: string | null } {
@@ -29,15 +29,15 @@ function tabLabel(target: DiffTarget): { name: string; hint: string | null } {
  */
 export function ViewerFileTabs({ projectId }: { projectId: string }) {
   const viewerTabs = useUi((s) => s.viewerTabs);
-  const selectedDiff = useUi((s) => s.selectedDiff);
-  const selectedDiffRepoId = useUi((s) => s.selectedDiffRepoId);
+  // 탭 바는 **활성 패널**이 무엇을 보는지 표시한다(분할해도 탭 목록은 창 단위로 하나 — §3.3).
+  const activeDiff = useUi(selectActiveDiff);
   const selectDiff = useUi((s) => s.selectDiff);
   const closeViewerTab = useUi((s) => s.closeViewerTab);
 
   const tabs = viewerTabs.filter((t) => t.outerId === projectId);
   const activeKey =
-    selectedDiff && tabs.length > 0
-      ? viewerTabKey(selectedDiff, selectedDiffRepoId, projectId)
+    activeDiff && tabs.length > 0
+      ? viewerTabKey(activeDiff.target, activeDiff.repoId, projectId)
       : null;
 
   // 탭이 많아 가로로 넘칠 때, 활성 탭이 밖에 있으면 보이는 데까지만 스크롤한다.

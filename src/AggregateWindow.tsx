@@ -2,10 +2,12 @@ import { useEffect } from "react";
 
 import { AggregateTerminals } from "./components/AggregateTerminals";
 import { ConfirmHost } from "./components/common/ConfirmDialog";
+import { PromptHost } from "./components/common/PromptDialog";
 import { Toasts } from "./components/common/Toast";
 import { TranslateHost } from "./components/common/TranslateCard";
 import { FloatTitleBar } from "./components/FloatTitleBar";
 import { GitDialog } from "./components/git/GitDialog";
+import { FileTreeDialog } from "./components/tree/FileTreeDialog";
 import { announceAggregateWindow } from "./lib/aggregate-window";
 import { refreshTerminalThemes } from "./lib/terminal";
 import { useSettings } from "./queries";
@@ -48,9 +50,14 @@ export function AggregateWindow() {
           셀의 프롬프트 목록 복사는 성공/실패를 알려야 한다. 스토어는 창마다 별개라
           (웹뷰 = 별도 JS 컨텍스트) 메인 창의 호스트가 여기 대신 그려 주지 않는다(SysMonitorWindow와 동일). */}
       <ConfirmHost />
+      {/* 파일 트리 모달의 새 파일·새 폴더·이름 바꾸기가 askPrompt를 쓴다 — 호스트가 없으면
+          이 창에서는 입력창이 아예 안 뜬다(창마다 useUi가 별개, 태스크 62). */}
+      <PromptHost />
       <Toasts />
       {/* 셀 헤더의 Git 버튼이 여는 변경·로그 모달도 같은 이유로 이 창에 마운트한다(태스크 55). */}
       <GitDialog />
+      {/* 셀 헤더의 파일 트리 버튼이 여는 모달 — 이 창엔 사이드바가 없어 유일한 동선이다(태스크 62). */}
+      <FileTreeDialog />
       {/* 칩 메뉴의 '선택 영역 번역' 카드도 이 창 안에 뜬다(태스크 61). */}
       <TranslateHost />
     </div>

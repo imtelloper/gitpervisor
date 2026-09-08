@@ -160,14 +160,22 @@ class Cdp {
   }
 
   /**
-   * term_open 용 Tauri Channel<Vec<u8>> 인자를 만든다. ref 를 onData 로 넘기고,
+   * term_open 용 Tauri Channel 인자를 만든다. ref 를 onData 로 넘기고,
    * drain() 으로 누적된 PTY 출력 바이트(평탄화)를 가져온다. text()는 UTF-8 디코딩.
+   *
+   * 페이로드는 커맨드에 따라 **ArrayBuffer**(`Channel<tauri::ipc::Response>` = Raw — PTY 출력이
+   * 그렇다, 태스크 63) 또는 숫자 배열(`Channel<Vec<u8>>`)로 온다. 양쪽을 모두 받는다.
+   * `push(...arr)` 는 쓰지 않는다 — 64KB 청크면 인자 65,536개라 스택이 터진다.
    */
   async openChannel() {
     const slot = `__gpvChan_${++this._chanSeq}`;
     const rid = await this.eval(
       `(()=>{ const k=${JSON.stringify(slot)}; window[k]=[];
-         return window.__TAURI_INTERNALS__.transformCallback((m)=>{ try{ const b=m&&m.message; if(b&&b.length) window[k].push(...b); }catch(_){} }); })()`,
+         return window.__TAURI_INTERNALS__.transformCallback((m)=>{ try{
+           const b=m&&m.message; if(b==null) return;
+           const a = b instanceof ArrayBuffer ? new Uint8Array(b) : b;
+           const out = window[k]; for(let i=0;i<a.length;i++) out.push(a[i]);
+         }catch(_){} }); })()`,
     );
     const drainBytes = async () =>
       this.eval(`(()=>{ const k=${JSON.stringify(slot)}; const a=window[k]||[]; window[k]=[]; return a; })()`);

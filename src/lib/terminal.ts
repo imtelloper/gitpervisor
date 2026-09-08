@@ -28,7 +28,7 @@ export interface TermInstance {
   /** 이 인스턴스가 PTY 출력을 받는 채널 — 재연결(reattachAllTerminals)에 다시 쓴다.
    *  PTY의 출력 소비자는 하나뿐이라(term_attach가 sink를 교체) 다른 창이 가져갔다 돌려줄 때
    *  같은 채널로 붙여야 기존 xterm이 그대로 이어진다. 엔진이 생성 직후 채운다. */
-  channel?: Channel<number[]>;
+  channel?: Channel<ArrayBuffer>;
 }
 
 /** 살아 있는 터미널 인스턴스 레지스트리 — 엔진이 등록하고, 코어/스캐너가 조회한다. */
@@ -50,9 +50,12 @@ export const registry = new Map<string, TermInstance>();
  *
  * 2026-08-28 실사례: 모아보기 별도 창을 닫으면 메인 창 터미널이 이 상태가 됐다 — 출력이 죽은 채
  * 옛 화면만 남고, PTY 크기도 저쪽 창 것으로 남아 글자가 왼쪽 일부에만 그려져 있었다.
+ *
+ * 페이로드는 `ArrayBuffer`다 — Rust가 `Channel<tauri::ipc::Response>`(= Raw)로 보내므로
+ * JSON 숫자 배열을 거치지 않는다(태스크 63 §4 P0). 인덱스 카운터 계약은 그대로다.
  */
-export function attachOutputChannel(inst: TermInstance): Channel<number[]> {
-  const ch = new Channel<number[]>();
+export function attachOutputChannel(inst: TermInstance): Channel<ArrayBuffer> {
+  const ch = new Channel<ArrayBuffer>();
   ch.onmessage = (bytes) => {
     try {
       inst.term.write(new Uint8Array(bytes));

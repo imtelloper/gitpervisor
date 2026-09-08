@@ -18,7 +18,7 @@ import { useApiClient } from "../../stores/apiclient";
 import { useBrowsers } from "../../stores/browser";
 import { useOccludesWebview } from "../../stores/occlusion";
 import { collectPanes, useTerminals } from "../../stores/terminals";
-import { useUi } from "../../stores/ui";
+import { selectActiveDiff, useUi } from "../../stores/ui";
 import { BrowserPane } from "./BrowserPane";
 import { Favicon } from "./Favicon";
 import { PaneTreeRoot } from "./PaneTree";
@@ -81,7 +81,7 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
     return done ? "ai-done" : "";
   };
 
-  const selectedDiff = useUi((s) => s.selectedDiff);
+  const activeDiff = useUi((s) => selectActiveDiff(s)?.target ?? null);
   const { data: settings } = useSettings();
   const fontSize = settings?.terminalFontSize ?? 13;
 
@@ -95,8 +95,8 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
     prevProjRef.current = projectId;
     // 최초 마운트(재시작 복원)·프로젝트 전환(복원)에서는 강제 전환 안 함 — 복원된 뷰 존중.
     // 같은 프로젝트에서 파일을 "새로 열" 때만 viewer로 전환.
-    if (selectedDiff && !first && !switched) setActiveTab(projectId, "viewer");
-  }, [selectedDiff, projectId, setActiveTab]);
+    if (activeDiff && !first && !switched) setActiveTab(projectId, "viewer");
+  }, [activeDiff, projectId, setActiveTab]);
 
   return (
     <section className="flex min-w-0 flex-1 flex-col bg-base">

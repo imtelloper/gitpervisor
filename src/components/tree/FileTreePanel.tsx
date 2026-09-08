@@ -15,6 +15,7 @@ import {
   Play,
   Trash2,
   Type,
+  X,
 } from "lucide-react";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import {
@@ -64,8 +65,9 @@ import { isPreviewUrl, useBrowsers } from "../../stores/browser";
 import { useOccludesWebview } from "../../stores/occlusion";
 import { useTerminals } from "../../stores/terminals";
 import { useTreeState } from "../../stores/treeState";
-import { useUi } from "../../stores/ui";
+import { selectActiveDiff, useUi } from "../../stores/ui";
 import { CollapsedPanelStrip } from "../common/CollapsedPanelStrip";
+import { ProjectLogo } from "../common/ProjectLogo";
 import { ResizeHandle } from "../common/ResizeHandle";
 
 const INDENT = 12;
@@ -161,14 +163,16 @@ function FileRow({
   isIgnored: boolean;
   depth: number;
 }) {
-  const selectedDiff = useUi((s) => s.selectedDiff);
+  // 강조 기준은 **활성 뷰어 패널**이 보는 파일이다(분할 시 패널을 옮기면 강조도 따라간다).
+  const activeDiff = useUi(selectActiveDiff);
   const ts = useContext(TreeStatusCtx);
   const openMenu = useContext(TreeMenuCtx);
   const row = useContext(TreeRowCtx);
   const { Icon, color } = fileIcon(name);
   const multi = row?.sel.has(path) ?? false;
   const selected =
-    multi || (selectedDiff?.mode === "file" && selectedDiff.path === path);
+    multi ||
+    (activeDiff?.target.mode === "file" && activeDiff.target.path === path);
   const kind = ts?.fileKind.get(path);
   const nameColor = kind ? colorClassOf(kind) : "";
 
@@ -457,8 +461,33 @@ function validateName(v: string): string | null {
   return null;
 }
 
-/** 선택 프로젝트의 전체 파일 트리 (지연 로딩). 파일 클릭 → 중앙 뷰어에 내용/diff. */
-export function FileTreePanel({ projectId }: { projectId: string }) {
+/**
+ * 프로젝트의 전체 파일 트리 (지연 로딩). 파일 클릭 → 중앙 뷰어에 내용/diff.
+ *
+ * `variant="modal"`은 같은 트리를 파일 트리 모달(FileTreeDialog, 태스크 62) 안에 그린다 —
+ * 패널 크롬(고정 폭·접기·ResizeHandle)을 빼고 헤더를 프로젝트 로고+이름+닫기로 바꾼다.
+ * 사본을 만들지 않는 이유는 우클릭 메뉴·드래그 이동·이미지 변환이 한쪽에만 고쳐지지 않게
+ * 하기 위함이다(설계 §5).
+ *
+ * `onActivate`는 파일 활성화 라우팅을 갈아 끼운다(기본은 중앙 뷰어). 모달은 `openDocWindow`를
+ * 넘긴다 — `selectDiff`는 repoId를 안 넘겨 **현재 선택된 프로젝트 기준으로** 경로를 풀고,
+ * 뷰어 탭을 만들며, 모아보기를 닫는다(설계 §2·§3.4).
+ */
+export function FileTreePanel({
+  projectId,
+  variant = "panel",
+  onActivate,
+  onClose,
+}: {
+  projectId: string;
+  variant?: "panel" | "modal";
+  onActivate?: (path: string, name: string) => void;
+  /** modal에서만 그리는 닫기(X) 버튼 핸들러. */
+  onClose?: () => void;
+}) {
+  const modal = variant === "modal";
+  // 훅은 variant와 무관하게 **항상** 호출한다 — 분기로 건너뛰면 같은 컴포넌트의 훅 수가
+  // variant에 따라 달라져 React가 깨진다. modal에서는 반환값만 쓰지 않는다.
   const { width, startResize, resizeTo } = usePanelWidth("gp:filetree-width", 260, 180, 520);
   const { collapsed, toggle: toggleCollapsed } = usePanelCollapsed("gp:filetree-collapsed");
   const { data: status } = useStatus(projectId);
@@ -488,8 +517,19 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
     void qc.invalidateQueries({ queryKey: ["file-image"] });
   }, [qc]);
 
-  const projectPath = projects?.find((p) => p.id === projectId)?.path ?? "";
+  const project = projects?.find((p) => p.id === projectId);
+  const projectPath = project?.path ?? "";
   const treeStatus = useMemo(() => buildTreeStatus(status), [status]);
+
+  // 파일 활성화 — 기본은 지금까지의 동작(중앙 뷰어로 라우팅). 행 클릭·새 파일 생성이 모두
+  // 이 한 곳을 지나므로, 훅을 넘긴 호출부는 세 경로가 한꺼번에 갈린다.
+  const activate = useCallback(
+    (path: string, name: string) => {
+      if (onActivate) onActivate(path, name);
+      else selectDiff({ mode: "file", path });
+    },
+    [onActivate, selectDiff],
+  );
 
   const [menu, setMenu] = useState<TreeMenu | null>(null);
   // 우클릭 메뉴가 워크스페이스 영역으로 넘어가면 네이티브 webview에 가린다 — 열린 동안 숨긴다.
@@ -554,6 +594,7 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
   // 아니면 그 파일을 **단일 선택**으로 세우고 앵커로 삼는다(파일 탐색기처럼). 함수형 setState 로 참조 안정.
   const onRowClick = useCallback(
     (path: string, e: React.MouseEvent) => {
+      const baseName = path.split("/").pop() ?? path;
       // Shift 범위 — 화면에 보이는 파일 행의 DOM 순서로 앵커~클릭 사이를 모두 선택.
       if (e.shiftKey && anchorRef.current) {
         const order = Array.from(
@@ -566,7 +607,7 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
         if (a >= 0 && b >= 0) {
           const [lo, hi] = a < b ? [a, b] : [b, a];
           setTreeSel(new Set(order.slice(lo, hi + 1)));
-          selectDiff({ mode: "file", path });
+          activate(path, baseName);
           return; // 앵커는 유지(연속 Shift 클릭으로 범위 조절 가능)
         }
       }
@@ -580,11 +621,11 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
         anchorRef.current = path;
       } else {
         setTreeSel(new Set([path]));
-        selectDiff({ mode: "file", path });
+        activate(path, baseName);
         anchorRef.current = path;
       }
     },
-    [selectDiff],
+    [activate],
   );
 
   // 더블클릭 — 실행 파일이면 즉시 OS로 실행한다.
@@ -874,7 +915,7 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
       onConfirm: (name) => {
         const rel = joinPath(baseDir, name.trim());
         createFile.mutate(rel, {
-          onSuccess: () => selectDiff({ mode: "file", path: rel }),
+          onSuccess: () => activate(rel, name.trim()),
         });
       },
     });
@@ -1128,16 +1169,29 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
     selImages.length >= 2 &&
     treeSel.has(menu.path);
 
-  if (collapsed)
+  // 접힘·폭은 **사이드바 패널의** 영속 상태다. 모달이 그것을 따르면 사이드바를 접어 둔
+  // 사용자는 모달에서도 28px 스트립만 보게 된다(태스크 55에서 같은 유형의 실사고).
+  if (collapsed && !modal)
     return <CollapsedPanelStrip title="Files" onExpand={toggleCollapsed} />;
 
   return (
     <div
-      style={{ width }}
-      className="relative flex h-full shrink-0 flex-col border-r border-edge bg-panel"
+      style={modal ? undefined : { width }}
+      className={`relative flex h-full flex-col bg-panel ${
+        modal ? "w-full min-w-0" : "shrink-0 border-r border-edge"
+      }`}
     >
       <div className="flex items-center gap-2 border-b border-edge px-3 py-2">
-        <span className="font-semibold">Files</span>
+        {modal ? (
+          <>
+            <ProjectLogo projectId={projectId} />
+            <span className="min-w-0 truncate font-semibold">
+              {project?.name ?? projectId}
+            </span>
+          </>
+        ) : (
+          <span className="font-semibold">Files</span>
+        )}
         <div className="flex-1" />
         <button
           title="새 파일 (루트)"
@@ -1157,13 +1211,24 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
         >
           <FolderPlus size={14} />
         </button>
-        <button
-          title="패널 접기"
-          onClick={toggleCollapsed}
-          className="rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
-        >
-          <ChevronsLeft size={14} />
-        </button>
+        {/* 모달에는 접을 패널이 없다 — 그 자리에 닫기(X)를 둔다. */}
+        {modal ? (
+          <button
+            title="닫기"
+            onClick={onClose}
+            className="rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
+          >
+            <X size={14} />
+          </button>
+        ) : (
+          <button
+            title="패널 접기"
+            onClick={toggleCollapsed}
+            className="rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
+          >
+            <ChevronsLeft size={14} />
+          </button>
+        )}
       </div>
       <div
         ref={treeRef}
@@ -1192,7 +1257,10 @@ export function FileTreePanel({ projectId }: { projectId: string }) {
           </TreeRowCtx.Provider>
         </TreeStatusCtx.Provider>
       </div>
-      <ResizeHandle onMouseDown={startResize} onDoubleClick={fitToContent} />
+      {/* 모달은 고정 크기라 폭 핸들이 없다 — 남기면 사이드바의 영속 폭을 모달이 바꾼다. */}
+      {!modal && (
+        <ResizeHandle onMouseDown={startResize} onDoubleClick={fitToContent} />
+      )}
       {/* 드래그 이동 고스트 — 커서 옆 라벨 + 대상 폴더 안내 */}
       <DragGhost ref={ghostRef} />
 
