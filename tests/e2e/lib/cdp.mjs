@@ -227,8 +227,19 @@ export async function connect({ port } = {}) {
       picked = { cdp: c, page };
       break;
     }
-    if (fallback) c.close();
-    else fallback = { cdp: c, page };
+    // 폴백은 **라벨을 못 읽는** 페이지만을 위한 것이다(옛 빌드, 또는 아직 로딩 중이라
+    // `__TAURI_INTERNALS__.metadata` 가 없는 main). 라벨을 **적극적으로 답한** 창
+    // (`aggregate`·`float-pool-*`·`doc-*`)은 후보에서 뺀다 — 예전에는 "main 이 아닌 첫 페이지"를
+    // 폴백으로 잡아서, main 의 라벨 eval 이 한 번 비면 모아보기 창이 채택됐다. 그 창에도 invoke
+    // 브리지가 있어 아래 `check_git` 정체성 확인까지 통과하므로 **조용히** 엉뚱한 창으로 돌고,
+    // 스위트는 `window.__gpv` 미노출로 통째 skip 됐다(2026-09-08 실관측, 사용자가 모아보기를
+    // 열어 둔 상태면 후보가 항상 둘이라 재현된다).
+    //
+    // **`=== null` 로 좁히지 마라.** eval 은 `r.result.result.value` 를 그대로 돌려주므로 라벨이
+    // 없는 페이지는 `{type:"undefined"}` → **`undefined`** 다. `null` 은 eval 이 던졌을 때만
+    // (`.catch(() => null)`) 나온다. 둘 다 잡아야 폴백이 산다 — 그래서 느슨한 `== null` 이다.
+    if (label == null && !fallback) fallback = { cdp: c, page };
+    else c.close();
   }
   if (picked && fallback) fallback.cdp.close();
   const chosen = picked ?? fallback;
