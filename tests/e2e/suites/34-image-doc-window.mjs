@@ -45,10 +45,13 @@ const DOC_HELPERS = `(() => {
   const A = {};
   const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  /** 이미지 편집기 모달(헤더 문구로 확인·프롬프트 다이얼로그와 가른다). */
+  /** 이미지 편집기 모달(확인·프롬프트 다이얼로그와 가른다 — 42 이후 aria-label 이 근거다). */
   A.modal = () =>
-    Array.from(document.querySelectorAll('div.fixed.inset-0.z-50'))
-      .find((el) => /이미지 편집/.test(el.textContent || '')) || null;
+    Array.from(document.querySelectorAll('div.fixed.inset-0.z-50')).find(
+      (el) =>
+        el.getAttribute('aria-label') === '이미지 편집' ||
+        /이미지 편집/.test(el.textContent || ''),
+    ) || null;
 
   /**
    * 확인·프롬프트 호스트가 **이 창에** 실제로 그려졌는가. 둘 다 z-[60] 오버레이라

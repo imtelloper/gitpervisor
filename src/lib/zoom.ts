@@ -35,3 +35,15 @@ export function zoomAt(v: View, cx: number, cy: number, factor: number): View {
   const k = scale / v.scale;
   return { scale, x: cx - (cx - v.x) * k, y: cy - (cy - v.y) * k };
 }
+
+/**
+ * 배율을 **지정한 값으로** 맞춘다 — (cx, cy) 아래의 점은 그 자리에 남는다.
+ *
+ * 줌 드롭다운의 `100% · 200%` 처럼 목표 배율이 정해진 경로가 쓴다. 호출부가
+ * `target / v.scale` 을 직접 계산해 `zoomAt` 에 넘기면 그 나눗셈이 화면마다 흩어지고,
+ * 한 곳이라도 클램프 이후의 실제 배율이 아니라 요청 배율로 나누면 연속 호출에서
+ * 배율이 조금씩 어긋난다.
+ */
+export function zoomTo(v: View, cx: number, cy: number, targetScale: number): View {
+  return zoomAt(v, cx, cy, targetScale / v.scale);
+}

@@ -24,21 +24,11 @@ export type ComponentId = string;
 /** 문서에 내장된 에셋(이미지 페인트 소스) id(태스크 41). */
 export type AssetId = string;
 
-/** 팔레트에서 고를 수 있는 도구(§5.2). `select` 만 객체를 만들지 않는다. */
-export type Tool =
-  | "select"
-  | "pen"
-  | "highlight"
-  | "line"
-  | "arrow"
-  | "rect"
-  | "ellipse"
-  | "text"
-  | "badge"
-  | "mosaic";
-
 /**
- * 도구로 직접 만들 수 있는 노드 종류 — `Tool` 과 이름이 같은 9종.
+ * 도구로 직접 만들 수 있는 노드 종류.
+ *
+ * `Tool` 은 여기 없다 — 도구는 문서가 아니라 화면 상태라 `stores/imageEditor.ts` 가 갖는다
+ * (42 §3.1). 문서 타입에 두면 레일 22종이 정규화 경계까지 흘러 들어간다.
  * `path`·`frame`·`group`·`instance` 는 도구가 아니라 연산·인스펙터로 생긴다(태스크 45·46).
  */
 export const TOOL_KINDS = [

@@ -28,9 +28,12 @@ const HELPERS = `(() => {
   const A = {};
   window.__gpvZoom = A;
 
+  // 42 이후 헤더 문구가 사라져 aria-label 이 1차 근거다(문구 조건은 옛 빌드용으로 남긴다).
   A.modal = () =>
-    Array.from(document.querySelectorAll('div.fixed.inset-0.z-50')).find((el) =>
-      /이미지 편집/.test(el.textContent || ''),
+    Array.from(document.querySelectorAll('div.fixed.inset-0.z-50')).find(
+      (el) =>
+        el.getAttribute('aria-label') === '이미지 편집' ||
+        /이미지 편집/.test(el.textContent || ''),
     ) || null;
 
   A.canvases = () => {

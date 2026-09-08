@@ -23,6 +23,7 @@ import {
 
 import type { ImageStore } from "../../lib/annotate/imageStore";
 import { releaseScratch, renderScene } from "../../lib/annotate/render";
+import type { Tool } from "../../stores/imageEditor";
 import { sceneOfNodes, type Scene } from "../../lib/annotate/scene";
 import {
   type GeomNode,
@@ -31,7 +32,6 @@ import {
   type Rect,
   type SceneTransform,
   type TextNode,
-  type Tool,
   type DefaultPaint,
 } from "../../lib/annotate/types";
 import {
@@ -40,7 +40,6 @@ import {
   drawMarquee,
   drawSelection,
 } from "./annotation/chrome";
-import { createKeyHandler } from "./annotation/keys";
 import {
   createPointerHandlers,
   type DragState,
@@ -51,6 +50,7 @@ import {
   finishEditing as finishEditingImpl,
   type EditState,
 } from "./annotation/textEdit";
+import type { StatusBarHandle } from "./EditorStatusBar";
 
 export interface AnnotationLayerHandle {
   /**
@@ -111,6 +111,13 @@ export interface AnnotationLayerProps {
   onCropCancel: () => void;
   /** 커밋 시점에만 부른다(§5.3) — 히스토리 스냅샷이 여기서 쌓인다. */
   onCommit: (next: Node[], label?: string) => void;
+  /** 텍스트 편집 진입·이탈 — 키 스코프가 도구 단축키를 잡을지 정하는 근거다(42 §3.3). */
+  onEditingChange?: (editing: boolean) => void;
+  /**
+   * 상태바의 커서 좌표·색 칸. **React state 가 아니다** — 마우스를 움직이는 동안 초당 60회
+   * 리렌더가 이 컴포넌트를 넘어 편집기 전체로 번지기 때문이다(42 §3.7, K4 와 같은 이유).
+   */
+  statusRef?: React.RefObject<StatusBarHandle | null>;
   onToolChange: (t: Tool) => void;
   onSelectionChange: (ids: ObjId[]) => void;
 }
@@ -276,8 +283,11 @@ function AnnotationLayerImpl(
 
   // ── 커밋 헬퍼 ─────────────────────────────────────────────────────────────
 
-  const commitObjects = useCallback((next: Node[]) => {
-    p.current.onCommit(next);
+  // `label` 을 그대로 넘긴다 — 여기서 떨어뜨리면 히스토리가 `describeChange` 자동 라벨
+  // ('사각형 삭제')로 덮여, 지우개 드래그 한 번이 무엇이었는지 패널에서 알 수 없게 된다.
+  // 인자를 하나만 받아도 TS 는 통과하므로 조용히 사라진다.
+  const commitObjects = useCallback((next: Node[], label?: string) => {
+    p.current.onCommit(next, label);
   }, []);
 
   /** 편집 중이던 텍스트를 확정한다. 내용이 비면 객체를 만들지 않거나 삭제한다(§5.5). */
@@ -322,17 +332,88 @@ function AnnotationLayerImpl(
       beginEditing,
     });
 
+  // ── 상태바 커서(좌표·색) ──────────────────────────────────────────────────
+  //
+  // rAF 당 **한 번만** 읽는다. `getImageData` 는 GPU→CPU 동기화라 포인터 이벤트마다 부르면
+  // 고해상도 마우스에서 프레임당 대여섯 번 파이프라인이 멈춘다.
+
+  const cursorRafRef = useRef(0);
+  const cursorPosRef = useRef<{ cx: number; cy: number } | null>(null);
+
+  const flushCursor = useCallback(() => {
+    cursorRafRef.current = 0;
+    const h = p.current.statusRef?.current;
+    const c = canvasRef.current;
+    const pos = cursorPosRef.current;
+    if (!h || !c || !pos) return;
+    const r = c.getBoundingClientRect();
+    const ow = p.current.oriented.width;
+    const oh = p.current.oriented.height;
+    const x = ((pos.cx - r.left) / Math.max(1, r.width)) * ow;
+    const y = ((pos.cy - r.top) / Math.max(1, r.height)) * oh;
+    if (x < 0 || y < 0 || x >= ow || y >= oh) {
+      h.setCursor(null, null, null);
+      return;
+    }
+    // 색은 **이 캔버스**에서 읽는다 — 39 이후 여기에 이미지와 노드가 불투명 합성돼 있어
+    // 화면에 보이는 색 그대로다. 좌표는 oriented 지만 픽셀은 백킹 스토어 기준이라 scale 을 건다.
+    let rgb: string | null = null;
+    try {
+      const bx = Math.min(c.width - 1, Math.max(0, Math.floor(x * p.current.scale)));
+      const by = Math.min(c.height - 1, Math.max(0, Math.floor(y * p.current.scale)));
+      const d = c.getContext("2d")!.getImageData(bx, by, 1, 1).data;
+      rgb =
+        "#" +
+        [d[0], d[1], d[2]]
+          .map((v) => v.toString(16).padStart(2, "0"))
+          .join("")
+          .toUpperCase();
+    } catch {
+      // 캔버스가 오염됐거나(교차 출처 에셋) 크기가 0 인 순간 — 좌표만 보여 준다.
+    }
+    h.setCursor(x, y, rgb);
+  }, []);
+
+  const trackCursor = useCallback(
+    (e: React.PointerEvent) => {
+      if (!p.current.statusRef) return;
+      cursorPosRef.current = { cx: e.clientX, cy: e.clientY };
+      if (cursorRafRef.current) return;
+      cursorRafRef.current = requestAnimationFrame(flushCursor);
+    },
+    [flushCursor],
+  );
+
+  const clearCursor = useCallback(() => {
+    if (cursorRafRef.current) {
+      cancelAnimationFrame(cursorRafRef.current);
+      cursorRafRef.current = 0;
+    }
+    cursorPosRef.current = null;
+    p.current.statusRef?.current?.setCursor(null, null, null);
+  }, []);
+
   // 편집기가 사라지면 모듈 스크래치를 놓아 준다 — 모듈 전역이라 창 수명 동안 마지막 크기
   // 그대로 남아 있었다(창당 최대 ~15MB). doc-* 창은 별도 WebView2라 창마다 따로 쌓인다.
   useEffect(() => releaseScratch, []);
 
-  // ── 키보드(§5.6) ──────────────────────────────────────────────────────────
+  // 예약해 둔 커서 rAF 는 언마운트에서 거둔다 — 남으면 사라진 캔버스를 읽는다.
+  useEffect(
+    () => () => {
+      if (cursorRafRef.current) cancelAnimationFrame(cursorRafRef.current);
+    },
+    [],
+  );
 
+  // 키보드 리스너는 여기 없다 — 편집기 전체가 `useEditorKeys` 의 window **capture**
+  // 리스너 하나를 쓴다(42 §3.3). 이 컴포넌트가 따로 달면 리스너가 둘이 되고, 어느 쪽이
+  // 먼저 먹는지가 lazy 로딩 순서에 달려 실행마다 달라진다.
+  //
+  // 대신 **텍스트 편집 중인지**만 위로 올린다. 그 상태에서는 글자가 그대로 입력돼야 하므로
+  // 키 스코프가 도구 단축키를 잡으면 안 된다.
   useEffect(() => {
-    const onKey = createKeyHandler({ p, editingRef });
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+    p.current.onEditingChange?.(editing !== null);
+  }, [editing]);
 
   // ── 외부 노출 핸들 ────────────────────────────────────────────────────────
 
@@ -394,9 +475,13 @@ function AnnotationLayerImpl(
       <canvas
         ref={canvasRef}
         onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
+        onPointerMove={(e) => {
+          trackCursor(e);
+          onPointerMove(e);
+        }}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
+        onPointerLeave={clearCursor}
         onDoubleClick={onDoubleClick}
         className={`absolute inset-0 h-full w-full ${
           props.cropMode || props.tool !== "select"

@@ -25,12 +25,14 @@ import {
   HIGHLIGHT_WIDTH_SCALE,
   newObjId,
   SHIFT_SNAP_DEG,
+  type AssetId,
   type BadgeObject,
   type Fill,
   type GeomNode,
   type Node,
   type ObjId,
   type Rect,
+  type RectObject,
   type TextNode,
 } from "../../../lib/annotate/types";
 import type { AnnotationLayerProps } from "../AnnotationLayer";
@@ -97,16 +99,26 @@ export function makeDraft(
       const r = squareable(a, b, shift);
       return { ...common, kind: "ellipse", ...r };
     }
-    case "mosaic": {
+    case "frame": {
+      const r = squareable(a, b, shift);
+      // 프레임은 **자르는 컨테이너**다 — clipsContent 가 false 면 그냥 사각형과 구분이 안 되고,
+      // 자식이 밖으로 삐져나온 채 커밋된다. 모서리는 각지게 시작한다(사각형 도구의 기본
+      // 반경을 물려받으면 레이아웃 프레임이 둥글게 나온다).
+      return { ...common, kind: "frame", ...r, radius: [0, 0, 0, 0], clipsContent: true };
+    }
+    case "mosaic":
+    case "blur": {
       const r = squareable(a, b, shift);
       return {
         ...common,
+        // 블러는 **새 kind 가 아니다** — 같은 mosaic 노드의 mode 하나만 다르다(37).
+        // kind 를 나누면 렌더·누수 단언(e2e 30 (j)(r)(s))이 통째로 갈라진다.
         kind: "mosaic",
         ...r,
         // 가림 영역은 색을 쓰지 않는다.
         fills: [],
         strokes: [],
-        mode: s.style.mosaicMode,
+        mode: s.tool === "blur" ? "blur" : s.style.mosaicMode,
         strength: s.style.mosaicStrength,
       };
     }
@@ -136,6 +148,7 @@ export function isDraftUsable(o: GeomNode): boolean {
     case "rect":
     case "ellipse":
     case "mosaic":
+    case "frame":
       return o.w >= MIN_DRAG && o.h >= MIN_DRAG;
     default:
       return true;
@@ -157,6 +170,8 @@ export function nextBadgeNumber(
 /**
  * 8핸들 리사이즈 — 시작 시점 bbox 를 기준으로 배율을 구해 객체 기하를 늘린다.
  * Shift 면 변화가 큰 축의 배율을 양축에 함께 적용해 비율을 고정한다(§5.6).
+ *
+ * `scaleStroke` 는 배율 도구(K)만 켠다 — 42 §3.5.
  */
 export function resizeObject(
   base: GeomNode,
@@ -164,6 +179,7 @@ export function resizeObject(
   handle: number,
   ptScreen: Point,
   shift: boolean,
+  scaleStroke = false,
 ): GeomNode {
   // 객체 좌표는 전부 **로컬(회전 이전)** 이다 — 회전은 렌더 시점에만 걸린다
   // (geometry.applyObjectTransform). 그러니 배율도 그 프레임에서 구해야 한다.
@@ -210,7 +226,12 @@ export function resizeObject(
   const MIN_F = 0.02;
   fx = Math.max(MIN_F, fx);
   fy = Math.max(MIN_F, fy);
-  const out = scaleObject(base, fx, fy, ox, oy);
+  let out = scaleObject(base, fx, fy, ox, oy);
+  // 선택 도구(V)는 두께를 건드리지 않는다 — 사용자가 "3px" 로 고른 값이 드래그마다 조용히
+  // 달라지면 그 숫자가 의미를 잃는다. 배율 도구(K)만 도형 전체를 확대하듯 두께도 같이 민다.
+  if (scaleStroke && out.strokeWidth) {
+    out = { ...out, strokeWidth: out.strokeWidth * (Math.sqrt(Math.abs(fx * fy)) || 1) };
+  }
   if (normalizeDeg(base.rot) === 0) return out;
   // 회전 피벗(objectAnchor)은 **기하에서 파생**된다 — 스케일이 그 점을 움직이면 회전 사상
   // 자체가 바뀌어, 로컬 좌표가 맞아도 화면에서는 잡지 않은 변까지 미끄러진다.
@@ -337,6 +358,42 @@ export function newBadgeNode(o: {
     fontSize: o.fontSize,
     opacity: o.opacity,
     fills: o.fills,
+    strokeWidth: 0,
+  };
+}
+
+/**
+ * 배치된 이미지 = **이미지 채우기를 든 사각형**이다. `ImageNode` kind 는 없다(37 §3.6) —
+ * 그래야 크기·모서리·마스크·효과가 다른 도형과 같은 코드를 탄다.
+ *
+ * `fills` 항목은 **평면 타입**(`Paint & {visible, blend}`)이다. `{ paint: … }` 로 한 겹 감싸면
+ * 정규화(schema.normalizeFill)가 type 을 못 찾아 조용히 solid 검정으로 떨어뜨린다 — 에러도
+ * 경고도 없이 방금 고른 그림 대신 검은 사각형이 남는다.
+ *
+ * 에셋 등록·상한 검사는 여기서 하지 않는다. `annotate/assets.ts` 의 `acquireAsset` 하나만
+ * 쓴다(41 §3.5) — 세는 곳이 둘이 되면 한쪽이 빠지고 저장이 통째로 실패한다.
+ */
+export function newImageNode(o: {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  assetId: AssetId;
+  opacity: number;
+}): RectObject {
+  return {
+    ...emptyBase(newObjId()),
+    kind: "rect",
+    x: o.x,
+    y: o.y,
+    w: o.w,
+    h: o.h,
+    radius: [0, 0, 0, 0],
+    opacity: o.opacity,
+    fills: [
+      { type: "image", assetId: o.assetId, mode: "fill", visible: true, blend: "normal" },
+    ],
+    strokes: [],
     strokeWidth: 0,
   };
 }

@@ -9,6 +9,7 @@ import {
   objectBBox,
   translateObject,
 } from "../../../lib/annotate/geometry";
+import { remove } from "../../../lib/annotate/tree";
 import {
   type GeomNode,
   type Node,
@@ -16,6 +17,7 @@ import {
   type Rect,
   type TextNode,
 } from "../../../lib/annotate/types";
+import type { Tool } from "../../../stores/imageEditor";
 import type { AnnotationLayerProps } from "../AnnotationLayer";
 import {
   isDraftUsable,
@@ -40,10 +42,20 @@ export interface Point {
   y: number;
 }
 
+/**
+ * 선택 도구처럼 구는 도구 — 히트·핸들·이동·마퀴가 같다. 배율(K)은 리사이즈 수식만 다르다.
+ */
+const isSelectLike = (t: Tool) => t === "select" || t === "scale";
+
 /** 진행 중인 포인터 제스처. */
 export type DragState =
   | { mode: "crop" }
   | { mode: "draw"; start: Point }
+  /**
+   * 지우개. 지날 때마다 지우지 **않고** 적중 id 만 모았다가 pointerup 에 한 번 커밋한다 —
+   * 틱마다 커밋하면 드래그 한 번이 히스토리 200칸을 통째로 태워 직전 작업으로 못 돌아간다.
+   */
+  | { mode: "erase"; ids: Set<ObjId> }
   /**
    * 빈 곳에서 시작한 선택 사각형. `keep` 은 Shift 누적의 기준이 되는 **드래그 시작 시점의**
    * 선택이다 — 비-Shift 는 pointerdown 에 이미 비우므로 up 에서 스토어를 되읽으면 늦다.
@@ -71,7 +83,8 @@ export interface PointerCtx {
   /** 번호 뱃지 카운터. */
   badgeSeqRef: React.RefObject<number>;
   schedule: () => void;
-  commitObjects: (next: Node[]) => void;
+  /** `label` 은 히스토리 항목 이름(41) — 넘기지 않으면 '편집' 류 기본 라벨이 붙는다. */
+  commitObjects: (next: Node[], label?: string) => void;
   finishEditing: () => void;
   beginEditing: (obj: TextNode, isNew: boolean) => void;
 }
@@ -106,11 +119,23 @@ export function createPointerHandlers(ctx: PointerCtx) {
     };
   };
 
+  /** 지우개가 지난 자리의 적중 노드를 모은다. 씬을 보므로 숨김·잠금은 애초에 안 걸린다. */
+  const eraseHit = (ids: Set<ObjId>, pt: Point) => {
+    const s = p.current;
+    const id = hitTest(s.scene, pt.x, pt.y, s.displayScale);
+    if (id) ids.add(id);
+  };
+
   // ── 포인터 ──────────────────────────────────────────────────────────────
 
   const onPointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
     const s = p.current;
+    // 손 도구는 좌버튼을 **잡지 않는다**(캡처도, 처리도 없다) — 그래야 이벤트가 그대로
+    // 버블해 스테이지의 팬 핸들러가 받는다. setPointerCapture 를 먼저 걸어 버리면 이후
+    // move/up 이 이 캔버스로만 배달돼 화면이 한 픽셀도 안 밀린다.
+    // 크롭은 모드라 도구보다 우선한다(42 §3.2 — 직교).
+    if (s.tool === "hand" && !s.cropMode) return;
     const pt = toOriented(e);
     e.currentTarget.setPointerCapture(e.pointerId);
 
@@ -122,7 +147,14 @@ export function createPointerHandlers(ctx: PointerCtx) {
     // 텍스트 편집 중 캔버스를 누르면 textarea blur 로 확정된다 — 여기서 한 번 더 보장.
     if (editingRef.current) finishEditing();
 
-    if (s.tool === "select") {
+    if (s.tool === "eraser") {
+      const ids = new Set<ObjId>();
+      eraseHit(ids, pt);
+      dragRef.current = { mode: "erase", ids };
+      return;
+    }
+
+    if (isSelectLike(s.tool)) {
       // 1) 단일 선택 상태면 리사이즈 핸들을 먼저 본다(핸들이 객체 위에 있을 수 있다).
       const only =
         s.selectedIds.length === 1
@@ -221,7 +253,10 @@ export function createPointerHandlers(ctx: PointerCtx) {
     if (!c) return;
     const s = p.current;
     let cur = "";
-    if (!s.cropMode && s.tool === "select" && s.selectedIds.length === 1) {
+    // 크롭 중에는 도구 커서를 덮지 않는다 — 모드가 이긴다(className 의 crosshair 유지).
+    if (!s.cropMode && s.tool === "hand") {
+      cur = "grab";
+    } else if (!s.cropMode && isSelectLike(s.tool) && s.selectedIds.length === 1) {
       const only = s.objects.find(
         (o): o is GeomNode => o.id === s.selectedIds[0] && isGeomNode(o),
       );
@@ -257,6 +292,10 @@ export function createPointerHandlers(ctx: PointerCtx) {
       d.cur = pt;
       return;
     }
+    if (d.mode === "erase") {
+      eraseHit(d.ids, pt);
+      return;
+    }
     if (d.mode === "draw") {
       const cur = draftRef.current;
       if (cur && (cur.kind === "pen" || cur.kind === "highlight")) {
@@ -273,7 +312,9 @@ export function createPointerHandlers(ctx: PointerCtx) {
       liveRef.current = d.base.map((o) => translateObject(o, dx, dy));
       return;
     }
-    liveRef.current = [resizeObject(d.base, d.bbox, d.handle, pt, shift)];
+    liveRef.current = [
+      resizeObject(d.base, d.bbox, d.handle, pt, shift, s.tool === "scale"),
+    ];
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
@@ -315,6 +356,12 @@ export function createPointerHandlers(ctx: PointerCtx) {
         s.onSelectionChange([...ids]);
       }
       schedule();
+      return;
+    }
+    if (d.mode === "erase") {
+      // 지운 게 없으면 커밋도 없다 — 빈 히스토리 항목이 쌓이면 Ctrl+Z 가 몇 번은
+      // 아무 일도 안 하는 것처럼 보인다.
+      if (d.ids.size) commitObjects(remove(s.objects, [...d.ids]), "지우개");
       return;
     }
     if (d.mode === "draw") {

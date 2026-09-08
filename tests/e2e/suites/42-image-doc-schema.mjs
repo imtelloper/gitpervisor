@@ -24,9 +24,13 @@ const HELPERS = `(() => {
   const A = {};
   window.__gpvSchema = A;
 
+  // 42 이후 편집기 헤더에서 '이미지 편집' **문구**가 사라졌다 — 루트의 aria-label 이 1차
+  // 근거다. 문구 조건은 옛 빌드를 위해 남겨 둔다(30·34·35 헬퍼와 같은 판정).
   A.modal = () =>
-    Array.from(document.querySelectorAll('div.fixed.inset-0.z-50')).find((el) =>
-      /이미지 편집/.test(el.textContent || ''),
+    Array.from(document.querySelectorAll('div.fixed.inset-0.z-50')).find(
+      (el) =>
+        el.getAttribute('aria-label') === '이미지 편집' ||
+        /이미지 편집/.test(el.textContent || ''),
     ) || null;
 
   A.ready = () => {

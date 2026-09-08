@@ -30,10 +30,14 @@ const BLUE = [10, 132, 255]; // 팔레트 파랑 (#0A84FF)
 const HELPERS = `(() => {
   const A = {};
 
-  // 이미지 편집기 모달(확인·프롬프트 다이얼로그와 섞이지 않게 헤더 문구로 가른다).
+  // 이미지 편집기 모달(확인·프롬프트 다이얼로그와 섞이지 않게 가른다). 42 이후 헤더 문구가
+  // 사라져 aria-label 이 1차 근거다 — 문구 조건은 옛 빌드를 위해 남겨 둔다.
   A.modal = () =>
-    Array.from(document.querySelectorAll('div.fixed.inset-0.z-50'))
-      .find((el) => /이미지 편집/.test(el.textContent || '')) || null;
+    Array.from(document.querySelectorAll('div.fixed.inset-0.z-50')).find(
+      (el) =>
+        el.getAttribute('aria-label') === '이미지 편집' ||
+        /이미지 편집/.test(el.textContent || ''),
+    ) || null;
 
   // [0] = 베이스(이미지, CSS 필터), [1] = 주석 오버레이(§4.3)
   A.canvases = () => {
@@ -431,14 +435,15 @@ const HELPERS = `(() => {
   A.activeTool = () => {
     const m = A.modal();
     if (!m) return null;
+    // 42 부터 P 는 베지어 펜(vpen), 자유곡선 '연필'은 Shift+P 다(42 §3.5).
     const byKey = {
-      V: 'select', P: 'pen', H: 'highlight', L: 'line', A: 'arrow',
+      V: 'select', P: 'vpen', 'Shift+P': 'pen', H: 'highlight', L: 'line', A: 'arrow',
       R: 'rect', O: 'ellipse', T: 'text', N: 'badge', M: 'mosaic',
     };
     for (const b of Array.from(m.querySelectorAll('button'))) {
-      // 도구 버튼만 '<라벨> (<단축키 한 글자>)' 형태의 title 을 갖는다.
+      // 도구 버튼만 '<라벨> (<단축키>)' 형태의 title 을 갖는다.
       // 역슬래시는 두 번 쓴다 — 이 블록은 템플릿 리터럴이라 \\( 라야 페이지에 \( 로 실린다.
-      const hit = /\\(([A-Z])\\)$/.exec((b.getAttribute('title') || '').trim());
+      const hit = /\\(((?:Shift\\+)?[A-Z])\\)$/.exec((b.getAttribute('title') || '').trim());
       if (!hit || !byKey[hit[1]]) continue;
       if (/text-accent/.test(b.className)) return byKey[hit[1]];
     }
