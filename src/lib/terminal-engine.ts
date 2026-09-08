@@ -204,6 +204,10 @@ export function createTerminalImpl(opts: {
       '"Cascadia Code", Consolas, "D2Coding", "Noto Sans Mono CJK KR", "Nanum Gothic Coding", monospace',
     cursorBlink: true,
     scrollback: 5000,
+    // Unicode11Addon(아래)이 `term.unicode`를 건드리는데 그게 proposed API다 — 이 플래그가
+    // 없으면 `loadAddon`이 "You must set the allowProposedApi option to true"로 **던지고**,
+    // createTerminalImpl이 통째로 중단돼 **터미널이 하나도 안 뜬다**(0036d06 이후 실측).
+    allowProposedApi: true,
     // Windows 백엔드는 ConPTY(portable_pty native) — xterm에 이를 알려 ConPTY 전용 워크어라운드를
     // 켠다: ① 행 증가 시 스크롤백을 뷰포트로 끌어오지 않고 빈 행 처리(ConPTY 실제 동작) ② 리플로우
     // 비활성 + "마지막 문자가 공백 아니면 wrap" 휴리스틱. 이걸 안 켜면 리사이즈 시 ConPTY 재방출과
