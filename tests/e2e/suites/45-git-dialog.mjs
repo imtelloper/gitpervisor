@@ -294,11 +294,23 @@ export async function run({ cdp, report: r, fix }) {
       await sleep(200);
     }
 
-    // 점유 계약(selectBlockingOverlay에 gitDialog 포함)은 셀렉터가 __gpv에 노출돼 있지 않아
-    // 여기서 잴 수 없다 — main.tsx 노출은 이 태스크 범위 밖이라 실기(§5.2)로 남긴다.
-    r.skip(
+    // 점유 계약 — 모달이 열린 동안 selectBlockingOverlay가 true여야 이웃 브라우저 셀의 네이티브
+    // webview가 숨겨진다. 빠지면 모달이 그 뒤에 가려 **보이지 않는다**(ui.ts의 계약 주석).
+    // 값을 직접 재려면 셀렉터가 필요해 main.tsx가 DEV에서 노출한다.
+    const overlayWhile = async (open) => {
+      if (open) await cdp.eval(`window.__gpv.ui.getState().openGitDialog(${J(fix.projectId)})`);
+      else await cdp.eval(`window.__gpv.ui.getState().closeGitDialog()`);
+      await sleep(200);
+      return cdp.eval(
+        `(()=>{ const f=window.__gpv.selectBlockingOverlay; return f ? f(window.__gpv.ui.getState()) : null; })()`,
+      );
+    };
+    const onOpen = await overlayWhile(true);
+    const onClose = await overlayWhile(false);
+    r.check(
       "점유 계약(selectBlockingOverlay에 gitDialog)",
-      "selectBlockingOverlay가 __gpv에 노출돼 있지 않다 — 브라우저 셀 위 표시는 실기 확인",
+      onOpen === true && onClose === false,
+      `열림=${J(onOpen)} 닫힘=${J(onClose)}`,
     );
   } finally {
     await esc().catch(() => {});

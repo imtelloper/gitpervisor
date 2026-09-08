@@ -34,7 +34,7 @@ import { initPreviewRemint } from "./stores/browser";
 import { useCustomThemes } from "./stores/customThemes";
 import { usePromptHistory } from "./stores/promptHistory";
 import { useTerminals } from "./stores/terminals";
-import { useUi } from "./stores/ui";
+import { selectBlockingOverlay, useUi } from "./stores/ui";
 import { planSegments, useVideoSplit } from "./stores/videoSplit";
 import "./styles.css";
 
@@ -74,6 +74,9 @@ if (import.meta.env.DEV) {
     term: { get: getTerminal }, // 터미널 e2e — xterm 인스턴스·win32Input 플래그 관측
     customThemes: useCustomThemes, // 커스텀 테마 e2e — 정의 upsert/remove
     builtinTokens: BUILTIN_TOKENS, // e2e 19 — styles.css ↔ 정적 사본 짝 검증
+    // 차단 모달 점유 판정 — e2e 45가 "새 전체화면 모달이 목록에 들어갔나"를 잰다. 이 목록에서
+    // 빠진 모달은 네이티브 자식 webview 뒤에 가려 보이지 않는다(ui.ts의 계약 주석).
+    selectBlockingOverlay,
     // 프로젝트 색 — e2e 19(32슬롯 대비 전수)·14(슬롯 배정 중복 0). 노출이 없으면 테스트가
     // 팔레트를 자기 사본으로 재게 되고, 사본은 구현이 바뀌어도 조용히 옛 값으로 통과한다.
     // FG·FLOORS도 같은 이유로 낀다 — 재는 토큰 목록과 하한까지 구현 쪽 단일 출처를 쓴다.

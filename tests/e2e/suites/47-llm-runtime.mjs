@@ -22,6 +22,22 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const J = JSON.stringify;
 const REPO = fileURLToPath(new URL("../../../", import.meta.url)).replace(/[\\/]+$/, "");
 
+/**
+ * 진행 채널에서 걷어 온 원소를 JSON 객체 배열로. 채널에는 문자열이 아닌 것(스트림 종료 시 null)이
+ * 섞여 올 수 있어 그대로 `JSON.parse` 하면 `null.phase` 로 스위트가 통째로 죽는다(실측).
+ */
+const parseMsgs = (arr) =>
+  (arr ?? [])
+    .filter((m) => typeof m === "string")
+    .map((m) => {
+      try {
+        return JSON.parse(m);
+      } catch {
+        return null;
+      }
+    })
+    .filter((m) => m && typeof m === "object");
+
 /** 진행률 Channel<String> 인자 — 수신 JSON 을 window 슬롯에 쌓는다(32-disk-usage 와 같은 방식). */
 async function progressChannel(cdp, slot) {
   const rid = await cdp.eval(
@@ -97,7 +113,7 @@ export async function run({ cdp, report: r }) {
       r.info(`런타임이 이미 설치돼 있다(${st.runtime}) — 다운로드는 건너뛰고 멱등만 확인한다`);
       const ch = await progressChannel(cdp, "__gpvLlmRt");
       st = await cdp.invoke("llm_runtime_ensure", { onProgress: ch.ref }, { timeoutMs: 60000 });
-      const msgs = (await ch.drain()).map((m) => JSON.parse(m));
+      const msgs = parseMsgs(await ch.drain());
       r.check(
         "① 멱등: 설치돼 있으면 즉시 done",
         st.runtime != null && msgs.some((m) => m.phase === "done") && !msgs.some((m) => m.phase === "download"),
@@ -109,7 +125,7 @@ export async function run({ cdp, report: r }) {
       // 채널은 drain 으로만 비워지므로 진행 중 계속 걷어 온다(단조 증가 판정에 전량이 필요).
       await startInvoke(cdp, "__gpvLlmRtDone", "llm_runtime_ensure", { onProgress: ch.ref });
       const res = await awaitSlot(cdp, "__gpvLlmRtDone", 900000, async () => {
-        all.push(...(await ch.drain()).map((m) => JSON.parse(m)));
+        all.push(...parseMsgs(await ch.drain()));
       });
       all.push(...(await ch.drain()).map((m) => JSON.parse(m)));
       r.check(

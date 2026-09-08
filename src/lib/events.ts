@@ -132,7 +132,10 @@ export function attachRepoEvents(qc: QueryClient) {
       void qc.invalidateQueries({ queryKey: ["diff"] });
       void qc.invalidateQueries({ queryKey: ["log"] });
       // 리포트 히트맵도 커밋을 세므로 로그와 같은 신호에 딸려 간다(태스크 60 §3.5).
+      // 카드의 커밋 목록도 **함께** — 잔디만 갱신하면 카드 개수와 입력 해시가 낡은 채로 남아
+      // "입력이 바뀜 — 다시 생성" 제안이 영영 안 뜬다(§1 수용 조건 3, e2e 48 ⑤가 잡았다).
       void qc.invalidateQueries({ queryKey: ["activity"] });
+      void qc.invalidateQueries({ queryKey: ["commits-between"] });
       void qc.invalidateQueries({ queryKey: ["branches"] });
       void qc.invalidateQueries({ queryKey: ["repo-files"] }); // Quick Open 파일 목록
       // 파일트리 즉각 반영 — react-query는 마운트된(=펼쳐진) 폴더만 refetch한다.
@@ -182,6 +185,7 @@ export function attachRepoEvents(qc: QueryClient) {
     void qc.invalidateQueries({ queryKey: ["statuses"] });
     void qc.invalidateQueries({ queryKey: ["log"] });
     void qc.invalidateQueries({ queryKey: ["activity"] });
+    void qc.invalidateQueries({ queryKey: ["commits-between"] }); // 카드 입력(위 주석과 같은 이유)
     void qc.invalidateQueries({ queryKey: ["branches"] });
   });
 }
