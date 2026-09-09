@@ -1001,6 +1001,8 @@ pub fn run() {
             commands::image_doc_write,
             commands::image_doc_move,
             commands::image_doc_delete,
+            commands::image_library_get,
+            commands::image_library_set,
             commands::asset_pick_file,
             commands::find_definition,
             commands::find_symbols,

@@ -52,6 +52,7 @@ const SUITES = [
   "./suites/35-image-editor-zoom.mjs",
   "./suites/36-image-layer-tree.mjs",
   "./suites/37-image-doc-persist.mjs",
+  "./suites/38-image-components-styles.mjs",
   "./suites/39-image-vector-crop.mjs",
   "./suites/40-image-editor-pro-ui.mjs",
   "./suites/42-image-doc-schema.mjs",

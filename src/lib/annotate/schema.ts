@@ -7,6 +7,7 @@
 // v1 문서(`{stroke, strokeWidth, fill, radius:number, head}`)도 같은 입구로 들어온다.
 // `upgradeV1Object` 가 렌더 현행 해석 그대로 페인트 스택으로 옮긴다(§3.3 매핑표).
 
+import { STYLE_DETACH_KEYS, type StyleSlot } from "./styles";
 import {
   BLEND_MODES,
   DEFAULT_FONT_FAMILY,
@@ -615,16 +616,41 @@ export function parseImageDoc(json: string): { env: ImageDocEnvelope; warnings: 
 
 // ── 페인트 패치 (v1 restyle / ToolStyle 대체) ────────────────────────────────
 
-const PAINT_SLOTS: Record<keyof DefaultPaint, keyof NodeBase["styleRefs"] | null> = {
-  fills: "fill",
-  strokes: "stroke",
-  strokeWidth: "stroke",
-  radius: null,
-  fontSize: "text",
-  mosaicMode: null,
-  mosaicStrength: null,
-  typo: "text",
-};
+/**
+ * 노드 필드를 **직접** 고쳤을 때 떼야 하는 스타일 슬롯(51 §3.2).
+ *
+ * 표를 여기 리터럴로 다시 적지 않는다 — 정본은 `annotate/styles.ts` 의 `STYLE_DETACH_KEYS`
+ * 하나다. 두 벌이 되면 37 이 `TextStyleProps` 에 키를 하나 더하는 날 그 키만 링크를 안 떼고,
+ * 다음 재동기가 사용자의 편집을 라이브러리 값으로 되돌린다(원인이 화면 어디에도 없다).
+ *
+ * 표에 없는 키(`strokeWidth`·`radius`·모자이크)는 **떼지 않는다**: 스타일이 싣는 값이 아니라
+ * 노드 고유값이라, 두께만 바꿨다고 색 스타일 링크가 풀리면 라이브러리 편집 전파가 끊긴다.
+ */
+const DETACH_SLOT: ReadonlyMap<string, StyleSlot> = new Map(
+  (Object.keys(STYLE_DETACH_KEYS) as StyleSlot[]).flatMap((slot) =>
+    STYLE_DETACH_KEYS[slot].map((key) => [key, slot] as const),
+  ),
+);
+
+/**
+ * 이 패치 키가 떼는 슬롯.
+ *
+ * `typo` 만 **안에 든 필드**를 봐야 한다 — 정렬(`align`)·세로 정렬처럼 텍스트 스타일이 싣지
+ * 않는 값을 바꿨다고 링크가 풀리면, 글자 색·크기는 그대로인데 라이브러리 갱신만 안 따라오는
+ * 노드가 조용히 생긴다.
+ */
+function detachSlots(key: keyof DefaultPaint, patch: PaintPatch): StyleSlot[] {
+  if (key !== "typo") {
+    const slot = DETACH_SLOT.get(key);
+    return slot ? [slot] : [];
+  }
+  const out = new Set<StyleSlot>();
+  for (const k of Object.keys(patch.typo ?? {})) {
+    const slot = DETACH_SLOT.get(k);
+    if (slot) out.add(slot);
+  }
+  return [...out];
+}
 
 /**
  * 패치로 오는 페인트 값. `typo` 만 `DefaultPaint` 보다 **넓다** — 툴바가 드는 것은 완전한
@@ -691,8 +717,7 @@ export function applyPaintPatch(node: Node, patch: PaintPatch): Node {
       }
     }
     touched = true;
-    const slot = PAINT_SLOTS[key];
-    if (slot) delete styleRefs[slot];
+    for (const slot of detachSlots(key, patch)) delete styleRefs[slot];
   }
   if (!touched) return node;
   next.styleRefs = styleRefs;

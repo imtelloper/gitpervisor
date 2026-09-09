@@ -61,6 +61,14 @@ export interface ColorPickerProps {
   onCommit(p: Paint): void;
   /** 51 이 오기 전에는 넘어오지 않는다 — 없으면 버튼 자체를 그리지 않는다. */
   onSaveStyle?(): void;
+  /**
+   * 색 스타일 목록(51 `StyleLibrary`) — 시안 ④ 가 저장 버튼 **아래**에 두는 그 목록이다.
+   *
+   * 슬롯으로 받는 이유는 적용이 문서 커밋이기 때문이다: 이 컴포넌트는 페인트 한 겹만 알고
+   * 문서 깔때기(`ImageEditor.applyDoc`)를 모른다. 직접 마운트하면 선택·히스토리 라벨을
+   * 여기까지 실어 내려야 하고, 그러면 색 피커가 문서를 아는 컴포넌트가 된다.
+   */
+  styles?: ReactNode;
 }
 
 export function ColorPicker({
@@ -70,6 +78,7 @@ export function ColorPicker({
   onLive,
   onCommit,
   onSaveStyle,
+  styles,
 }: ColorPickerProps) {
   const recent = useImageEditorUi((s) => s.recentColors);
   const { start: startEyedropper } = useEyedropper();
@@ -299,6 +308,11 @@ export function ColorPicker({
           색 스타일로 저장
         </button>
       )}
+
+      {/* 목록은 `Popover` 가 이미 폭과 스크롤을 정해 둔 자리라 `inline` 이다 — `popover` 모드의
+          고정 폭 236 은 이 팝오버의 콘텐츠 폭(232 − p-2 좌우)을 넘겨 가로로 삐져나가고,
+          자체 스크롤까지 겹치면 목록 안에 스크롤바가 하나 더 생긴다. */}
+      {styles && <div className="mt-1 border-t border-edge pt-1">{styles}</div>}
     </div>
   );
 }

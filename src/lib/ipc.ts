@@ -1227,6 +1227,16 @@ export const ipc = {
   // 이미지를 지웠거나 제자리 평탄화 저장이 끝났을 때 문서를 버린다. 없으면 no-op.
   imageDocDelete: (projectId: string, relPath: string) =>
     callMutating<void>("image_doc_delete", { projectId, relPath }),
+  // ---- 이미지 스타일·컴포넌트 라이브러리 (commands/library.rs, 태스크 51) ----
+  // 사이드카와 달리 이미지에 묶이지 않는다 — 창이 몇 개든 앱 데이터 파일 하나가 진실이다.
+  // 저장된 적이 없으면 null(오류 아님). 내용 스키마는 Rust가 모른다(stores/imageLibrary.ts 소유).
+  imageLibraryGet: () =>
+    call<string | null>("image_library_get", {}, { timeoutMs: 30_000 }),
+  // 8MB 초과·JSON 파손은 **쓰기 전에** IO 오류로 거절된다(마지막 성공본이 그대로 남는다).
+  // 성공하면 Rust가 `image-library://changed` 를 전 창에 쏜다 — 보낸 창은 payload.origin 이
+  // 자기 라벨이라 스스로 거른다(안 거르면 자기가 쓴 것을 다시 읽는 왕복이 된다).
+  imageLibrarySet: (json: string) =>
+    callMutating<void>("image_library_set", { json }, 30_000),
   // 레포 밖 이미지 1개 선택 → 바이트만(경로 미노출·16MB 상한). 취소하면 null.
   // 다이얼로그가 열려 있는 동안 응답이 없으므로 타임아웃을 길게 잡는다.
   assetPickFile: () =>

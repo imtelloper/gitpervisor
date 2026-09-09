@@ -34,6 +34,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
+import { instanceState } from "../../../lib/annotate/components";
 import {
   DEFAULT_LAYER_FILTER,
   defaultLayerName,
@@ -41,12 +42,13 @@ import {
   flattenLayers,
   patchNodes,
   type DropTarget,
+  type InstanceBadgeState,
   type LayerFilter,
   type LayerRow as Row,
 } from "../../../lib/annotate/layer-rows";
 import type { Scene } from "../../../lib/annotate/scene";
 import { nodeOf, reparent } from "../../../lib/annotate/tree";
-import type { EditorDoc, Node, ObjId } from "../../../lib/annotate/types";
+import type { EditorDoc, InstanceNode, Node, ObjId } from "../../../lib/annotate/types";
 import { useImageEditorUi } from "../../../stores/imageEditor";
 import { DragGhost } from "../../common/DragGhost";
 import { LayerRow } from "./LayerRow";
@@ -57,6 +59,19 @@ import { useLayerDrag } from "./useLayerDrag";
 const NO_COLLAPSE: ReadonlySet<ObjId> = new Set();
 /** 팝오버 폭(시안 ④ w236) — 화면 오른쪽 클램프에 쓴다. */
 const POPOVER_W = 236;
+
+/**
+ * 인스턴스 행 뱃지·`재정의된 인스턴스` 필터가 보는 상태(51 §3.6 `instanceState`).
+ *
+ * **모듈 상수여야 한다** — 매 렌더 새 화살표로 넘기면 `flattenLayers` 의 `useMemo` 가 그 참조를
+ * 의존성에 넣든 안 넣든 둘 중 하나는 틀린다(넣으면 선택 한 번에 전체 행이 다시 만들어지고,
+ * 빼면 lint 가 죽은 의존성을 지적한다).
+ *
+ * `?? "linked"` 는 형식 맞춤이다: `instanceState` 는 `Node` 를 받아 인스턴스도 분리 그룹도
+ * 아니면 null 을 내지만, 여기 오는 것은 `kind === 'instance'` 로 이미 걸러진 노드라 null 이
+ * 나올 수 없다(`layer-rows.ts` `badgesOf`).
+ */
+const instanceBadgeState = (n: InstanceNode): InstanceBadgeState => instanceState(n) ?? "linked";
 
 export interface LayerPanelHandle {
   /** 42 단축키 표의 `rename`(F2). 캔버스에 포커스가 있어도 여기로 들어온다. */
@@ -117,6 +132,7 @@ export const LayerPanel = forwardRef<LayerPanelHandle, LayerPanelProps>(function
       flattenLayers(doc, scene, query.trim() ? NO_COLLAPSE : collapsed, {
         baseName,
         nodeEditId,
+        instanceState: instanceBadgeState,
       }),
     [doc, scene, query, collapsed, baseName, nodeEditId],
   );

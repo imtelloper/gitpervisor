@@ -4,17 +4,16 @@
 // 선택(히스토리)은 패널 로컬 state 라 탭을 옮길 때 언마운트하면 조용히 사라지고, F2 가
 // 부르는 `LayerPanelHandle` 도 다른 탭을 보는 동안 null 이 된다.
 //
-// 에셋 탭 본문은 51 것이다. 여기서는 **참인 문장 하나**만 둔다 — "아직 만들지 않았습니다"
-// 류를 적으면 미완성이 기능처럼 보인다(INDEX §10.4 "없는 기능은 안 보인다").
+// 에셋 탭 본문(51 `AssetsPanel`)은 **슬롯으로 받는다**. 그쪽은 앱 전역 라이브러리 스토어와
+// 문서를 함께 봐야 하는데, 이 패널은 문서를 모른다 — 여기서 직접 마운트하면 doc·onPlace 를
+// 위에서부터 다시 실어 내려야 한다(`AdjustTab.cropSection` 과 같은 방식).
 //
 // 배경: DOCS/task/42-image-editor-shell.md §3.8 · DOCS/task/44-image-panels.md §3.7
 
-import type { Ref } from "react";
-import { Component } from "lucide-react";
+import type { ReactNode, Ref } from "react";
 
 import { usePanelWidth } from "../../lib/use-panel-width";
 import { useImageEditorUi } from "../../stores/imageEditor";
-import { EmptyState } from "../common/EmptyState";
 import { ResizeHandle } from "../common/ResizeHandle";
 import { LayerPanel, type LayerPanelHandle, type LayerPanelProps } from "./layers/LayerPanel";
 import { HistoryPanel, type HistoryPanelProps } from "./panels/HistoryPanel";
@@ -30,9 +29,11 @@ export interface LeftPanelProps {
   /** 42 액션 맵의 `rename`(F2)이 잡는 손잡이 — e2e 훅 `panel` 도 같은 것을 쓴다. */
   layersRef: Ref<LayerPanelHandle>;
   history: HistoryPanelProps;
+  /** 에셋 탭 본문(51 `AssetsPanel`). 세 탭이 늘 마운트돼 있으므로 여기도 항상 그려진다. */
+  assets: ReactNode;
 }
 
-export function LeftPanel({ layers, layersRef, history }: LeftPanelProps) {
+export function LeftPanel({ layers, layersRef, history, assets }: LeftPanelProps) {
   const tab = useImageEditorUi((s) => s.leftTab);
   const setTab = useImageEditorUi((s) => s.setTab);
   const { width, startResize } = usePanelWidth("gp:ie:left", 264, 200, 420);
@@ -89,7 +90,7 @@ export function LeftPanel({ layers, layersRef, history }: LeftPanelProps) {
           ) : t.id === "history" ? (
             <HistoryPanel {...history} />
           ) : (
-            <EmptyState icon={Component} title="로컬 컴포넌트가 없습니다" />
+            assets
           )}
         </div>
       ))}

@@ -73,6 +73,15 @@ export interface AnnotationLayerHandle {
   deleteSelectedGuide(): boolean;
   /** Alt 홀드 측정(42 `measure.hold`). 포인터가 멈춰 있어도 누름/뗌에 반응해야 한다. */
   setAltMeasure(on: boolean): void;
+  /**
+   * 화면 좌표(clientX/Y) → oriented px. 클램프하지 **않는다** — 이미지 밖에 떨군 것을
+   * 가장자리로 끌어다 붙이면 사용자는 자기가 놓은 자리와 다른 곳을 보게 된다.
+   *
+   * HTML5 drop 은 `PointerEvent` 가 아니라 좌표 두 개만 준다(51 §3.8 에셋 카드 드롭).
+   * 포인터 경로(`annotation/pointer.ts` 의 `rawOriented`)와 **같은 산술**이어야 카드를 놓은
+   * 자리와 인스턴스가 생기는 자리가 어긋나지 않는다.
+   */
+  clientToOriented(clientX: number, clientY: number): Point;
 }
 
 export interface AnnotationLayerProps {
@@ -406,17 +415,26 @@ function AnnotationLayerImpl(
   const cursorRafRef = useRef(0);
   const cursorPosRef = useRef<{ cx: number; cy: number } | null>(null);
 
+  /** 화면 → oriented px. 커서 표시와 에셋 드롭(51)이 같은 산술을 쓴다 — 핸들이 이걸 내보낸다. */
+  const clientToOriented = useCallback((cx: number, cy: number): Point => {
+    const c = canvasRef.current;
+    if (!c) return { x: 0, y: 0 };
+    const r = c.getBoundingClientRect();
+    return {
+      x: ((cx - r.left) / Math.max(1, r.width)) * p.current.oriented.width,
+      y: ((cy - r.top) / Math.max(1, r.height)) * p.current.oriented.height,
+    };
+  }, []);
+
   const flushCursor = useCallback(() => {
     cursorRafRef.current = 0;
     const h = p.current.statusRef?.current;
     const c = canvasRef.current;
     const pos = cursorPosRef.current;
     if (!h || !c || !pos) return;
-    const r = c.getBoundingClientRect();
     const ow = p.current.oriented.width;
     const oh = p.current.oriented.height;
-    const x = ((pos.cx - r.left) / Math.max(1, r.width)) * ow;
-    const y = ((pos.cy - r.top) / Math.max(1, r.height)) * oh;
+    const { x, y } = clientToOriented(pos.cx, pos.cy);
     if (x < 0 || y < 0 || x >= ow || y >= oh) {
       h.setCursor(null, null, null);
       return;
@@ -438,7 +456,7 @@ function AnnotationLayerImpl(
       // 캔버스가 오염됐거나(교차 출처 에셋) 크기가 0 인 순간 — 좌표만 보여 준다.
     }
     h.setCursor(x, y, rgb);
-  }, []);
+  }, [clientToOriented]);
 
   const trackCursor = useCallback(
     (e: React.PointerEvent) => {
@@ -545,8 +563,9 @@ function AnnotationLayerImpl(
         applyAltMeasure(on);
         schedule();
       },
+      clientToOriented,
     }),
-    [applyAltMeasure, finishEditing, schedule],
+    [applyAltMeasure, clientToOriented, finishEditing, schedule],
   );
 
   return (

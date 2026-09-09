@@ -33,7 +33,14 @@ import {
   type SnapLine,
   type SnapResult,
 } from "../../../lib/annotate/snap";
-import { group as treeGroup, remove } from "../../../lib/annotate/tree";
+import { moveUnit } from "../../../lib/annotate/components";
+import {
+  group as treeGroup,
+  isContainer,
+  nodeOf,
+  remove,
+  subtreeIds,
+} from "../../../lib/annotate/tree";
 import {
   type GeomNode,
   type Node,
@@ -597,9 +604,34 @@ export function createPointerHandlers(ctx: PointerCtx) {
         ids = s.selectedIds.includes(id) ? [...s.selectedIds] : [id];
       }
       s.onSelectionChange(ids);
-      // 컨테이너는 기하가 없어 직접 못 움직인다 — 그룹 이동은 태스크 38 translateSubtree.
+      // **컨테이너를 고르면 서브트리가 통째로 움직인다** — 프레임·그룹·인스턴스 모두.
+      // `nudge`(ImageEditor)가 `moveUnit` + `translateSubtree` 로 이미 그렇게 하므로, 여기서
+      // 선택 id 만 집으면 같은 조작이 입력 장치에 따라 갈린다: 프레임을 방향키로 밀면 자식이
+      // 따라오는데 마우스로 끌면 프레임만 빠져나가고(자식이 뒤에 남는다), 그룹은 기하가 없어
+      // (38 §1) `base` 가 비어 드래그가 **아무 일도 없이** 끝난다.
+      //
+      // 인스턴스는 그중 한 경우다(51 §3.4): 더블클릭으로 들어간 자식을 끌어도 인스턴스 전체가
+      // 따라와야 한다 — 자식만 옮기면 위치 재정의가 되는데 51 §3.5 가 기하 재정의를 받지 않아
+      // 다음 커밋의 재물질화가 소리 없이 되돌린다(사용자에겐 "드래그가 씹혔다"로 보인다).
+      // `moveUnit` 이 인스턴스 조상까지 올려 주는 것도 그래서다.
+      //
+      // 컨테이너가 하나도 없는 문서에서는 훑지 않는다 — 선택 하나마다 조상·서브트리를 도는
+      // O(n) 이라 전체 선택 뒤 드래그가 노드 수 × 선택 수가 된다.
+      const hasContainer = s.objects.some(isContainer);
+      const moveIds = new Set<ObjId>(hasContainer ? [] : ids);
+      if (hasContainer) {
+        for (const sel of ids) {
+          const unit = moveUnit(s.objects, sel);
+          const n = nodeOf(s.objects, unit);
+          if (n && isContainer(n)) {
+            for (const sub of subtreeIds(s.objects, unit)) moveIds.add(sub);
+          } else {
+            moveIds.add(unit);
+          }
+        }
+      }
       const base = s.objects.filter(
-        (o): o is GeomNode => ids.includes(o.id) && isGeomNode(o),
+        (o): o is GeomNode => moveIds.has(o.id) && isGeomNode(o),
       );
       dragRef.current = base.length
         ? {
@@ -608,7 +640,7 @@ export function createPointerHandlers(ctx: PointerCtx) {
             base,
             baseBox: unionOf(base),
             // 자기 자신(과 자손)은 후보에서 빼야 한다 — 안 그러면 드래그가 제자리에 붙는다.
-            snap: makeIndex(new Set(ids)),
+            snap: makeIndex(moveIds),
           }
         : null;
       liveRef.current = base.length ? base : null;

@@ -35,7 +35,30 @@ import {
   renderOutput as renderOutputTiled,
   renderRegion,
 } from "../../lib/annotate/render";
-import { resolveScene } from "../../lib/annotate/scene";
+import { resolveScene, sceneOfNodes } from "../../lib/annotate/scene";
+import {
+  detachAllInstances,
+  detachInstance,
+  diffInstance,
+  instanceCounts,
+  instanceState,
+  instantiate,
+  makeComponent,
+  moveUnit,
+  pushToMaster,
+  resetOverrides,
+  resolveInstances,
+} from "../../lib/annotate/components";
+import {
+  applyStyle,
+  detachStyle,
+  findStyle,
+  resyncStyles,
+  styleFromNode,
+  styleSection,
+  type StyleDef,
+  type StyleSlot,
+} from "../../lib/annotate/styles";
 import {
   isGeomNode,
   objectBBox,
@@ -98,11 +121,14 @@ import {
   DEFAULT_PAINT,
   DUPLICATE_OFFSET,
   newObjId,
+  type ColorStyle,
+  type ComponentDef,
   type Node,
   type EditorDoc,
   type Effect,
   type Fill,
   type GeomNode,
+  type ImageLibrary,
   type NodeBase,
   type ObjId,
   type Paint,
@@ -152,6 +178,7 @@ import {
   type View,
 } from "../../lib/zoom";
 import { useSaveImage } from "../../queries";
+import { useImageLibrary } from "../../stores/imageLibrary";
 import { useUi } from "../../stores/ui";
 import {
   rulerTicks,
@@ -182,6 +209,10 @@ import { useCropSession } from "./useCropSession";
 import EditorStatusBar, { type StatusBarHandle } from "./EditorStatusBar";
 import EditorTitleBar from "./EditorTitleBar";
 import { LeftPanel } from "./LeftPanel";
+import { InstanceSection } from "./InstanceSection";
+import { StyleLibrary } from "./StyleLibrary";
+import { StyleRow } from "./StyleRow";
+import { AssetsPanel, COMPONENT_DND_TYPE } from "./panels/AssetsPanel";
 import type { LayerPanelHandle } from "./layers/LayerPanel";
 import ToolRail, { type ToolRailHandle } from "./ToolRail";
 import { ContextBar, type EditorActions as BarActions } from "./ContextBar";
@@ -225,6 +256,11 @@ const CLIP_PREFIX = "gpv-anno:";
 const MAX_INPUT_PIXELS = 100_000_000;
 /** 최근 사용 색 기억 개수(42 스토어 `recentColors` 상한 — `ColorPicker` 와 같은 값이어야 한다). */
 const RECENT_COLORS = 12;
+/**
+ * 컴포넌트 썸네일 한 변 상한(51 §3.4). 라이브러리 파일 8MB 상한을 지키는 것이 이 값이다 —
+ * 카드 하나가 몇 KB 로 끝나야 컴포넌트 수십 개를 넣어도 저장이 거절되지 않는다.
+ */
+const COMPONENT_THUMB_MAX = 96;
 
 /** 빈 문서 — 경계(normalizeDoc)가 만든다. 필드를 두 곳에서 셀 이유가 없다(37 §4). */
 const EMPTY_DOC: EditorDoc = normalizeDoc({});
@@ -287,7 +323,10 @@ function applySelPatch(o: Node, p: SelPatch): Node {
   let next = applyPaintPatch(o, paintPart(p));
   if (p.opacity !== undefined) next = { ...next, opacity: Math.min(1, Math.max(0, p.opacity)) };
   if (p.blend !== undefined) next = { ...next, blend: p.blend };
-  if (p.effects !== undefined) next = { ...next, effects: p.effects };
+  // 효과는 `DefaultPaint` 에 없어 `applyPaintPatch` 를 지나지 않는다 — 자동 분리(51 §3.2)도
+  // 그 안에 있으므로 여기서 같은 규칙을 건다. 빼면 효과 스타일에 묶인 노드의 그림자를 직접
+  // 고쳐도 링크가 남고, 다음 재동기가 그 편집을 라이브러리 값으로 되돌린다.
+  if (p.effects !== undefined) next = detachStyle({ ...next, effects: p.effects }, "effect");
   if (p.name !== undefined) next = { ...next, name: p.name };
   if (p.visible !== undefined) next = { ...next, visible: p.visible };
   if (p.locked !== undefined) next = { ...next, locked: p.locked };
@@ -463,27 +502,15 @@ const PATH_KEYS = [
   "heads",
 ] as const satisfies readonly (keyof PathNode)[];
 
-/** 선 기하 키 — 값을 직접 고치면 스타일 참조를 뗀다(`applyPaintPatch` 와 같은 규칙). */
-const PATH_STROKE_KEYS = [
-  "strokeAlign",
-  "dash",
-  "cap",
-  "join",
-  "miterLimit",
-  "heads",
-] as const satisfies readonly (typeof PATH_KEYS)[number][];
-
 function applyPathPatch(node: PathNode, p: PathPatch): PathNode {
   // **반드시 복사한다.** `applyPaintPatch` 는 아는 키가 하나도 없으면 원본을 그대로 돌려주므로
   // (`if (!touched) return node`), 그 위에 Object.assign 하면 문서에 든 노드를 제자리에서
   // 뜯어고친다 — 히스토리의 이전 칸까지 같은 객체를 가리켜 되돌리기가 아무 것도 안 되돌린다.
   const next: PathNode = { ...(applySelPatch(node, p) as PathNode) };
   for (const k of PATH_KEYS) if (p[k] !== undefined) Object.assign(next, { [k]: p[k] });
-  // 라이브러리 값과 어긋난 채 링크가 남으면 다음 라이브러리 변경이 이 편집을 덮는다(51 §4).
-  if (PATH_STROKE_KEYS.some((k) => p[k] !== undefined) && next.styleRefs.stroke) {
-    const { stroke: _drop, ...rest } = next.styleRefs;
-    next.styleRefs = rest;
-  }
+  // 대시·캡·조인·화살촉을 고쳤다고 색 스타일 링크를 떼지 **않는다**: 스타일이 싣는 것은
+  // 페인트뿐이라(`STYLE_DETACH_KEYS.stroke = ['strokes']`) 재동기가 되돌릴 값이 애초에 없다.
+  // 여기서 떼면 선 모양을 한 번 만진 것만으로 라이브러리 색 전파가 조용히 끊긴다(51 §3.2).
   return next;
 }
 
@@ -579,6 +606,30 @@ export default function ImageEditor() {
   const histRef = useRef<DocHistory>(new DocHistory(EMPTY_DOC));
   // canUndo/canRedo 는 클래스 내부 상태라 리렌더 트리거가 따로 필요하다.
   const [histVer, setHistVer] = useState(0);
+  /**
+   * 문서가 **통째로 갈릴 때**만 오르는 값(새 이미지·사이드카 복원). 라이브러리 재동기 effect 가
+   * 걸리는 두 번째 축이다 — 51 §3.7 이 "자기 창 편집 · 남의 창 편집 · 문서 로드 직후" 셋을 같은
+   * 코드로 처리하기로 했는데, 의존성이 `lib` 뿐이면 마지막 하나가 빠진다(문서만 바뀌고 라이브러리
+   * 참조는 그대로라 effect 가 돌지 않는다). 커밋마다 오르는 `histVer` 를 쓰면 안 된다: 재동기가
+   * 커밋을 만들고 그 커밋이 재동기를 다시 부르는 왕복이 된다.
+   */
+  const [docGen, setDocGen] = useState(0);
+
+  /**
+   * 앱 전역 스타일·컴포넌트 라이브러리(51 §3.1). **참조가 바뀔 때마다** 재동기 effect 가 돈다 —
+   * 내 창의 편집도, 남의 창이 보낸 `image-library://changed` 재로드도 여기 한 곳으로 모인다.
+   */
+  const lib = useImageLibrary((s) => s.lib);
+  /**
+   * 첫 로드가 끝났는가. **재동기의 전제 조건이다** — 로드 전 `lib` 은 빈 라이브러리라, 그 상태로
+   * `resolveInstances` 를 돌리면 사이드카에서 막 되살린 문서의 인스턴스가 전부 "마스터가 없다"로
+   * 판정돼 통째로 분리된다(파일 로드 두 개의 순서에 따라 열 때마다 다르게 터진다).
+   */
+  const libReady = useImageLibrary((s) => s.ready);
+  const ensureLibrary = useImageLibrary((s) => s.ensure);
+  useEffect(() => {
+    void ensureLibrary();
+  }, [ensureLibrary]);
 
   /**
    * 편집 문서 영속(41). 커밋마다 1초 디바운스로 앱 데이터 사이드카에 쓰고, 열 때 되살린다.
@@ -750,7 +801,17 @@ export default function ImageEditor() {
    * 히스토리 조작은 setState 업데이터 **밖**에서 한다.
    */
   const applyDoc = useCallback(
-    (next: EditorDoc, mode: "commit" | "replace" = "commit", label?: string) => {
+    (input: EditorDoc, mode: "commit" | "replace" = "commit", label?: string) => {
+      // 인스턴스 재정의는 **커밋 시점에 문서에서 되짚는다**(51 §3.5) — 자식을 만지는 경로
+      // (캔버스·인스펙터·팝오버·키보드)마다 훅을 심는 대신 깔때기 한 곳에서 diff 를 뜬다.
+      // 라이브 갱신(replace)은 제외한다: 드래그 틱마다 돌 이유가 없고, 값도 어차피 확정 커밋에서
+      // 다시 계산된다. 인스턴스가 없으면 **같은 참조**라 없는 문서에는 비용이 0 이다.
+      //
+      // 라이브러리는 스토어에서 **직접** 읽는다. 렌더에 맞춘 ref 로 두면 '마스터 갱신'처럼
+      // 라이브러리와 문서를 한 핸들러에서 함께 바꾸는 동작에서 옛 마스터로 diff 를 떠,
+      // 방금 굳힌 값이 통째로 재정의로 되살아난다.
+      const next =
+        mode === "commit" ? diffInstance(input, useImageLibrary.getState().lib) : input;
       // 트리 불변식은 **커밋 경로 한 곳**에서 본다 — objects 를 직접 splice 한 코드가 있으면
       // 여기서 즉시 터진다(태스크 38 §3.1). DEV 전용이라 배포 빌드에는 없다.
       if (import.meta.env.DEV) assertTreeInvariant(next.objects);
@@ -767,6 +828,52 @@ export default function ImageEditor() {
     },
     [],
   );
+
+  /**
+   * 인스턴스 재물질화 + 커밋. 재동기 effect 와 '이 인스턴스로 마스터 갱신'이 **같은 함수**를 쓴다.
+   *
+   * 마스터를 바꾸는 동작은 `applyDoc` **앞에서** 반드시 이걸 태워야 한다. 커밋 깔때기의
+   * `diffInstance` 는 스토어의 **새 마스터**로 diff 를 뜨는데(§3.5), 다른 인스턴스의 자식은 아직
+   * 옛 마스터로 물질화돼 있다 — 먼저 다시 만들지 않고 커밋하면 마스터가 바뀐 필드가 **전부** 그
+   * 인스턴스의 재정의로 굳어, 뒤이은 재동기가 "이미 재정의된 값"으로 보고 넘겨 갱신이 영영
+   * 전파되지 않는다(e2e 38 (51 g-2) 가 그 회귀를 잡는다).
+   *
+   * `resolveInstances` 는 바뀐 것이 없으면 **같은 참조**를 돌려주고 그때는 커밋하지 않는다 —
+   * 안 그러면 라이브러리를 만질 때마다 창마다 빈 히스토리 칸이 쌓여 41 의 200칸을 갉아먹고,
+   * `objects` 참조가 매번 새로 나 39 렌더 캐시도 통째로 무효화된다.
+   */
+  const syncInstances = useCallback(
+    (input: EditorDoc, lib: ImageLibrary) => {
+      const r = resolveInstances(input, lib);
+      if (r.doc !== docRef.current) applyDoc(r.doc, "commit", "컴포넌트 갱신");
+      // 조용히 끊으면 나중에 "왜 링크가 풀렸지"가 된다 — 무엇이 없어졌는지까지 말한다.
+      for (const d of r.detached) {
+        pushToast(
+          "info",
+          `컴포넌트 '${d.name}'이(가) 라이브러리에 없어 인스턴스 ${d.count}개를 분리했습니다`,
+        );
+      }
+    },
+    [applyDoc, pushToast],
+  );
+
+  /**
+   * 라이브러리 → 문서 재동기(51 §3.7). **경로가 하나뿐이다**: 내 창의 스타일 편집도, 남의 창이
+   * 보낸 변경 이벤트도, 문서 로드도 전부 여기로 모인다.
+   *
+   * `resyncStyles` 도 바뀐 것이 없으면 **같은 참조**를 돌려주고 그때는 커밋하지 않는다
+   * (이유는 `syncInstances` 머리말과 같다).
+   *
+   * 순서가 중요하다: `resyncStyles` → `resolveInstances`. 인스턴스 서브트리는 마스터에서 다시
+   * 만들어 통째로 갈아 끼우므로, 스타일 재기록을 나중에 하면 방금 물질화한 자식의 값이 한 번 더
+   * 덮여 재정의 파생이 커밋마다 흔들린다.
+   */
+  useEffect(() => {
+    if (!libReady) return;
+    const styled = resyncStyles(docRef.current, lib);
+    if (styled !== docRef.current) applyDoc(styled, "commit", "스타일 갱신");
+    syncInstances(docRef.current, lib);
+  }, [lib, libReady, docGen, applyDoc, syncInstances]);
 
   /**
    * e2e 훅이 읽는 최신 값 미러 — 훅 effect 의 의존성을 늘리지 않으려고 ref 로 둔다
@@ -947,6 +1054,7 @@ export default function ImageEditor() {
     histRef.current.reset(d);
     setDoc(d);
     setHistVer((v) => v + 1);
+    setDocGen((v) => v + 1);
     uiReset();
 
     // 사이드카에 저장해 둔 편집 문서를 **자동으로** 되살린다(41 §3.3). v1 은 창 수명 stash 에
@@ -967,6 +1075,7 @@ export default function ImageEditor() {
       histRef.current.reset(next, "이미지 열기", restored.log);
       setDoc(next);
       setHistVer((v) => v + 1);
+      setDocGen((v) => v + 1);
       setImageChanged(restored.imageChanged);
       // 되돌린 crop 을 사이드카에도 반영한다 — 저장하지 않으면 열 때마다 같은 배너가 뜬다.
       if (restored.imageChanged) persistRef.current?.markDirty();
@@ -1109,6 +1218,22 @@ export default function ImageEditor() {
   // 복원될 때도 효과가 돌아 **델타가 두 번 걸린다** — 스냅샷의 objects 는 이미 그 공간이다.
 
   /**
+   * 이미지 90° 회전·반전은 인스턴스를 **분리한다**(51 §3.4).
+   *
+   * R-ROT 의 축정렬 사각형 표현이 미러·180° 정보를 잃어(38 `transformObjects`) 프레임이
+   * 인스턴스의 방향을 더 이상 들 수 없다 — 링크를 유지하면 다음 재물질화가 방향을 잘못
+   * 복원한다. 값은 노드에 그대로 있으므로 화면은 그대로고 링크만 끊긴다.
+   *
+   * **조용히 끊지 않는다.** 토스트가 없으면 며칠 뒤 "왜 마스터를 고쳐도 안 따라오지"가 된다.
+   * 되돌리기 한 칸이면 인스턴스가 돌아온다(변환과 같은 커밋 안에 있다).
+   */
+  const detachForOrient = (objects: readonly Node[], what: string): Node[] => {
+    const r = detachAllInstances(objects);
+    if (r.count) pushToast("info", `${what}으로 인스턴스 ${r.count}개를 분리했습니다`);
+    return r.objects;
+  };
+
+  /**
    * 반전이 홀수 개 걸려 있으면 화면 기준 회전 방향이 뒤집힌다(buildOriented 가 회전 후
    * 이미지 공간에서 반전하기 때문). 실측으로 확인한 관계다.
    */
@@ -1124,13 +1249,19 @@ export default function ImageEditor() {
       const delta: OrientDelta = plus90 !== mirrored ? "rotCW" : "rotCCW";
       patchDoc({
         rotation: (d.rotation + (plus90 ? 90 : 270)) % 360,
-        objects: transformObjects(d.objects, delta, base.width, base.height),
+        objects: transformObjects(
+          detachForOrient(d.objects, "회전"),
+          delta,
+          base.width,
+          base.height,
+        ),
         crop: null,
         outW: base.height,
         outH: base.width,
       });
     },
-    [patchDoc],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [patchDoc, pushToast],
   );
 
   const flipBy = useCallback(
@@ -1139,7 +1270,7 @@ export default function ImageEditor() {
       if (!base) return;
       const d = docRef.current;
       const objects = transformObjects(
-        d.objects,
+        detachForOrient(d.objects, "반전"),
         axis === "h" ? "flipH" : "flipV",
         base.width,
         base.height,
@@ -1152,7 +1283,8 @@ export default function ImageEditor() {
         outH: base.height,
       });
     },
-    [patchDoc],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [patchDoc, pushToast],
   );
 
   // ── 크롭 세션(48) ─────────────────────────────────────────────────────────
@@ -1880,6 +2012,133 @@ export default function ImageEditor() {
     setSelectedIds([]);
   };
 
+  // ── 컴포넌트·인스턴스(51 §3.4~§3.6) ────────────────────────────────────────
+  //
+  // 문서는 전부 `applyDoc` 깔때기로, 라이브러리는 전부 스토어로 나간다. 한 핸들러가 둘을 함께
+  // 바꿀 때는 **라이브러리를 먼저** 쓴다 — 커밋 경로의 `diffInstance` 가 스토어를 직접 읽으므로,
+  // 순서가 반대면 옛 마스터로 재정의를 떠 방금 굳힌 값이 되살아난다.
+
+  /**
+   * 카드 썸네일 — 마스터 좌표계(프레임이 0,0) 그대로 한 번 그린다.
+   *
+   * 씬은 `sceneOfNodes` 로 만든다: 문서 씬 캐시(`resolveScene`)에 임시 문서를 태우면 캐시 키가
+   * 밀려 다음 프레임이 씬을 통째로 다시 만든다. 실패는 `makeComponent` 가 삼켜 빈 문자열이 되고
+   * 카드는 아이콘만 그린다(51 §6).
+   */
+  const componentThumb = useCallback((nodes: Node[]): string => {
+    const root = nodes[0];
+    if (!root || root.kind !== "frame" || root.w <= 0 || root.h <= 0) return "";
+    const size = { w: root.w, h: root.h };
+    const { ctx } = renderRegion(
+      sceneOfNodes(nodes.filter(isGeomNode)),
+      { x: 0, y: 0, ...size },
+      Math.min(1, COMPONENT_THUMB_MAX / Math.max(root.w, root.h)),
+      { background: "transparent", store: storeRef.current, imageSize: size },
+    );
+    return ctx.canvas.toDataURL("image/png");
+  }, []);
+
+  /**
+   * 새 서브트리를 루트 **끝**에 붙인다(51 §4). 끝이어야 "자손은 컨테이너 바로 뒤에 연속"이라는
+   * 38 불변식이 유지된다 — 중간에 끼우면 커밋의 `assertTreeInvariant` 에서 즉시 터진다.
+   */
+  const insertNodes = useCallback(
+    (nodes: Node[], label: string) => {
+      if (!nodes.length) return;
+      applyDoc(
+        { ...docRef.current, objects: [...docRef.current.objects, ...nodes] },
+        "commit",
+        label,
+      );
+      setSelectedIds([nodes[0].id]);
+    },
+    [applyDoc, setSelectedIds],
+  );
+
+  /** 카드 더블클릭(이미지 중심)·드롭(드롭 좌표)이 함께 쓰는 배치. `at` 은 프레임 **중심**이다. */
+  const placeComponent = useCallback(
+    (def: ComponentDef, at?: { x: number; y: number }) => {
+      const base = orientedRef.current;
+      const center = at ?? { x: (base?.width ?? def.w) / 2, y: (base?.height ?? def.h) / 2 };
+      insertNodes(instantiate(def, center), "컴포넌트 배치");
+    },
+    [insertNodes],
+  );
+
+  /** 스테이지 드롭 — 카드가 실은 것은 컴포넌트 id 하나다(`COMPONENT_DND_TYPE`). */
+  const onStageDrop = (e: React.DragEvent) => {
+    const id = e.dataTransfer.getData(COMPONENT_DND_TYPE);
+    if (!id) return;
+    e.preventDefault();
+    const def = useImageLibrary.getState().lib.components.find((c) => c.id === id);
+    // 드롭 좌표는 포인터 경로와 **같은 산술**로 푼다(43 §3.2 · 51 §3.8) — 여기서 따로 계산하면
+    // 줌·팬이 걸린 상태에서 놓은 자리와 인스턴스가 생기는 자리가 어긋난다.
+    const at = layerRef.current?.clientToOriented(e.clientX, e.clientY);
+    if (def && at) placeComponent(def, at);
+  };
+
+  /** 선택으로 컴포넌트 만들기(Ctrl+Alt+K). 인스턴스가 섞여 있으면 `makeComponent` 가 던진다. */
+  const makeComponentFromSel = () => {
+    const ids = selIds();
+    if (!ids.length) return;
+    askPrompt({
+      title: "컴포넌트 만들기",
+      label: "이름에 '/' 를 넣으면 앞부분이 섹션이 됩니다 (예: 주석 / 번호 뱃지).",
+      defaultValue: "새 컴포넌트",
+      confirmLabel: "만들기",
+      validate: (v) => (v.trim() ? null : "이름을 입력하세요"),
+      onConfirm: (raw) => {
+        const name = raw.trim();
+        if (!name) return;
+        try {
+          const r = makeComponent(docRef.current.objects, ids, name, componentThumb);
+          useImageLibrary.getState().upsertComponent(r.def);
+          patchDoc({ objects: r.objects }, "commit", "컴포넌트 만들기");
+          setSelectedIds([r.instanceId]);
+        } catch (e) {
+          // 중첩 인스턴스 거부는 사용자가 고칠 수 있는 상황이다("먼저 분리하세요").
+          pushToast("error", errorMessage(e));
+        }
+      },
+    });
+  };
+
+  /**
+   * 인스턴스 분리(Ctrl+Alt+B). 자식을 고른 상태에서도 대상은 **인스턴스 전체**다.
+   * 그룹은 인스턴스의 id 를 그대로 잇는다(자식만 새 id) — 선택이 그대로 살아 있다.
+   */
+  const detachSel = (only?: ObjId) => {
+    const objects = docRef.current.objects;
+    const ids = (only ? [only] : [...new Set(selIds().map((id) => moveUnit(objects, id)))]).filter(
+      (id) => treeNodeOf(objects, id)?.kind === "instance",
+    );
+    if (!ids.length) return;
+    let next = objects;
+    for (const id of ids) next = detachInstance(next, id);
+    patchDoc({ objects: next }, "commit", "인스턴스 분리");
+    setSelectedIds(ids);
+  };
+
+  /** '재정의 초기화' — 바뀔 것이 없으면 커밋하지 않는다(빈 히스토리 칸 방지). */
+  const resetInstance = (instId: ObjId) => {
+    const next = resetOverrides(docRef.current, useImageLibrary.getState().lib, instId);
+    if (next !== docRef.current) applyDoc(next, "commit", "재정의 초기화");
+  };
+
+  /** '이 인스턴스로 마스터 갱신' — 다른 인스턴스의 재정의는 유지된다(51 §3.6). */
+  const pushInstance = (instId: ObjId) => {
+    const store = useImageLibrary.getState();
+    const inst = treeNodeOf(docRef.current.objects, instId);
+    if (!inst || inst.kind !== "instance") return;
+    const def = store.lib.components.find((c) => c.id === inst.componentId);
+    if (!def) return;
+    const r = pushToMaster(docRef.current, instId, def, componentThumb);
+    store.upsertComponent(r.def);
+    // 굳힌 마스터로 **다른 인스턴스를 먼저 다시 만든 뒤** 커밋한다(`syncInstances` 머리말).
+    // `store` 는 upsert 이전 스냅샷이라 여기서 스토어를 다시 읽어야 새 def 가 보인다.
+    syncInstances(r.doc, useImageLibrary.getState().lib);
+  };
+
   const duplicateSel = () => {
     const ids = selIds();
     const copies: Node[] = [];
@@ -1931,17 +2190,16 @@ export default function ImageEditor() {
 
   const nudge = useCallback(
     (dx: number, dy: number) => {
-      const ids = new Set(selIds());
-      if (!ids.size) return;
-      patchDoc(
-        {
-          objects: docRef.current.objects.map((o) =>
-            ids.has(o.id) && isGeomNode(o) ? translateObject(o, dx, dy) : o,
-          ),
-        },
-        "commit",
-        "이동",
-      );
+      const objects = docRef.current.objects;
+      // 인스턴스 안 자식을 골랐어도 **인스턴스 전체**가 움직인다(51 §3.4 — 포인터 드래그와 같은
+      // 규칙). 자식만 옮기면 위치 재정의가 되는데 51 §3.5 가 그것을 받지 않아, 다음 커밋의
+      // 재물질화가 소리 없이 되돌린다.
+      //
+      // `translateSubtree` 로 옮기는 이유: 인스턴스·그룹은 기하가 없어(38 §1) id 로 직접 집으면
+      // 아무 것도 안 움직이는데, 커밋은 그대로 나가 히스토리에 **빈 칸만** 쌓인다.
+      const units = [...new Set(selIds().map((id) => moveUnit(objects, id)))];
+      if (!units.length) return;
+      patchDoc({ objects: treeTranslate(objects, units, dx, dy) }, "commit", "이동");
     },
     [patchDoc],
   );
@@ -2276,6 +2534,12 @@ export default function ImageEditor() {
   const selGeom = useMemo(() => selNodes.filter(isGeomNode), [selNodes]);
 
   /**
+   * 인스펙터 인스턴스 블록의 대상(51 §3.4). 첫 선택을 `moveUnit` 으로 좁힌다 — 인스턴스가
+   * 아니면 `InstanceSection` 이 스스로 `null` 을 내므로 여기서 종류를 다시 볼 필요가 없다.
+   */
+  const instId = selectedIds.length ? moveUnit(doc.objects, selectedIds[0]) : null;
+
+  /**
    * 벡터 연산 게이트(46). 컨텍스트 바·인스펙터가 **같은 판정**을 본다 — 각자 세면 한쪽만
    * 잠긴 버튼이 생기고, 그 차이는 눌러 봐야 알 수 있다.
    */
@@ -2363,6 +2627,76 @@ export default function ImageEditor() {
       label,
       live,
     );
+  };
+
+  /**
+   * 색 피커 '색 스타일로 저장'(시안 ④).
+   *
+   * 저장은 **적용이 아니다** — 참조를 남기지 않으므로 문서는 한 줄도 바뀌지 않고 히스토리 칸도
+   * 생기지 않는다(51 §3.8). 저장한 노드까지 링크시키려면 목록에서 한 번 더 누르면 된다.
+   */
+  const saveColorStyle = () => {
+    if (pop?.kind !== "paint") return;
+    const node = popPaintNode();
+    const fill = popFill;
+    if (!node || !isGeomNode(node) || !fill) return;
+    const slot: StyleSlot = pop.slot === "fills" ? "fill" : "stroke";
+    askPrompt({
+      title: "색 스타일로 저장",
+      label: "이름에 '/' 를 넣으면 앞부분이 섹션이 됩니다 (예: 브랜드 / Blue 500).",
+      defaultValue: fill.type === "solid" ? fill.color.toUpperCase() : "새 색 스타일",
+      confirmLabel: "저장",
+      validate: (v) => (v.trim() ? null : "이름을 입력하세요"),
+      onConfirm: (raw) => {
+        const name = raw.trim();
+        if (!name) return;
+        // 슬롯이 fill·stroke 면 `styleFromNode` 는 `ColorStyle` 을 낸다 — 유니온을 좁힐 다른
+        // 표식이 없어 여기서 못 박는다(스토어의 슬라이스가 셋이라 잘못 넣으면 목록이 섞인다).
+        useImageLibrary
+          .getState()
+          .upsertColorStyle(styleFromNode(node, slot, name) as ColorStyle);
+      },
+    });
+  };
+
+  /**
+   * 선택 노드의 한 슬롯을 `f` 로 다시 쓰고 **바뀐 것이 있을 때만** 커밋한다.
+   *
+   * 아래 셋(적용·연결 해제·재동기)이 전부 "슬롯이 안 맞으면 같은 참조를 돌려준다"는
+   * `styles.ts` 규약 위에 서 있다 — 사각형에 텍스트 스타일을 눌렀을 때 문서는 그대로인데
+   * 히스토리에만 빈 칸이 쌓이면, 그 칸을 Ctrl+Z 로 지나가는 동안 화면은 아무 반응이 없다.
+   */
+  const editStyleSlot = (label: string, f: (n: Node) => Node) => {
+    const ids = new Set(selIds());
+    if (!ids.size) return;
+    const before = docRef.current.objects;
+    const objects = before.map((n) => (ids.has(n.id) ? f(n) : n));
+    if (objects.every((n, i) => n === before[i])) return;
+    patchDoc({ objects }, "commit", label);
+  };
+
+  /** 목록 행 클릭 = 값 복사 + `styleRefs` 기록. 히스토리 한 칸은 여기서 붙는다(51 §3.8). */
+  const applyStyleToSel = (slot: StyleSlot, style: StyleDef) =>
+    editStyleSlot(`스타일 ${styleSection(style.name).display}`, (n) => applyStyle(n, slot, style));
+
+  /** 연결 해제 — **값은 남는다**(51 §3.2). 값까지 되돌리면 해제가 색 삭제로 보인다. */
+  const detachStyleFromSel = (slot: StyleSlot) =>
+    editStyleSlot("스타일 연결 해제", (n) => detachStyle(n, slot));
+
+  /**
+   * `갱신 가능` — 이 선택만 라이브러리 값으로 되돌린다.
+   *
+   * 문서 전체를 도는 `resyncStyles`(useEffect([lib]))와 갈라 두는 이유는 대상이 다르기
+   * 때문이다: 저쪽은 라이브러리가 바뀌었을 때 참조 노드 **전부**, 이쪽은 사용자가 직접 고쳐
+   * `stale` 이 된 노드 중 **지금 고른 것**만이다.
+   */
+  const resyncSel = (slot: StyleSlot) => {
+    const lib = useImageLibrary.getState().lib;
+    editStyleSlot("스타일 갱신", (n) => {
+      const id = n.styleRefs[slot];
+      const style = id ? findStyle(lib, slot, id) : null;
+      return style ? applyStyle(n, slot, style) : n;
+    });
   };
 
   const putEffect = (e: Effect, live: boolean) => {
@@ -2510,6 +2844,10 @@ export default function ImageEditor() {
       // 그룹과 같은 연산이고 컨테이너 kind 만 다르다(38 `tree.group`) — 프레임은 내용을 자른다.
       frame: () => actions.group("frame"),
       mask: () => actions.mask(true),
+      // 51 컴포넌트 그룹. 표(shortcuts.ts)의 `consume` 이 `KeyboardShortcuts.tsx:122` 의
+      // alt 미검사 커밋 폼을 막아 준다 — 여기 핸들러가 없으면 막기만 하고 아무 일도 안 한다.
+      "component.make": () => makeComponentFromSel(),
+      "component.detach": () => detachSel(),
       forward: () => reorderSel(1),
       backward: () => reorderSel(-1),
       front: () => reorderSel("front"),
@@ -2880,6 +3218,30 @@ export default function ImageEditor() {
         },
         close: () => closeTopPopover(),
       },
+      /**
+       * 스타일·컴포넌트 라이브러리(51). **앱 전역 파일**이라 e2e 가 개발자의 dev 라이브러리를
+       * 지울 수 있다 — 스위트는 시작에 `get()` 을 떠 두고 끝에 되돌린다(51 §6).
+       * `ensure()` 는 단일 비행이라 여러 번 불러도 한 번만 로드한다.
+       */
+      library: {
+        get: () => useImageLibrary.getState().lib,
+        ensure: () => useImageLibrary.getState().ensure(),
+        // 슬롯마다 목록이 갈리므로(색·텍스트·효과) 하나로 합치지 않는다 — 합치면 어느
+        // 목록에 들어갔는지가 사라져 '텍스트 스타일로 저장'의 회귀를 못 잡는다.
+        styles: () => {
+          const l = useImageLibrary.getState().lib;
+          return { color: l.colorStyles, text: l.textStyles, effect: l.effectStyles };
+        },
+        components: () => useImageLibrary.getState().lib.components,
+      },
+      /** 인스턴스 상태 — 화면(⑤ 3칩)과 **같은 판정**을 문서에서 직접 본다. */
+      instance: {
+        state: (id: ObjId) => {
+          const n = treeNodeOf(docRef.current.objects, id);
+          return n ? instanceState(n) : null;
+        },
+        counts: () => instanceCounts(docRef.current.objects),
+      },
       /** 버튼·단축키가 부르는 것과 **같은 함수**(45 §4). 갈라지면 e2e 만 통과한다. */
       actions,
       /**
@@ -3009,6 +3371,7 @@ export default function ImageEditor() {
             onSaveSnapshot: saveSnapshot,
             onUndo: undo,
           }}
+          assets={<AssetsPanel doc={doc} onPlace={(def) => placeComponent(def)} />}
         />
 
         {/* 스테이지 열 — 컨텍스트 바(44px) + 프리뷰. 바는 크롬(SVG 오버레이)과 겹치지 않는
@@ -3042,6 +3405,13 @@ export default function ImageEditor() {
             onPointerMove={onStagePointerMove}
             onPointerUp={endPan}
             onPointerCancel={endPan}
+            // 에셋 카드 드롭(51 §3.8). `onDragOver` 의 preventDefault 가 없으면 브라우저가
+            // 기본 동작(드롭 거부)을 유지해 `onDrop` 이 **아예 오지 않는다**. doc 창에서는
+            // `disable_drag_drop_handler`(44) 가 있어야 WebView2 가 HTML5 drop 을 넘겨준다.
+            onDragOver={(e) => {
+              if (e.dataTransfer.types.includes(COMPONENT_DND_TYPE)) e.preventDefault();
+            }}
+            onDrop={onStageDrop}
             className="checkerboard relative flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden p-4"
           >
             {/* 모드 배너 — 지금 무엇이 Enter·Esc 를 받는지 알린다(§3.2). 포인터는 통과시킨다:
@@ -3199,6 +3569,29 @@ export default function ImageEditor() {
                 recentColors={recent}
                 onOpenPopover={openPopover}
                 canVector={canVector}
+                instanceSection={
+                  // 선택을 `moveUnit` 으로 좁혀 넘긴다 — 더블클릭으로 들어간 자식에서도 같은
+                  // 블록이 떠야 하고, '분리'·'마스터 갱신'의 대상은 언제나 인스턴스 전체다.
+                  instId && (
+                    <InstanceSection
+                      objects={doc.objects}
+                      instId={instId}
+                      onReset={() => resetInstance(instId)}
+                      onPush={() => pushInstance(instId)}
+                      onDetach={() => detachSel(instId)}
+                    />
+                  )
+                }
+                // 세 섹션이 **같은 컴포넌트**를 쓴다 — 슬롯마다 다시 그리면 채우기에서는
+                // '갱신 가능'이 뜨는데 선에서는 안 뜨는 식으로 판정이 갈린다(StyleRow 머리말).
+                styleRow={(slot) => (
+                  <StyleRow
+                    slot={slot}
+                    nodes={selNodes}
+                    onDetach={() => detachStyleFromSel(slot)}
+                    onResync={() => resyncSel(slot)}
+                  />
+                )}
               />
             ),
             // 글꼴 목록·굵기·서식 툴바는 50 `TextInspector` 것이다 — 레이아웃을 정하는
@@ -3288,6 +3681,25 @@ export default function ImageEditor() {
               docColors={docColors}
               onLive={(p) => putPaint(p, true)}
               onCommit={(p) => putPaint(p, false)}
+              // 선택이 없으면 저장할 **노드**가 없다(그때 팝오버가 편집하는 것은 도구 기본
+              // 스타일이다). prop 을 빼면 버튼 자체가 안 그려진다 — 눌러도 아무 일이 없는
+              // 버튼보다 없는 버튼이 낫다.
+              onSaveStyle={popPaintNode() ? saveColorStyle : undefined}
+              // 시안 ④ 의 색 스타일 라이브러리. **선택이 있을 때만** 그린다 — 선택이 없으면
+              // 팝오버가 편집하는 것은 도구 기본 스타일이고, 거기엔 `styleRefs` 를 남길 노드가
+              // 없어서 행을 눌러도 아무 일이 일어나지 않는다.
+              styles={
+                selectedIds.length ? (
+                  <StyleLibrary
+                    slot={pop.slot === "fills" ? "fill" : "stroke"}
+                    mode="inline"
+                    objects={doc.objects}
+                    onApply={(s) =>
+                      applyStyleToSel(pop.slot === "fills" ? "fill" : "stroke", s)
+                    }
+                  />
+                ) : undefined
+              }
             />
           ) : (
             <GradientEditor

@@ -152,11 +152,27 @@ export interface ExportRow {
   profile?: "srgb" | "display-p3";
 }
 
-/** 인스턴스가 마스터 자식에 덮어쓰는 값(태스크 51 §4). */
+/**
+ * 인스턴스가 마스터 자식에 덮어쓰는 값(태스크 51 §4).
+ *
+ * `NodeBase` 공통분(페인트·표시·블렌드)과 타이포 외에 **kind 별 값 키**를 명시로 더한다 —
+ * 재정의는 `diffInstance` 가 커밋 때 파생하는데(51 §3.5), 여기 없는 키는 타입이 막아 놓고
+ * 런타임에서만 실려 오는 유령 필드가 된다. 반대로 기하 키(x/y/w/h/rot/pts/…)는 **일부러
+ * 뺐다**: 자식 위치·크기 재정의를 허용하면 마스터 구조 변경과 3-way 병합을 해야 한다.
+ */
 export type InstanceOverride = Partial<
   Omit<NodeBase, "id" | "parentId" | "constraints" | "mask" | "exportRows" | "locked">
 > &
-  Partial<TextStyle>;
+  Partial<TextStyle> & {
+    text?: string;
+    radius?: RectObject["radius"];
+    n?: number;
+    fontSize?: number;
+    mode?: MosaicMode;
+    strength?: number;
+    fillRule?: PathNode["fillRule"];
+    clipsContent?: boolean;
+  };
 
 // ── 노드 ────────────────────────────────────────────────────────────────────
 
@@ -421,6 +437,93 @@ export interface SceneTransform {
   ty: number;
   sx: number;
   sy: number;
+}
+
+// ── 스타일·컴포넌트 라이브러리 (태스크 51) ──────────────────────────────────
+//
+// 라이브러리는 **문서 밖**에 산다(앱 전역 파일 하나 — 51 §3.1). 노드에는 값이 복사되고
+// `styleRefs[slot]` 에 id 만 남으므로, 라이브러리가 지워져도·다른 머신에서 열어도 문서는
+// 자기완결이다. 렌더·히트·AABB 가 라이브러리를 읽는 순간 WYSIWYG 와 히스토리 결정론이
+// 깨진다(00-INDEX §10.4) — 그래서 이 타입들은 `EditorDoc` 에 들어가지 않는다.
+
+/** 색 스타일 1개. `name` 은 경로 하나(`'상태 / 경고 / 핑크'`) — 첫 세그먼트가 섹션이다. */
+export interface ColorStyle {
+  id: StyleId;
+  name: string;
+  paint: Fill;
+  updatedAt: number;
+}
+
+/**
+ * 텍스트 스타일이 싣는 타이포 키만 추린 것.
+ *
+ * `align`/`valign`/`resize`/`list`/`truncateLines` 등이 빠진 이유: 그것들은 **글자 모양이
+ * 아니라 상자 배치**라, 스타일을 적용했다고 문단 정렬이나 자동 크기 모드까지 바뀌면
+ * 사용자는 스타일 하나로 레이아웃이 흐트러지는 경험을 한다(시안 ② 목록도 글꼴·크기·행간만 든다).
+ */
+export type TextStyleProps = Pick<
+  TextStyle,
+  | "fontFamily"
+  | "fontWeight"
+  | "italic"
+  | "fontSize"
+  | "lineHeight"
+  | "letterSpacing"
+  | "paragraphSpacing"
+  | "indent"
+  | "underline"
+  | "strike"
+  | "textCase"
+  | "features"
+>;
+
+/** 텍스트 스타일 1개(시안 ② `제목 / H1`). */
+export interface TextStyleDef {
+  id: StyleId;
+  name: string;
+  style: TextStyleProps;
+  updatedAt: number;
+}
+
+/** 효과 스타일 1개 — 스택 통째가 한 항목이다(시안 ① 효과 섹션). */
+export interface EffectStyle {
+  id: StyleId;
+  name: string;
+  effects: Effect[];
+  updatedAt: number;
+}
+
+/**
+ * 컴포넌트 마스터 1개.
+ *
+ * `nodes[0]` 은 **반드시 `(0,0,w,h)`·rot 0 의 루트 `FrameNode`** 고 나머지는 그 로컬 좌표의
+ * 자손이다(DFS 전순). 인스턴스의 위치·크기·회전을 그 프레임 자식이 들기 때문에(51 §3.4)
+ * 이 불변식이 깨지면 재물질화(`applyConstraints` → `rotateNodes`)가 기준 rect 를 잃는다.
+ */
+export interface ComponentDef {
+  id: ComponentId;
+  name: string;
+  nodes: Node[];
+  w: number;
+  h: number;
+  /** `data:image/png` ≤96px. 생성 실패 시 빈 문자열 — 카드는 이름만 그린다. */
+  thumb: string;
+  updatedAt: number;
+}
+
+/**
+ * 라이브러리 1벌 = `app_data_dir/image-library.json` 의 `library` 키 값.
+ *
+ * `seeded` 는 내장 텍스트 스타일 3종을 심었는지다 — 사용자가 지운 것을 다음 실행이 되살리면
+ * 지우는 행위 자체가 무의미해진다.
+ */
+export interface ImageLibrary {
+  v: 1;
+  colorStyles: ColorStyle[];
+  textStyles: TextStyleDef[];
+  effectStyles: EffectStyle[];
+  components: ComponentDef[];
+  seeded: boolean;
 }
 
 // ── 기본 속성값 ──────────────────────────────────────────────────────────────

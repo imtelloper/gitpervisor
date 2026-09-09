@@ -136,6 +136,19 @@ export interface PropsTabProps {
   onOpenPopover(req: PropsPopoverRequest): void;
   /** 46 벡터 연산 게이트 — 판정은 `vectorActions.can` 한 곳이 낸다(버튼과 키가 같은 판정). */
   canVector: Record<PathOp, boolean>;
+  /**
+   * 탭 **맨 위**에 얹히는 인스턴스 블록(51 `InstanceSection`). 슬롯으로 받는 이유는
+   * 선택 좁히기(`moveUnit`)와 세 동작이 전부 문서·라이브러리를 함께 만지기 때문이다 —
+   * 이 패널은 문서 깔때기(`applyDoc`)를 모른다. 인스턴스가 아니면 그쪽이 `null` 을 낸다.
+   */
+  instanceSection?: ReactNode;
+  /**
+   * 채우기·선·효과 섹션에 붙는 스타일 링크 한 줄(51 `StyleRow`). `instanceSection` 과 같은
+   * 이유로 슬롯이다 — 연결 해제·'갱신 가능'은 문서 커밋이라 `applyDoc` 을 아는 쪽만 할 수 있다.
+   *
+   * 텍스트 슬롯이 여기 없는 것은 실수가 아니다: 타이포는 텍스트 탭(50)이 자기 섹션에 붙인다.
+   */
+  styleRow?(slot: "fill" | "stroke" | "effect"): ReactNode;
 }
 
 // ── 도구별 기본 스타일 노출 범위(v1 AnnotationToolbar 승계) ──────────────────
@@ -196,6 +209,8 @@ export function PropsTab({
   recentColors,
   onOpenPopover,
   canVector,
+  instanceSection,
+  styleRow,
 }: PropsTabProps) {
   const tool = useImageEditorUi((s) => s.tool);
   const ratioLock = useImageEditorUi((s) => s.ratioLock);
@@ -339,6 +354,9 @@ export function PropsTab({
 
   return (
     <div>
+      {/* 인스턴스 블록은 **정렬보다 위**다(51 §3.8) — '지금 고른 것이 컴포넌트 사본'이라는
+          사실이 아래 필드들의 의미(위치·크기 읽기 전용)를 바꾸므로 먼저 읽혀야 한다. */}
+      {instanceSection}
       {/* 정렬은 하나만 골라도 뜻이 있다 — 기준이 캔버스가 된다(§3.5). 분배는 3개부터. */}
       {!empty && (
         <Group title="정렬 · 분배">
@@ -633,6 +651,11 @@ export function PropsTab({
               />
             )}
 
+            {/* 스타일 링크는 스택 **바로 아래**다(시안 ① `채우기 · Sw · 스타일 · 경고/핑크`).
+                아래 팔레트보다 뒤로 밀면, 링크된 노드에서 팔레트를 눌러 링크가 풀린 사실을
+                두 줄 건너에서 확인하게 된다. */}
+            {styleRow?.(slot === "fills" ? "fill" : "stroke")}
+
             {/* 팔레트·최근 색(v1 툴바 승계) — 색 피커를 열지 않고 한 번에 고르는 경로다.
                 맨 앞 겹의 색만 바꾼다: 스택을 통째로 갈면 두 번째 채우기가 말없이 사라진다. */}
             <SwatchRow
@@ -671,37 +694,43 @@ export function PropsTab({
         );
       })}
 
-      {effects !== undefined &&
-        (effects === MIXED ? (
-          <MixedStack
-            title="효과"
-            onAdd={() => editEffects(effects, (l) => [...l, NEW_EFFECT], "효과 추가 드롭 섀도")}
-          />
-        ) : (
-          <StackList
-            title="효과"
-            items={effects}
-            onAdd={() => editEffects(effects, (l) => [...l, NEW_EFFECT], "효과 추가 드롭 섀도")}
-            onToggle={(i) =>
-              editEffects(
-                effects,
-                (l) => l.map((e, j) => (j === i ? { ...e, visible: !e.visible } : e)),
-                `효과 ${effects[i].visible ? "숨기기" : "표시"}`,
-              )
-            }
-            onRemove={(i) => editEffects(effects, (l) => l.filter((_, j) => j !== i), "효과 제거")}
-            onOpen={(i, anchor) => onOpenPopover({ kind: "effect", index: i, anchor })}
-            render={(e) => (
-              <div className="flex min-w-0 items-center gap-1.5">
-                <span
-                  style={{ background: "color" in e ? e.color : "transparent" }}
-                  className="h-[18px] w-[18px] shrink-0 rounded border border-edge"
-                />
-                <span className="min-w-0 truncate text-[11px] text-fg-muted">{effectLabel(e)}</span>
-              </div>
-            )}
-          />
-        ))}
+      {effects !== undefined && (
+        <>
+          {effects === MIXED ? (
+            <MixedStack
+              title="효과"
+              onAdd={() => editEffects(effects, (l) => [...l, NEW_EFFECT], "효과 추가 드롭 섀도")}
+            />
+          ) : (
+            <StackList
+              title="효과"
+              items={effects}
+              onAdd={() => editEffects(effects, (l) => [...l, NEW_EFFECT], "효과 추가 드롭 섀도")}
+              onToggle={(i) =>
+                editEffects(
+                  effects,
+                  (l) => l.map((e, j) => (j === i ? { ...e, visible: !e.visible } : e)),
+                  `효과 ${effects[i].visible ? "숨기기" : "표시"}`,
+                )
+              }
+              onRemove={(i) => editEffects(effects, (l) => l.filter((_, j) => j !== i), "효과 제거")}
+              onOpen={(i, anchor) => onOpenPopover({ kind: "effect", index: i, anchor })}
+              render={(e) => (
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <span
+                    style={{ background: "color" in e ? e.color : "transparent" }}
+                    className="h-[18px] w-[18px] shrink-0 rounded border border-edge"
+                  />
+                  <span className="min-w-0 truncate text-[11px] text-fg-muted">
+                    {effectLabel(e)}
+                  </span>
+                </div>
+              )}
+            />
+          )}
+          {styleRow?.("effect")}
+        </>
+      )}
 
       {/* 패스 전용 선 기하·fillRule·벡터 연산(46 §3.8). **하나만 골랐을 때만** 뜬다 —
           `PathInspectorSection` 은 노드 하나의 값을 그리므로 여러 개를 고른 채 띄우면 첫
