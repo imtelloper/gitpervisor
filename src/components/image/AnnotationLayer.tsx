@@ -9,7 +9,10 @@
 //   backing px   = oriented × scale       캔버스 백킹 스토어(그리는 곳)
 //   css px       = oriented × displayScale 화면에 보이는 크기(포인터·핸들 크기·textarea)
 //
-// 제스처·키보드·화면 크롬·텍스트 편집은 `annotation/` 4모듈로 나뉜다(37 §3.5).
+// 제스처·텍스트 편집은 `annotation/` 모듈로 나뉜다(37 §3.5). **화면 크롬은 캔버스에 없다** —
+// 43 이 stage 위 SVG 한 겹(`ChromeOverlay`)으로 옮겼다. 여기서 하는 일은 프레임마다
+// `ChromeState` 를 조립해 `chrome.update()` 를 부르는 것뿐이고, 그래서 선택 상자·HUD 가
+// 저장본에 샐 경로가 **구조적으로** 없다(e2e 30 (o-4)(p-5)).
 
 import {
   forwardRef,
@@ -21,10 +24,13 @@ import {
   useState,
 } from "react";
 
+import { CHROME_COLORS, type ChromeScreen, type ChromeState } from "../../lib/annotate/chrome";
 import type { ImageStore } from "../../lib/annotate/imageStore";
 import { releaseScratch, renderScene } from "../../lib/annotate/render";
-import type { Tool } from "../../stores/imageEditor";
+import { useImageEditorUi, type Tool } from "../../stores/imageEditor";
 import { sceneOfNodes, type Scene } from "../../lib/annotate/scene";
+import { objectAABB, objectAnchor, objectBBox, selectBox } from "../../lib/annotate/geometry";
+import type { Guide, Measure } from "../../lib/annotate/snap";
 import {
   type GeomNode,
   type Node,
@@ -34,16 +40,14 @@ import {
   type TextNode,
   type DefaultPaint,
 } from "../../lib/annotate/types";
-import {
-  drawCropOverlay,
-  drawHud,
-  drawMarquee,
-  drawSelection,
-} from "./annotation/chrome";
+import type { ChromeOverlayHandle } from "./ChromeOverlay";
 import {
   createPointerHandlers,
+  marqueeRect,
+  MIN_DRAG,
   type DragState,
   type Point,
+  type SnapFeedback,
 } from "./annotation/pointer";
 import {
   TextEditOverlay,
@@ -62,6 +66,13 @@ export interface AnnotationLayerHandle {
   renderOnce(): void;
   /** 크롭 드래그 중 라이브 사각형(React 상태를 태우지 않고 오버레이만 갱신). null 이면 지운다. */
   setCropPreview(r: Rect | null): void;
+  /**
+   * 선택된 가이드를 지운다. 42 `delete` 액션이 **노드 삭제보다 먼저** 부른다 —
+   * true 를 돌려주면 거기서 끝이다(가이드를 고른 채 Delete 를 눌렀는데 객체가 지워지면 안 된다).
+   */
+  deleteSelectedGuide(): boolean;
+  /** Alt 홀드 측정(42 `measure.hold`). 포인터가 멈춰 있어도 누름/뗌에 반응해야 한다. */
+  setAltMeasure(on: boolean): void;
 }
 
 export interface AnnotationLayerProps {
@@ -98,6 +109,17 @@ export interface AnnotationLayerProps {
    * `objects` 는 커밋과 트리 연산이 쓰는 원본이다.
    */
   scene: Scene;
+  /**
+   * 화면 크롬을 그리는 SVG 오버레이. **rAF 안에서만** `update` 를 부른다(React 렌더 경로로
+   * 밀면 초당 60회 리렌더가 편집기 전체로 번진다 — 상태바·호버와 같은 규칙).
+   */
+  chrome: React.RefObject<ChromeOverlayHandle | null>;
+  /** oriented → stage css px 변환. `getBoundingClientRect` 없이 산술로만 온다(43 §3.2). */
+  screen: ChromeScreen;
+  /** 문서 가이드(37) — 그리기·스냅·히트가 같은 배열을 본다. */
+  guides: readonly Guide[];
+  /** 가이드 이동·삭제 커밋. 라벨이 히스토리 항목 이름이 된다(41). */
+  onGuidesChange: (next: Guide[], label: string) => void;
   selectedIds: readonly ObjId[];
   tool: Tool;
   style: DefaultPaint;
@@ -154,6 +176,14 @@ function AnnotationLayerImpl(
   const cropPreviewRef = useRef<Rect | null | undefined>(undefined);
   /** 번호 뱃지 카운터 — 삭제해도 재정렬하지 않고 계속 증가한다(§12). */
   const badgeSeqRef = useRef(1);
+  /** 스마트 가이드·간격 뱃지(드래그 수명) — 크롬에만 가고 문서에는 좌표만 남는다. */
+  const snapRef = useRef<SnapFeedback | null>(null);
+  /** Alt 홀드 측정. */
+  const measureRef = useRef<Measure[] | null>(null);
+  /** 선택된 가이드 인덱스(-1 = 없음). 문서가 아니라 화면 상태다. */
+  const guideSelRef = useRef(-1);
+  /** 마지막 포인터 위치(oriented). */
+  const ptRef = useRef<Point | null>(null);
 
   const [editing, setEditing] = useState<EditState | null>(null);
   const editingRef = useRef<EditState | null>(null);
@@ -236,10 +266,20 @@ function AnnotationLayerImpl(
       });
     }
 
-    drawSelection(ctx, s, liveRef.current);
-    drawMarquee(ctx, s, dragRef.current);
-    drawHud(ctx, s, dragRef.current, draftRef.current, liveRef.current);
-    drawCropOverlay(ctx, s, cropPreviewRef.current);
+    // 크롬은 **이 캔버스에 한 획도 그리지 않는다**. 같은 프레임 안에서 SVG 오버레이 속성만
+    // 갱신한다 — 그래서 저장·내보내기 어디에도 샐 자리가 없다(43 §3.1).
+    s.chrome.current?.update(
+      buildChromeState(s, {
+        drag: dragRef.current,
+        draft: draftRef.current,
+        live: liveRef.current,
+        crop: cropPreviewRef.current,
+        snap: snapRef.current,
+        measures: measureRef.current,
+        guideSel: guideSelRef.current,
+        pt: ptRef.current,
+      }),
+    );
   }, [ensureCache]);
 
   /** rAF 코얼레싱 — 한 프레임에 한 번만 그린다(§4.4). */
@@ -251,7 +291,15 @@ function AnnotationLayerImpl(
     });
   }, [paintNow]);
 
-  // 캐시를 버려야 하는 변화(문서·배율·크기·필터)와 매 프레임 크롬(선택)을 모두 다시 그린다.
+  /**
+   * 크롬 값의 **구독**. `paintNow` 는 이 둘을 `getState()` 로 읽으므로(리렌더 폭주 방지)
+   * 구독이 없으면 눈금자를 켜도, 레이어 패널 위에서 행을 훑어도 다음 마우스 이동까지
+   * 화면이 그대로다. 호버는 **대상이 바뀔 때만** 흐르므로 초당 60회가 아니다.
+   */
+  const toggles = useImageEditorUi((s) => s.toggles);
+  const hoverId = useImageEditorUi((s) => s.hoverId);
+
+  // 캐시를 버려야 하는 변화(문서·배율·크기·필터)와 매 프레임 크롬(선택·화면 변환)을 다시 그린다.
   useLayoutEffect(() => {
     schedule();
   }, [
@@ -266,8 +314,22 @@ function AnnotationLayerImpl(
     props.cropRect,
     props.cropMode,
     props.oriented,
+    // 팬은 배율을 바꾸지 않는다 — `screen` 이 없으면 화면을 밀어도 크롬만 제자리에 남는다.
+    props.screen,
+    props.guides,
+    toggles,
+    hoverId,
     editing,
   ]);
+
+  // 가이드 선택은 **캔버스 포인터가 만든 화면 상태**라 밖에서 선택이 바뀌면 낡는다
+  // (레이어 패널 행 클릭·Ctrl+A·Esc 는 `pointer.ts` 를 거치지 않는다). 낡은 채로 두면
+  // Delete 가 노드가 아니라 가이드를 지우고, 사용자에게는 '삭제가 안 먹는다'로 보인다.
+  // `guidesVisible` 이 꺼졌을 때도 같다 — 그리지도 잡히지도 않는 가이드를 지우게 된다.
+  // 같은 프레임의 `schedule()`(위 layout effect)이 이 값을 읽으므로 다시 그릴 필요는 없다.
+  useEffect(() => {
+    guideSelRef.current = -1;
+  }, [props.selectedIds, toggles.guidesVisible]);
 
   useEffect(
     () => () => {
@@ -317,7 +379,7 @@ function AnnotationLayerImpl(
 
   // ── 포인터 ────────────────────────────────────────────────────────────────
 
-  const { onPointerDown, onPointerMove, onPointerUp, onDoubleClick } =
+  const { onPointerDown, onPointerMove, onPointerUp, onDoubleClick, applyAltMeasure } =
     createPointerHandlers({
       p,
       canvasRef,
@@ -326,6 +388,10 @@ function AnnotationLayerImpl(
       liveRef,
       editingRef,
       badgeSeqRef,
+      snapRef,
+      measureRef,
+      guideSelRef,
+      ptRef,
       schedule,
       commitObjects,
       finishEditing,
@@ -391,7 +457,12 @@ function AnnotationLayerImpl(
     }
     cursorPosRef.current = null;
     p.current.statusRef?.current?.setCursor(null, null, null);
-  }, []);
+    // 포인터를 따라다니는 크롬(Alt 측정·픽셀 스냅 셀)은 포인터가 나가면 함께 사라져야 한다 —
+    // 안 그러면 마지막 위치에 굳어 "왜 저기 뱃지가 남아 있지"가 된다.
+    ptRef.current = null;
+    measureRef.current = null;
+    schedule();
+  }, [schedule]);
 
   // 편집기가 사라지면 모듈 스크래치를 놓아 준다 — 모듈 전역이라 창 수명 동안 마지막 크기
   // 그대로 남아 있었다(창당 최대 ~15MB). doc-* 창은 별도 WebView2라 창마다 따로 쌓인다.
@@ -433,6 +504,7 @@ function AnnotationLayerImpl(
           draftRef.current = null;
           liveRef.current = null;
           dragRef.current = null;
+          snapRef.current = null;
           if (d?.mode === "crop") {
             cropPreviewRef.current = undefined;
             s.onCropCancel();
@@ -457,8 +529,24 @@ function AnnotationLayerImpl(
         cropPreviewRef.current = r === null ? undefined : r;
         schedule();
       },
+      deleteSelectedGuide() {
+        const i = guideSelRef.current;
+        const s = p.current;
+        if (i < 0 || i >= s.guides.length) return false;
+        guideSelRef.current = -1;
+        s.onGuidesChange(
+          s.guides.filter((_, k) => k !== i).map((g) => ({ ...g })),
+          "가이드 삭제",
+        );
+        schedule();
+        return true;
+      },
+      setAltMeasure(on) {
+        applyAltMeasure(on);
+        schedule();
+      },
     }),
-    [finishEditing, schedule],
+    [applyAltMeasure, finishEditing, schedule],
   );
 
   return (
@@ -515,6 +603,254 @@ export default AnnotationLayer;
 
 function sceneTransform(scale: number): SceneTransform {
   return { tx: 0, ty: 0, sx: scale, sy: scale };
+}
+
+/** 여러 사각형의 합집합. 비어 있으면 null — "폭 0 상자"와 "없음"은 다른 뜻이다. */
+function unionRect(rects: readonly Rect[]): Rect | null {
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  for (const r of rects) {
+    x0 = Math.min(x0, r.x);
+    y0 = Math.min(y0, r.y);
+    x1 = Math.max(x1, r.x + r.w);
+    y1 = Math.max(y1, r.y + r.h);
+  }
+  return Number.isFinite(x0) ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : null;
+}
+
+/**
+ * 드래그 중 수치(시안 `Dim Badge`). 종전 캔버스 HUD 의 규칙 그대로다 — 스냅·가이드가 생긴
+ * 지금도 "지금 무엇을 만들고 있는가"를 아는 값은 이것뿐이다.
+ *
+ * 텍스트가 없으면 null 을 돌려 **선택 크기 뱃지로 되돌아간다**. 예전에는 여기서 아무것도 안
+ * 그렸는데, 그러면 3px 미만 이동에서 뱃지가 깜빡였다.
+ */
+function dragHudText(
+  d: DragState | null,
+  draft: GeomNode | null,
+  live: readonly GeomNode[] | null,
+): { text: string; box: Rect } | null {
+  if (!d) return null;
+  if (d.mode === "marquee") {
+    const r = marqueeRect(d);
+    if (r.w < MIN_DRAG && r.h < MIN_DRAG) return null;
+    return { text: `${Math.round(r.w)} × ${Math.round(r.h)}`, box: r };
+  }
+  if (d.mode === "measure") {
+    const len = Math.hypot(d.cur.x - d.a.x, d.cur.y - d.a.y);
+    if (len < MIN_DRAG) return null;
+    return {
+      text: `${Math.round(len)} px`,
+      box: {
+        x: Math.min(d.a.x, d.cur.x),
+        y: Math.min(d.a.y, d.cur.y),
+        w: Math.abs(d.cur.x - d.a.x),
+        h: Math.abs(d.cur.y - d.a.y),
+      },
+    };
+  }
+  if (d.mode === "draw" && draft) {
+    // 자유곡선은 폭·높이가 의미를 못 준다 — 아무것도 안 띄운다.
+    if (draft.kind === "pen" || draft.kind === "highlight") return null;
+    const box = objectAABB(draft);
+    if (draft.kind === "line" || draft.kind === "arrow") {
+      const dx = draft.x2 - draft.x1;
+      const dy = draft.y2 - draft.y1;
+      const deg = Math.round((Math.atan2(dy, dx) * 180) / Math.PI);
+      return { text: `${Math.round(Math.hypot(dx, dy))} px  ∠${deg}°`, box };
+    }
+    return { text: `${Math.round(box.w)} × ${Math.round(box.h)}`, box };
+  }
+  if (d.mode === "resize" && live && live[0]) {
+    const box = objectAABB(live[0]);
+    return { text: `${Math.round(box.w)} × ${Math.round(box.h)}`, box };
+  }
+  if (d.mode === "move" && live && live[0]) {
+    const from = objectBBox(d.base[0]);
+    const to = objectBBox(live[0]);
+    const dx = Math.round(to.x - from.x);
+    const dy = Math.round(to.y - from.y);
+    // 단순 클릭 선택(pointerdown 이 move 드래그를 세운 직후)에서 "+0 +0" 이 깜빡이는 것을 막는다.
+    if (Math.abs(dx) < MIN_DRAG && Math.abs(dy) < MIN_DRAG) return null;
+    return {
+      text: `${dx >= 0 ? "+" : ""}${dx}  ${dy >= 0 ? "+" : ""}${dy}`,
+      box: objectAABB(live[0]),
+    };
+  }
+  return null;
+}
+
+/**
+ * 이 프레임에 그려질 크롬 전부(43 §3.3).
+ *
+ * 좌표는 전부 **oriented px** 다 — 화면 변환은 오버레이가 `screen` 으로 한 번만 곱한다.
+ * 여기서 css px 를 섞으면 확대할 때 선이 같이 굵어지는, 캔버스 크롬을 버린 바로 그 증상이
+ * 되돌아온다.
+ */
+function buildChromeState(
+  s: AnnotationLayerProps,
+  f: {
+    drag: DragState | null;
+    draft: GeomNode | null;
+    live: readonly GeomNode[] | null;
+    crop: Rect | null | undefined;
+    snap: SnapFeedback | null;
+    measures: Measure[] | null;
+    guideSel: number;
+    pt: Point | null;
+  },
+): ChromeState {
+  const ui = useImageEditorUi.getState();
+  const t = ui.toggles;
+  const byId = new Map<ObjId, GeomNode>((f.live ?? []).map((o) => [o.id, o]));
+  const selSet = new Set<ObjId>(s.selectedIds);
+
+  // 선택 상자는 **씬**을 본다 — 숨긴 노드에 상자가 남으면 "보이는 것 ≠ 선택된 것"이 된다.
+  // 컨테이너를 골랐으면 자손이 대신 잡힌다(그래서 그룹도 점선 + 합집합 실선이 된다).
+  const picked: GeomNode[] = [];
+  // 선택이 없으면 조상 사슬을 한 번도 타지 않는다 — 이 루프는 **매 프레임** 돈다.
+  for (const o of selSet.size ? s.scene.nodes : []) {
+    let cur: ObjId | null = o.id;
+    for (let guard = 0; cur && guard <= s.scene.nodes.length; guard++) {
+      if (selSet.has(cur)) {
+        picked.push(byId.get(o.id) ?? o);
+        break;
+      }
+      cur = s.scene.owner.get(cur) ?? null;
+    }
+  }
+  const single = picked.length === 1 && selSet.has(picked[0].id);
+  const selection: ChromeState["selection"] = single
+    ? [
+        {
+          // 리프 하나는 **회전 상자**다 — 축정렬 외접 사각형을 그리면 잡는 곳과 보이는 곳이 갈린다.
+          box: {
+            rect: objectBBox(picked[0]),
+            rot: picked[0].rot,
+            anchor: objectAnchor(picked[0]),
+          },
+          handles: true,
+        },
+      ]
+    : picked.map((o) => ({
+        // 다중·컨테이너에는 핸들이 없다 — 일괄 리사이즈는 만들지 않았는데 핸들이 보이면
+        // 그게 된다고 약속하는 셈이다.
+        box: { rect: objectAABB(o), rot: 0, anchor: { x: 0, y: 0 } },
+        handles: false,
+      }));
+  const unionBox = picked.length
+    ? unionRect(picked.map((o) => objectAABB(o)))
+    : s.selectedIds.length
+      ? selectBox(s.scene, s.selectedIds).rect
+      : null;
+
+  // 이미 선택된 것에는 호버 상자를 겹치지 않는다 — 같은 자리에 파란 선이 두 겹 그어진다.
+  const hover = (() => {
+    const id = ui.hoverId;
+    if (!id || selSet.has(id)) return null;
+    const leaf = s.scene.nodes.find((o) => o.id === id);
+    if (leaf) return objectAABB(leaf);
+    // 컨테이너는 기하가 없다 — `hitTest` 가 최상위 조상을 돌려주므로 그룹 호버가 여기로 온다.
+    const b = selectBox(s.scene, [id]).rect;
+    return b.w > 0 || b.h > 0 ? b : null;
+  })();
+
+  const drag = f.drag;
+  const marquee =
+    drag?.mode === "marquee"
+      ? (() => {
+          const r = marqueeRect(drag);
+          return r.w >= MIN_DRAG || r.h >= MIN_DRAG ? r : null;
+        })()
+      : null;
+
+  const hudDrag = dragHudText(drag, f.draft, f.live);
+  // 크기 0 인 합집합(빈 그룹)에는 뱃지를 달지 않는다 — `0 × 0` 은 정보가 아니다.
+  const hudSel = unionBox && (unionBox.w > 0 || unionBox.h > 0) ? unionBox : null;
+  const hudBox = hudDrag?.box ?? hudSel;
+  const hud =
+    hudDrag || hudSel
+      ? {
+          text:
+            hudDrag?.text ?? `${Math.round(hudSel!.w)} × ${Math.round(hudSel!.h)}`,
+          // 뱃지는 상자 **아래 중앙**에 붙는다(오버레이가 6css 내리고 stage 안으로 접는다).
+          at: { x: hudBox!.x + hudBox!.w / 2, y: hudBox!.y + hudBox!.h },
+        }
+      : null;
+
+  const cropRect = f.crop !== undefined ? f.crop : s.cropRect;
+
+  // 간격 뱃지도 측정선과 같은 요소다 — 값만 다르고 그리는 규칙이 같다.
+  const measures: Measure[] = [...(f.measures ?? [])];
+  for (const g of f.snap?.gaps ?? []) {
+    measures.push({
+      from: g.axis === "x" ? { x: g.a, y: g.at } : { x: g.at, y: g.a },
+      to: g.axis === "x" ? { x: g.b, y: g.at } : { x: g.at, y: g.b },
+      label: String(Math.round(g.value)),
+      kind: "gap",
+    });
+  }
+
+  // 픽셀 스냅이 켜져 있으면 포인터 아래 셀 하나를 표시한다(시안 ⑦ `Snap Cell`) —
+  // 그 배율에서는 "어느 픽셀에 붙는가"가 눈으로 보여야 1px 단위 작업이 가능하다.
+  const extra: ChromeState["extra"] = [];
+  if (t.snapPixel && s.screen.scale >= 4 && f.pt) {
+    extra.push({
+      k: "rect",
+      x: Math.floor(f.pt.x),
+      y: Math.floor(f.pt.y),
+      w: 1,
+      h: 1,
+      color: CHROME_COLORS.smart,
+    });
+  }
+  if (drag?.mode === "measure") {
+    // 측정 도구의 러버밴드 — 아직 객체가 아니라 크롬이다(둘째 클릭 전에는 문서에 없다).
+    extra.push({
+      k: "line",
+      x1: drag.a.x,
+      y1: drag.a.y,
+      x2: drag.cur.x,
+      y2: drag.cur.y,
+      color: CHROME_COLORS.smart,
+    });
+  }
+
+  return {
+    screen: s.screen,
+    selection,
+    unionBox,
+    hover,
+    marquee,
+    hud,
+    crop:
+      cropRect && cropRect.w > 0 && cropRect.h > 0
+        ? {
+            rect: cropRect,
+            // 구도 격자는 **자르는 동안**만 뜬다. 확정된 크롭에 계속 남으면 그 선이 주석인지
+            // 안내선인지 구분되지 않는다(48 이 세션 오버레이를 가져가면 그쪽 값이 이긴다).
+            overlay: s.cropMode ? t.cropOverlay : "none",
+            label: null,
+            handles: false,
+          }
+        : null,
+    // 끌고 있는 가이드는 **아직 문서에 없다**(커밋은 up 에서 한 번) — 라이브 값으로 덮지
+    // 않으면 선이 원래 자리에 붙박인 채 포인터만 움직인다.
+    guides: t.guidesVisible
+      ? s.guides.map((g, i) => ({
+          axis: g.axis,
+          pos: drag?.mode === "guide" && drag.index === i ? drag.pos : g.pos,
+          selected: i === f.guideSel,
+        }))
+      : [],
+    smartGuides: f.snap?.lines ?? [],
+    measures,
+    rulers: t.rulers,
+    pixelGrid: t.pixelGrid,
+    extra,
+  };
 }
 
 

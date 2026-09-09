@@ -20,11 +20,9 @@ import {
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import {
   createContext,
-  forwardRef,
   useCallback,
   useContext,
   useEffect,
-  useImperativeHandle,
   useMemo,
   useRef,
   useState,
@@ -67,6 +65,7 @@ import { useTerminals } from "../../stores/terminals";
 import { useTreeState } from "../../stores/treeState";
 import { selectActiveDiff, useUi } from "../../stores/ui";
 import { CollapsedPanelStrip } from "../common/CollapsedPanelStrip";
+import { DragGhost, type DragGhostHandle } from "../common/DragGhost";
 import { ProjectLogo } from "../common/ProjectLogo";
 import { ResizeHandle } from "../common/ResizeHandle";
 
@@ -416,39 +415,7 @@ function MenuItem({
   );
 }
 
-// ── 드래그 이동 고스트 ──
-// 커서를 따라다니는 라벨은 pointermove마다 갱신된다 — FileTreePanel state로 두면 이동 한 번에
-// 트리 전체(수백 행)가 프레임마다 리렌더된다. 고스트만 자기 state를 갖고, 부모는 핸들로
-// 명령만 내린다(리렌더 범위 = 이 작은 컴포넌트 하나).
-interface GhostState {
-  x: number;
-  y: number;
-  /** 끌고 있는 것 — 파일명 또는 "N개 항목" */
-  label: string;
-  /** 대상 폴더(레포 상대, ""=루트). null = 지금 위치엔 놓을 수 없음 */
-  dest: string | null;
-}
-export interface DragGhostHandle {
-  update(g: GhostState | null): void;
-}
-const DragGhost = forwardRef<DragGhostHandle>(function DragGhost(_props, ref) {
-  const [g, setG] = useState<GhostState | null>(null);
-  useImperativeHandle(ref, () => ({ update: setG }), []);
-  if (!g) return null;
-  return (
-    <div
-      className="pointer-events-none fixed z-50 max-w-64 rounded-md border border-edge bg-panel px-2.5 py-1.5 text-xs shadow-xl"
-      style={{ left: g.x + 14, top: g.y + 10 }}
-    >
-      <div className="truncate font-medium text-fg">{g.label}</div>
-      <div className={`truncate text-[11px] ${g.dest !== null ? "text-accent" : "text-fg-dim"}`}>
-        {g.dest !== null ? `→ ${g.dest || "루트"}` : "여기로는 이동할 수 없습니다"}
-      </div>
-    </div>
-  );
-});
-
-// 드롭 대상 폴더 행 하이라이트 — React state 대신 classList 직접 조작(위 고스트와 같은 이유).
+// 드롭 대상 폴더 행 하이라이트 — React state 대신 classList 직접 조작(DragGhost와 같은 이유).
 // 문자열 리터럴이라 Tailwind JIT가 클래스를 생성한다.
 const DROP_HL = ["ring-1", "ring-inset", "ring-accent", "bg-accent/15"];
 

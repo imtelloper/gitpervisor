@@ -667,6 +667,9 @@ export async function run({ cdp, report: r, fix }) {
     return { ...res, ok: closed === null && onDisk === true, closed, onDisk };
   };
 
+  /** 이 스위트가 끄기 전의 사용자 스냅 값. `undefined` = 아직 못 껐다(원복할 것도 없다). */
+  let snap0;
+
   try {
     // ── 셋업 ────────────────────────────────────────────────────────────────
     const installed = await cdp.eval(HELPERS);
@@ -735,6 +738,14 @@ export async function run({ cdp, report: r, fix }) {
     ) {
       return;
     }
+
+    // 이 스위트의 드래그 단언은 전부 **스냅 이전 좌표계**를 잰다(스냅은 태스크 43, 스위트 40 의
+    // 주제다). 토글은 사용자 취향이라 localStorage 에 영속되므로, 사람이 켜 둔 그리드 16px 이
+    // 그대로 새어 들어와 (l) 의 리사이즈 산술이 4px 어긋난 값을 낸다 — 실제로 한 번 겪었다.
+    // 훅은 편집기가 마운트돼 있을 때만 있으니 반드시 열린 뒤에 부르고, 모듈(zustand) 상태라
+    // 편집기를 몇 번 닫았다 열어도 유지된다. 원복은 finally 첫 줄(편집기가 아직 살아 있을 때).
+    snap0 = await cdp.eval(`window.__gpv.imageEditor.getUi().toggles.snap`);
+    await cdp.eval(`window.__gpv.imageEditor.setToggle("snap", false)`);
 
     // ── (a) WYSIWYG 기본 — 프리뷰와 저장 결과가 같은 좌표에서 같은 색 ────────
     await setDoc({ objects: [rectObj("a1", 40, 40, 120, 120, "#FF3B30")] });
@@ -1947,6 +1958,24 @@ export async function run({ cdp, report: r, fix }) {
     }
 
   } finally {
+    // 스냅 원복이 **먼저**다 — closeEditor() 뒤에는 훅이 사라진다. 토글은 localStorage 에
+    // 영속되므로 여기서 놓치면 사용자의 스냅이 **다음 실행까지 꺼진 채로** 남는다.
+    if (snap0 !== undefined) {
+      await cdp
+        .eval(
+          `(() => {
+             const ed = window.__gpv.imageEditor;
+             // 훅이 살아 있으면 스토어까지 함께 맞는다(뒤따르는 스위트가 같은 값을 본다).
+             if (ed) { ed.setToggle("snap", ${J(snap0)}); return "hook"; }
+             // 앞 케이스가 편집기를 닫은 채 빠져나왔다면 저장소만이라도 되돌린다.
+             const t = JSON.parse(localStorage.getItem("gp:ie:toggles") || "{}");
+             t.snap = ${J(snap0)};
+             localStorage.setItem("gp:ie:toggles", JSON.stringify(t));
+             return "ls";
+           })()`,
+        )
+        .catch(() => {});
+    }
     // 정리 — 편집기·다이얼로그를 닫고 이 스위트가 만든 파일/중첩 레포를 전부 지운다.
     await cdp.eval(`window.__gpv.ui.getState().closeConfirm()`).catch(() => {});
     await cdp.eval(`window.__gpv.ui.getState().closePrompt()`).catch(() => {});

@@ -533,6 +533,10 @@ async fn open_doc_window(
             .center()
             // OS 기본 타이틀바 제거 — 프론트의 FloatTitleBar로 대체(리사이즈는 유지)
             .decorations(false)
+            // 메인 창과 같은 이유 — "Windows(WebView2)에서 이게 켜져 있으면 OS 핸들러가 웹뷰 안의
+            // HTML5 drag&drop 이벤트를 가로챈다". 이미지 편집기가 사는 창이라 레이어 드래그·에셋
+            // 드롭이 여기서 죽는다. 이 창도 OS 파일 드롭을 쓰지 않는다.
+            .disable_drag_drop_handler()
             .background_color(tauri::window::Color(30, 31, 34, 255))
             .additional_browser_args(&browser_args())
             .build();

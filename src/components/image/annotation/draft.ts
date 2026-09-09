@@ -36,8 +36,7 @@ import {
   type TextNode,
 } from "../../../lib/annotate/types";
 import type { AnnotationLayerProps } from "../AnnotationLayer";
-import { MIN_DRAG } from "./chrome";
-import type { Point } from "./pointer";
+import { MIN_DRAG, type Point } from "./pointer";
 
 /** 텍스트 객체의 기본 폰트 — textarea CSS 와 반드시 같은 문자열이어야 한다(§5.5). */
 export const FONT_FAMILY =

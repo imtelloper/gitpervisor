@@ -118,10 +118,20 @@ export function useEditorKeys(
     // Space 홀드(손 도구)는 떼는 순간 원래 도구로 돌아가야 한다 — keydown 만으로는
     // "누르고 있는 동안"을 표현할 수 없다. 액션은 `e.type` 으로 누름/뗌을 가른다
     // (`hand: (e) => e.type === "keyup" ? restoreTool() : setTool("hand", {temporary:true})`).
+    //
+    // 홀드는 `code` 로 직접 가른다 — `matchShortcut` 은 못 쓴다. 실제 브라우저의 Alt keyup 은
+    // `altKey === false` 로 오므로 표의 `Alt` 행(`k.alt === !!e.altKey`)에 절대 안 맞는다.
+    // AltRight(한/영)는 뺀다(43 §3.7 위험표). 이 줄이 Space 만 보면 Alt 를 떼도 측정 크롬이
+    // 화면에 굳는다 — 포인터가 멈춰 있으면 지울 다른 경로가 없다(pointermove 안에만 있다).
+    const HOLD: Record<string, ShortcutId> = {
+      Space: "hand",
+      AltLeft: "measure.hold",
+    };
     const onKeyUp = (e: KeyboardEvent) => {
       const g = o.current;
       if (g.blocked()) return;
-      const release = e.code === "Space" ? a.current["hand"] : null;
+      const id = HOLD[e.code];
+      const release = id ? a.current[id] : null;
       if (!release) return;
       e.preventDefault();
       release(e);

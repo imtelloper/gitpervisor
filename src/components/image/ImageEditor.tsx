@@ -7,6 +7,8 @@ import {
   FlipVertical,
   FileWarning,
   Loader2,
+  Minus,
+  Plus,
   RotateCcw,
   RotateCw,
 } from "lucide-react";
@@ -25,8 +27,9 @@ import {
   type OrientDelta,
 } from "../../lib/annotate/geometry";
 import { DocHistory } from "../../lib/annotate/history";
+import type { LayerFilter } from "../../lib/annotate/layer-rows";
 import { ensureAssets, imageStore } from "../../lib/annotate/imageStore";
-import { useImageDocPersist } from "../../lib/annotate/persist";
+import { useImageDocPersist, type SnapshotInfo } from "../../lib/annotate/persist";
 import {
   estimateRenderBytes,
   renderOutput as renderOutputTiled,
@@ -75,6 +78,7 @@ import {
 } from "../../lib/annotate/types";
 import {
   useImageEditorUi,
+  type EditorUiState,
   type Mode,
   type Tool,
 } from "../../stores/imageEditor";
@@ -103,13 +107,28 @@ import {
 } from "../../lib/zoom";
 import { useSaveImage } from "../../queries";
 import { useUi } from "../../stores/ui";
+import {
+  rulerTicks,
+  STAGE_Z,
+  type ChromeScreen,
+  type ChromeState,
+} from "../../lib/annotate/chrome";
+import {
+  buildSnapIndex,
+  snapPoint,
+  snapRect,
+  type SnapIndex,
+} from "../../lib/annotate/snap";
 import AnnotationLayer, {
   type AnnotationLayerHandle,
 } from "./AnnotationLayer";
+import ChromeOverlay, { type ChromeOverlayHandle } from "./ChromeOverlay";
+import { SnapSection } from "./SnapSection";
 import { newImageNode } from "./annotation/draft";
 import EditorStatusBar, { type StatusBarHandle } from "./EditorStatusBar";
 import EditorTitleBar from "./EditorTitleBar";
 import { LeftPanel } from "./LeftPanel";
+import type { LayerPanelHandle } from "./layers/LayerPanel";
 import ToolRail, { type ToolRailHandle } from "./ToolRail";
 import { Inspector } from "./inspector/Inspector";
 import { PropsLegacy, TextLegacy } from "./inspector/PropsLegacy";
@@ -255,6 +274,7 @@ export default function ImageEditor() {
   const uiSelect = useImageEditorUi((s) => s.select);
   const uiReset = useImageEditorUi((s) => s.reset);
   const setTextEditing = useImageEditorUi((s) => s.setTextEditing);
+  const leftTab = useImageEditorUi((s) => s.leftTab);
   const rawSelectedIds = useImageEditorUi((s) => s.selectedIds);
   /** `'__base'`(이미지 배경 의사 id)는 노드가 아니다 — 기하·페인트 경로에 흘리지 않는다. */
   const selectedIds = useMemo(
@@ -296,8 +316,27 @@ export default function ImageEditor() {
   /** 변환이 걸리지 않은 레이아웃 앵커 — 줌 수식의 기준 프레임(rect 가 view 에 흔들리지 않는다). */
   const boxRef = useRef<HTMLDivElement | null>(null);
   const layerRef = useRef<AnnotationLayerHandle | null>(null);
+  /** SVG 크롬 오버레이 실물. */
+  const chromeRef = useRef<ChromeOverlayHandle | null>(null);
+  /** 마지막으로 그린 크롬 상태 — e2e 훅이 읽고, `chrome.set` 이 그 위에 얹는다. */
+  const lastChromeRef = useRef<ChromeState | null>(null);
+  /**
+   * 주석 레이어에 넘기는 **경유 핸들**. 오버레이를 그대로 넘기면 마지막 상태를 볼 방법이 없다
+   * (오버레이는 상태를 밖으로 내주지 않는다) — 한 겹 두어 훅과 강제 갱신이 같은 값을 본다.
+   */
+  const chromeTapRef = useRef<ChromeOverlayHandle>({
+    update: (st) => {
+      lastChromeRef.current = st;
+      chromeRef.current?.update(st);
+    },
+  });
   const railRef = useRef<ToolRailHandle | null>(null);
   const statusRef = useRef<StatusBarHandle | null>(null);
+  /**
+   * 레이어 패널(44). 검색·필터·접기·이름 편집은 패널 로컬 state 라 F2 액션도 e2e 훅도
+   * 이 손잡이를 거쳐야 닿는다 — 그 상태를 스토어로 올리면 undo 와 사이드카가 UI 를 싣는다.
+   */
+  const layerPanelRef = useRef<LayerPanelHandle | null>(null);
   /**
    * 편집기 루트(`role="application"`). 포커스가 여기 있어야 Space 가 손 도구가 된다 —
    * 방금 누른 버튼에 남으면 Space 가 그 버튼을 다시 누르고, 아무 데도 없으면 뒤에 있는
@@ -390,6 +429,57 @@ export default function ImageEditor() {
     setHistVer((v) => v + 1);
     setSelectedIds([]);
   }, []);
+
+  /**
+   * 히스토리 목록에서 한 항목으로 점프(41). 되돌리기와 달리 **여러 칸을 한 번에** 건너뛴다.
+   * `markDirty` 를 빼면 점프한 상태가 사이드카에 안 남아, 편집기를 닫았다 열면 점프 전으로
+   * 되돌아온다. e2e 훅도 같은 함수를 쓴다 — 둘이 갈라지면 목록 클릭과 훅이 다르게 동작한다.
+   */
+  const jumpTo = useCallback((i: number) => {
+    const d = histRef.current.jumpTo(i);
+    if (!d) return false;
+    docRef.current = d;
+    setDoc(d);
+    setHistVer((v) => v + 1);
+    persistRef.current?.markDirty();
+    return true;
+  }, []);
+
+  const loadSnapshot = useCallback(
+    async (i: number) => {
+      const d = await persistRef.current?.loadSnapshot(i);
+      if (!d) return false;
+      applyDoc(d, "commit", "스냅샷 복원");
+      return true;
+    },
+    [applyDoc],
+  );
+
+  /** 히스토리 탭 `스냅샷` 칩이 보여 주는 목록(41 `listSnapshots`, 별도 파일). */
+  const [snapshots, setSnapshots] = useState<readonly SnapshotInfo[]>([]);
+  const refreshSnapshots = useCallback(async () => {
+    setSnapshots((await persistRef.current?.listSnapshots()) ?? []);
+  }, []);
+  // 스냅샷은 별도 파일이라 목록도 별도 IPC 다 — 히스토리 탭을 열 때만 읽는다. 편집기를 여는
+  // 것만으로 읽으면 이 탭을 한 번도 안 여는 대부분의 세션이 파일 읽기 하나를 그냥 문다.
+  useEffect(() => {
+    if (leftTab === "history") void refreshSnapshots();
+  }, [leftTab, refreshSnapshots]);
+
+  const saveSnapshot = () =>
+    askPrompt({
+      title: "스냅샷 저장",
+      // 상한을 넘기면 41 이 **가장 오래된 것부터 말없이 버린다** — 그 사실을 여기서 알린다.
+      label: "지금 상태를 이름 붙여 남깁니다. 되돌리기 목록에서 밀려나도 남고, 20개를 넘으면 오래된 것부터 지워집니다.",
+      defaultValue: "1차 검토본",
+      confirmLabel: "저장",
+      onConfirm: (name) => {
+        void (async () => {
+          await persistRef.current?.saveSnapshot(name);
+          await refreshSnapshots();
+        })();
+      },
+    });
 
   // ── 원본 로드 ──
   useEffect(() => {
@@ -515,6 +605,27 @@ export default function ImageEditor() {
   const showStage = !!oriented && fit > 0;
   /** 화면에 실제로 보이는 배율(맞춤 × 줌) — 주석 레이어가 화면 상수를 계산하는 근거값이다. */
   const screenScale = displayScale * view.scale;
+
+  /**
+   * oriented → stage css px(43 §3.2). **`getBoundingClientRect` 를 쓰지 않는다** — 팬·줌
+   * 프레임마다 강제 레이아웃을 부르는 셈이고, 그 값은 이미 여기 다 있다.
+   *
+   * `x`/`y` 는 이미지 원점의 stage 안 위치다. stage 는 flex 중앙 정렬 + `p-4` 인데
+   * `clientWidth` 가 패딩을 포함하므로 `16 + (clientW − 32 − dispW)/2 = (clientW − dispW)/2` 로
+   * 패딩이 상쇄된다 — 패딩을 바꾸면 이 식이 아니라 **상수 16 두 개**가 어긋난다.
+   */
+  const screen = useMemo<ChromeScreen>(
+    () => ({
+      scale: screenScale,
+      x: (stage.w - dispW) / 2 + view.x,
+      y: (stage.h - dispH) / 2 + view.y,
+      w: stage.w,
+      h: stage.h,
+      ow: oriented?.width ?? 0,
+      oh: oriented?.height ?? 0,
+    }),
+    [dispH, dispW, oriented, screenScale, stage.h, stage.w, view.x, view.y],
+  );
 
   // 방향(회전·반전)이 바뀌거나 새 이미지가 들어오면 맞춤으로 되돌린다. 옛 방향에서 쌓은 팬
   // 오프셋은 그 순간 의미가 없어져 이미지가 화면 밖으로 튀어나간다.
@@ -661,6 +772,55 @@ export default function ImageEditor() {
   const clearCrop = () => {
     if (!oriented) return;
     patchDoc({ crop: null, outW: oriented.width, outH: oriented.height });
+  };
+
+  // ── 가이드·스냅(눈금자 띠와 e2e 훅이 쓰는 쪽) ──────────────────────────────
+
+  /**
+   * 스냅 인덱스 캐시. 눈금자에서 가이드를 끌 때 `snapForGuide` 가 **매 move** 불리는데,
+   * 그때마다 인덱스를 다시 만들면 텍스트 노드가 프레임마다 `measureText` 를 탄다(43 §3.4).
+   * 문서·가이드·토글 중 하나라도 바뀌면 버린다 — 셋 다 그대로면 후보도 그대로다.
+   */
+  const snapIdxRef = useRef<{
+    objects: readonly Node[];
+    guides: EditorDoc["guides"];
+    toggles: unknown;
+    idx: SnapIndex;
+  } | null>(null);
+
+  const snapIndexNow = useCallback((): SnapIndex | null => {
+    const img = orientedRef.current;
+    if (!img) return null;
+    const d = docRef.current;
+    const t = useImageEditorUi.getState().toggles;
+    const c = snapIdxRef.current;
+    if (c && c.objects === d.objects && c.guides === d.guides && c.toggles === t) {
+      return c.idx;
+    }
+    const idx = buildSnapIndex(resolveScene(d), new Set(), d.guides, {
+      gridPx: t.grid,
+      pixel: t.snapPixel,
+      objects: t.snapObjects,
+      guides: t.snapGuides && t.guidesVisible,
+      canvas: { x: 0, y: 0, w: img.width, h: img.height },
+    });
+    snapIdxRef.current = { objects: d.objects, guides: d.guides, toggles: t, idx };
+    return idx;
+  }, []);
+
+  /** 눈금자에서 끌어내는 중의 스냅. **순수·동기**여야 한다(매 move 불린다). */
+  const snapForGuide = (axis: "x" | "y", pos: number): number => {
+    const u = useImageEditorUi.getState();
+    if (!u.toggles.snap) return pos;
+    const idx = snapIndexNow();
+    if (!idx) return pos;
+    // 가이드는 축 하나만 붙는다 — 반대 축 좌표는 후보에 영향을 주지 않는다.
+    const r = snapPoint(
+      idx,
+      axis === "x" ? { x: pos, y: 0 } : { x: 0, y: pos },
+      u.snapThresholdCss / Math.max(screenScale, 1e-6),
+    );
+    return pos + (axis === "x" ? r.dx : r.dy);
   };
 
   // 타이핑 한 글자마다 히스토리를 쌓지 않도록 슬라이더와 같은 라이브 규칙을 쓴다(blur 에서 끝).
@@ -1166,6 +1326,28 @@ export default function ImageEditor() {
     return nodes.length;
   };
 
+  /**
+   * 그룹·삭제는 레이어 패널 헤더 버튼(44 §3.3)과 단축키가 **같은 함수**를 쓴다. 따로 짜면
+   * Ctrl+G 로 만든 그룹과 폴더 버튼으로 만든 그룹의 히스토리 라벨·선택 결과가 갈린다.
+   *
+   * `delete` 액션의 가이드 우선 분기(43)는 여기 **없다** — 패널 휴지통은 고른 노드를 지우는
+   * 버튼이라, 가이드를 선택한 채 눌렀다고 가이드가 대신 사라지면 무슨 일이 났는지 알 수 없다.
+   */
+  const groupSel = () => {
+    const ids = selIds();
+    if (ids.length < 2) return;
+    const r = treeGroup(docRef.current.objects, ids, "group");
+    patchDoc({ objects: r.objects }, "commit", "그룹");
+    setSelectedIds([r.id]);
+  };
+
+  const removeSel = () => {
+    const ids = selIds();
+    if (!ids.length) return;
+    patchDoc({ objects: treeRemove(docRef.current.objects, ids) }, "commit", "삭제");
+    setSelectedIds([]);
+  };
+
   /** 보기 토글 뒤집기. 스토어에서 직접 읽는다 — 액션 맵은 리렌더 없이 최신 값을 봐야 한다. */
   const flipToggle = (k: "rulers" | "pixelGrid" | "snapPixel") => {
     const u = useImageEditorUi.getState();
@@ -1257,6 +1439,9 @@ export default function ImageEditor() {
     if (busyRef.current) return;
     // 0) 레일 플라이아웃이 열려 있으면 그것부터 닫는다.
     if (railRef.current?.closeFlyout()) return;
+    // 1) 레이어 행 드래그 취소. 아래보다 **먼저** 봐야 한다 — 뒤로 밀면 Esc 가 선택만 비우고
+    //    드래그는 살아남아, 손을 떼는 순간 취소한 줄 알았던 이동이 커밋된다.
+    if (layerPanelRef.current?.cancelDrag()) return;
     // 2~5) 텍스트 확정 → 드래프트 취소 → select 복귀 → 선택 해제
     if (layerRef.current?.handleEscape()) return;
     // 6) 크롭·노드 편집 종료(동급)
@@ -1322,10 +1507,16 @@ export default function ImageEditor() {
         setSelectedIds(copies.map((o) => o.id));
       },
       delete: () => {
-        const ids = selIds();
-        if (!ids.length) return;
-        patchDoc({ objects: treeRemove(docRef.current.objects, ids) }, "commit", "삭제");
-        setSelectedIds([]);
+        // 가이드가 먼저다 — 가이드를 고른 채 Delete 를 눌렀는데 객체가 지워지면 되돌리기
+        // 전까지 무슨 일이 났는지 알 수 없다.
+        if (layerRef.current?.deleteSelectedGuide()) return;
+        removeSel();
+      },
+      // 표에 행만 있고 주인이 44 다 — 캔버스에 포커스가 있어도 레이어 패널의 이름 편집이 뜬다.
+      // 다른 탭을 보고 있으면 입력이 `hidden` 안에 생겨 아무 일도 없어 보이므로 탭을 먼저 연다.
+      rename: () => {
+        useImageEditorUi.getState().setTab("left", "layers");
+        layerPanelRef.current?.startRename();
       },
       // 복사·잘라내기는 **표에 있어야** 한다. 맵에 없으면 Ctrl+C 가 그대로 앱으로 흘러
       // `terminal.ts` 의 폴백이 뒤에 있는 터미널 선택을 대신 복사한다(§3.3 출처표).
@@ -1360,13 +1551,7 @@ export default function ImageEditor() {
         if (dx || dy) nudge(dx, dy);
       },
 
-      group: () => {
-        const ids = selIds();
-        if (ids.length < 2) return;
-        const r = treeGroup(docRef.current.objects, ids, "group");
-        patchDoc({ objects: r.objects }, "commit", "그룹");
-        setSelectedIds([r.id]);
-      },
+      group: groupSel,
       ungroup: () => {
         const ids = selIds();
         if (ids.length !== 1) return;
@@ -1412,11 +1597,13 @@ export default function ImageEditor() {
       "zoom.fit": () => setView(IDENTITY_VIEW),
       "zoom.sel": () => zoomPreset("selection"),
 
-      // 43 이 실제 눈금자·그리드를 그리기 전에도 **값은 여기서** 뒤집는다 — 표에 있는데
-      // 맵에 없으면 Shift+R·Ctrl+' 이 앱 전역으로 새고(먹통), 상태바 토글과 키가 갈린다.
+      // 표에 있는데 맵에 없으면 Shift+R·Ctrl+' 이 앱 전역으로 새고(먹통), 상태바 토글과 키가
+      // 갈린다. 값만 뒤집으면 크롬은 스토어 구독으로 따라온다(AnnotationLayer).
       "view.rulers": () => flipToggle("rulers"),
       "view.pixelGrid": () => flipToggle("pixelGrid"),
       "view.snapPixel": () => flipToggle("snapPixel"),
+      // 홀드 — 누르는 동안만 잰다. auto-repeat 는 같은 값을 다시 쓰는 것뿐이라 무해하다.
+      "measure.hold": (e) => layerRef.current?.setAltMeasure(e.type !== "keyup"),
       // 0↔1 만 오간다(§3.4) — 45 가 넣는 2x 는 조정 탭이 정한다.
       "view.pixelPreview": () => {
         const u = useImageEditorUi.getState();
@@ -1476,6 +1663,15 @@ export default function ImageEditor() {
           toggles: u.toggles,
         };
       },
+      /**
+       * 토글은 **사용자 취향이라 localStorage 에 영속된다** — 사람이 켜 둔 그리드 16px 이
+       * e2e 로 새어 들어와 스냅 없던 시절의 좌표를 재는 단언(30 의 리사이즈 산술)을 깬다.
+       * 스위트가 전제를 명시적으로 세우고 끝에 원복할 손잡이다.
+       */
+      setToggle: <K extends keyof EditorUiState["toggles"]>(
+        k: K,
+        v: EditorUiState["toggles"][K],
+      ) => useImageEditorUi.getState().setToggle(k, v),
       setMode: (m: Mode) => setMode(m),
       /**
        * 표 판정만 떼어 본다 — 한글 IME(`key='ㅍ'`)·Mac ⌥(`key='å'`)에서도 물리 키로
@@ -1498,6 +1694,32 @@ export default function ImageEditor() {
         );
       },
       renderOnce: () => layerRef.current?.renderOnce(),
+      /**
+       * 화면 크롬(43). `state()` 는 **마지막 프레임이 그린 값**이고, `set()` 은 그 위에 덮어
+       * 강제로 한 번 더 그린다 — 아직 소유 태스크가 오지 않은 항목(48 크롭 오버레이·47 extra)을
+       * 문서 없이 검증하는 통로다.
+       */
+      chrome: {
+        state: () => lastChromeRef.current,
+        set: (patch: Partial<ChromeState>) => {
+          const last = lastChromeRef.current;
+          if (!last) return false;
+          chromeTapRef.current.update({ ...last, ...patch });
+          return true;
+        },
+      },
+      /** 스냅 순수 함수 — 현재 문서로 인덱스를 만든 뒤 부른다(드래그 없이 값만 본다). */
+      snap: {
+        rect: (r: Rect, tol: number) => {
+          const idx = snapIndexNow();
+          return idx ? snapRect(idx, r, tol, { gaps: true }) : null;
+        },
+        point: (pt: { x: number; y: number }, tol: number) => {
+          const idx = snapIndexNow();
+          return idx ? snapPoint(idx, pt, tol) : null;
+        },
+      },
+      rulerTicks,
       /** 직렬화 왕복이 문서를 바꾸지 않는가 — 태스크 41(사이드카 자동저장)의 전제다. */
       roundTrip: () => {
         const env: ImageDocEnvelope = {
@@ -1553,25 +1775,40 @@ export default function ImageEditor() {
             readonly: e.readonly,
           })),
         cursor: () => histRef.current.cursor,
-        jumpTo: (i: number) => {
-          const d = histRef.current.jumpTo(i);
-          if (!d) return false;
-          docRef.current = d;
-          setDoc(d);
-          setHistVer((v) => v + 1);
-          persistRef.current?.markDirty();
-          return true;
-        },
+        // 히스토리 탭의 행 클릭과 **같은 함수**다 — 갈라지면 e2e 가 통과해도 화면은 다르다.
+        jumpTo,
         snapshot: (name: string) => persistRef.current?.saveSnapshot(name),
         listSnapshots: () => persistRef.current?.listSnapshots(),
-        loadSnapshot: async (i: number) => {
-          const d = await persistRef.current?.loadSnapshot(i);
-          if (!d) return false;
-          applyDoc(d, "commit", "스냅샷 복원");
-          return true;
-        },
+        loadSnapshot,
         state: () => persistRef.current?.state ?? "clean",
         flush: () => persistRef.current?.flush(),
+      },
+      /**
+       * 레이어 패널(44). `rows()` 는 지금 **화면에 그려지는** 행이다(검색·필터·접기 반영) —
+       * 문서 전체를 보려면 `getDoc()` 을 쓴다. `count` 는 배경을 뺀 문서 노드 수라 필터 표기
+       * `matched/count` 의 분모와 같다.
+       *
+       * `badges` 는 블렌드만 표시 문구이고 나머지는 종류 문자열이다(`mask`·`nodeEdit`·
+       * `instance`) — 문구 표는 `LayerRow` 안에 있고 export 되지 않았다.
+       */
+      layers: () => ({
+        rows: (layerPanelRef.current?.rows() ?? []).map((r) => ({
+          id: r.id,
+          depth: r.depth,
+          name: r.name,
+          type: r.type,
+          hidden: r.hidden,
+          locked: r.locked,
+          badges: r.badges.map((b) => (b.kind === "blend" ? b.label : b.kind)),
+        })),
+        count: docRef.current.objects.length,
+      }),
+      /** 패널 로컬 state 에 닿는 유일한 통로(§4). 스토어에 없는 값이라 훅도 손잡이를 거친다. */
+      panel: {
+        setQuery: (q: string) => layerPanelRef.current?.setQuery(q),
+        setFilter: (patch: Partial<LayerFilter>) => layerPanelRef.current?.setFilter(patch),
+        toggleCollapsed: (id: ObjId) => layerPanelRef.current?.toggleCollapsed(id),
+        startRename: (id?: ObjId) => layerPanelRef.current?.startRename(id),
       },
       /** 씬 요약 — 숨김이 빠졌는지, 무엇이 잠겼는지, 컨테이너 범위가 맞는지(38 §7). */
       scene: () => {
@@ -1624,7 +1861,7 @@ export default function ImageEditor() {
       delete g.__gpv?.imageEditor;
       delete g.__gpv?.imageDocs;
     };
-  }, [patchDoc]);
+  }, [patchDoc, snapIndexNow]);
 
   if (!path) return null;
 
@@ -1632,6 +1869,12 @@ export default function ImageEditor() {
   const canUndo = histRef.current.canUndo;
   const canRedo = histRef.current.canRedo;
   void histVer; // 히스토리 깊이 변화로 리렌더되게 하는 의존(값 자체는 쓰지 않는다)
+  // 히스토리 탭에 넘길 값도 **렌더 시점에** 읽는다 — `DocHistory` 내부 배열을 패널이 직접
+  // 들고 있으면 커밋으로 배열이 바뀌어도 리렌더 신호가 없어 목록이 한 칸 뒤처진다(§6).
+  const histEntries = histRef.current.entries;
+  const histCursor = histRef.current.cursor;
+  /** 배경 행 문구(시안 `배경 — 대시보드.png`)는 확장자까지 붙은 파일명이다. */
+  const baseFile = path.split("/").pop() ?? path;
 
   return (
     // 루트 클래스 `fixed inset-0 z-50` 는 **그대로 두어야 한다** — e2e 30·34·35 가 이 선택자로
@@ -1701,7 +1944,25 @@ export default function ImageEditor() {
           handleRef={railRef}
           onPlaceImage={placeImage}
         />
-        <LeftPanel />
+        <LeftPanel
+          layersRef={layerPanelRef}
+          layers={{
+            doc,
+            scene,
+            baseName: baseFile,
+            onCommit: (objects, label) => patchDoc({ objects }, "commit", label),
+            actions: { group: groupSel, remove: removeSel },
+          }}
+          history={{
+            entries: histEntries,
+            cursor: histCursor,
+            snapshots,
+            onJump: jumpTo,
+            onLoadSnapshot: (i) => void loadSnapshot(i),
+            onSaveSnapshot: saveSnapshot,
+            onUndo: undo,
+          }}
+        />
 
         {/* 프리뷰 — 이미지 위에 주석 캔버스를 겹친다(§4.3) */}
         <div
@@ -1730,7 +1991,13 @@ export default function ImageEditor() {
           ) : showStage && oriented ? (
             // 바깥은 **변환이 걸리지 않는 앵커**다 — 줌 수식의 기준 프레임이라 rect 가
             // view 에 따라 흔들리면 안 된다. 확대분은 stage 의 overflow-hidden 이 자른다.
-            <div ref={boxRef} className="relative" style={{ width: dispW, height: dispH }}>
+            // z 는 stage 안 세 겹의 정본(`STAGE_Z`)에서만 온다 — 여기 값을 빼면 40 의 디테일
+            // 캔버스가 씬 위로 올라오는 순서가 파일마다 흩어진다.
+            <div
+              ref={boxRef}
+              className="relative"
+              style={{ width: dispW, height: dispH, zIndex: STAGE_Z.box }}
+            >
               <div
                 className="absolute inset-0 shadow-lg"
                 style={{
@@ -1771,10 +2038,65 @@ export default function ImageEditor() {
                   onToolChange={setTool}
                   onSelectionChange={setSelectedIds}
                   statusRef={statusRef}
+                  chrome={chromeTapRef}
+                  screen={screen}
+                  guides={doc.guides}
+                  onGuidesChange={(guides, label) =>
+                    patchDoc({ guides }, "commit", label)
+                  }
                 />
               </div>
             </div>
           ) : null}
+
+          {/* 크롬은 **변환 밖**, stage 직속이다. 줌 transform 안에 넣으면 1px 선·8px 핸들이
+              배율을 그대로 먹어 캔버스 크롬을 버린 이유(43 §3.1)를 되풀이한다. */}
+          {showStage && oriented && (
+            <ChromeOverlay
+              ref={chromeRef}
+              onGuideCommit={(axis, pos) =>
+                patchDoc(
+                  { guides: [...docRef.current.guides, { axis, pos }] },
+                  "commit",
+                  "가이드 추가",
+                )
+              }
+              snapForGuide={snapForGuide}
+            />
+          )}
+
+          {/* 줌 필(시안 ①, 캔버스 우하단) — 배율은 크롬과 같은 값을 쓴다. */}
+          {showStage && (
+            <div
+              className="absolute bottom-3 right-3 flex items-center gap-0.5 rounded-full border border-edge bg-panel/90 px-1 py-0.5 text-[11px] text-fg-muted"
+              style={{ zIndex: STAGE_Z.chrome + 1 }}
+            >
+              <button
+                type="button"
+                title="축소"
+                onClick={() => zoomBy(1 / (WHEEL_STEP * WHEEL_STEP))}
+                className="rounded-full p-1 hover:bg-raised hover:text-fg"
+              >
+                <Minus size={12} />
+              </button>
+              <button
+                type="button"
+                title="화면 맞춤"
+                onClick={() => setView(IDENTITY_VIEW)}
+                className="min-w-[3.5rem] rounded-full px-1 py-0.5 text-center font-mono hover:bg-raised hover:text-fg"
+              >
+                {Math.round(screenScale * 100)}%
+              </button>
+              <button
+                type="button"
+                title="확대"
+                onClick={() => zoomBy(WHEEL_STEP * WHEEL_STEP)}
+                className="rounded-full p-1 hover:bg-raised hover:text-fg"
+              >
+                <Plus size={12} />
+              </button>
+            </div>
+          )}
         </div>
 
         {/* 인스펙터 — 탭 4개(속성·텍스트·조정·내보내기)와 시안 푸터. 내용은 v1 우측 패널의
@@ -1869,6 +2191,12 @@ export default function ImageEditor() {
                     </button>
                   </div>
                 </Section>
+
+                {/* 스냅·가이드(시안 ⑦) — 값은 42 스토어에 있어 상태바 토글과 한 몸이다.
+                    제목을 스스로 그리므로 `Section` 으로 감싸지 않는다(제목이 두 줄 된다). */}
+                <div className="mb-3 border-b border-edge/60 pb-3">
+                  <SnapSection />
+                </div>
 
                 <Section title="색 보정">
                   <Slider
