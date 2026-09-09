@@ -60,8 +60,32 @@ export async function run({ cdp, report: r, fix }) {
 
   // 보이는 첫 .xterm 을 고르는 페이지 안 표현식. 비활성 탭도 hidden 클래스로 **마운트된 채**
   // 남으므로(WorkspaceTabs.tsx의 active?…:"hidden") 문서 순서 첫 .xterm 은 사용자가 볼 수 없는
-  // 탭의 것일 수 있다 — 레이아웃 상자가 있는(=실제로 보이는) 것만 고른다. #2a·#2c·4분할 공용.
+  // 탭의 것일 수 있다 — 레이아웃 상자가 있는(=실제로 보이는) 것만 고른다.
+  // **"아무 터미널이나 하나"를 뜻할 때만 쓴다**(4분할 우클릭). 특정 pane을 보는 검사는 아래 paneElOf.
   const VIS_XTERM = `Array.from(document.querySelectorAll('.xterm')).find((e) => e.getBoundingClientRect().width > 0)`;
+  // "보이는 첫 것"은 **아무 터미널이나 하나**를 뜻한다. 특정 pane(=paneId)을 보는 검사는 그걸로
+  // 앵커하면 안 된다: 모아보기가 열리면(러너 도중 도달한 Ctrl+Shift+A로도 열린다) 사용자의 터미널이
+  // 전부 한 그리드에 렌더돼 "보이는 첫 .xterm"이 **남의 셀**이 된다 — 그러면 클릭·우클릭이 엉뚱한
+  // 터미널에 가고, 단언은 우리 paneId 의 상태를 읽어 영원히 어긋난다.
+  // __gpv.term.get(id).host 는 그 세션의 xterm 호스트다(terminal.ts: registry 의 TermInstance.host,
+  // attachTerminal 이 pane 컨테이너 안으로 옮겨 둔 그 노드) — 그리드에 남의 셀이 함께 떠 있어도
+  // 정확히 이것만 잡는다.
+  //
+  // **붙어 있는지 반드시 확인한다.** host 는 createTerminalImpl 이 만든 **분리된 div**이고
+  // attachTerminal(id, container) 의 container.appendChild 로 붙일 때만 문서에 들어간다 — 한 번도
+  // 연 적 없는 탭, 모아보기 별도 창이 가져간 pane(TerminalPane 의 takenByWindow 는 attach 를
+  // 건너뛴다)에서는 떨어져 있다. 떨어진 노드에 클릭·우클릭을 보내면 리스너가 조상(pane 컨테이너)에
+  // 달려 있어 **아무 핸들러에도 닿지 않는다** — "남의 셀이 잡힌다"가 "메뉴가 아예 안 뜬다"로 얼굴만
+  // 바꿀 뿐이다. isConnected + 실제 크기로 거르고, 왜 걸렸는지는 hostWhy 가 말한다(조용한 통과 금지).
+  const hostOf = (id) => `(()=>{ const h = window.__gpv.term.get(${J(id)})?.host;
+      return h && h.isConnected && h.getBoundingClientRect().width > 0 ? h : null; })()`;
+  const hostWhy = (id) => `(()=>{ const h = window.__gpv.term.get(${J(id)})?.host;
+      return !h ? 'host 없음(인스턴스 미생성)'
+        : !h.isConnected ? 'host 분리됨(DOM 미부착)'
+        : h.getBoundingClientRect().width > 0 ? 'ok' : 'host 크기 0(숨김)'; })()`;
+  // 이름 주의: 아래 #13에 `paneOf`(탭 id → activePaneId)가 이미 있다 — 같은 try 블록이라
+  // 이름이 겹치면 그 앞 블록들이 TDZ ReferenceError로 죽는다(paneId 재선언 금지 주석과 같은 함정).
+  const paneElOf = (id) => `${hostOf(id)}?.closest('[class~="group/pane"]')`;
 
   try {
     // ── 셋업: 픽스처는 원시 invoke로 추가돼 UI 캐시에 없을 수 있다 → projects 쿼리 갱신 후 선택.
@@ -177,20 +201,28 @@ export async function run({ cdp, report: r, fix }) {
     await cdp.eval(
       `window.__gpv.terminals.getState().setActiveTab(${J(fix.projectId)}, ${J(tabId)})`,
     );
-    const rendered = await poll(xtermCount, (n) => n >= 1);
-    r.check("새 터미널 렌더(콜드스타트)", rendered >= 1, `xterm=${rendered}`);
+    // **이 pane 의 호스트가 붙고 그려질 때까지** 기다린다. 문서의 xterm 총 개수로 기다리면 사용자
+    // 터미널이 이미 떠 있는 경우 즉시 통과해, 뒤 검사들이 아직 attach 되지 않은 우리 pane 을 본다
+    // (createTerminal 은 xterm 엔진 청크를 동적 import 한 뒤에야 attachTerminal 을 부른다).
+    const paneReady = await poll(() => cdp.eval(hostWhy(paneId)), (v) => v === "ok", 40, 300);
+    const rendered = await xtermCount();
+    r.check(
+      "새 터미널 렌더(콜드스타트)",
+      paneReady === "ok" && rendered >= 1,
+      `pane=${paneReady} xterm=${rendered}`,
+    );
 
     // ── #2a 세션 컨트롤 오버레이 병합 hit-test (태스크 23) ──
     // 회귀 대상: TerminalPane 우상단 세션 클러스터(z-10)가 같은 앵커의 PaneControls 오버레이(z-30)에 완전히 덮여
     // 테마·히스토리 버튼이 눌리지 않았다. 병합 뒤엔 pane에 오버레이가 하나고, 각 버튼 중심의 elementFromPoint가
     // 자기 자신이어야 한다. opacity-0은 hit-test에 영향이 없어 hover 없이도 판정된다(합성 mouseover는 CSS :hover를
     // 바꾸지 못한다 — 보이는지는 실기가 본다).
-    if (rendered >= 1) {
+    if (paneReady === "ok") {
       // paneId: 위에서 잡은 함수 스코프 변수 — 재선언 금지(뒤 블록들도 같은 것을 쓴다).
       const hit = await cdp.eval(`(()=>{
-        const x = ${VIS_XTERM};
+        const x = ${hostOf(paneId)};
         const pane = x && x.closest('[class~="group/pane"]');
-        if (!pane) return { err: 'pane 래퍼 없음' };
+        if (!pane) return { err: 'pane 래퍼 없음 — ' + ${hostWhy(paneId)} };
         for (const t of ['pointerover','mouseover','mouseenter']) x.dispatchEvent(new MouseEvent(t,{bubbles:true}));
         const log = pane.querySelector('button[title^="입력한 프롬프트"]');
         const theme = pane.querySelector('button[title^="이 터미널의 컬러 테마"]');
@@ -215,30 +247,35 @@ export async function run({ cdp, report: r, fix }) {
       );
       // 클릭 → 컬럼 여닫힘. 스토어(usePromptHistory)는 __gpv에 없으므로 write-through된 localStorage
       // (gp:prompt-panel-open — promptHistory.ts persistPanel)와 DOM(PromptSidePanel 헤더의 X)으로 본다.
+      // pane 을 못 찾으면 dom 은 false 다 — "닫힘" 단언이 **조용히 통과**해 버리므로 pane 존재
+      // 여부를 따로 실어 양쪽 단언에 함께 건다.
       const panelState = () => cdp.eval(`(()=>{
         let ls = {}; try { ls = JSON.parse(localStorage.getItem('gp:prompt-panel-open') || '{}'); } catch (e) {}
-        const pane = ${VIS_XTERM}?.closest('[class~="group/pane"]');
-        return { ls: ls[${J(paneId)}] === true, dom: !!pane && !!pane.querySelector('button[title="프롬프트 목록 닫기"]') };
+        const pane = ${paneElOf(paneId)};
+        return { pane: !!pane, why: pane ? 'ok' : ${hostWhy(paneId)},
+                 ls: ls[${J(paneId)}] === true, dom: !!pane && !!pane.querySelector('button[title="프롬프트 목록 닫기"]') };
       })()`);
+      // 클릭도 **그 pane 안**의 버튼이어야 한다. document 첫 매치를 누르면 숨은 탭·모아보기 셀의
+      // 버튼이 눌려 위 단언(우리 paneId 의 상태)과 영원히 어긋난다.
       const clickLog = () => cdp.eval(
-        `(()=>{ const b = document.querySelector('[class~="group/pane"] button[title^="입력한 프롬프트"]'); if (b) { b.click(); return true; } return false; })()`,
+        `(()=>{ const p = ${paneElOf(paneId)}; const b = p && p.querySelector('button[title^="입력한 프롬프트"]'); if (b) { b.click(); return true; } return false; })()`,
       );
       await clickLog();
-      const st1 = await poll(panelState, (v) => v.ls && v.dom, 12, 250);
-      r.check("히스토리 버튼 클릭 → 컬럼 열림(localStorage + DOM)", st1.ls && st1.dom, J(st1));
+      const st1 = await poll(panelState, (v) => v.pane && v.ls && v.dom, 12, 250);
+      r.check("히스토리 버튼 클릭 → 컬럼 열림(localStorage + DOM)", st1.pane && st1.ls && st1.dom, J(st1));
       await clickLog();
-      const st2 = await poll(panelState, (v) => !v.ls && !v.dom, 12, 250);
-      r.check("히스토리 버튼 재클릭 → 컬럼 닫힘", !st2.ls && !st2.dom, J(st2));
+      const st2 = await poll(panelState, (v) => v.pane && !v.ls && !v.dom, 12, 250);
+      r.check("히스토리 버튼 재클릭 → 컬럼 닫힘", st2.pane && !st2.ls && !st2.dom, J(st2));
 
       // ── 컬럼 헤더 X가 오버레이에 덮이지 않는다 (태스크 23 §10) ──
       // 회귀 대상: 오버레이 앵커가 pane 루트였을 때, 컬럼이 열리면 pane 우상단 = **컬럼 헤더 우측**이라
       // 오버레이(맨 오른쪽 버튼이 '패널 닫기')가 헤더의 X를 정확히 덮었다 → X를 누르면 컬럼이 아니라
       // pane이 닫히고 PTY가 죽었다. 앵커를 xterm 호스트 래퍼로 옮겨 겹침 자체를 없앤다.
       await clickLog();
-      await poll(panelState, (v) => v.ls && v.dom, 12, 250);
+      await poll(panelState, (v) => v.pane && v.ls && v.dom, 12, 250);
       const geo = await cdp.eval(`(async()=>{
-        const pane = ${VIS_XTERM}?.closest('[class~="group/pane"]');
-        if (!pane) return { err: 'pane 래퍼 없음' };
+        const pane = ${paneElOf(paneId)};
+        if (!pane) return { err: 'pane 래퍼 없음 — ' + ${hostWhy(paneId)} };
         const ov = pane.querySelector('.z-30');
         const x = pane.querySelector('button[title="프롬프트 목록 닫기"]');
         if (!ov || !x) return { err: '오버레이/컬럼 X 없음 ov=' + !!ov + ' x=' + !!x };
@@ -284,27 +321,28 @@ export async function run({ cdp, report: r, fix }) {
       // 십수 초가 걸린 실측이 있어 넉넉히 기다린다(정상이면 첫 호출에 바로 나온다).
       const ptyBefore = await poll(projOf, (v) => v !== null, 40, 500);
       const clickTop = await cdp.eval(`(()=>{
-        const pane = ${VIS_XTERM}?.closest('[class~="group/pane"]');
+        const pane = ${paneElOf(paneId)};
         const x = pane && pane.querySelector('button[title="프롬프트 목록 닫기"]');
-        if (!x) return { ok: false, title: null };
+        if (!x) return { ok: false, title: null, why: pane ? '컬럼 X 없음' : ${hostWhy(paneId)} };
         const b = x.getBoundingClientRect();
         const top = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
         const btn = top && top.closest('button');
         if (btn) btn.click();
-        return { ok: !!btn, title: btn ? btn.title : null };
+        return { ok: !!btn, title: btn ? btn.title : null, why: 'ok' };
       })()`);
-      const st3 = await poll(panelState, (v) => !v.ls && !v.dom, 12, 250);
+      const st3 = await poll(panelState, (v) => v.pane && !v.ls && !v.dom, 12, 250);
       const paneAfter = await xtermCount();
       const ptyAfter = await poll(projOf, (v) => v !== null, 6, 250);
       r.check(
         "컬럼 헤더 X 실클릭 → 컬럼만 닫힘 · pane 수·PTY 불변",
         clickTop.title === "프롬프트 목록 닫기" &&
+          st3.pane &&
           !st3.ls &&
           !st3.dom &&
           paneAfter === paneBefore &&
           !!ptyAfter &&
           ptyAfter === ptyBefore,
-        `top="${clickTop.title}" ls=${st3.ls} dom=${st3.dom} xterm ${paneBefore}→${paneAfter} pty ${J(ptyBefore)}→${J(ptyAfter)}`,
+        `top="${clickTop.title}"(${clickTop.why}) pane=${st3.why} ls=${st3.ls} dom=${st3.dom} xterm ${paneBefore}→${paneAfter} pty ${J(ptyBefore)}→${J(ptyAfter)}`,
       );
     } else {
       r.skip("세션 컨트롤 오버레이 병합", "터미널 렌더 선행 실패 — 스킵");
@@ -421,10 +459,14 @@ export async function run({ cdp, report: r, fix }) {
     const clickMenu = (label) =>
       cdp.eval(`(()=>{ const m=${MENU}; const b = m && Array.from(m.querySelectorAll('button')).find(el => (el.textContent||'').trim() === ${J(label)}); if (b) { b.click(); return true; } return false; })()`);
     const esc = () => cdp.eval(`window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`);
-    // .xterm에 contextmenu → TerminalPane onContextMenu가 PaneMenu를 연다(#2의 '4분할'과 같은 경로).
+    // 이 pane의 xterm 호스트에 contextmenu → TerminalPane onContextMenu가 PaneMenu를 연다(#2의
+    // '4분할'과 같은 경로). 아래 단언은 전부 **이 paneId**의 컬럼 상태를 보므로 앵커도 그 pane이어야
+    // 한다 — "보이는 첫 .xterm"이면 모아보기가 열린 순간 남의 셀 메뉴가 열려 라벨·개수가 어긋난다.
+    // 못 열면 왜인지를 돌려준다 — 분리된 host 에 보낸 이벤트는 조상이 없어 아무 데도 닿지 않는데,
+    // 그냥 false 면 "메뉴가 안 떴다"까지만 보이고 이유가 로그에 남지 않는다.
     const rightClickXterm = (yExpr = "r.top+40") =>
-      cdp.eval(`(()=>{ const x=${VIS_XTERM}; if(!x) return false; const r=x.getBoundingClientRect();
-        x.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,clientX:r.left+40,clientY:${yExpr}})); return true; })()`);
+      cdp.eval(`(()=>{ const x=${hostOf(paneId)}; if(!x) return ${hostWhy(paneId)}; const r=x.getBoundingClientRect();
+        x.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,clientX:r.left+40,clientY:${yExpr}})); return 'ok'; })()`);
     const noMenu = () => cdp.eval(`!${MENU}`);
     // 라벨이 반전됐는지 보려고 메뉴를 **다시** 열 때 쓴다. 항목 클릭 직후엔 이전 메뉴가 아직 떠
     // 있을 수 있고, 그 상태로 곧바로 우클릭하면 새 메뉴가 이전 메뉴의 정리 경로(window click·
@@ -444,13 +486,13 @@ export async function run({ cdp, report: r, fix }) {
 
     const dom0 = await panelCount();
     r.check("프롬프트 컬럼 초기 닫힘(전제)", !!paneId && (await panelPersisted()) === false, `pane=${String(paneId).slice(0, 8)}`);
-    await rightClickXterm();
+    const rc1 = await rightClickXterm();
     await sleep(300);
     const labels1 = await menuLabels();
     const iMax = labels1?.findIndex((l) => /^패널 최대화/.test(l)) ?? -1;
     const iPrompt = labels1?.indexOf("프롬프트 목록 열기") ?? -1;
     const iFloat = labels1?.findIndex((l) => /새 창으로 분리/.test(l)) ?? -1;
-    r.check("PaneMenu: '프롬프트 목록 열기' — '패널 최대화' 다음·'새 창으로 분리' 앞", iMax >= 0 && iPrompt === iMax + 1 && iFloat === iPrompt + 1, J(labels1));
+    r.check("PaneMenu: '프롬프트 목록 열기' — '패널 최대화' 다음·'새 창으로 분리' 앞", iMax >= 0 && iPrompt === iMax + 1 && iFloat === iPrompt + 1, `rc=${rc1} ${J(labels1)}`);
     const clicked1 = await clickMenu("프롬프트 목록 열기");
     const persisted1 = await poll(panelPersisted, (v) => v === true, 10, 200);
     const dom1 = await poll(panelCount, (n) => n === dom0 + 1, 10, 200);
@@ -470,10 +512,10 @@ export async function run({ cdp, report: r, fix }) {
       `click=${clicked2} ls=${persisted2} dom ${dom0}→${dom2}`,
     );
     // 하단 클램프 — 창 바닥에서 우클릭해도 메뉴 바닥이 창 안에 있다(항목 13개 ≈ 445px, 상수 448).
-    await rightClickXterm("window.innerHeight-4");
+    const rc2 = await rightClickXterm("window.innerHeight-4");
     await sleep(300);
     const clamp = await cdp.eval(`(()=>{ const m=${MENU}; if(!m) return null; const r=m.getBoundingClientRect(); return { h: r.height, bottom: r.bottom, ih: window.innerHeight }; })()`);
-    r.check("PaneMenu 하단 클램프: 메뉴 바닥 ≤ innerHeight", !!clamp && clamp.bottom <= clamp.ih + 0.5, J(clamp));
+    r.check("PaneMenu 하단 클램프: 메뉴 바닥 ≤ innerHeight", !!clamp && clamp.bottom <= clamp.ih + 0.5, `rc=${rc2} ${J(clamp)}`);
     await esc();
     await sleep(150);
 
@@ -664,26 +706,52 @@ export async function run({ cdp, report: r, fix }) {
     r.check("모아보기: 그리드에 터미널 표시", aggGrid >= 1, `gridXterm=${aggGrid}`);
 
     // ── #11a ChipMenu → 프롬프트 목록 (태스크 24) — 표시 중 터미널 셀에만 ──
+    // **첫 호출에서 고른 셀을 기억하고 이후엔 그 셀에만 보낸다.** 매번 "그리드 첫 .xterm"을 다시
+    // 고르면 그 사이 그리드가 다시 그려질 때 두 번째 우클릭이 **다른 셀**로 간다 — 열어 둔 컬럼은
+    // 그대로인데 메뉴에는 '프롬프트 목록 열기'가 떠 닫기 클릭이 불발한다(관측된 실패: 두 번째 메뉴에
+    // 픽스처가 아닌 프로젝트의 `'…'에 새 터미널 열기`가 있고 dom 1→2).
+    //
+    // 기억은 **노드 참조**로 한다. 이 노드는 React가 만들지 않는다: terminal-engine이 host div를
+    // 한 번 만들고(그 안에 xterm이 .xterm을 그린다), attachTerminal은 부모가 다를 때 **옮기기만**
+    // 한다(terminal.ts의 `if (inst.host.parentElement !== container) container.appendChild(...)`).
+    // 그래서 셀이 리렌더돼도 같은 노드가 새 래퍼로 옮겨질 뿐 교체되지 않는다 — id로 되찾을 이유가
+    // 없고, 애초에 셀에는 termId를 뒤집을 data-* 표식이 없다. 노드가 사라지거나(dispose가
+    // host.remove()) 떨어지면(칩으로 숨겨 셀이 언마운트) 아래에서 **사유와 함께** 실패한다.
+    const CELL = "window.__gpvE2eCell";
+    await cdp.eval(`${CELL} = null`); // 이전 회차 잔재 초기화
+    let lastRcc = null; // 마지막 우클릭 결과('ok' 또는 사유) — openMenuFor가 반환값을 버리므로 여기 남긴다
     const rightClickCell = () =>
-      cdp.eval(`(()=>{ const g=document.querySelector('[style*="grid-template-columns"]'); const x=g&&g.querySelector('.xterm'); if(!x) return false;
-        const r=x.getBoundingClientRect(); x.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,clientX:r.left+30,clientY:r.top+30})); return true; })()`);
+      cdp
+        .eval(`(()=>{
+          if (!${CELL}) { const g = document.querySelector('[style*="grid-template-columns"]');
+            ${CELL} = (g && g.querySelector('.xterm')) || null; }
+          const x = ${CELL};
+          if (!x) return '그리드에 터미널 셀 없음';
+          if (!x.isConnected) return '기억한 셀이 DOM에서 떨어짐 — 셀이 닫혔거나 숨겨졌다';
+          const r = x.getBoundingClientRect();
+          if (!(r.width > 0)) return '기억한 셀 크기 0(숨김)';
+          x.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,clientX:r.left+30,clientY:r.top+30}));
+          return 'ok';
+        })()`)
+        .then((v) => (lastRcc = v));
     const cell0 = await panelCount();
     await rightClickCell();
     await sleep(300);
     const cl1 = await menuLabels();
     const iZoom = cl1?.findIndex((l) => /^확대/.test(l)) ?? -1;
-    r.check("ChipMenu(표시 셀): '프롬프트 목록 열기' — '확대해서 보기' 다음", iZoom >= 0 && cl1[iZoom + 1] === "프롬프트 목록 열기", J(cl1));
+    r.check("ChipMenu(표시 셀): '프롬프트 목록 열기' — '확대해서 보기' 다음", iZoom >= 0 && cl1[iZoom + 1] === "프롬프트 목록 열기", `rc=${lastRcc} ${J(cl1)}`);
     const cClick1 = await clickMenu("프롬프트 목록 열기");
     const cDom1 = await poll(panelCount, (n) => n === cell0 + 1, 10, 200);
-    r.check("셀 메뉴 클릭 → 셀 안 PromptSidePanel", cClick1 && cDom1 === cell0 + 1, `dom ${cell0}→${cDom1}`);
+    r.check("셀 메뉴 클릭 → 셀 안 PromptSidePanel", cClick1 && cDom1 === cell0 + 1, `rc=${lastRcc} dom ${cell0}→${cDom1}`);
     const cl2 = await openMenuFor(rightClickCell, "프롬프트 목록 닫기");
     const cClick2 = await clickMenu("프롬프트 목록 닫기");
     const cDom2 = await poll(panelCount, (n) => n === cell0, 10, 200);
     r.check(
       "셀 메뉴: 라벨 '프롬프트 목록 닫기' → 닫힘",
-      !!cl2 && cl2.includes("프롬프트 목록 닫기") && cClick2 && cDom2 === cell0,
-      `cl2=${J(cl2)} click=${cClick2} dom ${cell0}→${cDom2}`,
+      lastRcc === "ok" && !!cl2 && cl2.includes("프롬프트 목록 닫기") && cClick2 && cDom2 === cell0,
+      `rc=${lastRcc} cl2=${J(cl2)} click=${cClick2} dom ${cell0}→${cDom2}`,
     );
+    await cdp.eval(`delete ${CELL}`); // 기억한 노드 참조를 페이지에 남기지 않는다
     // 숨김 셀의 칩 우클릭 → 항목 없음. 칩은 title "(우클릭: 메뉴)"; 탭 모으기 모드면 개별 칩이 없어 스킵.
     const CHIP = `document.querySelector('button[title*="우클릭: 메뉴"]')`;
     const hasChip = await cdp.eval(`!!${CHIP}`);
