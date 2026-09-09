@@ -70,8 +70,6 @@ export interface EditorUiState {
   hoverId: ObjId | null;
   leftTab: "layers" | "assets" | "history";
   inspectorTab: "props" | "text" | "adjust" | "export";
-  /** 사용자가 탭을 직접 골랐는가 — 45 의 선택 기반 자동 탭 전환을 멈춘다. */
-  inspectorTabManual: boolean;
   /** 정리(tidy) 간격(45 §3.5). `'auto'` 는 선택에서 추론. */
   tidyGap: number | "auto";
   /** 인스펙터 W/H 비율 잠금(45 §3.6). */
@@ -112,14 +110,17 @@ export interface EditorUiState {
     v: EditorUiState["toggles"][K],
   ): void;
   /**
-   * 좌 패널·인스펙터 탭 전환. 인스펙터의 `manual` 기본이 **true** 인 이유: 호출 대부분이
-   * 사용자 탭 클릭이고, 자동 전환(45)만 `false` 를 명시한다. 반대로 뒀다가 클릭에서 빠뜨리면
-   * 고른 탭이 다음 선택에 곧바로 튕겨 나간다.
+   * 좌 패널·인스펙터 탭 전환.
+   *
+   * "사용자가 직접 골랐다"를 기억하는 플래그는 **두지 않는다.** 45 의 자동 전환은 선택 종류가
+   * 바뀔 때만 도는 이펙트(`ImageEditor` 의 `AUTO_TAB`)라 그 의존성이 곧 계약이고, 여기에 플래그를
+   * 더해도 아무도 읽지 않는 상태가 하나 늘 뿐이다 — 실제로 그렇게 한 번 늘었다가 걷어냈다.
+   * 반대로 플래그를 **읽게** 만들면 한 번 탭을 고른 뒤로 자동 전환이 영구히 죽는다(ins-1f 위반).
    */
   setTab(
     ...a:
       | ["left", EditorUiState["leftTab"]]
-      | ["inspector", EditorUiState["inspectorTab"], boolean?]
+      | ["inspector", EditorUiState["inspectorTab"]]
   ): void;
   setPixelPreview(n: 0 | 1 | 2): void;
   setTextEditing(v: boolean): void;
@@ -193,7 +194,6 @@ function freshState(): Pick<
   | "hoverId"
   | "leftTab"
   | "inspectorTab"
-  | "inspectorTabManual"
   | "tidyGap"
   | "ratioLock"
   | "hint"
@@ -208,7 +208,6 @@ function freshState(): Pick<
     hoverId: null,
     leftTab: "layers",
     inspectorTab: "props",
-    inspectorTabManual: false,
     tidyGap: "auto",
     ratioLock: false,
     hint: null,
@@ -268,12 +267,8 @@ export const useImageEditorUi = create<EditorUiState>((set) => ({
       return { toggles };
     }),
   setTab: (...a) => {
-    const [which, tab, manual] = a;
-    set(
-      which === "left"
-        ? { leftTab: tab }
-        : { inspectorTab: tab, inspectorTabManual: manual ?? true },
-    );
+    const [which, tab] = a;
+    set(which === "left" ? { leftTab: tab } : { inspectorTab: tab });
   },
   setPixelPreview: (n) => set({ pixelPreview: n }),
   setTextEditing: (v) => set({ textEditing: v }),

@@ -13,6 +13,7 @@
 //
 // 배경: DOCS/task/39-image-render-v2.md
 
+import { readableOn } from "../color";
 import {
   backgroundBlur,
   dropShadow,
@@ -507,25 +508,6 @@ function drawBadge(
   ctx.fillText(String(o.n), o.x, o.y);
   ctx.restore();
   void r;
-}
-
-/** 배경색 위에서 읽히는 글자색(밝기 기준 흰/검 이분). */
-function readableOn(bg: string): string {
-  const hex = bg.replace("#", "");
-  const full =
-    hex.length === 3
-      ? hex
-          .split("")
-          .map((c) => c + c)
-          .join("")
-      : hex;
-  const n = Number.parseInt(full.slice(0, 6), 16);
-  if (!Number.isFinite(n)) return "#FFFFFF";
-  const r = (n >> 16) & 0xff;
-  const g = (n >> 8) & 0xff;
-  const b = n & 0xff;
-  // ITU-R BT.601 근사 — 정밀한 대비비까지는 필요 없다.
-  return (r * 299 + g * 587 + b * 114) / 1000 > 150 ? "#1C1C1E" : "#FFFFFF";
 }
 
 // ── 가림(모자이크·블러) ─────────────────────────────────────────────────────

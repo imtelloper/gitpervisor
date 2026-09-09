@@ -25,8 +25,14 @@ export type SelectionKind =
 /**
  * 선택 상태를 인스펙터·컨텍스트 바가 쓰는 한 낱말로 줄인다.
  *
+ * 우선순위는 45 §3.1 표가 정본이다: crop > vector-edit > none > image > text > single-shape > multi.
+ *
  * **모드가 선택보다 먼저다** — 크롭·노드 편집 중에는 무엇이 선택돼 있든 그 모드의 UI 가
- * 떠야 한다(정본은 45 §3.1 표).
+ * 떠야 한다. 선택을 먼저 보면 크롭 중에 다른 객체를 스치기만 해도 크롭 바가 사라지고,
+ * 세션(48)은 살아 있는데 취소·적용 버튼만 화면에서 없어진다.
+ *
+ * 컨테이너(group/frame/instance)는 별도 종류가 아니다 — 하나면 `single-shape`, 여럿이면
+ * `multi` 다. kind 별 가부(불리언 활성 등)는 각 소비자가 따로 거른다(45 §3.1 multi 행).
  */
 export function classifySelection(
   objects: readonly Node[],
@@ -36,9 +42,14 @@ export function classifySelection(
   if (mode.kind === "crop") return "crop";
   if (mode.kind === "nodeEdit") return "vector-edit";
   if (selectedIds.length === 0) return "none";
+  // `'__base'` 는 **끼어 있기만 하면** 이미지다. 스토어의 `normalizeSelection`(42)이 노드와
+  // 섞인 조합을 이미 걷어내지만, 그 정규화를 거치지 않은 선택(복원·e2e 훅)이 한 번이라도 들어오면
+  // 순서가 반대일 때 배경이 도형 취급을 받아 `setObjectFrame` 이 없는 노드로 간다.
+  if (selectedIds.includes("__base")) return "image";
   if (selectedIds.length > 1) return "multi";
-  if (selectedIds[0] === "__base") return "image";
   const node = objects.find((o) => o.id === selectedIds[0]);
+  // 텍스트는 **혼자 골랐을 때만** 텍스트다. 도형과 섞이면 multi 로 떨어져 공통 속성만 만진다 —
+  // 안 그러면 50 의 텍스트 바가 fontSize·행간을 사각형에도 쓴다.
   return node?.kind === "text" ? "text" : "single-shape";
 }
 

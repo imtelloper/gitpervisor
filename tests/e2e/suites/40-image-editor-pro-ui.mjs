@@ -837,6 +837,253 @@ const HELPERS = `(() => {
     return true;
   };
 
+  // ── 컨텍스트 바 · 인스펙터 · 팝오버(45) ───────────────────────────────────
+  //
+  // 인스펙터는 **네 탭이 전부 마운트**돼 있고 비활성만 hidden 이다. 그래서 입력을 찾을 때는
+  // 반드시 '지금 보이는 탭' 으로 좁힌다 — 루트에서 aria-label 로 집으면 숨은 탭의 같은 이름
+  // 필드가 먼저 잡혀, 화면에 있지도 않은 칸을 재는 단언이 된다.
+  A.bar = () => {
+    const m = A.modal();
+    if (!m) return null;
+    // 레일도 role=toolbar 다 — 그쪽은 aria-label 이 '도구' 라 그것만 걸러 낸다.
+    return (
+      Array.from(m.querySelectorAll('[role="toolbar"]')).find(
+        (el) => (el.getAttribute('aria-label') || '') !== '도구',
+      ) || null
+    );
+  };
+  A.barTitles = () => {
+    const b = A.bar();
+    if (!b) return [];
+    return Array.from(b.querySelectorAll('button'))
+      .map((x) => (x.getAttribute('title') || '').trim())
+      .filter((t) => t !== '');
+  };
+  A.barText = () => {
+    const b = A.bar();
+    return b ? (b.textContent || '').trim() : '';
+  };
+  A.clickBar = async (re) => {
+    const b = A.bar();
+    const hit = b
+      ? Array.from(b.querySelectorAll('button')).find((x) =>
+          re.test((x.textContent || '') + ' ' + (x.getAttribute('title') || '')),
+        )
+      : null;
+    if (!hit) return false;
+    hit.click();
+    A.focusRoot();
+    await A.frame();
+    return true;
+  };
+
+  A.tab = () => A.ed().inspector.tab();
+  A.tabPanel = (id) => {
+    const m = A.modal();
+    return m ? m.querySelector('[data-inspector-tab="' + (id || A.tab()) + '"]') : null;
+  };
+  A.tabHidden = (id) => {
+    const el = A.tabPanel(id);
+    return el ? el.hidden === true : null;
+  };
+  /** 인스펙터 탭 목록 — 좌 패널 탭리스트(aria-label 이 있다)와 구분한다. */
+  A.tabBtns = () => {
+    const m = A.modal();
+    const tl = m
+      ? Array.from(m.querySelectorAll('[role="tablist"]')).find(
+          (el) => !el.getAttribute('aria-label'),
+        )
+      : null;
+    return tl ? Array.from(tl.querySelectorAll('button')) : [];
+  };
+  A.tabAria = () =>
+    A.tabBtns().map((b) => ({
+      label: (b.textContent || '').trim(),
+      sel: b.getAttribute('aria-selected') === 'true',
+    }));
+  A.clickTab = async (label) => {
+    const b = A.tabBtns().find((x) => (x.textContent || '').trim() === label);
+    if (!b) return false;
+    b.click();
+    A.focusRoot();
+    await A.frame();
+    return true;
+  };
+
+  /** 지금 보이는 탭(root 를 주면 그 안)의 입력 하나. NumField·HEX 가 같은 규칙(aria-label)을 쓴다. */
+  A.input = (label, root) => {
+    const p = root || A.tabPanel();
+    return p ? p.querySelector('input[aria-label="' + label + '"]') : null;
+  };
+  /** 값과 placeholder 를 **함께** 준다 — 빈 칸 하나로는 '0' 과 '여러 값' 이 구분되지 않는다. */
+  A.fieldState = (label, root) => {
+    const el = A.input(label, root);
+    return el ? { value: el.value, placeholder: el.placeholder || '' } : null;
+  };
+  /** React 제어 입력 — 네이티브 setter 로 넣어야 onChange 가 값 변화를 본다(zoomSelect 와 같은 이유). */
+  A.setValue = (el, text) => {
+    const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    set.call(el, text);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  A.typeField = async (label, text, root) => {
+    const el = A.input(label, root);
+    if (!el) return false;
+    el.focus();
+    A.setValue(el, text);
+    el.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Enter', code: 'Enter', bubbles: true, cancelable: true,
+      }),
+    );
+    await A.frame();
+    await A.frame();
+    return true;
+  };
+  /**
+   * 필드 위 방향키. **입력에 직접** 쏜다 — window 로 쏘면 42 캡처 리스너의 nudge 가 먼저 먹어
+   * 선택 객체가 1px 움직이고, 재려던 필드 규칙(1회 = 1칸)은 재지 못한다.
+   */
+  A.keyField = async (label, init, root) => {
+    const el = A.input(label, root);
+    if (!el) return false;
+    el.focus();
+    el.dispatchEvent(
+      new KeyboardEvent('keydown', Object.assign({ bubbles: true, cancelable: true }, init)),
+    );
+    await A.frame();
+    await A.frame();
+    return true;
+  };
+  /**
+   * 라벨 스크럽. 손잡이는 입력 **앞의 span** 이다(시안 ① — 라벨 글자 자체를 끈다).
+   * 실제 포인터가 없으면 setPointerCapture 가 던져 핸들러가 통째로 죽으므로 무해화한다.
+   *
+   * 드래그 **중간**의 히스토리 깊이를 함께 돌려준다 — 라이브 구간이 한 칸을 넘게 쌓는지는
+   * 손을 떼기 전에만 잴 수 있다(떼고 나면 마지막 한 칸만 남아 똑같아 보인다).
+   */
+  A.scrub = (label, dx, opts) =>
+    A.noCapture(async () => {
+      const el = A.input(label, opts && opts.root);
+      const row = el && el.parentElement ? el.parentElement.parentElement : null;
+      const grip = row ? row.firstElementChild : null;
+      if (!grip) return { ok: false };
+      const x0 = 300;
+      const send = (type, x, btns) =>
+        grip.dispatchEvent(
+          new PointerEvent(type, {
+            bubbles: true, cancelable: true, composed: true,
+            clientX: x, clientY: 100, button: 0, buttons: btns,
+            shiftKey: !!(opts && opts.shift), altKey: !!(opts && opts.alt),
+            pointerId: 1600, pointerType: 'mouse', isPrimary: true,
+          }),
+        );
+      send('pointerdown', x0, 1);
+      send('pointermove', x0 + dx / 2, 1);
+      await A.frame();
+      send('pointermove', x0 + dx, 1);
+      await A.frame();
+      const mid = A.hist();
+      send('pointerup', x0 + dx, 0);
+      await A.frame();
+      return { ok: true, mid: mid, end: A.hist() };
+    });
+
+  A.hist = () => A.ed().history.entries().length;
+  A.lastLabel = () => {
+    const e = A.ed().history.entries();
+    return e.length ? e[0].label : null;
+  };
+  /** 내보내기 렌더 경로(39)로 뽑은 픽셀 한 점 — 씬 캔버스와 같아야 '화면 == 파일' 이다. */
+  A.renderPx = (x, y) => {
+    const r = A.ed().renderRegion({ x: x, y: y, w: 1, h: 1 }, 1);
+    return r ? r.data.slice(0, 4) : null;
+  };
+
+  // 속성 탭 스택(채우기·선·효과) — 섹션 헤더 **문구**로 집는다. 클래스 선택자는 스타일이
+  // 바뀌면 조용히 못 찾고, 순서 인덱스는 필드가 숨겨질 때마다 밀린다.
+  A.stack = (title) => {
+    const p = A.tabPanel();
+    if (!p) return null;
+    return (
+      Array.from(p.querySelectorAll('section')).find((s) => {
+        const h = s.firstElementChild;
+        return !!h && (h.textContent || '').trim() === title;
+      }) || null
+    );
+  };
+  A.stackRows = (title) => {
+    const s = A.stack(title);
+    return s ? Array.from(s.children).slice(1) : [];
+  };
+  A.stackText = (title) => A.stackRows(title).map((r) => (r.textContent || '').trim());
+  A.stackAdd = async (title) => {
+    const s = A.stack(title);
+    const b = s ? s.querySelector('button[title="' + title + ' 추가"]') : null;
+    if (!b) return false;
+    b.click();
+    await A.frame();
+    return true;
+  };
+  A.stackBtn = async (title, i, btnTitle) => {
+    const row = A.stackRows(title)[i];
+    const b = row ? row.querySelector('button[title="' + btnTitle + '"]') : null;
+    if (!b) return false;
+    b.click();
+    await A.frame();
+    return true;
+  };
+  /** 행 왼쪽 스와치 = 팝오버 앵커. title 이 없다 — 색 자체가 라벨이라 문구로는 못 집는다. */
+  A.stackOpen = async (title, i) => {
+    const row = A.stackRows(title)[i];
+    const b = row && row.firstElementChild ? row.firstElementChild.querySelector('button') : null;
+    if (!b) return false;
+    b.click();
+    await A.frame();
+    await A.frame();
+    return true;
+  };
+
+  // 팝오버 — role="dialog" 는 이 프리미티브만 쓴다(확인창·프롬프트는 z-[60] div 다).
+  // 중첩 팝오버는 부모 팝오버의 **자손**이라 문서 순서상 뒤가 곧 위다.
+  A.pops = () => Array.from((A.modal() || document).querySelectorAll('[role="dialog"]'));
+  A.popN = () => A.pops().length;
+  A.popTop = () => {
+    const p = A.pops();
+    return p.length ? p[p.length - 1] : null;
+  };
+  A.popTitle = () => {
+    const p = A.popTop();
+    return p && p.firstElementChild ? (p.firstElementChild.textContent || '').trim() : null;
+  };
+  /** 화면 안에 들어왔는가 — 인스펙터(오른쪽 끝 320)에서 열면 기본 배치가 화면 밖이다. */
+  A.popFits = () => {
+    const p = A.popTop();
+    if (!p) return false;
+    const r = p.getBoundingClientRect();
+    return (
+      r.left >= 0 && r.top >= 0 &&
+      r.right <= window.innerWidth + 0.5 && r.bottom <= window.innerHeight + 0.5
+    );
+  };
+  /** 백드롭 — 모달 팝오버만 그린다. 루트 안의 'fixed inset-0 z-50'(플라이아웃과 같은 모양). */
+  A.popBackdrop = () => {
+    const m = A.modal();
+    return m ? m.querySelector('div.fixed.inset-0.z-50') : null;
+  };
+  A.clickIn = async (root, re) => {
+    const b = root
+      ? Array.from(root.querySelectorAll('button')).find((x) =>
+          re.test((x.textContent || '') + ' ' + (x.getAttribute('title') || '')),
+        )
+      : null;
+    if (!b) return false;
+    b.click();
+    await A.frame();
+    await A.frame();
+    return true;
+  };
+
   return true;
 })()`;
 
@@ -2472,6 +2719,1047 @@ export async function run({ cdp, report: r, fix }) {
         `cursor ${cur0} → ${cur1}`,
       );
     }
+    // ══ 태스크 45 — 컨텍스트 바 · 인스펙터 4탭 · 필드 · 팝오버 ══════════════
+    //
+    // 이 절이 지키는 것 셋:
+    //   ① **세 상태를 뭉개지 않는다.** 값 하나 / 여러 값(MIXED) / 그 속성이 없음 은 각각
+    //      숫자 · 빈 칸+`혼합` · **필드 자체가 없음** 이다. 뭉치는 순간 사용자는 "0"과
+    //      "값 없음"과 "여러 값"을 같은 빈 칸으로 보고, 그 칸을 건드리는 것만으로 선택
+    //      전체를 자기가 모르던 값으로 덮는다. 그래서 MIXED 의 스크럽·방향키는 절대값이
+    //      아니라 **노드별 Δ** 여야 한다(4/8 에 ↑ 한 번이 둘 다 5 로 만들면 안 된다).
+    //   ② **버튼과 단축키는 같은 함수다.** 정렬·간격 정리를 두 경로로 돌려 문서를 통째로
+    //      비교한다 — 갈라지면 히스토리 라벨부터 어긋나고, 그다음엔 한쪽만 정규화를 탄다.
+    //   ③ **라이브 한 번 = 히스토리 한 칸.** 스크럽·슬라이더는 손을 **떼기 전에도** 재야
+    //      한다. 떼고 나서만 보면 중간에 수십 칸이 쌓였다 마지막 하나만 남은 경우와
+    //      구분되지 않는다(41 상한 200 이 몇 초에 소진된다).
+    await closeEditor();
+    await sleep(250);
+    await cdp.try("image_doc_delete", { projectId: fix.projectId, relPath: SRC });
+    if (!r.check("(45 ins-0) 인스펙터 검증용 재오픈", (await openEditor()) === true)) return;
+    await S(`leftTab('레이어')`);
+    await sleep(150);
+
+    /** 페인트 스택을 **명시**한 rect — v1 리터럴(`fill`)은 경계가 단색 한 겹으로 채운다. */
+    const paintRect = (id, x, y, w, h, fills) => ({
+      id, kind: "rect", parentId: null, stroke: "#FF3B30", strokeWidth: 0,
+      opacity: 1, rot: 0, x, y, w, h, radius: 0, fills, strokes: [],
+    });
+    const solid = (color) => ({
+      type: "solid", color, opacity: 1, visible: true, blend: "normal",
+    });
+    const ellipse = (id, x, y) => ({
+      id, kind: "ellipse", parentId: null, stroke: "#FF3B30", strokeWidth: 0,
+      opacity: 1, rot: 0, x, y, w: 40, h: 40, fill: "#FF3B30",
+    });
+    const TEXT_NODE = {
+      id: "vt", kind: "text", parentId: null, stroke: "#111111", strokeWidth: 0,
+      opacity: 1, rot: 0, x: 10, y: 60, w: 80, h: 18, text: "e2e", fontSize: 14,
+    };
+    /**
+     * 빈 곳 클릭 = 선택 해제. Esc 를 쓰면 안 된다 — 선택이 이미 비어 있을 때 Esc 는 계층을
+     * 끝까지 내려가 **편집기를 닫는다**(그 뒤 단언이 전부 무의미해진다).
+     */
+    const clearSel = async () => {
+      await cdp.eval(`window.__gpvShell.ed().setTool('select')`);
+      await S(`pointerSeq([['down',196,196],['up',196,196]])`);
+      await sleep(150);
+    };
+    /**
+     * 전체 선택 — **루트 포커스가 먼저다**. 앞 케이스가 필드에 포커스를 남겨 두면
+     * `useEditorKeys` 게이트 ④(입력 요소면 통과)가 Ctrl+A 를 그 입력의 전체 선택으로
+     * 흘려보낸다 — 아무것도 안 고른 채로 뒤따르는 단언이 전부 무너진다.
+     */
+    const selectAllRoot = async () => {
+      await S(`focusRoot()`);
+      await selectAll();
+      await sleep(150);
+    };
+
+    // ── (45 ins-1) 컨텍스트 바 7변형 · 자동 탭 ───────────────────────────────
+    const V1 = rect("v1", 40, 40, 60, 60);
+    const V2 = rect("v2", 150, 100, 40, 30);
+    const V3 = rect("v3", 20, 150, 30, 30);
+    const variant = async (objects, pick) => {
+      await seed(objects);
+      await sleep(150);
+      if (pick === "all") await selectAllRoot();
+      else if (pick === "base") await S(`clickRow('__base')`);
+      else await clearSel();
+      await sleep(250);
+      return cdp.eval(`(() => {
+        const S = window.__gpvShell;
+        const t = S.barTitles();
+        return {
+          kind: S.ed().classify(),
+          tab: S.tab(),
+          titles: t,
+          text: S.barText(),
+          align: t.filter((x) => /정렬 \\(/.test(x)).length,
+          dist: t.filter((x) => /균등 분배/.test(x)).length,
+          zoom: !!S.input('줌', S.bar()),
+          radius: !!S.input('반경', S.bar()),
+          opacity: !!S.input('불투명도', S.bar()),
+        };
+      })()`);
+    };
+
+    const vNone = await variant([V1], "none");
+    r.check(
+      "(45 ins-1a) 아무것도 안 고르면 바는 **캔버스 것**이다 — 줌·맞춤·보기 토글뿐이고 정렬은 없다",
+      vNone.kind === "none" &&
+        vNone.zoom === true &&
+        /캔버스/.test(vNone.text) &&
+        vNone.titles.some((t) => /맞춤/.test(t)) &&
+        vNone.align === 0,
+      `kind=${vNone.kind} titles=${J(vNone.titles)}`,
+    );
+    const vOne = await variant([V1], "all");
+    r.check(
+      "(45 ins-1b) 도형 하나면 그 도형의 값이 바에 온다(채우기·선 칩 · 반경 · 불투명도) — 개수 문구는 없다",
+      vOne.kind === "single-shape" &&
+        vOne.tab === "props" &&
+        vOne.titles.some((t) => /^채우기/.test(t)) &&
+        vOne.titles.some((t) => /^선/.test(t)) &&
+        vOne.radius === true &&
+        vOne.opacity === true &&
+        !/개 선택/.test(vOne.text),
+      `kind=${vOne.kind} tab=${vOne.tab} titles=${J(vOne.titles)}`,
+    );
+    const vTwo = await variant([V1, V2], "all");
+    const vThree = await variant([V1, V2, V3], "all");
+    r.check(
+      "(45 ins-1c) 여럿이면 정렬 6 이 뜨고, **분배는 3개부터** 나타난다(둘은 놓을 자리가 없어 눌러도 아무 일이 없다)",
+      vTwo.kind === "multi" &&
+        vTwo.align === 6 &&
+        vTwo.dist === 0 &&
+        /2개 선택/.test(vTwo.text) &&
+        vThree.align === 6 &&
+        vThree.dist === 2,
+      `2개: align=${vTwo.align} dist=${vTwo.dist} / 3개: align=${vThree.align} dist=${vThree.dist}`,
+    );
+    r.check(
+      "(45 ins-1d) 아직 주인이 없는 기능은 **버튼이 없다** — 불리언(46)이 오기 전에는 회색 버튼조차 그리지 않는다(눌러 보고 나서야 아무 일도 안 난다는 것을 알면 앱이 고장 난 것으로 읽힌다)",
+      !vThree.titles.some((t) => /합집합|빼기|교집합|배타/.test(t)),
+      J(vThree.titles),
+    );
+    const vBase = await variant([V1], "base");
+    r.check(
+      "(45 ins-1e) 배경을 고르면 이미지 변형이다 — `배경 이미지` · 원본 크기 · 조정 탭 자동 전환",
+      vBase.kind === "image" &&
+        vBase.tab === "adjust" &&
+        /배경 이미지/.test(vBase.text) &&
+        /원본 크기 200 × 200/.test(vBase.text),
+      `kind=${vBase.kind} tab=${vBase.tab} text=${J(vBase.text.slice(0, 40))}`,
+    );
+
+    await seed([TEXT_NODE]);
+    await selectAllRoot();
+    await sleep(250);
+    const autoText = await cdp.eval(
+      `({ kind: window.__gpvShell.ed().classify(), tab: window.__gpvShell.tab() })`,
+    );
+    await S(`clickTab('속성')`);
+    await sleep(150);
+    const manual = await S(`tab()`);
+    const aria = await S(`tabAria()`);
+    await selectAllRoot();
+    await sleep(250);
+    const kept = await S(`tab()`);
+    await S(`clickRow('__base')`);
+    await sleep(250);
+    const again = await S(`tab()`);
+    r.check(
+      "(45 ins-1f) 탭 자동 전환은 **선택 종류가 바뀔 때 한 번**이다 — 그 안에서 사용자가 고른 탭은 남고, 종류가 바뀌면 다시 산다",
+      autoText.kind === "text" &&
+        autoText.tab === "text" &&
+        manual === "props" &&
+        kept === "props" &&
+        again === "adjust",
+      `text=${autoText.tab} 수동=${manual} 유지=${kept} 종류변경=${again}`,
+    );
+    r.check(
+      "(45 ins-1g) 탭 넷이 `role=tab` 이고 `aria-selected` 는 **하나만** 참이다(스크린리더가 지금 보이는 탭을 읽는 유일한 근거다)",
+      Array.isArray(aria) &&
+        J(aria.map((t) => t.label)) === J(["속성", "텍스트", "조정", "내보내기"]) &&
+        aria.filter((t) => t.sel).length === 1 &&
+        aria[0].sel === true,
+      J(aria),
+    );
+
+    // 모드 전환은 `setMode` 로 한다 — Esc 로 나오면 계층 5(선택 해제)가 먼저 걸려 모드가
+    // 그대로 남는다(Esc 계층 자체는 42 의 (e-3)(e-4) 가 이미 잰다).
+    await seed([V1]);
+    await selectAllRoot();
+    await cdp.eval(`window.__gpvShell.ed().setMode({ kind:'nodeEdit', id:'v1' })`);
+    await sleep(250);
+    const inNode = await cdp.eval(
+      `({ kind: window.__gpvShell.ed().classify(), text: window.__gpvShell.barText() })`,
+    );
+    await cdp.eval(`window.__gpvShell.ed().setMode({ kind:'crop' })`);
+    await sleep(250);
+    const inCrop = await cdp.eval(`({
+      kind: window.__gpvShell.ed().classify(),
+      text: window.__gpvShell.barText(),
+      tab: window.__gpvShell.tab(),
+    })`);
+    await cdp.eval(`window.__gpvShell.ed().setMode({ kind:'design' })`);
+    await sleep(250);
+    const backDesign = await cdp.eval(
+      `({ kind: window.__gpvShell.ed().classify(), crop: window.__gpvShell.doc().crop })`,
+    );
+    r.check(
+      "(45 ins-1h) **모드가 선택을 이긴다** — 크롭·노드 편집 중에는 무엇이 골라져 있든 그 모드의 바가 뜬다(선택을 먼저 보면 크롭 중에 다른 객체를 스치는 것만으로 취소·적용 버튼이 사라진다)",
+      inNode.kind === "vector-edit" &&
+        inCrop.kind === "crop" &&
+        /크롭/.test(inCrop.text) &&
+        inCrop.tab === "adjust" &&
+        backDesign.kind === "single-shape" &&
+        backDesign.crop === null,
+      `node=${J(inNode)} crop=${J(inCrop)} 복귀=${J(backDesign)}`,
+    );
+
+    // ── (45 ins-2) 정렬 · 분배 · 간격 정리 ───────────────────────────────────
+    const AL = [rect("a1", 40, 40, 60, 60), rect("a2", 150, 100, 80, 30)];
+    await seed(AL);
+    await selectAllRoot();
+    await sleep(200);
+    const h2 = await S(`hist()`);
+    await cdp.eval(`window.__gpvShell.ed().actions.align('left')`);
+    await sleep(250);
+    const aligned = await cdp.eval(`({
+      xs: window.__gpvShell.doc().objects.map((o) => o.x),
+      label: window.__gpvShell.lastLabel(),
+      hist: window.__gpvShell.hist(),
+    })`);
+    await cdp.eval(`window.__gpvShell.fire({ key:'z', code:'KeyZ', ctrlKey:true })`);
+    await sleep(250);
+    const undone = await cdp.eval(`window.__gpvShell.doc().objects.map((o) => o.x)`);
+    r.check(
+      "(45 ins-2a) 왼쪽 정렬은 **마지막 선택**에 맞춘다 — 기준 자신은 안 움직이고, 한 칸이며, Ctrl+Z 로 되돌아온다",
+      J(aligned.xs) === J([150, 150]) &&
+        aligned.label === "정렬 왼쪽" &&
+        aligned.hist === h2 + 1 &&
+        J(undone) === J([40, 150]),
+      `xs=${J(aligned.xs)} label=${aligned.label} hist=${h2}→${aligned.hist} undo=${J(undone)}`,
+    );
+
+    // 같은 조작을 키와 버튼으로 각각 돌려 **문서를 통째로** 비교한다. 한쪽만 액션 맵을
+    // 지나가면(예: 바가 patchDoc 을 직접 부르면) 좌표는 같아도 라벨이 갈린다.
+    const alignBy = async (how) => {
+      await seed(AL);
+      await selectAllRoot();
+      await sleep(200);
+      if (how === "key") {
+        await cdp.eval(`window.__gpvShell.fire({ key:'a', code:'KeyA', altKey:true })`);
+      } else {
+        await S(`clickBar(/왼쪽 정렬/)`);
+      }
+      await sleep(250);
+      return cdp.eval(`({
+        geom: window.__gpvShell.doc().objects.map((o) => [o.id, o.x, o.y]),
+        label: window.__gpvShell.lastLabel(),
+      })`);
+    };
+    const alignKey = await alignBy("key");
+    const alignBtn = await alignBy("btn");
+    r.check(
+      "(45 ins-2b) 정렬은 **버튼과 단축키가 같은 함수**다 — 좌표도 히스토리 라벨도 같다",
+      J(alignKey.geom) === J(alignBtn.geom) &&
+        alignKey.label === alignBtn.label &&
+        alignKey.label === "정렬 왼쪽",
+      `key=${J(alignKey)} btn=${J(alignBtn)}`,
+    );
+
+    await seed([
+      rect("d1", 10, 40, 30, 30),
+      rect("d2", 70, 40, 30, 30),
+      rect("d3", 150, 40, 30, 30),
+    ]);
+    await selectAllRoot();
+    await sleep(200);
+    await cdp.eval(`window.__gpvShell.ed().actions.distribute('x')`);
+    await sleep(250);
+    const dist = await cdp.eval(`(() => {
+      const c = window.__gpvShell.doc().objects.map((o) => o.x + o.w / 2).sort((a, b) => a - b);
+      return { c: c, gaps: c.slice(1).map((v, i) => v - c[i]), label: window.__gpvShell.lastLabel() };
+    })()`);
+    r.check(
+      "(45 ins-2c) 수평 분배는 양 끝을 두고 가운데 중심을 등간격에 놓는다(±0.5)",
+      dist.gaps.length === 2 &&
+        Math.abs(dist.gaps[0] - dist.gaps[1]) <= 0.5 &&
+        dist.label === "수평 분배",
+      `centers=${J(dist.c)} gaps=${J(dist.gaps)} label=${dist.label}`,
+    );
+
+    const TIDY = [
+      rect("t1", 10, 40, 30, 30),
+      rect("t2", 60, 40, 30, 30),
+      rect("t3", 150, 40, 30, 30),
+    ];
+    await seed(TIDY);
+    await selectAllRoot();
+    await sleep(200);
+    await cdp.eval(`window.__gpvShell.ed().actions.tidy(24)`);
+    await sleep(250);
+    const tidied = await cdp.eval(`(() => {
+      const os = window.__gpvShell.doc().objects.slice().sort((a, b) => a.x - b.x);
+      return {
+        first: os[0].x,
+        gaps: os.slice(1).map((o, i) => o.x - (os[i].x + os[i].w)),
+        label: window.__gpvShell.lastLabel(),
+      };
+    })()`);
+    r.check(
+      "(45 ins-2d) `간격 정리 24` 는 첫 항목을 제자리에 두고 인접 간격을 전부 24 로 만든다",
+      J(tidied.gaps) === J([24, 24]) &&
+        tidied.first === 10 &&
+        tidied.label === "간격 정리 24",
+      `first=${tidied.first} gaps=${J(tidied.gaps)} label=${tidied.label}`,
+    );
+
+    const tidyBy = async (how) => {
+      await seed(TIDY);
+      await selectAllRoot();
+      await sleep(200);
+      if (how === "key") {
+        await cdp.eval(
+          `window.__gpvShell.fire({ key:'K', code:'KeyK', ctrlKey:true, altKey:true, shiftKey:true })`,
+        );
+      } else {
+        await S(`clickBar(/간격 정리/)`);
+      }
+      await sleep(250);
+      return cdp.eval(`({
+        geom: window.__gpvShell.doc().objects.map((o) => [o.id, o.x]),
+        label: window.__gpvShell.lastLabel(),
+      })`);
+    };
+    const tidyKey = await tidyBy("key");
+    const tidyBtn = await tidyBy("btn");
+    r.check(
+      "(45 ins-2e) 간격 정리도 키(Ctrl+Alt+Shift+K)와 버튼이 같은 결과다 — 둘 다 `ui.tidyGap` 을 읽는다",
+      J(tidyKey.geom) === J(tidyBtn.geom) &&
+        tidyKey.label === tidyBtn.label &&
+        J(tidyKey.geom) !== J(TIDY.map((o) => [o.id, o.x])),
+      `key=${J(tidyKey)} btn=${J(tidyBtn)}`,
+    );
+
+    // ── (45 ins-3) MIXED 세 상태 ─────────────────────────────────────────────
+    const MIX = [
+      { ...rect("m1", 10, 10, 40, 40), radius: 4 },
+      { ...rect("m2", 100, 10, 40, 40), radius: 8 },
+    ];
+    await seed(MIX);
+    await selectAllRoot();
+    await S(`clickTab('속성')`);
+    await sleep(250);
+    const mixField = await S(`fieldState('반경')`);
+    r.check(
+      "(45 ins-3a) 값이 갈리면 **빈 칸 + `혼합`** 이다 — 한쪽 값을 대표로 보여 주면 그 칸을 누르는 순간 다른 쪽이 조용히 덮인다",
+      !!mixField && mixField.value === "" && mixField.placeholder === "혼합",
+      J(mixField),
+    );
+    const h3 = await S(`hist()`);
+    await S(`typeField('반경', '12')`);
+    await sleep(300);
+    const typed = await cdp.eval(`({
+      radii: window.__gpvShell.doc().objects.map((o) => o.radius),
+      hist: window.__gpvShell.hist(),
+    })`);
+    r.check(
+      "(45 ins-3b) 숫자를 **직접 적는 것**만 절대값이다 — 선택 전체가 그 값이 되고 히스토리는 한 칸",
+      J(typed.radii) === J([[12, 12, 12, 12], [12, 12, 12, 12]]) && typed.hist === h3 + 1,
+      `radii=${J(typed.radii)} hist=${h3}→${typed.hist}`,
+    );
+
+    await seed(MIX);
+    await selectAllRoot();
+    await sleep(250);
+    const h3b = await S(`hist()`);
+    const scrubbed = await cdp.eval(`window.__gpvShell.scrub('반경', 5)`);
+    await sleep(250);
+    const scrubRadii = await cdp.eval(
+      `window.__gpvShell.doc().objects.map((o) => o.radius[0])`,
+    );
+    r.check(
+      "(45 ins-3c) 스크럽은 **상대 델타**다 — 4/8 이 9/13 이 되어 차이가 살아남고, 드래그 전체가 한 칸이다",
+      J(scrubRadii) === J([9, 13]) &&
+        scrubbed.ok === true &&
+        scrubbed.mid === h3b + 1 &&
+        scrubbed.end === h3b + 1,
+      `radius=${J(scrubRadii)} hist=${h3b}→${scrubbed.mid}→${scrubbed.end}`,
+    );
+
+    await seed([ellipse("e1", 10, 10), ellipse("e2", 100, 10)]);
+    await selectAllRoot();
+    await sleep(300);
+    const noRadius = await cdp.eval(`({
+      radius: !!window.__gpvShell.input('반경'),
+      opacity: !!window.__gpvShell.input('불투명도'),
+      names: Object.keys(window.__gpvShell.ed().inspector.fields()),
+    })`);
+    r.check(
+      "(45 ins-3d) 어느 노드에도 없는 속성은 **칸 자체가 없다** — 타원에 반경 칸을 그리면 거기 적은 값이 아무 데도 가지 않는다",
+      noRadius.radius === false && noRadius.opacity === true,
+      J(noRadius),
+    );
+
+    // ── (45 ins-4) 위치 · 크기 필드 ──────────────────────────────────────────
+    await seed([rect("f1", 30, 30, 50, 40)]);
+    await selectAllRoot();
+    await sleep(250);
+    const h4 = await S(`hist()`);
+    await S(`typeField('X', '100')`);
+    await sleep(300);
+    const movedX = await cdp.eval(`({
+      x: window.__gpvShell.doc().objects[0].x,
+      y: window.__gpvShell.doc().objects[0].y,
+      hist: window.__gpvShell.hist(),
+      label: window.__gpvShell.lastLabel(),
+    })`);
+    r.check(
+      "(45 ins-4a) X 필드는 `setObjectFrame` 을 탄다 — 적은 값 그대로 들어가고 다른 축은 건드리지 않는다",
+      movedX.x === 100 && movedX.y === 30 && movedX.hist === h4 + 1 && movedX.label === "X 100",
+      J(movedX),
+    );
+    const w0 = await S(`doc().objects[0].w`);
+    const h4b = await S(`hist()`);
+    await S(`keyField('W', { key:'ArrowUp', code:'ArrowUp', shiftKey:true })`);
+    await sleep(300);
+    const w1 = await cdp.eval(
+      `({ w: window.__gpvShell.doc().objects[0].w, hist: window.__gpvShell.hist() })`,
+    );
+    await S(`keyField('W', { key:'ArrowUp', code:'ArrowUp', shiftKey:true, repeat:true })`);
+    await sleep(300);
+    const w2 = await cdp.eval(
+      `({ w: window.__gpvShell.doc().objects[0].w, hist: window.__gpvShell.hist() })`,
+    );
+    r.check(
+      "(45 ins-4b) Shift+↑ 는 10 을 더하고 **한 번 = 한 칸**이며 auto-repeat 는 버린다(누르고 있으면 초당 수십 칸이 쌓여 앞 작업이 히스토리 밖으로 밀린다)",
+      w1.w === w0 + 10 && w1.hist === h4b + 1 && w2.w === w1.w && w2.hist === w1.hist,
+      `w ${w0}→${w1.w}→${w2.w} hist ${h4b}→${w1.hist}→${w2.hist}`,
+    );
+
+    // ── (45 ins-5) 채우기 스택 — 겹 추가 · 눈 · 제거 ─────────────────────────
+    //
+    // 픽스처가 두 겹인 이유: `+` 가 만드는 겹의 색은 **최근 사용 색**에 달려 있어 고정값이
+    // 아니다. 위에 덮이는 흰 겹을 미리 깔아 두면 눈을 껐을 때 나와야 할 픽셀이 정해진다.
+    const BLUE = [10, 132, 255];
+    await seed([paintRect("p1", 40, 40, 60, 60, [solid("#0A84FF"), solid("#FFFFFF")])]);
+    await selectAllRoot();
+    await sleep(300);
+    const rows0 = await S(`stackRows('채우기').length`);
+    await S(`stackAdd('채우기')`);
+    await sleep(300);
+    const addedN = await S(`doc().objects[0].fills.length`);
+    await S(`stackBtn('채우기', 2, '제거')`);
+    await sleep(300);
+    const removedN = await S(`doc().objects[0].fills.length`);
+    r.check(
+      "(45 ins-5a) 스택 행 수 == 문서 겹 수이고 `+`/`−` 가 그대로 반영된다",
+      rows0 === 2 && addedN === 3 && removedN === 2,
+      `rows=${rows0} +=${addedN} −=${removedN}`,
+    );
+    await S(`stackBtn('채우기', 1, '숨기기')`);
+    await sleep(400);
+    const hiddenFill = await cdp.eval(`({
+      visible: window.__gpvShell.doc().objects[0].fills[1].visible,
+      preview: window.__gpvShell.px(1, 70, 70),
+      render: window.__gpvShell.renderPx(70, 70),
+      label: window.__gpvShell.lastLabel(),
+    })`);
+    const near3 = (a, b) =>
+      Array.isArray(a) && Array.isArray(b) && [0, 1, 2].every((i) => Math.abs(a[i] - b[i]) <= 2);
+    r.check(
+      "(45 ins-5b) 겹의 눈을 끄면 화면에서도 **렌더 경로에서도** 사라진다 — 프리뷰와 내보내기 픽셀이 같아야 '화면 == 파일' 이다",
+      hiddenFill.visible === false &&
+        near3(hiddenFill.preview, BLUE) &&
+        near3(hiddenFill.preview, hiddenFill.render) &&
+        hiddenFill.label === "채우기 숨기기",
+      `preview=${J(hiddenFill.preview)} render=${J(hiddenFill.render)} label=${hiddenFill.label}`,
+    );
+
+    // ── (45 ins-6) 반전 · 회전 ───────────────────────────────────────────────
+    await seed([rect("x1", 20, 20, 40, 30), rect("x2", 120, 60, 30, 50)]);
+    await selectAllRoot();
+    await sleep(250);
+    const geomKey = `window.__gpvShell.doc().objects.map((o) => [o.id, o.x, o.y, o.w, o.h])`;
+    const geo0 = await cdp.eval(geomKey);
+    await cdp.eval(`window.__gpvShell.ed().actions.flip('h')`);
+    await sleep(250);
+    const geo1 = await cdp.eval(geomKey);
+    await cdp.eval(`window.__gpvShell.ed().actions.flip('h')`);
+    await sleep(250);
+    const geo2 = await cdp.eval(geomKey);
+    r.check(
+      "(45 ins-6a) 좌우 반전은 **선택 AABB 안에서** 뒤집는다 — 한 번은 자리가 바뀌고 두 번은 정확히 제자리다",
+      J(geo1) !== J(geo0) && J(geo2) === J(geo0),
+      `0=${J(geo0)} 1=${J(geo1)} 2=${J(geo2)}`,
+    );
+    await seed([rect("x1", 20, 20, 40, 30)]);
+    await selectAllRoot();
+    await sleep(200);
+    await cdp.eval(`window.__gpvShell.ed().actions.rotate(90)`);
+    await sleep(250);
+    const rotated = await cdp.eval(
+      `({ rot: window.__gpvShell.doc().objects[0].rot, label: window.__gpvShell.lastLabel() })`,
+    );
+    r.check(
+      "(45 ins-6b) 선택 회전은 선택 상자 중심을 축으로 돈다(`rot` 90 · 라벨 `90° 회전`)",
+      rotated.rot === 90 && rotated.label === "90° 회전",
+      J(rotated),
+    );
+
+    // ── (45 ins-7) 색 피커 ───────────────────────────────────────────────────
+    await seed([paintRect("c1", 40, 40, 60, 60, [solid("#FF3B30")])]);
+    await selectAllRoot();
+    await sleep(300);
+    await S(`stackOpen('채우기', 0)`);
+    await sleep(300);
+    const popOpen = await cdp.eval(`({
+      n: window.__gpvShell.popN(),
+      title: window.__gpvShell.popTitle(),
+      fits: window.__gpvShell.popFits(),
+      slot: window.__gpvShell.ed().popover.open(),
+      hex: (window.__gpvShell.fieldState('HEX', window.__gpvShell.popTop()) || {}).value,
+    })`);
+    r.check(
+      "(45 ins-7a) 스와치가 색 피커를 연다 — 인스펙터 오른쪽 끝에서 열어도 화면 안이고, hex 왕복에 오차가 없다",
+      popOpen.n === 1 &&
+        popOpen.fits === true &&
+        popOpen.slot === "paint:fills:0" &&
+        /채우기 · 단색/.test(popOpen.title || "") &&
+        String(popOpen.hex).toUpperCase() === "#FF3B30",
+      J(popOpen),
+    );
+    const h7 = await S(`hist()`);
+    await cdp.eval(
+      `window.__gpvShell.typeField('HEX', '0A84FF', window.__gpvShell.popTop())`,
+    );
+    await sleep(300);
+    const hexPut = await cdp.eval(`({
+      fill: window.__gpvShell.doc().objects[0].fills[0],
+      hist: window.__gpvShell.hist(),
+      label: window.__gpvShell.lastLabel(),
+    })`);
+    r.check(
+      "(45 ins-7b) hex 입력은 한 칸으로 들어간다 — 적은 문자열이 **그대로** 문서 색이 된다(HSV 왕복으로 한 칸 어긋나면 안 된다)",
+      hexPut.fill.color === "#0A84FF" &&
+        hexPut.hist === h7 + 1 &&
+        hexPut.label === "채우기 0A84FF",
+      `fill=${J(hexPut.fill)} hist=${h7}→${hexPut.hist} label=${hexPut.label}`,
+    );
+    await cdp.eval(
+      `window.__gpvShell.typeField('불투명도', '50', window.__gpvShell.popTop())`,
+    );
+    await sleep(300);
+    const painted = await S(`doc().objects[0].fills[0]`);
+    r.check(
+      "(45 ins-7c) 알파는 `Fill.opacity` 로 간다 — 색 문자열은 `#rrggbb` 그대로다(섞으면 e2e 색 상수·팔레트·정규화 전제가 통째로 깨진다)",
+      painted.color === "#0A84FF" && painted.opacity === 0.5,
+      J(painted),
+    );
+    // 라벨 div 는 **자식이 없는** 것으로 고른다 — 감싼 div 도 같은 문구를 담고 있어
+    // 그것을 집으면 스와치 줄이 아니라 피커 전체를 세게 된다.
+    const docSw = await cdp.eval(`(() => {
+      const p = window.__gpvShell.popTop();
+      if (!p) return null;
+      const head = Array.from(p.querySelectorAll('div')).find(
+        (d) => d.children.length === 0 && (d.textContent || '').trim() === '문서 색상',
+      );
+      const box = head && head.parentElement ? head.parentElement.lastElementChild : null;
+      return {
+        shown: box ? box.querySelectorAll('button').length : -1,
+        colors: window.__gpvShell.ed().schema.documentColors(window.__gpvShell.doc()).length,
+      };
+    })()`);
+    r.check(
+      "(45 ins-7d) `문서 색상` 칸은 문서에 실제로 쓰인 색이다(한 줄 8칸까지)",
+      !!docSw && docSw.shown > 0 && docSw.shown === Math.min(8, docSw.colors),
+      J(docSw),
+    );
+    await S(`focusRoot()`);
+    await cdp.eval(`window.__gpvShell.fire({ key:'Escape', code:'Escape' })`);
+    await sleep(250);
+    const escPop = await cdp.eval(`({
+      n: window.__gpvShell.popN(),
+      color: window.__gpvShell.doc().objects[0].fills[0].color,
+      open: !window.__gpvShell.gone(),
+    })`);
+    r.check(
+      "(45 ins-7e) Esc 는 **팝오버부터** 닫는다(계층 0) — 문서도 편집기도 그대로다",
+      escPop.n === 0 && escPop.color === "#0A84FF" && escPop.open === true,
+      J(escPop),
+    );
+    await S(`stackOpen('채우기', 0)`);
+    await sleep(250);
+    const outside = await cdp.eval(`(() => {
+      const b = window.__gpvShell.popBackdrop();
+      if (!b) return false;
+      b.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+      return true;
+    })()`);
+    await sleep(250);
+    const afterOutside = await cdp.eval(
+      `({ n: window.__gpvShell.popN(), objects: window.__gpvShell.doc().objects.length })`,
+    );
+    r.check(
+      "(45 ins-7f) 바깥 클릭이 닫는다 — 그 클릭이 캔버스로 새어 선택이 바뀌거나 도형이 그려지지 않는다",
+      outside === true && afterOutside.n === 0 && afterOutside.objects === 1,
+      `${J(afterOutside)}`,
+    );
+    // 위 (ins-7e)는 포커스를 루트로 뺀 뒤 쐈다 — 실제 기본 상태는 **hex 입력에 포커스**다
+    // (Popover 가 첫 입력을 잡는다). 그 자리에서 Esc 를 쏴야 재려던 것이 재어진다.
+    await S(`stackOpen('채우기', 0)`);
+    await sleep(250);
+    const hexFocused = await cdp.eval(`(() => {
+      const p = window.__gpvShell.popTop();
+      return !!p && document.activeElement === window.__gpvShell.input('HEX', p);
+    })()`);
+    await cdp.eval(
+      `window.__gpvShell.keyField('HEX', { key:'Escape', code:'Escape' }, window.__gpvShell.popTop())`,
+    );
+    await sleep(250);
+    const escHex = await cdp.eval(`({
+      n: window.__gpvShell.popN(),
+      color: window.__gpvShell.doc().objects[0].fills[0].color,
+      open: !window.__gpvShell.gone(),
+    })`);
+    r.check(
+      "(45 ins-7g) hex 입력에 포커스가 있어도 Esc 가 닫는다 — 42 캡처 리스너는 입력 안 Esc 를 통과시키므로 이 이벤트가 팝오버까지 **올라가야** 닫힌다(입력이 삼키면 X 버튼 말고는 닫을 길이 없다)",
+      hexFocused === true &&
+        escHex.n === 0 &&
+        escHex.color === "#0A84FF" &&
+        escHex.open === true,
+      `focus=${hexFocused} ${J(escHex)}`,
+    );
+
+    // ── (45 ins-8) 블렌드 목록 19 ────────────────────────────────────────────
+    await seed([rect("b1", 40, 40, 60, 60)]);
+    await selectAllRoot();
+    await sleep(250);
+    await S(`clickBar(/블렌드 모드 전체/)`);
+    await sleep(300);
+    const menu = await cdp.eval(`(() => {
+      const p = window.__gpvShell.popTop();
+      const items = p ? Array.from(p.querySelectorAll('[role="menuitemradio"]')) : [];
+      return {
+        n: items.length,
+        seps: p ? p.querySelectorAll('[role="separator"]').length : -1,
+        pass: items
+          .filter((b) => (b.textContent || '').trim() === '패스스루')
+          .map((b) => b.disabled),
+      };
+    })()`);
+    await cdp.eval(`window.__gpvShell.clickIn(window.__gpvShell.popTop(), /곱하기/)`);
+    await sleep(300);
+    const blended = await cdp.eval(`({
+      blend: window.__gpvShell.doc().objects[0].blend,
+      label: window.__gpvShell.lastLabel(),
+      n: window.__gpvShell.popN(),
+    })`);
+    r.check(
+      "(45 ins-8) 블렌드 19종·구분선 5 이고, 리프에서 `패스스루` 는 **남되 비활성**이다 — 빼 버리면 항목 수가 선택마다 흔들리고 컨테이너 전용이라는 사실이 화면에서 사라진다",
+      menu.n === 19 &&
+        menu.seps === 5 &&
+        J(menu.pass) === J([true]) &&
+        blended.blend === "multiply" &&
+        blended.label === "블렌드 곱하기" &&
+        blended.n === 0,
+      `${J(menu)} → ${J(blended)}`,
+    );
+
+    // ── (45 ins-9) 팝오버가 열린 동안의 키 스코프 ────────────────────────────
+    await seed([paintRect("k1", 40, 40, 60, 60, [solid("#FF3B30")]), rect("k2", 130, 40, 30, 30)]);
+    await cdp.eval(`window.__gpvShell.ed().setTool('select')`);
+    await S(`pointerSeq([['down',70,70],['up',70,70]])`);
+    await sleep(250);
+    await S(`stackOpen('채우기', 0)`);
+    await sleep(300);
+    await S(`focusRoot()`);
+    await cdp.eval(`window.__gpvShell.ed().setTool('rect')`);
+    const delFire = await cdp.eval(
+      `window.__gpvShell.fire({ key:'Delete', code:'Delete' })`,
+    );
+    await sleep(200);
+    const vFire = await cdp.eval(`window.__gpvShell.fire({ key:'v', code:'KeyV' })`);
+    await sleep(200);
+    const guarded = await cdp.eval(`({
+      objects: window.__gpvShell.doc().objects.length,
+      tool: window.__gpvShell.ui().tool,
+      pops: window.__gpvShell.popN(),
+    })`);
+    await S(`ed().popover.close()`);
+    await sleep(200);
+    r.check(
+      "(45 ins-9) 팝오버가 열려 있으면 편집기 단축키는 **하나도** 먹지 않는다(Esc 만 예외) — 막지 않으면 색 이름을 지우려던 Delete 가 선택 객체를 지우고 V 는 글자 대신 도구를 바꾼다",
+      guarded.objects === 2 &&
+        guarded.tool === "rect" &&
+        guarded.pops === 1 &&
+        delFire.prevented === false &&
+        vFire.prevented === false,
+      `${J(guarded)} delete=${J(delFire)} v=${J(vFire)}`,
+    );
+    await cdp.eval(`window.__gpvShell.ed().setTool('select')`);
+
+    // ── (45 ins-10) 아이드로퍼 ───────────────────────────────────────────────
+    await seed([
+      paintRect("y1", 10, 10, 40, 40, [solid("#0A84FF")]),
+      rect("y2", 80, 80, 60, 60),
+    ]);
+    await cdp.eval(`window.__gpvShell.ed().setTool('select')`);
+    await S(`pointerSeq([['down',30,30],['up',30,30]])`);
+    await sleep(250);
+    await S(`focusRoot()`);
+    await cdp.eval(`window.__gpvShell.fire({ key:'i', code:'KeyI' })`);
+    await sleep(250);
+    const eyeOn = await S(`ui().tool`);
+    await S(`pointerSeq([['down',110,110],['up',110,110]])`);
+    await sleep(350);
+    const picked = await cdp.eval(`({
+      tool: window.__gpvShell.ui().tool,
+      color: window.__gpvShell.doc().objects[0].fills[0].color,
+      objects: window.__gpvShell.doc().objects.length,
+      label: window.__gpvShell.lastLabel(),
+    })`);
+    r.check(
+      "(45 ins-10a) 스포이드는 캔버스 색을 집어 선택 도형에 넣고 **원래 도구로 돌아온다** — 그 클릭이 선점되지 않으면 찍은 자리에 도형이 하나 생긴다",
+      eyeOn === "eyedropper" &&
+        picked.tool === "select" &&
+        picked.color === "#FF3B30" &&
+        picked.objects === 2 &&
+        picked.label === "채우기 FF3B30",
+      `on=${eyeOn} ${J(picked)}`,
+    );
+    await S(`focusRoot()`);
+    await cdp.eval(`window.__gpvShell.fire({ key:'i', code:'KeyI' })`);
+    await sleep(200);
+    await cdp.eval(`window.__gpvShell.fire({ key:'Escape', code:'Escape' })`);
+    await sleep(300);
+    const canceledPick = await cdp.eval(`({
+      tool: window.__gpvShell.ui().tool,
+      color: window.__gpvShell.doc().objects[0].fills[0].color,
+      open: !window.__gpvShell.gone(),
+    })`);
+    r.check(
+      "(45 ins-10b) Esc 는 색을 쓰지 않고 도구만 되돌린다 — 등록이 남으면 그 뒤 캔버스 클릭이 계속 먹혀 '그림이 안 그려진다'가 된다",
+      canceledPick.tool === "select" &&
+        canceledPick.color === "#FF3B30" &&
+        canceledPick.open === true,
+      J(canceledPick),
+    );
+    await S(`pointerSeq([['down',196,196],['up',196,196]])`);
+    await sleep(250);
+    const afterCancel = await cdp.eval(`({
+      sel: window.__gpvShell.ui().selectedIds.length,
+      objects: window.__gpvShell.doc().objects.length,
+    })`);
+    r.check(
+      "(45 ins-10c) 취소가 포인터 선점을 **해제**한다 — 빈 곳 클릭이 캔버스에 닿아 선택이 비고(선점이 남아 있으면 그 클릭이 삼켜져 선택이 그대로다) 객체 수는 변하지 않는다",
+      afterCancel.sel === 0 && afterCancel.objects === 2,
+      J(afterCancel),
+    );
+
+    // 색 피커의 스포이드 버튼 — `I` 와 달리 **팝오버가 열린 채** 도는 경로다. 버튼을 누르면
+    // 백드롭이 걷혀야(캔버스 클릭이 통과해야) 색을 뽑을 수 있는데, 그 전환이 팝오버를 다시
+    // 마운트하면 정리 함수가 방금 켠 세션을 그 자리에서 죽인다.
+    await seed([
+      paintRect("y3", 10, 10, 40, 40, [solid("#0A84FF")]),
+      rect("y4", 80, 80, 60, 60),
+    ]);
+    await cdp.eval(`window.__gpvShell.ed().setTool('select')`);
+    await S(`pointerSeq([['down',30,30],['up',30,30]])`);
+    await sleep(250);
+    await S(`stackOpen('채우기', 0)`);
+    await sleep(300);
+    await cdp.eval(`window.__gpvShell.clickIn(window.__gpvShell.popTop(), /스포이드/)`);
+    await sleep(250);
+    const popEye = await cdp.eval(
+      `({ tool: window.__gpvShell.ui().tool, n: window.__gpvShell.popN() })`,
+    );
+    await S(`pointerSeq([['down',110,110],['up',110,110]])`);
+    await sleep(350);
+    const popPicked = await cdp.eval(`({
+      tool: window.__gpvShell.ui().tool,
+      color: window.__gpvShell.doc().objects[0].fills[0].color,
+      objects: window.__gpvShell.doc().objects.length,
+      n: window.__gpvShell.popN(),
+    })`);
+    r.check(
+      "(45 ins-10d) 색 피커의 스포이드도 같은 세션이다 — 백드롭이 걷히는 동안 피커가 살아 있어야 그 클릭이 색으로 들어온다(다시 마운트되면 버튼이 아무 일도 안 한 것처럼 보인다)",
+      popEye.tool === "eyedropper" &&
+        popEye.n === 1 &&
+        popPicked.tool === "select" &&
+        popPicked.color === "#FF3B30" &&
+        popPicked.objects === 2 &&
+        popPicked.n === 1,
+      `${J(popEye)} → ${J(popPicked)}`,
+    );
+    await cdp.eval(`window.__gpvShell.clickIn(window.__gpvShell.popTop(), /스포이드/)`);
+    await sleep(250);
+    await S(`focusRoot()`);
+    await cdp.eval(`window.__gpvShell.fire({ key:'Escape', code:'Escape' })`);
+    await sleep(300);
+    const popEsc = await cdp.eval(`({
+      tool: window.__gpvShell.ui().tool,
+      n: window.__gpvShell.popN(),
+      color: window.__gpvShell.doc().objects[0].fills[0].color,
+    })`);
+    r.check(
+      "(45 ins-10e) 팝오버를 Esc 로 닫으면 도구도 함께 돌아온다 — Esc 는 계층 0(팝오버)에서 끝나 `select` 복귀(4단계)까지 못 가므로 세션이 스스로 되돌려야 한다(안 하면 캔버스가 선택도 그리기도 안 먹는다)",
+      popEsc.n === 0 && popEsc.tool === "select" && popEsc.color === "#FF3B30",
+      J(popEsc),
+    );
+    await cdp.eval(`window.__gpvShell.ed().setTool('select')`);
+
+    // ── (45 ins-11) 그라디언트 편집기 · 팝오버 스택 ──────────────────────────
+    const GRAD = paintRect("g1", 40, 40, 100, 60, [
+      {
+        type: "linear", angle: 90, scale: 1, visible: true, blend: "normal",
+        stops: [
+          { pos: 0, color: "#3B82F6", opacity: 1 },
+          { pos: 1, color: "#A855F7", opacity: 1 },
+        ],
+      },
+    ]);
+    await seed([GRAD]);
+    await selectAllRoot();
+    await sleep(300);
+    await S(`stackOpen('채우기', 0)`);
+    await sleep(350);
+    const gOpen = await cdp.eval(`({
+      n: window.__gpvShell.popN(),
+      title: window.__gpvShell.popTitle(),
+      backdrop: !!window.__gpvShell.popBackdrop(),
+      extra: window.__gpvShell.chromeN('[data-chrome="extra"] *'),
+    })`);
+    r.check(
+      "(45 ins-11a) 그라디언트 팝오버는 **백드롭이 없다**(핸들을 캔버스에서 끌어야 한다) · 핸들은 SVG 크롬에만 뜬다",
+      gOpen.n === 1 &&
+        /그라디언트/.test(gOpen.title || "") &&
+        gOpen.backdrop === false &&
+        gOpen.extra >= 1,
+      J(gOpen),
+    );
+    await cdp.eval(`window.__gpvShell.typeField('각도', '135', window.__gpvShell.popTop())`);
+    await sleep(300);
+    const addStop = await cdp.eval(`(() => {
+      const p = window.__gpvShell.popTop();
+      const bar = p ? p.querySelector('[aria-label="스톱"]') : null;
+      if (!bar) return false;
+      const r = bar.getBoundingClientRect();
+      bar.dispatchEvent(
+        new PointerEvent('pointerdown', {
+          bubbles: true, cancelable: true,
+          clientX: r.left + r.width / 2, clientY: r.top + r.height / 2,
+          button: 0, buttons: 1, pointerId: 1601, pointerType: 'mouse', isPrimary: true,
+        }),
+      );
+      return true;
+    })()`);
+    await sleep(300);
+    const gEdited = await cdp.eval(`(() => {
+      const f = window.__gpvShell.doc().objects[0].fills[0];
+      return { type: f.type, angle: f.angle, pos: f.stops.map((s) => s.pos) };
+    })()`);
+    await cdp.eval(`window.__gpvShell.clickIn(window.__gpvShell.popTop(), /스톱 순서 반전/)`);
+    await sleep(300);
+    const shuffled = await cdp.eval(
+      `window.__gpvShell.doc().objects[0].fills[0].stops.map((s) => s.pos)`,
+    );
+    r.check(
+      "(45 ins-11b) 각도 필드·스톱 바·순서 반전이 전부 문서에 닿는다 — 핸들 없이도 그라디언트 전 기능에 도달한다",
+      gEdited.type === "linear" &&
+        gEdited.angle === 135 &&
+        addStop === true &&
+        gEdited.pos.length === 3 &&
+        J(shuffled) === J(gEdited.pos.map((p) => 1 - p).reverse()),
+      `edited=${J(gEdited)} shuffle=${J(shuffled)}`,
+    );
+    const nested = await cdp.eval(`(() => {
+      const p = window.__gpvShell.popTop();
+      const b = p ? p.querySelector('button[title="색"]') : null;
+      if (!b) return false;
+      b.click();
+      return true;
+    })()`);
+    await sleep(300);
+    const stacked = await cdp.eval(
+      `({ n: window.__gpvShell.popN(), title: window.__gpvShell.popTitle() })`,
+    );
+    await S(`focusRoot()`);
+    await cdp.eval(`window.__gpvShell.fire({ key:'Escape', code:'Escape' })`);
+    await sleep(300);
+    const afterEsc1 = await cdp.eval(
+      `({ n: window.__gpvShell.popN(), title: window.__gpvShell.popTitle() })`,
+    );
+    await S(`focusRoot()`);
+    await cdp.eval(`window.__gpvShell.fire({ key:'Escape', code:'Escape' })`);
+    await sleep(300);
+    const afterEsc2 = await cdp.eval(`({
+      n: window.__gpvShell.popN(),
+      extra: window.__gpvShell.chromeN('[data-chrome="extra"] *'),
+      open: !window.__gpvShell.gone(),
+    })`);
+    r.check(
+      "(45 ins-11c) 팝오버는 **스택**이다 — 그라디언트 위에 연 스톱 피커를 Esc 가 하나씩 벗기고, 다 닫히면 캔버스 핸들도 함께 걷힌다",
+      nested === true &&
+        stacked.n === 2 &&
+        /스톱/.test(stacked.title || "") &&
+        afterEsc1.n === 1 &&
+        /그라디언트/.test(afterEsc1.title || "") &&
+        afterEsc2.n === 0 &&
+        afterEsc2.extra === 0 &&
+        afterEsc2.open === true,
+      `열림=${J(stacked)} Esc1=${J(afterEsc1)} Esc2=${J(afterEsc2)}`,
+    );
+
+    // ── (45 ins-12) 효과 편집 ────────────────────────────────────────────────
+    await seed([rect("fx", 40, 40, 60, 60)]);
+    await selectAllRoot();
+    await sleep(300);
+    await S(`stackAdd('효과')`);
+    await sleep(300);
+    const fx1 = await cdp.eval(`({
+      effects: window.__gpvShell.doc().objects[0].effects,
+      rows: window.__gpvShell.stackText('효과'),
+      label: window.__gpvShell.lastLabel(),
+    })`);
+    r.check(
+      "(45 ins-12a) `효과 +` 는 시안 기본값 드롭 섀도(0·4 12 25%) 한 겹을 만든다",
+      fx1.effects.length === 1 &&
+        fx1.effects[0].type === "drop-shadow" &&
+        fx1.effects[0].y === 4 &&
+        fx1.effects[0].blur === 12 &&
+        fx1.effects[0].opacity === 0.25 &&
+        /드롭 섀도/.test(fx1.rows[0] || "") &&
+        fx1.label === "효과 추가 드롭 섀도",
+      J(fx1),
+    );
+    await S(`stackBtn('효과', 0, '설정')`);
+    await sleep(300);
+    await cdp.eval(`window.__gpvShell.typeField('흐림', '16', window.__gpvShell.popTop())`);
+    await sleep(300);
+    const fx2 = await cdp.eval(`({
+      blur: window.__gpvShell.doc().objects[0].effects[0].blur,
+      title: window.__gpvShell.popTitle(),
+      n: window.__gpvShell.popN(),
+    })`);
+    await S(`ed().popover.close()`);
+    await sleep(200);
+    await S(`stackBtn('효과', 0, '제거')`);
+    await sleep(300);
+    const fx3 = await cdp.eval(`({
+      n: window.__gpvShell.doc().objects[0].effects.length,
+      label: window.__gpvShell.lastLabel(),
+    })`);
+    r.check(
+      "(45 ins-12b) 행의 `설정` 이 그 겹의 편집기를 열고, 필드가 문서에 닿고, `−` 가 겹을 지운다",
+      fx2.blur === 16 && fx2.n === 1 && fx2.title === "드롭 섀도" && fx3.n === 0 &&
+        fx3.label === "효과 제거",
+      `${J(fx2)} → ${J(fx3)}`,
+    );
+
+    // ── (45 ins-13) 조정 탭 — hidden 마운트 · 마스크 · 슬라이더 ──────────────
+    await seed([rect("j1", 20, 20, 40, 40)]);
+    await selectAllRoot();
+    await S(`clickTab('속성')`);
+    await sleep(250);
+    const before13 = await cdp.eval(`({
+      tab: window.__gpvShell.tab(),
+      hidden: window.__gpvShell.tabHidden('adjust'),
+      rotation: window.__gpvShell.doc().rotation,
+    })`);
+    const rotClicked = await S(`clickBtn(/오른쪽 90/)`);
+    await sleep(500);
+    const after13 = await cdp.eval(
+      `({ rotation: window.__gpvShell.doc().rotation, tab: window.__gpvShell.tab() })`,
+    );
+    await S(`clickBtn(/왼쪽 90/)`);
+    await sleep(400);
+    r.check(
+      "(45 ins-13a) 네 탭이 **항상 마운트**돼 있다 — 속성 탭을 보는 채로 조정 탭의 `오른쪽 90°` 가 눌린다(e2e 30 (c) 가 정확히 이 경로다)",
+      before13.tab === "props" &&
+        before13.hidden === true &&
+        rotClicked === true &&
+        after13.rotation === (before13.rotation + 90) % 360 &&
+        after13.tab === "props",
+      `${J(before13)} → ${J(after13)} clicked=${rotClicked}`,
+    );
+
+    await seed([rect("k1", 20, 20, 40, 40), rect("k2", 90, 20, 40, 40)]);
+    await selectAllRoot();
+    await sleep(250);
+    await S(`clickBar(/마스크로 사용/)`);
+    await sleep(350);
+    const masked = await cdp.eval(`({
+      masks: window.__gpvShell.doc().objects.filter((o) => o.mask).length,
+      kinds: window.__gpvShell.doc().objects.map((o) => o.kind),
+      label: window.__gpvShell.lastLabel(),
+    })`);
+    r.check(
+      "(45 ins-13b) `마스크로 사용` 은 그룹으로 감싸고 **맨 아래 한 겹만** 마스크로 만든다(38 makeMask)",
+      masked.masks === 1 && masked.kinds.includes("group") && masked.label === "마스크로 사용",
+      J(masked),
+    );
+
+    await S(`clickTab('조정')`);
+    await sleep(250);
+    const h13 = await S(`hist()`);
+    const slid = await cdp.eval(`(async () => {
+      const p = window.__gpvShell.tabPanel('adjust');
+      const el = p ? p.querySelector('input[type="range"]') : null;
+      if (!el) return null;
+      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      for (const v of ['110', '120', '130']) {
+        set.call(el, v);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        await window.__gpvShell.frame();
+      }
+      const mid = window.__gpvShell.hist();
+      el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true }));
+      await window.__gpvShell.frame();
+      return {
+        mid: mid,
+        end: window.__gpvShell.hist(),
+        brightness: window.__gpvShell.doc().brightness,
+      };
+    })()`);
+    r.check(
+      "(45 ins-13c) 색 보정 슬라이더는 **드래그 한 번 = 한 칸**이다 — 틱마다 커밋하면 몇 초 만에 200칸 상한이 소진돼 그 앞 작업으로 못 돌아간다",
+      !!slid && slid.brightness === 130 && slid.mid === h13 + 1 && slid.end === h13 + 1,
+      J(slid),
+    );
+    await cdp.eval(`window.__gpvShell.ed().setDoc({ brightness: 100 })`);
+    await S(`clickTab('속성')`);
+    await sleep(200);
+
+    // ── (45 ins-14) 푸터 ─────────────────────────────────────────────────────
+    const footer = await cdp.eval(`(() => {
+      const m = window.__gpvShell.modal();
+      const aside = m ? m.querySelector('aside') : null;
+      const foot = aside ? aside.lastElementChild : null;
+      return {
+        labels: foot
+          ? Array.from(foot.querySelectorAll('button')).map((b) => (b.textContent || '').trim())
+          : [],
+        cancels: m
+          ? Array.from(m.querySelectorAll('button')).filter(
+              (b) => (b.textContent || '').trim() === '취소',
+            ).length
+          : -1,
+      };
+    })()`);
+    r.check(
+      "(45 ins-14) 푸터는 `초기화 · 복사 · 다른 이름으로 · 저장 (PNG)` 넷이고 `취소` 버튼은 없다 — e2e 30/34/35 가 이 라벨로 저장을 구동하고, 닫기는 타이틀바 X·Esc 다",
+      footer.labels.length === 4 &&
+        footer.labels[0] === "초기화" &&
+        footer.labels[1] === "복사" &&
+        footer.labels[2] === "다른 이름으로" &&
+        /^저장 \(/.test(footer.labels[3] || "") &&
+        footer.cancels === 0,
+      J(footer),
+    );
   } finally {
     await cdp.eval(`window.__gpvShell && window.__gpvShell.removeProbe()`).catch(() => {});
     await closeEditor().catch(() => {});

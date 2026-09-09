@@ -73,6 +73,8 @@ export function Inspector({
           id={`${uid}-${t.id}-panel`}
           role="tabpanel"
           aria-labelledby={`${uid}-${t.id}`}
+          // e2e 40 이 이 속성으로 패널을 집는다(`id` 는 `useId` 라 창마다 달라 못 쓴다).
+          data-inspector-tab={t.id}
           hidden={tab !== t.id}
           className={tab === t.id ? "flex-1 overflow-y-auto p-3" : "hidden"}
         >

@@ -1,17 +1,5 @@
 import { writeImage } from "@tauri-apps/plugin-clipboard-manager";
-import {
-  AlertTriangle,
-  Copy,
-  Crop,
-  FlipHorizontal,
-  FlipVertical,
-  FileWarning,
-  Loader2,
-  Minus,
-  Plus,
-  RotateCcw,
-  RotateCw,
-} from "lucide-react";
+import { AlertTriangle, FileWarning, Loader2, Minus, Plus } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -36,7 +24,26 @@ import {
   renderRegion,
 } from "../../lib/annotate/render";
 import { resolveScene } from "../../lib/annotate/scene";
-import { isGeomNode, selectBox, translateObject } from "../../lib/annotate/geometry";
+import {
+  isGeomNode,
+  objectBBox,
+  objectFrame,
+  selectBox,
+  setObjectFrame,
+  translateObject,
+} from "../../lib/annotate/geometry";
+import {
+  alignObjects,
+  distributeObjects,
+  flipNodes,
+  tidyObjects,
+  type AlignMode,
+} from "../../lib/annotate/align";
+import {
+  classifySelection,
+  readProp,
+  type SelectionKind,
+} from "../../lib/annotate/selection";
 import { matchShortcut } from "../../lib/annotate/shortcuts";
 import {
   assertTreeInvariant,
@@ -44,10 +51,13 @@ import {
   makeMask as treeMakeMask,
   maskScope as treeMaskScope,
   nodeAABB as treeNodeAABB,
+  nodeOf as treeNodeOf,
+  releaseMask as treeReleaseMask,
   remove as treeRemove,
   reorder as treeReorder,
   reparent as treeReparent,
   rotateNodes as treeRotate,
+  subtreeIds as treeSubtreeIds,
   subtreeRange as treeSubtreeRange,
   translateSubtree as treeTranslate,
   ungroup as treeUngroup,
@@ -69,10 +79,13 @@ import {
   DEFAULT_PAINT,
   DUPLICATE_OFFSET,
   newObjId,
-  TOOL_KINDS,
   type Node,
   type EditorDoc,
+  type Effect,
+  type Fill,
+  type NodeBase,
   type ObjId,
+  type Paint,
   type Rect,
   type DefaultPaint,
 } from "../../lib/annotate/types";
@@ -86,10 +99,8 @@ import {
   bytesToBase64,
   encodeCanvas,
   extOf,
-  FORMATS,
   formatOfPath,
   loadImage,
-  supportsQuality,
   type ImgFormat,
 } from "../../lib/image-codec";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -110,6 +121,7 @@ import { useUi } from "../../stores/ui";
 import {
   rulerTicks,
   STAGE_Z,
+  type ChromePrim,
   type ChromeScreen,
   type ChromeState,
 } from "../../lib/annotate/chrome";
@@ -123,15 +135,31 @@ import AnnotationLayer, {
   type AnnotationLayerHandle,
 } from "./AnnotationLayer";
 import ChromeOverlay, { type ChromeOverlayHandle } from "./ChromeOverlay";
-import { SnapSection } from "./SnapSection";
 import { newImageNode } from "./annotation/draft";
+import { registerPointerHit } from "./annotation/pointer";
 import EditorStatusBar, { type StatusBarHandle } from "./EditorStatusBar";
 import EditorTitleBar from "./EditorTitleBar";
 import { LeftPanel } from "./LeftPanel";
 import type { LayerPanelHandle } from "./layers/LayerPanel";
 import ToolRail, { type ToolRailHandle } from "./ToolRail";
+import { ContextBar, type EditorActions as BarActions } from "./ContextBar";
 import { Inspector } from "./inspector/Inspector";
-import { PropsLegacy, TextLegacy } from "./inspector/PropsLegacy";
+import { AdjustTab } from "./inspector/AdjustTab";
+import { ExportTabHost } from "./inspector/ExportTabHost";
+import { InspectorFooter } from "./inspector/InspectorFooter";
+import {
+  PropsTab,
+  takesPaint,
+  type EditorActions as PropsActions,
+  type PaintSlot,
+  type PropsPopoverRequest,
+} from "./inspector/PropsTab";
+import { NumField } from "./inspector/fields/NumField";
+import { closeTopPopover, hasOpenPopover, Popover } from "./popovers/Popover";
+import { ColorPicker } from "./popovers/ColorPicker";
+import { EffectEditor } from "./popovers/EffectEditor";
+import { useEyedropper } from "./popovers/Eyedropper";
+import { GradientEditor } from "./popovers/GradientEditor";
 import { useEditorKeys } from "./useEditorKeys";
 
 // 프리뷰 백킹 스토어 상한 — 거대 이미지를 전체 해상도로 그리면 메모리 폭증 + Chromium 캔버스
@@ -149,8 +177,8 @@ const CLIP_PREFIX = "gpv-anno:";
 // 입력 화소수 상한. 8K(33MP)는 통과시키고 초대형 스캔본을 막는 선 — 편집기 하나가 이미지
 // 한 장을 두고 디코드·oriented·프리뷰 3장·저장 캔버스를 동시에 들기 때문이다(설계 §6.3).
 const MAX_INPUT_PIXELS = 100_000_000;
-/** 최근 사용 색 기억 개수(세션 한정). */
-const RECENT_COLORS = 6;
+/** 최근 사용 색 기억 개수(42 스토어 `recentColors` 상한 — `ColorPicker` 와 같은 값이어야 한다). */
+const RECENT_COLORS = 12;
 
 /** 빈 문서 — 경계(normalizeDoc)가 만든다. 필드를 두 곳에서 셀 이유가 없다(37 §4). */
 const EMPTY_DOC: EditorDoc = normalizeDoc({});
@@ -192,15 +220,134 @@ function roundTripWarning(path: string): string | null {
   return formatOfPath(path) === null ? "PNG로 저장됩니다" : null;
 }
 
+// ── 액션 맵(45 §4) ──────────────────────────────────────────────────────────
+//
+// 컨텍스트 바와 속성 탭이 각자 자기 파일에서 같은 이름의 계약을 선언한다(둘 다 이 파일이
+// 구현을 든다는 전제로 쓰였다). 여기서 **교집합이 아니라 합집합**으로 든다 — 한쪽만 만족하면
+// 나머지 한쪽이 컴파일에서 터지고, 둘을 따로 만들면 버튼과 단축키가 갈라진다.
+//
+// 두 선언이 겹치는 자리의 인자가 서로 넓다(`patchSelection` 은 patch|함수, `setFrame` 은
+// id 하나|배열). 구현은 **둘 다 받는** 쪽으로 넓혀 둔다.
+export type EditorActions = BarActions & PropsActions;
+
 /**
- * 툴바의 "색" 컨트롤은 kind 마다 다른 슬롯에 앉는다 — v1 `restyle` 의 규칙을 그대로 잇는다:
- * 뱃지는 원 채움, 텍스트는 글자색(둘 다 `fills`), 나머지는 선(`strokes`).
- * 나머지 필드는 schema.applyPaintPatch 가 kind 를 보고 거른다.
+ * 선택 전체에 쓰는 속성 묶음 — 두 계약의 patch 타입을 합친 것.
+ * `DefaultPaint` 키는 `applyPaintPatch`(37)가 kind 를 보고 거르고, 나머지는 노드 공통 필드다.
  */
-function remapPaintForKind(o: Node, patch: Partial<DefaultPaint>): Partial<DefaultPaint> {
-  if (!patch.strokes || (o.kind !== "badge" && o.kind !== "text")) return patch;
-  const { strokes, ...rest } = patch;
-  return { ...rest, fills: strokes };
+type SelPatch = Partial<DefaultPaint> &
+  Partial<
+    Pick<
+      NodeBase,
+      "opacity" | "blend" | "name" | "visible" | "locked" | "constraints" | "effects"
+    >
+  >;
+
+const PAINT_KEYS = [
+  "fills",
+  "strokes",
+  "strokeWidth",
+  "radius",
+  "fontSize",
+  "mosaicMode",
+  "mosaicStrength",
+] as const satisfies readonly (keyof DefaultPaint)[];
+
+/** `applyPaintPatch` 가 아는 키만 남긴다 — 모르는 키를 넘기면 조용히 무시돼 값이 안 들어간다. */
+function paintPart(p: SelPatch): Partial<DefaultPaint> {
+  const out: Partial<DefaultPaint> = {};
+  for (const k of PAINT_KEYS) if (p[k] !== undefined) Object.assign(out, { [k]: p[k] });
+  return out;
+}
+
+/**
+ * 노드 하나에 패치를 얹는다. 페인트 스택은 37 깔때기를 지나고 공통 필드는 직접 얹는다 —
+ * `applyPaintPatch` 는 `DefaultPaint` 키만 알아서 `opacity`/`blend`/`effects` 를 **말없이 버린다**.
+ */
+function applySelPatch(o: Node, p: SelPatch): Node {
+  let next = applyPaintPatch(o, paintPart(p));
+  if (p.opacity !== undefined) next = { ...next, opacity: Math.min(1, Math.max(0, p.opacity)) };
+  if (p.blend !== undefined) next = { ...next, blend: p.blend };
+  if (p.effects !== undefined) next = { ...next, effects: p.effects };
+  if (p.name !== undefined) next = { ...next, name: p.name };
+  if (p.visible !== undefined) next = { ...next, visible: p.visible };
+  if (p.locked !== undefined) next = { ...next, locked: p.locked };
+  if (p.constraints !== undefined) next = { ...next, constraints: p.constraints };
+  return next;
+}
+
+/** 팔레트·색 피커가 고른 색을 최근 목록 맨 앞으로. `ColorPicker` 의 비공개 `pushRecent` 와 같은 규칙. */
+function rememberColor(p: SelPatch): void {
+  const head = (p.strokes ?? p.fills)?.find((f) => f.visible && f.type === "solid");
+  if (!head || head.type !== "solid") return;
+  const hex = head.color;
+  useImageEditorUi.setState((s) =>
+    s.recentColors[0] === hex
+      ? s
+      : { recentColors: [hex, ...s.recentColors.filter((c) => c !== hex)].slice(0, RECENT_COLORS) },
+  );
+}
+
+const ALIGN_LABEL: Record<AlignMode, string> = {
+  left: "왼쪽",
+  hcenter: "가로 가운데",
+  right: "오른쪽",
+  top: "위",
+  vcenter: "세로 가운데",
+  bottom: "아래",
+};
+
+const SLOT_TITLE: Record<PaintSlot, string> = { fills: "채우기", strokes: "선" };
+
+/**
+ * 선택 종류 → 자동으로 열 인스펙터 탭(45 §3.1 표). `none` 은 여기 없다 — 아무것도 안 골랐다고
+ * 보던 탭을 빼앗으면 조정 슬라이더를 만지다 빈 곳을 클릭한 것만으로 탭이 튄다.
+ */
+const AUTO_TAB: Partial<Record<SelectionKind, EditorUiState["inspectorTab"]>> = {
+  "single-shape": "props",
+  multi: "props",
+  "vector-edit": "props",
+  text: "text",
+  image: "adjust",
+  crop: "adjust",
+};
+
+const PAINT_KIND_TITLE: Record<Paint["type"], string> = {
+  solid: "단색",
+  linear: "선형 그라디언트",
+  radial: "방사형 그라디언트",
+  angular: "원뿔 그라디언트",
+  diamond: "다이아 그라디언트",
+  image: "이미지",
+};
+
+const EFFECT_TITLE: Record<Effect["type"], string> = {
+  "drop-shadow": "드롭 섀도",
+  "inner-shadow": "이너 섀도",
+  "layer-blur": "레이어 블러",
+  "background-blur": "배경 블러",
+};
+
+/** 스택 한 겹만 갈아 끼운다 — 표시·블렌드는 그 겹의 것을 남긴다(팝오버는 색만 고친다). */
+function replacePaint(list: readonly Fill[], i: number, p: Paint): Fill[] {
+  return list.map((f, k) => (k === i ? { ...p, visible: f.visible, blend: f.blend } : f));
+}
+
+/**
+ * 맨 앞 겹을 단색으로 바꾼다(없으면 만든다). **나머지 겹은 그대로 둔다** — 스택을 통째로
+ * 갈면 두 번째 채우기가 말없이 사라진다(스포이드·팔레트가 같은 규칙을 쓴다).
+ */
+function withSolidHead(list: readonly Fill[], hex: string): Fill[] {
+  const head = list[0];
+  return [
+    {
+      type: "solid",
+      color: hex,
+      opacity: head && head.type === "solid" ? head.opacity : 1,
+      visible: head?.visible ?? true,
+      blend: head?.blend ?? "normal",
+    },
+    ...list.slice(1),
+  ];
 }
 
 /**
@@ -303,7 +450,12 @@ export default function ImageEditor() {
 
   const [style, setStyle] = useState<DefaultPaint>(DEFAULT_PAINT);
   const [opacity, setOpacity] = useState(DEFAULT_OPACITY);
-  const [recent, setRecent] = useState<string[]>([]);
+  // 최근 색은 **스토어 한 곳**이다. 여기 로컬 사본을 두면 색 피커(스토어를 직접 쓴다)와
+  // 팔레트가 서로 다른 목록을 보여 준다.
+  const recent = useImageEditorUi((s) => s.recentColors);
+  // 액션 맵은 리렌더 없이 최신 값을 봐야 한다(전부 stable useCallback) — 그래서 거울을 둔다.
+  const styleRef = useRef(style);
+  styleRef.current = style;
 
   /**
    * 화면 확대·이동. **CSS transform 으로만** 건다 — 프리뷰 백킹(previewScale/backW/backH)은
@@ -320,16 +472,41 @@ export default function ImageEditor() {
   const chromeRef = useRef<ChromeOverlayHandle | null>(null);
   /** 마지막으로 그린 크롬 상태 — e2e 훅이 읽고, `chrome.set` 이 그 위에 얹는다. */
   const lastChromeRef = useRef<ChromeState | null>(null);
+  /** 주석 레이어가 마지막으로 준 원본(=`extra` 합류 전). 프리미티브만 바뀔 때 다시 그릴 근거다. */
+  const baseChromeRef = useRef<ChromeState | null>(null);
+  /**
+   * 45 팝오버가 캔버스에 얹는 크롬 프리미티브(그라디언트 핸들). 주석 레이어는 이 값을 모르고
+   * 매 프레임 자기 `extra` 를 새로 만들므로, **여기서 합류**시키지 않으면 핸들이 다음 프레임에
+   * 사라진다(드래그 중에는 매 틱 다시 그려진다).
+   */
+  const chromeExtraRef = useRef<ChromePrim[]>([]);
+  const paintChrome = useCallback((st: ChromeState) => {
+    baseChromeRef.current = st;
+    const ex = chromeExtraRef.current;
+    const merged = ex.length ? { ...st, extra: [...st.extra, ...ex] } : st;
+    lastChromeRef.current = merged;
+    chromeRef.current?.update(merged);
+  }, []);
   /**
    * 주석 레이어에 넘기는 **경유 핸들**. 오버레이를 그대로 넘기면 마지막 상태를 볼 방법이 없다
    * (오버레이는 상태를 밖으로 내주지 않는다) — 한 겹 두어 훅과 강제 갱신이 같은 값을 본다.
    */
   const chromeTapRef = useRef<ChromeOverlayHandle>({
-    update: (st) => {
-      lastChromeRef.current = st;
-      chromeRef.current?.update(st);
-    },
+    update: (st) => paintChrome(st),
   });
+  /**
+   * `GradientEditor` 의 `onExtra`. **참조가 안정해야 한다** — 매 렌더 새 함수면 그쪽 이펙트가
+   * 렌더마다 돌아 크롬이 초당 60회 재구축된다.
+   */
+  const setChromeExtra = useCallback(
+    (prims: ChromePrim[]) => {
+      chromeExtraRef.current = prims;
+      // 문서가 안 바뀌는 조작(각도 필드만 만지는 등)에서는 레이어가 프레임을 안 돌린다 —
+      // 마지막 원본 위에 다시 얹어 한 번 더 그린다.
+      if (baseChromeRef.current) paintChrome(baseChromeRef.current);
+    },
+    [paintChrome],
+  );
   const railRef = useRef<ToolRailHandle | null>(null);
   const statusRef = useRef<StatusBarHandle | null>(null);
   /**
@@ -403,8 +580,8 @@ export default function ImageEditor() {
   // 결과적으로 드래그 한 번이 히스토리 한 칸이 된다(§5.3).
   const liveRef = useRef(false);
   const patchLive = useCallback(
-    (patch: Partial<EditorDoc>) => {
-      patchDoc(patch, liveRef.current ? "replace" : "commit");
+    (patch: Partial<EditorDoc>, label?: string) => {
+      patchDoc(patch, liveRef.current ? "replace" : "commit", label);
       liveRef.current = true;
     },
     [patchDoc],
@@ -412,6 +589,23 @@ export default function ImageEditor() {
   const endLive = useCallback(() => {
     liveRef.current = false;
   }, []);
+
+  /**
+   * 확정 커밋. **라이브 구간이 열려 있으면 그 칸을 덮고 봉인한다** — 그냥 commit 하면
+   * 슬라이더·핸들 드래그 한 번이 히스토리 두 칸(첫 라이브 틱 + 최종 커밋)이 되어
+   * Ctrl+Z 가 같은 조작을 두 번 되돌린다(45 §3.4).
+   */
+  const commitDoc = useCallback(
+    (patch: Partial<EditorDoc>, label: string) => {
+      if (liveRef.current) {
+        liveRef.current = false;
+        patchDoc(patch, "replace", label);
+        return;
+      }
+      patchDoc(patch, "commit", label);
+    },
+    [patchDoc],
+  );
 
   const undo = useCallback(() => {
     const d = histRef.current.undo();
@@ -694,37 +888,48 @@ export default function ImageEditor() {
    * 반전이 홀수 개 걸려 있으면 화면 기준 회전 방향이 뒤집힌다(buildOriented 가 회전 후
    * 이미지 공간에서 반전하기 때문). 실측으로 확인한 관계다.
    */
-  const rotateBy = (plus90: boolean) => {
-    if (!oriented) return;
-    const d = docRef.current;
-    const mirrored = d.flipH !== d.flipV;
-    const delta: OrientDelta = plus90 !== mirrored ? "rotCW" : "rotCCW";
-    patchDoc({
-      rotation: (d.rotation + (plus90 ? 90 : 270)) % 360,
-      objects: transformObjects(d.objects, delta, oriented.width, oriented.height),
-      crop: null,
-      outW: oriented.height,
-      outH: oriented.width,
-    });
-  };
+  //
+  // `oriented` 를 **ref 로 읽는다**: 액션 맵(45)이 이 둘을 stable 하게 물고 있어서, 렌더 값을
+  // 잡으면 첫 렌더(이미지가 아직 null)의 클로저가 굳어 회전·반전이 영영 조용히 no-op 이 된다.
+  const rotateBy = useCallback(
+    (plus90: boolean) => {
+      const base = orientedRef.current;
+      if (!base) return;
+      const d = docRef.current;
+      const mirrored = d.flipH !== d.flipV;
+      const delta: OrientDelta = plus90 !== mirrored ? "rotCW" : "rotCCW";
+      patchDoc({
+        rotation: (d.rotation + (plus90 ? 90 : 270)) % 360,
+        objects: transformObjects(d.objects, delta, base.width, base.height),
+        crop: null,
+        outW: base.height,
+        outH: base.width,
+      });
+    },
+    [patchDoc],
+  );
 
-  const flipBy = (axis: "h" | "v") => {
-    if (!oriented) return;
-    const d = docRef.current;
-    const objects = transformObjects(
-      d.objects,
-      axis === "h" ? "flipH" : "flipV",
-      oriented.width,
-      oriented.height,
-    );
-    patchDoc({
-      ...(axis === "h" ? { flipH: !d.flipH } : { flipV: !d.flipV }),
-      objects,
-      crop: null,
-      outW: oriented.width,
-      outH: oriented.height,
-    });
-  };
+  const flipBy = useCallback(
+    (axis: "h" | "v") => {
+      const base = orientedRef.current;
+      if (!base) return;
+      const d = docRef.current;
+      const objects = transformObjects(
+        d.objects,
+        axis === "h" ? "flipH" : "flipV",
+        base.width,
+        base.height,
+      );
+      patchDoc({
+        ...(axis === "h" ? { flipH: !d.flipH } : { flipV: !d.flipV }),
+        objects,
+        crop: null,
+        outW: base.width,
+        outH: base.height,
+      });
+    },
+    [patchDoc],
+  );
 
   // ── 크롭(포인터는 주석 캔버스가 받아 여기로 위임한다) ──────────────────────
   const cropStartRef = useRef<{ x: number; y: number } | null>(null);
@@ -870,16 +1075,16 @@ export default function ImageEditor() {
     setCropMode(false);
   };
 
-  // ── 툴바 콜백 ─────────────────────────────────────────────────────────────
+  // ── 도구 기본 스타일 ──────────────────────────────────────────────────────
 
-  // 객체 하나를 고르면 그 객체의 속성을 툴바에 끌어온다 — 패널이 보여주는 값과 실제 값이
-  // 어긋나면 슬라이더를 건드리는 순간 엉뚱한 값으로 덮어쓴다.
+  // 객체 하나를 고르면 그 속성이 **다음에 그릴 것의 기본값**이 된다(v1 툴바 규칙 승계).
+  // 인스펙터는 노드를 직접 읽으므로 이 동기화는 레일 스와치·드래프트 색에만 쓰인다.
   useEffect(() => {
     if (selectedIds.length !== 1) return;
     const o = docRef.current.objects.find((x) => x.id === selectedIds[0]);
     if (!o) return;
-    // 선택 객체의 페인트를 툴바로 끌어온다. 뱃지·텍스트는 "색"이 채우기 슬롯에 있으므로
-    // 툴바가 읽는 strokes 자리로 옮겨 보여 준다(remapPaintForKind 의 역).
+    // 뱃지·텍스트는 "색"이 채우기 슬롯에 있다 — 드래프트가 읽는 strokes 자리로 옮겨 둔다
+    // (`annotation/pointer.ts` 의 `newTextNode({ fills: style.strokes })` 와 짝이다).
     const p = paintOf(o);
     setStyle((s) => ({
       ...s,
@@ -897,40 +1102,6 @@ export default function ImageEditor() {
     }));
     setOpacity(o.opacity);
   }, [selectedIds]);
-
-  /** 속성 패널이 따를 도구 — 선택 중이면 선택된 객체의 종류(NodeKind ⊂ Tool). */
-  const propTool: Tool = (() => {
-    if (tool !== "select" || selectedIds.length !== 1) return tool;
-    const kind = doc.objects.find((o) => o.id === selectedIds[0])?.kind;
-    // path·frame·group·instance 는 도구가 없다(만드는 UI 는 태스크 45·46) — 속성 패널은
-    // 현재 도구를 따른다.
-    return kind && (TOOL_KINDS as readonly string[]).includes(kind) ? (kind as Tool) : tool;
-  })();
-
-  const onStyleChange = (patch: Partial<DefaultPaint>, live = false) => {
-    setStyle((s) => ({ ...s, ...patch }));
-    const picked = patch.strokes?.find((f) => f.visible && f.type === "solid");
-    if (picked && picked.type === "solid") {
-      const c = picked.color;
-      setRecent((r) => [c, ...r.filter((x) => x !== c)].slice(0, RECENT_COLORS));
-    }
-    if (!selectedIds.length) return;
-    const next = docRef.current.objects.map((o) =>
-      selectedIds.includes(o.id) ? applyPaintPatch(o, remapPaintForKind(o, patch)) : o,
-    );
-    if (live) patchLive({ objects: next });
-    else patchDoc({ objects: next });
-  };
-
-  const onOpacityChange = (v: number, live = false) => {
-    setOpacity(v);
-    if (!selectedIds.length) return;
-    const next = docRef.current.objects.map((o) =>
-      selectedIds.includes(o.id) ? { ...o, opacity: v } : o,
-    );
-    if (live) patchLive({ objects: next });
-    else patchDoc({ objects: next });
-  };
 
   // ── 출력 ──────────────────────────────────────────────────────────────────
 
@@ -1312,7 +1483,20 @@ export default function ImageEditor() {
   // 리스너는 `useEditorKeys` 하나뿐이다(window **capture**). 다른 태스크는 표(shortcuts.ts)에
   // 행을 넣고 이 맵에 핸들러를 더한다 — 리스너를 새로 달지 않는다. 여기 없는 id 는
   // `preventDefault` 도 안 되므로 앱 전역으로 그대로 흘러간다(먹통 키가 생기지 않는다).
-  const selIds = () => useImageEditorUi.getState().selectedIds as ObjId[];
+  /**
+   * 단축키·액션 맵이 보는 선택. **`'__base'`(배경 의사 id)를 여기서 걸러 낸다** — 렌더 쪽
+   * `selectedIds`(:426)와 같은 규칙이다.
+   *
+   * 남겨 두면 배경만 고른 상태가 개수 1 이라 "선택 없음" 분기를 그냥 지나가는데, 정작 그 id 에
+   * 맞는 노드는 하나도 없다. 결과는 조용한 두 가지 사고다: 스포이드로 뽑은 색이 기본 스타일
+   * 에도 노드에도 안 들어가 **사라지고**(:1818 의 주석이 막으려던 상황), `patchDoc` 은 매번 새
+   * doc 객체를 만들어 히스토리 단락(`next === cur.doc`)을 통과하므로 아무것도 안 바뀐 커밋이
+   * 편집마다 한 칸씩 쌓이며 자동저장까지 예약한다(41 의 200칸을 갉아먹는다).
+   */
+  const selIds = (): ObjId[] =>
+    useImageEditorUi
+      .getState()
+      .selectedIds.filter((id): id is ObjId => id !== "__base");
 
   /**
    * 선택 노드를 OS 클립보드에 텍스트로 쓴다. 복사한 개수를 돌려준다 — 잘라내기가 그 값으로
@@ -1333,12 +1517,24 @@ export default function ImageEditor() {
    * `delete` 액션의 가이드 우선 분기(43)는 여기 **없다** — 패널 휴지통은 고른 노드를 지우는
    * 버튼이라, 가이드를 선택한 채 눌렀다고 가이드가 대신 사라지면 무슨 일이 났는지 알 수 없다.
    */
-  const groupSel = () => {
+  const groupSel = (kind: "group" | "frame" = "group") => {
     const ids = selIds();
-    if (ids.length < 2) return;
-    const r = treeGroup(docRef.current.objects, ids, "group");
-    patchDoc({ objects: r.objects }, "commit", "그룹");
+    // 그룹은 둘 이상, 프레임은 하나만으로도 감싼다(단축키 표의 `when` 이 그렇게 갈려 있다).
+    if (kind === "group" ? ids.length < 2 : ids.length < 1) return;
+    const r = treeGroup(docRef.current.objects, ids, kind);
+    if (!r.id) return;
+    patchDoc(
+      { objects: r.objects },
+      "commit",
+      kind === "group" ? "그룹" : "프레임으로 감싸기",
+    );
     setSelectedIds([r.id]);
+  };
+
+  const ungroupSel = () => {
+    const ids = selIds();
+    if (ids.length !== 1) return;
+    patchDoc({ objects: treeUngroup(docRef.current.objects, ids[0]) }, "commit", "그룹 해제");
   };
 
   const removeSel = () => {
@@ -1346,6 +1542,49 @@ export default function ImageEditor() {
     if (!ids.length) return;
     patchDoc({ objects: treeRemove(docRef.current.objects, ids) }, "commit", "삭제");
     setSelectedIds([]);
+  };
+
+  const duplicateSel = () => {
+    const ids = selIds();
+    const copies: Node[] = [];
+    for (const o of docRef.current.objects) {
+      if (!ids.includes(o.id)) continue;
+      // 컨테이너는 기하가 없다 — 자손째 복제는 레이어 패널(44)이 붙인다.
+      copies.push(
+        isGeomNode(o)
+          ? { ...translateObject(o, DUPLICATE_OFFSET, DUPLICATE_OFFSET), id: newObjId() }
+          : { ...o, id: newObjId() },
+      );
+    }
+    if (!copies.length) return;
+    patchDoc(
+      { objects: [...docRef.current.objects, ...copies] },
+      "commit",
+      copies.length === 1 ? "복제" : copies.length + "개 복제",
+    );
+    setSelectedIds(copies.map((o) => o.id));
+  };
+
+  /**
+   * 마스크 지정/해제. 해제는 **선택 안에서 마스크인 노드**를 찾아 푼다 — `makeMask` 가 세운
+   * 것이 첫 자식이라, 사용자가 고른 것이 그룹이든 마스크 노드든 같은 결과가 나와야 한다.
+   */
+  const maskSel = (on: boolean) => {
+    const ids = selIds();
+    if (!ids.length) return;
+    if (on) {
+      if (ids.length < 2) return;
+      const r = treeMakeMask(docRef.current.objects, ids);
+      patchDoc({ objects: r.objects }, "commit", "마스크로 사용");
+      return;
+    }
+    let objs = docRef.current.objects;
+    for (const id of ids) {
+      for (const sub of treeSubtreeIds(objs, id)) {
+        if (treeNodeOf(objs, sub)?.mask) objs = treeReleaseMask(objs, sub);
+      }
+    }
+    if (objs !== docRef.current.objects) patchDoc({ objects: objs }, "commit", "마스크 해제");
   };
 
   /** 보기 토글 뒤집기. 스토어에서 직접 읽는다 — 액션 맵은 리렌더 없이 최신 값을 봐야 한다. */
@@ -1435,9 +1674,305 @@ export default function ImageEditor() {
     [dispH, dispW, displayScale, scene, selectedIds],
   );
 
+  // ── 액션 맵(45 §4) — 단축키·컨텍스트 바·인스펙터가 같은 함수를 부른다 ──────
+  //
+  // 전부 **stable** 이어야 한다: e2e 훅이 `actions` 를 통째로 들고 있고, `GradientEditor` 처럼
+  // 콜백 참조로 이펙트를 거는 소비자가 있다. 그래서 값은 React state 가 아니라 스토어·ref 에서
+  // 읽는다(`selIds()`·`docRef`·`styleRef`·`orientedRef`).
+
+  /** 정렬·반전의 기준 캔버스(oriented px). 이미지가 아직 없으면 0 크기라 연산이 항등이 된다. */
+  const canvasRect = useCallback(
+    (): Rect => ({
+      x: 0,
+      y: 0,
+      w: orientedRef.current?.width ?? 0,
+      h: orientedRef.current?.height ?? 0,
+    }),
+    [],
+  );
+
+  const patchSelection = useCallback(
+    (
+      patch: SelPatch | ((n: Node) => SelPatch | null),
+      label: string,
+      live = false,
+    ) => {
+      const ids = selIds();
+      // 고른 값은 **다음에 만들 객체**의 기본값도 된다(v1 `onStyleChange` 승계). 선택이 비면
+      // 이것이 전부다 — 이 경로가 없으면 "그리기 전에 색·두께를 고른다"가 통째로 사라진다.
+      // 노드별 함수 패치(MIXED)는 값이 하나로 모이지 않으므로 기본값을 건드리지 않는다.
+      if (typeof patch !== "function") {
+        const paint = paintPart(patch);
+        if (Object.keys(paint).length) setStyle((s) => ({ ...s, ...paint }));
+        if (patch.opacity !== undefined) setOpacity(patch.opacity);
+        rememberColor(patch);
+      }
+      if (!ids.length) return;
+      const set = new Set(ids);
+      const next = docRef.current.objects.map((o) => {
+        if (!set.has(o.id)) return o;
+        const p = typeof patch === "function" ? patch(o) : patch;
+        return p ? applySelPatch(o, p) : o;
+      });
+      if (live) patchLive({ objects: next }, label);
+      else commitDoc({ objects: next }, label);
+    },
+    [commitDoc, patchLive],
+  );
+
+  const setFrame = useCallback(
+    (
+      ids: ObjId | readonly ObjId[],
+      edit:
+        | Partial<{ x: number; y: number; w: number; h: number; rot: number }>
+        | ((cur: { x: number; y: number; w: number; h: number; rot: number }) => Partial<{
+            x: number;
+            y: number;
+            w: number;
+            h: number;
+            rot: number;
+          }>),
+      label: string,
+      live = false,
+    ) => {
+      const set = new Set(typeof ids === "string" ? [ids] : ids);
+      if (!set.size) return;
+      let touched = false;
+      const next = docRef.current.objects.map((o) => {
+        // 컨테이너는 자기 기하가 없다 — 프레임 편집은 리프에만 걸린다(38 §1).
+        if (!set.has(o.id) || !isGeomNode(o)) return o;
+        touched = true;
+        return setObjectFrame(o, typeof edit === "function" ? edit(objectFrame(o)) : edit);
+      });
+      if (!touched) return;
+      if (live) patchLive({ objects: next }, label);
+      else commitDoc({ objects: next }, label);
+    },
+    [commitDoc, patchLive],
+  );
+
+  const actions: EditorActions = useMemo(
+    () => ({
+      patchSelection,
+      setFrame,
+      endLive,
+      align: (mode) => {
+        const ids = selIds();
+        if (!ids.length) return;
+        // 기준은 **마지막 선택**이다(시안 ⑧). 하나만 골랐으면 캔버스가 기준이 된다.
+        const keyId = ids.length > 1 ? ids[ids.length - 1] : null;
+        commitDoc(
+          {
+            objects: alignObjects(docRef.current.objects, ids, mode, keyId, canvasRect()),
+          },
+          `정렬 ${ALIGN_LABEL[mode]}`,
+        );
+      },
+      distribute: (axis) => {
+        const ids = selIds();
+        if (ids.length < 3) return;
+        commitDoc(
+          { objects: distributeObjects(docRef.current.objects, ids, axis) },
+          axis === "x" ? "수평 분배" : "수직 분배",
+        );
+      },
+      tidy: (gap) => {
+        const ids = selIds();
+        if (ids.length < 2) return;
+        commitDoc(
+          { objects: tidyObjects(docRef.current.objects, ids, gap) },
+          gap === "auto" ? "간격 정리" : `간격 정리 ${gap}`,
+        );
+      },
+      flip: (axis) => {
+        const ids = selIds();
+        if (!ids.length) return;
+        commitDoc(
+          { objects: flipNodes(docRef.current.objects, ids, axis) },
+          axis === "h" ? "좌우 반전" : "상하 반전",
+        );
+      },
+      rotate: (deg) => {
+        const ids = selIds();
+        if (!ids.length) return;
+        // 회전 중심은 선택 상자 한가운데다 — 노드마다 자기 중심으로 돌리면 여러 개를 고른
+        // 순간 배치가 흩어진다.
+        const { rect } = selectBox(resolveScene(docRef.current), ids);
+        commitDoc(
+          {
+            objects: treeRotate(docRef.current.objects, ids, deg, {
+              x: rect.x + rect.w / 2,
+              y: rect.y + rect.h / 2,
+            }),
+          },
+          `${deg}° 회전`,
+        );
+      },
+      group: (kind) => groupSel(kind),
+      ungroup: () => ungroupSel(),
+      mask: (on) => maskSel(on),
+      duplicate: () => duplicateSel(),
+      remove: () => removeSel(),
+      // 46 이 도착하면 `booleanOp` 로 잇는다. 그때까지 컨텍스트 바는 `booleanReady={false}` 라
+      // 버튼을 아예 그리지 않고, 단축키 표의 `bool.*` 행도 이 맵에 없어 소비만 되고 끝난다.
+      boolean: () => {},
+      rotateImage: (plus90) => rotateBy(plus90),
+      flipImage: (axis) => flipBy(axis),
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [patchSelection, setFrame, endLive, commitDoc, canvasRect, rotateBy, flipBy],
+  );
+
+  /**
+   * `I` 로 시작하는 스포이드. 뽑은 색은 **채우기 맨 앞 겹**에 들어간다(설계 §7 ins-10).
+   * 선택이 없으면 그리기 색(= `style.strokes` 슬롯)이 대상이다 — 아무 데도 안 들어가면
+   * 사용자는 스포이드가 고장 난 것으로 읽는다.
+   */
+  const { start: startEyedropper } = useEyedropper();
+  const pickColor = useCallback(() => {
+    startEyedropper((hex) => {
+      const label = `채우기 ${hex.replace("#", "").toUpperCase()}`;
+      if (!selIds().length) {
+        patchSelection({ strokes: withSolidHead(styleRef.current.strokes, hex) }, label);
+        return;
+      }
+      patchSelection((n) => ({ fills: withSolidHead(n.fills, hex) }), label);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [patchSelection, startEyedropper]);
+
+  // ── 선택 분류 · 인스펙터 · 팝오버 ─────────────────────────────────────────
+
+  /** 컨텍스트 바와 인스펙터가 **같은 판정**을 본다(45 §3.1). 모드가 선택을 이긴다. */
+  const selKind = classifySelection(doc.objects, rawSelectedIds, mode);
+
+  /**
+   * 선택 종류가 바뀔 때 탭을 한 번 옮긴다(§3.1 표).
+   *
+   * **"사용자가 고른 탭은 그 종류 안에서 남는다"를 지키는 것은 이 의존성 배열 하나다** —
+   * `[selKind]` 라 종류가 그대로면 이펙트가 아예 돌지 않는다. 스토어에 "수동으로 골랐다"
+   * 플래그는 **없다**(아무도 읽지 않는 죽은 상태였다). 여기에 `selectedIds` 나 `doc` 을 더하면
+   * 막아 주는 것이 없어 사용자가 고른 탭이 클릭 한 번마다 자동 탭으로 덮인다(e2e 40 ins-1f).
+   */
+  useEffect(() => {
+    const t = AUTO_TAB[selKind];
+    if (t) useImageEditorUi.getState().setTab("inspector", t);
+  }, [selKind]);
+
+  /**
+   * 속성 탭이 읽는 노드. **메모해야 한다** — 매 렌더 새 배열이면 pen/path 선택에서
+   * `objectFrame` 이 점 전체를 다시 훑는다(PropsTab 의 프레임 캐시가 이 참조로 걸린다).
+   */
+  const selNodes = useMemo(
+    () => doc.objects.filter((o) => selectedIds.includes(o.id)),
+    [doc.objects, selectedIds],
+  );
+
+  /**
+   * 텍스트 탭의 유일한 값. 선택이 없으면 **텍스트·뱃지 도구일 때만** 보여 준다 — 사각형을
+   * 든 채 글자 크기를 보여 주면 그 값이 지금 그리는 것에 반영되는 줄 안다.
+   * `undefined` 면 `NumField` 가 필드를 통째로 감춘다(= 조용한 빈 탭).
+   */
+  const fontSizeValue = selNodes.length
+    ? readProp(selNodes, (n) =>
+        n.kind === "text" || n.kind === "badge" ? n.fontSize : undefined,
+      )
+    : tool === "text" || tool === "badge"
+      ? style.fontSize
+      : undefined;
+
+  const [pop, setPop] = useState<PropsPopoverRequest | null>(null);
+  const popRef = useRef(pop);
+  popRef.current = pop;
+  const closePop = useCallback(() => setPop(null), []);
+  // 선택이 바뀌면 팝오버가 가리키던 겹이 다른 객체의 것이 된다 — 남의 값을 편집하기 전에 닫는다.
+  useEffect(() => setPop(null), [selectedIds]);
+
+  /**
+   * 팝오버가 편집하는 노드. **첫 선택이 아니라 그 슬롯에 값을 내는 첫 노드**다.
+   *
+   * 스택을 그리는 쪽(PropsTab)은 `readProp` 으로 읽고, 그 함수는 그 속성에 의견이 없는 노드를
+   * **건너뛴다** — 모자이크는 채우기·선을 받지 않는다(`takesPaint`). 그래서 [모자이크, 사각형]
+   * 을 고르면 화면에는 사각형의 스택이 그려지는데 첫 선택에서 다시 읽으면 빈 배열이 나와,
+   * 스와치를 눌러도 겹을 못 찾고 **아무 일도 일어나지 않는다**(예외도 로그도 없다).
+   * 그린 것과 여는 것은 같은 노드에서 나와야 한다.
+   */
+  const popPaintNode = () => selNodes.find(takesPaint);
+
+  /** 팝오버가 편집하는 스택. 선택이 없으면 도구 기본 스타일이 대상이다(속성 탭과 같은 규칙). */
+  const popStack = (slot: PaintSlot): readonly Fill[] | null => {
+    if (!selectedIds.length) return style[slot];
+    return popPaintNode()?.[slot] ?? null;
+  };
+  /**
+   * 이미지 페인트에는 편집기가 없다(시안 ④ 팝오버 8종에 없다). 상태만 세워 두면 아무것도
+   * 안 뜨는데 "팝오버 열림"으로 남아 e2e 훅과 화면이 어긋난다 — 아예 열지 않는다.
+   */
+  const openPopover = (req: PropsPopoverRequest) => {
+    if (req.kind === "paint" && popStack(req.slot)?.[req.index]?.type === "image") return;
+    setPop(req);
+  };
+
+  const popFill =
+    pop?.kind === "paint" ? (popStack(pop.slot)?.[pop.index] ?? null) : null;
+  const popEffect =
+    pop?.kind === "effect"
+      ? (doc.objects.find((o) => o.id === selectedIds[0])?.effects[pop.index] ?? null)
+      : null;
+
+  /**
+   * 팝오버가 그린 스택은 `readProp` 이 **기여 노드 전부 동일**로 판정했을 때만 뜬다(PropsTab 은
+   * MIXED 스택에 목록을 그리지 않는다) — 그래서 `popPaintNode()` 에서 읽은 절대 배열을 전체에
+   * 써도 된다. 기여하지 않는 노드(모자이크)는 `applyPaintPatch` 가 알아서 무시한다.
+   */
+  const putPaint = (p: Paint, live: boolean) => {
+    if (pop?.kind !== "paint") return;
+    const cur = popStack(pop.slot);
+    if (!cur) return;
+    const list = replacePaint(cur, pop.index, p);
+    const label = `${SLOT_TITLE[pop.slot]} ${
+      p.type === "solid" ? p.color.replace("#", "").toUpperCase() : PAINT_KIND_TITLE[p.type]
+    }`;
+    actions.patchSelection(
+      pop.slot === "fills" ? { fills: list } : { strokes: list },
+      label,
+      live,
+    );
+  };
+
+  const putEffect = (e: Effect, live: boolean) => {
+    if (pop?.kind !== "effect") return;
+    const i = pop.index;
+    actions.patchSelection(
+      (n) => ({ effects: n.effects.map((x, k) => (k === i ? e : x)) }),
+      `${EFFECT_TITLE[e.type]} 편집`,
+      live,
+    );
+  };
+
+  /**
+   * 그라디언트 핸들의 기준 상자 — 렌더(`paint.ts` 의 `paintBox`)와 **같은 값**이어야 한다.
+   * 어긋나면 핸들이 실제 램프와 다른 자리에 떠 잡아 끄는 대로 색이 움직이지 않는다.
+   * 팝오버가 열렸을 때만 부른다 — pen/path 는 `objectBBox` 가 점을 전부 훑는다.
+   */
+  const popBBox = (): Rect => {
+    // 스택을 읽은 그 노드여야 한다 — 다른 객체의 상자를 쓰면 핸들이 램프와 다른 자리에 떠
+    // 끄는 대로 색이 움직이지 않는다.
+    const n = popPaintNode();
+    return n && isGeomNode(n) ? objectBBox(n) : canvasRect();
+  };
+
+  const docColors = useMemo(
+    () => (pop?.kind === "paint" ? documentColors(doc) : undefined),
+    [pop?.kind, doc],
+  );
+
   const escape = useCallback(() => {
     if (busyRef.current) return;
-    // 0) 레일 플라이아웃이 열려 있으면 그것부터 닫는다.
+    // 0a) 팝오버가 가장 위다(45 §3.7 — Esc 계층 0단계). 그라디언트 편집기처럼 캔버스와
+    //     상호작용하는 팝오버는 백드롭이 없어서, 이걸 빼면 Esc 가 편집기를 통째로 닫는다.
+    if (closeTopPopover()) return;
+    // 0b) 레일 플라이아웃이 열려 있으면 그것부터 닫는다.
     if (railRef.current?.closeFlyout()) return;
     // 1) 레이어 행 드래그 취소. 아래보다 **먼저** 봐야 한다 — 뒤로 밀면 Esc 가 선택만 비우고
     //    드래그는 살아남아, 손을 떼는 순간 취소한 줄 알았던 이동이 커밋된다.
@@ -1483,29 +2018,7 @@ export default function ImageEditor() {
       // 그룹 진입·노드 편집 진입)는 44·47·50 것이다.
       ...(mode.kind === "design" ? {} : { enter: () => leaveMode() }),
 
-      duplicate: () => {
-        const ids = selIds();
-        const copies: Node[] = [];
-        for (const o of docRef.current.objects) {
-          if (!ids.includes(o.id)) continue;
-          // 컨테이너는 기하가 없다 — 자손째 복제는 레이어 패널(44)이 붙인다.
-          copies.push(
-            isGeomNode(o)
-              ? {
-                  ...translateObject(o, DUPLICATE_OFFSET, DUPLICATE_OFFSET),
-                  id: newObjId(),
-                }
-              : { ...o, id: newObjId() },
-          );
-        }
-        if (!copies.length) return;
-        patchDoc(
-          { objects: [...docRef.current.objects, ...copies] },
-          "commit",
-          copies.length === 1 ? "복제" : copies.length + "개 복제",
-        );
-        setSelectedIds(copies.map((o) => o.id));
-      },
+      duplicate: () => duplicateSel(),
       delete: () => {
         // 가이드가 먼저다 — 가이드를 고른 채 Delete 를 눌렀는데 객체가 지워지면 되돌리기
         // 전까지 무슨 일이 났는지 알 수 없다.
@@ -1551,35 +2064,28 @@ export default function ImageEditor() {
         if (dx || dy) nudge(dx, dy);
       },
 
-      group: groupSel,
-      ungroup: () => {
-        const ids = selIds();
-        if (ids.length !== 1) return;
-        patchDoc(
-          { objects: treeUngroup(docRef.current.objects, ids[0]) },
-          "commit",
-          "그룹 해제",
-        );
-      },
+      // 구조·정렬은 전부 액션 맵을 탄다 — 컨텍스트 바 버튼과 갈라지면 히스토리 라벨부터 어긋난다.
+      group: () => actions.group("group"),
+      ungroup: () => actions.ungroup(),
       // 그룹과 같은 연산이고 컨테이너 kind 만 다르다(38 `tree.group`) — 프레임은 내용을 자른다.
-      frame: () => {
-        const ids = selIds();
-        if (!ids.length) return;
-        const r = treeGroup(docRef.current.objects, ids, "frame");
-        if (!r.id) return;
-        patchDoc({ objects: r.objects }, "commit", "프레임으로 감싸기");
-        setSelectedIds([r.id]);
-      },
-      mask: () => {
-        const ids = selIds();
-        if (ids.length < 2) return;
-        const r = treeMakeMask(docRef.current.objects, ids);
-        patchDoc({ objects: r.objects }, "commit", "마스크");
-      },
+      frame: () => actions.group("frame"),
+      mask: () => actions.mask(true),
       forward: () => reorderSel(1),
       backward: () => reorderSel(-1),
       front: () => reorderSel("front"),
       back: () => reorderSel("back"),
+
+      // 45 가 주인인 행들(표 owner:45). 맵에 없으면 소비만 되고 아무 일도 안 한다.
+      "align.left": () => actions.align("left"),
+      "align.hcenter": () => actions.align("hcenter"),
+      "align.right": () => actions.align("right"),
+      "align.top": () => actions.align("top"),
+      "align.vcenter": () => actions.align("vcenter"),
+      "align.bottom": () => actions.align("bottom"),
+      "distribute.h": () => actions.distribute("x"),
+      "distribute.v": () => actions.distribute("y"),
+      tidy: () => actions.tidy(useImageEditorUi.getState().tidyGap),
+      "tool.eyedropper": () => pickColor(),
 
       "zoom.in": () => zoomBy(WHEEL_STEP * WHEEL_STEP),
       "zoom.out": () => zoomBy(1 / (WHEEL_STEP * WHEEL_STEP)),
@@ -1615,7 +2121,9 @@ export default function ImageEditor() {
       "file.close": () => requestClose(),
     },
     {
-      popoverOpen: () => railRef.current?.isFlyoutOpen() ?? false,
+      // 팝오버가 열려 있으면 Escape 만 받는다 — 안 그러면 색 피커 안에서 누른 Delete 가
+      // 텍스트가 아니라 **선택 객체**를 지운다(45 §6).
+      popoverOpen: () => (railRef.current?.isFlyoutOpen() ?? false) || hasOpenPopover(),
       blocked: () => {
         const ui = useUi.getState();
         return !!(ui.prompt || ui.confirm);
@@ -1701,10 +2209,12 @@ export default function ImageEditor() {
        */
       chrome: {
         state: () => lastChromeRef.current,
+        // 덮는 대상은 **레이어가 준 원본**이다. 그려진 값(`lastChromeRef`)에 얹으면 45 가
+        // 합류시킨 `extra`(그라디언트 핸들)가 한 번 더 붙어 프리미티브가 두 벌이 된다.
         set: (patch: Partial<ChromeState>) => {
-          const last = lastChromeRef.current;
-          if (!last) return false;
-          chromeTapRef.current.update({ ...last, ...patch });
+          const base = baseChromeRef.current;
+          if (!base) return false;
+          chromeTapRef.current.update({ ...base, ...patch });
           return true;
         },
       },
@@ -1856,12 +2366,51 @@ export default function ImageEditor() {
         emptyDoc: () => EMPTY_DOC,
         version: DOC_VERSION,
       },
+      /** 컨텍스트 바·인스펙터가 보는 판정(45 §3.1) — 화면을 안 읽고 규칙만 확인한다. */
+      classify: () => {
+        const u = useImageEditorUi.getState();
+        return classifySelection(docRef.current.objects, u.selectedIds, u.mode);
+      },
+      /**
+       * 인스펙터(45). `fields()` 는 **지금 보이는 탭**의 입력만 훑는다 — MIXED 를 값과
+       * 구분해야 해서 `value` 와 `placeholder` 를 함께 돌려준다(빈 문자열 하나로 뭉치면
+       * "0"·"값 없음"·"여러 값"이 같아 보인다).
+       */
+      inspector: {
+        tab: () => useImageEditorUi.getState().inspectorTab,
+        setTab: (t: EditorUiState["inspectorTab"]) =>
+          useImageEditorUi.getState().setTab("inspector", t),
+        fields: () => {
+          const tab = useImageEditorUi.getState().inspectorTab;
+          const panel = rootRef.current?.querySelector(`[data-inspector-tab="${tab}"]`);
+          const out: Record<string, unknown> = {};
+          for (const el of panel?.querySelectorAll<HTMLInputElement>("input[aria-label]") ??
+            []) {
+            out[el.getAttribute("aria-label")!] = {
+              value: el.value,
+              placeholder: el.placeholder,
+            };
+          }
+          return out;
+        },
+      },
+      /** 열린 팝오버 하나 — 어떤 슬롯의 몇 번째 겹인지까지 준다. */
+      popover: {
+        open: () => {
+          const p = popRef.current;
+          if (!p) return null;
+          return p.kind === "paint" ? `paint:${p.slot}:${p.index}` : `effect:${p.index}`;
+        },
+        close: () => closeTopPopover(),
+      },
+      /** 버튼·단축키가 부르는 것과 **같은 함수**(45 §4). 갈라지면 e2e 만 통과한다. */
+      actions,
     };
     return () => {
       delete g.__gpv?.imageEditor;
       delete g.__gpv?.imageDocs;
     };
-  }, [patchDoc, snapIndexNow]);
+  }, [actions, patchDoc, snapIndexNow]);
 
   if (!path) return null;
 
@@ -1951,7 +2500,9 @@ export default function ImageEditor() {
             scene,
             baseName: baseFile,
             onCommit: (objects, label) => patchDoc({ objects }, "commit", label),
-            actions: { group: groupSel, remove: removeSel },
+            // 인자를 삼켜야 한다 — 패널은 `onClick={actions.group}` 으로 그대로 넘기므로
+            // 맨 인자로 두면 `groupSel` 이 마우스 이벤트를 컨테이너 kind 로 받는다.
+            actions: { group: () => groupSel("group"), remove: () => removeSel() },
           }}
           history={{
             entries: histEntries,
@@ -1964,333 +2515,220 @@ export default function ImageEditor() {
           }}
         />
 
-        {/* 프리뷰 — 이미지 위에 주석 캔버스를 겹친다(§4.3) */}
-        <div
-          ref={stageRef}
-          onPointerDown={onStagePointerDown}
-          onPointerMove={onStagePointerMove}
-          onPointerUp={endPan}
-          onPointerCancel={endPan}
-          className="checkerboard relative flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden p-4"
-        >
-          {/* 모드 배너 — 지금 무엇이 Enter·Esc 를 받는지 알린다(§3.2). 포인터는 통과시킨다:
-              스테이지 위에 떠 있어 클릭을 먹으면 그 자리에 그림을 못 그린다. */}
-          {mode.kind !== "design" && (
-            <div className="pointer-events-none absolute left-1/2 top-2 z-10 -translate-x-1/2 rounded border border-edge bg-panel/90 px-2 py-1 text-[11px] text-fg-muted">
-              {mode.kind === "crop"
-                ? "크롭 모드 · ⏎ 적용 · Esc 취소"
-                : "벡터 편집 모드 · Esc 로 편집 종료"}
-            </div>
-          )}
-          {loadErr ? (
-            <div className="text-sm text-danger">{loadErr}</div>
-          ) : !img ? (
-            <div className="flex items-center gap-2 text-sm text-fg-dim">
-              <Loader2 size={16} className="animate-spin" /> 이미지 불러오는 중…
-            </div>
-          ) : showStage && oriented ? (
-            // 바깥은 **변환이 걸리지 않는 앵커**다 — 줌 수식의 기준 프레임이라 rect 가
-            // view 에 따라 흔들리면 안 된다. 확대분은 stage 의 overflow-hidden 이 자른다.
-            // z 는 stage 안 세 겹의 정본(`STAGE_Z`)에서만 온다 — 여기 값을 빼면 40 의 디테일
-            // 캔버스가 씬 위로 올라오는 순서가 파일마다 흩어진다.
-            <div
-              ref={boxRef}
-              className="relative"
-              style={{ width: dispW, height: dispH, zIndex: STAGE_Z.box }}
-            >
-              <div
-                className="absolute inset-0 shadow-lg"
-                style={{
-                  transformOrigin: "0 0",
-                  transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})`,
-                }}
-              >
-                {/* 이미지는 이제 **씬 캔버스**가 그린다(태스크 39 §3.1 병합) — 별도 베이스
-                    캔버스도, CSS 필터도 없다. 조정은 renderScene 안에서 이미지에만 걸린다. */}
-                <AnnotationLayer
-                  ref={layerRef}
-                  scene={scene}
-                  oriented={oriented}
-                  backW={backW}
-                  backH={backH}
-                  scale={previewScale}
-                  // 줌을 곱해 넘긴다 — 이 prop 의 계약은 "oriented → **화면** css px" 라
-                  // 히트 허용오차·핸들 집기 반경·핸들 그리기 크기가 전부 스스로 맞는다.
-                  // transform 안쪽 DOM(텍스트 편집 textarea)만 zoom 으로 되나눈다.
-                  displayScale={screenScale}
-                  zoom={view.scale}
-                  filterStr={filterStr}
-                  objects={doc.objects}
-                  store={store}
-                  assetsVer={assetsVer}
-                  selectedIds={selectedIds}
-                  tool={tool}
-                  style={style}
-                  opacity={opacity}
-                  cropMode={cropMode}
-                  cropRect={crop}
-                  onCropDown={onCropDown}
-                  onCropMove={onCropMove}
-                  onCropUp={onCropUp}
-                  onCropCancel={onCropCancel}
-                  onCommit={(objects, label) => patchDoc({ objects }, "commit", label)}
-                  onEditingChange={setTextEditing}
-                  onToolChange={setTool}
-                  onSelectionChange={setSelectedIds}
-                  statusRef={statusRef}
-                  chrome={chromeTapRef}
-                  screen={screen}
-                  guides={doc.guides}
-                  onGuidesChange={(guides, label) =>
-                    patchDoc({ guides }, "commit", label)
-                  }
-                />
+        {/* 스테이지 열 — 컨텍스트 바(44px) + 프리뷰. 바는 크롬(SVG 오버레이)과 겹치지 않는
+            일반 흐름이라 z 를 다투지 않는다. */}
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <ContextBar
+            kind={selKind}
+            actions={actions}
+            objects={doc.objects}
+            zoom={screenScale}
+            onZoom={zoomPreset}
+            imageSize={oriented ? { w: oriented.width, h: oriented.height } : null}
+          />
+
+          {/* 프리뷰 — 이미지 위에 주석 캔버스를 겹친다(§4.3) */}
+          <div
+            ref={stageRef}
+            onPointerDown={onStagePointerDown}
+            onPointerMove={onStagePointerMove}
+            onPointerUp={endPan}
+            onPointerCancel={endPan}
+            className="checkerboard relative flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden p-4"
+          >
+            {/* 모드 배너 — 지금 무엇이 Enter·Esc 를 받는지 알린다(§3.2). 포인터는 통과시킨다:
+                스테이지 위에 떠 있어 클릭을 먹으면 그 자리에 그림을 못 그린다. */}
+            {mode.kind !== "design" && (
+              <div className="pointer-events-none absolute left-1/2 top-2 z-10 -translate-x-1/2 rounded border border-edge bg-panel/90 px-2 py-1 text-[11px] text-fg-muted">
+                {mode.kind === "crop"
+                  ? "크롭 모드 · ⏎ 적용 · Esc 취소"
+                  : "벡터 편집 모드 · Esc 로 편집 종료"}
               </div>
-            </div>
-          ) : null}
+            )}
+            {loadErr ? (
+              <div className="text-sm text-danger">{loadErr}</div>
+            ) : !img ? (
+              <div className="flex items-center gap-2 text-sm text-fg-dim">
+                <Loader2 size={16} className="animate-spin" /> 이미지 불러오는 중…
+              </div>
+            ) : showStage && oriented ? (
+              // 바깥은 **변환이 걸리지 않는 앵커**다 — 줌 수식의 기준 프레임이라 rect 가
+              // view 에 따라 흔들리면 안 된다. 확대분은 stage 의 overflow-hidden 이 자른다.
+              // z 는 stage 안 세 겹의 정본(`STAGE_Z`)에서만 온다 — 여기 값을 빼면 40 의 디테일
+              // 캔버스가 씬 위로 올라오는 순서가 파일마다 흩어진다.
+              <div
+                ref={boxRef}
+                className="relative"
+                style={{ width: dispW, height: dispH, zIndex: STAGE_Z.box }}
+              >
+                <div
+                  className="absolute inset-0 shadow-lg"
+                  style={{
+                    transformOrigin: "0 0",
+                    transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})`,
+                  }}
+                >
+                  {/* 이미지는 이제 **씬 캔버스**가 그린다(태스크 39 §3.1 병합) — 별도 베이스
+                      캔버스도, CSS 필터도 없다. 조정은 renderScene 안에서 이미지에만 걸린다. */}
+                  <AnnotationLayer
+                    ref={layerRef}
+                    scene={scene}
+                    oriented={oriented}
+                    backW={backW}
+                    backH={backH}
+                    scale={previewScale}
+                    // 줌을 곱해 넘긴다 — 이 prop 의 계약은 "oriented → **화면** css px" 라
+                    // 히트 허용오차·핸들 집기 반경·핸들 그리기 크기가 전부 스스로 맞는다.
+                    // transform 안쪽 DOM(텍스트 편집 textarea)만 zoom 으로 되나눈다.
+                    displayScale={screenScale}
+                    zoom={view.scale}
+                    filterStr={filterStr}
+                    objects={doc.objects}
+                    store={store}
+                    assetsVer={assetsVer}
+                    selectedIds={selectedIds}
+                    tool={tool}
+                    style={style}
+                    opacity={opacity}
+                    cropMode={cropMode}
+                    cropRect={crop}
+                    onCropDown={onCropDown}
+                    onCropMove={onCropMove}
+                    onCropUp={onCropUp}
+                    onCropCancel={onCropCancel}
+                    onCommit={(objects, label) => patchDoc({ objects }, "commit", label)}
+                    onEditingChange={setTextEditing}
+                    onToolChange={setTool}
+                    onSelectionChange={setSelectedIds}
+                    statusRef={statusRef}
+                    chrome={chromeTapRef}
+                    screen={screen}
+                    guides={doc.guides}
+                    onGuidesChange={(guides, label) =>
+                      patchDoc({ guides }, "commit", label)
+                    }
+                  />
+                </div>
+              </div>
+            ) : null}
 
-          {/* 크롬은 **변환 밖**, stage 직속이다. 줌 transform 안에 넣으면 1px 선·8px 핸들이
-              배율을 그대로 먹어 캔버스 크롬을 버린 이유(43 §3.1)를 되풀이한다. */}
-          {showStage && oriented && (
-            <ChromeOverlay
-              ref={chromeRef}
-              onGuideCommit={(axis, pos) =>
-                patchDoc(
-                  { guides: [...docRef.current.guides, { axis, pos }] },
-                  "commit",
-                  "가이드 추가",
-                )
-              }
-              snapForGuide={snapForGuide}
-            />
-          )}
+            {/* 크롬은 **변환 밖**, stage 직속이다. 줌 transform 안에 넣으면 1px 선·8px 핸들이
+                배율을 그대로 먹어 캔버스 크롬을 버린 이유(43 §3.1)를 되풀이한다. */}
+            {showStage && oriented && (
+              <ChromeOverlay
+                ref={chromeRef}
+                onGuideCommit={(axis, pos) =>
+                  patchDoc(
+                    { guides: [...docRef.current.guides, { axis, pos }] },
+                    "commit",
+                    "가이드 추가",
+                  )
+                }
+                snapForGuide={snapForGuide}
+              />
+            )}
 
-          {/* 줌 필(시안 ①, 캔버스 우하단) — 배율은 크롬과 같은 값을 쓴다. */}
-          {showStage && (
-            <div
-              className="absolute bottom-3 right-3 flex items-center gap-0.5 rounded-full border border-edge bg-panel/90 px-1 py-0.5 text-[11px] text-fg-muted"
-              style={{ zIndex: STAGE_Z.chrome + 1 }}
-            >
-              <button
-                type="button"
-                title="축소"
-                onClick={() => zoomBy(1 / (WHEEL_STEP * WHEEL_STEP))}
-                className="rounded-full p-1 hover:bg-raised hover:text-fg"
+            {/* 줌 필(시안 ①, 캔버스 우하단) — 배율은 크롬과 같은 값을 쓴다. */}
+            {showStage && (
+              <div
+                className="absolute bottom-3 right-3 flex items-center gap-0.5 rounded-full border border-edge bg-panel/90 px-1 py-0.5 text-[11px] text-fg-muted"
+                style={{ zIndex: STAGE_Z.chrome + 1 }}
               >
-                <Minus size={12} />
-              </button>
-              <button
-                type="button"
-                title="화면 맞춤"
-                onClick={() => setView(IDENTITY_VIEW)}
-                className="min-w-[3.5rem] rounded-full px-1 py-0.5 text-center font-mono hover:bg-raised hover:text-fg"
-              >
-                {Math.round(screenScale * 100)}%
-              </button>
-              <button
-                type="button"
-                title="확대"
-                onClick={() => zoomBy(WHEEL_STEP * WHEEL_STEP)}
-                className="rounded-full p-1 hover:bg-raised hover:text-fg"
-              >
-                <Plus size={12} />
-              </button>
-            </div>
-          )}
+                <button
+                  type="button"
+                  title="축소"
+                  onClick={() => zoomBy(1 / (WHEEL_STEP * WHEEL_STEP))}
+                  className="rounded-full p-1 hover:bg-raised hover:text-fg"
+                >
+                  <Minus size={12} />
+                </button>
+                <button
+                  type="button"
+                  title="화면 맞춤"
+                  onClick={() => setView(IDENTITY_VIEW)}
+                  className="min-w-[3.5rem] rounded-full px-1 py-0.5 text-center font-mono hover:bg-raised hover:text-fg"
+                >
+                  {Math.round(screenScale * 100)}%
+                </button>
+                <button
+                  type="button"
+                  title="확대"
+                  onClick={() => zoomBy(WHEEL_STEP * WHEEL_STEP)}
+                  className="rounded-full p-1 hover:bg-raised hover:text-fg"
+                >
+                  <Plus size={12} />
+                </button>
+              </div>
+            )}
+          </div>
         </div>
 
-        {/* 인스펙터 — 탭 4개(속성·텍스트·조정·내보내기)와 시안 푸터. 내용은 v1 우측 패널의
-            섹션을 **옮겨 담은 것**이다: 45 가 진짜 속성 필드를 만들 때까지 기능이 하나도
-            없어지지 않게 한다. */}
+        {/* 인스펙터 — 탭 4개(속성·텍스트·조정·내보내기)와 시안 푸터(45 §3.3).
+            네 탭이 **항상 마운트**돼 있고 비활성만 숨는다: e2e 30 이 속성 탭이 열린 채로
+            조정 탭의 `오른쪽 90°` 를 누른다(조건부 마운트면 그 클릭이 갈 곳이 없다). */}
         <Inspector
           panes={{
             props: (
-              <PropsLegacy
-                propTool={propTool}
+              <PropsTab
+                nodes={selNodes}
+                actions={actions}
                 style={style}
-                onStyleChange={onStyleChange}
                 opacity={opacity}
-                onOpacityChange={onOpacityChange}
-                onEditEnd={endLive}
                 recentColors={recent}
+                onOpenPopover={openPopover}
               />
             ),
+            // 텍스트 탭 본체는 50 `TextInspector` 것이다. 글자 크기만 여기 남긴다 —
+            // 이 필드가 없으면 앱 전체에 글자 크기를 바꿀 수단이 하나도 없어진다(v1 후퇴).
             text: (
-              <TextLegacy
-                propTool={propTool}
-                style={style}
-                onStyleChange={onStyleChange}
-                onEditEnd={endLive}
+              <NumField
+                label="글자 크기"
+                value={fontSizeValue}
+                unit="px"
+                min={4}
+                max={400}
+                onCommit={(v) => actions.patchSelection({ fontSize: v }, `글자 크기 ${v}`)}
+                onLive={(v) =>
+                  actions.patchSelection({ fontSize: v }, `글자 크기 ${v}`, true)
+                }
+                onLiveEnd={actions.endLive}
               />
             ),
             adjust: (
-              <>
-                <Section title="회전 · 반전">
-                  <div className="grid grid-cols-4 gap-1.5">
-                    <IconBtn title="왼쪽 90°" onClick={() => rotateBy(false)}>
-                      <RotateCcw size={15} />
-                    </IconBtn>
-                    <IconBtn title="오른쪽 90°" onClick={() => rotateBy(true)}>
-                      <RotateCw size={15} />
-                    </IconBtn>
-                    <IconBtn title="좌우 반전" active={flipH} onClick={() => flipBy("h")}>
-                      <FlipHorizontal size={15} />
-                    </IconBtn>
-                    <IconBtn title="상하 반전" active={flipV} onClick={() => flipBy("v")}>
-                      <FlipVertical size={15} />
-                    </IconBtn>
-                  </div>
-                </Section>
-
-                <Section title="크롭">
-                  <div className="flex items-center gap-1.5">
-                    {/* 두 라벨은 e2e 30 이 크롭 모드를 판정하는 근거다(`영역을 드래그`) —
-                        문구를 바꾸면 그 스위트가 통째로 빨개진다. */}
-                    <button
-                      onClick={() => setCropMode((v) => !v)}
-                      className={`flex items-center gap-1 rounded px-2 py-1 ${
-                        cropMode
-                          ? "bg-accent/20 text-accent"
-                          : "bg-raised text-fg-muted hover:text-fg"
-                      }`}
-                    >
-                      <Crop size={14} />
-                      {cropMode ? "영역을 드래그" : "크롭 선택"}
-                    </button>
-                    {crop && (
-                      <button
-                        onClick={clearCrop}
-                        className="rounded px-2 py-1 text-fg-dim hover:bg-raised hover:text-fg"
-                      >
-                        해제
-                      </button>
-                    )}
-                  </div>
-                  {crop && (
-                    <div className="mt-1.5 font-mono text-[11px] text-fg-dim">
-                      {Math.round(crop.w)} × {Math.round(crop.h)} px
-                    </div>
-                  )}
-                </Section>
-
-                <Section title="크기">
-                  <div className="flex items-center gap-1.5">
-                    <NumInput value={outW} onChange={changeW} onEnd={endLive} />
-                    <span className="text-fg-dim">×</span>
-                    <NumInput value={outH} onChange={changeH} onEnd={endLive} />
-                    <button
-                      onClick={() => setLockRatio((v) => !v)}
-                      title="비율 고정"
-                      className={`rounded px-2 py-1 text-[11px] ${
-                        lockRatio
-                          ? "bg-accent/20 text-accent"
-                          : "bg-raised text-fg-dim hover:text-fg"
-                      }`}
-                    >
-                      {lockRatio ? "비율 ✓" : "비율"}
-                    </button>
-                  </div>
-                </Section>
-
-                {/* 스냅·가이드(시안 ⑦) — 값은 42 스토어에 있어 상태바 토글과 한 몸이다.
-                    제목을 스스로 그리므로 `Section` 으로 감싸지 않는다(제목이 두 줄 된다). */}
-                <div className="mb-3 border-b border-edge/60 pb-3">
-                  <SnapSection />
-                </div>
-
-                <Section title="색 보정">
-                  <Slider
-                    label="밝기"
-                    value={brightness}
-                    onChange={(v) => patchLive({ brightness: v })}
-                    onEnd={endLive}
-                    min={0}
-                    max={200}
-                  />
-                  <Slider
-                    label="대비"
-                    value={contrast}
-                    onChange={(v) => patchLive({ contrast: v })}
-                    onEnd={endLive}
-                    min={0}
-                    max={200}
-                  />
-                  <Slider
-                    label="채도"
-                    value={saturate}
-                    onChange={(v) => patchLive({ saturate: v })}
-                    onEnd={endLive}
-                    min={0}
-                    max={200}
-                  />
-                </Section>
-              </>
+              <AdjustTab
+                doc={doc}
+                onPatch={(patch, live) => (live ? patchLive(patch) : patchDoc(patch))}
+                onEditEnd={endLive}
+                cropMode={cropMode}
+                onCropMode={setCropMode}
+                onClearCrop={clearCrop}
+                onRotateImage={rotateBy}
+                onFlipImage={flipBy}
+                onOutW={changeW}
+                onOutH={changeH}
+                lockRatio={lockRatio}
+                onLockRatio={setLockRatio}
+              />
             ),
             export: (
-              <Section title="포맷">
-                <div className="grid grid-cols-4 gap-1.5">
-                  {FORMATS.map((f) => (
-                    <button
-                      key={f.id}
-                      onClick={() => setFormat(f.id)}
-                      className={`rounded px-2 py-1 text-[12px] ${
-                        format === f.id
-                          ? "bg-accent text-on-accent"
-                          : "bg-raised text-fg-muted hover:text-fg"
-                      }`}
-                    >
-                      {f.label}
-                    </button>
-                  ))}
-                </div>
-                {supportsQuality(format) && (
-                  <div className="mt-2">
-                    <Slider
-                      label="품질"
-                      value={quality}
-                      onChange={setQuality}
-                      min={1}
-                      max={100}
-                    />
-                  </div>
-                )}
-              </Section>
+              <ExportTabHost
+                format={format}
+                onFormat={setFormat}
+                quality={quality}
+                onQuality={setQuality}
+              />
             ),
           }}
           footer={
-            <>
-              {/* `취소` 는 없다 — 타이틀바 X 가 닫기다(§3.8). */}
-              <button
-                onClick={resetAll}
-                disabled={busy}
-                className="mr-auto rounded px-2 py-1.5 text-[13px] text-fg-muted hover:bg-raised disabled:opacity-50"
-              >
-                초기화
-              </button>
-              <button
-                onClick={copyToClipboard}
-                disabled={busy || !img}
-                title="편집 결과를 PNG로 클립보드에 복사"
-                className="flex items-center gap-1.5 rounded px-2 py-1.5 text-[13px] text-fg-muted hover:bg-raised disabled:opacity-50"
-              >
-                <Copy size={14} /> 복사
-              </button>
-              <button
-                onClick={saveAs}
-                disabled={busy || !img}
-                className="rounded border border-edge px-2 py-1.5 text-[13px] text-fg-muted hover:bg-raised disabled:opacity-50"
-              >
-                다른 이름으로
-              </button>
-              <button
-                onClick={saveInPlace}
-                disabled={busy || !img}
-                className="flex items-center gap-1.5 rounded bg-accent px-3 py-1.5 text-[13px] font-medium text-on-accent hover:bg-accent-hover disabled:opacity-50"
-              >
-                {busy && <Loader2 size={14} className="animate-spin" />}
-                저장 ({extOf(format)})
-              </button>
-            </>
+            <InspectorFooter
+              format={format}
+              busy={busy}
+              canSave={!!img}
+              onReset={resetAll}
+              onCopy={copyToClipboard}
+              onSaveAs={saveAs}
+              onSave={saveInPlace}
+            />
           }
         />
       </div>
@@ -2301,107 +2739,69 @@ export default function ImageEditor() {
         undoDepth={histRef.current.cursor}
         selectBox={selBox}
       />
-    </div>
-  );
-}
 
-function Section({
-  title,
-  children,
-}: {
-  title: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="mb-3 border-b border-edge/60 pb-3 last:border-0">
-      <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-fg-dim">
-        {title}
-      </div>
-      {children}
-    </div>
-  );
-}
+      {/* 팝오버(45 §3.7~3.8). 편집기 루트 안이라 확인창 `z-[60]`·토스트 `z-[55]` 아래에 선다. */}
+      {pop?.kind === "paint" && popFill && popFill.type !== "image" && (
+        <Popover
+          anchor={pop.anchor}
+          open
+          onClose={closePop}
+          placement="left-start"
+          width={232}
+          // 그라디언트는 캔버스 핸들을 끌어야 해서 백드롭을 두지 않는다. 색 피커는 스포이드가
+          // 켜진 동안만 통과시킨다 — 백드롭이 캔버스 클릭을 먼저 먹으면 스포이드가 한 번도
+          // 성립하지 않는다(45 §3.7).
+          modal={popFill.type === "solid" && tool !== "eyedropper"}
+          title={`${SLOT_TITLE[pop.slot]} · ${PAINT_KIND_TITLE[popFill.type]}`}
+        >
+          {popFill.type === "solid" ? (
+            <ColorPicker
+              title={SLOT_TITLE[pop.slot]}
+              paint={popFill}
+              docColors={docColors}
+              onLive={(p) => putPaint(p, true)}
+              onCommit={(p) => putPaint(p, false)}
+            />
+          ) : (
+            <GradientEditor
+              paint={popFill}
+              bbox={popBBox()}
+              onExtra={setChromeExtra}
+              registerHit={registerPointerHit}
+              onLive={(p) => putPaint(p, true)}
+              onCommit={(p) => putPaint(p, false)}
+            />
+          )}
+        </Popover>
+      )}
 
-function IconBtn({
-  title,
-  active,
-  onClick,
-  children,
-}: {
-  title: string;
-  active?: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      title={title}
-      onClick={onClick}
-      className={`flex items-center justify-center rounded py-1.5 ${
-        active
-          ? "bg-accent/20 text-accent"
-          : "bg-raised text-fg-muted hover:text-fg"
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
-
-function NumInput({
-  value,
-  onChange,
-  onEnd,
-}: {
-  value: number;
-  onChange: (v: number) => void;
-  /** 입력이 끝났음을 알린다 — 다음 변경이 새 히스토리 칸이 된다. */
-  onEnd?: () => void;
-}) {
-  return (
-    <input
-      type="number"
-      min={1}
-      value={value}
-      onChange={(e) => onChange(Number(e.target.value))}
-      onBlur={onEnd}
-      className="w-16 rounded border border-edge bg-raised px-1.5 py-1 text-center font-mono text-[12px] outline-none focus:border-accent"
-    />
-  );
-}
-
-function Slider({
-  label,
-  value,
-  onChange,
-  onEnd,
-  min,
-  max,
-}: {
-  label: string;
-  value: number;
-  onChange: (v: number) => void;
-  /** 드래그가 끝났음을 알린다 — 히스토리가 드래그 한 번을 한 칸으로 묶는다(§5.3). */
-  onEnd?: () => void;
-  min: number;
-  max: number;
-}) {
-  return (
-    <div className="mb-1.5">
-      <div className="flex justify-between text-[11px] text-fg-dim">
-        <span>{label}</span>
-        <span className="font-mono">{value}</span>
-      </div>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
-        onPointerUp={onEnd}
-        onKeyUp={onEnd}
-        className="w-full accent-accent"
-      />
+      {pop?.kind === "effect" && popEffect && (
+        <Popover
+          anchor={pop.anchor}
+          open
+          onClose={closePop}
+          placement="left-start"
+          width={232}
+          modal={tool !== "eyedropper"}
+          title={EFFECT_TITLE[popEffect.type]}
+        >
+          <EffectEditor
+            effect={popEffect}
+            onLive={(e) => putEffect(e, true)}
+            onCommit={(e) => putEffect(e, false)}
+            onToggle={() => putEffect({ ...popEffect, visible: !popEffect.visible }, false)}
+            onRemove={() => {
+              const i = pop.index;
+              actions.patchSelection(
+                (n) => ({ effects: n.effects.filter((_, k) => k !== i) }),
+                "효과 제거",
+              );
+              // 인덱스가 신원이 아니다 — 지운 자리에 다음 효과가 들어오므로 반드시 닫는다.
+              closePop();
+            }}
+          />
+        </Popover>
+      )}
     </div>
   );
 }
