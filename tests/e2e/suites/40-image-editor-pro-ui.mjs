@@ -43,11 +43,14 @@ const RAIL_TITLES = [
   "지우개 (E)",
   "사각형 (R)",
   "타원 (O)",
+  // 46 이 도착해 `ready` 가 켜진 둘 — 키가 없어 괄호 없는 라벨이다(§3.5 레일 순서 그대로).
+  "다각형",
   "직선 (L)",
   "화살표 (A)",
   "텍스트 (T)",
   "이미지",
   "번호 뱃지 (N)",
+  "말풍선",
   "모자이크 (M)",
   "블러",
   "크롭 (C)",
@@ -2837,10 +2840,18 @@ export async function run({ cdp, report: r, fix }) {
         vThree.dist === 2,
       `2개: align=${vTwo.align} dist=${vTwo.dist} / 3개: align=${vThree.align} dist=${vThree.dist}`,
     );
+    // 46 이 도착해 불리언 4개가 실제로 그려진다. 재려는 성질은 그대로다 — **눌러도 아무 일
+    // 없는 버튼은 두지 않는다**. 이제 그 판정을 `canBoolean` 게이트로 잰다: 전부 변환 가능한
+    // 도형이면 4개가 뜨고, 텍스트가 하나라도 섞이면(`toPathObject` 가 null 이라 그 객체가
+    // 말없이 사라진다) 통째로 사라져야 한다.
+    const BOOL_RE = /합집합|빼기|교집합|배타/;
+    const vText = await variant([V1, V2, TEXT_NODE], "all");
     r.check(
-      "(45 ins-1d) 아직 주인이 없는 기능은 **버튼이 없다** — 불리언(46)이 오기 전에는 회색 버튼조차 그리지 않는다(눌러 보고 나서야 아무 일도 안 난다는 것을 알면 앱이 고장 난 것으로 읽힌다)",
-      !vThree.titles.some((t) => /합집합|빼기|교집합|배타/.test(t)),
-      J(vThree.titles),
+      "(45 ins-1d) 불리언 4개는 **전부 변환 가능한 도형일 때만** 뜬다 — 텍스트가 섞이면 사라진다(눌러 보고 나서야 아무 일도 안 난다는 것을 알면 앱이 고장 난 것으로 읽힌다)",
+      vThree.titles.filter((t) => BOOL_RE.test(t)).length === 4 &&
+        vText.kind === "multi" &&
+        !vText.titles.some((t) => BOOL_RE.test(t)),
+      `3도형=${J(vThree.titles.filter((t) => BOOL_RE.test(t)))} 텍스트섞임=${J(vText.titles)}`,
     );
     const vBase = await variant([V1], "base");
     r.check(

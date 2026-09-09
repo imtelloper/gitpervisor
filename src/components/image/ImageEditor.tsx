@@ -7,6 +7,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 
 import {
@@ -14,6 +15,17 @@ import {
   transformObjects,
   type OrientDelta,
 } from "../../lib/annotate/geometry";
+import {
+  aspectRatioOf,
+  buildOriented,
+  cropBounds,
+  cropLabel,
+  fitAspect,
+  maxStraightenFor,
+  resizeCropRect,
+  straightenObjects,
+  type CropSession,
+} from "../../lib/annotate/crop";
 import { DocHistory } from "../../lib/annotate/history";
 import type { LayerFilter } from "../../lib/annotate/layer-rows";
 import { ensureAssets, imageStore } from "../../lib/annotate/imageStore";
@@ -41,13 +53,19 @@ import {
 } from "../../lib/annotate/align";
 import {
   classifySelection,
+  MIXED,
   readProp,
+  type Maybe,
   type SelectionKind,
 } from "../../lib/annotate/selection";
+import { layoutText, mixedTextStyle } from "../../lib/annotate/text-layout";
 import { matchShortcut } from "../../lib/annotate/shortcuts";
 import {
+  ancestorsOf as treeAncestorsOf,
   assertTreeInvariant,
+  childrenOf as treeChildrenOf,
   group as treeGroup,
+  isContainer,
   makeMask as treeMakeMask,
   maskScope as treeMaskScope,
   nodeAABB as treeNodeAABB,
@@ -73,6 +91,7 @@ import {
   parseImageDoc,
   serializeImageDoc,
   type ImageDocEnvelope,
+  type PaintPatch,
 } from "../../lib/annotate/schema";
 import {
   DEFAULT_OPACITY,
@@ -83,12 +102,28 @@ import {
   type EditorDoc,
   type Effect,
   type Fill,
+  type GeomNode,
   type NodeBase,
   type ObjId,
   type Paint,
+  type PathNode,
   type Rect,
   type DefaultPaint,
+  type TextNode,
+  type TextStyle,
 } from "../../lib/annotate/types";
+import {
+  booleanOp,
+  flattenObjects,
+  separateSubPaths,
+} from "../../lib/annotate/vector/boolean";
+import {
+  canBoolean,
+  canFlatten,
+  canOutline,
+  toPathObject,
+} from "../../lib/annotate/vector/convert";
+import { outlineStroke } from "../../lib/annotate/vector/outline";
 import {
   useImageEditorUi,
   type EditorUiState,
@@ -136,7 +171,14 @@ import AnnotationLayer, {
 } from "./AnnotationLayer";
 import ChromeOverlay, { type ChromeOverlayHandle } from "./ChromeOverlay";
 import { newImageNode } from "./annotation/draft";
-import { registerPointerHit } from "./annotation/pointer";
+import {
+  cropDragMods,
+  hitCropHandle,
+  registerPointerHit,
+  HANDLE_GRAB_CSS,
+} from "./annotation/pointer";
+import { CropInspectorSection } from "./CropInspectorSection";
+import { useCropSession } from "./useCropSession";
 import EditorStatusBar, { type StatusBarHandle } from "./EditorStatusBar";
 import EditorTitleBar from "./EditorTitleBar";
 import { LeftPanel } from "./LeftPanel";
@@ -155,6 +197,10 @@ import {
   type PropsPopoverRequest,
 } from "./inspector/PropsTab";
 import { NumField } from "./inspector/fields/NumField";
+import { Select, type SelectOption } from "./inspector/fields/Select";
+import { Toggle } from "./inspector/fields/Toggle";
+import { BooleanPreviewStrip } from "./vector/BooleanPreviewStrip";
+import type { PathOp, PathPatch } from "./vector/PathInspectorSection";
 import { closeTopPopover, hasOpenPopover, Popover } from "./popovers/Popover";
 import { ColorPicker } from "./popovers/ColorPicker";
 import { EffectEditor } from "./popovers/EffectEditor";
@@ -183,33 +229,6 @@ const RECENT_COLORS = 12;
 /** 빈 문서 — 경계(normalizeDoc)가 만든다. 필드를 두 곳에서 셀 이유가 없다(37 §4). */
 const EMPTY_DOC: EditorDoc = normalizeDoc({});
 
-/** 회전(0/90/180/270) + 좌우/상하 반전을 적용한 원본 해상도 캔버스를 만든다(필터·크롭 전). */
-function buildOriented(
-  img: HTMLImageElement,
-  rotation: number,
-  flipH: boolean,
-  flipV: boolean,
-): HTMLCanvasElement {
-  const swap = rotation % 180 !== 0;
-  const w = swap ? img.naturalHeight : img.naturalWidth;
-  const h = swap ? img.naturalWidth : img.naturalHeight;
-  const c = document.createElement("canvas");
-  c.width = w;
-  c.height = h;
-  const ctx = c.getContext("2d")!;
-  // 반전은 이미지 공간(rotate 이후 scale)으로 적용되므로, 1/4바퀴 회전 시 화면 기준 축이
-  // 뒤바뀐다. 사용자가 본 대로(화면 기준) 반전하려면 회전이 90/270°일 때 H↔V를 교환한다.
-  const fh = swap ? flipV : flipH;
-  const fv = swap ? flipH : flipV;
-  ctx.save();
-  ctx.translate(w / 2, h / 2);
-  ctx.rotate((rotation * Math.PI) / 180);
-  ctx.scale(fh ? -1 : 1, fv ? -1 : 1);
-  ctx.drawImage(img, -img.naturalWidth / 2, -img.naturalHeight / 2);
-  ctx.restore();
-  return c;
-}
-
 /** 확장자 → 비-라운드트립 경고 문구(설계 D3, §6.3). 라운드트립 가능한 포맷이면 null. */
 function roundTripWarning(path: string): string | null {
   const base = path.split("/").pop() ?? path;
@@ -234,7 +253,7 @@ export type EditorActions = BarActions & PropsActions;
  * 선택 전체에 쓰는 속성 묶음 — 두 계약의 patch 타입을 합친 것.
  * `DefaultPaint` 키는 `applyPaintPatch`(37)가 kind 를 보고 거르고, 나머지는 노드 공통 필드다.
  */
-type SelPatch = Partial<DefaultPaint> &
+type SelPatch = PaintPatch &
   Partial<
     Pick<
       NodeBase,
@@ -250,11 +269,12 @@ const PAINT_KEYS = [
   "fontSize",
   "mosaicMode",
   "mosaicStrength",
+  "typo",
 ] as const satisfies readonly (keyof DefaultPaint)[];
 
 /** `applyPaintPatch` 가 아는 키만 남긴다 — 모르는 키를 넘기면 조용히 무시돼 값이 안 들어간다. */
-function paintPart(p: SelPatch): Partial<DefaultPaint> {
-  const out: Partial<DefaultPaint> = {};
+function paintPart(p: SelPatch): PaintPatch {
+  const out: PaintPatch = {};
   for (const k of PAINT_KEYS) if (p[k] !== undefined) Object.assign(out, { [k]: p[k] });
   return out;
 }
@@ -285,6 +305,186 @@ function rememberColor(p: SelPatch): void {
       ? s
       : { recentColors: [hex, ...s.recentColors.filter((c) => c !== hex)].slice(0, RECENT_COLORS) },
   );
+}
+
+// ── 벡터 연산(46 §4) ────────────────────────────────────────────────────────
+
+/** 히스토리 라벨 = 사용자가 누른 버튼의 이름. 연산마다 다른 이름을 쓰면 되돌리기 목록이 거짓말을 한다. */
+const OP_LABEL: Record<PathOp, string> = {
+  union: "합집합",
+  subtract: "차집합",
+  intersect: "교집합",
+  exclude: "제외",
+  flatten: "평탄화",
+  outline: "윤곽선화",
+  separate: "패스 분리",
+};
+
+const VECTOR_OPS = Object.keys(OP_LABEL) as PathOp[];
+
+/**
+ * 불리언 4연산 · 평탄화 · 윤곽선화 · 패스 분리 — 단축키·컨텍스트 바·인스펙터·미리보기 스트립·
+ * e2e 훅이 전부 이 함수 하나를 탄다.
+ *
+ * **판정(`can`)이 실행(`run`)과 같은 자리에 있다.** 갈라 두면 잠긴 버튼의 단축키만 도는 조합이
+ * 생기고, 그때 사용자는 "키로는 되는데 버튼으로는 안 된다"를 겪는다.
+ *
+ * 전부 **파괴적 1커밋**이고 끝나면 선택을 결과 노드로 옮긴다. 피연산자가 사라졌는데 선택이
+ * 남으면 다음 조작이 문서에 없는 id 를 만지고, 그 뒤로는 아무 버튼도 듣지 않는다.
+ */
+export function vectorActions(ctx: {
+  doc: EditorDoc;
+  ids: readonly ObjId[];
+  applyDoc(next: EditorDoc, mode: "commit", label: string): void;
+  select(ids: ObjId[]): void;
+}): { run(op: PathOp): ObjId[]; can(op: PathOp): boolean } {
+  const objects = ctx.doc.objects;
+  const set = new Set(ctx.ids);
+  // 선택은 **문서 순서(z)** 로 다시 세운다 — 클릭 순서 그대로 넘기면 차집합이 "아래 도형에서
+  // 위를 뺀다"(§3.5)를 못 지켜, 같은 두 도형이 고른 차례에 따라 다른 결과를 낸다.
+  const picked = objects.filter((o) => set.has(o.id));
+  // 조상과 자손을 함께 골랐으면 조상만 남긴다 — 삭제·자리 계산의 단위다.
+  const roots = picked.filter((o) => !treeAncestorsOf(objects, o.id).some((a) => set.has(a)));
+
+  /** 평탄화 입력 — 컨테이너는 리프까지 편다(§3.6). 컨테이너 자신은 기하가 아니라 뺀다. */
+  const leaves = (): GeomNode[] => {
+    const ids = new Set(roots.flatMap((o) => treeSubtreeIds(objects, o.id)));
+    return objects.filter(
+      (o): o is GeomNode => ids.has(o.id) && isGeomNode(o) && !isContainer(o),
+    );
+  };
+
+  /** 이미 패스 하나면 평탄화는 항등이다 — 커밋하면 아무것도 안 바뀐 히스토리 칸만 남는다(41 의 200칸). */
+  const flattenIsNoop = () => {
+    const l = leaves();
+    return l.length === 1 && l[0].kind === "path";
+  };
+
+  const single = picked.length === 1 ? picked[0] : null;
+
+  /**
+   * 결과를 최상위 소스 자리(같은 부모·같은 형제 인덱스)에 놓고 소스를 서브트리째 지운다.
+   *
+   * 새 노드는 **루트 끝에 붙인 뒤 `reparent` 로** 옮긴다. `parentId` 만 바꿔 배열 끝에 두면
+   * "자손은 컨테이너 바로 뒤에 연속"(38 불변식 ②)이 깨져 커밋에서 즉시 터진다.
+   */
+  const replaceRoots = (made: readonly Node[]): Node[] => {
+    const anchor = roots[roots.length - 1];
+    const parent = anchor.parentId;
+    const siblings = treeChildrenOf(objects, parent);
+    const gone = new Set(roots.map((o) => o.id));
+    // 삽입 위치는 **살아남는 형제** 기준으로 센다. 원래 인덱스를 그대로 쓰면 아래쪽 피연산자가
+    // 함께 사라진 만큼 목록이 짧아져, 결과가 제자리가 아니라 맨 위로 올라간다(a+b 를 합치면
+    // c 위로 튀어 나온다). 겹침 순서가 조용히 바뀌는 종류의 사고다.
+    const index = siblings
+      .slice(0, siblings.indexOf(anchor.id))
+      .filter((id) => !gone.has(id)).length;
+    const rest = treeRemove(objects, roots.map((o) => o.id));
+    const placed = made.map((n) => ({ ...n, parentId: null }));
+    return treeReparent(
+      [...rest, ...placed],
+      placed.map((n) => n.id),
+      parent,
+      index,
+    );
+  };
+
+  const commit = (next: Node[], ids: ObjId[], op: PathOp): ObjId[] => {
+    ctx.applyDoc({ ...ctx.doc, objects: next }, "commit", OP_LABEL[op]);
+    ctx.select(ids);
+    return ids;
+  };
+
+  const can = (op: PathOp): boolean => {
+    switch (op) {
+      case "flatten":
+        return canFlatten(picked) && !flattenIsNoop();
+      case "outline":
+        return !!single && canOutline(single);
+      case "separate":
+        return !!single && single.kind === "path" && single.subpaths.length > 1;
+      default:
+        return canBoolean(picked);
+    }
+  };
+
+  return {
+    can,
+    run(op) {
+      if (!can(op)) return [];
+      if (op === "flatten") {
+        const made = flattenObjects(leaves());
+        if (!made) return [];
+        // 뱃지 숫자는 텍스트로 따라 나온다(§3.6) — 빼면 평탄화한 순간 번호가 사라진다.
+        const nodes = [made.path, ...made.extras];
+        return commit(replaceRoots(nodes), nodes.map((n) => n.id), op);
+      }
+      if (op === "outline") {
+        // 텍스트는 같은 액션 id 아래 50 `outlineText` 가 맡는다 — `canOutline` 이 거짓이라
+        // 여기까지 오지 않는다. 그 사실은 호출자가 알린다(빈 배열 = 아무 일도 없었다).
+        const made = single && isGeomNode(single) ? outlineStroke(single) : null;
+        if (!made) return [];
+        // 제자리 치환이다(id 유지) — 선택도 z 순서도 그대로 남는다.
+        return commit(
+          objects.map((o) => (o.id === made.id ? made : o)),
+          [made.id],
+          op,
+        );
+      }
+      if (op === "separate") {
+        // `can` 이 이미 봤지만 다시 좁힌다 — 캐스트로 넘기면 게이트가 한 번 느슨해지는 날
+        // `separateSubPaths` 가 subpaths 없는 노드를 받아 터진다.
+        if (!single || single.kind !== "path") return [];
+        const parts = separateSubPaths(single);
+        const i = objects.indexOf(single);
+        return commit(
+          [...objects.slice(0, i), ...parts, ...objects.slice(i + 1)],
+          parts.map((p) => p.id),
+          op,
+        );
+      }
+      const made = booleanOp(picked.filter(isGeomNode), op);
+      // 겹치지 않는 두 도형의 교집합처럼 결과가 비면 문서를 건드리지 않는다.
+      if (!made) return [];
+      return commit(replaceRoots([made]), [made.id], op);
+    },
+  };
+}
+
+/** `PathPatch` 중 `applyPaintPatch`(37)가 모르는 키 — 노드에 직접 얹는다(§3.8). */
+const PATH_KEYS = [
+  "fillRule",
+  "subpaths",
+  "strokeAlign",
+  "dash",
+  "cap",
+  "join",
+  "miterLimit",
+  "heads",
+] as const satisfies readonly (keyof PathNode)[];
+
+/** 선 기하 키 — 값을 직접 고치면 스타일 참조를 뗀다(`applyPaintPatch` 와 같은 규칙). */
+const PATH_STROKE_KEYS = [
+  "strokeAlign",
+  "dash",
+  "cap",
+  "join",
+  "miterLimit",
+  "heads",
+] as const satisfies readonly (typeof PATH_KEYS)[number][];
+
+function applyPathPatch(node: PathNode, p: PathPatch): PathNode {
+  // **반드시 복사한다.** `applyPaintPatch` 는 아는 키가 하나도 없으면 원본을 그대로 돌려주므로
+  // (`if (!touched) return node`), 그 위에 Object.assign 하면 문서에 든 노드를 제자리에서
+  // 뜯어고친다 — 히스토리의 이전 칸까지 같은 객체를 가리켜 되돌리기가 아무 것도 안 되돌린다.
+  const next: PathNode = { ...(applySelPatch(node, p) as PathNode) };
+  for (const k of PATH_KEYS) if (p[k] !== undefined) Object.assign(next, { [k]: p[k] });
+  // 라이브러리 값과 어긋난 채 링크가 남으면 다음 라이브러리 변경이 이 편집을 덮는다(51 §4).
+  if (PATH_STROKE_KEYS.some((k) => p[k] !== undefined) && next.styleRefs.stroke) {
+    const { stroke: _drop, ...rest } = next.styleRefs;
+    next.styleRefs = rest;
+  }
+  return next;
 }
 
 const ALIGN_LABEL: Record<AlignMode, string> = {
@@ -480,10 +680,27 @@ export default function ImageEditor() {
    * 사라진다(드래그 중에는 매 틱 다시 그려진다).
    */
   const chromeExtraRef = useRef<ChromePrim[]>([]);
+  /** 진행 중인 크롭 세션(48). 렌더마다 갱신되고, 매 프레임 도는 경로가 ref 로만 읽는다. */
+  const cropSessionRef = useRef<CropSession | null>(null);
   const paintChrome = useCallback((st: ChromeState) => {
     baseChromeRef.current = st;
     const ex = chromeExtraRef.current;
-    const merged = ex.length ? { ...st, extra: [...st.extra, ...ex] } : st;
+    let merged = ex.length ? { ...st, extra: [...st.extra, ...ex] } : st;
+    // 크롭 **세션 중**에만 8핸들과 크기 배지를 얹는다(48 §3.3). 주석 레이어는 세션을 모르고
+    // 확정된 `doc.crop` 도 같은 자리를 쓰므로, 여기서 갈라 두지 않으면 이미 적용된 크롭에도
+    // 잡히지 않는 핸들이 그려진다.
+    const s = cropSessionRef.current;
+    if (s && merged.crop) {
+      merged = {
+        ...merged,
+        crop: {
+          ...merged.crop,
+          overlay: s.overlay,
+          label: cropLabel(s, { straighten: true }),
+          handles: true,
+        },
+      };
+    }
     lastChromeRef.current = merged;
     chromeRef.current?.update(merged);
   }, []);
@@ -761,12 +978,15 @@ export default function ImageEditor() {
 
   const { rotation, flipH, flipV, crop, outW, outH, brightness, contrast, saturate } =
     doc;
+  const { straighten } = doc;
   const filterStr = `brightness(${brightness}%) contrast(${contrast}%) saturate(${saturate}%)`;
 
-  // 회전·반전이 적용된 캔버스(메모) — 방향이 바뀌면 새 정체성을 갖는다.
+  // 회전·반전·직선화가 적용된 캔버스(메모) — 방향이 바뀌면 새 정체성을 갖는다. 직선화는
+  // `buildOriented` **가장 안쪽**이라 여기 아래(프리뷰 백킹·출력·90° 델타)는 전부 무변경이다:
+  // 그것들은 캔버스의 크기와 픽셀만 보고 어떻게 만들어졌는지는 모른다(48 §3.2).
   const oriented = useMemo(
-    () => (img ? buildOriented(img, rotation, flipH, flipV) : null),
-    [img, rotation, flipH, flipV],
+    () => (img ? buildOriented(img, rotation, flipH, flipV, straighten) : null),
+    [img, rotation, flipH, flipV, straighten],
   );
 
   // ── 캔버스 크기 계산(두 캔버스가 항상 같은 값을 쓴다, §4.3) ────────────────
@@ -823,7 +1043,11 @@ export default function ImageEditor() {
 
   // 방향(회전·반전)이 바뀌거나 새 이미지가 들어오면 맞춤으로 되돌린다. 옛 방향에서 쌓은 팬
   // 오프셋은 그 순간 의미가 없어져 이미지가 화면 밖으로 튀어나간다.
-  useEffect(() => setView(IDENTITY_VIEW), [oriented]);
+  //
+  // **`oriented` 자체를 의존성으로 두면 안 된다**(48 §3.2): 직선화는 틱마다 새 캔버스를 만드는데
+  // 그때마다 맞춤으로 튀면 확대해서 수평을 맞추는 조작 자체가 불가능하다.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => setView(IDENTITY_VIEW), [img, rotation, flipH, flipV]);
 
   // 휠 = 줌. **non-passive 로 직접 등록해야 한다** — React 의 onWheel 은 passive 라
   // preventDefault 가 무시되고 WebView2 가 페이지째 확대해 버린다(ImageView 와 같은 이유).
@@ -931,48 +1155,19 @@ export default function ImageEditor() {
     [patchDoc],
   );
 
-  // ── 크롭(포인터는 주석 캔버스가 받아 여기로 위임한다) ──────────────────────
-  const cropStartRef = useRef<{ x: number; y: number } | null>(null);
-  const cropLiveRef = useRef<Rect | null>(null);
-
-  const onCropDown = useCallback((p: { x: number; y: number }) => {
-    cropStartRef.current = p;
-    cropLiveRef.current = null;
-    layerRef.current?.setCropPreview(null);
-  }, []);
-  const onCropMove = useCallback((p: { x: number; y: number }) => {
-    const st = cropStartRef.current;
-    if (!st) return;
-    const r = normalizeRect(st.x, st.y, p.x, p.y);
-    cropLiveRef.current = r;
-    layerRef.current?.setCropPreview(r);
-  }, []);
-  /** Esc 로 드래그가 취소되면 시작점·라이브 사각형을 버린다 — 남아 있으면 버튼을 떼는 순간 확정된다. */
-  const onCropCancel = useCallback(() => {
-    cropStartRef.current = null;
-    cropLiveRef.current = null;
-    layerRef.current?.setCropPreview(null);
-  }, []);
-  const onCropUp = useCallback(() => {
-    const st = cropStartRef.current;
-    cropStartRef.current = null;
-    const r = cropLiveRef.current;
-    cropLiveRef.current = null;
-    layerRef.current?.setCropPreview(null);
-    // 시작점이 없다 = Esc 로 취소된 드래그다. 커밋하지 않는다(§5.4 계층 3).
-    if (!st) return;
-    // 너무 작은 선택은 무시(클릭 오조작)
-    if (r && r.w >= 4 && r.h >= 4) {
-      const rect: Rect = {
-        x: Math.round(r.x),
-        y: Math.round(r.y),
-        w: Math.round(r.w),
-        h: Math.round(r.h),
-      };
-      patchDoc({ crop: rect, outW: rect.w, outH: rect.h });
-      setCropMode(false);
-    }
-  }, [patchDoc]);
+  // ── 크롭 세션(48) ─────────────────────────────────────────────────────────
+  //
+  // 세션은 모드가 열고 닫는다 — 이 훅이 `mode.kind` 를 스스로 구독하므로 여기서 진입·취소를
+  // 다시 부르지 않는다. 세션 중 문서 변경은 전부 `replace` 라 히스토리는 0칸이고, 커밋은
+  // ⏎ 적용 한 번이다(§3.1).
+  const { session: cropSession, api: cropApi } = useCropSession({
+    docRef,
+    applyDoc,
+    oriented,
+    img,
+    ui: useImageEditorUi.getState(),
+  });
+  cropSessionRef.current = cropSession;
 
   const clearCrop = () => {
     if (!oriented) return;
@@ -1028,6 +1223,129 @@ export default function ImageEditor() {
     return pos + (axis === "x" ? r.dx : r.dy);
   };
 
+  // ── 크롭 드래그(포인터는 주석 캔버스가 받아 여기로 위임한다) ────────────────
+  //
+  // 세션 사각형을 아는 쪽이 여기뿐이라 기하도 여기 있다. 포인터 파일은 "무엇을 잡았나"
+  // (`hitCropHandle`)와 수식자(`cropDragMods`)만 준다 — 두 곳이 각자 계산하면 보이는 상자와
+  // 저장되는 영역이 갈린다.
+  const cropDragRef = useRef<
+    | { kind: "resize"; handle: number; base: Rect }
+    | { kind: "move"; start: { x: number; y: number }; base: Rect }
+    | { kind: "draw"; start: { x: number; y: number } }
+    | null
+  >(null);
+  const cropLiveRef = useRef<Rect | null>(null);
+
+  /** 이번 드래그가 쓰는 경계·비율 — 세션과 **같은 함수**(crop.ts)에서만 나온다. */
+  const cropGeom = useCallback(() => {
+    const s = cropSessionRef.current;
+    const base = orientedRef.current;
+    if (!s || !base || !img) return null;
+    const d = docRef.current;
+    return {
+      rect: s.rect,
+      bounds: cropBounds(s, img.naturalWidth, img.naturalHeight, d.rotation, {
+        w: base.width,
+        h: base.height,
+      }),
+      aspect: aspectRatioOf(s.aspect, img.naturalWidth, img.naturalHeight, d.rotation),
+    };
+  }, [img]);
+
+  /**
+   * 크롭도 다른 드래그와 같은 스냅을 탄다 — 안 걸면 크롭만 격자·가이드를 무시한다.
+   * Alt 는 "정확히 여기"라는 뜻이라 저항을 없앤다(`applyDragAt` 과 같은 규칙).
+   */
+  const snapCropPoint = (p: { x: number; y: number }, alt: boolean) => {
+    const u = useImageEditorUi.getState();
+    if (alt || !u.toggles.snap) return p;
+    const idx = snapIndexNow();
+    if (!idx) return p;
+    const r = snapPoint(idx, p, u.snapThresholdCss / Math.max(screenScale, 1e-6));
+    return { x: p.x + r.dx, y: p.y + r.dy };
+  };
+
+  const onCropDown = useCallback(
+    (p: { x: number; y: number }) => {
+      cropLiveRef.current = null;
+      layerRef.current?.setCropPreview(null);
+      const g = cropGeom();
+      if (!g) {
+        cropDragRef.current = null;
+        return;
+      }
+      // 히트 순서는 핸들 → 안 → 밖이다(§3.3). 핸들이 사각형 안쪽 경계에 걸쳐 있어서
+      // 안쪽 판정을 먼저 하면 모서리를 잡아도 통째로 끌린다.
+      const h = hitCropHandle(g.rect, p, HANDLE_GRAB_CSS / Math.max(screenScale, 1e-6));
+      if (h >= 0) cropDragRef.current = { kind: "resize", handle: h, base: g.rect };
+      else if (
+        p.x >= g.rect.x &&
+        p.x <= g.rect.x + g.rect.w &&
+        p.y >= g.rect.y &&
+        p.y <= g.rect.y + g.rect.h
+      ) {
+        cropDragRef.current = { kind: "move", start: p, base: g.rect };
+      } else cropDragRef.current = { kind: "draw", start: p };
+    },
+    [cropGeom, screenScale],
+  );
+
+  const onCropMove = useCallback(
+    (p: { x: number; y: number }) => {
+      const d = cropDragRef.current;
+      const g = cropGeom();
+      if (!d || !g) return;
+      const m = cropDragMods();
+      let r: Rect;
+      if (d.kind === "resize") {
+        r = resizeCropRect(d.base, d.handle, snapCropPoint(p, m.alt), {
+          aspect: g.aspect,
+          bounds: g.bounds,
+          shift: m.shift,
+        });
+      } else if (d.kind === "move") {
+        // 크기는 그대로, 위치만 — `fitAspect` 에 비율 null 을 주면 정수 반올림 + 경계
+        // 클램프만 남는다(같은 규칙을 두 번 쓰지 않는다).
+        r = fitAspect(
+          { ...d.base, x: d.base.x + (p.x - d.start.x), y: d.base.y + (p.y - d.start.y) },
+          null,
+          g.bounds,
+        );
+      } else {
+        const q = snapCropPoint(p, m.alt);
+        r = fitAspect(
+          normalizeRect(d.start.x, d.start.y, q.x, q.y),
+          g.aspect ?? (m.shift ? 1 : null),
+          g.bounds,
+        );
+      }
+      cropLiveRef.current = r;
+      layerRef.current?.setCropPreview(r);
+    },
+    [cropGeom, screenScale],
+  );
+
+  /** Esc 로 드래그가 취소되면 상태와 라이브 사각형을 버린다 — 남아 있으면 버튼을 떼는 순간 확정된다. */
+  const onCropCancel = useCallback(() => {
+    cropDragRef.current = null;
+    cropLiveRef.current = null;
+    layerRef.current?.setCropPreview(null);
+  }, []);
+
+  const onCropUp = useCallback(() => {
+    const d = cropDragRef.current;
+    cropDragRef.current = null;
+    const r = cropLiveRef.current;
+    cropLiveRef.current = null;
+    layerRef.current?.setCropPreview(null);
+    // 상태가 없다 = Esc 로 취소된 드래그다. 세션에 반영하지 않는다(§5.4 계층 3).
+    if (!d || !r) return;
+    // 빈 곳에서 시작한 새 사각형만 최소 크기를 본다 — 클릭 오조작이 사각형을 1px 로
+    // 줄여 버리면 되돌릴 방법이 세션 취소뿐이다. 핸들·이동은 항상 유효한 값에서 출발한다.
+    if (d.kind === "draw" && (r.w < 4 || r.h < 4)) return;
+    cropApi.cropSet({ rect: r });
+  }, [cropApi]);
+
   // 타이핑 한 글자마다 히스토리를 쌓지 않도록 슬라이더와 같은 라이브 규칙을 쓴다(blur 에서 끝).
   const changeW = (v: number) => {
     const w = Math.max(1, Math.round(v || 0));
@@ -1060,11 +1378,24 @@ export default function ImageEditor() {
       w = h;
       h = t;
     }
+    // 직선화는 `buildOriented` 의 **가장 안쪽**이라 가장 나중에 푼다(48 §3.2). 반전은 이미
+    // 걷혔으므로 부호 뒤집기(mirrored)가 없다.
+    if (d.straighten !== 0) {
+      objs = straightenObjects(
+        objs,
+        d.straighten,
+        0,
+        { w, h },
+        { w: img.naturalWidth, h: img.naturalHeight },
+        false,
+      );
+    }
     patchDoc({
       objects: objs.slice(),
       rotation: 0,
       flipH: false,
       flipV: false,
+      straighten: 0,
       crop: null,
       outW: img.naturalWidth,
       outH: img.naturalHeight,
@@ -1315,6 +1646,9 @@ export default function ImageEditor() {
    */
   const requestClose = useCallback(() => {
     if (busyRef.current) return;
+    // 크롭 세션 중이면 **먼저 되돌린다**(48 §6). 세션 문서는 아직 적용된 적 없는 라이브 값인데,
+    // 그대로 flush 하면 다음에 열었을 때 누른 적 없는 직선화·크롭이 걸린 채로 뜬다.
+    cropApi.cropCancel();
     void (async () => {
       await persistRef.current?.flush();
       if (persistRef.current?.state === "error") {
@@ -1330,7 +1664,7 @@ export default function ImageEditor() {
       }
       close();
     })();
-  }, [askConfirm, close]);
+  }, [askConfirm, close, cropApi]);
 
   /**
    * doc 창의 X(FloatTitleBar → `win.close()`)는 편집기의 닫기 가드를 지나지 않는다 —
@@ -1350,6 +1684,8 @@ export default function ImageEditor() {
         const p = persistRef.current;
         if (!p || p.state === "clean") return;
         e.preventDefault();
+        // `requestClose` 와 같은 이유 — 적용하지 않은 크롭 세션을 사이드카에 쓰지 않는다.
+        cropApi.cropCancel();
         void (async () => {
           await p.flush();
           if (persistRef.current?.state === "error") {
@@ -1377,7 +1713,7 @@ export default function ImageEditor() {
       dead = true;
       off?.();
     };
-  }, [askConfirm]);
+  }, [askConfirm, cropApi]);
 
   // 붙여넣기 한 곳 — 객체(`gpv-anno:` 텍스트, 42 §3.4)와 이미지 파일(→ 에셋 + 이미지 채우기
   // 사각형, 41 §3.5)을 함께 받는다. Ctrl+V 는 단축키 표에 **없다**: 브라우저가 만드는 paste
@@ -1703,7 +2039,14 @@ export default function ImageEditor() {
       // 노드별 함수 패치(MIXED)는 값이 하나로 모이지 않으므로 기본값을 건드리지 않는다.
       if (typeof patch !== "function") {
         const paint = paintPart(patch);
-        if (Object.keys(paint).length) setStyle((s) => ({ ...s, ...paint }));
+        // 타이포만 **병합**이다 — 부분 패치를 그대로 얹으면 행간 하나를 바꾼 순간 나머지
+        // 필드가 통째로 사라져, 툴바가 든 "다음 텍스트 스타일"이 반쪽이 된다.
+        if (Object.keys(paint).length)
+          setStyle((s) => ({
+            ...s,
+            ...paint,
+            typo: paint.typo ? { ...s.typo, ...paint.typo } : s.typo,
+          }));
         if (patch.opacity !== undefined) setOpacity(patch.opacity);
         rememberColor(patch);
       }
@@ -1748,6 +2091,54 @@ export default function ImageEditor() {
       if (live) patchLive({ objects: next }, label);
       else commitDoc({ objects: next }, label);
     },
+    [commitDoc, patchLive],
+  );
+
+  /**
+   * 벡터 연산 실행(46). 버튼·단축키·미리보기 스트립·e2e 훅이 전부 이 함수를 탄다.
+   * `ids` 를 넘기지 않으면 현재 선택이다(스토어에서 읽으므로 액션 맵이 stable 하게 남는다).
+   */
+  const runVector = useCallback(
+    (op: PathOp, ids?: readonly ObjId[]): ObjId[] => {
+      const list = ids ?? selIds();
+      const out = vectorActions({
+        doc: docRef.current,
+        ids: list,
+        applyDoc,
+        select: setSelectedIds,
+      }).run(op);
+      // 텍스트 윤곽선화는 50(`outlineText`) 몫이라 지금은 게이트에서 막힌다. 조용히 넘어가면
+      // 사용자는 Ctrl+Shift+O 가 죽은 줄 알고 다시 누른다 — 한 줄이라도 남겨야 한다.
+      if (!out.length && op === "outline" && list.length === 1) {
+        if (treeNodeOf(docRef.current.objects, list[0])?.kind === "text") {
+          pushToast("info", "텍스트 윤곽선화는 아직 지원하지 않습니다");
+        }
+      }
+      return out;
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [applyDoc, pushToast, setSelectedIds],
+  );
+
+  /**
+   * 패스 전용 속성(선 기하·fillRule·subpaths). `patchSelection` 을 못 쓰는 이유는 §3.8 주석
+   * 그대로다 — `applyPaintPatch` 는 `DefaultPaint` 키만 알고 나머지를 **말없이 버린다**.
+   */
+  const pathPatch = useCallback(
+    (patch: PathPatch, label: string, live = false) => {
+      const ids = new Set(selIds());
+      if (!ids.size) return;
+      let touched = false;
+      const next = docRef.current.objects.map((o) => {
+        if (!ids.has(o.id) || o.kind !== "path") return o;
+        touched = true;
+        return applyPathPatch(o, patch);
+      });
+      if (!touched) return;
+      if (live) patchLive({ objects: next }, label);
+      else commitDoc({ objects: next }, label);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [commitDoc, patchLive],
   );
 
@@ -1813,14 +2204,23 @@ export default function ImageEditor() {
       mask: (on) => maskSel(on),
       duplicate: () => duplicateSel(),
       remove: () => removeSel(),
-      // 46 이 도착하면 `booleanOp` 로 잇는다. 그때까지 컨텍스트 바는 `booleanReady={false}` 라
-      // 버튼을 아예 그리지 않고, 단축키 표의 `bool.*` 행도 이 맵에 없어 소비만 되고 끝난다.
-      boolean: () => {},
+      vectorOp: (op) => void runVector(op),
+      pathPatch,
       rotateImage: (plus90) => rotateBy(plus90),
       flipImage: (axis) => flipBy(axis),
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [patchSelection, setFrame, endLive, commitDoc, canvasRect, rotateBy, flipBy],
+    [
+      patchSelection,
+      setFrame,
+      endLive,
+      commitDoc,
+      canvasRect,
+      rotateBy,
+      flipBy,
+      runVector,
+      pathPatch,
+    ],
   );
 
   /**
@@ -1869,8 +2269,33 @@ export default function ImageEditor() {
   );
 
   /**
-   * 텍스트 탭의 유일한 값. 선택이 없으면 **텍스트·뱃지 도구일 때만** 보여 준다 — 사각형을
-   * 든 채 글자 크기를 보여 주면 그 값이 지금 그리는 것에 반영되는 줄 안다.
+   * 불리언 미리보기 스트립이 받는 z 순서 기하 노드. **메모해야 한다** — 매 렌더 새 배열이면
+   * 스트립의 `useMemo` 키가 매번 깨져 선택을 하나 움직일 때마다 불리언 4연산이 다시 돈다
+   * (§6: 200정점 곡선 ∪ rect 가 300ms 예산이다).
+   */
+  const selGeom = useMemo(() => selNodes.filter(isGeomNode), [selNodes]);
+
+  /**
+   * 벡터 연산 게이트(46). 컨텍스트 바·인스펙터가 **같은 판정**을 본다 — 각자 세면 한쪽만
+   * 잠긴 버튼이 생기고, 그 차이는 눌러 봐야 알 수 있다.
+   */
+  const canVector = useMemo(() => {
+    const v = vectorActions({
+      doc,
+      ids: selectedIds,
+      applyDoc,
+      select: setSelectedIds,
+    });
+    return Object.fromEntries(VECTOR_OPS.map((op) => [op, v.can(op)])) as Record<
+      PathOp,
+      boolean
+    >;
+  }, [doc, selectedIds, applyDoc, setSelectedIds]);
+
+  /**
+   * 텍스트 탭에서 **뱃지도 공유하는** 유일한 값이라 `typo` 가 아니라 `fontSize` 슬롯으로 간다.
+   * 선택이 없으면 **텍스트·뱃지 도구일 때만** 보여 준다 — 사각형을 든 채 글자 크기를 보여
+   * 주면 그 값이 지금 그리는 것에 반영되는 줄 안다.
    * `undefined` 면 `NumField` 가 필드를 통째로 감춘다(= 조용한 빈 탭).
    */
   const fontSizeValue = selNodes.length
@@ -1979,14 +2404,20 @@ export default function ImageEditor() {
     if (layerPanelRef.current?.cancelDrag()) return;
     // 2~5) 텍스트 확정 → 드래프트 취소 → select 복귀 → 선택 해제
     if (layerRef.current?.handleEscape()) return;
-    // 6) 크롭·노드 편집 종료(동급)
+    // 6) 크롭·노드 편집 종료(동급). 크롭은 **취소**다 — 진입 시점 문서로 정확히 되돌아가고
+    //    히스토리는 변하지 않는다(48 §3.1). 여기서 그냥 모드만 끄면 세션 중의 라이브 문서가
+    //    적용된 것처럼 남는다.
+    if (useImageEditorUi.getState().mode.kind === "crop") {
+      cropApi.cropCancel();
+      return;
+    }
     if (useImageEditorUi.getState().mode.kind !== "design") {
       leaveMode();
       return;
     }
     // 7) 닫기 — 41 이후 확인창은 없다(문서가 사이드카에 남으므로).
     requestClose();
-  }, [leaveMode, requestClose]);
+  }, [cropApi, leaveMode, requestClose]);
 
   useEditorKeys(
     {
@@ -2010,13 +2441,22 @@ export default function ImageEditor() {
           ? useImageEditorUi.getState().restoreTool()
           : setTool("hand", { temporary: true }),
 
-      undo: () => undo(),
-      redo: () => redo(),
+      // 크롭 세션 중에는 되돌리기를 잠근다(48 §6): 세션 문서는 `replace` 로만 얹혀 있어
+      // 여기서 undo 하면 진입 **이전** 편집이 풀리는데, 화면에는 크롭 상자만 그대로 남아
+      // 무엇이 되돌아갔는지 보이지 않는다(Figma 도 크롭 중 잠근다).
+      undo: () => {
+        if (!cropSessionRef.current) undo();
+      },
+      redo: () => {
+        if (!cropSessionRef.current) redo();
+      },
       esc: () => escape(),
       // Enter 는 **모드가 있을 때만** 맵에 넣는다. 항상 넣으면 design 모드의 Enter 까지
       // 소비해 포커스된 버튼이 Enter 로 눌리지 않는다 — design 의 Enter(텍스트 편집 진입·
       // 그룹 진입·노드 편집 진입)는 44·47·50 것이다.
-      ...(mode.kind === "design" ? {} : { enter: () => leaveMode() }),
+      ...(mode.kind === "design"
+        ? {}
+        : { enter: () => (mode.kind === "crop" ? cropApi.cropApply() : leaveMode()) }),
 
       duplicate: () => duplicateSel(),
       delete: () => {
@@ -2086,6 +2526,15 @@ export default function ImageEditor() {
       "distribute.v": () => actions.distribute("y"),
       tidy: () => actions.tidy(useImageEditorUi.getState().tidyGap),
       "tool.eyedropper": () => pickColor(),
+
+      // 46 벡터 연산 — 버튼과 **같은 함수**다. 게이트(`vectorActions.can`)도 그 안에 있어서
+      // 지금 할 수 없는 조합은 문서를 건드리지 않고 그냥 소비된다.
+      "bool.union": () => void runVector("union"),
+      "bool.subtract": () => void runVector("subtract"),
+      "bool.intersect": () => void runVector("intersect"),
+      "bool.exclude": () => void runVector("exclude"),
+      flatten: () => void runVector("flatten"),
+      outline: () => void runVector("outline"),
 
       "zoom.in": () => zoomBy(WHEEL_STEP * WHEEL_STEP),
       "zoom.out": () => zoomBy(1 / (WHEEL_STEP * WHEEL_STEP)),
@@ -2202,6 +2651,34 @@ export default function ImageEditor() {
         );
       },
       renderOnce: () => layerRef.current?.renderOnce(),
+      /**
+       * 크롭(48). `crop` 은 버튼·단축키가 부르는 것과 **같은 객체**라 갈라질 자리가 없고,
+       * `getOrientedSize` 는 직선화가 캔버스를 얼마나 키웠는지를(θ=0 비트 동일 증명 포함)
+       * 화면을 안 읽고 확인하는 통로다. `histDepth` 는 "세션 몇 틱 = 히스토리 0칸"의 근거.
+       */
+      getOrientedSize: () => ({
+        w: orientedRef.current?.width ?? 0,
+        h: orientedRef.current?.height ?? 0,
+      }),
+      cropSession: () => cropApi.getCropSession(),
+      crop: cropApi,
+      histDepth: () => histRef.current.depth,
+      /**
+       * 텍스트 레이아웃(49) — 줄 나눔·상자·마커를 화면 픽셀을 읽지 않고 확인하는 통로.
+       * 렌더·히트·편집 오버레이가 **이 산출물 하나**를 나눠 쓰므로, 여기서 본 줄이 곧
+       * 그려진 줄이다. `fallback:true` 는 `letterSpacing` 이 없는 엔진(WKWebView)의 수동
+       * 배치 경로를 Windows 에서 강제한다 — 그 경로는 Mac 에서만 도는 코드라 실기 없이
+       * 죽어 있는지 알 방법이 이것뿐이다. `outline`(50)은 Path2D 라 직렬화에서 뺀다.
+       */
+      textLayout: (
+        id: ObjId,
+        opts?: { editing?: boolean; fallback?: boolean },
+      ) => {
+        const n = docRef.current.objects.find((o) => o.id === id);
+        if (!n || n.kind !== "text") return null;
+        const { outline: _drop, ...rest } = layoutText(n, opts);
+        return rest;
+      },
       /**
        * 화면 크롬(43). `state()` 는 **마지막 프레임이 그린 값**이고, `set()` 은 그 위에 덮어
        * 강제로 한 번 더 그린다 — 아직 소유 태스크가 오지 않은 항목(48 크롭 오버레이·47 extra)을
@@ -2405,12 +2882,31 @@ export default function ImageEditor() {
       },
       /** 버튼·단축키가 부르는 것과 **같은 함수**(45 §4). 갈라지면 e2e 만 통과한다. */
       actions,
+      /**
+       * 벡터 연산(46 §4). `op` 는 **커밋까지** 하고 결과 id 를 준다 — 화면을 안 읽고 4연산·
+       * 평탄화·분리의 문서 결과를 본다. `toPath` 는 변환기 단독 확인용이라 커밋하지 않는다.
+       */
+      vector: {
+        op: (op: PathOp, ids?: ObjId[]) => runVector(op, ids),
+        can: (op: PathOp, ids?: ObjId[]) =>
+          vectorActions({
+            doc: docRef.current,
+            ids: ids ?? selIds(),
+            applyDoc,
+            select: setSelectedIds,
+          }).can(op),
+        toPath: (id: ObjId) => {
+          const n = treeNodeOf(docRef.current.objects, id);
+          return n && isGeomNode(n) ? toPathObject(n) : null;
+        },
+      },
     };
     return () => {
       delete g.__gpv?.imageEditor;
       delete g.__gpv?.imageDocs;
     };
-  }, [actions, patchDoc, snapIndexNow]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [actions, patchDoc, snapIndexNow, runVector, cropApi]);
 
   if (!path) return null;
 
@@ -2525,6 +3021,18 @@ export default function ImageEditor() {
             zoom={screenScale}
             onZoom={zoomPreset}
             imageSize={oriented ? { w: oriented.width, h: oriented.height } : null}
+            canVector={canVector}
+            crop={
+              cropSession && img
+                ? {
+                    session: cropSession,
+                    api: cropApi,
+                    // 큰 이미지는 직선화 bbox 가 화소 상한에 먼저 걸린다 — 슬라이더 범위를
+                    // 그 각까지로 줄여야 끝까지 끌었을 때 캔버스 할당이 터지지 않는다(§3.6).
+                    maxDeg: maxStraightenFor(img.naturalWidth, img.naturalHeight),
+                  }
+                : undefined
+            }
           />
 
           {/* 프리뷰 — 이미지 위에 주석 캔버스를 겹친다(§4.3) */}
@@ -2591,7 +3099,9 @@ export default function ImageEditor() {
                     style={style}
                     opacity={opacity}
                     cropMode={cropMode}
-                    cropRect={crop}
+                    // 세션이 있으면 그 사각형이 이긴다 — 확정된 `doc.crop` 은 세션이 끝난 뒤의
+                    // 값이라, 세션 중에 그리면 방금 만진 상자가 화면에 안 나온다.
+                    cropRect={cropSession ? cropSession.rect : crop}
                     onCropDown={onCropDown}
                     onCropMove={onCropMove}
                     onCropUp={onCropUp}
@@ -2626,6 +3136,18 @@ export default function ImageEditor() {
                 }
                 snapForGuide={snapForGuide}
               />
+            )}
+
+            {/* 불리언 미리보기(시안 ③ 캔버스 하단) — 게이트는 컨텍스트 바·인스펙터와 같은
+                판정이다. 스트립 자체도 `canBoolean` 을 다시 보므로 여기 조건은 빈 상자를
+                만들지 않기 위한 것이다(줌 필과 자리를 다투지 않게 왼쪽으로 붙인다). */}
+            {showStage && canVector.union && (
+              <div
+                className="absolute bottom-3 left-3"
+                style={{ zIndex: STAGE_Z.chrome + 1 }}
+              >
+                <BooleanPreviewStrip nodes={selGeom} onApply={(op) => void runVector(op)} />
+              </div>
             )}
 
             {/* 줌 필(시안 ①, 캔버스 우하단) — 배율은 크롬과 같은 값을 쓴다. */}
@@ -2676,22 +3198,21 @@ export default function ImageEditor() {
                 opacity={opacity}
                 recentColors={recent}
                 onOpenPopover={openPopover}
+                canVector={canVector}
               />
             ),
-            // 텍스트 탭 본체는 50 `TextInspector` 것이다. 글자 크기만 여기 남긴다 —
-            // 이 필드가 없으면 앱 전체에 글자 크기를 바꿀 수단이 하나도 없어진다(v1 후퇴).
+            // 글꼴 목록·굵기·서식 툴바는 50 `TextInspector` 것이다 — 레이아웃을 정하는
+            // 값만 49 가 채운다. `patchSelection` 을 **직접** 넘기는 이유는 타이포가 부분
+            // 패치이기 때문이다(`actions` 쪽 계약의 `typo` 는 완전한 `TextStyle` 이다).
             text: (
-              <NumField
-                label="글자 크기"
-                value={fontSizeValue}
-                unit="px"
-                min={4}
-                max={400}
-                onCommit={(v) => actions.patchSelection({ fontSize: v }, `글자 크기 ${v}`)}
-                onLive={(v) =>
-                  actions.patchSelection({ fontSize: v }, `글자 크기 ${v}`, true)
+              <TextTab
+                nodes={selNodes}
+                fontSize={fontSizeValue}
+                onFontSize={(v, live) =>
+                  patchSelection({ fontSize: v }, `글자 크기 ${v}`, live)
                 }
-                onLiveEnd={actions.endLive}
+                onTypo={(typo, label, live) => patchSelection({ typo }, label, live)}
+                onLiveEnd={endLive}
               />
             ),
             adjust: (
@@ -2699,9 +3220,15 @@ export default function ImageEditor() {
                 doc={doc}
                 onPatch={(patch, live) => (live ? patchLive(patch) : patchDoc(patch))}
                 onEditEnd={endLive}
-                cropMode={cropMode}
-                onCropMode={setCropMode}
-                onClearCrop={clearCrop}
+                cropSection={
+                  <CropInspectorSection
+                    session={cropSession}
+                    api={cropApi}
+                    doc={doc}
+                    onEnter={() => setCropMode(true)}
+                    onClear={clearCrop}
+                  />
+                }
                 onRotateImage={rotateBy}
                 onFlipImage={flipBy}
                 onOutW={changeW}
@@ -2803,5 +3330,210 @@ export default function ImageEditor() {
         </Popover>
       )}
     </div>
+  );
+}
+
+// ── 텍스트 탭(태스크 49) ─────────────────────────────────────────────────────
+//
+// 시안 ② 타이포그래피 중 **레이아웃을 정하는 값**만 여기 있다. 글꼴 목록·굵기·OpenType 은
+// 50 이 얹을 자리라 비워 뒀다 — 지금 껍데기를 그려 두면 50 이 그것을 지우는 일부터 한다.
+//
+// 쓰기는 전부 `onTypo(부분 스타일)` 하나로 나간다. 노드 필드를 직접 얹으면 37
+// `applyPaintPatch` 의 두 규칙(텍스트 아닌 kind 무시 · `styleRefs.text` 떼기)을 우회하게 되고,
+// 그러면 스타일 라이브러리(51)가 다음 동기화에서 사용자의 편집을 조용히 덮는다.
+//
+// 선택에 텍스트가 없으면 **글자 크기만** 남는다. 나머지를 툴바 기본값으로 보여 주면 그 값이
+// 지금 그리는 것에 반영되는 것처럼 보이는데, 새 텍스트를 만드는 `newTextNode`(draft.ts)는
+// 아직 `fontSize` 밖의 타이포를 받지 않는다.
+
+const ALIGN_OPTS: readonly SelectOption<TextStyle["align"]>[] = [
+  { value: "left", label: "왼쪽" },
+  { value: "center", label: "가운데" },
+  { value: "right", label: "오른쪽" },
+  { value: "justify", label: "양쪽" },
+];
+const VALIGN_OPTS: readonly SelectOption<TextStyle["valign"]>[] = [
+  { value: "top", label: "위" },
+  { value: "middle", label: "가운데" },
+  { value: "bottom", label: "아래" },
+];
+const RESIZE_OPTS: readonly SelectOption<TextStyle["resize"]>[] = [
+  { value: "auto-width", label: "자동 폭" },
+  { value: "auto-height", label: "자동 높이" },
+  { value: "fixed", label: "고정" },
+];
+const LIST_OPTS: readonly SelectOption<TextStyle["list"]>[] = [
+  { value: "none", label: "없음" },
+  { value: "bullet", label: "글머리" },
+  { value: "number", label: "번호" },
+  { value: "check", label: "체크" },
+];
+const CASE_OPTS: readonly SelectOption<TextStyle["textCase"]>[] = [
+  { value: "none", label: "기본" },
+  { value: "upper", label: "대문자" },
+  { value: "lower", label: "소문자" },
+];
+const SCRIPT_OPTS: readonly SelectOption<TextStyle["script"]>[] = [
+  { value: "none", label: "없음" },
+  { value: "super", label: "위" },
+  { value: "sub", label: "아래" },
+];
+
+/** 히스토리 라벨은 사용자가 화면에서 읽은 낱말이어야 한다 — 되돌리기 목록이 `justify` 라고 적으면 안 된다. */
+function optLabel<V>(opts: readonly SelectOption<V>[], v: V): string {
+  return opts.find((o) => Object.is(o.value, v))?.label ?? String(v);
+}
+
+function TypoSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="mt-3 first:mt-0">
+      <div className="mb-1 text-[11px] text-fg-dim">{title}</div>
+      {children}
+    </section>
+  );
+}
+
+function TypoRow({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="flex h-7 items-center gap-1.5">
+      <span className="w-11 shrink-0 text-[11px] text-fg-dim">{label}</span>
+      {children}
+    </div>
+  );
+}
+
+/** 값 하나만 실어 보내는 숫자 필드들. 키가 바뀌어도 라벨·히스토리 규칙이 한 곳에 남는다. */
+type TypoNumKey =
+  | "lineHeight"
+  | "letterSpacing"
+  | "paragraphSpacing"
+  | "indent"
+  | "listLevel";
+
+function TextTab({
+  nodes,
+  fontSize,
+  onFontSize,
+  onTypo,
+  onLiveEnd,
+}: {
+  nodes: readonly Node[];
+  /** 뱃지도 쓰는 값이라 `typo` 가 아니라 `fontSize` 슬롯으로 나간다. */
+  fontSize: Maybe<number> | undefined;
+  onFontSize(v: number, live?: boolean): void;
+  onTypo(patch: Partial<TextStyle>, label: string, live?: boolean): void;
+  onLiveEnd(): void;
+}) {
+  const texts = nodes.filter((n): n is TextNode => n.kind === "text");
+  // 빈 선택에서 `mixedTextStyle` 은 모든 필드가 undefined 다 — 세 상태를 지키는 `NumField` 는
+  // 그래도 되지만 `Select`·`Toggle` 은 값 하나를 요구하므로 아예 그리지 않는다.
+  const t = texts.length ? mixedTextStyle(texts) : null;
+
+  const numField = (
+    key: TypoNumKey,
+    label: string,
+    unit: "px" | "%" | undefined,
+    min: number,
+    max: number,
+    step = 1,
+  ) => (
+    <NumField
+      label={label}
+      value={t?.[key]}
+      unit={unit}
+      min={min}
+      max={max}
+      step={step}
+      onCommit={(v) => onTypo({ [key]: v } as Partial<TextStyle>, `${label} ${v}`)}
+      onLive={(v) => onTypo({ [key]: v } as Partial<TextStyle>, `${label} ${v}`, true)}
+      onLiveEnd={onLiveEnd}
+    />
+  );
+
+  const pick = <K extends "align" | "valign" | "resize" | "list" | "textCase" | "script">(
+    key: K,
+    label: string,
+    opts: readonly SelectOption<TextStyle[K]>[],
+    value: Maybe<TextStyle[K]>,
+  ) => (
+    <TypoRow label={label}>
+      <Select
+        label={label}
+        value={value}
+        options={opts}
+        onChange={(v) =>
+          onTypo({ [key]: v } as Partial<TextStyle>, `${label} ${optLabel(opts, v)}`)
+        }
+      />
+    </TypoRow>
+  );
+
+  return (
+    <>
+      <TypoSection title="타이포그래피">
+        <NumField
+          label="글자 크기"
+          value={fontSize}
+          unit="px"
+          min={4}
+          max={400}
+          onCommit={(v) => onFontSize(v)}
+          onLive={(v) => onFontSize(v, true)}
+          onLiveEnd={onLiveEnd}
+        />
+        {/* 행간·자간은 **%** 다(37 결정) — px 로 두면 캡션 11px 과 제목 28px 사이에서 같은
+            숫자가 전혀 다른 간격이 된다. px 환산은 `layoutText` 한 곳에서만 한다. */}
+        {t && numField("lineHeight", "행간", "%", 25, 400, 5)}
+        {t && numField("letterSpacing", "자간", "%", -50, 200)}
+      </TypoSection>
+
+      {t && (
+        <>
+          <TypoSection title="문단">
+            {pick("align", "정렬", ALIGN_OPTS, t.align)}
+            {numField("paragraphSpacing", "문단 간격", "px", 0, 400)}
+            {numField("indent", "들여쓰기", "px", 0, 400)}
+            {pick("list", "목록", LIST_OPTS, t.list)}
+            {/* 수준은 목록이 있을 때만 뜻이 있다 — 없는데 보이면 아무 일도 안 하는 칸이 된다. */}
+            {t.list !== "none" && numField("listLevel", "수준", undefined, 0, 8)}
+          </TypoSection>
+
+          <TypoSection title="상자">
+            {pick("resize", "크기", RESIZE_OPTS, t.resize)}
+            {/* 세로 정렬은 남는 높이를 나누는 값이라 `고정` 상자에서만 움직인다(§3.2). */}
+            {pick("valign", "세로", VALIGN_OPTS, t.valign)}
+            <NumField
+              label="말줄임"
+              // 0 = 자르지 않음. `null` 을 빈 칸으로 그리면 "값 없음"(필드를 숨기는 상태)과
+              // 구분되지 않아, 말줄임을 끄는 방법이 화면에서 사라진다.
+              value={t.truncateLines === MIXED ? MIXED : (t.truncateLines ?? 0)}
+              min={0}
+              max={99}
+              onCommit={(v) =>
+                onTypo(
+                  { truncateLines: v >= 1 ? v : null },
+                  v >= 1 ? `말줄임 ${v}줄` : "말줄임 해제",
+                )
+              }
+            />
+          </TypoSection>
+
+          <TypoSection title="장식">
+            <Toggle
+              label="밑줄"
+              checked={t.underline}
+              onChange={(v) => onTypo({ underline: v }, v ? "밑줄" : "밑줄 해제")}
+            />
+            <Toggle
+              label="취소선"
+              checked={t.strike}
+              onChange={(v) => onTypo({ strike: v }, v ? "취소선" : "취소선 해제")}
+            />
+            {pick("textCase", "대소문자", CASE_OPTS, t.textCase)}
+            {pick("script", "첨자", SCRIPT_OPTS, t.script)}
+          </TypoSection>
+        </>
+      )}
+    </>
   );
 }

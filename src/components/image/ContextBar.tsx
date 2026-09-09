@@ -7,8 +7,9 @@
 // **없는 기능은 그리지 않는다**(INDEX §10.4). text·vector-edit·crop 변형의 알맹이는 50·47·48 이
 // 소유하고 아직 없어서, 그 자리에는 무엇이 선택됐는지만 적는다. 회색 버튼으로 채워 두면
 // 사용자는 눌러 보고 나서야 아무 일도 안 난다는 것을 알고, 그때는 앱이 고장 난 것으로 읽는다.
-// 불리언(46)도 같은 이유로 `booleanReady` **prop** 이다 — `actions.boolean` 의 존재로 46 의 도착을
-// 추측하면 안 된다. 액션 맵은 46 이 없어도 자리를 든 채 아무 일도 안 하는 함수를 넣을 수 있다.
+// 벡터 연산(46)도 같은 이유로 `canVector` **prop** 이다 — `actions.vectorOp` 의 존재로 지금
+// 그 연산이 되는지를 추측하면 안 된다. 액션 맵은 아무 일도 안 하는 함수도 들 수 있고, 판정은
+// `vectorActions.can` 한 곳에서만 나와야 버튼과 단축키가 갈라지지 않는다.
 //
 // 배경: DOCS/task/45-image-inspector-popovers.md §3.1·§3.2
 
@@ -70,13 +71,17 @@ import type {
   NodeBase,
   ObjId,
 } from "../../lib/annotate/types";
+import type { BoolOp } from "../../lib/annotate/vector/boolean";
+import type { CropSession } from "../../lib/annotate/crop";
 import { useImageEditorUi } from "../../stores/imageEditor";
+import { CropContextBar } from "./CropContextBar";
+import type { CropApi } from "./useCropSession";
 import { NumField } from "./inspector/fields/NumField";
+import type { PathOp } from "./vector/PathInspectorSection";
 import { BlendMenu } from "./popovers/BlendMenu";
 import { Popover } from "./popovers/Popover";
 
-/** 46 `boolean.ts` 가 정본. 그 파일이 도착하기 전까지 액션 맵의 타입만 여기서 든다. */
-export type BoolOp = "union" | "subtract" | "intersect" | "exclude";
+export type { BoolOp };
 
 /** `patchSelection` 이 받는 것 — 페인트 스택 필드(37 `DefaultPaint`) + 노드 공통 속성 몇 개. */
 export type SelectionPatch = Partial<DefaultPaint> &
@@ -112,7 +117,12 @@ export interface EditorActions {
   mask(on: boolean): void;
   duplicate(): void;
   remove(): void;
-  boolean(op: BoolOp): void;
+  /**
+   * 46 벡터 연산 — 불리언 4연산·평탄화·윤곽선화·패스 분리가 **함수 하나**다
+   * (`ImageEditor.vectorActions`). 45 가 `boolean(op)` 로 자리만 잡아 둔 것을 46 이 넓혔다:
+   * 연산마다 진입점을 따로 두면 어느 한쪽만 선택을 옮기거나 라벨을 다르게 다는 날이 온다.
+   */
+  vectorOp(op: PathOp): void;
   /** 이미지 **전체** 변형(기존 `rotateBy`/`flipBy`) — 선택 대상 `rotate`/`flip` 과 다른 축이다. */
   rotateImage(plus90: boolean): void;
   flipImage(axis: "h" | "v"): void;
@@ -128,8 +138,17 @@ export interface ContextBarProps {
   onZoom(target: number | "fit"): void;
   /** oriented 원본 크기(시안 ⑧ `원본 크기 2880×1605`). 아직 안 읽혔으면 null. */
   imageSize: { w: number; h: number } | null;
-  /** 46 불리언이 배선됐는가. 기본 false — 없으면 불리언 버튼을 아예 그리지 않는다. */
-  booleanReady?: boolean;
+  /**
+   * 46 벡터 연산 게이트(`vectorActions.can` 한 곳이 낸다). **지금 할 수 있는 것만 그린다** —
+   * 잠긴 회색 버튼으로 채우면 사용자는 눌러 보고 나서야 안 되는 줄 알고, 그때는 앱이 고장 난
+   * 것으로 읽는다. 생략하면(=46 미도착) 벡터 버튼이 통째로 사라진다.
+   */
+  canVector?: Partial<Record<PathOp, boolean>>;
+  /**
+   * 48 크롭 세션. 모드에 들어가도 이미지가 아직 안 읽혔으면 세션이 없다 — 그때는 이 prop 이
+   * 없고 바는 '크롭' 라벨만 그린다(`canVector` 와 같은 규칙: 없는 기능은 안 그린다).
+   */
+  crop?: { session: CropSession; api: CropApi; maxDeg: number };
 }
 
 /** 툴팁 `<라벨> (<키>)`. 대안 키가 있는 행은 첫 번째만 쓴다(`EditorTitleBar` 와 같은 규칙). */
@@ -397,10 +416,12 @@ function ShapeBar({
   node,
   objects,
   actions,
+  canVector,
 }: {
   node: Node;
   objects: readonly Node[];
   actions: EditorActions;
+  canVector: Partial<Record<PathOp, boolean>>;
 }) {
   const setTab = useImageEditorUi((s) => s.setTab);
   const openProps = () => setTab("inspector", "props");
@@ -459,6 +480,24 @@ function ShapeBar({
         onChange={(v) => actions.patchSelection({ blend: v }, `블렌드 ${blendLabel(v)}`)}
       />
 
+      {/* 시안 ③ 컨텍스트 바 `평탄화 · 윤곽선화`. 도형 하나에 건 평탄화가 곧 '패스로'다
+          (§3.6) — `패스로` 전용 버튼은 두지 않는다(시안 라벨 0건, §3.9). */}
+      {(canVector.flatten || canVector.outline) && (
+        <>
+          <Sep />
+          {canVector.flatten && (
+            <Btn title={tip("flatten")} onClick={() => actions.vectorOp("flatten")}>
+              평탄화
+            </Btn>
+          )}
+          {canVector.outline && (
+            <Btn title={tip("outline")} onClick={() => actions.vectorOp("outline")}>
+              윤곽선화
+            </Btn>
+          )}
+        </>
+      )}
+
       <Sep />
       {/* 하나만 골랐을 때의 정렬 기준은 캔버스다(`align.ts` keyId=null) — 액션이 정한다. */}
       <Btn title={tip("align.hcenter")} onClick={() => actions.align("hcenter")}>
@@ -483,12 +522,12 @@ function MultiBar({
   nodes,
   count,
   actions,
-  booleanReady,
+  canVector,
 }: {
   nodes: readonly Node[];
   count: number;
   actions: EditorActions;
-  booleanReady: boolean;
+  canVector: Partial<Record<PathOp, boolean>>;
 }) {
   const tidyGap = useImageEditorUi((s) => s.tidyGap);
 
@@ -530,14 +569,23 @@ function MultiBar({
         간격 정리
       </Btn>
 
-      {booleanReady && (
+      {/* 텍스트·모자이크가 섞이면 `canBoolean` 이 거짓이라 아이콘 4개가 통째로 사라진다 —
+          눌러도 아무 일 없는 버튼을 남기는 것보다 낫다(§3.5 게이트). 평탄화는 게이트가 더
+          넓다(컨테이너도 리프까지 펴서 받는다) — 그래서 조건을 따로 본다. */}
+      {(canVector.union || canVector.flatten) && (
         <>
           <Sep />
-          {BOOLS.map((b) => (
-            <Btn key={b.op} title={tip(b.id)} onClick={() => actions.boolean(b.op)}>
-              <b.icon size={14} />
+          {canVector.union &&
+            BOOLS.map((b) => (
+              <Btn key={b.op} title={tip(b.id)} onClick={() => actions.vectorOp(b.op)}>
+                <b.icon size={14} />
+              </Btn>
+            ))}
+          {canVector.flatten && (
+            <Btn title={tip("flatten")} onClick={() => actions.vectorOp("flatten")}>
+              평탄화
             </Btn>
-          ))}
+          )}
         </>
       )}
 
@@ -631,7 +679,8 @@ export function ContextBar({
   zoom,
   onZoom,
   imageSize,
-  booleanReady = false,
+  canVector = {},
+  crop,
 }: ContextBarProps) {
   const selectedIds = useImageEditorUi((s) => s.selectedIds);
   const mode = useImageEditorUi((s) => s.mode);
@@ -649,7 +698,12 @@ export function ContextBar({
     case "single-shape":
       // 선택 id 가 문서에 없을 수 있다(되돌리기 직후 한 프레임) — 그때는 빈 바다.
       body = nodes[0] ? (
-        <ShapeBar node={nodes[0]} objects={objects} actions={actions} />
+        <ShapeBar
+          node={nodes[0]}
+          objects={objects}
+          actions={actions}
+          canVector={canVector}
+        />
       ) : null;
       break;
     case "multi":
@@ -658,7 +712,7 @@ export function ContextBar({
           nodes={nodes}
           count={selectedIds.length}
           actions={actions}
-          booleanReady={booleanReady}
+          canVector={canVector}
         />
       );
       break;
@@ -683,8 +737,11 @@ export function ContextBar({
       break;
     }
     case "crop":
-      // 48 `CropContextBar`(자유·1:1·3:2·16:9 · 직선화 · 취소 · 적용 ⏎)의 자리.
-      body = <SlotLabel icon={Crop} text="크롭" />;
+      body = crop ? (
+        <CropContextBar session={crop.session} api={crop.api} maxDeg={crop.maxDeg} />
+      ) : (
+        <SlotLabel icon={Crop} text="크롭" />
+      );
       break;
   }
 

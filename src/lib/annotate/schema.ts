@@ -623,6 +623,16 @@ const PAINT_SLOTS: Record<keyof DefaultPaint, keyof NodeBase["styleRefs"] | null
   fontSize: "text",
   mosaicMode: null,
   mosaicStrength: null,
+  typo: "text",
+};
+
+/**
+ * 패치로 오는 페인트 값. `typo` 만 `DefaultPaint` 보다 **넓다** — 툴바가 드는 것은 완전한
+ * `TextStyle` 이지만 인스펙터가 보내는 것은 만진 필드 하나뿐이다. 여기서 좁히면 행간을
+ * 한 번 바꾸려고 타이포 필드 전부를 실어 보내야 하고, 그 사이 다른 필드가 옛 값으로 덮인다.
+ */
+export type PaintPatch = Omit<Partial<DefaultPaint>, "typo"> & {
+  typo?: Partial<TextStyle>;
 };
 
 /**
@@ -632,7 +642,7 @@ const PAINT_SLOTS: Record<keyof DefaultPaint, keyof NodeBase["styleRefs"] | null
  * 직접 편집하면 그 슬롯의 스타일 참조를 뗀다 — 라이브러리 값과 어긋난 채 링크가 남으면
  * 다음 라이브러리 변경이 사용자의 편집을 덮는다(태스크 51 §4).
  */
-export function applyPaintPatch(node: Node, patch: Partial<DefaultPaint>): Node {
+export function applyPaintPatch(node: Node, patch: PaintPatch): Node {
   const next = { ...node } as Node & Record<string, unknown>;
   let touched = false;
   const styleRefs = { ...node.styleRefs };
@@ -669,6 +679,16 @@ export function applyPaintPatch(node: Node, patch: Partial<DefaultPaint>): Node 
         if (node.kind !== "mosaic") continue;
         next.strength = Math.max(1, value as number);
         break;
+      case "typo": {
+        // 타이포 필드는 `TextNode` 에 **평평하게** 얹혀 있다(37: TextNode = NodeBase & TextStyle).
+        if (node.kind !== "text") continue;
+        const typo = value as Partial<TextStyle>;
+        Object.assign(next, typo);
+        // 크기만 다시 조인다. 0 이나 음수가 들어오면 `layoutText` 의 가용 폭이 0 이 돼
+        // 줄 채우기가 글자 하나마다 줄을 바꾸고, 상자가 세로로 무한히 자란다.
+        if (typo.fontSize !== undefined) next.fontSize = Math.max(1, typo.fontSize);
+        break;
+      }
     }
     touched = true;
     const slot = PAINT_SLOTS[key];
@@ -687,6 +707,19 @@ function nodeTakesStroke(node: Node): boolean {
   return node.kind !== "mosaic";
 }
 
+/**
+ * 노드의 타이포 한 벌. 텍스트가 아니면 기본값이다 — 사각형을 고른 채로 텍스트 도구를 들면
+ * 그 값이 다음 글자에 쓰이므로, 옆 노드에서 주워 온 값이 아니라 기본값이어야 한다.
+ * 키 목록의 정본은 `DEFAULT_TEXT_STYLE` 하나다(37 이 필드를 늘리면 여기가 자동으로 따라간다).
+ */
+function typoOf(node: Node): TextStyle {
+  if (node.kind !== "text") return DEFAULT_TEXT_STYLE;
+  const src = node as unknown as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const k of Object.keys(DEFAULT_TEXT_STYLE)) out[k] = src[k];
+  return out as unknown as TextStyle;
+}
+
 /** 선택 노드 → 툴바 표시값. */
 export function paintOf(node: Node): DefaultPaint {
   return {
@@ -697,6 +730,7 @@ export function paintOf(node: Node): DefaultPaint {
     fontSize: node.kind === "text" || node.kind === "badge" ? node.fontSize : DEFAULT_TEXT_STYLE.fontSize,
     mosaicMode: node.kind === "mosaic" ? node.mode : DEFAULT_MOSAIC_MODE,
     mosaicStrength: node.kind === "mosaic" ? node.strength : DEFAULT_MOSAIC_STRENGTH,
+    typo: typoOf(node),
   };
 }
 

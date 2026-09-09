@@ -10,13 +10,14 @@
 //
 // **버튼 문구를 바꾸지 마라.** e2e 30 은 `A.btn` 이 `textContent + ' ' + title` 을 정규식으로
 // 훑어 버튼을 찾는다: `/오른쪽 90/`(30:843)·`/크롭 선택/`(30:1313)·`/영역을 드래그/`(30:473).
+// 뒤 둘은 이제 `cropSection` 슬롯(48 `CropInspectorSection`)이 그리지만 계약은 그대로다.
 // 특히 회전은 **속성 탭이 열려 있는 상태에서** 눌린다 — 인스펙터가 네 탭을 전부 마운트하고
 // 숨기기만 하는 이유가 이것이다(조건부 마운트면 그 클릭이 갈 곳이 없다).
 //
 // 배경: DOCS/task/45-image-inspector-popovers.md §3.3
 
 import type { ReactNode } from "react";
-import { Crop, FlipHorizontal, FlipVertical, RotateCcw, RotateCw } from "lucide-react";
+import { FlipHorizontal, FlipVertical, RotateCcw, RotateCw } from "lucide-react";
 
 import type { EditorDoc } from "../../../lib/annotate/types";
 import { useImageEditorUi } from "../../../stores/imageEditor";
@@ -25,7 +26,7 @@ import { SnapSection } from "../SnapSection";
 /** 이 탭이 읽는 문서 필드만. 문서 전체를 받으면 주석 하나만 바뀌어도 여기가 다시 그려진다. */
 type AdjustDoc = Pick<
   EditorDoc,
-  "crop" | "outW" | "outH" | "brightness" | "contrast" | "saturate" | "flipH" | "flipV"
+  "outW" | "outH" | "brightness" | "contrast" | "saturate" | "flipH" | "flipV"
 >;
 
 export interface AdjustTabProps {
@@ -33,9 +34,12 @@ export interface AdjustTabProps {
   /** 색 보정 라이브 틱 — `patchLive`(첫 틱만 commit, 이후 replace)로 드래그 1회 = 1칸. */
   onPatch(patch: Partial<EditorDoc>, live?: boolean): void;
   onEditEnd(): void;
-  cropMode: boolean;
-  onCropMode(v: boolean): void;
-  onClearCrop(): void;
+  /**
+   * 크롭 섹션(48 `CropInspectorSection`) — **노드로 받는다.** 세션·`CropApi`·문서 전체를
+   * 알아야 그릴 수 있는데, 이 탭은 셋 다 필요 없다. 소유자(ImageEditor)가 만들어 꽂는 편이
+   * prop 4개를 여기로 끌고 오는 것보다 짧다(`Inspector` 의 `panes`·`footer` 와 같은 관례).
+   */
+  cropSection: ReactNode;
   /** 이미지 전체 회전 — v1 `rotateBy`. */
   onRotateImage(plus90: boolean): void;
   /** 이미지 전체 반전 — v1 `flipBy`. */
@@ -57,9 +61,7 @@ export function AdjustTab({
   doc,
   onPatch,
   onEditEnd,
-  cropMode,
-  onCropMode,
-  onClearCrop,
+  cropSection,
   onRotateImage,
   onFlipImage,
   onOutW,
@@ -69,7 +71,6 @@ export function AdjustTab({
 }: AdjustTabProps) {
   const pixelPreview = useImageEditorUi((s) => s.pixelPreview);
   const setPixelPreview = useImageEditorUi((s) => s.setPixelPreview);
-  const { crop } = doc;
 
   return (
     <div>
@@ -92,32 +93,7 @@ export function AdjustTab({
         </div>
       </Section>
 
-      <Section title="크롭">
-        <div className="flex items-center gap-1.5">
-          <button
-            onClick={() => onCropMode(!cropMode)}
-            className={`flex items-center gap-1 rounded px-2 py-1 ${
-              cropMode ? "bg-accent/20 text-accent" : "bg-raised text-fg-muted hover:text-fg"
-            }`}
-          >
-            <Crop size={14} />
-            {cropMode ? "영역을 드래그" : "크롭 선택"}
-          </button>
-          {crop && (
-            <button
-              onClick={onClearCrop}
-              className="rounded px-2 py-1 text-fg-dim hover:bg-raised hover:text-fg"
-            >
-              해제
-            </button>
-          )}
-        </div>
-        {crop && (
-          <div className="mt-1.5 font-mono text-[11px] text-fg-dim">
-            {Math.round(crop.w)} × {Math.round(crop.h)} px
-          </div>
-        )}
-      </Section>
+      {cropSection}
 
       {/* 스냅·가이드(시안 ⑦) — 값은 42 스토어에 있어 상태바 토글과 한 몸이다. 제목을 스스로
           그리므로 `Section` 으로 감싸지 않는다(제목이 두 줄 된다). */}

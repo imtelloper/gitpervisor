@@ -513,6 +513,14 @@ export interface DefaultPaint {
   fontSize: number;
   mosaicMode: MosaicMode;
   mosaicStrength: number;
+  /**
+   * 타이포 한 벌. 들고 있는 값은 **항상 완전한** `TextStyle` 이고, 패치로 올 때만
+   * `Partial` 이다(`schema.PaintPatch`). 반쪽짜리를 들면 다음에 만들 텍스트가 어떤 필드는
+   * 툴바 값, 어떤 필드는 정규화 기본값을 갖게 돼 "지금 고른 스타일"이 무엇인지 화면에서
+   * 갈린다. 기본값은 `DEFAULT_TEXT_STYLE` — 정규화가 쓰는 그 상수여야 새 텍스트와
+   * 정규화된 텍스트가 같은 자리에서 시작한다(태스크 49 §4).
+   */
+  typo: TextStyle;
 }
 
 /** 단색 Fill 한 겹을 만든다(정규화·기본값·업그레이드가 공유). */
@@ -528,6 +536,7 @@ export const DEFAULT_PAINT: DefaultPaint = {
   fontSize: DEFAULT_FONT_SIZE,
   mosaicMode: DEFAULT_MOSAIC_MODE,
   mosaicStrength: DEFAULT_MOSAIC_STRENGTH,
+  typo: DEFAULT_TEXT_STYLE,
 };
 
 /** 새 객체 id. Tauri webview 는 보안 컨텍스트라 randomUUID 를 항상 쓸 수 있다. */

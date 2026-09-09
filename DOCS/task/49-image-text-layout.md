@@ -187,7 +187,7 @@ e2e 훅(`window.__gpv.imageEditor`, 37 `roundTrip` 옆): `textLayout(id, opts?: 
   (f) `textCase:'upper'` `'abc'` → `lines[0].width === measureText('ABC') ±0.5`(훅으로 비교), 저장 문자열 `'abc'` 불변;
   (g) `fixed w=150 h=200 valign:'bottom'` → 마지막 줄 `baseline+descent === 200 ±1`; `middle` → 위·아래 여백 차 ≤1;
   (h) 리사이즈: E 핸들 +40 → `resize==='auto-height'`·`w +40`·`fontSize` 불변; SE 핸들 → `'fixed'`; Ctrl+SE → `fontSize` 배율·`resize` 불변(현행 회귀);
-  (i) 히트 == 상자: 상자 안 클릭 `selCount 1`, 상자 오른쪽 2px 밖 `0`, `objectAABB` == `box` 이동값;
+  (i) 히트 == 상자: 상자 안 클릭 `selCount 1`, 상자 오른쪽 **핸들 파지 반경 밖**(20px — `HANDLE_GRAB_CSS=10/displayScale` 안은 E 핸들 자리라 2px 로는 선택이 풀리지 않는다) 클릭 `0`, `objectAABB` == `box` 이동값;
   (j) 프리뷰 `[1]` vs `readSaved` 텍스트 영역 픽셀 델타 0(4폰트 — 미설치 폰트는 `document.fonts.check` false면 skip); (j-2) `strokeAlign:'outside' strokeWidth 3 #0E0E10` → 글리프 경계 바로 밖 1px ≈ `[14,14,16]`, `'center'`는 안팎 반씩;
   (k) **미러 대조 6샘플**(한글 공백 문장·영문 장토큰·혼합·bullet 목록·justify·문단 간격+들여쓰기): `textCss(id)`로 숨은 `div`(`white-space:pre-wrap`, 줄마다 `<span>`)를 만들어 `Range.getClientRects()` 줄 수 == `lines.length`, 줄 폭 차 ≤1px, `contentTop` 차 ≤1px(DPR 1.5);
   (l) 편집 중 첫 글자: textarea 미러 첫 글자 rect ↔ 확정 후 캔버스 첫 잉크 top 차 ≤1px, 4폰트;

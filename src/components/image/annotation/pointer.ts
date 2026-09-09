@@ -126,6 +126,43 @@ function handlePointsOf(o: GeomNode): Point[] {
   ).map(([x, y]) => rotatePoint(x, y, o.rot, a));
 }
 
+/**
+ * 크롭 사각형의 8핸들 — `handlePointsOf` 와 **같은 인덱스**(0 nw … 7 w)다. 크롭 사각형은
+ * 회전이 없어 회전 보정도 없다.
+ *
+ * 크롭 기하(리사이즈·이동·비율)는 세션을 쥔 `ImageEditor` 가 계산하고 여기는 "무엇을 잡았나"만
+ * 판정한다. 커서(호버)와 다운 판정이 **같은 함수**를 봐야 보이는 자리와 잡히는 자리가 갈리지
+ * 않는다(`hitHandle` 머리말과 같은 이유).
+ */
+export function hitCropHandle(r: Rect, pt: Point, tol: number): number {
+  const mx = r.x + r.w / 2;
+  const my = r.y + r.h / 2;
+  const hs: readonly (readonly [number, number])[] = [
+    [r.x, r.y],
+    [mx, r.y],
+    [r.x + r.w, r.y],
+    [r.x + r.w, my],
+    [r.x + r.w, r.y + r.h],
+    [mx, r.y + r.h],
+    [r.x, r.y + r.h],
+    [r.x, my],
+  ];
+  for (let i = 0; i < hs.length; i++) {
+    if (Math.abs(hs[i][0] - pt.x) <= tol && Math.abs(hs[i][1] - pt.y) <= tol) return i;
+  }
+  return -1;
+}
+
+/**
+ * 크롭 드래그의 마지막 수식자.
+ *
+ * 크롭 사각형을 계산하는 쪽(ImageEditor 의 크롭 세션)으로 가는 통로는 `onCropMove(pt)` 뿐이라
+ * 점 하나만 나른다 — Shift(자유 비율일 때 1:1 임시 고정)와 Alt(스냅 끄기)를 그쪽에서 알 방법이
+ * 없다. 이벤트를 보는 이 파일이 남겨 두고, **크롭 드래그 중에만** 읽는다.
+ */
+let cropMods: { shift: boolean; alt: boolean } = { shift: false, alt: false };
+export const cropDragMods = (): { shift: boolean; alt: boolean } => cropMods;
+
 /** 점이 어느 핸들 위인가(oriented px 허용오차). 없으면 -1. */
 export function hitHandle(o: GeomNode, pt: Point, tol: number): number {
   const hs = handlePointsOf(o);
@@ -462,6 +499,7 @@ export function createPointerHandlers(ctx: PointerCtx) {
     e.currentTarget.setPointerCapture(e.pointerId);
 
     if (s.cropMode) {
+      cropMods = { shift: e.shiftKey, alt: e.altKey };
       dragRef.current = { mode: "crop" };
       s.onCropDown(pt);
       return;
@@ -631,10 +669,25 @@ export function createPointerHandlers(ctx: PointerCtx) {
 
     let cur = "";
     let hover: ObjId | null = null;
-    // 크롭 중에는 도구 커서를 덮지 않는다 — 모드가 이긴다(className 의 crosshair 유지).
-    if (!s.cropMode && s.tool === "hand") {
+    // 크롭 중에는 도구가 아니라 **사각형**이 커서를 정한다(모드가 도구를 이긴다). 8핸들 위에서
+    // 리사이즈 커서가 안 뜨면 사용자는 그 자리가 잡히는 줄 모른다 — 빈 곳의 crosshair 는
+    // className 이 내므로 여기서는 빈 문자열로 되돌린다.
+    if (s.cropMode) {
+      const r = s.cropRect;
+      const h = r ? hitCropHandle(r, pt, HANDLE_GRAB_CSS / s.displayScale) : -1;
+      if (h >= 0) cur = HANDLE_CURSORS[h];
+      else if (
+        r &&
+        pt.x >= r.x &&
+        pt.x <= r.x + r.w &&
+        pt.y >= r.y &&
+        pt.y <= r.y + r.h
+      ) {
+        cur = "move";
+      }
+    } else if (s.tool === "hand") {
       cur = "grab";
-    } else if (!s.cropMode && isSelectLike(s.tool)) {
+    } else if (isSelectLike(s.tool)) {
       if (s.selectedIds.length === 1) {
         const only = s.objects.find(
           (o): o is GeomNode => o.id === s.selectedIds[0] && isGeomNode(o),
@@ -684,11 +737,12 @@ export function createPointerHandlers(ctx: PointerCtx) {
   const applyDragAt = (
     d: DragState,
     pt: Point,
-    mods: { shift: boolean; alt: boolean },
+    mods: { shift: boolean; alt: boolean; ctrl: boolean },
   ) => {
     const s = p.current;
     const idx = mods.alt ? undefined : "snap" in d ? d.snap : undefined;
     if (d.mode === "crop") {
+      cropMods = mods;
       s.onCropMove(pt);
       return;
     }
@@ -754,6 +808,16 @@ export function createPointerHandlers(ctx: PointerCtx) {
       liveRef.current = d.base.map((o) => translateObject(o, dx, dy));
       return;
     }
+    // 클릭 = 길이 0 의 resize 드래그다(up 이 이 함수를 한 번 더 부른다) — move 분기와 같은
+    // 가드가 필요하다. `resizeObject` 는 델타가 아니라 **절대 좌표**로 배율을 잡으므로,
+    // 핸들 파지 반경(HANDLE_GRAB_CSS) 안 아무 데나 한 번 누르기만 해도 그 오프셋만큼
+    // 기하가 조용히 바뀌고(텍스트는 폭까지 갈리며 박스 모드가 auto-height 로 넘어간다)
+    // 빈 히스토리 항목이 쌓인다. `d.base` 를 그대로 돌려놔야 onPointerUp 의 참조 비교
+    // (`moved`)가 false 가 된다 — d.base 는 scene.nodes 원소 = doc.objects 원소다.
+    if (pt.x === d.start.x && pt.y === d.start.y) {
+      liveRef.current = [d.base];
+      return;
+    }
     liveRef.current = [
       resizeObject(
         d.base,
@@ -762,6 +826,7 @@ export function createPointerHandlers(ctx: PointerCtx) {
         snapAt(idx, pt),
         mods.shift,
         s.tool === "scale",
+        mods.ctrl,
       ),
     ];
   };
@@ -781,7 +846,7 @@ export function createPointerHandlers(ctx: PointerCtx) {
     }
     const pt = d.mode === "guide" ? rawOriented(e) : toOriented(e);
     ptRef.current = pt;
-    applyDragAt(d, pt, { shift: e.shiftKey, alt: e.altKey });
+    applyDragAt(d, pt, { shift: e.shiftKey, alt: e.altKey, ctrl: e.ctrlKey || e.metaKey });
     schedule();
   };
 
@@ -799,6 +864,7 @@ export function createPointerHandlers(ctx: PointerCtx) {
       applyDragAt(d, d.mode === "guide" ? rawOriented(e) : toOriented(e), {
         shift: e.shiftKey,
         alt: e.altKey,
+        ctrl: e.ctrlKey || e.metaKey,
       });
     }
     // 스냅 부산물은 드래그와 함께 사라진다 — 남으면 분홍 선이 화면에 굳는다.

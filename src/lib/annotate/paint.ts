@@ -102,7 +102,11 @@ export function strokePaint(
     // 않고 그대로 두되, e2e 30 (u) 대시 단언이 판정한다.
     ctx.setLineDash(node.dash && node.dash.length > 0 ? node.dash : []);
     if (align === "inside") ctx.clip(path, rule);
-    else if (align === "outside") ctx.clip(outsideClip(path, bbox, w), "evenodd");
+    // 바깥 클립에는 `bbox` 를 쓰면 안 된다 — paintBox 는 단색뿐이면 계산을 건너뛰고
+    // {0,0,0,0} 을 돌려준다(그라디언트 매핑 전용 값이다). 그 0 사각형은 도형과 **떨어져
+    // 있어** evenodd 합집합이 '도형 밖'이 아니라 '도형 안쪽'이 되고, outside 가 inside 와
+    // 똑같이 그려진다(46 §7 (d) 가 잡아낸 결함).
+    else if (align === "outside") ctx.clip(outsideClip(path, objectBBox(node), w), "evenodd");
     paintLayer(ctx, s, bbox, t, store, () => {
       ctx.stroke(path);
       // 화살촉은 선과 **같은 페인트**로 채운다(그라디언트 선이면 머리도 그라디언트다).

@@ -35,6 +35,9 @@ import {
   type RectObject,
   type TextNode,
 } from "../../../lib/annotate/types";
+import { resizeText } from "../../../lib/annotate/text-layout";
+import { calloutSubPath, polygonSubPath } from "../../../lib/annotate/vector/convert";
+import { pathBounds } from "../../../lib/annotate/vector/path";
 import type { AnnotationLayerProps } from "../AnnotationLayer";
 import { MIN_DRAG, type Point } from "./pointer";
 
@@ -105,6 +108,21 @@ export function makeDraft(
       // 반경을 물려받으면 레이아웃 프레임이 둥글게 나온다).
       return { ...common, kind: "frame", ...r, radius: [0, 0, 0, 0], clipsContent: true };
     }
+    case "polygon":
+    case "callout": {
+      const r = squareable(a, b, shift);
+      // 변 수는 **문서에 없다** — 정점 배치에서 파생한다(46 §3.4 `isRegularPolygon`). 도구
+      // 상태로 들면 그 값과 실제 정점이 갈라져, 리사이즈 한 번에 "6각형인데 변 수 3"이 된다.
+      // 3은 Figma 기본값이고, 인스펙터 `모양 › 변 수` 가 그 자리에서 다시 만든다.
+      return {
+        ...common,
+        kind: "path",
+        subpaths: [
+          s.tool === "polygon" ? polygonSubPath(r, 3) : calloutSubPath(r, s.style.radius),
+        ],
+        fillRule: "nonzero",
+      };
+    }
     case "mosaic":
     case "blur": {
       const r = squareable(a, b, shift);
@@ -149,6 +167,12 @@ export function isDraftUsable(o: GeomNode): boolean {
     case "mosaic":
     case "frame":
       return o.w >= MIN_DRAG && o.h >= MIN_DRAG;
+    case "path": {
+      // 프리셋(다각형·말풍선)은 클릭만으로도 정점을 다 갖는다 — 개수로는 걸러지지 않는다.
+      // 잡히지도 보이지도 않는 0px 도형이 문서에 남는 것을 막는 것은 이 상자뿐이다.
+      const b = pathBounds(o);
+      return b.w >= MIN_DRAG && b.h >= MIN_DRAG;
+    }
     default:
       return true;
   }
@@ -166,11 +190,15 @@ export function nextBadgeNumber(
   return n;
 }
 
+/** 8핸들 인덱스 → 방향(0 이 좌상단, 시계 방향). crop.ts `resizeCrop` 과 같은 규약이다. */
+const HANDLE_DIRS = ["NW", "N", "NE", "E", "SE", "S", "SW", "W"] as const;
+
 /**
  * 8핸들 리사이즈 — 시작 시점 bbox 를 기준으로 배율을 구해 객체 기하를 늘린다.
  * Shift 면 변화가 큰 축의 배율을 양축에 함께 적용해 비율을 고정한다(§5.6).
  *
  * `scaleStroke` 는 배율 도구(K)만 켠다 — 42 §3.5.
+ * `scaleFont` 은 Ctrl 홀드다 — 텍스트만 갈린다(49 §3.6).
  */
 export function resizeObject(
   base: GeomNode,
@@ -179,6 +207,7 @@ export function resizeObject(
   ptScreen: Point,
   shift: boolean,
   scaleStroke = false,
+  scaleFont = false,
 ): GeomNode {
   // 객체 좌표는 전부 **로컬(회전 이전)** 이다 — 회전은 렌더 시점에만 걸린다
   // (geometry.applyObjectTransform). 그러니 배율도 그 프레임에서 구해야 한다.
@@ -225,7 +254,14 @@ export function resizeObject(
   const MIN_F = 0.02;
   fx = Math.max(MIN_F, fx);
   fy = Math.max(MIN_F, fy);
-  let out = scaleObject(base, fx, fy, ox, oy);
+  // 텍스트 상자는 배율이 아니라 **폭·높이**를 받는다(49 §3.6 Figma 동작) — 글자 크기는 그대로
+  // 두고 줄을 다시 접는다. `scaleObject` 로 보내면 동쪽 핸들을 끄는 것만으로 글꼴이 커지고,
+  // `resize`/`w`/`h` 와 `layoutText` 의 박스 모드 분기가 UI 에서 아예 도달 불가능해진다.
+  // Ctrl 홀드(`scaleFont`)만 종전 글자 배율 경로로 남긴다(v1 회귀 방지선).
+  let out =
+    base.kind === "text" && !scaleFont
+      ? resizeText(base, { w: b.w * fx, h: b.h * fy }, HANDLE_DIRS[handle])
+      : scaleObject(base, fx, fy, ox, oy);
   // 선택 도구(V)는 두께를 건드리지 않는다 — 사용자가 "3px" 로 고른 값이 드래그마다 조용히
   // 달라지면 그 숫자가 의미를 잃는다. 배율 도구(K)만 도형 전체를 확대하듯 두께도 같이 민다.
   if (scaleStroke && out.strokeWidth) {

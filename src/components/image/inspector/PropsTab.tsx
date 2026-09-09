@@ -53,6 +53,11 @@ import {
   type ObjId,
 } from "../../../lib/annotate/types";
 import { useImageEditorUi, type Tool } from "../../../stores/imageEditor";
+import {
+  PathInspectorSection,
+  type PathOp,
+  type PathPatch,
+} from "../vector/PathInspectorSection";
 import { NumField, type NumFieldProps } from "./fields/NumField";
 import { Select } from "./fields/Select";
 import { StackList } from "./fields/StackList";
@@ -102,6 +107,14 @@ export interface EditorActions {
   tidy(gap: number | "auto"): void;
   /** `tree.makeMask`/`releaseMask`(38) — 그룹 감싸기까지 그쪽이 한다. */
   mask(on: boolean): void;
+  /**
+   * 46 패스 속성. `patchSelection` 과 갈라 두는 이유는 **키 집합**이다 — 정렬·대시·캡·조인·
+   * 마이터·화살촉·fillRule·subpaths 는 `DefaultPaint` 에 없어서 `applyPaintPatch`(37)가
+   * 말없이 버린다(switch 에 default 가 없다). 여기로 오는 것만 노드에 직접 얹는다.
+   */
+  pathPatch(patch: PathPatch, label: string, live?: boolean): void;
+  /** 46 벡터 연산 — 컨텍스트 바·단축키와 **같은 함수**(`ImageEditor.vectorActions`). */
+  vectorOp(op: PathOp): void;
 }
 
 export type PaintSlot = "fills" | "strokes";
@@ -121,6 +134,8 @@ export interface PropsTabProps {
   opacity: number;
   recentColors: readonly string[];
   onOpenPopover(req: PropsPopoverRequest): void;
+  /** 46 벡터 연산 게이트 — 판정은 `vectorActions.can` 한 곳이 낸다(버튼과 키가 같은 판정). */
+  canVector: Record<PathOp, boolean>;
 }
 
 // ── 도구별 기본 스타일 노출 범위(v1 AnnotationToolbar 승계) ──────────────────
@@ -180,6 +195,7 @@ export function PropsTab({
   opacity,
   recentColors,
   onOpenPopover,
+  canVector,
 }: PropsTabProps) {
   const tool = useImageEditorUi((s) => s.tool);
   const ratioLock = useImageEditorUi((s) => s.ratioLock);
@@ -686,6 +702,23 @@ export function PropsTab({
             )}
           />
         ))}
+
+      {/* 패스 전용 선 기하·fillRule·벡터 연산(46 §3.8). **하나만 골랐을 때만** 뜬다 —
+          `PathInspectorSection` 은 노드 하나의 값을 그리므로 여러 개를 고른 채 띄우면 첫
+          객체의 값이 나머지 것으로도 보인다(이 파일이 `readProp` 으로 피하는 바로 그 함정). */}
+      {nodes.length === 1 && nodes[0].kind === "path" && (
+        <div className="mt-3">
+          <PathInspectorSection
+            node={nodes[0]}
+            // 라이브 틱에는 라벨이 없다(45 계약) — 히스토리 칸 이름은 첫 틱에 정해지므로
+            // 스크럽 한 번은 `패스 속성` 으로 남는다. 값은 손을 뗄 때의 커밋이 확정한다.
+            onLive={(p) => actions.pathPatch(p, "패스 속성", true)}
+            onCommit={(p, label) => actions.pathPatch(p, label ?? "패스 속성")}
+            onOp={actions.vectorOp}
+            canOp={canVector}
+          />
+        </div>
+      )}
     </div>
   );
 }

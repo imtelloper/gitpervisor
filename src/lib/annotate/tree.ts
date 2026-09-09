@@ -428,6 +428,11 @@ export function translateSubtree(
  * 리프 규칙(48 §3.2 해석): 축정렬 도형(rect·ellipse·mosaic)과 앵커 하나짜리(text·badge)는
  * 앵커를 회전 이동시키고 `rot` 을 누적한다. 정점이 여럿인 것(pen·highlight·line·arrow·path)은
  * 정점을 직접 돌려 회전을 기하에 흡수시킨다.
+ *
+ * **단, 정점 굽기는 그 노드의 `rot` 이 0 일 때만 옳다.** pen·highlight·path 의 회전 피벗
+ * (`objectAnchor`)은 정점 AABB 의 중심이라 회전에 공변하지 않는다 — 정점만 돌리면 피벗이
+ * 제 몫보다 더/덜 움직이고, 렌더가 그 새 피벗에 옛 `rot` 을 걸어 객체가 화면에서 미끄러진다
+ * (rot 90°·8px 앵커 오차면 12px). 그래서 rot≠0 이면 `spin` 으로 보낸다.
  */
 export function rotateNodes(
   objects: readonly Node[],
@@ -446,8 +451,23 @@ export function rotateNodes(
     const dy = y - center.y;
     return { x: center.x + dx * cos - dy * sin, y: center.y + dx * sin + dy * cos };
   };
+  // 앵커를 옮기고 각도를 누적한다. **모든 종류에서 정확하다** — 정점이 그대로면 앵커도
+  // 그대로라, 렌더가 거는 R(rot+deg) about R(앵커) 가 곧 "원래 자리에 그린 뒤 center 기준으로
+  // deg 돌린 것"과 같은 사상이 된다. 정점 굽기는 rot=0 일 때 이것과 같으면서 각도를 0 으로
+  // 유지하는 특수 경로일 뿐이다.
+  const spin = (n: GeomNode): Node => {
+    const a = objectAnchor(n);
+    const q = R(a.x, a.y);
+    const moved = translateObject(n, q.x - a.x, q.y - a.y);
+    return { ...moved, rot: normalizeDeg(moved.rot + deg) };
+  };
   return objects.map((n): Node => {
     if (!moving.has(n.id) || !isGeomNode(n)) return n;
+    // 앵커가 회전 공변이 아닌 종류는 rot 이 붙어 있으면 정점을 구울 수 없다(머리말).
+    // line·arrow 의 앵커는 두 끝점의 중점이라 공변이므로 여기 없다.
+    if (normalizeDeg(n.rot) !== 0 && (n.kind === "pen" || n.kind === "highlight" || n.kind === "path")) {
+      return spin(n);
+    }
     switch (n.kind) {
       case "pen":
       case "highlight": {
@@ -480,13 +500,9 @@ export function rotateNodes(
           })),
         };
       }
-      default: {
-        // 축정렬 도형·앵커형 — 앵커를 옮기고 각도를 누적한다.
-        const a = objectAnchor(n);
-        const q = R(a.x, a.y);
-        const moved = translateObject(n, q.x - a.x, q.y - a.y);
-        return { ...moved, rot: normalizeDeg(moved.rot + deg) };
-      }
+      // 축정렬 도형·앵커형.
+      default:
+        return spin(n);
     }
   });
 }

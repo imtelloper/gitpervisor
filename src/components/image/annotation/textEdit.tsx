@@ -1,11 +1,15 @@
 // 텍스트 편집 — 확정 규칙과 캔버스 위에 겹치는 textarea 오버레이(설계 §5.5).
+//
+// 상자도 글꼴도 **여기서 계산하지 않는다**. `textEditBox`/`textCss`(태스크 49)는 캔버스 쪽
+// `setupTextCtx` 와 같은 파일에 나란히 있어서, 속성을 하나 늘리면 두 열을 함께 고치게 된다.
+// 그 짝을 여기서 끊고 한쪽만 손보면 편집을 시작하는 순간 글자가 튄다 — 옛 half-leading
+// 근사가 정확히 그 회귀였다(Segoe UI 5px, 폰트마다 다른 양으로).
 
 import { useEffect, useRef } from "react";
 
-import { layoutText } from "../../../lib/annotate/geometry";
+import { textCss, textEditBox } from "../../../lib/annotate/text-layout";
 import {
   DEFAULT_STROKE,
-  TEXT_LINE_HEIGHT,
   type Node,
   type TextNode,
 } from "../../../lib/annotate/types";
@@ -90,33 +94,13 @@ export function TextEditOverlay({
     ta.setSelectionRange(ta.value.length, ta.value.length);
   }, [editing]);
 
+  if (!editing) return null;
   // textarea 는 transform 안쪽 형제라 레이아웃 px(줌 이전)를 써야 한다 — 줌을 되나눈다.
   const ds = displayScale / Math.max(zoom ?? 1, 1e-6);
-  const editBox = editing
-    ? (() => {
-        const m = layoutText({ ...editing.obj, text: editing.text || " " });
-        const fs = editing.obj.fontSize * ds;
-        const lh = editing.obj.fontSize * TEXT_LINE_HEIGHT * ds;
-        // 캔버스는 textBaseline="top"(em 상단 기준)인데 줄 상자는 half-leading 만큼
-        // 글리프를 내린다 — 그 차이를 빼서 편집 중에도 같은 자리에 보이게 한다.
-        const halfLeading = (lh - fs) / 2;
-        return {
-          left: editing.obj.x * ds,
-          top: editing.obj.y * ds - halfLeading,
-          width: (m.width + editing.obj.fontSize) * ds,
-          height: m.height * ds + (lh - fs),
-          fontSize: fs,
-          lineHeight: `${lh}px`,
-          // 이미지 회전으로 rot 이 붙은 텍스트도 캔버스와 같은 방향·자리에 뜨게 한다(§5.5).
-          // 피벗은 applyObjectTransform 과 같은 앵커(=obj.x,obj.y)이고, 그 점은 textarea 상자
-          // 안에서 (0, half-leading) 이다.
-          rot: editing.obj.rot,
-          originY: halfLeading,
-        };
-      })()
-    : null;
-
-  if (!editing || !editBox) return null;
+  // 확정 전 글자로 잰다 — 줄이 늘거나 상자가 자라는 게 타이핑과 같은 프레임에 보여야 한다.
+  const box = textEditBox(editing.obj, editing.text, ds);
+  // 글자색은 채우기 첫 겹(37 §3.3) — 캔버스 확정 렌더와 같은 값이어야 편집 중/후가 안 튄다.
+  const color = textColorOf(editing.obj);
   return (
     <textarea
       ref={taRef}
@@ -137,19 +121,20 @@ export function TextEditOverlay({
       spellCheck={false}
       className="absolute m-0 resize-none overflow-hidden border-0 bg-transparent p-0 outline-none"
       style={{
-        left: editBox.left,
-        top: editBox.top,
-        width: editBox.width,
-        height: editBox.height,
-        fontSize: editBox.fontSize,
-        lineHeight: editBox.lineHeight,
-        fontFamily: editing.obj.fontFamily,
-        // 글자색은 채우기 첫 겹(37 §3.3) — 캔버스 확정 렌더와 같은 값이어야 편집 중/후가 안 튄다.
-        color: textColorOf(editing.obj),
-        caretColor: textColorOf(editing.obj),
-        whiteSpace: "pre",
-        transformOrigin: `0px ${editBox.originY}px`,
-        transform: `rotate(${editBox.rot}deg)`,
+        // 글꼴·행간·자간·정렬·줄바꿈 규칙은 통째로 DOM 열에서 온다. 여기서 하나라도
+        // 덮어쓰면 캔버스 열(setupTextCtx)과 갈라진다.
+        ...textCss(editing.obj, ds),
+        left: box.left,
+        top: box.top,
+        width: box.width,
+        height: box.height,
+        color,
+        caretColor: color,
+        // 이미지 회전으로 rot 이 붙은 텍스트도 캔버스와 같은 방향·자리에 뜨게 한다(§5.5).
+        // 피벗은 textEditBox 가 준다 — 앵커가 곧 상자 좌상단이라 지금은 0,0 이지만,
+        // 그 계산이 바뀌면 여기가 아니라 그쪽 한 곳만 고치면 된다.
+        transformOrigin: `${box.originX}px ${box.originY}px`,
+        transform: `rotate(${box.rot}deg)`,
       }}
     />
   );

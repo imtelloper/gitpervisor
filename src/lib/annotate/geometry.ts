@@ -7,19 +7,20 @@
 // rot 은 applyObjectTransform() 이 ctx 의 CTM 으로 걸며, 렌더와 히트테스트가 같은 함수를 쓴다.
 
 import type { Scene } from "./scene";
+import { layoutText, resizeText } from "./text-layout";
+// 패스 기하의 정본은 vector/path.ts 다(46 §3.3). 여기에 지역 근사본을 다시 두면 auto 정점이
+// 물질화되지 않고 bbox 가 제어점 헐로 부풀어, 화면(렌더)과 집히는 상자가 어긋난다.
+import { pathBounds, pathToPath2D } from "./vector/path";
 import {
   ARROW_HEAD_SCALE,
   BADGE_RADIUS_SCALE,
   HIT_TOLERANCE_CSS,
   PEN_MIN_DIST,
-  TEXT_LINE_HEIGHT,
   type GeomNode,
   type Node,
   type ObjId,
-  type PathNode,
   type Rect,
   type SceneTransform,
-  type TextNode,
 } from "./types";
 
 /**
@@ -33,8 +34,9 @@ export function isGeomNode(n: Node): n is GeomNode {
 const DEG = Math.PI / 180;
 
 /**
- * 측정·히트테스트 전용 1×1 스크래치 컨텍스트. 픽셀을 그리지 않고 measureText 와
- * isPointInPath/isPointInStroke 만 쓴다(둘 다 CTM·lineWidth 만 참조하며 캔버스 크기와 무관).
+ * 히트테스트 전용 1×1 스크래치 컨텍스트. 픽셀을 그리지 않고 isPointInPath/isPointInStroke
+ * 만 쓴다(둘 다 CTM·lineWidth 만 참조하며 캔버스 크기와 무관). 글자 측정용 컨텍스트는
+ * text-layout.ts 가 따로 든다 — 그쪽은 `font`·`letterSpacing` 을 매번 갈아 끼운다.
  */
 let scratch: CanvasRenderingContext2D | null = null;
 function scratchCtx(): CanvasRenderingContext2D {
@@ -113,37 +115,6 @@ export function snapAngle(
   return { x: x1 + Math.cos(a) * len, y: y1 + Math.sin(a) * len };
 }
 
-// ── 텍스트 레이아웃 ──────────────────────────────────────────────────────────
-
-/** 캔버스 font 축약 문자열. textarea 오버레이도 같은 family/size 를 쓴다(§5.5). */
-export function fontStringOf(
-  fontSize: number,
-  fontFamily: string,
-  weight: number | string = 400,
-): string {
-  return `${weight} ${fontSize}px ${fontFamily}`;
-}
-
-export interface TextLayout {
-  lines: string[];
-  lineHeight: number;
-  width: number;
-  height: number;
-}
-
-/** 텍스트 객체의 줄 나눔과 실측 크기(앵커 기준 좌상단 정렬). */
-export function layoutText(o: TextNode): TextLayout {
-  const ctx = scratchCtx();
-  ctx.font = fontStringOf(o.fontSize, o.fontFamily);
-  const lines = o.text.length ? o.text.split("\n") : [""];
-  let width = 0;
-  for (const line of lines) {
-    width = Math.max(width, ctx.measureText(line).width);
-  }
-  const lineHeight = o.fontSize * TEXT_LINE_HEIGHT;
-  return { lines, lineHeight, width, height: lineHeight * lines.length };
-}
-
 // ── Path2D 빌더 (렌더·히트테스트 공용) ───────────────────────────────────────
 
 function penPath(pts: readonly number[]): Path2D {
@@ -206,50 +177,6 @@ function roundRectPath(
   p.closePath();
 }
 
-/** 패스 서브패스를 Path2D 로 — 정점의 상대 핸들이 곧 3차 베지어 제어점이다. */
-function pathNodePath(o: PathNode): Path2D {
-  const p = new Path2D();
-  for (const sub of o.subpaths) {
-    const v = sub.verts;
-    if (v.length === 0) continue;
-    p.moveTo(v[0].x, v[0].y);
-    for (let i = 1; i < v.length; i++) {
-      const a = v[i - 1];
-      const b = v[i];
-      p.bezierCurveTo(a.x + a.outX, a.y + a.outY, b.x + b.inX, b.y + b.inY, b.x, b.y);
-    }
-    if (sub.closed && v.length > 1) {
-      const a = v[v.length - 1];
-      const b = v[0];
-      p.bezierCurveTo(a.x + a.outX, a.y + a.outY, b.x + b.inX, b.y + b.inY, b.x, b.y);
-      p.closePath();
-    }
-  }
-  return p;
-}
-
-/** 패스 정점·핸들 전부를 감싸는 사각형(제어점 포함 — 실제 곡선보다 넉넉하다). */
-function pathBounds(o: PathNode): Rect {
-  let x0 = Infinity;
-  let y0 = Infinity;
-  let x1 = -Infinity;
-  let y1 = -Infinity;
-  for (const sub of o.subpaths) {
-    for (const v of sub.verts) {
-      const xs = [v.x, v.x + v.inX, v.x + v.outX];
-      const ys = [v.y, v.y + v.inY, v.y + v.outY];
-      for (let i = 0; i < 3; i++) {
-        x0 = Math.min(x0, xs[i]);
-        y0 = Math.min(y0, ys[i]);
-        x1 = Math.max(x1, xs[i]);
-        y1 = Math.max(y1, ys[i]);
-      }
-    }
-  }
-  if (!Number.isFinite(x0)) return { x: 0, y: 0, w: 0, h: 0 };
-  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
-}
-
 /**
  * 객체의 기하를 **로컬 좌표**(rot 미적용 oriented px) Path2D 로 만든다.
  * 화살촉·텍스트 글리프처럼 "장식"에 해당하는 부분은 포함하지 않는다 — 렌더러가 덧그리고,
@@ -300,8 +227,10 @@ function buildObjectPathUncached(o: GeomNode): Path2D {
       p.rect(o.x, o.y, o.w, o.h);
       return p;
     case "text": {
-      const m = layoutText(o);
-      p.rect(o.x, o.y, m.width, m.height);
+      // 상자는 `layoutText` 가 정하는 **하나**다 — 여기서 따로 재면 집히는 곳이 보이는 곳과
+      // 어긋난다(정렬·박스 모드·말줄임이 전부 그 상자에서 나온다).
+      const b = layoutText(o).box;
+      p.rect(o.x + b.x, o.y + b.y, b.w, b.h);
       return p;
     }
     case "badge": {
@@ -310,7 +239,7 @@ function buildObjectPathUncached(o: GeomNode): Path2D {
       return p;
     }
     case "path":
-      return pathNodePath(o);
+      return pathToPath2D(o);
     case "frame":
       roundRectPath(p, o.x, o.y, o.w, o.h, o.radius);
       return p;
@@ -389,8 +318,8 @@ export function objectBBox(o: GeomNode): Rect {
     case "mosaic":
       return normalizeRect(o.x, o.y, o.x + o.w, o.y + o.h);
     case "text": {
-      const m = layoutText(o);
-      return { x: o.x, y: o.y, w: m.width, h: m.height };
+      const b = layoutText(o).box;
+      return { x: o.x + b.x, y: o.y + b.y, w: b.w, h: b.h };
     }
     case "badge": {
       const r = BADGE_RADIUS_SCALE * o.fontSize + o.strokeWidth / 2;
@@ -934,9 +863,13 @@ export function setObjectFrame(
   const nw = f.w === undefined ? cur.w : Math.max(0, f.w);
   const nh = f.h === undefined ? cur.h : Math.max(0, f.h);
   if ((nw !== cur.w || nh !== cur.h) && cur.w > 0 && cur.h > 0) {
-    const fx = nw / cur.w;
-    const fy = nh / cur.h;
-    out = scaleGeom(out, fx, fy, cur.x, cur.y);
+    // 텍스트는 배율이 아니다 — 인스펙터 W 를 한 번 건드릴 때마다 글꼴 크기가 조용히 따라
+    // 커지면 사용자가 고른 "14" 가 의미를 잃는다(49 §3.6). 폭만 주면 높이는 자동(동쪽 핸들),
+    // 둘 다 주면 고정 상자(남동 핸들)로 — 좌상단 고정이라 이 함수의 규약과 같다.
+    out =
+      node.kind === "text"
+        ? resizeText(node, { w: nw, h: nh }, f.h === undefined ? "E" : "SE")
+        : scaleGeom(out, nw / cur.w, nh / cur.h, cur.x, cur.y);
   }
   const after = objectFrame(out);
   const dx = (f.x === undefined ? cur.x : f.x) - after.x;

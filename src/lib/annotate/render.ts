@@ -27,11 +27,15 @@ import {
   effectReach,
   applySceneTransform,
   buildObjectPath,
-  fontStringOf,
-  layoutText,
   objectAABB,
   objectBBox,
 } from "./geometry";
+import {
+  fontStringOf,
+  HAS_CTX_SPACING,
+  layoutText,
+  setupTextCtx,
+} from "./text-layout";
 import { layerPool, type LayerPool } from "./layers";
 import { fillPaint, gradientOf, strokePaint } from "./paint";
 import { imageStore, type ImageStore } from "./imageStore";
@@ -461,7 +465,11 @@ function firstPaintStyle(
   return fallback;
 }
 
-/** 여러 줄 텍스트 — 앵커(x,y)가 첫 줄의 좌상단. 레이아웃은 geometry 와 공유한다. */
+/**
+ * 여러 줄 텍스트 — 앵커(x,y)가 상자의 좌상단. 줄·런·마커·장식 위치는 **전부** `layoutText`
+ * 가 준다(태스크 49). 여기서 좌표를 하나라도 다시 계산하면 프리뷰·저장·히트·편집 오버레이
+ * 네 소비자 중 이 하나만 다른 자리에 그린다 — 그게 v1 이 정렬·자간을 못 넣었던 이유다.
+ */
 function drawText(
   ctx: CanvasRenderingContext2D,
   o: TextNode,
@@ -469,18 +477,51 @@ function drawText(
   store: ImageStore,
 ): void {
   void store;
-  const m = layoutText(o);
+  const l = layoutText(o);
   ctx.save();
   applySceneTransform(ctx, t);
   applyObjectTransform(ctx, o);
   ctx.globalAlpha = 1;
   // 글자색은 **채우기 스택**이다(v1 의 stroke 자리 — 37 §3.3 매핑표).
-  ctx.fillStyle = firstPaintStyle(ctx, o.fills, objectBBox(o), t, DEFAULT_STROKE);
-  ctx.font = fontStringOf(o.fontSize, o.fontFamily);
-  ctx.textAlign = "left";
-  ctx.textBaseline = "top";
-  for (let i = 0; i < m.lines.length; i++) {
-    ctx.fillText(m.lines[i], o.x, o.y + i * m.lineHeight);
+  const fill = firstPaintStyle(ctx, o.fills, objectBBox(o), t, DEFAULT_STROKE);
+  // 외곽선은 `strokeText` 라 경로 기반 `strokePaint` 를 못 쓴다. `inside` 는 글리프 클립이
+  // 있어야 성립하므로(50 outline 경로) 지금은 `center` 로 그린다 — 인스펙터가 같은 판정을
+  // 하도록 `paintOf` 쪽에 표시 규칙이 생기면 그때 갈라진다.
+  const outline =
+    o.strokeWidth > 0 && o.strokes.some((f) => f.visible)
+      ? {
+          style: firstPaintStyle(ctx, o.strokes, objectBBox(o), t, DEFAULT_STROKE),
+          // outside 는 두께 2배로 긋고 채움으로 안쪽 절반을 덮는다(source-over) — 글리프
+          // 안쪽으로 파고드는 선이 얇은 획을 통째로 먹는 것을 막는다.
+          width: o.strokeAlign === "outside" ? o.strokeWidth * 2 : o.strokeWidth,
+        }
+      : null;
+  setupTextCtx(ctx, l);
+  ctx.fillStyle = fill;
+  if (outline) {
+    ctx.strokeStyle = outline.style;
+    ctx.lineWidth = outline.width;
+    ctx.lineJoin = "round";
+  }
+  for (const line of l.lines) {
+    for (const run of line.runs) {
+      // 폴백 경로(§3.8)는 런마다 wordSpacing 0 이고 간격을 x 에 이미 넣어 둔다. 속성이 없는
+      // 엔진(WKWebView)에서는 대입 자체를 하지 않는다 — 그게 폴백이 존재하는 이유다.
+      if (HAS_CTX_SPACING) ctx.wordSpacing = `${run.wordSpacing}px`;
+      if (outline) ctx.strokeText(run.text, o.x + run.x, o.y + run.baseline);
+      ctx.fillText(run.text, o.x + run.x, o.y + run.baseline);
+    }
+    // 마커는 저장 문자열에 없다(편집 중 커서가 지우지 못하게) — 레이아웃이 준 자리에 따로 찍는다.
+    if (line.marker) {
+      ctx.fillText(line.marker.text, o.x + line.marker.x, o.y + line.baseline);
+    }
+    // 장식은 줄의 잉크 폭만 덮는다. 기준은 **첫 런의 베이스라인**이다 — 첨자가 걸리면 글자가
+    // 통째로 올라가는데 밑줄만 제자리에 남으면 글자와 떨어진 선이 하나 뜬다.
+    const base = line.runs[0]?.baseline ?? line.baseline;
+    const x0 = o.x + (line.runs[0]?.x ?? 0);
+    for (const d of [l.decor.underline, l.decor.strike]) {
+      if (d) ctx.fillRect(x0, o.y + base + d.y, line.width, d.thick);
+    }
   }
   ctx.restore();
 }
