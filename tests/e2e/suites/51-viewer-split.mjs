@@ -702,6 +702,13 @@ export async function run({ cdp, report: r, fix }) {
     await closeMenu().catch(() => {});
     await cdp.eval(`window.__gpv.ui.getState().closeTranslate()`).catch(() => {});
     await cdp.eval(`window.__gpv.ui.getState().closeGitDialog()`).catch(() => {});
+    // 확인창·입력창 안전망 — **이 줄이 없으면 다음 스위트가 통째로 죽는다.** 이 스위트는
+    // AltGr 음성 대조에서 업스트림 확인창을 **의도적으로** 띄우고 그 자리에서 닫는데(:544),
+    // 그 사이 어느 단언이든 던지면 `confirm` 이 `useUi` 에 남는다. 남은 모달은 다음 스위트의
+    // 키 입력을 전부 삼켜(Ctrl+W 가 뷰어 탭을 닫는 식으로) 원인과 전혀 다른 얼굴의 실패가 된다
+    // — 2026-09-09 다른 스위트에서 실제로 그렇게 9건이 죽었다. 열었을 수 있는 모달은 정리
+    // 단계에서 **무조건** 닫는다(안 열려 있으면 no-op).
+    await cdp.eval(`(()=>{ const s = window.__gpv.ui.getState(); s.closeConfirm(); s.closePrompt(); return true; })()`).catch(() => {});
     await cdp
       .eval(`(()=>{
         const p = JSON.parse(${J(snap)});
