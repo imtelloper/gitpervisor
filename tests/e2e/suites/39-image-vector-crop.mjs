@@ -770,6 +770,48 @@ export async function run({ cdp, report: r, fix }) {
         `크롬=${J(gSel)} 기하=${J(gBox)}`,
       );
 
+      // ── (h-2) 마이터 조인의 뾰족 끝이 상자 안에 있는가(§3.3 선 여백) ────────
+      //
+      // `pathBounds` 는 **기하만** 잰다 — 선이 기하 밖으로 나가는 양은 `objectBBox` 가 더한다.
+      // 그 여백이 선 반폭뿐이면 예각 마이터가 상자 밖으로 튀어나오고, 선택 상자·정렬·스냅·
+      // `selectBox` 줌이 전부 이 상자를 쓰므로 **보이는 것과 다른 자리에** 붙는다. 잉크는 있는데
+      // 상자만 작은 종류라 화면에는 "선택 테두리가 도형을 파고든다"로만 나타난다.
+      //
+      // 픽스처: 꼭짓점 (100,100) 에서 (160,60)·(160,140) 으로 벌어진 V. 끼인각
+      // θ = 2·atan(40/60) = 67.38° 이므로 마이터 돌출은 (w/2)/sin(θ/2) = 15/0.5547 = 27.04 —
+      // 즉 뾰족 끝은 x = 72.96 이고, 선 반폭만 더하던 옛 값(x = 85)보다 **12px 더 왼쪽**이다.
+      // 비율 1.803 ≤ miterLimit 4 라 캔버스가 bevel 로 자르지도 않는다(자르면 잉크가 사라져
+      // 이 케이스가 무의미해진다 — 그래서 miterLimit 을 픽스처에 명시한다).
+      await setDoc({
+        rotation: 0, flipH: false, flipV: false,
+        objects: [
+          pathNode("pm", [
+            { verts: [V(160, 60), V(100, 100), V(160, 140)], closed: false },
+          ], {
+            strokes: [solid(BLUE)], strokeWidth: 30, join: "miter", miterLimit: 4,
+          }),
+        ],
+      });
+      const mBox = await cdp.eval(`window.__gpvVec.ed().tree.nodeAABB('pm')`);
+      // x=78 은 뾰족 끝(72.96) 안쪽 5px · 옛 상자 경계(85) 바깥 7px — 이 한 점이 "마이터가
+      // 실제로 그려졌고 옛 여백으로는 못 담는다"를 홀로 가른다. x=66 은 끝보다 7px 더 왼쪽이다.
+      const mTip = await px(78, 100);
+      const mOut = await px(66, 100);
+      await S(`selectAll()`);
+      await sleep(200);
+      const mSel = await cdp.eval(`(() => {
+        const s = window.__gpvVec.ed().chrome.state();
+        const b = s && s.selection[0] ? s.selection[0].box.rect : null;
+        return b;
+      })()`);
+      r.check(
+        "(46 h-2) 마이터 조인의 **뾰족 끝까지** 상자가 감싼다 — 선 여백이 반폭뿐이면 잉크가 상자 밖에 남아 선택 테두리가 도형을 파고든다. 상한은 설계가 정한 `w/2·miterLimit`(둔각에서 과대해지는 대가로 어떤 각도에서도 모자라지 않는다)",
+        !!mBox && near(mTip, [0, 0, 255]) && isWhite(mOut) &&
+          mBox.x <= 73 && mBox.x >= 100 - (30 / 2) * 4 - 0.01 &&
+          !!mSel && Math.abs(mSel.x - mBox.x) <= 0.5 && Math.abs(mSel.w - mBox.w) <= 0.5,
+        `상자=${J(mBox)} 크롬=${J(mSel)} 끝(78,100)=${show(mTip)} 밖(66,100)=${show(mOut)}`,
+      );
+
       // ── (i) 도형 → 패스: 같은 그림 ─────────────────────────────────────────
       const ell = {
         id: "pi", kind: "ellipse", x: 50, y: 70, w: 100, h: 60,

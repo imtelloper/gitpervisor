@@ -179,7 +179,8 @@ export interface EditorUiState {
             snapPixel:boolean; gapBadges:boolean; grid:0|8|16; curvature:boolean; cropOverlay:'none'|'thirds'|'quarters'|'golden'|'diagonal' /* 48 */ };   // localStorage 'gp:ie:toggles'
   snapThresholdCss:number /* 4 */; hint:string|null /* 상태바 모드 요약 슬롯 */;
   setTool(t:Tool, o?:{temporary?:boolean}):void /* select|vpen 밖으로 가면 mode.nodeEdit → design (47 §3.2) */; restoreTool():void; setMode(m:Mode):void;
-  select(ids:(ObjId|'__base')[], o?:{append?:boolean; toggle?:boolean}):void;   // '__base' 는 단독만 — 노드 id 와 섞이면 노드가 이긴다(44 배경 행 → 45 image 컨텍스트 바) setHover(id:ObjId|null):void;
+  select(ids:(ObjId|'__base')[], o?:{append?:boolean; toggle?:boolean}):void;   // '__base' 는 단독만 — 노드 id 와 섞이면 `normalizeSelection` 이 '__base' 를 버린다(= 노드가 이긴다; 44 배경 행 → 45 image 컨텍스트 바). **여긴 스토어 경계 얘기다** — 이 정규화를 건너뛴 배열이 classifySelection 에 직접 닿으면 거기선 배경이 이긴다(45 §3.1)
+  setHover(id:ObjId|null):void;
   setToggle<K extends keyof EditorUiState['toggles']>(k:K, v:EditorUiState['toggles'][K]):void; setTab(...):void; setPixelPreview(n:0|1|2):void;
   setTextEditing(v:boolean):void; setHint(s:string|null):void; reset():void;
 }

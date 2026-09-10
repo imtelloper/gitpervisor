@@ -54,7 +54,6 @@ import {
   detachStyle,
   findStyle,
   resyncStyles,
-  styleFromNode,
   styleSection,
   type StyleDef,
   type StyleSlot,
@@ -121,7 +120,6 @@ import {
   DEFAULT_PAINT,
   DUPLICATE_OFFSET,
   newObjId,
-  type ColorStyle,
   type ComponentDef,
   type Node,
   type EditorDoc,
@@ -2630,10 +2628,22 @@ export default function ImageEditor() {
   };
 
   /**
-   * 색 피커 '색 스타일로 저장'(시안 ④).
+   * 색 피커 '색 스타일로 저장'(시안 ④) — 만들고, **스택이 한 겹일 때만** 곧바로 적용한다.
    *
-   * 저장은 **적용이 아니다** — 참조를 남기지 않으므로 문서는 한 줄도 바뀌지 않고 히스토리 칸도
-   * 생기지 않는다(51 §3.8). 저장한 노드까지 링크시키려면 목록에서 한 번 더 누르면 된다.
+   * 링크를 남기지 않으면 방금 저장한 노드만 라이브러리 밖에 남아, 나중에 그 스타일을 고칠 때
+   * 혼자 안 따라온다 — 51 §7 (c)("저장 뒤 스타일을 고치면 A·B 픽셀이 **동시에** 바뀐다")가
+   * 요구하는 것이 정확히 그 링크다. 히스토리는 만들기+적용을 합쳐 한 칸이다.
+   *
+   * 값은 `styleFromNode`(= 스토어 `saveStyleFromNode`)에 맡기지 않는다. 그 함수는 스택의
+   * **맨 앞 겹**만 보는데(styles.ts:199) 팝오버는 아무 겹에서나 열린다 — 두 번째 스와치에서
+   * 저장하면 이름은 이 겹 색(`popFill`)인데 값은 첫 겹 색인 항목이 생긴다.
+   *
+   * 2겹 이상에서 **적용을 건너뛰는** 이유: `applyStyle` 은 슬롯을 `[style.paint]` 한 겹으로
+   * 갈아 끼우므로(styles.ts:161) 링크를 거는 순간 나머지 겹이 말없이 사라진다 — PropsTab 의
+   * 팔레트 경로가 피해 둔 그 사고(`맨 앞 겹의 색만 바꾼다`)와 같은 것이고, 선택이 여럿이면
+   * 전원에서 동시에 사라진다. 그 겹만 갈아 끼우는 '부분 링크'로도 못 피한다: 노드 값이
+   * 스타일과 달라 `styleState` 가 영원히 `stale` 이고, 다음 라이브러리 편집의 재동기
+   * (`resyncStyles`)가 결국 스택을 접는다 — 사라지는 시점만 미루는 셈이다.
    */
   const saveColorStyle = () => {
     if (pop?.kind !== "paint") return;
@@ -2641,6 +2651,7 @@ export default function ImageEditor() {
     const fill = popFill;
     if (!node || !isGeomNode(node) || !fill) return;
     const slot: StyleSlot = pop.slot === "fills" ? "fill" : "stroke";
+    const single = (popStack(pop.slot)?.length ?? 0) <= 1;
     askPrompt({
       title: "색 스타일로 저장",
       label: "이름에 '/' 를 넣으면 앞부분이 섹션이 됩니다 (예: 브랜드 / Blue 500).",
@@ -2650,11 +2661,9 @@ export default function ImageEditor() {
       onConfirm: (raw) => {
         const name = raw.trim();
         if (!name) return;
-        // 슬롯이 fill·stroke 면 `styleFromNode` 는 `ColorStyle` 을 낸다 — 유니온을 좁힐 다른
-        // 표식이 없어 여기서 못 박는다(스토어의 슬라이스가 셋이라 잘못 넣으면 목록이 섞인다).
-        useImageLibrary
-          .getState()
-          .upsertColorStyle(styleFromNode(node, slot, name) as ColorStyle);
+        const style = { id: newObjId(), name, paint: { ...fill }, updatedAt: Date.now() };
+        useImageLibrary.getState().upsertColorStyle(style);
+        if (single) applyStyleToSel(slot, style);
       },
     });
   };

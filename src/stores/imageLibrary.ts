@@ -19,6 +19,7 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { create } from "zustand";
 
 import { normalizeNode } from "../lib/annotate/schema";
+import { resyncComponents, styleFromNode, type StyleSlot } from "../lib/annotate/styles";
 import {
   DEFAULT_TEXT_STYLE,
   type ColorStyle,
@@ -27,6 +28,7 @@ import {
   type Effect,
   type EffectStyle,
   type Fill,
+  type GeomNode,
   type ImageLibrary,
   type Node,
   type StyleId,
@@ -44,11 +46,11 @@ export const LIBRARY_MAX_BYTES = 8 * 1024 * 1024;
 const SAVE_DEBOUNCE_MS = 300;
 
 /**
- * 스타일 슬롯. 3단계의 `annotate/styles.ts` 가 `StyleSlot` 이라는 이름으로 **같은 리터럴**을
- * 내보내기로 돼 있어(51 §4) 여기서는 이름을 만들지 않는다 — 같은 개념에 두 이름을 두면
- * 어느 쪽이 정본인지 다음 사람이 알 수 없다(00-INDEX §10.4).
+ * 스타일 슬롯. 정본은 `annotate/styles.ts` 의 `StyleSlot` 이다(51 §4) — 여기서는 리터럴을 다시
+ * 적지 않고 그것을 그대로 쓴다. 같은 개념에 두 정의를 두면 한쪽에 슬롯을 더하는 날 다른 쪽이
+ * 조용히 뒤처진다(00-INDEX §10.4).
  */
-type Slot = "fill" | "stroke" | "text" | "effect";
+type Slot = StyleSlot;
 
 /** 슬롯 → 라이브러리 슬라이스. `fill`·`stroke` 는 **같은 색 스타일 목록**을 본다(시안 ④는 목록 하나다). */
 const SLICE: Record<Slot, "colorStyles" | "textStyles" | "effectStyles"> = {
@@ -351,6 +353,15 @@ export interface ImageLibraryState {
   upsertColorStyle(s: ColorStyle): void;
   upsertTextStyle(s: TextStyleDef): void;
   upsertEffectStyle(s: EffectStyle): void;
+  /**
+   * 지금 노드 값으로 스타일 1개를 만들어 슬롯에 맞는 목록에 넣고 id 를 돌려준다
+   * (45 색 피커 `색 스타일로 저장`·효과 편집·50 텍스트 스타일 `+`).
+   *
+   * **적용은 호출자 몫이다.** 이 스토어는 문서를 만지지 않는다 — 여기서 노드까지 링크하면
+   * 히스토리 깔때기가 둘이 된다(`removeComponent` 주석과 같은 이유). 호출자는 돌려받은 id 로
+   * `applyStyle` 을 **같은 커밋 안에서** 걸어 한 동작 = 한 칸을 지킨다(51 §7 (c)).
+   */
+  saveStyleFromNode(node: GeomNode, slot: Slot, name: string): StyleId;
   removeStyle(slot: Slot, id: StyleId): void;
   renameStyle(slot: Slot, id: StyleId, name: string): void;
   upsertComponent(d: ComponentDef): void;
@@ -361,58 +372,65 @@ export interface ImageLibraryState {
 /** `ensure()` 단일 비행 — 편집기·인스펙터·에셋 패널이 각자 마운트에서 부른다. */
 let ensured: Promise<void> | null = null;
 
-export const useImageLibrary = create<ImageLibraryState>((set) => ({
-  lib: EMPTY_LIBRARY,
-  ready: false,
-  ensure: () => (ensured ??= init()),
-  flush: async () => {
-    if (saveTimer !== null) {
-      clearTimeout(saveTimer);
-      saveTimer = null;
-    }
-    await save();
-  },
-  upsertColorStyle: (s) => {
-    set((st) => ({ lib: { ...st.lib, colorStyles: upsertById(st.lib.colorStyles, s) } }));
+export const useImageLibrary = create<ImageLibraryState>((set) => {
+  /**
+   * 모든 변경의 통로 — 새 라이브러리를 만들고, **컴포넌트 마스터를 같은 set 안에서 맞춘 뒤**,
+   * 저장을 예약한다.
+   *
+   * 마스터 재동기가 여기 있어야 하는 이유: 스타일을 고쳤는데 마스터가 옛 값을 들고 있으면,
+   * 문서 자식만 새 값으로 갱신된 순간 커밋 깔때기의 `diffInstance` 가 그 차이를 사용자의
+   * 재정의로 굳힌다 — 화면은 맞는데 `연결됨` 이 조용히 `재정의됨` 이 된다(51 §3.5).
+   * 편집기가 문서를 해소하기 **전에** 라이브러리가 이미 정합해야 한다.
+   *
+   * `resyncComponents` 는 바뀐 것이 없으면 같은 참조를 돌려주므로 이름 변경처럼 스타일과 무관한
+   * 변경에는 비용이 0 이다. 예외를 두지 않는 것이 규칙이다 — 링크는 살아 있는데 값만 다른(stale)
+   * 마스터는 '마스터 갱신'으로 들어와도 여기서 라이브러리 값으로 스냅된다. 문서의 stale 노드가
+   * 다음 라이브러리 편집에 스냅되는 것과 **같은 규칙**이라, 통로마다 다르게 굴면 창끼리 서로
+   * 다른 마스터를 들게 된다.
+   */
+  const edit = (fn: (lib: ImageLibrary) => ImageLibrary) => {
+    set((st) => ({ lib: resyncComponents(fn(st.lib)) }));
     schedule();
-  },
-  upsertTextStyle: (s) => {
-    set((st) => ({ lib: { ...st.lib, textStyles: upsertById(st.lib.textStyles, s) } }));
-    schedule();
-  },
-  upsertEffectStyle: (s) => {
-    set((st) => ({ lib: { ...st.lib, effectStyles: upsertById(st.lib.effectStyles, s) } }));
-    schedule();
-  },
-  removeStyle: (slot, id) => {
-    const key = SLICE[slot];
-    set((st) => ({
-      lib: { ...st.lib, [key]: st.lib[key].filter((x) => x.id !== id) },
-    }));
-    schedule();
-  },
-  renameStyle: (slot, id, name) => {
-    const key = SLICE[slot];
-    set((st) => ({
-      lib: { ...st.lib, [key]: renameById(st.lib[key] as LibItem[], id, name) },
-    }));
-    schedule();
-  },
-  upsertComponent: (d) => {
-    set((st) => ({ lib: { ...st.lib, components: upsertById(st.lib.components, d) } }));
-    schedule();
-  },
-  removeComponent: (id) => {
+  };
+  return {
+    lib: EMPTY_LIBRARY,
+    ready: false,
+    ensure: () => (ensured ??= init()),
+    flush: async () => {
+      if (saveTimer !== null) {
+        clearTimeout(saveTimer);
+        saveTimer = null;
+      }
+      await save();
+    },
+    upsertColorStyle: (s) => edit((l) => ({ ...l, colorStyles: upsertById(l.colorStyles, s) })),
+    upsertTextStyle: (s) => edit((l) => ({ ...l, textStyles: upsertById(l.textStyles, s) })),
+    upsertEffectStyle: (s) => edit((l) => ({ ...l, effectStyles: upsertById(l.effectStyles, s) })),
+    saveStyleFromNode: (node, slot, name) => {
+      const style = styleFromNode(node, slot, name);
+      // 슬롯 → 슬라이스 매핑은 `SLICE` 하나뿐이다. 여기서 색/텍스트/효과를 다시 분기하면
+      // 잘못 넣은 스타일이 목록에서만 사라져(다른 슬라이스에 살아 있다) 원인이 안 보인다.
+      const key = SLICE[slot];
+      edit((l) => ({ ...l, [key]: upsertById(l[key] as LibItem[], style) }));
+      return style.id;
+    },
+    removeStyle: (slot, id) => {
+      const key = SLICE[slot];
+      edit((l) => ({ ...l, [key]: l[key].filter((x) => x.id !== id) }));
+    },
+    renameStyle: (slot, id, name) => {
+      const key = SLICE[slot];
+      edit((l) => ({ ...l, [key]: renameById(l[key] as LibItem[], id, name) }));
+    },
+    upsertComponent: (d) => edit((l) => ({ ...l, components: upsertById(l.components, d) })),
     // 참조하던 인스턴스는 여기서 건드리지 않는다 — 열린 문서는 편집기의 재동기(51 §3.7)가,
     // 닫힌 문서는 다음 로드가 분리한다. 스토어가 문서를 만지면 히스토리 깔때기가 둘이 된다.
-    set((st) => ({ lib: { ...st.lib, components: st.lib.components.filter((c) => c.id !== id) } }));
-    schedule();
-  },
-  renameComponent: (id, name) => {
-    set((st) => ({ lib: { ...st.lib, components: renameById(st.lib.components, id, name) } }));
-    schedule();
-  },
-}));
+    removeComponent: (id) =>
+      edit((l) => ({ ...l, components: l.components.filter((c) => c.id !== id) })),
+    renameComponent: (id, name) =>
+      edit((l) => ({ ...l, components: renameById(l.components, id, name) })),
+  };
+});
 
 async function reload(): Promise<void> {
   let raw: unknown = null;
@@ -423,7 +441,11 @@ async function reload(): Promise<void> {
     // 없거나 손상 — 기본값으로 시작한다. 원본 격리·로그는 Rust(state.rs)가 이미 했다.
     // 여기서 토스트를 띄우면 첫 실행마다 뜬다(파일 없음이 정상 상태다).
   }
-  useImageLibrary.setState({ lib: normalizeLibrary(raw) });
+  // 파일을 쓴 쪽이 스토어를 거치지 않았을 수 있다(남의 창의 옛 버전·e2e 의 직접 쓰기). 마스터가
+  // 스타일보다 뒤처진 채로 편집기에 닿으면 `diffInstance` 가 그 차이를 재정의로 굳히므로, 읽는
+  // 자리에서도 한 번 맞춘다. 여기서는 저장을 예약하지 않는다 — 메모리만 고치면 충분하고,
+  // 창마다 저장하면 같은 내용으로 서로를 덮는 왕복이 된다.
+  useImageLibrary.setState({ lib: resyncComponents(normalizeLibrary(raw)) });
 }
 
 async function init(): Promise<void> {

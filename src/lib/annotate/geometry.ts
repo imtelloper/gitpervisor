@@ -19,6 +19,7 @@ import {
   type GeomNode,
   type Node,
   type ObjId,
+  type PathNode,
   type Rect,
   type SceneTransform,
 } from "./types";
@@ -293,6 +294,33 @@ function inflate(r: Rect, by: number): Rect {
   return { x: r.x - by, y: r.y - by, w: r.w + by * 2, h: r.h + by * 2 };
 }
 
+/**
+ * 패스의 선 여백(46 §3.3 표). `pathBounds` 는 기하만 재므로 **선이 기하 밖으로 나가는 양**을
+ * 여기서 더한다. 모자라면 뾰족한 마이터 모서리와 화살촉이 선택 상자 밖으로 튀어나오고,
+ * 선택 상자·정렬·스냅·`selectBox` 줌이 전부 이 값을 쓰므로 **보이는 것과 다른 자리에 붙는다.**
+ *
+ * 마이터는 **상한**을 쓴다(설계가 고른 값). 실제 돌출은 조인 각도의 함수(`w/2 ÷ sin(θ/2)`)이고
+ * `miterLimit` 을 넘으면 캔버스가 bevel 로 잘라 버린다 — 즉 이 값은 "절대 모자라지 않는" 쪽이다.
+ * 대가: 둔각 조인에서 상자가 과대해진다. 직각 4개짜리 사각 패스는 실제 돌출이 `w/2` 인데
+ * 기본 `miterLimit` 4 면 `2w` 로 잡혀 상자가 도형보다 넉넉해 보인다. 세그먼트마다 각도를 풀면
+ * 정확해지지만, 상자가 모자라 정렬이 어긋나는 쪽이 훨씬 나쁘다.
+ * (`miterLimit < 1` 은 문서가 손으로 망가진 경우다. 조인은 어떤 각도에서도 최소 `w/2` 는
+ * 나가므로 1 로 바닥을 깐다 — 안 깔면 상자가 선보다 작아진다.)
+ *
+ * 화살촉은 끝점 **뒤로** `ARROW_HEAD_SCALE·w` 뻗은 삼각형이라 축 방향으로는 끝점을 넘지 않고
+ * 옆으로만 최대 `4w·sin(π/7) ≈ 1.74w` 벌어진다 — `ARROW_HEAD_SCALE·w/2`(=2w) 가 그걸 덮는
+ * line·arrow 의 관례고, 패스도 같은 관례를 쓴다(접선이 상자 극단 방향과 크게 어긋난 갈고리
+ * 패스에서는 이론상 모자랄 수 있다 — line·arrow 와 같은 값을 쓰는 대가다). 그릴 끝이 없으면
+ * (전부 닫힌 서브패스) `paint.ts` 가 머리를 아예 안 그리므로 여백도 붙이지 않는다.
+ */
+function pathStrokePad(o: PathNode): number {
+  const miter = o.join === "miter" ? Math.max(1, o.miterLimit) : 1;
+  const drawsHead =
+    (o.heads.start === "arrow" || o.heads.end === "arrow") &&
+    o.subpaths.some((s) => !s.closed && s.verts.length >= 2);
+  return (o.strokeWidth / 2) * miter + (drawsHead ? (ARROW_HEAD_SCALE * o.strokeWidth) / 2 : 0);
+}
+
 /** 회전 전(로컬) 바운딩 박스 — 선 두께까지 포함한다. */
 export function objectBBox(o: GeomNode): Rect {
   switch (o.kind) {
@@ -326,7 +354,7 @@ export function objectBBox(o: GeomNode): Rect {
       return { x: o.x - r, y: o.y - r, w: r * 2, h: r * 2 };
     }
     case "path":
-      return inflate(pathBounds(o), o.strokeWidth / 2);
+      return inflate(pathBounds(o), pathStrokePad(o));
     case "frame":
       return inflate(normalizeRect(o.x, o.y, o.x + o.w, o.y + o.h), o.strokeWidth / 2);
   }
@@ -841,6 +869,21 @@ export function objectFrame(node: GeomNode): { x: number; y: number; w: number; 
     case "mosaic":
     case "frame":
       return { x: node.x, y: node.y, w: node.w, h: node.h, rot: node.rot };
+    case "line":
+    case "arrow":
+      // 선·화살표도 두 끝점이 곧 상자다 — 아래 default 로 보내면 **화살표만** 어긋난다:
+      // `objectBBox` 가 붙이는 여백이 `ARROW_HEAD_SCALE·w/2`(= 2w)인데 default 는 언제나
+      // `strokeWidth/2` 만 빼서 양쪽에 1.5w 가 남는다. 두께 6 짜리 가로 화살표(길이 120)의
+      // W 가 138 로 보이고, 거기에 120 을 쳐 넣으면 `setObjectFrame` 이 120/138 배로 줄여
+      // 되읽을 때 122.35 가 나온다 — 값이 친 대로 서지 않고, 다시 칠 때마다 41 히스토리
+      // 칸만 쌓인다. 빼서 맞추려 하지 말고 pad 를 안 붙인 값을 쓴다(패스와 같은 이유).
+      return { ...normalizeRect(node.x1, node.y1, node.x2, node.y2), rot: node.rot };
+    case "path":
+      // 패스는 기하 상자를 **직접** 든다. 아래 default 처럼 `objectBBox − strokeWidth/2` 로 빼면
+      // 마이터·화살촉 여백(`pathStrokePad`)이 남아 인스펙터 X/Y·W/H 가 정점 좌표와 어긋나고,
+      // 그만큼 `setObjectFrame` 왕복이 도형을 옮긴다. 빼는 쪽을 더하는 쪽과 맞추려 애쓰지 말고
+      // 애초에 pad 를 더하지 않은 값을 쓴다.
+      return { ...pathBounds(node), rot: node.rot };
     default: {
       // 선 두께를 뺀 기하 자체의 상자 — 폭을 물으면 도형 크기를 답해야 한다.
       const b = objectBBox(node);

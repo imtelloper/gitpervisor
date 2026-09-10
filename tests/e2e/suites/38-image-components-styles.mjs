@@ -736,7 +736,8 @@ export async function run({ cdp, report: r, fix, port }) {
 
     // ── (b) '색 스타일로 저장'(시안 ④ 색 피커) ──────────────────────────────
     //
-    // 저장은 **적용이 아니다** — 참조를 남기지 않으므로 문서는 한 줄도 바뀌지 않는다(§3.8).
+    // 저장 = 만들기 **+ 선택에 적용**(§7 (c)). 순수 함수 `styleFromNode` 는 계약대로 참조를
+    // 남기지 않고, 링크는 호출자가 이어서 한 번 더 건다 — 그래서 히스토리는 한 칸이다.
     const PINK = "e2e:상태 / 경고 / 핑크";
     await setDoc({
       objects: [
@@ -760,15 +761,23 @@ export async function run({ cdp, report: r, fix, port }) {
     const pink = arr(savedStyle.colorStyles).find((s) => s.name === PINK) || null;
     const a1 = await node("a1");
     r.check(
-      "(51 b-1) 색 피커 `색 스타일로 저장` 이 노드 값을 그대로 스타일로 굳힌다 — 저장은 적용이 아니라 문서·히스토리는 그대로다",
+      // 재는 것이 바뀌었다: 예전엔 "저장은 문서를 안 건드린다"였는데, 그러면 방금 저장한 그
+      // 도형만 라이브러리 **밖에** 남아 나중에 그 스타일을 고칠 때 혼자 안 따라온다(§7 (c) 가
+      // 요구하는 'A·B 픽셀이 동시에 바뀐다'가 성립하지 않는다). 지금 재는 것은 셋이다 —
+      // ① 스타일 값은 노드 값 그대로(RED), ② 저장한 노드가 그 스타일을 문다, ③ 만들기와
+      // 적용을 합쳐 히스토리 **한 칸**(두 칸이면 Ctrl+Z 한 번이 링크만 풀고 스타일은 남긴다).
+      // 라벨은 `styleSection` 이 섹션(`e2e:상태`)을 떼고 남긴 표시 이름이다.
+      "(51 b-1) 색 피커 `색 스타일로 저장` 이 노드 값을 스타일로 굳히고 **저장한 노드까지 그 스타일에 링크한다**(§7 (c)) — 값은 그대로(RED)고 만들기+적용이 히스토리 한 칸으로 묶인다",
       opened === true &&
         hasSaveBtn === true &&
         !!pink &&
         pink.paint.color === RED &&
         !!a1 &&
-        !a1.styleRefs.fill &&
-        (await S(`hist()`)) === histB,
-      `팝오버=${opened} 버튼=${hasSaveBtn} 스타일=${pink ? pink.name + "/" + pink.paint.color : "없음"} 참조=${a1 ? J(a1.styleRefs) : "?"}`,
+        a1.styleRefs.fill === pink.id &&
+        a1.fills[0].color === RED &&
+        (await S(`hist()`)) === histB + 1 &&
+        (await S(`lastLabel()`)) === "스타일 경고 / 핑크",
+      `팝오버=${opened} 버튼=${hasSaveBtn} 스타일=${pink ? pink.name + "/" + pink.paint.color : "없음"} 참조=${a1 ? J(a1.styleRefs) : "?"} 색=${a1 && arr(a1.fills)[0] ? a1.fills[0].color : "?"} 칸=${histB}→${await S(`hist()`)} 라벨=${await S(`lastLabel()`)}`,
     );
 
     // ── (b-2) 목록 UI — 섹션 규칙·검색·적용·`적용됨`(45/50 슬롯) ─────────────
@@ -828,6 +837,44 @@ export async function run({ cdp, report: r, fix, port }) {
         `참조=${applied && J(applied.styleRefs)} 색=${applied && applied.fills[0].color} 배지=${J(badged.map((x) => x.name))}`,
       );
     }
+    await cdp.eval(`window.__gpvLib.ed().popover.close()`).catch(() => {});
+    await sleep(150);
+
+    // ── (b-1b) 2겹 스택에서 **두 번째** 겹을 저장한다 ────────────────────────
+    //
+    // 여기서 재는 것은 둘이다.
+    // ① 값은 `popFill`(= 누른 겹)에서 온다. `styleFromNode` 는 스택의 맨 앞 겹만 보므로
+    //    그 함수에 맡기면 이름은 `00FF00` 인데 값은 `#FF0000` 인 항목이 생긴다.
+    // ② 2겹 이상에서는 **적용하지 않는다**. `applyStyle` 은 슬롯을 `[style.paint]` 한 겹으로
+    //    갈아 끼우므로 링크를 거는 순간 나머지 겹이 말없이 사라진다(선택이 여럿이면 전원에서
+    //    동시에). 그래서 문서도 히스토리도 그대로여야 한다 — b-1 의 1겹 케이스만으로는
+    //    이 경로가 통째로 안 잡힌다.
+    const TWO = "e2e:겹 / 두 번째";
+    await setDoc({
+      objects: [
+        { id: "s2", kind: "rect", x: 20, y: 20, w: 60, h: 40, fills: [solid(RED), solid(GREEN)], strokes: [], strokeWidth: 0 },
+      ],
+    });
+    await S(`click(50, 40)`);
+    await sleep(200);
+    await cdp.eval(`window.__gpvLib.ed().inspector.setTab('props')`);
+    await sleep(200);
+    const histTwo = await S(`hist()`);
+    const opened2 = await S(`stackOpen('채우기', 1)`);
+    await S(`clickSaveStyle()`);
+    await S(`answerPrompt(${J(TWO)})`);
+    await sleep(400);
+    const two = arr(((await mainLib()) || {}).colorStyles).find((s) => s.name === TWO) || null;
+    const s2 = await node("s2");
+    r.check(
+      "(51 b-1b) 2겹 스택에서는 **누른 겹**(2번째 = GREEN)이 스타일 값이 되고 링크는 걸지 않는다 — 걸면 스택이 한 겹으로 접혀 다른 겹이 말없이 사라진다(문서·히스토리 그대로)",
+      opened2 === true && !!two && two.paint.color === GREEN &&
+        !!s2 && arr(s2.fills).length === 2 &&
+        s2.fills[0].color === RED && s2.fills[1].color === GREEN &&
+        !s2.styleRefs.fill &&
+        (await S(`hist()`)) === histTwo,
+      `스타일=${two ? two.paint.color : "없음"} 겹=${s2 ? J(arr(s2.fills).map((f) => f.color)) : "?"} 참조=${s2 ? J(s2.styleRefs) : "?"} 칸=${histTwo}→${await S(`hist()`)}`,
+    );
     await cdp.eval(`window.__gpvLib.ed().popover.close()`).catch(() => {});
     await sleep(150);
 
@@ -932,6 +979,73 @@ export async function run({ cdp, report: r, fix, port }) {
           tx ? `${tx.fontSize}/${tx.fontWeight}/${tx.lineHeight} 참조=${J(tx.styleRefs)}` : "노드 없음",
         );
       }
+
+      // ── (c-4) 스타일 편집이 인스턴스를 `연결됨` 으로 남기는가 ────────────────
+      //
+      // **화면에 증상이 없는 종류의 결함**이라 여기서만 잡힌다. 스타일이 바뀌면 재동기는
+      // **문서 자식**을 새 값으로 쓰는데, 컴포넌트 마스터가 옛 값을 들고 있으면 그 커밋의
+      // `diffInstance` 가 "자식 ≠ 마스터"를 사용자의 재정의로 굳힌다(`styleRefs` 도
+      // `INSTANCE_FIXED_KEYS` 밖이라 링크 해제조차 재정의가 된다). 색은 맞게 보이고 `연결됨` 만
+      // 조용히 `재정의됨` 이 되는데, 그 뒤 '재정의 초기화' 는 **옛 색**으로 되돌아가고
+      // '마스터 갱신' 은 라이브러리와 무관한 값을 마스터에 굳힌다 — 원인은 며칠 전 그 스타일 편집이다.
+      //
+      // 그래서 **색과 상태를 함께** 잰다: 색만 재면 결함이 통째로 통과하고, 상태만 재면
+      // 재동기가 아예 안 돈 경우(색도 안 따라온 경우)와 구분되지 않는다.
+      const LINK = "e2e:연결 / 링크";
+      const CLIP = "e2e:링크 칩";
+      const seeded = await writeLib(
+        (l) => ({
+          ...l,
+          colorStyles: [
+            ...l.colorStyles,
+            { id: "e2e-link", name: LINK, paint: solid(GREEN), updatedAt: 1 },
+          ],
+        }),
+        (l) => !!l && l.colorStyles.some((s) => s.id === "e2e-link"),
+      );
+      await setDoc({
+        objects: [
+          { id: "lk", kind: "rect", x: 30, y: 30, w: 60, h: 40, fills: [solid(GREEN)], strokes: [], strokeWidth: 0, styleRefs: { fill: "e2e-link" } },
+        ],
+      });
+      await S(`selectAll()`);
+      await sleep(200);
+      await makeComponent(CLIP);
+      const osL = arr(await objects());
+      const instL = osL.find((o) => o.kind === "instance") || null;
+      // 자식은 `<인스턴스>/<마스터>` 접두라 id 로 못 찾는다 — 프레임에 담긴 유일한 rect 다.
+      const kidL = osL.find((o) => o.kind === "rect" && o.parentId) || null;
+      const bumpedLink = await writeLib(
+        (l) => ({
+          ...l,
+          colorStyles: l.colorStyles.map((s) =>
+            s.id === "e2e-link" ? { ...s, paint: solid(BLUE), updatedAt: Date.now() } : s,
+          ),
+        }),
+        (l) => !!l && (l.colorStyles.find((s) => s.id === "e2e-link") || {}).paint?.color === BLUE,
+      );
+      await sleep(500);
+      await S(`repaint()`);
+      const kidAfter = kidL ? await node(kidL.id) : null;
+      const pxLink = kidAfter
+        ? await px(kidAfter.x + kidAfter.w / 2, kidAfter.y + kidAfter.h / 2)
+        : null;
+      const stateLink = instL ? await S(`instState(${J(instL.id)})`) : null;
+      const instAfter = instL ? await node(instL.id) : null;
+      const defLink = arr(((await mainLib()) || {}).components).find((c) => c.name === CLIP) || null;
+      const masterRectL = defLink ? arr(defLink.nodes).find((n) => n.kind === "rect") : null;
+      const masterLink =
+        masterRectL && arr(masterRectL.fills)[0] ? masterRectL.fills[0].color : null;
+      r.check(
+        "(51 c-4) 라이브러리 스타일을 고쳐도 그 스타일을 문 인스턴스는 **`연결됨` 을 유지한다** — 라이브러리가 편집기에 닿기 전에 컴포넌트 마스터도 같은 값으로 재동기되므로 자식/마스터 차이가 생기지 않는다(색만 맞고 상태가 `재정의됨` 이 되면 이후 초기화·마스터 갱신이 전부 틀린 값을 쓴다)",
+        seeded.ok === true && bumpedLink.ok === true &&
+          !!kidAfter && arr(kidAfter.fills)[0] && kidAfter.fills[0].color === BLUE &&
+          near(pxLink, rgb(BLUE)) &&
+          masterLink === BLUE &&
+          stateLink === "linked" &&
+          !!instAfter && Object.keys(instAfter.overrides).length === 0,
+        `자식=${kidAfter && arr(kidAfter.fills)[0] ? kidAfter.fills[0].color : "?"}/${show(pxLink)} 마스터=${masterLink} 상태=${stateLink} 재정의=${instAfter && J(Object.keys(instAfter.overrides))} 심기=${seeded.ok}/${bumpedLink.ok}`,
+      );
     }
 
     // ── (e) 컴포넌트 만들기(Ctrl+Alt+K) ─────────────────────────────────────

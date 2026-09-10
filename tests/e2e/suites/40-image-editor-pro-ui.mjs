@@ -3151,6 +3151,30 @@ export async function run({ cdp, report: r, fix }) {
       `w ${w0}→${w1.w}→${w2.w} hist ${h4b}→${w1.hist}→${w2.hist}`,
     );
 
+    // 화살표는 프레임 pad 의 **유일한 예외**다. `objectBBox` 는 화살촉 몫으로
+    // `ARROW_HEAD_SCALE·w/2`(= 2w) 를 붙이는데 `objectFrame` 의 default 는 언제나
+    // `strokeWidth/2` 만 뺀다 — 양쪽에 1.5w 가 남으면 W 칸이 도형 길이가 아닌 값을 보이고,
+    // 그 칸에 진짜 길이를 적어도 `setObjectFrame` 이 부푼 값 기준으로 줄여 되읽으면 또 다른
+    // 숫자가 나온다(친 값이 서지 않고 칠 때마다 41 히스토리 칸만 쌓인다). 사각형으로는 안
+    // 잡힌다 — pad 가 정확히 `w/2` 라 빼기가 우연히 맞는다.
+    await seed([{
+      id: "ar1", kind: "arrow", parentId: null, stroke: "#FF3B30", strokeWidth: 6,
+      opacity: 1, rot: 0, x1: 40, y1: 100, x2: 160, y2: 100, head: "end",
+      heads: { start: "none", end: "arrow" },
+    }]);
+    await selectAllRoot();
+    await cdp.eval(`window.__gpvShell.ed().inspector.setTab('props')`);
+    await sleep(250);
+    const arrowFrame = (await S(`ed().inspector.fields()`)) || {};
+    r.check(
+      "(45 ins-4c) 화살표 X/Y/W/H 는 화살촉 여백을 뺀 **기하 그대로**다 — 두께 6·길이 120 가로 화살표는 X=40 W=120 H=0 (2w 로 부푼 31/138/18 이 아니다)",
+      arrowFrame.X?.value === "40" &&
+        arrowFrame.Y?.value === "100" &&
+        arrowFrame.W?.value === "120" &&
+        arrowFrame.H?.value === "0",
+      J({ X: arrowFrame.X, Y: arrowFrame.Y, W: arrowFrame.W, H: arrowFrame.H }),
+    );
+
     // ── (45 ins-5) 채우기 스택 — 겹 추가 · 눈 · 제거 ─────────────────────────
     //
     // 픽스처가 두 겹인 이유: `+` 가 만드는 겹의 색은 **최근 사용 색**에 달려 있어 고정값이

@@ -16,6 +16,7 @@
 // taint 걱정이 없다). 되읽을 사각형은 인자 `rect`(oriented px)이고, 캔버스 밖은 읽지 않도록
 // 교차만 취한다 — 40 §3.2 의 렌더 윈도가 오면 그 작업 캔버스 경계가 곧 안전 경계가 된다.
 
+import { hexToRgb } from "../color";
 import type { LayerPool } from "./layers";
 import type { Effect, Rect, SceneTransform } from "./types";
 
@@ -89,14 +90,16 @@ function deviceRect(canvas: HTMLCanvasElement, r: Rect, t: SceneTransform): Rect
 /**
  * 색 + 효과 불투명도 → canvas 색 문자열. 문서 색은 항상 hex 다(types.ts `PALETTE`·정규화) —
  * 다른 표기가 들어오면 알파를 못 곱하고 색만 쓴다.
+ *
+ * 파싱은 `color.ts` 가 한다. 여기 있던 자기 정규식은 그쪽 `normalizeHex` 와 받는 모양이
+ * 글자 하나까지 같았다 — 두 벌로 두면 한쪽만 표기를 늘렸을 때 같은 색이 인스펙터에서는 읽히고
+ * 섀도에서는 무시되는(= 효과 불투명도가 통째로 빠지는) 차이가 조용히 생긴다.
  */
 function withAlpha(color: string, opacity: number): string {
   const a = Math.max(0, Math.min(1, opacity));
-  const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(color.trim());
-  if (!m) return color;
-  const h = m[1].length === 3 ? m[1].replace(/./g, (c) => c + c) : m[1];
-  const n = Number.parseInt(h, 16);
-  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+  const rgb = hexToRgb(color);
+  if (!rgb) return color;
+  return `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${a})`;
 }
 
 /** 레이어 크기(device px). 격리 레이어는 캔버스라 width/height 가 곧 크기다. */

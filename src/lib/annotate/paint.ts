@@ -15,6 +15,7 @@
 
 import { objectBBox } from "./geometry";
 import type { ImageStore } from "./imageStore";
+import { pathEndTangents, type EndTangent } from "./vector/path";
 import {
   ARROW_HEAD_SCALE,
   type BlendMode,
@@ -433,8 +434,14 @@ function headAnchors(node: GeomNode): { start: HeadAnchor | null; end: HeadAncho
  * 열린 경로의 양 끝점과 접선.
  *
  * 펜은 midpoint 이차 베지어로 이어지는데(geometry.ts:165) 첫·마지막 구간만은 정점을 직접 지나므로
- * 이웃 점이 곧 정확한 접선이다. path 는 끝 정점의 핸들이 접선이다 — 핸들이 0이면 이웃 정점을 쓴다.
- * 서브패스가 여럿이면 **첫 서브패스**의 양 끝에만 단다(태스크 46 `pathEndTangents` 가 오면 그 규칙을 따른다).
+ * 이웃 점이 곧 정확한 접선이다. path 는 46 `pathEndTangents` 가 정본이다 — 그 함수가 `auto` 모드
+ * 정점의 핸들을 **물질화한 뒤** 접선을 재므로, 문서에 핸들이 (0,0) 으로 저장된 곡선에서도 머리가
+ * 곡선의 진짜 접선을 탄다(여기서 직접 재던 예전 코드는 이웃 앵커 쪽으로 비뚤어졌다).
+ *
+ * 서브패스가 여럿이어도 **첫 열린 서브패스**에만 단다. 설계 46 §3.2 는 `heads` 를 노드 하나에
+ * 하나 달리는 속성으로만 규정하고 다중 서브패스 규칙을 두지 않았다 — 전부에 달면 이미 저장된
+ * 다중 서브패스 문서가 열자마자 머리가 여러 개 생겨 **기존 그림이 바뀐다.** 없던 기능이 조용히
+ * 나타나는 쪽이 더 나쁘다. 필요해지면 설계에 규칙을 먼저 넣고 여기를 편다.
  */
 function pathEnds(node: GeomNode): { start: HeadAnchor; end: HeadAnchor } | null {
   switch (node.kind) {
@@ -459,33 +466,27 @@ function pathEnds(node: GeomNode): { start: HeadAnchor; end: HeadAnchor } | null
       };
     }
     case "path": {
-      const sub = node.subpaths.find((s) => !s.closed && s.verts.length >= 2);
-      if (!sub) return null;
-      const v = sub.verts;
-      const first = v[0];
-      const last = v[v.length - 1];
-      const prev = v[v.length - 2];
-      const next = v[1];
-      const hasOut = first.outX !== 0 || first.outY !== 0;
-      const hasIn = last.inX !== 0 || last.inY !== 0;
-      return {
-        start: {
-          fromX: hasOut ? first.x + first.outX : next.x,
-          fromY: hasOut ? first.y + first.outY : next.y,
-          toX: first.x,
-          toY: first.y,
-        },
-        end: {
-          fromX: hasIn ? last.x + last.inX : prev.x,
-          fromY: hasIn ? last.y + last.inY : prev.y,
-          toX: last.x,
-          toY: last.y,
-        },
-      };
+      const t = pathEndTangents(node)[0];
+      if (!t) return null;
+      return { start: headAnchorOf(t.start), end: headAnchorOf(t.end) };
     }
     default:
       return null;
   }
+}
+
+/**
+ * `EndTangent` → `HeadAnchor`. `drawArrowHead` 는 `atan2(to − from)` 만 보므로 꼬리 점은
+ * 끝점에서 접선 반대로 **단위 벡터 하나** 물린 자리면 충분하다(길이는 각도에 영향이 없다).
+ * 0 벡터가 되지 않는 것도 여기서 보장된다 — 되면 머리가 통째로 안 그려진다.
+ */
+function headAnchorOf(t: EndTangent): HeadAnchor {
+  return {
+    fromX: t.x - Math.cos(t.angle),
+    fromY: t.y - Math.sin(t.angle),
+    toX: t.x,
+    toY: t.y,
+  };
 }
 
 /**
@@ -529,6 +530,15 @@ function withAlpha(color: string, opacity: number): string {
   return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${(rgb.a * a).toFixed(4)})`;
 }
 
+/**
+ * `color.ts` 의 동명 함수와 **일부러 따로 둔다.** 그쪽은 알파 표기(`#rrggbbaa`)를 의도적으로
+ * 거르는데(색과 `opacity` 두 곳에 알파가 생기는 걸 막으려고), 정규화는 `#` + hex 3~8 자를
+ * 통과시키므로(schema.ts:99) 여기엔 알파가 실린 색이 실제로 도착한다.
+ *
+ * 공용 파서로 바꾸면 그 색이 null 로 떨어져 `withAlpha` 가 색을 그대로 돌려주고, 스톱의
+ * `opacity` 가 통째로 무시된다 — 반투명하게 저장한 그라디언트가 다시 열면 불투명하게 그려진다.
+ * 합치려면 색 문자열의 알파와 `opacity` 중 어느 쪽이 이기는지부터 정해야 한다.
+ */
 function hexToRgb(hex: string): { r: number; g: number; b: number; a: number } | null {
   const h = hex.trim().replace("#", "");
   const full =
