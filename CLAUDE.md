@@ -141,8 +141,11 @@ rm -f installers/Gitpervisor_<이전버전>*
 **`/gitpervisor-deploy` 스킬을 쓴다** (`.claude/skills/gitpervisor-deploy/SKILL.md`).
 절차·함정이 거기 정리돼 있다. 핵심만:
 
-- 버전은 **4곳**을 함께 올린다: `package.json`, `src-tauri/Cargo.toml`,
-  `src-tauri/tauri.conf.json`, `src-tauri/Cargo.lock`.
+- 버전은 **5곳**을 함께 올린다: `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`,
+  `src-tauri/tauri.conf.json`, `src-tauri/Cargo.lock`. 뒤의 둘은 파생 파일이라 도구로 맞춘다
+  (`npm install --package-lock-only`, `cargo update -p gitpervisor --precise <버전>`).
+  **`package-lock.json`이 오래 빠져 있었다** — v0.5.1 시점에 0.5.0에 멈춰 있었고,
+  `npm ci`는 lock의 버전을 그대로 쓰므로 CI 산출물 메타데이터가 조용히 어긋난다.
 - 릴리스는 **태그 푸시 → CI** 경로여야 한다. 서명(`.sig`)과 `latest.json`은 CI에서만 생성된다.
   로컬 deb를 릴리스에 수동 업로드하면 자동 업데이트가 깨진다.
 - 사이트(gitpervisor.aickyway.com)는 코드 수정이 필요 없다 — 최신 릴리스를 런타임에 읽는다.

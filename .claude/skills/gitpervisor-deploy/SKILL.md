@@ -35,15 +35,21 @@ git status -s                          # 커밋 안 된 변경 파악
 gh release list -L 3                   # 현재 최신 릴리스 버전
 ```
 
-### 1. 버전 상향 — 4곳을 함께 올린다
+### 1. 버전 상향 — 5곳을 함께 올린다
 
-`package.json` · `src-tauri/Cargo.toml` · `src-tauri/tauri.conf.json` · `src-tauri/Cargo.lock`
+`package.json` · `package-lock.json` · `src-tauri/Cargo.toml` · `src-tauri/tauri.conf.json` ·
+`src-tauri/Cargo.lock`
+
+> **`package-lock.json`을 빼먹기 쉽다.** 이 체크리스트에 오래 빠져 있었고, 실제로 v0.5.1에서
+> 0.5.0에 멈춘 채 배포됐다. `npm ci`는 lock에 적힌 버전을 그대로 쓰므로 CI 산출물의
+> 메타데이터가 조용히 어긋난다 — 빌드도 테스트도 통과해서 드러나지 않는다.
 
 ```bash
 NEW=0.3.3
 sed -i "0,/\"version\": \"[0-9.]*\"/s//\"version\": \"$NEW\"/" package.json
 sed -i "0,/^version = \"[0-9.]*\"/s//version = \"$NEW\"/" src-tauri/Cargo.toml
 sed -i "0,/\"version\": \"[0-9.]*\"/s//\"version\": \"$NEW\"/" src-tauri/tauri.conf.json
+npm install --package-lock-only                                   # package-lock.json 동기화
 (cd src-tauri && cargo update -p gitpervisor --precise "$NEW")   # Cargo.lock 동기화
 ```
 
@@ -51,7 +57,16 @@ sed -i "0,/\"version\": \"[0-9.]*\"/s//\"version\": \"$NEW\"/" src-tauri/tauri.c
 ```bash
 grep -m1 '"version"' package.json; grep -m1 '^version' src-tauri/Cargo.toml
 grep -m1 '"version"' src-tauri/tauri.conf.json
+grep -m1 '"version"' package-lock.json
 grep -A1 '^name = "gitpervisor"$' src-tauri/Cargo.lock | grep version
+```
+
+한 줄로 확인(다섯 값이 모두 같아야 하므로 **유일한 값 1개**가 나와야 한다):
+```bash
+{ grep -m1 '"version"' package.json; grep -m1 '"version"' package-lock.json;
+  grep -m1 '"version"' src-tauri/tauri.conf.json; grep -m1 '^version' src-tauri/Cargo.toml;
+  grep -A1 '^name = "gitpervisor"$' src-tauri/Cargo.lock | grep version;
+} | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | sort -u
 ```
 
 > **버전을 반드시 올려야 하는 이유**: 같은 번호로 다른 내용을 배포하면 (a) 어느 빌드인지
@@ -193,7 +208,7 @@ curl -sI -L "https://github.com/imtelloper/gitpervisor/releases/download/v${NEW}
 
 ## 체크리스트
 
-- [ ] 버전 4곳 일치
+- [ ] 버전 5곳 일치(`package-lock.json` 포함 — 위 한 줄 확인으로 값 1개)
 - [ ] 로컬 deb 빌드 완료(서명 exit 1은 무시) + `installers/` 복사
 - [ ] `cargo test --lib` 통과, `npx tsc --noEmit` 통과
 - [ ] **실기기 설치·동작 확인**
