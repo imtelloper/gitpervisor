@@ -468,6 +468,26 @@ pub fn close_session(state: &AppState, term_id: &str) {
     }
 }
 
+/// 프로젝트 하나에 딸린 PTY를 전부 거둔다 — `remove_project`가 부른다.
+///
+/// **대상 term_id를 먼저 모으고 락을 놓은 뒤** `close_session`을 부른다. 가드를 쥔 채 부르면
+/// `close_session`이 같은 `state.terminals` 뮤텍스를 다시 잠가 그 자리에서 데드락이다.
+/// 프론트에도 같은 정리가 있지만(`useRemoveProjectFull`), 이 함수가 정본이다 — 이유는
+/// `remove_project` 쪽 주석 참조.
+pub(crate) fn close_project_sessions(state: &AppState, project_id: &str) {
+    let term_ids: Vec<String> = {
+        let terms = state.terminals.lock().unwrap_or_else(|e| e.into_inner());
+        terms
+            .iter()
+            .filter(|(_, s)| s.project_id == project_id)
+            .map(|(id, _)| id.clone())
+            .collect()
+    };
+    for term_id in term_ids {
+        close_session(state, &term_id);
+    }
+}
+
 /// 종료를 별도 스레드로 넘긴다.
 ///
 /// `term_close`는 `#[tauri::command]` 동기 커맨드라 **GTK 메인 이벤트 루프에서 실행된다.**

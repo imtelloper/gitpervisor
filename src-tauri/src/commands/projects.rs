@@ -293,6 +293,15 @@ pub fn remove_project(
         path
     };
     crate::watcher::unregister(&app, &id);
+    // 이 프로젝트의 PTY와 언어 서버를 거둔다. 프론트 `useRemoveProjectFull`에도 같은 정리가
+    // 있지만, 이 커맨드를 직접 부르는 경로(e2e teardown 등)는 그 경로를 안 탄다. PTY 수명의
+    // 단일 진실은 Rust이므로 여기가 정본이고 프론트 쪽은 중복 안전망이다(중복 호출은 무해 —
+    // 없는 id에 no-op). 빠뜨리면 셸/언어 서버가 레포를 **CWD로 쥔 채** 살아남는다: 프로세스
+    // CWD는 FILE_SHARE_DELETE 없이 열린 디렉터리 핸들이라 안의 파일만 지워지고 디렉터리가
+    // 남아 그 경로를 영영 못 지운다(e2e 픽스처가 회차마다 쌓여 렌더러를 죽인 실제 원인).
+    // 두 함수 모두 자기 맵 락을 놓은 뒤 비동기 종료를 던지므로 여기서 잡히는 락은 없다.
+    super::terminal::close_project_sessions(state.inner(), &id);
+    super::lsp::stop_project_sessions(state.inner(), &id);
     // 이 레포 하위를 서빙하던 로컬 HTML 프리뷰 서버를 폐기한다 — 안 하면 프로젝트를 제거한
     // 뒤에도 루프백으로 파일이 계속 노출된다(preview.rs § 보안). 레지스트리 키는 정규화된
     // 절대경로라 같은 기준으로 맞춰 비교한다.

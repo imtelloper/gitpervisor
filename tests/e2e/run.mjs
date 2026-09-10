@@ -7,7 +7,7 @@
 //   사용법:  npm run test:e2e          (앱이 'npm run tauri dev' 로 떠 있어야 함)
 //            GPV_E2E_PORT=9222 node tests/e2e/run.mjs
 //
-import { readdirSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -112,6 +112,20 @@ function purgeStaleFixtures() {
   if (removed || kept) console.log(`  잔여 픽스처 정리: ${removed}개 삭제, ${kept}개 남김`);
 }
 
+/**
+ * 삭제에 실패한 픽스처에 남은 항목 목록 — 실패 메시지에 실어 다음 사람이 이 경로로 범인
+ * 프로세스를 찾을 수 있게 한다(남는 건 보통 빈 디렉터리뿐이라 어느 깊이가 CWD 인지가 단서다).
+ */
+function listLeftover(root) {
+  try {
+    const names = readdirSync(root, { recursive: true });
+    if (!names.length) return "(비어있음)";
+    return names.length > 20 ? `${names.slice(0, 20).join(", ")} 외 ${names.length - 20}개` : names.join(", ");
+  } catch (e) {
+    return `목록 실패: ${e.code || e.message}`;
+  }
+}
+
 async function teardown() {
   report.suite("정리 · 사용자 상태 복원 검증");
   // 1) 테스트가 만든 자원 강제 정리(방어적 — 스위트가 이미 닫았어도 무해). cdp.try 는 throw 하지 않는다.
@@ -139,8 +153,34 @@ async function teardown() {
   report.check("teardown: remove_project(픽스처) 호출 성공", rmRes.ok, rmRes.code || rmRes.message || "");
   report.check("teardown: set_settings(원복) 호출 성공", setRes.ok, setRes.code || setRes.message || "");
 
-  // 3) 임시 디렉토리 삭제
-  if (fix) fix.cleanup();
+  // 3) 임시 디렉토리 삭제 + **실제로 사라졌는지** 단언. 살아있는 세션 개수 같은 대리 지표가
+  //    아니라 결과를 재는 이유: 다른 무엇이 디렉토리를 쥐어도 개수는 통과한다. 남아 있다면
+  //    누군가 이 경로를 CWD 로 쥐고 있다는 뜻이다(프로세스 CWD 는 FILE_SHARE_DELETE 없이 열린
+  //    디렉터리 핸들이라 안의 파일만 지워지고 디렉터리가 남는다). 회차마다 쌓이면 결국 WebView2
+  //    메시지 큐가 터져 렌더러가 죽는다(0x80070578).
+  //
+  //    **즉시 재면 안 된다.** `remove_project` 는 PTY·LSP 종료를 별도 스레드로 넘기고 바로
+  //    반환한다(terminal.rs `spawn_terminate` — 동기로 기다리면 세션 N개 × 300ms 만큼 앱이
+  //    통째로 얼어붙는다). 그래서 커맨드가 돌아온 시점엔 셸이 아직 살아 CWD 를 쥐고 있을 수
+  //    있다. 계약은 "즉시 지워진다"가 아니라 **"곧 지워진다"** 이므로 그렇게 잰다.
+  //    상한을 두므로 진짜 누수(영영 안 놓는 핸들)는 그대로 잡힌다 — 경과 시간을 성공 메시지에
+  //    실어 두니, 이 값이 상한에 근접하기 시작하면 종료가 느려졌다는 신호로 읽으면 된다.
+  //    throw 하지 않는다 — teardown 의 나머지 복원 검증은 끝까지 돌아야 한다.
+  if (fix) {
+    const t0 = Date.now();
+    let left = true;
+    for (let i = 0; i < 24 && left; i++) {
+      if (i) await new Promise((r) => setTimeout(r, 250));
+      fix.cleanup(); // 실패를 삼킨다(경고만) — 판정은 아래 existsSync 로 한다
+      left = existsSync(fix.root);
+    }
+    const ms = Date.now() - t0;
+    report.check(
+      "teardown: 픽스처 디렉토리 삭제됨(종료는 비동기라 최대 6초 대기)",
+      !left,
+      left ? `${fix.root} — ${ms}ms 후에도 남음, 남은 항목: ${listLeftover(fix.root)}` : `${ms}ms`,
+    );
+  }
 
   // 4) 복원 검증 — 사용자의 실제 상태가 그대로인지 확인
   const projects = await cdp.invoke("list_projects");

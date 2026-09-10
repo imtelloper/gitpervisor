@@ -290,6 +290,28 @@ pub fn lsp_stop(state: State<'_, AppState>, session_key: String) -> Result<(), I
     Ok(())
 }
 
+/// 프로젝트 하나에 딸린 언어 서버를 전부 거둔다 — `remove_project`가 부른다.
+///
+/// 키 포맷(`{project_id}:{lang}`)을 아는 곳을 이 파일 안에 묶어 두려고 여기 둔다.
+/// 접두 매칭(`starts_with`) 대신 **첫 `:` 앞을 잘라 비교**한다 — 접두 매칭은 어떤 id가 다른
+/// id의 접두일 때 남의 세션까지 조용히 죽인다.
+/// `lsp_stop`과 같은 순서로 **맵에서 먼저 꺼내고 락을 놓은 뒤** 종료를 던진다(락을 쥔 채
+/// spawn_terminate에 들어가면 유예 시간 동안 다른 LSP 호출이 전부 막힌다).
+pub(crate) fn stop_project_sessions(state: &AppState, project_id: &str) {
+    let sessions: Vec<LspSession> = {
+        let mut map = state.lsp.lock().unwrap_or_else(|e| e.into_inner());
+        let keys: Vec<String> = map
+            .keys()
+            .filter(|k| k.split_once(':').map(|(p, _)| p) == Some(project_id))
+            .cloned()
+            .collect();
+        keys.iter().filter_map(|k| map.remove(k)).collect()
+    };
+    for s in sessions {
+        spawn_terminate(s);
+    }
+}
+
 /// 앱 종료 시 전 세션 정리(lib.rs Destroyed 훅 / health 시그널 핸들러 — terminal kill_all 미러).
 /// **시그니처 고정** — lib.rs·health/mod.rs가 이 형태로 부른다.
 pub fn lsp_kill_all(state: &AppState) {
