@@ -144,6 +144,42 @@ fn find_in_dirs(dirs: &[PathBuf], name: &str) -> Option<PathBuf> {
     None
 }
 
+/// PATH에 없더라도 패키지 매니저가 흔히 쓰는 자리들을 훑는다.
+///
+/// **왜 필요한가**: `find_on_path`는 프로세스의 `PATH`만 본다. 그런데 Finder/독/시작메뉴로 띄운
+/// 앱의 `PATH`는 launchd(macOS: `/usr/bin:/bin:/usr/sbin:/sbin`)나 systemd가 주는 최소 집합이라,
+/// 셸 프로필이 넣어 주던 Homebrew 경로가 통째로 빠진다. 그래서 **"터미널에선 `ffmpeg -version`이
+/// 되는데 앱은 못 찾는다"** 가 된다 — 실제로 개발 기계가 그 상태였다(`/usr/local/bin/ffmpeg`가
+/// 있는데 동영상 편집·변환이 통째로 비활성). CLAUDE.md의 "dev는 되는데 설치본만 이상하다 =
+/// 런치 환경변수 차이"와 같은 부류다.
+///
+/// Windows는 제외한다 — 거기서는 GUI 프로세스도 사용자·시스템 환경변수의 PATH를 온전히
+/// 물려받아 이 구멍이 없다.
+///
+/// 호출부는 **PATH 탐색이 실패한 뒤에만** 부른다: 사용자가 PATH로 고른 버전이 언제나 우선이다.
+pub(crate) fn find_in_wellknown_dirs(name: &str) -> Option<PathBuf> {
+    if cfg!(windows) {
+        return None;
+    }
+    let mut dirs: Vec<PathBuf> = [
+        "/opt/homebrew/bin",            // Apple Silicon Homebrew
+        "/usr/local/bin",               // Intel Homebrew · 수동 설치
+        "/opt/local/bin",               // MacPorts
+        "/usr/bin",                     // 배포판 패키지
+        "/snap/bin",                    // Linux snap
+        "/var/lib/flatpak/exports/bin", // Flatpak
+    ]
+    .iter()
+    .map(PathBuf::from)
+    .collect();
+    if let Some(home) = std::env::var_os("HOME") {
+        dirs.push(PathBuf::from(&home).join(".local/bin"));
+        dirs.push(PathBuf::from(&home).join("bin"));
+    }
+    // find_in_dirs를 그대로 쓴다 — 실행 권한 비트 검사와 Windows 확장자 후보까지 공유한다.
+    find_in_dirs(&dirs, name)
+}
+
 /// PATH 탐색 결과 캐시 — 도구 이름 → (결과, 기록 시각).
 ///
 /// 왜 캐시하나: 린트는 **편집 중 500ms 디바운스마다** discover를 다시 돈다. 예전 구현은 그때마다

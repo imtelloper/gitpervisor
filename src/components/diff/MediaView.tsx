@@ -19,12 +19,15 @@ import VideoPlayer from "../video/VideoPlayer";
 export default function MediaView({
   projectId,
   path,
+  onOpenPath,
 }: {
   projectId: string;
   path: string;
+  /** 동영상 라이브러리 레일에서 형제 영상을 고를 때 쓸 통로(VideoPlayer의 onOpenPath). */
+  onOpenPath?: (path: string) => void;
 }) {
   return isVideo(path) ? (
-    <VideoPlayer projectId={projectId} path={path} />
+    <VideoPlayer projectId={projectId} path={path} onOpenPath={onOpenPath} />
   ) : (
     <AudioView projectId={projectId} path={path} />
   );

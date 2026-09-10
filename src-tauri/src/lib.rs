@@ -720,6 +720,7 @@ pub(crate) fn shutdown_children(app: &tauri::AppHandle) {
         shutdown_step("llm", || llm::llm_kill_all(state));
         shutdown_step("browser", || commands::browser_kill_all(app, state));
         shutdown_step("video", || commands::video_kill_all(state));
+        shutdown_step("hls", commands::hls_kill_all);
         shutdown_step("capture", commands::capture_release_all);
     } else {
         // setup 실패 등으로 manage 전에 끝난 경우 — 정리할 자식도 아직 없다.
@@ -1053,6 +1054,7 @@ pub fn run() {
             commands::video_tool_status,
             commands::video_tool_ensure,
             commands::video_probe,
+            commands::video_hls_url,
             commands::video_export,
             commands::video_export_cancel,
             commands::video_capture_frame,

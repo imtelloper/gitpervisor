@@ -1,6 +1,8 @@
 // 동영상 플레이어 (DOCS/video-editor-design.md L1) — 커스텀 컨트롤 + 타임라인 + 구간(A-B).
 //
 // - 스트리밍은 MediaView와 같은 루프백 Range 경로(previewLocalUrl). 유휴 사망 시 1회 재발급.
+// - 그래도 못 풀면(웹뷰 미지원 코덱 — macOS의 AV1 등) 같은 서버의 HLS 폴백으로 갈아탄다:
+//   ffmpeg가 재생 구간만 H.264로 구워 흘리고, <video>는 재생목록만 문다(hls.rs).
 // - 하나의 In/Out 구간이 반복 재생(⑤)과 클립 추출(①)의 공용 입력이다(설계 결정 3).
 // - 단축키는 window가 아니라 **포커스된 컨테이너**에 바인딩 — 전역 Ctrl+W(탭 닫기) 등과 충돌 없음.
 // - 확대(F)는 OS 전체화면이 아니라 앱 내 오버레이(WKWebView requestFullscreen 신뢰 불가) —
@@ -26,12 +28,14 @@ import {
   SkipForward,
   SlidersHorizontal,
   Undo2,
+  Waves,
   Volume2,
   VolumeX,
   X,
 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { hasUserEngaged } from "../../lib/engagement";
 import { markLocalVideoJob } from "../../lib/events";
 import { openDocWindow } from "../../lib/floating";
 import type { VideoExportFinished, VideoExportSpec, VideoFilmstrip } from "../../lib/ipc";
@@ -130,9 +134,15 @@ function RegionBox({
 export default function VideoPlayer({
   projectId,
   path,
+  onOpenPath,
 }: {
   projectId: string;
   path: string;
+  /**
+   * 라이브러리 레일에서 다른 영상을 고를 때 **이 자리에서** 연다(뷰어 탭 업서트).
+   * 안 주면 새 문서 창으로 떨어진다 — 레일 없이 VideoPlayer만 쓰는 호출부의 기존 동작.
+   */
+  onOpenPath?: (path: string) => void;
 }) {
   const pushToast = useUi((s) => s.pushToast);
   const [url, setUrl] = useState<string | null>(null);
@@ -141,6 +151,20 @@ export default function VideoPlayer({
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const retriedRef = useRef(false);
+
+  // ── 코덱 폴백(HLS) ──
+  // hlsRef는 "이미 갈아탔는가"의 단일 진실이다. 상태(usingHls)만 보면 setState가 반영되기 전에
+  // 도착하는 두 번째 error 이벤트가 폴백을 두 번 태운다(세션이 두 개 생기고 캐시가 갈린다).
+  const hlsRef = useRef(false);
+  const [usingHls, setUsingHls] = useState(false);
+  const [hlsError, setHlsError] = useState<string | null>(null);
+  const [switching, setSwitching] = useState(false);
+  /** src 교체 후 복원할 재생 위치 — onLoadedMetadata가 한 번 소비한다. */
+  const resumeRef = useRef<{ at: number; playing: boolean } | null>(null);
+  /** 이 파일에 대해 자동재생을 이미 시도했는가. 파일이 바뀔 때만 재장전한다 —
+   *  프리뷰 서버 재발급·HLS 전환으로 canplay가 여러 번 와도 사용자가 세운 영상을
+   *  다시 틀면 안 된다. */
+  const autoplayedRef = useRef(false);
 
   const [playing, setPlaying] = useState(false);
   const [time, setTime] = useState(0);
@@ -279,6 +303,12 @@ export default function VideoPlayer({
     setMintError(null);
     setPlayError(false);
     retriedRef.current = false;
+    hlsRef.current = false;
+    resumeRef.current = null;
+    autoplayedRef.current = false;
+    setUsingHls(false);
+    setHlsError(null);
+    setSwitching(false);
     setPlaying(false);
     setTime(0);
     setDuration(0);
@@ -307,11 +337,17 @@ export default function VideoPlayer({
   // 죽으면 다음 탐색이 연결 거부 → 미디어 오류가 된다(1시간짜리 실파일에서 실사례).
   // mint는 멱등이고 기존 서버의 유휴 시계를 리셋한다(preview.rs). CSP connect-src가
   // 루프백 fetch를 막으므로 HEAD 핑 대신 mint를 쓴다.
+  //
+  // HLS로 갈아탔으면 **HLS 세션**의 시계를 리셋해야 한다 — 그쪽은 요청이 45분 끊기면 회수되고
+  // (hls.rs SESSION_IDLE_SECS), 일시정지해 둔 영상은 세그먼트를 요청하지 않는다. videoHlsUrl도
+  // 멱등이고 내부에서 프리뷰 서버까지 함께 확보하므로 한 번의 핑으로 둘 다 산다.
   useEffect(() => {
-    const id = window.setInterval(
-      () => void ipc.previewLocalUrl(projectId, path).catch(() => {}),
-      4 * 60_000,
-    );
+    const id = window.setInterval(() => {
+      const ping = hlsRef.current
+        ? ipc.videoHlsUrl(projectId, path)
+        : ipc.previewLocalUrl(projectId, path);
+      void ping.catch(() => {});
+    }, 4 * 60_000);
     return () => window.clearInterval(id);
   }, [projectId, path]);
 
@@ -381,29 +417,81 @@ export default function VideoPlayer({
    *  재생 중이었으면 play()로 재개해야 한다 — 안 하면 UI는 ⏸(재생 중)인데 영상은 멈춘
    *  어긋난 상태로 남는다(1시간짜리 실파일에서 실사례). 복구가 성공(onCanPlay)하면
    *  retriedRef를 재장전해 긴 세션의 다음 오류도 다시 한 번 복구할 수 있다. */
+  /** 재발급 — HLS로 갈아탄 뒤에는 원본 URL로 되돌리면 안 된다(그 코덱이 애초에 문제였다). */
+  const remint = useCallback(async () => {
+    if (!hlsRef.current) return mint();
+    try {
+      const u = await ipc.videoHlsUrl(projectId, path);
+      setUrl(u);
+      setMintError(null);
+      return u;
+    } catch (e) {
+      setMintError(errorMessage(e));
+      return null;
+    }
+  }, [mint, projectId, path]);
+
+  /** 코덱 폴백 — 웹뷰가 못 푸는 원본 대신 ffmpeg가 구운 H.264 HLS를 먹인다(hls.rs).
+   *  src가 바뀌므로 load()는 브라우저가 알아서 한다. 위치 복원은 메타데이터가 온 뒤라야
+   *  의미가 있어 resumeRef로 넘긴다 — 지금 currentTime을 써 봐야 로드 중에 0으로 덮인다. */
+  const switchToHls = useCallback(
+    async (at: number, wasPlaying: boolean) => {
+      if (hlsRef.current) return false;
+      hlsRef.current = true;
+      setSwitching(true);
+      try {
+        const u = await ipc.videoHlsUrl(projectId, path);
+        resumeRef.current = { at, playing: wasPlaying };
+        setUsingHls(true);
+        setUrl(u);
+        return true;
+      } catch (e) {
+        setHlsError(errorMessage(e));
+        return false;
+      } finally {
+        setSwitching(false);
+      }
+    },
+    [projectId, path],
+  );
+
   const onError = () => {
     const el = videoRef.current;
-    if (retriedRef.current || !el) {
+    if (!el) {
       setPlayError(true);
       return;
     }
-    retriedRef.current = true;
     const at = el.currentTime;
     // 치명 오류로 멈춰도 paused는 false로 남는다 — "재생 중이었나"의 판단 근거로 쓸 수 있다.
     const wasPlaying = !el.paused;
-    void mint().then((u) => {
-      if (!u) {
-        setPlayError(true);
-        return;
-      }
-      requestAnimationFrame(() => {
-        const m = videoRef.current;
-        if (!m) return;
-        m.load();
-        if (at > 0) m.currentTime = at;
-        if (wasPlaying) void m.play().catch(() => {});
+
+    // ① 죽은 프리뷰 서버·일시적 오류 — 재발급 후 같은 소스로 재시도.
+    if (!retriedRef.current) {
+      retriedRef.current = true;
+      void remint().then((u) => {
+        if (!u) {
+          setPlayError(true);
+          return;
+        }
+        requestAnimationFrame(() => {
+          const m = videoRef.current;
+          if (!m) return;
+          m.load();
+          if (at > 0) m.currentTime = at;
+          if (wasPlaying) void m.play().catch(() => {});
+        });
       });
-    });
+      return;
+    }
+    // ② 재발급으로도 안 되면 서버가 아니라 **코덱**이 문제다 — 실시간 변환으로 갈아탄다.
+    if (!hlsRef.current) {
+      void switchToHls(at, wasPlaying).then((ok) => {
+        if (!ok) setPlayError(true);
+      });
+      return;
+    }
+    // ③ 변환한 것마저 못 틀면 더 해 볼 것이 없다.
+    setPlayError(true);
   };
 
   const openExternally = () => {
@@ -764,7 +852,13 @@ export default function VideoPlayer({
       <EmptyState
         icon={FileWarning}
         title="이 형식은 재생할 수 없습니다"
-        desc="현재 플랫폼의 웹뷰가 이 코덱을 지원하지 않습니다. 파일 자체는 정상일 수 있습니다."
+        desc={
+          // 실시간 변환까지 실패했으면 그 이유가 진짜 원인이다 — 웹뷰 코덱 얘기만 하면
+          // "ffmpeg가 없다"를 영영 못 본다.
+          hlsError
+            ? `${probe.data?.vcodec ? `원본 코덱 ${probe.data.vcodec}을(를) ` : ""}이 웹뷰가 지원하지 않아 실시간 변환을 시도했지만 실패했습니다 — ${hlsError}`
+            : "현재 플랫폼의 웹뷰가 이 코덱을 지원하지 않습니다. 파일 자체는 정상일 수 있습니다."
+        }
         action={
           <div className="flex items-center gap-2">
             <button
@@ -797,6 +891,15 @@ export default function VideoPlayer({
       />
     );
 
+  if (switching)
+    return (
+      <EmptyState
+        icon={Loader2}
+        title="재생 가능한 형식으로 변환 준비 중…"
+        desc="이 웹뷰가 원본 코덱을 지원하지 않아, 재생하는 구간만 H.264로 바꿔 흘립니다. 원본 파일은 건드리지 않습니다."
+      />
+    );
+
   if (!url) return <EmptyState title="미디어 준비 중…" />;
 
   return (
@@ -818,6 +921,16 @@ export default function VideoPlayer({
             {probe.data.vcodec ? ` · ${probe.data.vcodec}` : ""}
             {probe.data.acodec ? `+${probe.data.acodec}` : ""}
             {probe.data.bitrateKbps ? ` · ${Math.round(probe.data.bitrateKbps / 100) / 10}Mbps` : ""}
+          </span>
+        )}
+        {/* 지금 보고 있는 그림이 원본이 아니라는 사실은 숨기면 안 된다 — 화질을 의심할 때
+            원인을 여기서 바로 읽을 수 있어야 한다. */}
+        {usingHls && (
+          <span
+            title={`이 웹뷰가 ${probe.data?.vcodec ?? "이 코덱"}을 재생하지 못해, 재생하는 구간만 ffmpeg로 H.264로 변환해 흘리고 있습니다. 원본 파일은 그대로입니다.`}
+            className="flex shrink-0 items-center gap-1 rounded border border-accent/40 bg-accent/10 px-1.5 py-0.5 text-accent"
+          >
+            <Waves size={11} /> 실시간 변환 H.264
           </span>
         )}
         <div className="flex-1" />
@@ -866,7 +979,7 @@ export default function VideoPlayer({
           clips={railClips}
           query={railQuery}
           onQueryChange={setRailQuery}
-          onOpen={(p) => openDocWindow(projectId, p)}
+          onOpen={(p) => (onOpenPath ? onOpenPath(p) : openDocWindow(projectId, p))}
           onPlayClip={playClip}
           playingClip={clipPlaying}
           onSaveAllSplits={() => {
@@ -905,6 +1018,13 @@ export default function VideoPlayer({
               setDuration(Number.isFinite(el.duration) ? el.duration : 0);
               el.playbackRate = rate;
               el.muted = muted;
+              // HLS로 갈아탄 직후 — 보던 위치와 재생 상태를 되돌린다. 한 번만 소비한다.
+              const resume = resumeRef.current;
+              if (resume) {
+                resumeRef.current = null;
+                if (resume.at > 0) el.currentTime = resume.at;
+                if (resume.playing) void el.play().catch(() => {});
+              }
             }}
             onTimeUpdate={(e) => {
               const el = e.currentTarget;
@@ -926,8 +1046,26 @@ export default function VideoPlayer({
             onEmptied={() => setPlaying(false)}
             // 로드가 성공할 때마다 오류 복구 1회권을 재장전 — 긴 재생 세션은 서버 교체가
             // 여러 번 있을 수 있다(파일당 1회 제한이면 두 번째부터 오류 화면행).
-            onCanPlay={() => {
+            onCanPlay={(e) => {
               retriedRef.current = false;
+              // 파일을 열면 바로 재생한다 — 클릭해서 연 것 자체가 "보겠다"는 의사표시다.
+              // 파일당 한 번만: 재발급 복구·HLS 전환으로 canplay가 다시 와도, 사용자가 그
+              // 사이에 세워 둔 영상을 마음대로 다시 틀지 않는다. 이미 재생 중이면(복원 경로가
+              // play를 이미 불렀다) 건드리지 않는다.
+              // wry의 webview autoplay 기본값이 true라 정책 차단은 없지만, 막히더라도
+              // 조용히 일시정지로 남는다(폴백 = 종전 동작).
+              // 단, 메인 창이 **재시작하며 복원한** 탭이면 틀지 않는다 — 앱을 켠 것뿐인데
+              // 강의 영상이 소리를 내면 안 된다. 사용자가 이 창에서 한 번이라도 조작했는지로
+              // 가른다(lib/engagement.ts). 파일 클릭으로 연 경우는 그 클릭이 관문을 연다.
+              // 판단은 **첫 canplay에서 한 번만** 하고 표식을 세운다. 관문이 닫혀 있어 넘어간
+              // 경우에도 다시 보지 않는다 — 안 그러면 나중에 오류 복구로 canplay가 또 왔을 때
+              // 그 사이 열린 관문 때문에, 한 번도 재생한 적 없는 영상이 갑자기 재생된다.
+              // 파일이 바뀌면 표식은 재장전되므로 "클릭해서 연 다음 영상"은 정상 재생된다.
+              if (!autoplayedRef.current) {
+                autoplayedRef.current = true;
+                const el = e.currentTarget;
+                if (hasUserEngaged() && el.paused) void el.play().catch(() => {});
+              }
             }}
             // Out이 영상 끝과 같으면 timeupdate가 outPt에 못 미친 채 ended가 먼저 온다 —
             // 반복 중이면 여기서 되감아 재생을 이어간다.

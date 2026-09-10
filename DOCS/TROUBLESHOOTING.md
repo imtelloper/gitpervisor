@@ -509,3 +509,55 @@ nupkg sha256을 **고정값과 대조**하고 불일치면 중단한다. 배치 
 
 **dev는 이 소스 폴더에서 로드한다** — 실행 중인 앱이 `target/debug`의 DLL을 잠그면 다음 빌드의
 리소스 복사가 `os error 32`로 실패해 재빌드가 막히기 때문이다(`CLAUDE.md` › 개발 실행).
+
+---
+
+## 11. "닫기"를 눌러도 창이 안 닫힌다 — `core:window:allow-destroy` 권한 누락
+
+### 11.1 증상
+
+두 자리에서 확인 대화상자의 **확인 버튼이 아무 일도 하지 않았다.**
+
+- 메인 창 X → "터미널이 실행 중입니다" → **[닫기]** → 창이 그대로 남는다
+- 이미지 편집기 닫기 → "저장하지 못했습니다" → **[그래도 닫기]** → 창이 그대로 남는다
+
+조용히 실패한다 — 토스트도, 대화상자 잔류 외의 단서도 없다. 웹뷰 콘솔에만 뜬다:
+
+```
+[unhandledrejection] window.destroy not allowed.
+Permissions associated with this command: core:window:allow-destroy
+```
+
+### 11.2 근본 원인
+
+`capabilities/default.json`이 `core:window:allow-close`만 부여하고 **`allow-destroy`를 빠뜨렸다.**
+Tauri v2의 ACL은 허용 목록이라, 목록에 없는 커맨드는 호출 시 거부되고 **JS 프라미스가 reject**된다.
+두 호출부 모두 `void win.destroy()`로 부르고 있어 그 reject를 아무도 잡지 않는다 → 무반응.
+
+### 11.3 왜 `close()`로 바꾸면 안 되는가
+
+둘 다 **`CloseRequested`를 가로챈 안에서** 부르는 호출이다:
+
+- `App.tsx` — 백엔드가 살아있는 PTY를 보고 닫기를 막은 뒤 보낸 `app://close-requested` 핸들러
+- `ImageEditor.tsx` — `onCloseRequested`에서 `e.preventDefault()` 한 뒤의 후속 처리
+
+`close()`는 그 이벤트를 **다시 발화**시키므로 같은 확인 대화상자가 무한히 뜬다.
+`destroy()`가 그 고리를 끊는 유일한 수단이라, 답은 권한을 주는 것이다.
+
+### 11.4 해결
+
+```json
+"core:window:allow-close",
+"core:window:allow-destroy",
+```
+
+부여 대상은 `default.json`의 기존 `windows` 스코프 그대로다(`main`·`float-*`·`sysmon`·
+`aggregate`·`capture`·`doc-*` — 전부 우리가 만든 창이고, 외부 브라우저/팝업 webview는 애초에
+이 capability를 받지 않는다).
+
+### 11.5 교훈
+
+**Tauri 권한 누락은 컴파일도 테스트도 통과한다.** 잘못된 권한 *식별자*는 빌드가 잡아 주지만,
+**빠뜨린** 권한은 그 코드를 실제로 실행해 봐야만 드러난다. 그리고 실패가 unhandled rejection이라
+화면에는 아무 것도 안 나온다 — 이 건도 다른 기능을 검증하다 로그에서 우연히 걸렸다.
+창 제어·파일시스템 등 ACL이 걸린 API를 새로 쓸 때는 **그 경로를 한 번 실제로 눌러 봐야 한다.**

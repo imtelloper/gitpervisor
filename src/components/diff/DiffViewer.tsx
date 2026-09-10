@@ -231,6 +231,13 @@ export default function DiffViewer({
   const selectDiff = useUi((s) => s.selectDiff);
   const pushToast = useUi((s) => s.pushToast);
 
+  /** 뷰어 안에서 형제 파일로 갈아타는 통로 — "편집" 버튼·정의 이동과 **같은 opener**를 쓴다.
+   *  덕분에 패널 안에서 열면 그 패널에, 모달 안에서 열면 그 모달에 뜬다(전역 유출 없음). */
+  const openPath = useCallback(
+    (p: string) => (onOpenFile ?? selectDiff)({ mode: "file", path: p }, projectId),
+    [onOpenFile, selectDiff, projectId],
+  );
+
   const options = useMemo(
     () => ({
       ...DIFF_OPTIONS,
@@ -718,7 +725,7 @@ export default function DiffViewer({
         {isImageView ? (
           <ImageView projectId={projectId} path={path} />
         ) : isMediaView ? (
-          <MediaView projectId={projectId} path={path} />
+          <MediaView projectId={projectId} path={path} onOpenPath={openPath} />
         ) : isOfficeView ? (
           <OfficeView projectId={projectId} path={path} mode={target.mode} />
         ) : isLoading ? (

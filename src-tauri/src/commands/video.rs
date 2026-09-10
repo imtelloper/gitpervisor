@@ -158,6 +158,19 @@ pub(crate) fn find_ffmpeg(app: &AppHandle, state: &AppState) -> Result<FfmpegBin
             source: "path",
         });
     }
+    // ②′ 관례 설치 경로 — **PATH만 보면 GUI로 띄운 앱은 못 찾는다.**
+    // Finder/독/시작메뉴로 띄운 프로세스의 PATH는 launchd(macOS: /usr/bin:/bin:/usr/sbin:/sbin)나
+    // systemd가 주는 최소 집합이라, 셸 프로필이 넣어 주던 Homebrew 경로가 통째로 빠진다.
+    // 그래서 "터미널에선 ffmpeg -version이 되는데 앱은 못 찾는다"가 된다 — 실제로 이 기계가
+    // 그 상태였다(/usr/local/bin/ffmpeg 존재, 앱에서는 편집·변환 기능이 통째로 비활성).
+    // CLAUDE.md의 "dev는 되는데 설치본만 이상하다 = 런치 환경변수 차이"와 같은 부류다.
+    if let Some(p) = crate::tools::runner::find_in_wellknown_dirs("ffmpeg") {
+        return Ok(FfmpegBin {
+            ffprobe: sibling_probe(&p),
+            ffmpeg: p,
+            source: "wellknown",
+        });
+    }
     // ③ 관리 설치본 (설정에서 다운로드).
     if let Some(p) = managed_ffmpeg(app) {
         return Ok(FfmpegBin {
@@ -367,8 +380,9 @@ fn need_probe(bin: &FfmpegBin) -> Result<PathBuf, IpcError> {
     })
 }
 
-/// ffprobe 1회 → VideoMeta. video_probe와 필름스트립(길이를 알아야 fps를 정한다)이 공유한다.
-async fn probe_meta(probe: &Path, src: &str) -> Result<VideoMeta, IpcError> {
+/// ffprobe 1회 → VideoMeta. video_probe·필름스트립(길이를 알아야 fps를 정한다)과
+/// HLS 폴백(hls.rs — 조각 수를 정하려면 길이가, 인코딩 인자를 정하려면 크기·fps가 필요하다)이 공유한다.
+pub(crate) async fn probe_meta(probe: &Path, src: &str) -> Result<VideoMeta, IpcError> {
     let (code, stdout, stderr) = run_capture(
         probe,
         &["-v", "error", "-print_format", "json", "-show_format", "-show_streams", src],

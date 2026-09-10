@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import { Code2, Eye, FileQuestion, FileWarning } from "lucide-react";
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ConfirmHost } from "./components/common/ConfirmDialog";
 import { EmptyState } from "./components/common/EmptyState";
@@ -10,6 +10,7 @@ import { Toasts } from "./components/common/Toast";
 import { TranslateHost } from "./components/common/TranslateCard";
 import { FloatTitleBar } from "./components/FloatTitleBar";
 import { attachVideoEvents } from "./lib/events";
+import type { DiffTarget } from "./lib/ipc";
 import { docTarget } from "./lib/floating";
 import { errorMessage } from "./lib/ipc";
 import { languageOf } from "./lib/language-map";
@@ -46,6 +47,18 @@ const ImageEditor = lazy(() => import("./components/image/ImageEditor"));
  */
 export function DocWindow({ docId }: { docId: string }) {
   const target = useMemo(() => docTarget(docId), [docId]);
+  /**
+   * 이 창 **안에서** 다른 파일로 갈아탄 경로. 창은 "그 파일 하나"를 보는 것이 원칙이지만,
+   * 뷰어가 제공하는 이동(동영상 라이브러리 레일·"편집" 버튼·정의 이동)은 **이 창 안에서**
+   * 일어나야 한다 — 안 그러면 DiffViewer가 전역 selectDiff로 떨어지는데, 이 창의 스토어는
+   * 아무도 안 보므로 클릭이 통째로 무반응이 된다(창마다 스토어가 별개다).
+   * 네이티브 창 제목은 생성 시점 값 그대로지만, 창 안 타이틀바는 아래 name이 따라간다.
+   */
+  const [navPath, setNavPath] = useState<string | null>(null);
+  const openInWindow = useCallback((t: DiffTarget) => {
+    // 이 창은 단일 파일 보기 전용이다 — 커밋/워크트리 diff 대상은 받지 않는다.
+    if (t.mode === "file") setNavPath(t.path);
+  }, []);
   const { data: settings } = useSettings();
   const qc = useQueryClient();
   const imageEditorPath = useUi((s) => s.imageEditorPath);
@@ -105,8 +118,9 @@ export function DocWindow({ docId }: { docId: string }) {
     attachVideoEvents(qc);
   }, [qc]);
 
-  const name = target ? (target.path.split("/").pop() ?? target.path) : "파일";
-  const isMd = !!target && languageOf(target.path) === "markdown";
+  const shownPath = navPath ?? target?.path ?? null;
+  const name = shownPath ? (shownPath.split("/").pop() ?? shownPath) : "파일";
+  const isMd = !!shownPath && languageOf(shownPath) === "markdown";
 
   return (
     <div className="flex h-screen flex-col bg-base">
@@ -121,12 +135,13 @@ export function DocWindow({ docId }: { docId: string }) {
             desc="창 정보가 만료되었습니다. 파일트리에서 다시 열어 주세요."
           />
         ) : isMd ? (
-          <MarkdownDoc projectId={target.projectId} path={target.path} />
+          <MarkdownDoc projectId={target.projectId} path={shownPath ?? target.path} />
         ) : (
           <Suspense fallback={<Loading />}>
             <DiffViewer
               projectId={target.projectId}
-              target={{ mode: "file", path: target.path }}
+              target={{ mode: "file", path: shownPath ?? target.path }}
+              onOpenFile={openInWindow}
             />
           </Suspense>
         )}

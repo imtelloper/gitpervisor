@@ -14,6 +14,7 @@ import { installMacCopyInterceptor } from "./lib/clipboard";
 import { attachLogoEvents, attachRepoEvents } from "./lib/events";
 import { setupErrorLogging } from "./lib/logging";
 import { watchAggregateWindow } from "./lib/aggregate-window";
+import { armEngagementTracking } from "./lib/engagement";
 import { docTarget, openDocWindow, warmFloatingWindowPool } from "./lib/floating";
 import { ipc } from "./lib/ipc";
 import { keys } from "./queries";
@@ -103,6 +104,11 @@ const floatPaneId =
     : null;
 // 파일 뷰어 창 — 라벨이 곧 대상 id다(경로는 localStorage 경유, lib/floating.ts 주석).
 const docId = label.startsWith("doc-") ? label.slice("doc-".length) : null;
+
+// 자동재생 관문 무장(lib/engagement.ts). 메인 창만 "복원된 탭"이라는 사정이 있어 첫 조작을
+// 기다리고, 보조 창은 그 창이 열린 것 자체가 사용자의 행동이라 처음부터 허용한다.
+// 여기서 달아야 파일을 여는 그 클릭을 놓치지 않는다 — VideoPlayer는 지연 로드다.
+armEngagementTracking(label !== "main" && label !== "");
 
 if (label === "aggregate") {
   // 터미널 모아보기 전용 창 — 메인의 살아있는 PTY에 재연결해 보여주는 "터미널 벽".

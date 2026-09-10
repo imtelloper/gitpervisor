@@ -18,6 +18,7 @@
     "core:window:allow-is-maximized",
     "core:window:allow-start-dragging",
     "core:window:allow-close",
+    "core:window:allow-destroy",
     "core:window:allow-set-focus",
     "core:webview:allow-create-webview-window",
     "clipboard-manager:allow-write-text",

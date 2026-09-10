@@ -157,6 +157,16 @@ pub fn preview_local_url(
         .ok_or_else(|| IpcError::new(ErrorCode::Io, "파일 이름을 읽을 수 없습니다"))?
         .to_string();
 
+    let (port, token) = ensure_server(&state, &base)?;
+    let enc = utf8_percent_encode(&file_name, PATH_SEG).to_string();
+    Ok(format!("http://127.0.0.1:{port}/{enc}?t={token}"))
+}
+
+/// base 폴더를 서빙하는 서버를 확보한다 — 살아 있으면 재사용, 아니면 새로 띄운다.
+///
+/// HLS 폴백(hls.rs)도 같은 서버에 라우트를 얹으므로 여기서 공유한다. 미디어 파일의 상위 폴더는
+/// 이미 프리뷰가 쓰는 base와 동일해서, 영상을 재생하던 서버가 그대로 재생목록도 내보낸다.
+pub(crate) fn ensure_server(state: &AppState, base: &Path) -> Result<(u16, String), IpcError> {
     let mut reg = state.preview.lock().unwrap_or_else(|e| e.into_inner());
     // 죽은 엔트리를 먼저 회수한다 — 유휴 종료·리스너 오류로 끝난 서버가 남긴 스테일 엔트리는
     // 폴더를 옮겨 다닐수록 쌓이기만 한다(§prune_dead).
@@ -166,7 +176,7 @@ pub fn preview_local_url(
     // prune 뒤에도 이 필터는 남긴다 — 폴링 스레드가 prune과 get 사이에 alive를 내릴 수 있다.
     let reusable = reg
         .ports
-        .get(&base)
+        .get(base)
         .filter(|e| e.alive.load(Ordering::Relaxed))
         .map(|e| {
             // 재사용도 활동이다 — 갱신하지 않으면 유휴 임계에 걸친 서버를 내주고 곧바로
@@ -175,20 +185,16 @@ pub fn preview_local_url(
                 .store(e.started.elapsed().as_secs(), Ordering::Relaxed);
             (e.port, e.token.clone())
         });
-    let (port, token) = match reusable {
+    Ok(match reusable {
         Some(v) => v,
         None => {
             let token = Uuid::new_v4().simple().to_string();
-            let entry = start_server(base.clone(), token.clone())?;
+            let entry = start_server(base.to_path_buf(), token.clone())?;
             let v = (entry.port, entry.token.clone());
-            reg.ports.insert(base.clone(), entry); // 스테일 엔트리가 있으면 덮어쓴다
+            reg.ports.insert(base.to_path_buf(), entry); // 스테일 엔트리가 있으면 덮어쓴다
             v
         }
-    };
-    drop(reg);
-
-    let enc = utf8_percent_encode(&file_name, PATH_SEG).to_string();
-    Ok(format!("http://127.0.0.1:{port}/{enc}?t={token}"))
+    })
 }
 
 /// base 폴더를 루트로 하는 루프백 서버를 띄운다.
@@ -443,10 +449,37 @@ fn handle_conn(
         return write_status(&mut stream, 403, "Forbidden");
     }
 
-    // 요청 경로 → base 안의 실제 파일 (탈출·비밀파일 거부). 실패는 전부 404.
-    let resolved = match resolve_request_path(base, path_part) {
-        Some(p) => p,
-        None => return write_status(&mut stream, 404, "Not Found"),
+    // HLS 폴백 라우트 — 웹뷰가 못 푸는 코덱을 그때그때 H.264로 구워 흘린다(hls.rs).
+    // `/.hls/`로 시작하는 경로는 resolve_request_path가 어차피 거부하므로(dot 세그먼트 차단)
+    // 레포 파일과 이름이 겹칠 수 없다. Content-Type은 라우트가 정해 준다 — `.ts`를 MIME 표에
+    // 넣으면 TypeScript 소스를 서빙할 때 video/mp2t가 붙는다.
+    let mut forced_ctype: Option<&'static str> = None;
+    let resolved = if path_part.starts_with("/.hls/") {
+        match super::hls::route(path_part, token) {
+            super::hls::Route::Playlist(text) => {
+                return write_inline(
+                    &mut stream,
+                    "application/vnd.apple.mpegurl",
+                    text.as_bytes(),
+                    head_only,
+                );
+            }
+            super::hls::Route::Segment(p, ct) => {
+                forced_ctype = Some(ct);
+                p
+            }
+            super::hls::Route::NotFound => return write_status(&mut stream, 404, "Not Found"),
+            super::hls::Route::Failed(msg) => {
+                log::warn!("[hls] {path_part}: {msg}");
+                return write_status(&mut stream, 500, "Internal Server Error");
+            }
+        }
+    } else {
+        // 요청 경로 → base 안의 실제 파일 (탈출·비밀파일 거부). 실패는 전부 404.
+        match resolve_request_path(base, path_part) {
+            Some(p) => p,
+            None => return write_status(&mut stream, 404, "Not Found"),
+        }
     };
 
     let mut file = match std::fs::File::open(&resolved) {
@@ -454,7 +487,7 @@ fn handle_conn(
         Err(_) => return write_status(&mut stream, 404, "Not Found"),
     };
     let len = file.metadata().map(|m| m.len()).unwrap_or(0);
-    let ctype = content_type(&resolved);
+    let ctype = forced_ctype.unwrap_or_else(|| content_type(&resolved));
 
     // Range(단일 범위)면 206 — WKWebView는 미디어(mp4 등)를 Range 없이는 재생하지 못한다.
     let range = if range_hdr.is_empty() { None } else { parse_range(&range_hdr, len) };
@@ -517,6 +550,27 @@ fn handle_conn(
         remaining -= n as u64;
     }
     Ok(())
+}
+
+/// 메모리에 있는 작은 본문을 그대로 200으로 내보낸다(HLS 재생목록). Range는 다루지 않는다 —
+/// 재생목록은 수 KB고, Range를 보내는 재생기가 있어도 200 전체 응답은 스펙상 유효하다.
+fn write_inline(
+    stream: &mut TcpStream,
+    ctype: &str,
+    body: &[u8],
+    head_only: bool,
+) -> std::io::Result<()> {
+    let header = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\n\
+         Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\
+         Connection: close\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(header.as_bytes())?;
+    if head_only {
+        return Ok(());
+    }
+    stream.write_all(body)
 }
 
 fn write_status(stream: &mut TcpStream, code: u16, reason: &str) -> std::io::Result<()> {
@@ -613,6 +667,81 @@ fn content_type(path: &Path) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 서버에 GET 한 방 — keep-alive 없이 응답 전체를 읽는다(핸들러가 Connection: close다).
+    fn get(port: u16, target: &str) -> (String, Vec<u8>) {
+        use std::io::Read as _;
+        let mut st = TcpStream::connect(("127.0.0.1", port)).expect("연결");
+        st.set_read_timeout(Some(Duration::from_secs(20))).ok();
+        write!(st, "GET {target} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").expect("요청");
+        let mut buf = Vec::new();
+        st.read_to_end(&mut buf).expect("응답");
+        let split = buf
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .expect("헤더 끝");
+        (
+            String::from_utf8_lossy(&buf[..split]).into_owned(),
+            buf[split + 4..].to_vec(),
+        )
+    }
+
+    /// HLS 폴백이 프리뷰 서버 위에서 **실제로 라우팅·인증되는지**를 소켓 레벨에서 본다.
+    /// 유닛 테스트로 쪼개면 정작 통합 지점(경로 접두사·토큰·Content-Type)이 안 덮인다.
+    #[test]
+    fn hls_playlist_is_served_and_guarded_by_the_same_token() {
+        let dir = tempfile::tempdir().expect("임시 폴더");
+        let base = dunce::canonicalize(dir.path()).expect("정규화");
+        let cache = base.join("cache");
+        std::fs::create_dir_all(&cache).expect("캐시 폴더");
+        let src = base.join("clip.mp4");
+        std::fs::write(&src, b"not a real video").expect("더미 원본");
+
+        let token = "tok-integration".to_string();
+        let entry = start_server(base.clone(), token.clone()).expect("서버");
+        let port = entry.port;
+        let sid = super::super::hls::register_test_session(
+            src,
+            cache,
+            PathBuf::from("ffmpeg-not-used-here"),
+            20_000,
+            false,
+        );
+
+        // ① 토큰이 있으면 재생목록이 나온다 — VOD 4조각(6+6+6+2).
+        let (head, body) = get(port, &format!("/.hls/{sid}/index.m3u8?t={token}"));
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "헤더: {head}");
+        assert!(
+            head.contains("Content-Type: application/vnd.apple.mpegurl"),
+            "재생목록 MIME이 틀리면 나머지가 다 맞아도 재생기가 파싱을 안 한다: {head}"
+        );
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("#EXT-X-ENDLIST"), "본문: {text}");
+        assert_eq!(text.matches(".ts?t=").count(), 4, "본문: {text}");
+
+        // ② 토큰이 없으면 403 — 프리뷰와 같은 관문을 지난다(별도 우회로가 생기면 안 된다).
+        let (head, _) = get(port, &format!("/.hls/{sid}/index.m3u8"));
+        assert!(head.starts_with("HTTP/1.1 403"), "헤더: {head}");
+
+        // ③ 모르는 세션·범위 밖 조각은 404.
+        let (head, _) = get(port, &format!("/.hls/deadbeef/index.m3u8?t={token}"));
+        assert!(head.starts_with("HTTP/1.1 404"), "헤더: {head}");
+        let (head, _) = get(port, &format!("/.hls/{sid}/999.ts?t={token}"));
+        assert!(head.starts_with("HTTP/1.1 404"), "헤더: {head}");
+
+        entry.alive.store(false, Ordering::Relaxed);
+    }
+
+    /// `.hls` 접두사가 레포 파일 서빙과 겹치지 않는다 — dot 세그먼트 차단이 그 근거다.
+    /// 이 성질이 깨지면 레포에 `.hls` 폴더를 만든 사람이 폴백을 통째로 가로챌 수 있다.
+    #[test]
+    fn dot_prefixed_paths_are_never_resolved_as_repo_files() {
+        let dir = tempfile::tempdir().expect("임시 폴더");
+        let base = dunce::canonicalize(dir.path()).expect("정규화");
+        std::fs::create_dir_all(base.join(".hls/abc")).expect("폴더");
+        std::fs::write(base.join(".hls/abc/index.m3u8"), b"hijacked").expect("파일");
+        assert!(resolve_request_path(&base, "/.hls/abc/index.m3u8").is_none());
+    }
 
     #[test]
     fn path_seg_encodes_reserved_and_unicode() {
