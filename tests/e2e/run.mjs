@@ -56,6 +56,7 @@ const SUITES = [
   "./suites/39-image-vector-crop.mjs",
   "./suites/40-image-editor-pro-ui.mjs",
   "./suites/43-image-text.mjs",
+  "./suites/53-image-pen-node.mjs",
   "./suites/42-image-doc-schema.mjs",
   "./suites/46-image-arrow-nav.mjs",
   // E2E_NET=1 일 때만 실제로 돈다(런타임 다운로드에 네트워크 필요) — 아니면 전부 skip.

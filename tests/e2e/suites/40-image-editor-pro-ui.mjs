@@ -39,6 +39,9 @@ const RAIL_TITLES = [
   "선택 (V)",
   "이동 (K)",
   "프레임 (F)",
+  // 47 이 도착해 `ready` 가 켜진 둘 — 베지어 펜과 그 곡률 토글(레일 항목이지만 도구가 아니다).
+  "펜 (P)",
+  "곡률",
   "연필 (Shift+P)",
   "지우개 (E)",
   "사각형 (R)",
@@ -1428,16 +1431,34 @@ export async function run({ cdp, report: r, fix }) {
       afterEsc.mode === "design" && afterEsc.crop === null && afterEsc.open === true,
       J(afterEsc),
     );
-    await cdp.eval(`window.__gpvShell.ed().setMode({ kind:'nodeEdit', id:'s1' })`);
+    // 노드 편집은 **패스 노드에만** 걸린다(47 §3.2). 예전엔 rect 인 `s1` 에 모드만 직접 꽂아
+    // 배너를 확인했는데, 47 이 "대상이 편집 불가면 모드를 자동으로 푼다"를 넣으면서 그 합성
+    // 상태는 한 프레임도 못 산다 — 그러면 뒤이은 Esc 가 처리할 것이 없어 **편집기를 닫아** 버려
+    // 이 스위트의 나머지가 통째로 죽는다. 제품에서 도달할 수 없는 상태였으므로 실제 패스로
+    // 바꿔 잰다. 계층 자체(정점 선택 해제 → 모드 종료)는 스위트 53 이 더 깊게 잰다.
+    await cdp.eval(`window.__gpvShell.ed().setDoc({ objects: [{
+      id: 'p1', kind: 'path', fillRule: 'nonzero', fills: [], strokeWidth: 2,
+      strokes: [{ type:'solid', color:'#0000FF', opacity:1, visible:true, blend:'normal' }],
+      subpaths: [{ closed: false, verts: [
+        { x:20, y:20, inX:0, inY:0, outX:0, outY:0, mode:'corner' },
+        { x:80, y:60, inX:0, inY:0, outX:0, outY:0, mode:'corner' },
+      ] }],
+    }] })`);
+    await sleep(120);
+    const entered = await cdp.eval(`window.__gpvShell.ed().enterNodeEdit('p1')`);
     await sleep(150);
     const nodeBanner = /벡터 편집 모드/.test(await S(`text()`));
     await cdp.eval(`window.__gpvShell.fire({ key:'Escape', code:'Escape' })`);
     await sleep(150);
-    r.check(
-      "(e-4) 노드 편집 모드도 같은 계층으로 끝난다(배너 → Esc → 디자인)",
-      nodeBanner === true && (await S(`ui().mode.kind`)) === "design",
-      `배너=${nodeBanner} mode=${await S(`ui().mode.kind`)}`,
+    const afterNodeEsc = await cdp.eval(
+      `({ mode: window.__gpv.imageEditor.getUi().mode.kind, open: !!window.__gpv.imageEditor })`,
     );
+    r.check(
+      "(e-4) 노드 편집 모드도 같은 계층으로 끝난다(진입 → 배너 → Esc → 디자인) · **편집기는 열린 채다**",
+      entered === true && nodeBanner === true && afterNodeEsc.mode === "design" && afterNodeEsc.open === true,
+      `진입=${entered} 배너=${nodeBanner} ${J(afterNodeEsc)}`,
+    );
+    await seed();
 
     // ── (f) 레일 도구 동작 ──────────────────────────────────────────────────
     await seed();
@@ -2899,9 +2920,21 @@ export async function run({ cdp, report: r, fix }) {
 
     // 모드 전환은 `setMode` 로 한다 — Esc 로 나오면 계층 5(선택 해제)가 먼저 걸려 모드가
     // 그대로 남는다(Esc 계층 자체는 42 의 (e-3)(e-4) 가 이미 잰다).
-    await seed([V1]);
+    // 노드 편집 대상은 **패스여야** 한다(47 §3.2) — rect 에 모드만 꽂으면 47 의 "편집 불가면
+    // 자동 종료"가 즉시 풀어 버려 이 검사가 재려는 `vector-edit` 바가 한 프레임도 안 뜬다.
+    // 이 검사의 주제는 노드 종류가 아니라 **모드 대 선택**이므로 대상만 패스로 바꾼다.
+    await seed([
+      {
+        id: "v1", kind: "path", fillRule: "nonzero", fills: [], strokeWidth: 2,
+        strokes: [{ type: "solid", color: "#0000FF", opacity: 1, visible: true, blend: "normal" }],
+        subpaths: [{ closed: false, verts: [
+          { x: 40, y: 40, inX: 0, inY: 0, outX: 0, outY: 0, mode: "corner" },
+          { x: 100, y: 100, inX: 0, inY: 0, outX: 0, outY: 0, mode: "corner" },
+        ] }],
+      },
+    ]);
     await selectAllRoot();
-    await cdp.eval(`window.__gpvShell.ed().setMode({ kind:'nodeEdit', id:'v1' })`);
+    await cdp.eval(`window.__gpvShell.ed().enterNodeEdit('v1')`);
     await sleep(250);
     const inNode = await cdp.eval(
       `({ kind: window.__gpvShell.ed().classify(), text: window.__gpvShell.barText() })`,

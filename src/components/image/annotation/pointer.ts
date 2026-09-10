@@ -59,6 +59,15 @@ import {
   nextBadgeNumber,
   resizeObject,
 } from "./draft";
+// 노드 편집·펜의 **본체는 저쪽**이다(47 §3.4) — 여기 들어오는 것은 진입뿐이라, 크롭(48)과
+// 이 파일을 동시에 편집하는 면적이 몇 줄로 묶인다.
+import {
+  createNodeGestures,
+  isNodeDrag,
+  type NodeDrag,
+  type NodeGestureCtx,
+  type NodeMods,
+} from "./nodeEdit";
 import type { EditState } from "./textEdit";
 
 export interface Point {
@@ -255,7 +264,12 @@ export type DragState =
       snap?: SnapIndex;
     }
   /** 측정 도구 — **버튼을 떼도 살아 있다**(두 클릭이 한 제스처다). */
-  | { mode: "measure"; a: Point; cur: Point; snap?: SnapIndex };
+  | { mode: "measure"; a: Point; cur: Point; snap?: SnapIndex }
+  /**
+   * 노드 편집의 정점·핸들·노드 마퀴(47). 상태는 같은 `dragRef` 에 실리고 갱신·커밋은
+   * `nodeEdit.ts` 가 한다 — 여기 분기는 `isNodeDrag` 한 줄이다.
+   */
+  | NodeDrag;
 
 /** 이번 프레임의 스냅 부산물 — 크롬에만 간다. */
 export interface SnapFeedback {
@@ -288,6 +302,11 @@ export interface PointerCtx {
   commitObjects: (next: Node[], label?: string) => void;
   finishEditing: () => void;
   beginEditing: (obj: TextNode, isNew: boolean) => void;
+  /**
+   * 노드 편집 세션으로 가는 통로(47 §3.4). 선택 정점·펜 드래프트 ref 의 주인은
+   * `AnnotationLayer` 이고, 이 파일은 포인터 좌표와 스냅만 얹는다.
+   */
+  node: NodeGestureCtx;
 }
 
 export function createPointerHandlers(ctx: PointerCtx) {
@@ -393,6 +412,32 @@ export function createPointerHandlers(ctx: PointerCtx) {
     feedback(r);
     return { x: pt.x + r.dx, y: pt.y + r.dy };
   };
+
+  // ── 노드 편집·펜(47 §3.4) ───────────────────────────────────────────────
+  //
+  // 본체는 `nodeEdit.ts` 다. 여기서 넘기는 것은 이 파일만 아는 것뿐이다: 도구·배율·스냅 인덱스.
+
+  const node = createNodeGestures(ctx.node, {
+    pen: () => p.current.tool === "vpen",
+    curvature: () => useImageEditorUi.getState().toggles.curvature,
+    tol: () => HANDLE_GRAB_CSS / Math.max(p.current.displayScale, 1e-6),
+    // 편집 중인 객체는 후보에서 뺀다 — 안 빼면 정점이 자기 자신의 변에 붙어 안 움직인다.
+    makeSnap: (id) => makeIndex(new Set([id])),
+    snapAt,
+    // 핸들은 **픽셀 스냅만** 받는다(§3.4). 마스터 토글이 꺼져 있으면 아무 것도 하지 않는다 —
+    // 상태바에서 끈 스냅이 노드 편집에서만 살아 있으면 안 된다.
+    snapPixel: (pt) => {
+      const t = useImageEditorUi.getState().toggles;
+      if (!t.snap || !t.snapPixel) return pt;
+      return { x: Math.round(pt.x), y: Math.round(pt.y) };
+    },
+  });
+
+  const modsOf = (e: React.PointerEvent | React.MouseEvent): NodeMods => ({
+    shift: e.shiftKey,
+    alt: e.altKey,
+    ctrl: e.ctrlKey || e.metaKey,
+  });
 
   // ── 가이드 ──────────────────────────────────────────────────────────────
 
@@ -513,6 +558,16 @@ export function createPointerHandlers(ctx: PointerCtx) {
     }
     // 텍스트 편집 중 캔버스를 누르면 textarea blur 로 확정된다 — 여기서 한 번 더 보장.
     if (editingRef.current) finishEditing();
+
+    // 노드 편집·펜은 **여기서** 갈린다(47 §3.4). 안 갈리면 정점을 집으려는 클릭이 아래
+    // `isSelectLike` 로 떨어져 패스 **객체**를 골라 통째로 끌고 가고, 펜 클릭은 `makeDraft` 의
+    // default(null)로 떨어져 아무 일도 일어나지 않는다 — 예외도 로그도 없다.
+    const nodeHit = node.onDown(pt, modsOf(e));
+    if (nodeHit) {
+      dragRef.current = nodeHit.drag ?? null;
+      schedule();
+      return;
+    }
 
     if (s.tool === "eraser") {
       const ids = new Set<ObjId>();
@@ -772,6 +827,11 @@ export function createPointerHandlers(ctx: PointerCtx) {
     mods: { shift: boolean; alt: boolean; ctrl: boolean },
   ) => {
     const s = p.current;
+    // 노드 편집 제스처는 갱신도 커밋도 저쪽이 한다 — 여기 있는 것은 좌표뿐이다.
+    if (isNodeDrag(d)) {
+      node.onDrag(d, pt, mods);
+      return;
+    }
     const idx = mods.alt ? undefined : "snap" in d ? d.snap : undefined;
     if (d.mode === "crop") {
       cropMods = mods;
@@ -873,6 +933,17 @@ export function createPointerHandlers(ctx: PointerCtx) {
       schedule();
     }
     if (!d) {
+      // 펜 러버밴드·커서 힌트는 디자인 호버 경로가 모른다(그쪽은 객체 하이라이트와 커서만 본다).
+      const q = toOriented(e);
+      if (node.onHover(q, modsOf(e))) {
+        // 인라인 커서는 디자인 호버가 마지막으로 쓴 값이다(리사이즈 화살표 등) — 이 화면에서
+        // 정본은 className 의 crosshair 라, 안 비우면 엉뚱한 커서가 굳는다.
+        const c = canvasRef.current;
+        if (c && c.style.cursor) c.style.cursor = "";
+        ptRef.current = q;
+        schedule();
+        return;
+      }
       onHoverMove(e);
       return;
     }
@@ -885,6 +956,9 @@ export function createPointerHandlers(ctx: PointerCtx) {
   const onPointerUp = (e: React.PointerEvent) => {
     const d = dragRef.current;
     dragRef.current = null;
+    // 펜 드래프트는 `dragRef` 에 실리지 않는다(버튼을 떼도 살아 있다) — 손을 뗐다는 것은
+    // **드래그가 없어도** 알려야 한다. 안 알리면 이후 호버가 마지막 정점의 핸들을 계속 끈다.
+    node.onRelease();
     if (!d) return;
     const s = p.current;
     if (e.currentTarget.hasPointerCapture(e.pointerId)) {
@@ -902,6 +976,12 @@ export function createPointerHandlers(ctx: PointerCtx) {
     // 스냅 부산물은 드래그와 함께 사라진다 — 남으면 분홍 선이 화면에 굳는다.
     feedback(null);
 
+    // 노드 편집 제스처의 커밋은 라벨(`노드 이동`·`핸들 조정`)이 붙어야 하고, 마퀴는 커밋이
+    // 아니라 선택이다 — 아래 일반 꼬리(라벨 없는 커밋)로 흘리면 둘 다 어긋난다.
+    if (isNodeDrag(d)) {
+      node.onUp(d);
+      return;
+    }
     if (d.mode === "measure") {
       // 두 클릭이 한 제스처다 — 버튼을 뗐다고 시작점을 버리면 두 번째 점을 찍을 수 없다.
       dragRef.current = d;
@@ -966,16 +1046,25 @@ export function createPointerHandlers(ctx: PointerCtx) {
 
   const onDoubleClick = (e: React.MouseEvent) => {
     const s = p.current;
-    if (s.cropMode || s.tool !== "select") return;
+    if (s.cropMode) return;
     const c = canvasRef.current!;
     const r = c.getBoundingClientRect();
     const x = ((e.clientX - r.left) / Math.max(1, r.width)) * s.oriented.width;
     const y = ((e.clientY - r.top) / Math.max(1, r.height)) * s.oriented.height;
+    // 펜 드래프트 완료·정점 모드 토글은 도구가 `vpen` 이어도 와야 한다(47 §3.1 표·§3.6).
+    if (node.onDouble({ x, y })) {
+      schedule();
+      return;
+    }
+    if (s.tool !== "select") return;
     // 더블클릭은 그룹 안으로 들어간다(deep) — 텍스트를 바로 편집할 수 있어야 한다.
     const hitId = hitTest(s.scene, x, y, s.displayScale, { deep: true });
     if (!hitId) return;
     const o = s.scene.nodes.find((n) => n.id === hitId);
     if (o && o.kind === "text") beginEditing(o, false);
+    // `path` 더블클릭 = 노드 편집 진입(47 §3.2). 텍스트 편집과 **같은 자리**에서 갈린다 —
+    // 진입 경로를 따로 만들면 더블클릭의 뜻이 도구마다 달라진다.
+    else if (o && o.kind === "path") node.enter(o.id);
   };
 
   return {

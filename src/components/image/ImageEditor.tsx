@@ -27,7 +27,7 @@ import {
   type CropSession,
 } from "../../lib/annotate/crop";
 import { DocHistory } from "../../lib/annotate/history";
-import type { LayerFilter } from "../../lib/annotate/layer-rows";
+import { defaultLayerName, type LayerFilter } from "../../lib/annotate/layer-rows";
 import { ensureAssets, imageStore } from "../../lib/annotate/imageStore";
 import { useImageDocPersist, type SnapshotInfo } from "../../lib/annotate/persist";
 import {
@@ -148,6 +148,7 @@ import {
   toPathObject,
 } from "../../lib/annotate/vector/convert";
 import { outlineStroke } from "../../lib/annotate/vector/outline";
+import type { NodeModeUi, VertRef } from "../../lib/annotate/vector/edit";
 import {
   useImageEditorUi,
   type EditorUiState,
@@ -197,6 +198,11 @@ import AnnotationLayer, {
 import ChromeOverlay, { type ChromeOverlayHandle } from "./ChromeOverlay";
 import { newImageNode } from "./annotation/draft";
 import {
+  nodeStatusText,
+  type NodeEditState,
+  type NodeOp,
+} from "./annotation/nodeEdit";
+import {
   cropDragMods,
   hitCropHandle,
   registerPointerHit,
@@ -214,6 +220,8 @@ import { AssetsPanel, COMPONENT_DND_TYPE } from "./panels/AssetsPanel";
 import type { LayerPanelHandle } from "./layers/LayerPanel";
 import ToolRail, { type ToolRailHandle } from "./ToolRail";
 import { ContextBar, type EditorActions as BarActions } from "./ContextBar";
+import { NodeContextBar } from "./NodeContextBar";
+import { NodeInspectorSection } from "./inspector/NodeInspectorSection";
 import { Inspector } from "./inspector/Inspector";
 import { AdjustTab } from "./inspector/AdjustTab";
 import { ExportTabHost } from "./inspector/ExportTabHost";
@@ -242,6 +250,15 @@ import { useEditorKeys } from "./useEditorKeys";
 const MAX_PREVIEW = 1800;
 // 출력 캔버스 한 변 상한(Chromium 캔버스 한계 가드) — 초과 시 인코딩 전에 명확히 실패시킨다.
 const MAX_OUTPUT_DIM = 16384;
+
+/**
+ * 노드 편집 컨텍스트 바의 이름 — 레이어 패널·캔버스 아트보드 라벨과 **같은 값**이어야 한다.
+ * 세 곳이 갈리면 같은 객체가 화면마다 다른 이름으로 보인다.
+ */
+function nodeEditName(objects: readonly Node[], id: ObjId): string {
+  const o = objects.find((n) => n.id === id);
+  return o ? (o.name ?? defaultLayerName(o, objects)) : "벡터 편집";
+}
 
 /**
  * 객체 복사·붙여넣기의 클립보드 접두(42 §3.4). **텍스트로** 나가야 doc 창과 메인 창처럼
@@ -717,6 +734,36 @@ export default function ImageEditor() {
   /** 변환이 걸리지 않은 레이아웃 앵커 — 줌 수식의 기준 프레임(rect 가 view 에 흔들리지 않는다). */
   const boxRef = useRef<HTMLDivElement | null>(null);
   const layerRef = useRef<AnnotationLayerHandle | null>(null);
+  /**
+   * 노드 편집 요약(47). **선택 정점·펜 드래프트는 여기 없다** — 그것들은 주석 레이어 안 ref 에
+   * 살고(포인터 이동마다 리렌더되지 않게), 여기 올라오는 것은 컨텍스트 바·인스펙터·상태바가
+   * 읽는 한 줄 요약뿐이다.
+   */
+  const [nodeUi, setNodeUi] = useState<NodeEditState | null>(null);
+  /**
+   * 노드 편집 조작 — 컨텍스트 바 버튼·인스펙터·단축키·e2e 훅이 **같은 함수**를 부른다.
+   * 참조가 안정해야 한다: 매 렌더 새 객체면 바와 인스펙터가 프레임마다 다시 그려진다.
+   */
+  const nodeApi = useMemo(
+    () => ({
+      nodeOp: (op: NodeOp) => layerRef.current?.nodeOp(op),
+      setNodeMode: (m: NodeModeUi) => layerRef.current?.setNodeMode(m),
+      selectVerts: (refs: readonly VertRef[]) => layerRef.current?.selectVerts(refs),
+      setVertPos: (x: number, y: number) => layerRef.current?.setVertPos(x, y),
+      setVertHandle: (side: "in" | "out", x: number, y: number) =>
+        layerRef.current?.setVertHandle(side, x, y),
+      exitNodeEdit: () => layerRef.current?.exitNodeEdit(),
+    }),
+    [],
+  );
+  // 상태바 모드 힌트(시안 `노드 1개 선택 · 대칭 핸들`). 48 크롭과 **같은 슬롯**이라 우리가
+  // 채운 동안에만 쓰고 나갈 때 비운다 — 조건 없이 null 을 쓰면 크롭 힌트를 대신 지운다.
+  useEffect(() => {
+    if (!nodeUi) return;
+    const setHint = useImageEditorUi.getState().setHint;
+    setHint(nodeStatusText(nodeUi));
+    return () => setHint(null);
+  }, [nodeUi]);
   /** SVG 크롬 오버레이 실물. */
   const chromeRef = useRef<ChromeOverlayHandle | null>(null);
   /** 마지막으로 그린 크롬 상태 — e2e 훅이 읽고, `chrome.set` 이 그 위에 얹는다. */
@@ -2768,6 +2815,10 @@ export default function ImageEditor() {
       "tool.scale": () => setTool("scale"),
       "tool.frame": () => setTool("frame"),
       "tool.eraser": () => setTool("eraser"),
+      // 표에 행만 있고 맵에 핸들러가 없으면 `useEditorKeys` 가 그 키를 **삼키기만 하고 아무
+      // 일도 하지 않는다**(consume 행은 preventDefault + stopImmediatePropagation 을 먼저 한다).
+      // 펜은 이 태스크(47)의 대표 기능이라 그 무성 no-op 이 곧 "P 를 눌러도 안 된다"였다.
+      "tool.vpen": () => setTool("vpen"),
       "tool.pen": () => setTool("pen"),
       "tool.highlight": () => setTool("highlight"),
       "tool.rect": () => setTool("rect"),
@@ -2788,24 +2839,37 @@ export default function ImageEditor() {
       // 여기서 undo 하면 진입 **이전** 편집이 풀리는데, 화면에는 크롭 상자만 그대로 남아
       // 무엇이 되돌아갔는지 보이지 않는다(Figma 도 크롭 중 잠근다).
       undo: () => {
+        // 펜 드래프트 중 Ctrl+Z 는 **마지막 정점만** 무른다(47 §3.6) — 문서 undo 로 새면
+        // 그리기 시작 전의 편집이 대신 사라진다.
+        if (layerRef.current?.handleUndo()) return;
         if (!cropSessionRef.current) undo();
       },
       redo: () => {
         if (!cropSessionRef.current) redo();
       },
       esc: () => escape(),
-      // Enter 는 **모드가 있을 때만** 맵에 넣는다. 항상 넣으면 design 모드의 Enter 까지
-      // 소비해 포커스된 버튼이 Enter 로 눌리지 않는다 — design 의 Enter(텍스트 편집 진입·
-      // 그룹 진입·노드 편집 진입)는 44·47·50 것이다.
-      ...(mode.kind === "design"
-        ? {}
-        : { enter: () => (mode.kind === "crop" ? cropApi.cropApply() : leaveMode()) }),
+      // Enter 는 모드마다 뜻이 다르다. **design 에서도 맵에 있어야 한다** — 표 행이 `always`·
+      // `consume` 이라 여기 없으면 펜 드래프트 완료·노드 편집 진입(47 §3.1·§3.2)이 아무 데도
+      // 가지 않고 조용히 삼켜진다. 레이어가 소비하지 못하면 아무 일도 일어나지 않는다.
+      enter: () => {
+        if (useImageEditorUi.getState().mode.kind === "crop") {
+          cropApi.cropApply();
+          return;
+        }
+        layerRef.current?.handleEnter();
+      },
 
       duplicate: () => duplicateSel(),
       delete: () => {
         // 가이드가 먼저다 — 가이드를 고른 채 Delete 를 눌렀는데 객체가 지워지면 되돌리기
         // 전까지 무슨 일이 났는지 알 수 없다.
         if (layerRef.current?.deleteSelectedGuide()) return;
+        // 노드 편집 중 Delete 는 **정점**을 지운다(47 §3.6). 표에 게이트만 다른 행이 하나 더
+        // 있고 액션은 이것 하나다 — 여기서 안 갈리면 편집 중에 객체가 통째로 사라진다.
+        if (useImageEditorUi.getState().mode.kind === "nodeEdit") {
+          layerRef.current?.nodeOp("delete");
+          return;
+        }
         removeSel();
       },
       // 표에 행만 있고 주인이 44 다 — 캔버스에 포커스가 있어도 레이어 패널의 이름 편집이 뜬다.
@@ -2829,6 +2893,13 @@ export default function ImageEditor() {
       },
       copyPng: () => copyToClipboard(),
       selectAll: () => {
+        // 노드 편집 중에는 **정점** 전체다. 표의 `selectAll` 행은 `always` 라 nodeEdit 에서도
+        // 먼저 이기므로 여기서 갈라야 한다 — 안 그러면 Ctrl+A 가 편집 중인 패스 밖 객체까지
+        // 골라, 그다음 조작이 화면에서 본 것과 어긋난다.
+        if (useImageEditorUi.getState().mode.kind === "nodeEdit") {
+          layerRef.current?.nodeOp("select-all");
+          return;
+        }
         // 잠긴 노드는 클릭으로 고를 수 없다 — Ctrl+A 로만 잡히면 그다음 조작 결과가
         // 화면에서 본 것과 어긋난다. 씬이 유일한 판정이다(38).
         const sc = resolveScene(docRef.current);
@@ -2844,7 +2915,13 @@ export default function ImageEditor() {
         const step = e.shiftKey ? 10 : 1;
         const dx = e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0;
         const dy = e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0;
-        if (dx || dy) nudge(dx, dy);
+        if (!dx && !dy) return;
+        // 노드 편집 중에는 **정점**이 움직인다(keydown 1회 = 커밋 1칸, 위 `delete` 와 같은 구조).
+        if (useImageEditorUi.getState().mode.kind === "nodeEdit") {
+          layerRef.current?.nodeOp({ nudge: [dx, dy] });
+          return;
+        }
+        nudge(dx, dy);
       },
 
       // 구조·정렬은 전부 액션 맵을 탄다 — 컨텍스트 바 버튼과 갈라지면 히스토리 라벨부터 어긋난다.
@@ -3009,6 +3086,13 @@ export default function ImageEditor() {
       }),
       cropSession: () => cropApi.getCropSession(),
       crop: cropApi,
+      /**
+       * 노드 편집(47 §4). 컨텍스트 바 버튼·단축키가 부르는 것과 **같은 함수**라 갈라질 자리가
+       * 없다. `nodeEdit()` 은 화면을 안 읽고 정점 수·선택·모드·핸들 값을 보는 통로다.
+       */
+      nodeEdit: () => layerRef.current?.getNodeEditState() ?? null,
+      enterNodeEdit: (id: ObjId) => layerRef.current?.enterNodeEdit(id) ?? false,
+      ...nodeApi,
       histDepth: () => histRef.current.depth,
       /**
        * 텍스트 레이아웃(49) — 줄 나눔·상자·마커를 화면 픽셀을 읽지 않고 확인하는 통로.
@@ -3277,7 +3361,7 @@ export default function ImageEditor() {
       delete g.__gpv?.imageDocs;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [actions, patchDoc, snapIndexNow, runVector, cropApi]);
+  }, [actions, patchDoc, snapIndexNow, runVector, cropApi, nodeApi]);
 
   if (!path) return null;
 
@@ -3386,26 +3470,37 @@ export default function ImageEditor() {
         {/* 스테이지 열 — 컨텍스트 바(44px) + 프리뷰. 바는 크롬(SVG 오버레이)과 겹치지 않는
             일반 흐름이라 z 를 다투지 않는다. */}
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <ContextBar
-            kind={selKind}
-            actions={actions}
-            objects={doc.objects}
-            zoom={screenScale}
-            onZoom={zoomPreset}
-            imageSize={oriented ? { w: oriented.width, h: oriented.height } : null}
-            canVector={canVector}
-            crop={
-              cropSession && img
-                ? {
-                    session: cropSession,
-                    api: cropApi,
-                    // 큰 이미지는 직선화 bbox 가 화소 상한에 먼저 걸린다 — 슬라이더 범위를
-                    // 그 각까지로 줄여야 끝까지 끌었을 때 캔버스 할당이 터지지 않는다(§3.6).
-                    maxDeg: maxStraightenFor(img.naturalWidth, img.naturalHeight),
-                  }
-                : undefined
-            }
-          />
+          {/* 노드 편집 바는 `ContextBar` 의 `case "vector-edit"`(45 소유, 지금은 자리표시자)
+              자리다. 그 파일을 이번 태스크가 건드리지 않으려고 여기서 갈라 끼운다 —
+              옮길 때는 `NodeContextBar` 의 바깥 `<div>` 만 벗기면 된다. */}
+          {nodeUi ? (
+            <NodeContextBar
+              state={nodeUi}
+              name={nodeEditName(doc.objects, nodeUi.id)}
+              api={nodeApi}
+            />
+          ) : (
+            <ContextBar
+              kind={selKind}
+              actions={actions}
+              objects={doc.objects}
+              zoom={screenScale}
+              onZoom={zoomPreset}
+              imageSize={oriented ? { w: oriented.width, h: oriented.height } : null}
+              canVector={canVector}
+              crop={
+                cropSession && img
+                  ? {
+                      session: cropSession,
+                      api: cropApi,
+                      // 큰 이미지는 직선화 bbox 가 화소 상한에 먼저 걸린다 — 슬라이더 범위를
+                      // 그 각까지로 줄여야 끝까지 끌었을 때 캔버스 할당이 터지지 않는다(§3.6).
+                      maxDeg: maxStraightenFor(img.naturalWidth, img.naturalHeight),
+                    }
+                  : undefined
+              }
+            />
+          )}
 
           {/* 프리뷰 — 이미지 위에 주석 캔버스를 겹친다(§4.3) */}
           <div
@@ -3487,6 +3582,7 @@ export default function ImageEditor() {
                     onCropCancel={onCropCancel}
                     onCommit={(objects, label) => patchDoc({ objects }, "commit", label)}
                     onEditingChange={setTextEditing}
+                    onNodeEditChange={setNodeUi}
                     onToolChange={setTool}
                     onSelectionChange={setSelectedIds}
                     statusRef={statusRef}
@@ -3570,38 +3666,43 @@ export default function ImageEditor() {
         <Inspector
           panes={{
             props: (
-              <PropsTab
-                nodes={selNodes}
-                actions={actions}
-                style={style}
-                opacity={opacity}
-                recentColors={recent}
-                onOpenPopover={openPopover}
-                canVector={canVector}
-                instanceSection={
-                  // 선택을 `moveUnit` 으로 좁혀 넘긴다 — 더블클릭으로 들어간 자식에서도 같은
-                  // 블록이 떠야 하고, '분리'·'마스터 갱신'의 대상은 언제나 인스턴스 전체다.
-                  instId && (
-                    <InstanceSection
-                      objects={doc.objects}
-                      instId={instId}
-                      onReset={() => resetInstance(instId)}
-                      onPush={() => pushInstance(instId)}
-                      onDetach={() => detachSel(instId)}
+              <>
+                {/* 시안 ③ `Sec 노드`. `PropsTab`(45 소유)에 슬롯이 없어 속성 탭 맨 위에 얹는다 —
+                    노드 편집 중에는 이 섹션이 가장 먼저 읽혀야 한다. */}
+                {nodeUi && <NodeInspectorSection state={nodeUi} api={nodeApi} />}
+                <PropsTab
+                  nodes={selNodes}
+                  actions={actions}
+                  style={style}
+                  opacity={opacity}
+                  recentColors={recent}
+                  onOpenPopover={openPopover}
+                  canVector={canVector}
+                  instanceSection={
+                    // 선택을 `moveUnit` 으로 좁혀 넘긴다 — 더블클릭으로 들어간 자식에서도 같은
+                    // 블록이 떠야 하고, '분리'·'마스터 갱신'의 대상은 언제나 인스턴스 전체다.
+                    instId && (
+                      <InstanceSection
+                        objects={doc.objects}
+                        instId={instId}
+                        onReset={() => resetInstance(instId)}
+                        onPush={() => pushInstance(instId)}
+                        onDetach={() => detachSel(instId)}
+                      />
+                    )
+                  }
+                  // 세 섹션이 **같은 컴포넌트**를 쓴다 — 슬롯마다 다시 그리면 채우기에서는
+                  // '갱신 가능'이 뜨는데 선에서는 안 뜨는 식으로 판정이 갈린다(StyleRow 머리말).
+                  styleRow={(slot) => (
+                    <StyleRow
+                      slot={slot}
+                      nodes={selNodes}
+                      onDetach={() => detachStyleFromSel(slot)}
+                      onResync={() => resyncSel(slot)}
                     />
-                  )
-                }
-                // 세 섹션이 **같은 컴포넌트**를 쓴다 — 슬롯마다 다시 그리면 채우기에서는
-                // '갱신 가능'이 뜨는데 선에서는 안 뜨는 식으로 판정이 갈린다(StyleRow 머리말).
-                styleRow={(slot) => (
-                  <StyleRow
-                    slot={slot}
-                    nodes={selNodes}
-                    onDetach={() => detachStyleFromSel(slot)}
-                    onResync={() => resyncSel(slot)}
-                  />
-                )}
-              />
+                  )}
+                />
+              </>
             ),
             // 글꼴 목록·굵기·서식 툴바는 50 `TextInspector` 것이다 — 레이아웃을 정하는
             // 값만 49 가 채운다. `patchSelection` 을 **직접** 넘기는 이유는 타이포가 부분

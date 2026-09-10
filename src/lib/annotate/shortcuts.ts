@@ -157,6 +157,12 @@ export const EDITOR_SHORTCUTS: readonly Shortcut[] = [
   { id: "delete", win: "Delete·Backspace", mac: "Delete·Backspace", label: "삭제", when: "hasSelection", consume: true, owner: 42 },
   // 방향키 auto-repeat(K5) 무시는 액션 쪽 몫이다 — 표에 `repeat` 칸이 없다(§4 계약 고정).
   { id: "nudge", win: "Arrow·Shift+Arrow", mac: "Arrow·⇧Arrow", label: "미세 이동", when: "hasSelection", consume: true, owner: 42 },
+  // 노드 편집(47 §3.6). 위 두 행은 `hasSelection` = **design 전용** 게이트라 `nodeEdit` 에서는
+  // 어떤 행도 안 맞고, 그러면 `consume` 도 안 돼 Delete·방향키가 앱의 다른 window 리스너로 샌다.
+  // 그래서 **같은 id 로 게이트만 다른 행**을 둔다: 액션은 하나이고 그 안에서 모드로 갈린다
+  // (표를 훑는 곳은 전부 `find`(첫 행) 또는 `filter(consume)` 라 id 가 겹쳐도 안전하다).
+  { id: "delete", win: "Delete·Backspace", mac: "Delete·Backspace", label: "노드 삭제", when: "nodeEdit", consume: true, owner: 47 },
+  { id: "nudge", win: "Arrow·Shift+Arrow", mac: "Arrow·⇧Arrow", label: "노드 미세 이동", when: "nodeEdit", consume: true, owner: 47 },
   { id: "rename", win: "F2", mac: "F2", label: "이름 바꾸기", when: "hasSelection", consume: true, owner: 44 },
 
   // ── 모드 ──────────────────────────────────────────────────────────────────

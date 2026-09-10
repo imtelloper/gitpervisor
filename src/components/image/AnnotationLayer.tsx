@@ -26,23 +26,51 @@ import {
 
 import { CHROME_COLORS, type ChromeScreen, type ChromeState } from "../../lib/annotate/chrome";
 import type { ImageStore } from "../../lib/annotate/imageStore";
+import { defaultLayerName } from "../../lib/annotate/layer-rows";
 import { releaseScratch, renderScene } from "../../lib/annotate/render";
-import { useImageEditorUi, type Tool } from "../../stores/imageEditor";
+import { useImageEditorUi, type Mode, type Tool } from "../../stores/imageEditor";
 import { sceneOfNodes, type Scene } from "../../lib/annotate/scene";
 import { objectAABB, objectAnchor, objectBBox, selectBox } from "../../lib/annotate/geometry";
 import type { Guide, Measure } from "../../lib/annotate/snap";
+import { remove as removeNodes } from "../../lib/annotate/tree";
 import {
+  newObjId,
   type GeomNode,
   type Node,
   type ObjId,
+  type PathNode,
   type Rect,
   type SceneTransform,
   type TextNode,
   type DefaultPaint,
 } from "../../lib/annotate/types";
+import {
+  moveHandle,
+  moveVerts,
+  type NodeModeUi,
+  type VertRef,
+} from "../../lib/annotate/vector/edit";
 import type { ChromeOverlayHandle } from "./ChromeOverlay";
 import {
+  applyNodeMode,
+  applyNodeOp,
+  clampSel,
+  nodeChrome,
+  nodeEditState,
+  type NodeEditState,
+  type NodeOp,
+} from "./annotation/nodeEdit";
+import {
+  penDraftNode,
+  penFinish,
+  penPop,
+  penPreview,
+  penUsable,
+  type PenDraft,
+} from "./annotation/pen";
+import {
   createPointerHandlers,
+  HANDLE_GRAB_CSS,
   marqueeRect,
   MIN_DRAG,
   type DragState,
@@ -82,6 +110,37 @@ export interface AnnotationLayerHandle {
    * 자리와 인스턴스가 생기는 자리가 어긋나지 않는다.
    */
   clientToOriented(clientX: number, clientY: number): Point;
+
+  // ── 노드 편집(47) ─────────────────────────────────────────────────────────
+  //
+  // 세션(선택 정점·펜 드래프트)은 이 컴포넌트 안 **ref** 에 산다(47 §3.2). 밖으로 나가는 것은
+  // 요약(`NodeEditState`)뿐이고, 키·컨텍스트 바·인스펙터·e2e 훅이 전부 아래 함수를 부른다 —
+  // 같은 조작이 두 경로로 갈리면 히스토리 라벨부터 어긋난다.
+  //
+  // 키 처리를 여기 두는 이유: 편집기의 키 리스너는 `useEditorKeys` 의 window **capture** 하나
+  // 뿐이고 그것이 `stopImmediatePropagation` 까지 한다. 이 컴포넌트가 리스너를 새로 달면
+  // 조용히 죽는다(머리말 :497-502 와 같은 규칙).
+
+  /** `path` 노드면 노드 편집으로 들어간다. 아니면 false — 46 `패스로` 뒤에 다시 부른다. */
+  enterNodeEdit(id: ObjId): boolean;
+  /** 편집 완료. **커밋이 아니다**(§3.2) — 세션만 버리고 모드를 design 으로 되돌린다. */
+  exitNodeEdit(): void;
+  getNodeEditState(): NodeEditState | null;
+  nodeOp(op: NodeOp): void;
+  setNodeMode(mode: NodeModeUi): void;
+  selectVerts(refs: readonly VertRef[]): void;
+  /** 인스펙터 X/Y — 단일 선택 정점을 **절대 좌표**로 옮긴다(커밋 1칸). */
+  setVertPos(x: number, y: number): void;
+  /** 인스펙터 핸들 in/out — 값은 앵커 **상대** 좌표다(문서 저장 형식과 같다). */
+  setVertHandle(side: "in" | "out", x: number, y: number): void;
+  /**
+   * Enter: 펜 드래프트 완료 → 노드 편집 종료 → 단일 `path` 선택이면 진입(§3.1·§3.2).
+   * @returns 소비했으면 true. false 면 상위는 아무 일도 하지 않는다 — design 모드의 Enter 를
+   *   무조건 잡으면 포커스된 버튼이 Enter 로 안 눌린다.
+   */
+  handleEnter(): boolean;
+  /** Ctrl+Z: 펜 드래프트가 있으면 **마지막 정점만** 무르고 true(문서 히스토리 불변). */
+  handleUndo(): boolean;
 }
 
 export interface AnnotationLayerProps {
@@ -151,6 +210,14 @@ export interface AnnotationLayerProps {
   statusRef?: React.RefObject<StatusBarHandle | null>;
   onToolChange: (t: Tool) => void;
   onSelectionChange: (ids: ObjId[]) => void;
+  /**
+   * 노드 편집 요약(47) — 컨텍스트 바·인스펙터·상태바가 읽는 값.
+   *
+   * 선택 정점 배열과 펜 드래프트는 **여기로 올라오지 않는다**. 올리면 포인터를 움직이는 동안
+   * 편집기 트리 전체가 초당 60회 다시 그려진다(`useCropSession` 의 `ref`/`useState` 갈림과
+   * 같은 판정). 모드 자체는 스토어에 있으므로 이 prop 으로 나르지 않는다.
+   */
+  onNodeEditChange?: (s: NodeEditState | null) => void;
 }
 
 function AnnotationLayerImpl(
@@ -193,6 +260,22 @@ function AnnotationLayerImpl(
   const guideSelRef = useRef(-1);
   /** 마지막 포인터 위치(oriented). */
   const ptRef = useRef<Point | null>(null);
+  /**
+   * 노드 편집 선택 정점(47). **state 가 아니다** — 정점을 끄는 동안 매 프레임 리렌더가
+   * 편집기 전체로 번진다. 밖으로는 요약(`onNodeEditChange`)만 나간다.
+   */
+  const nodeSelRef = useRef<readonly VertRef[]>([]);
+  /** 진행 중인 펜 드래프트(문서 밖 — `annotation/pen.ts` 머리말). 쓰기는 `setPenDraft` 한 곳. */
+  const penRef = useRef<PenDraft | null>(null);
+  /**
+   * 드래프트의 **확정된 부분**을 그리는 문서 밖 노드. 이게 없으면 방금 찍은 정점들이 화면에
+   * 하나도 안 보이고 커서까지의 점선만 남는다(`penPreview` 는 다음 구간만 그린다).
+   *
+   * id 를 드래프트 하나 동안 고정하는 이유는 `penDraftNode` 머리말에 있다 — 프레임마다 바뀌면
+   * 커밋 캐시 키가 갈려 포인터를 움직이는 내내 씬 전체가 다시 그려진다.
+   */
+  const penLiveRef = useRef<PathNode | null>(null);
+  const penIdRef = useRef<ObjId | null>(null);
 
   const [editing, setEditing] = useState<EditState | null>(null);
   const editingRef = useRef<EditState | null>(null);
@@ -266,6 +349,8 @@ function AnnotationLayerImpl(
     const live: GeomNode[] = [];
     if (liveRef.current) live.push(...liveRef.current);
     if (draftRef.current) live.push(draftRef.current);
+    // 펜 드래프트의 확정 부분 — 아직 문서에 없으므로 캐시에도 없다. 커밋 뒤와 같은 픽셀이다.
+    if (penLiveRef.current) live.push(penLiveRef.current);
     if (live.length) {
       // 드래그 중인 것은 아직 문서에 없다 — 임시 씬으로 감싸 **같은 렌더 진입**을 쓴다.
       // 배경(이미지 + 커밋 노드)은 이미 캐시로 깔려 있어 가림·multiply 가 그대로 성립한다.
@@ -287,6 +372,8 @@ function AnnotationLayerImpl(
         measures: measureRef.current,
         guideSel: guideSelRef.current,
         pt: ptRef.current,
+        nodeSel: nodeSelRef.current,
+        pen: penRef.current,
       }),
     );
   }, [ensureCache]);
@@ -307,6 +394,11 @@ function AnnotationLayerImpl(
    */
   const toggles = useImageEditorUi((s) => s.toggles);
   const hoverId = useImageEditorUi((s) => s.hoverId);
+  /**
+   * 모드도 같은 이유로 **구독**한다 — 노드 편집으로 들어간 순간 스크림·앵커가 떠야 하는데,
+   * `getState()` 로만 읽으면 다음 포인터 이동까지 화면이 그대로다(커서 클래스도 같다).
+   */
+  const mode = useImageEditorUi((s) => s.mode);
 
   // 캐시를 버려야 하는 변화(문서·배율·크기·필터)와 매 프레임 크롬(선택·화면 변환)을 다시 그린다.
   useLayoutEffect(() => {
@@ -328,6 +420,7 @@ function AnnotationLayerImpl(
     props.guides,
     toggles,
     hoverId,
+    mode,
     editing,
   ]);
 
@@ -386,6 +479,179 @@ function AnnotationLayerImpl(
     [finishEditing, schedule],
   );
 
+  // ── 노드 편집 세션(47 §3.2) ───────────────────────────────────────────────
+
+  /** 컨텍스트 바·인스펙터·상태바가 읽는 요약을 위로 올린다. 문서·선택이 바뀔 때만 부른다. */
+  const emitNodeEdit = useCallback(() => {
+    const s = p.current;
+    const o = editedPath(s.objects, useImageEditorUi.getState().mode);
+    s.onNodeEditChange?.(o ? nodeEditState(o, nodeSelRef.current, penRef.current) : null);
+  }, []);
+
+  /**
+   * 펜 드래프트를 갈아 끼우는 **유일한 자리**. 드래프트와 그것을 그리는 라이브 노드가 여기서만
+   * 함께 바뀌므로 둘이 갈릴 수 없다(갈리면 "그린 선이 한 박자 늦게 따라온다"가 된다).
+   *
+   * 요약(`onNodeEditChange`)은 **정점 수가 바뀔 때만** 올린다. 요약에 실리는 드래프트 정보가
+   * 정점 수 하나뿐인데 매 pointermove 마다 올리면, 커서를 움직이는 내내 편집기 트리 전체가
+   * 초당 60회 다시 그려진다(이 파일이 세션을 state 로 안 들고 있는 것과 같은 이유).
+   */
+  const setPenDraft = useCallback(
+    (d: PenDraft | null) => {
+      const s = p.current;
+      const before = penRef.current?.verts.length ?? -1;
+      penRef.current = d;
+      if (!d) {
+        penIdRef.current = null;
+        penLiveRef.current = null;
+      } else {
+        if (!penIdRef.current) penIdRef.current = newObjId();
+        penLiveRef.current = penDraftNode(d, s.style, s.opacity, penIdRef.current);
+      }
+      if ((d?.verts.length ?? -1) !== before) emitNodeEdit();
+      schedule();
+    },
+    [emitNodeEdit, schedule],
+  );
+
+  /** 선택 정점 갱신 — 범위 밖 ref 를 걷고(41 "존재 id 필터") 요약을 올린다. */
+  const setNodeSel = useCallback(
+    (refs: readonly VertRef[]) => {
+      const o = editedPath(p.current.objects, useImageEditorUi.getState().mode);
+      nodeSelRef.current = o ? clampSel(o, refs) : [];
+      emitNodeEdit();
+      schedule();
+    },
+    [emitNodeEdit, schedule],
+  );
+
+  /**
+   * 편집 대상 노드를 갈아 끼우고 **커밋 1회**(= 히스토리 한 칸).
+   *
+   * `next` 가 입력과 **같은 참조**면 커밋하지 않는다 — `edit.ts` 의 연산들은 바뀐 것이 없으면
+   * 원본을 돌려주고, 그걸 그대로 커밋하면 버튼 한 번이 히스토리 200칸 중 하나를 빈 칸으로
+   * 태운다(Ctrl+Z 를 눌러도 화면이 그대로인 그 증상).
+   *
+   * `next === null` 은 정점이 하나도 안 남았다는 뜻이라 **객체를 지운다**(§3.3 `deleteVerts`).
+   * 모드는 여기서 끄지 않는다 — 아래 세션 effect 가 문서에서 대상이 사라진 것을 보고 나간다.
+   */
+  const commitNode = useCallback(
+    (cur: PathNode, next: PathNode | null, label: string, sel: readonly VertRef[]) => {
+      const s = p.current;
+      if (next !== cur) {
+        commitObjects(
+          next
+            ? s.objects.map((o) => (o.id === cur.id ? next : o))
+            : removeNodes(s.objects, [cur.id]),
+          label,
+        );
+      }
+      nodeSelRef.current = next ? sel : [];
+      emitNodeEdit();
+      schedule();
+    },
+    [commitObjects, emitNodeEdit, schedule],
+  );
+
+  const enterNodeEdit = useCallback(
+    (id: ObjId): boolean => {
+      const o = p.current.objects.find((n) => n.id === id);
+      // `path` 가 아니면 들어가지 않는다(§3.2) — 46 `패스로`(toPathObject) 로 바꾼 뒤가 그 경로다.
+      if (!o || o.kind !== "path") return false;
+      nodeSelRef.current = [];
+      setPenDraft(null);
+      useImageEditorUi.getState().setMode({ kind: "nodeEdit", id });
+      schedule();
+      return true;
+    },
+    [schedule, setPenDraft],
+  );
+
+  const exitNodeEdit = useCallback(() => {
+    nodeSelRef.current = [];
+    setPenDraft(null);
+    useImageEditorUi.getState().setMode({ kind: "design" });
+    schedule();
+  }, [schedule, setPenDraft]);
+
+  /**
+   * 펜 드래프트를 문서로 굳힌다(§3.1 완료) — **커밋 1회**. 새 객체면 그대로 노드 편집으로
+   * 들어간다(시안 ③ 이 펜 직후 상태다).
+   *
+   * 정점이 2개 미만이면 남길 것이 없어 드래프트만 버린다(커밋 0). @returns 드래프트가 있었나.
+   */
+  const finishPen = useCallback(
+    (closed: boolean): boolean => {
+      const s = p.current;
+      const d = penRef.current;
+      if (!d) return false;
+      setPenDraft(null);
+      if (penUsable(d)) {
+        const made = penFinish(d, closed, s.style, s.opacity);
+        if ("sub" in made) {
+          // 노드 편집 중 빈 곳에서 시작한 드래프트 = 같은 객체에 서브패스 추가(46 짝수-홀수 구멍).
+          const t = d.target;
+          const host =
+            t.kind === "append" ? s.objects.find((o) => o.id === t.id) : undefined;
+          if (host && host.kind === "path") {
+            commitObjects(
+              s.objects.map((o) =>
+                o.id === host.id ? { ...host, subpaths: [...host.subpaths, made.sub] } : o,
+              ),
+              "펜 경로 생성",
+            );
+          }
+        } else {
+          commitObjects([...s.objects, made], "펜 경로 생성");
+          s.onSelectionChange([made.id]);
+          nodeSelRef.current = [];
+          useImageEditorUi.getState().setMode({ kind: "nodeEdit", id: made.id });
+        }
+      }
+      emitNodeEdit();
+      schedule();
+      return true;
+    },
+    [commitObjects, emitNodeEdit, schedule, setPenDraft],
+  );
+
+  /**
+   * 세션의 바깥 조건을 보는 **한 곳**(48 `useCropSession` 의 모드 effect 와 같은 자리).
+   *
+   * 되돌리기·삭제로 편집 대상이 문서에서 사라지면 스스로 나간다 — 안 나가면 세션이 죽은 id 를
+   * 든 채 크롬만 남고, 그 뒤의 Delete 는 아무 일도 하지 않는다. 정점 수가 줄었으면 범위 밖
+   * 선택을 걷는다(41 의 "존재 id 필터"와 같은 규칙).
+   */
+  useEffect(() => {
+    if (mode.kind !== "nodeEdit") {
+      if (nodeSelRef.current.length || penRef.current) {
+        nodeSelRef.current = [];
+        setPenDraft(null);
+      }
+      emitNodeEdit();
+      return;
+    }
+    const o = editedPath(props.objects, mode);
+    if (!o) {
+      exitNodeEdit();
+      return;
+    }
+    const next = clampSel(o, nodeSelRef.current);
+    if (next !== nodeSelRef.current) nodeSelRef.current = next;
+    emitNodeEdit();
+  }, [props.objects, mode, emitNodeEdit, exitNodeEdit, setPenDraft]);
+
+  /**
+   * 도구가 펜을 떠나면 드래프트를 버린다.
+   *
+   * 안 버리면 확정된 부분이 라이브 노드로 화면에 계속 그려진다 — 문서에는 없는 선이라 지울
+   * 수단도 없고(러버밴드·힌트는 `vpen` 일 때만 그린다) 저장하면 사라져 "그린 게 없어졌다"가 된다.
+   * 도구를 바꾸는 것은 Esc 와 같은 취소다(커밋 0).
+   */
+  useEffect(() => {
+    if (props.tool !== "vpen" && penRef.current) setPenDraft(null);
+  }, [props.tool, setPenDraft]);
+
   // ── 포인터 ────────────────────────────────────────────────────────────────
 
   const { onPointerDown, onPointerMove, onPointerUp, onDoubleClick, applyAltMeasure } =
@@ -405,6 +671,22 @@ function AnnotationLayerImpl(
       commitObjects,
       finishEditing,
       beginEditing,
+      // 노드 편집·펜 세션으로 가는 통로(47 §3.4). 여기 있는 것은 전부 **이 컴포넌트가 소유한
+      // ref 와 커밋 헬퍼**다 — 포인터 층은 좌표와 스냅만 얹는다.
+      node: {
+        edited: () => editedPath(p.current.objects, useImageEditorUi.getState().mode),
+        sel: () => nodeSelRef.current,
+        setSel: setNodeSel,
+        pen: () => penRef.current,
+        setPen: setPenDraft,
+        setLive: (o) => {
+          liveRef.current = o ? [o] : null;
+        },
+        commit: commitNode,
+        finishPen,
+        enter: enterNodeEdit,
+        schedule,
+      },
     });
 
   // ── 상태바 커서(좌표·색) ──────────────────────────────────────────────────
@@ -515,6 +797,13 @@ function AnnotationLayerImpl(
           finishEditing();
           return true;
         }
+        // 펜 드래프트는 **취소**다(커밋 0) — 그리던 것을 그냥 버린다. 취소 키가 커밋을 하면
+        // 사용자는 되돌린 줄 알고 손을 떼는데 문서에는 객체가 남는다. 완료는 Enter·첫 정점
+        // 클릭(닫기)뿐이다(47 §3.1 · `pen.ts` 머리말).
+        if (penRef.current) {
+          setPenDraft(null);
+          return true;
+        }
         // 진행 중인 드래그는 종류를 가리지 않고 버린다(§5.4 계층 3). 크롭 드래그도 포함해야
         // Esc 뒤에 버튼을 떼는 것만으로 크롭이 확정되는 일이 없다.
         const d = dragRef.current;
@@ -528,6 +817,19 @@ function AnnotationLayerImpl(
             s.onCropCancel();
           }
           schedule();
+          return true;
+        }
+        // 노드 선택 해제 → 노드 편집 종료. **도구 복귀보다 앞**이어야 한다: 스토어는 도구가
+        // `select`|`vpen` 이면 nodeEdit 을 유지하므로(imageEditor.ts:232-238) 뒤에 두면 Esc 한
+        // 번이 도구만 바꾸고 편집 모드는 남아, 나가려면 두세 번을 눌러야 한다(47 §3.6 계층).
+        if (useImageEditorUi.getState().mode.kind === "nodeEdit") {
+          if (nodeSelRef.current.length) {
+            nodeSelRef.current = [];
+            emitNodeEdit();
+            schedule();
+            return true;
+          }
+          exitNodeEdit();
           return true;
         }
         if (s.tool !== "select") {
@@ -564,8 +866,89 @@ function AnnotationLayerImpl(
         schedule();
       },
       clientToOriented,
+
+      enterNodeEdit,
+      exitNodeEdit,
+      getNodeEditState() {
+        const o = editedPath(p.current.objects, useImageEditorUi.getState().mode);
+        return o ? nodeEditState(o, nodeSelRef.current, penRef.current) : null;
+      },
+      nodeOp(op) {
+        const o = editedPath(p.current.objects, useImageEditorUi.getState().mode);
+        if (!o) return;
+        // 할 수 있는 일이 없으면 `null` 이다(비활성 버튼) — 그때는 커밋도 선택 변경도 없다.
+        const r = applyNodeOp(o, nodeSelRef.current, op);
+        if (r) commitNode(o, r.obj, r.label, r.sel);
+      },
+      setNodeMode(m) {
+        const o = editedPath(p.current.objects, useImageEditorUi.getState().mode);
+        if (!o) return;
+        const r = applyNodeMode(o, nodeSelRef.current, m);
+        if (r) commitNode(o, r.obj, r.label, nodeSelRef.current);
+      },
+      // 선택은 **문서가 아니다** — 커밋하지 않는다(모드 진입·노드 선택은 히스토리에 안 쌓인다).
+      // 포인터가 부르는 것과 **같은 함수**라 범위 클램프가 한 벌이다.
+      selectVerts: setNodeSel,
+      setVertPos(x, y) {
+        const o = editedPath(p.current.objects, useImageEditorUi.getState().mode);
+        const sel = nodeSelRef.current;
+        const v = o && sel.length === 1 ? vertOf(o, sel[0]) : null;
+        // 여럿을 고른 채 절대 좌표를 쓰면 정점들이 한 점으로 뭉친다 — 인스펙터가 단일 선택에서만
+        // X/Y 를 그리는 이유이고, 여기서도 같은 조건으로 막는다.
+        if (!o || !v) return;
+        commitNode(o, moveVerts(o, sel, x - v.x, y - v.y), "노드 이동", sel);
+      },
+      setVertHandle(side, x, y) {
+        const o = editedPath(p.current.objects, useImageEditorUi.getState().mode);
+        const sel = nodeSelRef.current;
+        const v = o && sel.length === 1 ? vertOf(o, sel[0]) : null;
+        if (!o || !v) return;
+        // 인스펙터 값은 앵커 **상대**(문서 저장 형식)이고 `moveHandle` 은 절대 좌표를 받는다.
+        commitNode(
+          o,
+          moveHandle(o, sel[0], side, { x: v.x + x, y: v.y + y }, { alt: false }),
+          "핸들 조정",
+          sel,
+        );
+      },
+      handleEnter() {
+        const s = p.current;
+        // 1) 펜 드래프트 완료(열린 채) — 커밋 1회 뒤 곧바로 노드 편집으로 들어간다.
+        if (finishPen(false)) return true;
+        const ui = useImageEditorUi.getState();
+        // 2) `편집 완료 ⏎` — 종료는 커밋이 아니다.
+        if (ui.mode.kind === "nodeEdit") {
+          exitNodeEdit();
+          return true;
+        }
+        // 3) 단일 `path` 선택 + Enter = 진입(§3.2). 아니면 **소비하지 않는다** — design 의
+        //    Enter 를 무조건 잡으면 포커스된 버튼이 Enter 로 안 눌린다.
+        if (ui.mode.kind === "design" && s.selectedIds.length === 1) {
+          return enterNodeEdit(s.selectedIds[0]);
+        }
+        return false;
+      },
+      handleUndo() {
+        const d = penRef.current;
+        if (!d) return false;
+        // 드래프트 안에서만 무른다 — 문서 undo 로 새면 "그리기 전"의 편집이 대신 사라진다.
+        setPenDraft(penPop(d));
+        return true;
+      },
     }),
-    [applyAltMeasure, clientToOriented, finishEditing, schedule],
+    [
+      applyAltMeasure,
+      clientToOriented,
+      commitNode,
+      emitNodeEdit,
+      enterNodeEdit,
+      exitNodeEdit,
+      finishEditing,
+      finishPen,
+      schedule,
+      setNodeSel,
+      setPenDraft,
+    ],
   );
 
   return (
@@ -591,7 +974,9 @@ function AnnotationLayerImpl(
         onPointerLeave={clearCursor}
         onDoubleClick={onDoubleClick}
         className={`absolute inset-0 h-full w-full ${
-          props.cropMode || props.tool !== "select"
+          // 노드 편집은 도구가 `select` 여도 십자선이다(47 §3.5) — 정점을 집는 화면에서
+          // 화살표 커서는 "여기서는 객체를 고른다"는 다른 약속을 한다.
+          props.cropMode || props.tool !== "select" || mode.kind === "nodeEdit"
             ? "cursor-crosshair"
             : "cursor-default"
         }`}
@@ -622,6 +1007,23 @@ export default AnnotationLayer;
 
 function sceneTransform(scale: number): SceneTransform {
   return { tx: 0, ty: 0, sx: scale, sy: scale };
+}
+
+/**
+ * 지금 노드 편집 중인 노드. **모드와 문서가 둘 다 맞을 때만** 값이다(47 §3.2).
+ *
+ * `objects` 를 보는 것이 중요하다 — 되돌리기·삭제로 대상이 사라져도 모드는 스토어에 남아 있어서,
+ * id 만 믿으면 죽은 노드에 크롬을 그리려다 매 프레임 undefined 를 만진다.
+ */
+function editedPath(objects: readonly Node[], mode: Mode): PathNode | null {
+  if (mode.kind !== "nodeEdit") return null;
+  const o = objects.find((n) => n.id === mode.id);
+  return o && o.kind === "path" ? o : null;
+}
+
+/** 문서 그대로의 정점(auto 핸들 물질화 전) — 좌표 델타를 잴 때는 이 값이 기준이다. */
+function vertOf(o: PathNode, r: VertRef) {
+  return o.subpaths[r.sub]?.verts[r.vert] ?? null;
 }
 
 /** 여러 사각형의 합집합. 비어 있으면 null — "폭 0 상자"와 "없음"은 다른 뜻이다. */
@@ -719,6 +1121,9 @@ function buildChromeState(
     measures: Measure[] | null;
     guideSel: number;
     pt: Point | null;
+    /** 노드 편집 선택 정점(47). 세션은 ref 에 살고 이 함수는 값만 받는다. */
+    nodeSel: readonly VertRef[];
+    pen: PenDraft | null;
   },
 ): ChromeState {
   const ui = useImageEditorUi.getState();
@@ -777,8 +1182,10 @@ function buildChromeState(
   })();
 
   const drag = f.drag;
+  // 노드 마퀴(47)도 같은 슬롯을 쓴다 — 정점을 고르는 러버밴드가 객체 마퀴와 다른 그림이면
+  // 사용자는 "지금 무엇이 잡히는가"를 두 벌로 배워야 한다.
   const marquee =
-    drag?.mode === "marquee"
+    drag?.mode === "marquee" || drag?.mode === "vmarquee"
       ? (() => {
           const r = marqueeRect(drag);
           return r.w >= MIN_DRAG || r.h >= MIN_DRAG ? r : null;
@@ -835,6 +1242,39 @@ function buildChromeState(
       y2: drag.cur.y,
       color: CHROME_COLORS.smart,
     });
+  }
+
+  // 노드 편집·펜 크롬(47 §3.5) — 스크림·골격선·앵커·핸들·HUD·러버밴드가 전부 여기서 나온다.
+  // **캔버스에는 한 획도 그리지 않는다**: 확대하면 디테일 캔버스(40)가 위를 덮어, 노드를
+  // 편집하려고 확대한 바로 그 순간 크롬이 사라진다. 위에 이미 담긴 것들(픽셀 스냅 셀·측정선)과
+  // ImageEditor 가 합류시키는 45 그라디언트 핸들을 지우지 않도록 **덧붙이기만** 한다.
+  // 드래그 중에는 **라이브 객체**를 본다 — 커밋 전 문서를 보면 앵커·핸들·스크림 구멍이
+  // 손가락을 안 따라오고, 놓는 순간 한 번에 튄다.
+  const editedDoc = editedPath(s.objects, ui.mode);
+  const editedLive = editedDoc ? byId.get(editedDoc.id) : undefined;
+  const edited =
+    editedLive && editedLive.kind === "path" ? editedLive : editedDoc;
+  if (edited) {
+    extra.push(
+      ...nodeChrome(
+        edited,
+        nodeEditState(edited, f.nodeSel, f.pen),
+        { scale: s.screen.scale },
+        // 시안 ③ 아트보드 라벨. 파일명은 이 컴포넌트가 모른다 — 레이어 이름이 컨텍스트 바·
+        // 레이어 패널과 같은 이름이라 그쪽을 쓴다.
+        { label: `${edited.name ?? defaultLayerName(edited, s.objects)} · 벡터 레이어 편집 중` },
+      ),
+    );
+  }
+  // 펜 프리뷰는 드래프트가 없어도 낸다(도구를 막 집었을 때의 커서 힌트) — 대신 도구가 펜일
+  // 때만이다. 다른 도구에서 뜨면 커서를 따라다니는 뱃지가 정작 그리는 선을 가린다.
+  if (s.tool === "vpen") {
+    extra.push(
+      ...penPreview(f.pen, f.pt, {
+        scale: s.screen.scale,
+        tol: HANDLE_GRAB_CSS / Math.max(s.displayScale, 1e-6),
+      }),
+    );
   }
 
   return {
