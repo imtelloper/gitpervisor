@@ -464,7 +464,7 @@ pub(crate) fn run_file(target: &Path) -> Result<(), IpcError> {
 }
 
 #[cfg(windows)]
-fn open_explorer(path: &Path) -> Result<(), IpcError> {
+pub(crate) fn open_explorer(path: &Path) -> Result<(), IpcError> {
     // explorer는 성공해도 비정상 종료코드를 반환할 수 있어 spawn 성공 여부만 본다.
     let mut cmd = Command::new("explorer");
     cmd.arg(path);
@@ -491,7 +491,7 @@ fn open_terminal(path: &Path) -> Result<(), IpcError> {
 }
 
 #[cfg(target_os = "macos")]
-fn open_explorer(path: &Path) -> Result<(), IpcError> {
+pub(crate) fn open_explorer(path: &Path) -> Result<(), IpcError> {
     let mut cmd = Command::new("open");
     cmd.arg(path);
     spawn_launcher(cmd, "탐색기").map_err(|e| spawn_err("탐색기", e))
@@ -505,7 +505,7 @@ fn open_terminal(path: &Path) -> Result<(), IpcError> {
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
-fn open_explorer(path: &Path) -> Result<(), IpcError> {
+pub(crate) fn open_explorer(path: &Path) -> Result<(), IpcError> {
     let mut cmd = Command::new("xdg-open");
     cmd.arg(path);
     spawn_launcher(cmd, "탐색기").map_err(|e| spawn_err("탐색기", e))

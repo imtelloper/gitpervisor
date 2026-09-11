@@ -1,6 +1,6 @@
 # 태스크 66 — 즐겨찾기 폴더 창 (스크린샷·다운로드 빠르게 보기)
 
-> 상태: **구현 완료 · e2e 60 12/12 · 실기 확인 완료** (2026-09-10) · 대상: gitpervisor ·
+> 상태: **구현 완료 · e2e 60 12/12 · 실기 확인 완료** (2026-09-10) · **리뷰 후속 수정 후 e2e 60 18/18** (2026-09-11) · 대상: gitpervisor ·
 > 근거: 코드 실측 2026-09-09(워킹트리 기준) ·
 > 선행: 태스크 30(문서 창 `doc-*`), 56(이미지 ↑↓ 전환 규약), 65(복사 — 경로 복사가 이 경로를 탄다) ·
 > **Rust 변경**: 신규 `commands/favorites.rs` + `Settings` 필드 1개 + `image` 피처 3개
@@ -61,31 +61,47 @@ read-modify-write 한다. 설정 다이얼로그 form이 열린 채 저장하면
 ### 3.2 Rust `commands/favorites.rs` (신규 ~250줄, `lib.rs` 등록 5개)
 
 ```rust
-fn allowed(state: &AppState, path: &str) -> Result<PathBuf, IpcError>
-// dunce::canonicalize(path) 가 favorite_folders 중 하나의 canonical 루트에 starts_with — 아니면 Forbidden.
-// 심링크로 밖으로 나가는 경우도 canonicalize가 잡는다. 아래 절대경로 커맨드 4개가 첫 줄에서 부른다.
+fn allowed(state: &AppState, path: &str) -> Result<PathBuf, IpcError>   // → contained(path, roots)
+// std::fs::canonicalize(path) 가 favorite_folders 중 하나의 std::fs::canonicalize 루트에 (성분 단위)
+// starts_with — 아니면 거부. 심링크로 밖으로 나가는 경우도 canonicalize가 잡는다. 아래 절대경로 커맨드
+// 4개가 첫 줄에서 부른다. 돌려주는 값만 dunce::simplified.
 ```
 
+**(2026-09-11 정정)** 처음엔 양쪽을 `dunce::canonicalize`로 풀었는데, `dunce`는 `\\?\` 접두를 260자 이하일 때만
+벗긴다. 짧은 루트는 `C:\…`(Disk), 깊은 하위 파일은 `\\?\C:\…`(VerbatimDisk)가 되어 `starts_with`가 첫 성분부터
+어긋나고 **루트 안의 정당한 파일이 거부됐다**(막히는 쪽이라 우회는 아니었다). 이제 양쪽을 같은 함수로 푼다.
+
 - `fav_presets() -> Vec<FavoriteFolder>` — 존재하는 것만.
-  - Windows: 스크린샷 = 레지스트리 `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders`
-    의 `{B7BEDE81-DF94-4682-A7D8-57A52620B86F}`(환경변수 확장) → 없으면 `%USERPROFILE%\Pictures\Screenshots`;
-    다운로드 = `{374DE290-123F-4565-9164-39C4925E467B}` → `%USERPROFILE%\Downloads`; 바탕화면 `%USERPROFILE%\Desktop`.
+  - Windows: 레지스트리 `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders`의 값을
+    **모든 `%NAME%` 환경변수를 확장**해 쓴다(OneDrive 이동·폴더 리디렉션은 `%USERPROFILE%` 밖의 변수를 쓴다).
+    스크린샷 = `{B7BEDE81-DF94-4682-A7D8-57A52620B86F}` → 없으면 `My Pictures` 값 아래 `Screenshots` →
+    `%USERPROFILE%\Pictures\Screenshots`; 다운로드 = `{374DE290-123F-4565-9164-39C4925E467B}` →
+    `%USERPROFILE%\Downloads`; 바탕화면 = `Desktop` 값 → `%USERPROFILE%\Desktop`.
   - macOS: 스크린샷 = `defaults read com.apple.screencapture location`(짧은 동기 `Command`, 출력 읽음) →
     없으면 `~/Desktop`; `~/Downloads`; `~/Desktop`.
-  - Linux: `~/Pictures/Screenshots`(GNOME 42+) → `~/Pictures`; `XDG_DOWNLOAD_DIR`(`~/.config/user-dirs.dirs`
-    한 줄 파싱) → `~/Downloads`; `~/Desktop`.
+  - Linux: `~/.config/user-dirs.dirs`의 `XDG_<키>_DIR`(로케일에 따라 "다운로드"·"바탕화면"·"사진")을 쓴다.
+    다운로드 = `DOWNLOAD` → `~/Downloads`; 바탕화면 = `DESKTOP` → `~/Desktop`; 스크린샷 = `<PICTURES>/Screenshots`가
+    있으면 그것, 없으면 사진 폴더 자체다. gnome-shell은 하위 폴더 이름도 번역한다(한국어면 `~/사진/스크린샷`) —
+    번역명은 모르므로 사진 폴더에서 멈춘다(ponytail).
 - `fav_list(path) -> Vec<FavEntry { name, is_dir, size, mtime_ms, kind }>` — `kind`는 확장자로
   `image`(png jpg jpeg gif webp bmp svg) · `video`(mp4 mov webm mkv) · `dir` · `other`. 점 파일·Windows 숨김
   제외. 정렬은 프론트. 상한 없음(메타 ~100B/개).
-- `fav_thumb(app, path, edge: u32) -> String`(data URL `image/jpeg`) — gate → 캐시 키
-  `sha256(path|mtime|size|edge)` → `app_cache_dir()/thumbs/<hex>.jpg` 있으면 그대로 → 없으면 `spawn_blocking`
-  에서 `image::open(..).thumbnail(edge, edge)` → JPEG q80 → 캐시 기록 → 반환. `edge`는 **128/192/320 중
+- `fav_thumb(app, path, edge: u32) -> String`(data URL `image/jpeg`, **async 커맨드**) — gate → 캐시 키
+  `sha256(path|mtime|size|edge)` → `app_cache_dir()/thumbs/<hex>.jpg` 있으면 그대로(슬롯을 기다리지 않는다) →
+  없으면 **디코드 슬롯(프로세스 전체 3개, `DECODE_SLOTS`)**을 쥐고 `spawn_blocking`에서 `decode_thumb` →
+  JPEG q80 → `write_atomic`(같은 폴더 임시 파일 + rename)으로 캐시 기록 → 반환. `edge`는 **128/192/320 중
   하나만** 받는다(그리드 S/M/L, 그 외 거부 — 캐시 폭주 방지). svg는 썸네일 없이 `fav_read` 원본, video/other는
   프론트 아이콘. `image` 피처에 `gif`·`webp`·`bmp` 추가(pure Rust).
-  ponytail: 캐시 용량 무제한 — `MaintenanceSection`에 "썸네일 캐시 비우기"(폴더 삭제 1줄). 상한·LRU는 커지면.
+  - `decode_thumb`: 디코더는 **내용으로** 고른다(`ImageReader::with_guessed_format` — `.png`로 저장된 JPEG도 연다).
+    한도는 디코드 **전에** 건다: 파일 256 MiB(JPEG 디코더는 생성자에서 파일 전체를 읽어 `Limits`보다 먼저
+    할당한다), 치수 16384 px, 할당 256 MiB. 걸리면 "이미지가 너무 큽니다 (…) — 기본 앱으로 열어 보세요".
+  - 캐시 정리: 프로세스당 첫 호출 때 한 번, 30일 넘게 다시 기록되지 않은 `*.jpg`와 1시간 넘은 고아 `*.tmp`를
+    지운다. ponytail: 나이로만 거둔다 — 용량이 문제가 되면 총량 상한 + LRU.
 - `fav_read(path) -> FileBytes { mime, base64 }` — 라이트박스 원본. `diff.rs` FileBytes·크기 한도 재사용.
-- `fav_open(path, how: "default" | "reveal")` — gate → `reveal`은 기존 `reveal(p)`; `default`는 Windows
-  `explorer <file>`, macOS `open`, Linux `xdg-open` — 전부 `spawn_launcher`.
+- `fav_open(path, how: "default" | "reveal")` — gate → `reveal`은 기존 `reveal(p)`(상위 폴더를 열고 이것을
+  선택); `default`는 **폴더면 `open_explorer(p)`(그 폴더 자체를 연다)**, 파일이면 `run_file(p)` — 전부
+  `spawn_launcher`. 폴더 창 툴바의 "탐색기에서 이 폴더 열기"가 `default`를 쓴다(2026-09-11 — 처음엔 `reveal`이라
+  **상위 폴더**가 열렸고, 폴더를 받은 Linux `run_file`은 그 폴더를 먼저 exec 하려 했다).
 
 ### 3.3 창 — `doc-*` 재사용
 
@@ -100,13 +116,18 @@ fn allowed(state: &AppState, path: &str) -> Result<PathBuf, IpcError>
 ### 3.4 `components/folder/FolderWindow.tsx` (신규 ~350줄; `FolderGrid`·`FolderList`·`Lightbox`로 나눠도 됨)
 
 - 상태: `dir`(현재 경로, root 하위) · `entries` · `mode: "grid-s"|"grid-m"|"grid-l"|"list"` · `sort` ·
-  `imagesOnly` · `query` · `selected` · `lightbox: number | null`. `mode/sort/imagesOnly`는 localStorage
+  `imagesOnly` · `query` · `sel: { name, index }` · `lightbox: string | null`. `mode/sort/imagesOnly`는 localStorage
   `gp:folder-view:<root>`.
+  **선택과 라이트박스는 이름으로 붙든다(2026-09-11).** 인덱스로 들면 포커스·F5 갱신이 더 최신 파일을 앞에 끼울 때
+  강조·Ctrl+C·Enter·라이트박스가 말없이 옆 파일로 옮겨 간다. 이름이 사라지면 마지막 자리로 폴백하고, 라이트박스는
+  닫는다. **아직 아무것도 안 골랐으면 강조는 맨 앞(최신)을 따라간다** — 새 스크린샷을 찍고 창을 클릭하면 그게 잡혀야 한다.
 - 상단: `FloatTitleBar(title=폴더명, badge="폴더")` + 툴바(브레드크럼 · 검색 · 이미지만 · 정렬 · 모드 세그먼트 ·
   새로고침 · 탐색기).
 - 그리드: CSS `grid-template-columns: repeat(auto-fill, minmax(edge, 1fr))`, 셀 `content-visibility: auto;
-  contain-intrinsic-size`. 썸네일은 **IntersectionObserver로 보일 때만** 요청, 동시 8개 큐, 결과 `Map<path,
-  dataUrl>`(창 수명). 목록: 테이블 + 종류 아이콘(썸네일 없음).
+  contain-intrinsic-size`. 썸네일은 **IntersectionObserver로 보일 때만** 요청, 동시 8개 큐, 결과 맵의 키는
+  `이름|mtime|크기`(백엔드 캐시 키와 같은 셋 — 이름만이면 같은 이름으로 덮어쓴 파일이 옛 썸네일을 영영 쓴다).
+  칸의 React key도 같은 값이라 다시 쓴 파일은 칸이 새로 마운트돼 재요청된다(IO는 이미 관찰 중인 요소의 `observe()`를
+  무시한다). 요청은 초기화 세대를 들고 나가, 크기 전환 뒤 늦게 온 응답은 버린다. 목록: 테이블 + 종류 아이콘(썸네일 없음).
 - 갱신: `getCurrentWindow().onFocusChanged(true)` → `fav_list` 재호출(mtime 동일이면 상태 유지), F5, 버튼.
   notify 감시는 안 한다(스크린샷은 다른 창에 있을 때 찍히고, 보려면 이 창을 클릭한다 = 포커스 = 갱신).
 - 라이트박스: `fav_read` → `<img class="object-contain">`(ZoomableImage는 편집 버튼이 프로젝트 경로를 요구해
@@ -136,6 +157,7 @@ freedesktop 캐시), notify 감시, 창 간 드래그(별도 webview라 HTML5 Dn
 
 - **Rust 단위**: `allowed()` — 루트 밖·`..`·심링크 탈출 거부, 루트 자신·하위 허용; `fav_presets` 존재 필터;
   `fav_thumb` 캐시 히트(두 번째 호출이 디코드 없이 같은 바이트); `edge` 128/192/320 외 거부.
+  (실제로 들어간 목록은 §6 "검증 상태"와 "리뷰 후속 수정" — 게이트 테스트는 `contained()`를 직접 부른다.)
 - **e2e 53(신규)**: 픽스처 폴더(png 3·jpg 1·txt 1·하위 폴더 1) 생성 → `__gpv`로 `favoriteFolders` 설정 →
   타이틀바 [폴더] → 항목 클릭 → `doc-*` 창 뜸 → 목록 6개 → 그리드 셀에 `data:image/jpeg` 도착 → 목록 모드·정렬·
   이미지만(4개) → 하위 폴더 진입·Backspace → png 더블클릭 → 라이트박스 → 키로 다음, `n / N` → 우클릭
@@ -214,3 +236,29 @@ freedesktop 캐시), notify 감시, 창 간 드래그(별도 webview라 HTML5 Dn
   `run.mjs` 의 목록에서 빈 번호를 고른다.
 - 게이트 e2e 는 **비허용 경로로 `fav_list` 를 직접 invoke 해 거부되는지**를 반드시 포함한다.
   UI 로만 확인하면 프론트가 안 보내는 것과 백엔드가 막는 것이 구분되지 않는다.
+
+### 리뷰 후속 수정 (2026-09-11)
+
+병합 전 반박 검증 리뷰가 잡은 9건을 고쳤다(브랜치 `fix/review-65-66`). 수정마다 **되돌리면 빨개지는** 검사를 붙였다.
+
+| # | 결함 | 수정 | 검사 |
+|---|---|---|---|
+| 1 | `fav_thumb`가 async 워커에서 한도 없이 디코드(창당 8개) — 초대형 이미지 몇 장이면 수 GiB, 다른 커맨드 정체 | blocking 풀 + 프로세스 전체 슬롯 3개 + 파일·치수·할당 한도(§3.2) | `decode_slots_cap_concurrency_at_three` · `decode_thumb_rejects_oversized_dimensions` · `decode_thumb_rejects_oversized_file_before_reading_it` |
+| 2 | 확장자로만 디코더 선택 — 확장자가 틀린 이미지는 썸네일이 없다 | `with_guessed_format` | `decode_thumb_sniffs_content_not_extension` |
+| 3 | 캐시 비원자 쓰기 — 도중에 죽으면 잘린 JPEG를 계속 내준다 | 임시 파일 + rename | `write_atomic_replaces_instead_of_truncating`(하드링크로 제자리 쓰기를 가려낸다) |
+| 4 | 캐시 무한 증가 | 나이 기반 정리(30일 · 고아 임시 파일 1시간) | `prune_removes_only_stale_entries` |
+| 5 | 260자 넘는 경로가 게이트에서 거부(`\\?\` 접두 불일치) | 양쪽 `std::fs::canonicalize` | `contained_allows_long_paths_under_root`(옛 판정이 이 파일을 거부함을 전제로 단언) · `contained_allows_root_and_children_only`(`<root>-2` 형제 거부 포함) |
+| 6 | Windows 스크린샷·바탕화면 프리셋이 OneDrive 이동을 무시 · Linux 로케일 폴더 무시 | 전 변수 확장 · `Desktop`/`My Pictures` 값 · XDG 파서 일반화 | `expand_env_vars_expands_every_known_token` · `user_dirs_parser_reads_any_key` · `gnome_screenshots_stay_in_localized_pictures_dir` |
+| 7 | 툴바 "탐색기에서 이 폴더 열기"가 상위 폴더를 열었다 | `default` + 폴더면 `open_explorer` | `folders_open_themselves_unless_revealed` · e2e 60 ⑪ |
+| 8 | 갱신 뒤 강조·라이트박스가 인덱스라 다른 파일을 가리켰다 | 이름으로 고정(§3.4) | e2e 60 ⑦ · ⑨ · ⑫(안 골랐으면 최신을 따라감) |
+| 9 | 썸네일이 이름으로만 캐시 — 덮어쓴 파일은 옛 썸네일, 크기 전환 중 늦은 응답이 덮어씀 | 키 이름·mtime·크기 · 칸 재마운트 · 세대 가드 | e2e 60 ⑧ · ⑩ |
+
+Rust 단위 테스트 241 → **252**(신규 11), 새 경고 0. `cfg(unix)`·`cfg(macos)` 호출부는 이 머신에서 컴파일되지 않아
+눈으로만 검토했다(순수 도우미는 전 플랫폼에서 컴파일돼 단위 테스트가 여기서 돈다).
+
+알고 둔 한계: 폴더 창 `useThumbs`의 `nodes` 맵은 떨어진 칸을 지우지 않는다(다시 쓴 파일마다 하나씩, 창 수명) ·
+라이트박스는 열린 파일이 같은 이름으로 다시 쓰여도 다시 읽지 않는다 · Linux 스크린샷은 번역된 하위 폴더 이름을 모른다.
+
+**e2e(2026-09-11, `F:\gp-fix` dev 빌드)**: 60 **18/18** — 새 ⑦~⑫ 전부 통과. ⑩·⑪ 은 페이지가 실제로 로드한 `ipc`
+모듈(`performance` 리소스 항목으로 찾는다 — vite 의 `?t=` 사본 대비)을 스파이한다. `__TAURI_INTERNALS__.invoke` 는
+non-writable 이라 그게 유일한 틈이다.

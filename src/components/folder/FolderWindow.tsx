@@ -47,8 +47,12 @@ export default function FolderWindow({ root }: { root: string }) {
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState(() => readView(root));
   const [query, setQuery] = useState("");
-  const [cursor, setCursor] = useState(0);
-  const [lightbox, setLightbox] = useState<number | null>(null);
+  /** 선택. **이름으로 붙든다** — 인덱스로 들면 포커스·F5 갱신이 더 최신 파일을 앞에 끼울 때(기본
+   *  정렬이 최신 먼저) 강조·Ctrl+C·Enter 가 말없이 옆 파일로 옮겨 간다. 스크린샷 경로를 Claude 에
+   *  넘기는 바로 그 동선에서 엉뚱한 경로가 나간다. */
+  const [sel, setSel] = useState<Sel>(NO_SEL);
+  /** 라이트박스에 열린 이미지의 **이름** — 같은 이유로 인덱스가 아니다. */
+  const [lightbox, setLightbox] = useState<string | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; entry: FavEntry } | null>(
     null,
   );
@@ -68,7 +72,7 @@ export default function FolderWindow({ root }: { root: string }) {
 
   useEffect(() => {
     setEntries(null);
-    setCursor(0);
+    setSel(NO_SEL); // 폴더가 바뀌면 선택은 처음부터
     void load();
   }, [load]);
 
@@ -110,18 +114,48 @@ export default function FolderWindow({ root }: { root: string }) {
   /** 라이트박스가 넘나드는 순서 = **지금 보이는 순서의 이미지들**(태스크 56 규약). */
   const images = useMemo(() => shown.filter((e) => e.kind === "image"), [shown]);
 
+  const cursor = useMemo(() => cursorOf(shown, sel), [shown, sel]);
+  // 이름이 사라졌으면(삭제·필터) 폴백 자리의 항목이 새 선택이다 — 다음 갱신부터는 그 이름을 따라간다.
+  // 자리도 함께 적어 둔다: 다음에 사라질 때의 폴백이다.
+  // **아직 안 골랐으면(NO_SEL) 적지 않는다.** 고르기 전의 강조는 맨 앞(= 최신)을 따라가야 한다 — 새
+  // 스크린샷을 찍고 창을 클릭(= 갱신)하면 강조·Ctrl+C·Enter 가 방금 찍은 것이어야 한다. 첫 로드에서 이름을
+  // 붙들면 이전 스크린샷에 남아 옛 경로가 나간다. 이름은 클릭·화살표가 비로소 적는다.
+  useEffect(() => {
+    if (sel.name === null) return;
+    const e = shown[cursor];
+    if (e && (e.name !== sel.name || cursor !== sel.index)) setSel({ name: e.name, index: cursor });
+  }, [shown, cursor, sel]);
+  const select = useCallback(
+    (i: number) => {
+      const e = shown[i];
+      if (e) setSel({ name: e.name, index: i });
+    },
+    [shown],
+  );
+
+  const lbIndex = lightbox === null ? -1 : images.findIndex((e) => e.name === lightbox);
+  // 열어 둔 이미지가 갱신 뒤 없으면(지워짐) 닫는다 — 옆 이미지로 슬쩍 바뀌어 보이면 안 된다.
+  useEffect(() => {
+    if (lightbox !== null && lbIndex < 0) setLightbox(null);
+  }, [lightbox, lbIndex]);
+  const stepLightbox = useCallback(
+    (d: number) =>
+      setLightbox((name) => {
+        const i = images.findIndex((e) => e.name === name);
+        return i < 0 ? name : images[Math.max(0, Math.min(images.length - 1, i + d))].name;
+      }),
+    [images],
+  );
+
   const openEntry = useCallback(
     (e: FavEntry) => {
       if (e.isDir) {
         setDir(join(dir, e.name));
         return;
       }
-      if (e.kind === "image") {
-        const i = images.findIndex((x) => x.name === e.name);
-        if (i >= 0) {
-          setLightbox(i);
-          return;
-        }
+      if (e.kind === "image" && images.some((x) => x.name === e.name)) {
+        setLightbox(e.name);
+        return;
       }
       void ipc.favOpen(join(dir, e.name), "default").catch((err) =>
         useUi.getState().pushToast("error", `열지 못했습니다 — ${msg(err)}`),
@@ -164,9 +198,8 @@ export default function FolderWindow({ root }: { root: string }) {
         ev.target instanceof HTMLTextAreaElement;
       if (lightbox !== null) {
         if (ev.key === "Escape") setLightbox(null);
-        else if (ev.key === "ArrowRight")
-          setLightbox((i) => Math.min((i ?? 0) + 1, images.length - 1));
-        else if (ev.key === "ArrowLeft") setLightbox((i) => Math.max((i ?? 0) - 1, 0));
+        else if (ev.key === "ArrowRight") stepLightbox(1);
+        else if (ev.key === "ArrowLeft") stepLightbox(-1);
         else return;
         ev.preventDefault();
         return;
@@ -210,11 +243,15 @@ export default function FolderWindow({ root }: { root: string }) {
       ev.preventDefault();
       // 목록 모드는 ←→도 한 칸씩(열이 하나라 위아래와 같다).
       const delta = step || row * (view.mode === "list" ? 1 : 0) || row;
-      setCursor((c) => Math.max(0, Math.min(shown.length - 1, c + delta)));
+      // 새 자리를 계산해 **이름**으로 적는다(위 sel 주석).
+      setSel((s) => {
+        const i = Math.max(0, Math.min(shown.length - 1, cursorOf(shown, s) + delta));
+        return shown[i] ? { name: shown[i].name, index: i } : s;
+      });
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [lightbox, images.length, shown, cursor, view.mode, load, goUp, openEntry, copyPath]);
+  }, [lightbox, stepLightbox, shown, cursor, view.mode, load, goUp, openEntry, copyPath]);
 
   const crumbs = useMemo(() => {
     const rootName = root.replace(/[\\/]+$/, "").split(SEP).filter(Boolean).pop() ?? root;
@@ -243,8 +280,10 @@ export default function FolderWindow({ root }: { root: string }) {
         view={view}
         setView={setView}
         onRefresh={() => void load()}
+        // 이 폴더 **자체**를 연다 — `reveal` 은 상위 폴더를 열고 이것을 선택만 한다(Linux 는 상위만).
+        // `default` 는 디렉터리를 받으면 그 폴더를 연다(commands/favorites.rs `fav_open`).
         onReveal={() =>
-          void ipc.favOpen(dir, "reveal").catch(() => {
+          void ipc.favOpen(dir, "default").catch(() => {
             useUi.getState().pushToast("error", "탐색기를 열지 못했습니다");
           })
         }
@@ -274,7 +313,7 @@ export default function FolderWindow({ root }: { root: string }) {
           <ListView
             items={shown}
             cursor={cursor}
-            onCursor={setCursor}
+            onCursor={select}
             onOpen={openEntry}
             onMenu={(x, y, e) => setMenu({ x, y, entry: e })}
           />
@@ -285,7 +324,7 @@ export default function FolderWindow({ root }: { root: string }) {
             join={join}
             edge={EDGE[view.mode]}
             cursor={cursor}
-            onCursor={setCursor}
+            onCursor={select}
             onOpen={openEntry}
             onMenu={(x, y, e) => setMenu({ x, y, entry: e })}
           />
@@ -313,16 +352,14 @@ export default function FolderWindow({ root }: { root: string }) {
         />
       )}
 
-      {lightbox !== null && images[lightbox] && (
+      {lbIndex >= 0 && (
         <Lightbox
-          path={join(dir, images[lightbox].name)}
-          name={images[lightbox].name}
-          index={lightbox}
+          path={join(dir, images[lbIndex].name)}
+          name={images[lbIndex].name}
+          index={lbIndex}
           total={images.length}
           onClose={() => setLightbox(null)}
-          onStep={(d) =>
-            setLightbox((i) => Math.max(0, Math.min(images.length - 1, (i ?? 0) + d)))
-          }
+          onStep={stepLightbox}
         />
       )}
 
@@ -379,6 +416,19 @@ function writeView(root: string, v: View) {
 }
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/** 선택 — `name` 이 본체이고 `index` 는 마지막으로 보인 자리(이름이 사라졌을 때의 폴백). */
+interface Sel {
+  name: string | null;
+  index: number;
+}
+const NO_SEL: Sel = { name: null, index: 0 };
+/** 선택이 지금 목록의 몇 번째인가. 이름이 없으면(삭제·필터) 마지막 자리 — 끝을 넘지 않게. 아직 안
+ *  골랐으면(NO_SEL) 늘 0 = 맨 앞(최신). */
+const cursorOf = (list: FavEntry[], s: Sel) => {
+  const i = list.findIndex((e) => e.name === s.name);
+  return i >= 0 ? i : Math.min(s.index, list.length - 1);
+};
 
 const fmtSize = (n: number) =>
   n < 1024
@@ -540,7 +590,9 @@ function GridView({
     >
       {items.map((e, i) => (
         <button
-          key={e.name}
+          // key 가 곧 썸네일 식별 키다 — 같은 이름으로 다시 쓴 파일은 칸이 **새로 마운트**돼야 새 키를
+          // 요청한다. IntersectionObserver 는 이미 관찰 중인 요소의 observe() 를 무시한다(첫 콜백이 없다).
+          key={thumbKey(e)}
           ref={(el) => thumbs.observe(el, e)}
           onClick={() => onCursor(i)}
           onDoubleClick={() => onOpen(e)}
@@ -563,9 +615,9 @@ function GridView({
           >
             {e.isDir ? (
               <Folder size={edge / 3} className="text-fg-dim" />
-            ) : thumbs.get(e.name) ? (
+            ) : thumbs.get(e) ? (
               <img
-                src={thumbs.get(e.name)}
+                src={thumbs.get(e)}
                 alt={e.name}
                 className="h-full w-full object-contain"
               />
@@ -598,11 +650,18 @@ function FileGlyph({ size }: { size: number }) {
   );
 }
 
+/** 썸네일 식별 키 — 이름|mtime|크기. **이름만으로 들면 안 된다:** 같은 이름으로 다시 쓴 파일(편집기로
+ *  덮어쓴 스크린샷)이 옛 썸네일을 영영 쓴다. 백엔드 디스크 캐시 키도 같은 셋이다(favorites.rs `fav_thumb`). */
+const thumbKey = (e: FavEntry) => `${e.name}|${e.mtimeMs}|${e.size}`;
+
 /**
  * 보이는 칸의 썸네일만 받아 온다.
  *
  * 전부 미리 받으면 스크린샷 폴더(수백 장)에서 IPC 가 그만큼 나가고 각 응답이 base64 문자열이다.
- * IntersectionObserver 로 화면에 들어온 것만, 동시 8개까지 요청한다.
+ * IntersectionObserver 로 화면에 들어온 것만, 동시 8개까지 요청한다. 키는 `thumbKey`.
+ *
+ * ponytail: 다시 쓴 파일의 옛 키 썸네일은 폴더를 옮기거나 크기를 바꿀 때까지 map 에 남는다(장당 수십 KB).
+ * 커지면 목록 갱신 때 지금 목록의 키만 남기고 거른다.
  */
 function useThumbs(
   dir: string,
@@ -611,25 +670,34 @@ function useThumbs(
 ) {
   const [map, setMap] = useState<Record<string, string>>({});
   const inflight = useRef(0);
-  const queue = useRef<{ name: string; path: string }[]>([]);
+  const queue = useRef<{ key: string; path: string; edge: 128 | 192 | 320; gen: number }[]>([]);
   const asked = useRef<Set<string>>(new Set());
+  /** 초기화 세대. 요청은 자기 세대를 들고 나가고, 돌아왔을 때 세대가 바뀌었으면 버린다 — 크기를 바꾼
+   *  직후 늦게 온 128px 응답이 320px 칸을 덮거나, 옛 폴더의 응답이 같은 키 칸에 앉지 않게. */
+  const gen = useRef(0);
   const io = useRef<IntersectionObserver | null>(null);
   const nodes = useRef(new Map<Element, FavEntry>());
 
-  // 폴더나 썸네일 크기가 바뀌면 처음부터 — 캐시 키가 달라진다.
+  // 폴더나 썸네일 크기가 바뀌면 처음부터 — 캐시 키가 달라진다. setMap({}) 은 매번 새 객체라 반드시
+  // 다시 그려지고, 그 렌더의 ref 콜백이 칸들을 **새** observer 에 다시 붙인다(아래 observe).
   useEffect(() => {
+    gen.current++;
     setMap({});
     asked.current = new Set();
     queue.current = [];
   }, [dir, edge]);
 
+  // 요청이 자기 edge 를 들고 다니므로 pump 는 한 벌이면 된다. 렌더마다 edge 를 붙든 pump 였다면
+  // 크기를 바꾼 뒤 옛 요청의 finally 가 부른 **옛** pump 가 새 요청을 옛 크기로 내보낸다.
   const pump = useCallback(() => {
     while (inflight.current < 8 && queue.current.length) {
       const job = queue.current.shift()!;
       inflight.current++;
       void ipc
-        .favThumb(job.path, edge)
-        .then((url) => setMap((m) => ({ ...m, [job.name]: url })))
+        .favThumb(job.path, job.edge)
+        .then((url) => {
+          if (job.gen === gen.current) setMap((m) => ({ ...m, [job.key]: url }));
+        })
         .catch(() => {
           /* 못 만드는 형식(svg·손상)은 아이콘으로 남는다 — 조용히 넘긴다 */
         })
@@ -638,7 +706,7 @@ function useThumbs(
           pump();
         });
     }
-  }, [edge]);
+  }, []);
 
   useEffect(() => {
     io.current = new IntersectionObserver(
@@ -647,17 +715,17 @@ function useThumbs(
           if (!it.isIntersecting) continue;
           const e = nodes.current.get(it.target);
           if (!e || e.isDir || e.kind !== "image") continue;
-          const key = `${e.name}`;
+          const key = thumbKey(e);
           if (asked.current.has(key)) continue;
           asked.current.add(key);
-          queue.current.push({ name: e.name, path: join(dir, e.name) });
+          queue.current.push({ key, path: join(dir, e.name), edge, gen: gen.current });
         }
         pump();
       },
       { rootMargin: "200px" },
     );
     return () => io.current?.disconnect();
-  }, [dir, pump, join]);
+  }, [dir, edge, pump, join]);
 
   const observe = useCallback((el: Element | null, e: FavEntry) => {
     if (!el || !io.current) return;
@@ -665,7 +733,7 @@ function useThumbs(
     io.current.observe(el);
   }, []);
 
-  const get = useCallback((name: string) => map[name], [map]);
+  const get = useCallback((e: FavEntry) => map[thumbKey(e)], [map]);
   return { observe, get };
 }
 
