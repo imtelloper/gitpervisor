@@ -561,3 +561,102 @@ Tauri v2의 ACL은 허용 목록이라, 목록에 없는 커맨드는 호출 시
 **빠뜨린** 권한은 그 코드를 실제로 실행해 봐야만 드러난다. 그리고 실패가 unhandled rejection이라
 화면에는 아무 것도 안 나온다 — 이 건도 다른 기능을 검증하다 로그에서 우연히 걸렸다.
 창 제어·파일시스템 등 ACL이 걸린 API를 새로 쓸 때는 **그 경로를 한 번 실제로 눌러 봐야 한다.**
+
+---
+
+## 12. 터미널이 1분 넘게 빈 화면이다가 `os error 1920` — Store PowerShell 별칭이 옛 버전을 가리킨다
+
+### 12.1 증상
+
+설치본(v0.5.2)을 재시작하자 복원된 터미널이 전부 빈 화면(커서만)으로 멈췄다가, 60~80초 뒤 하나씩 빨간 줄로 바뀌었다:
+
+```
+[터미널 연결 실패] 셸 실행 실패(pwsh.exe): CreateProcessW `"C:\Users\…\AppData\Local\Microsoft\WindowsApps\pwsh.exe -NoLogo"`
+in cwd `…` failed: 시스템에서 파일에 액세스할 수 없습니다. (os error 1920)
+```
+
+앱 로그(UTC): 시작 00:02:26 → 실패 00:03:29, 00:03:49(7건 동시). 같은 시각 이 PC의 다른 pwsh 사용처
+(에이전트의 PowerShell 도구는 출력 없이 exit 1)도 같은 이유로 죽어 있었다 — 앱만의 문제가 아니다.
+
+### 12.2 근본 원인 — 업데이트를 따라가지 못한 앱 실행 별칭
+
+- Microsoft Store가 PowerShell을 7.6.5.0 → 7.6.6.0으로 자동 업데이트했다(2026-09-09 설치). 그런데
+  `%LOCALAPPDATA%\Microsoft\WindowsApps\pwsh.exe`(APPEXECLINK 재분석 지점)와
+  `WindowsApps\Microsoft.PowerShell_8wekyb3d8bbwe\pwsh.exe`는 **여전히 7.6.5.0 폴더를 가리켰다.**
+  `Get-AppxPackage`는 7.6.6.0 / Status Ok.
+- 별칭을 실행하면 AppInfo가 on-demand 복구(`RegisterByPackageFamilyName … SkipReregisterIfPackageStatusOk`,
+  AppXDeploymentServer/Operational 603)를 걸고, 패키지 상태가 Ok라 재등록을 **건너뛴** 뒤 활성화에 실패한다
+  (AppModel-Runtime/Admin 202 "0x69004D"). 그 사이 **CreateProcessW가 20~80초 블록**되고 1920으로 끝난다.
+  실행할 때마다 반복되고 스스로 낫지 않는다(1분 간격으로 16분간 관측).
+- 앱의 셸 선택(`default_shell`)은 `where pwsh`로 **파일 존재만** 봤다. 별칭 파일은 있으니 pwsh를 골랐다.
+- 옛 7.6.5.0 폴더는 디스크에 남아 있었다 → "별칭 대상 파일이 있나"로도 가려지지 않는다.
+- 추정 경위: 터미널의 pwsh가 늘 켜져 있어 업데이트 등록이 미뤄졌고, 별칭이 갱신되지 않은 채 재부팅됐다.
+  **Store 업데이트마다 재발할 수 있는 구조**다.
+
+판별 — 두 버전이 다르면 이 건이다(대조군: 같은 머신의 `winget.exe` 별칭은 264ms에 정상 실행):
+
+```bash
+ls -la ~/AppData/Local/Microsoft/WindowsApps/pwsh.exe      # Git Bash가 별칭 대상 경로를 보여 준다
+powershell.exe -NoProfile -c "(Get-AppxPackage Microsoft.PowerShell).Version"   # 등록된 버전
+```
+
+### 12.3 앱 안에서 pwsh 7을 살릴 수 없는 이유 (실측)
+
+- 패키지 exe 직접 실행(`C:\Program Files\WindowsApps\Microsoft.PowerShell_7.6.6.0_…\pwsh.exe`):
+  icacls에 `BUILTIN\Users:(RX)`가 보여도 **40초 넘게 블록된 뒤 "액세스가 거부"**.
+- 7.6.6.0을 가리키는 APPEXECLINK를 직접 만들어 실행: **60초 블록 후 1920.**
+
+→ 앱이 할 일은 **기다리지 않고 다른 셸로 여는 것**이다.
+
+### 12.4 해결 — `src-tauri/src/commands/terminal/shell.rs`
+
+`term_open`의 셸 선택을 "후보를 순서대로 **사전 검사 → 시간 제한 실행**, 막히면 다음 후보"로 바꿨다.
+
+- **후보:** 설정 셸 → PATH의 `pwsh.exe` **전부** → `%ProgramFiles%\PowerShell\*\pwsh.exe`(MSI) →
+  Windows PowerShell 5.1(절대경로) → `%ComSpec%`/cmd. 패키지 설치 폴더 직접 실행은 넣지 않는다(12.3).
+- **사전 검사(프로세스 없이 즉시):** 후보가 앱 실행 별칭이면 재분석 데이터(버전 3 + NUL 종료 UTF-16
+  문자열 4개: 패밀리명·AUMID·대상 exe·앱 타입 — 문서화된 형식이 아니라 fsutil 덤프로 확인)를 읽고,
+  대상 경로의 패키지 full name이 `GetPackagesByPackageFamily`가 돌려준 **등록 목록에 있는지** 본다.
+  없으면(= 옛 버전) 실행하지 않고 건너뛴다. 이 건의 60~80초가 **0.2초 안쪽**으로 줄었다
+  (`cargo test --lib terminal::shell -- --ignored` 머신 회귀 테스트: 145~192ms에 5.1 선택).
+  dev 앱 실측(CDP로 `term_open` 직접 구동, 같은 깨진 상태): 첫 열기 0.73초, 8개 동시 최대 0.17초,
+  UI 터미널 탭의 xterm 버퍼에 안내 줄 + 프롬프트 확인.
+- **시간 제한:** 판정으로 못 잡는 고장에 대비해 후보마다 새 PTY 쌍 + 10초. 늦게 뜬 셸은 거둔다.
+  PTY를 연 뒤 셸 실행에서 막힌 경우만 10분간 기억해 다음 터미널부터 기다리지 않는다(별칭 파일이 바뀌면
+  즉시 재시도). 빠른 실패는 기억하지 않는다 — 긴 cwd의 os error 267처럼 셸 탓이 아닐 수 있어서다.
+  마지막 후보(cmd)는 기록을 무시한다 — 터미널이 아예 안 열리는 상태는 만들지 않는다.
+- **안내:** 폴백하면 그 셸이 **자기 출력으로** 첫 줄에 노란 글씨로 사유를 찍는다
+  (`-NoExit -Command "Write-Host '…'"` / `cmd /K echo …`). 프론트가 xterm에 먼저 쓰면 ConPTY 시작 시퀀스의
+  `ESC[2J`에 지워지고, 출력 스트림에 끼워 넣으면 ConPTY 화면 모델과 어긋나기 때문이다.
+  `-EncodedCommand`는 백신이 악성 지표로 봐서 쓰지 않는다.
+- 터미널마다 `where` 프로세스를 띄우던 것도 사라졌다(인프로세스 PATH 스캔).
+
+### 12.5 OS 쪽 복구 — pwsh 7로 되돌리기 (2026-09-11 실측)
+
+- **패키지 재등록은 안 됐다.** `Add-AppxPackage -Register "<InstallLocation>\AppxManifest.xml" -DisableDevelopmentMode`가
+  300초 넘게 멈춰 강제 종료했다. 같은 시각 winget도 자기 소스 패키지를 까는 AddPackage에서 `Begin blocking for operation`
+  으로 멈췄다 → **AppX 배포 서비스가 통째로 막힌 상태**였다(사용자 프로세스 중 옛 패키지 폴더를 쥔 것은 없었다).
+  이 상태에서는 AppX를 거치는 복구(재등록·winget, 설정의 별칭 토글도 같은 경로로 추정)가 전부 같이 막힌다.
+  재부팅이 풀어 줄 가능성이 가장 크다(미검증).
+- **실제로 쓴 해결 — MSI PowerShell 7 설치.** AppX를 거치지 않는다. winget도 막혀 있어 GitHub 공식 릴리스에서 직접 받았다:
+
+  ```bash
+  gh release download v7.6.6 --repo PowerShell/PowerShell --pattern "*-win-x64.msi" --pattern "hashes.sha256"
+  # hashes.sha256은 UTF-16LE다 — iconv -f UTF-16 로 풀어 SHA256을 대조하고, Get-AuthenticodeSignature로 Microsoft 서명 확인
+  msiexec /i PowerShell-7.6.6-win-x64.msi /passive /norestart ADD_PATH=1 USE_MU=1 ENABLE_MU=1   # UAC 1회
+  ```
+
+  Git Bash에서 msiexec를 직접 부르면 `//l*v`처럼 `*`가 든 인자는 슬래시 변환이 안 돼 msiexec가 **사용법 창을 띄운 채 멈춘다**
+  (창 제목 "Windows Installer", 로그도 안 생긴다). PowerShell의 `Start-Process -ArgumentList @(...)`로 부른다.
+- 결과: `C:\Program Files\PowerShell\7\`이 **시스템 PATH**에 들어가, 사용자 PATH의 WindowsApps(Store 별칭)보다 먼저 잡힌다.
+  옛 버전 앱도 **재시작하면**(새 환경) pwsh 7을 쓰고, 12.4의 수정은 PATH와 무관하게 `%ProgramFiles%\PowerShell\*`를 훑어
+  재시작 전에도 찾는다(이때 안내는 `pwsh.exe [Microsoft Store] 를 열 수 없어 pwsh.exe [C:\Program Files\PowerShell\7] 로…`).
+  Store 버전의 업데이트 지연·별칭 고장과 무관해져 **재발도 막힌다.**
+
+### 12.6 교훈
+
+- **"파일이 있다"는 "실행된다"가 아니다.** 앱 실행 별칭은 존재 검사·`where`를 통과하면서 실행만 실패한다.
+  외부 프로그램을 고를 때는 실행 가능성을 판정할 신호(여기선 패키지 등록 상태)를 보거나, 시간 제한을 걸고
+  실제로 띄워 봐야 한다.
+- **CreateProcessW도 수십 초 막힐 수 있다.** 별칭 활성화는 AppInfo 서비스를 거친다 — 실행 호출에도 시간 제한이 필요하다.
+- 셸 하나가 깨지면 앱의 **모든** 터미널이 동시에 죽는다 — 대체 경로가 항상 있어야 한다.

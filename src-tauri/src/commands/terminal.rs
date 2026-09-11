@@ -4,7 +4,7 @@ use std::sync::mpsc::{sync_channel, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{Child, MasterPty, PtySize};
 use serde::Serialize;
 use tauri::ipc::{Channel, Response};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -12,6 +12,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use super::projects::project_path;
 use crate::error::{ErrorCode, IpcError};
 use crate::state::AppState;
+
+mod shell;
 
 /// PTY 출력 상한(초당 바이트) — 평시.
 ///
@@ -147,11 +149,8 @@ struct TermExit {
 #[serde(rename_all = "camelCase")]
 pub struct TermOpened {
     conpty: Option<&'static str>, // "bundled" | "os"
-}
-
-struct ShellSpec {
-    program: String,
-    args: Vec<String>,
+    /// 실제로 띄운 셸 프로그램(경로) — 폴백(shell.rs)이 무엇을 골랐는지 로그·e2e에서 확인한다.
+    shell: String,
 }
 
 /// 프로젝트 경로에 PTY 셸을 띄우고 출력 스트림(Channel)을 연결한다 (설계 §16.3).
@@ -174,46 +173,33 @@ pub fn term_open(
         ));
     }
 
-    let pty_system = native_pty_system();
-    let pair = pty_system
-        .openpty(PtySize {
+    // 셸 선택·실행은 shell.rs — 후보를 사전 검사·시간 제한으로 시도하고 막히면 다음 후보로 내려간다
+    // (TERM/COLORTERM 명시 설정도 거기서 한다).
+    let configured = state
+        .settings
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .terminal_shell
+        .clone();
+    let shell::Opened {
+        master,
+        child,
+        program: shell,
+    } = shell::open(
+        configured.as_deref(),
+        &path,
+        PtySize {
             rows,
             cols,
             pixel_width: 0,
             pixel_height: 0,
-        })
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("PTY 생성 실패: {e}")))?;
+        },
+    )?;
 
-    let shell = resolve_shell(&state);
-    let mut cmd = CommandBuilder::new(&shell.program);
-    for a in &shell.args {
-        cmd.arg(a);
-    }
-    cmd.cwd(&path);
-    // 터미널 에뮬레이터는 PTY 셸의 TERM 을 직접 지정해야 한다(모든 터미널이 그렇게 한다).
-    // 지정하지 않으면 앱을 GNOME 메뉴/systemd 로 띄울 때 그 환경에 TERM 이 없어
-    // (터미널에서 띄울 때만 TERM=xterm-256color 를 물려받음) 셸이 빈 TERM 으로 떠서,
-    // zsh-syntax-highlighting·zsh-autosuggestions 가 terminfo 능력을 잘못 판정해
-    // 어긋난 커서 이동·clear escape 를 보내 입력줄이 깨진다(고스트 잔상·한글 커서 드리프트).
-    // → 같은 바이너리도 "dev/터미널 실행은 정상, 메뉴 설치본은 깨짐"의 진짜 원인.
-    cmd.env("TERM", "xterm-256color");
-    cmd.env("COLORTERM", "truecolor");
-
-    let child = pair.slave.spawn_command(cmd).map_err(|e| {
-        IpcError::new(
-            ErrorCode::Io,
-            format!("셸 실행 실패({}): {e}", shell.program),
-        )
-    })?;
-    // 슬레이브를 닫아 자식 종료 시 리더가 EOF를 받도록 한다.
-    drop(pair.slave);
-
-    let mut reader = pair
-        .master
+    let mut reader = master
         .try_clone_reader()
         .map_err(|e| IpcError::new(ErrorCode::Io, format!("PTY 리더 생성 실패: {e}")))?;
-    let writer = pair
-        .master
+    let writer = master
         .take_writer()
         .map_err(|e| IpcError::new(ErrorCode::Io, format!("PTY 라이터 생성 실패: {e}")))?;
 
@@ -337,7 +323,7 @@ pub fn term_open(
 
     let session = TerminalSession {
         writer: Arc::new(Mutex::new(writer)),
-        master: Arc::new(Mutex::new(pair.master)),
+        master: Arc::new(Mutex::new(master)),
         child,
         pid,
         closed,
@@ -373,7 +359,7 @@ pub fn term_open(
             "OS 내장"
         }
     );
-    Ok(TermOpened { conpty })
+    Ok(TermOpened { conpty, shell })
 }
 
 /// 키 입력을 PTY stdin에 raw로 전달 — 셸 문자열 조립 없음(인젝션 표면 없음).
@@ -843,57 +829,6 @@ fn save_temp_image(bytes: &[u8]) -> Option<String> {
     path.push(format!("gitpervisor-paste-{nanos}.bmp"));
     std::fs::write(&path, bytes).ok()?;
     Some(path.to_string_lossy().into_owned())
-}
-
-fn resolve_shell(state: &AppState) -> ShellSpec {
-    let configured = state.settings.read().unwrap_or_else(|e| e.into_inner()).terminal_shell.clone();
-    if let Some(program) = configured.filter(|s| !s.trim().is_empty()) {
-        return ShellSpec {
-            program,
-            args: Vec::new(),
-        };
-    }
-    default_shell()
-}
-
-#[cfg(windows)]
-fn default_shell() -> ShellSpec {
-    // pwsh(7+) → powershell(5) → cmd 순. -NoLogo로 배너 억제.
-    for program in ["pwsh.exe", "powershell.exe"] {
-        if on_path(program) {
-            return ShellSpec {
-                program: program.to_string(),
-                args: vec!["-NoLogo".to_string()],
-            };
-        }
-    }
-    ShellSpec {
-        program: "cmd.exe".to_string(),
-        args: Vec::new(),
-    }
-}
-
-#[cfg(windows)]
-fn on_path(program: &str) -> bool {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    std::process::Command::new("where")
-        .arg(program)
-        .creation_flags(CREATE_NO_WINDOW)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
-#[cfg(not(windows))]
-fn default_shell() -> ShellSpec {
-    let program = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-    ShellSpec {
-        program,
-        args: Vec::new(),
-    }
 }
 
 // Linux 한정 — macOS는 unix지만 이 테스트의 전제 둘이 다 없다: 검증 대상인 세션 스캔
