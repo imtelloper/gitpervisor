@@ -146,29 +146,14 @@ export const BUILTIN_TOKENS: Record<ThemeName, Record<ThemeToken, string>> = {
   },
 };
 
-// 프로젝트 틴트(--proj-*) — styles.css :189-196(light·solarized-light 공통)과 :199-202
-// (solarized-light 추가 오버라이드)의 사본. 다크 기반은 :root 기본값(:179-188)이 이미 맞아
-// 커스텀 블록에 넣지 않는다. 커스텀 id는 styles.css의 라이트 셀렉터에 매칭되지 않으므로
-// 라이트 기반일 때만 여기서 다시 얹어 준다.
-const LIGHT_TINT: Record<string, string> = {
-  "--proj-l": "50%",
-  "--proj-a-on": "0.42",
-  "--proj-a-off": "0.2",
-  "--proj-a-row": "0.1",
-  "--proj-a-row-on": "0.15",
-};
-const TINT: Partial<Record<ThemeName, Record<string, string>>> = {
-  light: LIGHT_TINT,
-  "solarized-light": { ...LIGHT_TINT, "--proj-a-row": "0.06", "--proj-a-row-on": "0.1" },
-};
-
 const STYLE_ID = "gp-custom-themes";
 
-/** 커스텀 테마 1개의 `:root[data-theme="…"]` 블록. id·색 형식은 loadCustomThemes가 이미 검증. */
+/** 커스텀 테마 1개의 `:root[data-theme="…"]` 블록. id·색 형식은 loadCustomThemes가 이미 검증.
+ *  프로젝트 색은 여기서 주입하지 않는다 — lib/project-color.ts가 이 토큰들에서 직접 유도한다
+ *  (옛 `--proj-*` 사본은 상속원 id(`t.base`)로 다크/라이트를 판정해 "다크 기반 + 라이트 색"
+ *  커스텀 테마에서 반대로 칠했다). */
 export function customThemeCss(t: CustomTheme): string {
   const decls = THEME_TOKENS.map((k) => `  --color-${k}: ${t.colors[k]};`);
-  const tint = TINT[t.base];
-  if (tint) for (const [k, v] of Object.entries(tint)) decls.push(`  ${k}: ${v};`);
   return `:root[data-theme="${t.id}"] {\n${decls.join("\n")}\n}`;
 }
 

@@ -16,7 +16,7 @@ import { useEffect, useRef, useState } from "react";
 
 import {
   attachTerminal,
-  copyTerminalSelection,
+  copyTerminalText,
   createTerminal,
   disposeTerminal,
   fitTerminal,
@@ -217,18 +217,7 @@ function PaneMenu({
       onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
     >
-      <MenuItem
-        icon={<Copy size={14} />}
-        label="복사"
-        hint="Ctrl+Shift+C"
-        onClick={run(() => copyTerminalSelection(paneId))}
-      />
-      <MenuItem
-        icon={<ClipboardPaste size={14} />}
-        label="붙여넣기"
-        hint="Ctrl+V"
-        onClick={run(() => void pasteIntoTerminal(paneId))}
-      />
+      <TermClipboardItems termId={paneId} selection={selection} run={run} />
       {selection && (
         <MenuItem
           icon={<Languages size={14} />}
@@ -300,6 +289,58 @@ function PaneMenu({
       />
     </div>
   );
+}
+
+/** 터미널 우클릭 메뉴의 **복사·붙여넣기 두 줄** — pane 메뉴와 모아보기 칩 메뉴가 같은 것을 쓴다.
+ *
+ *  같은 파일에 둔 이유: `MenuItem`이 여기 있고 `AggregateTerminals`가 이미 이 모듈에서 그것을
+ *  가져간다. 별도 파일로 빼면 TerminalPane ↔ 새 파일 순환 import가 생긴다.
+ *
+ *  모아보기 셀에는 이 두 줄이 **아예 없었다**(태스크 65 §2 #1) — Claude 세션을 모아보기로 읽다
+ *  우클릭하면 복사가 없어서 "이 PC에서는 복사가 안 된다"로 체감됐다. */
+export function TermClipboardItems({
+  termId,
+  selection,
+  run,
+}: {
+  termId: string;
+  /** 메뉴가 **열린 순간**의 선택 스냅샷 — 여기서 다시 읽지 않는다(`copyTerminalText` 주석). */
+  selection: string;
+  run: (fn: () => void) => () => void;
+}) {
+  return (
+    <>
+      {selection ? (
+        <MenuItem
+          icon={<Copy size={14} />}
+          label="복사"
+          hint="Ctrl+Shift+C"
+          onClick={run(() => copyTerminalText(termId, selection))}
+        />
+      ) : (
+        // 죽은 [복사] 버튼을 그리지 않는다 — 눌러도 아무 일이 없으면 클립보드가 고장 난 것으로
+        // 보인다. 왜 없는지를 대신 말한다.
+        <div className="px-3 py-1.5 text-[11px] text-fg-dim">
+          {noSelectionHint(termId)}
+        </div>
+      )}
+      <MenuItem
+        icon={<ClipboardPaste size={14} />}
+        label="붙여넣기"
+        hint="Ctrl+V"
+        onClick={run(() => void pasteIntoTerminal(termId))}
+      />
+    </>
+  );
+}
+
+/** 마우스 추적 모드(vim·lazygit·htop·tmux)에서는 드래그가 앱으로 가서 **선택이 생기지 않는다**.
+ *  정답은 Shift+드래그인데, 안내가 없으면 "복사가 안 되는 앱"으로 오해한다. */
+function noSelectionHint(termId: string): string {
+  const mouse = getTerminal(termId)?.term.modes.mouseTrackingMode;
+  return mouse && mouse !== "none"
+    ? "앱이 마우스를 쓰는 중 — Shift+드래그로 선택하세요"
+    : "선택한 텍스트가 없습니다";
 }
 
 /** 컨텍스트 메뉴 한 줄 — 모아보기 칩 메뉴(AggregateTerminals)도 같은 모양을 쓴다. */

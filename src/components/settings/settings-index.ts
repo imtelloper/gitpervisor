@@ -55,6 +55,7 @@ export const SETTINGS_INDEX: SettingIndexEntry[] = [
   { category: "general", key: "remoteRefreshMinutes", label: "원격 새로고침 주기", keywords: ["remote", "fetch", "새로고침", "주기", "pull"] },
   { category: "general", key: "confirmDiscard", label: "되돌리기·삭제 확인", keywords: ["confirm", "확인", "삭제", "되돌리기", "discard"] },
   { category: "general", key: "gitPath", label: "git 실행 파일 경로", keywords: ["git", "path", "경로", "실행"] },
+  { category: "general", key: "favoriteFolders", label: "즐겨찾기 폴더", keywords: ["favorite", "즐겨찾기", "폴더", "folder", "스크린샷", "screenshot", "다운로드", "download", "바탕화면", "desktop"] },
   // 모양
   { category: "appearance", key: "theme", label: "테마", keywords: ["theme", "테마", "다크", "라이트", "색", "color", "monokai", "dracula", "nord", "커스텀", "내 테마", "custom"] },
   { category: "appearance", key: "diffFontSize", label: "Diff 폰트 크기", keywords: ["font", "폰트", "크기", "size", "diff"] },

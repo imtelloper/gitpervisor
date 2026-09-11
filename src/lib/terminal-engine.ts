@@ -8,14 +8,13 @@ import "@xterm/xterm/css/xterm.css";
 
 import { collectPanes, useTerminals } from "../stores/terminals";
 import { useTermThemes } from "../stores/termThemes";
-import { useUi } from "../stores/ui";
 import { errorMessage } from "./ipc";
-import { copyText } from "./clipboard";
 import { isMod, isWindows } from "./platform";
 import { capturePtyInput } from "./prompt-capture";
 import { termSchemeOf } from "./term-color-schemes";
 import {
   attachOutputChannel,
+  copyTerminalText,
   ensureExitListener,
   pasteIntoTerminal,
   registry,
@@ -248,6 +247,11 @@ export function createTerminalImpl(opts: {
       '"Cascadia Code", Consolas, "D2Coding", "Noto Sans Mono CJK KR", "Nanum Gothic Coding", monospace',
     cursorBlink: true,
     scrollback: 5000,
+    // **macOS 기본값을 끈다.** xterm의 `rightClickSelectsWord` 기본은 "Macintosh면 true"라
+    // (xterm.mjs), mac에서만 드래그 선택 밖을 우클릭하면 그 순간 커서 아래 단어로 선택이
+    // 교체됐다 → 우클릭 메뉴의 [복사]가 엉뚱한 단어를 복사한다. 세 OS 모두 "우클릭은 선택을
+    // 건드리지 않는다"로 통일한다(태스크 65).
+    rightClickSelectsWord: false,
     // Unicode11Addon(아래 :223)이 `term.unicode`를 건드리는데 그게 proposed API다 — 이 플래그가
     // 없으면 `loadAddon`이 "You must set the allowProposedApi option to true"로 **던지고**,
     // createTerminalImpl이 통째로 중단돼 **터미널이 하나도 안 뜬다**(0036d06 이후 실측).
@@ -434,13 +438,7 @@ export function createTerminalImpl(opts: {
     // 성공 시에만 선택을 해제한다 — 실패 시 선택을 유지하고 토스트로 알린다(무음+선택 해제면
     // 사용자는 복사가 된 줄 알고, SIGINT도 안 나가서 "복사가 안 된다"로만 체감된다).
     if (e.ctrlKey && k === "c" && (e.shiftKey || term.hasSelection())) {
-      const sel = term.getSelection();
-      if (sel)
-        void copyText(sel).then((ok) =>
-          ok
-            ? term.clearSelection()
-            : useUi.getState().pushToast("error", "복사에 실패했습니다"),
-        );
+      copyTerminalText(opts.id, term.getSelection());
       e.preventDefault();
       return false;
     }
@@ -459,13 +457,7 @@ export function createTerminalImpl(opts: {
     // 터미널에선 무해). preventDefault가 웹뷰 기본 커맨드(=깨지는 경로) 실행을 차단한다.
     if (isMacWebKit && e.metaKey && !e.ctrlKey && !e.altKey) {
       if (k === "c" && term.hasSelection()) {
-        const sel = term.getSelection();
-        if (sel)
-          void copyText(sel).then((ok) =>
-            ok
-              ? term.clearSelection()
-              : useUi.getState().pushToast("error", "복사에 실패했습니다"),
-          );
+        copyTerminalText(opts.id, term.getSelection());
         e.preventDefault();
         return false;
       }
@@ -628,7 +620,9 @@ export function createTerminalImpl(opts: {
           if (!sel) return; // 선택 없으면 기본 동작(사실상 no-op)에 맡긴다
           e.preventDefault();
           e.stopPropagation();
-          void copyText(sel);
+          // 결과를 버리지 않는다 — 여기서 실패하면 웹뷰 기본 복사도 막아 둔 뒤라 아무 일도
+          // 안 일어난 것처럼 보인다(태스크 65 §2 #5).
+          copyTerminalText(opts.id, sel);
         },
         true,
       );

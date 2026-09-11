@@ -196,6 +196,14 @@ pub struct CommitDetail {
 
 // ---- M4: 설정 ----
 
+/// 즐겨찾기 폴더 한 칸 — `path` 는 절대경로, `name` 은 드롭다운 표시용(기본 = 폴더명).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FavoriteFolder {
+    pub path: String,
+    pub name: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
@@ -263,6 +271,9 @@ pub struct Settings {
     pub llm_language: String,
     /// "auto" | "cpu" — Windows Vulkan 초기화 실패 시 폴백이 여기에 "cpu"를 기록한다.
     pub llm_backend: String,
+    /// 즐겨찾기 폴더 (태스크 66). **이 목록이 곧 `commands/favorites.rs` 의 허용 루트다** —
+    /// 등록되지 않은 경로는 읽기·썸네일·열기가 전부 거부된다. 비어 있으면 폴더 창을 열 수 없다.
+    pub favorite_folders: Vec<FavoriteFolder>,
 }
 
 impl Default for Settings {
@@ -301,6 +312,7 @@ impl Default for Settings {
             llm_context: 8192,
             llm_language: "ko".to_string(),
             llm_backend: "auto".to_string(),
+            favorite_folders: Vec::new(),
         }
     }
 }

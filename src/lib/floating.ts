@@ -46,6 +46,13 @@ export interface DocTarget {
    * readDocs 는 JSON 파싱만 검사하지 필드 유무는 못 본다.
    */
   edit?: boolean;
+  /**
+   * 있으면 이 창은 **파일 하나가 아니라 폴더**를 연다(태스크 66 — 즐겨찾기 폴더 창).
+   * 값은 그 폴더의 절대경로. 이때 `projectId` 는 빈 문자열이고 `path` 는 같은 절대경로다
+   * (창 제목·기존 코드 경로가 `path` 를 읽으므로 비워 두지 않는다).
+   * `edit` 과 같은 이유로 **옵셔널이어야 한다** — 이 필드 이전에 적힌 항목이 남아 있다.
+   */
+  folder?: string;
 }
 
 /**
@@ -118,4 +125,56 @@ export function openDocWindow(
 /** 이 창이 띄울 대상 — main.tsx가 라벨(`doc-<id>`)에서 뽑은 id로 부른다. */
 export function docTarget(id: string): DocTarget | null {
   return readDocs()[id] ?? null;
+}
+
+/** 경로 → 창 id. **결정적이어야 한다** — 같은 폴더를 다시 누르면 같은 라벨(`doc-<id>`)이 나와야
+ *  Rust 가 새 창 대신 기존 창에 포커스만 준다(lib.rs open_doc_window 의 싱글턴 분기).
+ *  crypto.randomUUID 를 쓰면 누를 때마다 창이 하나씩 늘어난다.
+ *  FNV-1a 32bit 를 정·역방향으로 두 번 돌려 16자를 만든다 — 라벨 문자 집합(영숫자·`-`)에 맞고,
+ *  충돌해도 결과는 "다른 폴더가 같은 창을 쓴다"가 아니라 그냥 그 창이 재사용될 뿐이다
+ *  (창이 뜬 뒤 실제로 무엇을 여는지는 localStorage 의 항목이 정한다 — 그건 매번 덮어쓴다). */
+function folderWindowId(path: string): string {
+  const fnv = (s: string) => {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return h.toString(16).padStart(8, "0");
+  };
+  const rev = path.split("").reverse().join("");
+  return fnv(path) + fnv(rev);
+}
+
+/**
+ * 즐겨찾기 폴더를 **별도 OS 창**으로 연다(태스크 66).
+ *
+ * 파일 뷰어 창(`doc-*`)의 인프라를 그대로 탄다 — 새 라벨도, 새 캡처빌리티도, 새 창 커맨드도
+ * 필요 없다. 차이는 localStorage 에 적는 항목에 `folder` 가 있다는 것뿐이고, `DocWindow` 가
+ * 그걸 보고 뷰어 대신 `FolderWindow` 를 그린다.
+ */
+export function openFolderWindow(path: string): void {
+  const id = folderWindowId(path);
+  const docs = readDocs();
+  docs[id] = { projectId: "", path, folder: path };
+  const keys = Object.keys(docs);
+  const kept =
+    keys.length > DOC_MAX
+      ? Object.fromEntries(keys.slice(-DOC_MAX).map((k) => [k, docs[k]]))
+      : docs;
+  try {
+    localStorage.setItem(DOC_KEY, JSON.stringify(kept));
+  } catch {
+    /* 용량 초과 — 창은 그래도 띄운다(대상을 못 찾으면 그 창이 안내한다) */
+  }
+  // 파일 뷰어(900×760)보다 넓게 — 썸네일 그리드가 한 줄에 여러 장 들어가야 쓸 만하다.
+  // Rust 가 420..3000 으로 클램프한다.
+  void invoke("open_doc_window", {
+    docId: id,
+    title: path.split(/[\\/]/).filter(Boolean).pop() ?? path,
+    origin: window.location.origin,
+    size: [1100, 760],
+  }).catch((e) => {
+    console.error("폴더 창 생성 실패:", e);
+  });
 }

@@ -132,7 +132,9 @@ if (label === "aggregate") {
   // **같은 키**여야 하므로 queries.keys를 그대로 쓴다(키가 어긋나면 조용히 두 번 읽는다).
   {
     const t = docTarget(docId);
-    if (t) {
+    // 폴더 창(태스크 66)은 프로젝트 상대경로 diff 를 읽지 않는다 — projectId 가 빈 문자열이라
+    // 여기서 걸러 두지 않으면 뜰 때마다 실패할 게 뻔한 IPC 를 한 번씩 태운다.
+    if (t && !t.folder) {
       const target = { mode: "file", path: t.path } as const;
       void docQc.prefetchQuery({
         queryKey: keys.diff(t.projectId, target),

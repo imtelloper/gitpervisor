@@ -258,6 +258,25 @@ export interface Settings {
   llmContext: number; // -c, 저장 시 2048..32768 클램프
   llmLanguage: string; // "ko" | "en" — 요약·번역 기본 언어
   llmBackend: "auto" | "cpu"; // Windows Vulkan 폴백이 "cpu"를 기록
+  /** 즐겨찾기 폴더 (태스크 66). **이 목록이 곧 백엔드의 허용 루트다** — `fav_*` 커맨드는 여기
+   *  등록된 폴더 아래가 아니면 거부한다. 비어 있으면 폴더 창을 열 수 있는 경로가 없다. */
+  favoriteFolders: FavoriteFolder[];
+}
+
+/** 즐겨찾기 폴더 한 칸 — `path`는 절대경로, `name`은 드롭다운 표시용(기본 = 폴더명). */
+export interface FavoriteFolder {
+  path: string;
+  name: string;
+}
+
+/** 즐겨찾기 폴더 안의 항목 하나 (commands/favorites.rs `fav_list`). */
+export interface FavEntry {
+  name: string;
+  isDir: boolean;
+  size: number;
+  mtimeMs: number;
+  /** 확장자로 가른 종류 — 프론트가 아이콘·썸네일·라이트박스 대상을 이걸로 정한다. */
+  kind: "dir" | "image" | "video" | "other";
 }
 
 /** 포맷 결과 (commands/format.rs format_source). */
@@ -1145,6 +1164,20 @@ export const ipc = {
     callMutating<void>("set_settings", { settings }),
   openIn: (projectId: string, target: OpenTarget) =>
     callMutating<void>("open_in", { projectId, target }),
+
+  // ---- 즐겨찾기 폴더 (태스크 66 — commands/favorites.rs) ----
+  // 전부 **절대경로**를 받는다. 백엔드가 첫 줄에서 `Settings.favoriteFolders` 루트 안인지
+  // canonicalize 로 검사하고 아니면 거부한다 — 프론트를 믿지 않는다.
+  /** OS별 스크린샷·다운로드·바탕화면 후보 중 **실제로 존재하는 것만**. */
+  favPresets: () => call<FavoriteFolder[]>("fav_presets"),
+  favList: (path: string) => call<FavEntry[]>("fav_list", { path }),
+  /** 썸네일 data URL(image/jpeg). `edge`는 128·192·320 셋 중 하나만 받는다(캐시 폭주 방지). */
+  favThumb: (path: string, edge: 128 | 192 | 320) =>
+    call<string>("fav_thumb", { path, edge }),
+  /** 라이트박스 원본 — 썸네일이 아니라 파일 그대로(크기 한도는 백엔드). */
+  favRead: (path: string) => call<FileBytes>("fav_read", { path }),
+  favOpen: (path: string, how: "default" | "reveal") =>
+    callMutating<void>("fav_open", { path, how }),
   // 파일트리에서 실행 파일 더블클릭 → OS 기본 실행기로 띄운다(프론트가 확인 후 호출).
   runExecutable: (projectId: string, relPath: string) =>
     callMutating<void>("run_executable", { projectId, relPath }),

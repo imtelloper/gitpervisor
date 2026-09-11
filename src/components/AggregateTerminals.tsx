@@ -57,7 +57,7 @@ import {
   PromptSidePanel,
   ThemeButton,
 } from "./workspace/TermSessionControls";
-import { MenuItem } from "./workspace/TerminalPane";
+import { MenuItem, TermClipboardItems } from "./workspace/TerminalPane";
 
 // 모아보기 토글 단축키 라벨 — mac은 심볼 관례(⌘⇧A), 그 외는 Ctrl+Shift+A
 const hotkeyLabel = isMac ? `${modLabel}⇧A` : `${modLabel}+Shift+A`;
@@ -988,6 +988,13 @@ function ChipMenu({
   onFloat?: () => void;
   onCloseCell?: () => void;
 }) {
+  // 메뉴가 **열린 순간**의 선택(PaneMenu와 같은 규약, 태스크 65) — 우클릭 뒤에 선택이 바뀌어도
+  // 복사 대상은 사용자가 드래그한 그것이다.
+  const [selection] = useState(() => {
+    const term = getTerminal(cell.id)?.term;
+    return term?.hasSelection() ? term.getSelection() : "";
+  });
+
   useEffect(() => {
     const close = () => onClose();
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -1004,6 +1011,9 @@ function ChipMenu({
     onClose();
   };
 
+  // 복사·붙여넣기 2줄 + 구분선 ≈ 72px — 터미널 셀에만 붙는다(아래 §복사).
+  const clipboardHeight = cell.kind === "terminal" ? 72 : 0;
+
   return (
     <div
       className="fixed z-50 min-w-52 rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl"
@@ -1013,7 +1023,13 @@ function ChipMenu({
         // ≈ 240 → 8 단위 올림(PaneMenu와 같은 규칙). max(0, …)은 창이 메뉴보다 낮을 때 top이
         // 음수가 되어 위쪽 항목이 잘리는 것을 막는다(별도 창은 창 크기 제한이 낮다).
         // ponytail: 항목이 또 늘면 ref 실측으로. 번역 항목(선택이 있을 때만)은 32px을 더 잡는다.
-        top: Math.max(0, Math.min(y, window.innerHeight - (onTranslate ? 280 : 248))),
+        top: Math.max(
+          0,
+          Math.min(
+            y,
+            window.innerHeight - (onTranslate ? 280 : 248) - clipboardHeight,
+          ),
+        ),
       }}
       onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
@@ -1022,6 +1038,14 @@ function ChipMenu({
         {cell.projName} · {cell.title}
       </div>
       <div className="my-1 border-t border-edge" />
+      {/* 복사 — 여기 없어서 모아보기에서는 우클릭 복사가 아예 불가능했다(태스크 65 §2 #1).
+          브라우저 셀은 네이티브 webview라 이 메뉴가 관여하지 않는다. */}
+      {cell.kind === "terminal" && (
+        <>
+          <TermClipboardItems termId={cell.id} selection={selection} run={run} />
+          <div className="my-1 border-t border-edge" />
+        </>
+      )}
       <MenuItem
         icon={shown ? <EyeOff size={14} /> : <Eye size={14} />}
         label={shown ? "그리드에서 숨기기" : "그리드에 표시"}

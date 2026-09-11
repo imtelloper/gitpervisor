@@ -350,7 +350,7 @@ pub fn reveal_path(path: String) -> Result<(), IpcError> {
 }
 
 #[cfg(windows)]
-fn reveal(path: &Path) -> Result<(), IpcError> {
+pub(crate) fn reveal(path: &Path) -> Result<(), IpcError> {
     // explorer /select,<path> — 폴더를 열고 그 파일을 선택 표시한다.
     let mut cmd = Command::new("explorer");
     cmd.arg(format!("/select,{}", path.display()));
@@ -358,14 +358,14 @@ fn reveal(path: &Path) -> Result<(), IpcError> {
 }
 
 #[cfg(target_os = "macos")]
-fn reveal(path: &Path) -> Result<(), IpcError> {
+pub(crate) fn reveal(path: &Path) -> Result<(), IpcError> {
     let mut cmd = Command::new("open");
     cmd.args(["-R"]).arg(path);
     spawn_launcher(cmd, "탐색기").map_err(|e| spawn_err("탐색기", e))
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
-fn reveal(path: &Path) -> Result<(), IpcError> {
+pub(crate) fn reveal(path: &Path) -> Result<(), IpcError> {
     // 파일 선택 표준이 없어 부모 폴더를 연다.
     let dir = path.parent().unwrap_or(path);
     let mut cmd = Command::new("xdg-open");
@@ -403,7 +403,7 @@ pub fn run_executable(
 }
 
 #[cfg(windows)]
-fn run_file(target: &Path) -> Result<(), IpcError> {
+pub(crate) fn run_file(target: &Path) -> Result<(), IpcError> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
@@ -440,7 +440,7 @@ fn run_file(target: &Path) -> Result<(), IpcError> {
 }
 
 #[cfg(target_os = "macos")]
-fn run_file(target: &Path) -> Result<(), IpcError> {
+pub(crate) fn run_file(target: &Path) -> Result<(), IpcError> {
     // open 은 .app 번들·확장자 핸들러로 실행한다.
     let mut cmd = Command::new("open");
     cmd.arg(target);
@@ -448,7 +448,7 @@ fn run_file(target: &Path) -> Result<(), IpcError> {
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
-fn run_file(target: &Path) -> Result<(), IpcError> {
+pub(crate) fn run_file(target: &Path) -> Result<(), IpcError> {
     let dir = target.parent().unwrap_or(target);
     // 실행권한 있는 바이너리/스크립트는 직접 실행, 실패하면 기본 핸들러(xdg-open)로 폴백.
     // spawn_launcher는 실행권한이 없거나 exec에 실패하면 Err를 돌려주므로(위임 경로도
