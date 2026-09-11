@@ -13,9 +13,6 @@ export const name =
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// themes.ts THEMES와 1:1이어야 하는 목록 — 테마 추가 시 여기에도 추가(짝 검증의 제3사본).
-const THEME_IDS = ["darcula", "monokai", "dracula", "nord", "light", "solarized-light"];
-
 /** "#rrggbb" → getComputedStyle이 돌려주는 "rgb(r, g, b)" 표기. */
 function rgbOf(hex) {
   let h = hex.replace("#", "").trim();
@@ -55,12 +52,48 @@ export async function run({ cdp, report: r, fix }) {
       `(()=>{ const v=document.querySelector('.xterm-scrollable-element'); return v?getComputedStyle(v).backgroundColor:null; })()`,
     );
 
-  // 태스크 28 — 사이드바 행 틴트 대비. 절대 목표(4.5/4.5/3.0)는 틴트 없는 오늘의 행도 못 넘으므로
-  // (darcula fg-dim 2.90:1) 이름만 절대, 나머지는 "현행 bg-selection 위 대비" 기준선으로 본다.
-  // 허용 오차는 hsl→rgb 반올림분(0.1). solarized-light는 selection≈panel이라 보이는 틴트가 전부
-  // 기준선 아래 — 그 테마 특성으로 수용한 예외값(28 §3.4·§8 ①).
-  const TINT_TOL = { default: 0.1, "solarized-light": 0.35 };
-  const fmt = (m) => ["fg", "muted", "dim"].map((k) => m[k].toFixed(2)).join("/");
+  // 프로젝트 색 대비 — 팔레트도, 재는 토큰 목록(FG)도, 절대 하한(FLOORS)도, 슬롯 수
+  // (PROJECT_HUES)도 전부 **앱이 실제로 쓰는 값**(__gpv.projectColor)에서 읽는다. 여기에
+  // 손사본을 두면 구현이 바뀌어도 사본이 조용히 옛 값으로 통과한다(옛 판은 12 hue 하드코딩,
+  // 그 다음 판은 8토큰·하한 3개를 손으로 베낀 사본이었다).
+  // 슬롯 **수** 자체(32)는 여기서 안 잰다 — 아래 `c.n === c.hues`는 projectPalette가
+  // PROJECT_HUES.map이라 항진명제이고, 수 핀은 14-frontend-dom.mjs "슬롯 수 ≥ 32" 한 곳에 있다.
+  // 기준선 = 그 테마의 선택 행(bg-selection) 위 대비. 허용 오차는 8비트 반올림분 0.1 —
+  // solarized-light 예외(0.35)는 없앴다: 신 팔레트는 최소 여유 +0.090으로 기준선을 넘는다.
+  const TINT_TOL = { default: 0.1 };
+  const fmt = (m) =>
+    Object.entries(m)
+      .map(([k, v]) => `${k}=${v.toFixed(2)}`)
+      .join(" ");
+
+  // ── 다리 확인 — 없으면 **명시적으로 FAIL** 한다 ──
+  // 이 스위트의 값은 전부 구현에서 읽어 오므로, 다리가 없는 빌드에 붙으면 "빈 목록을 다 돌았다"
+  // 로 조용히 통과해 버린다(잰 척). 옛 빌드/릴리스 빌드에 붙었을 때 그걸 막는 관문.
+  const bridge = await cdp.eval(`(()=>{
+    const p = window.__gpv && window.__gpv.projectColor;
+    return { fg: p && p.FG, floors: (p && p.FLOORS) || null,
+             hues: p && Array.isArray(p.PROJECT_HUES) ? p.PROJECT_HUES.length : 0,
+             themes: Object.keys(window.__gpv.builtinTokens || {}) };})()`);
+  const fgOk = Array.isArray(bridge?.fg) && bridge.fg.length > 0;
+  const floorsOk =
+    !!bridge?.floors &&
+    typeof bridge.floors === "object" &&
+    !Array.isArray(bridge.floors) &&
+    Object.keys(bridge.floors).length > 0;
+  r.check(
+    "__gpv.projectColor 다리 노출 (FG · FLOORS · PROJECT_HUES — 사본 대신 구현에서 읽는다)",
+    fgOk && floorsOk && bridge.hues > 0,
+    `FG=${fgOk ? bridge.fg.length : bridge?.fg} FLOORS=${floorsOk ? Object.keys(bridge.floors).length : bridge?.floors} hues=${bridge?.hues}`,
+  );
+  // themes.ts THEMES 목록도 손사본을 두지 않는다 — BUILTIN_TOKENS는 `Record<ThemeName, …>`라
+  // THEMES에 테마가 늘면 키가 컴파일 타임에 따라 늘어난다(빠지면 theme-apply.ts가 안 컴파일된다).
+  const THEME_IDS = Array.isArray(bridge?.themes) ? bridge.themes : [];
+  r.check(
+    "__gpv.builtinTokens 다리에서 테마 id 목록 확보",
+    THEME_IDS.length > 0,
+    `ids=${THEME_IDS.join(",") || "(없음)"}`,
+  );
+  const canMeasureTint = fgOk && floorsOk && bridge.hues > 0;
 
   const orig = await cdp.invoke("get_settings");
   const origTheme = orig.theme || "darcula";
@@ -102,35 +135,42 @@ export async function run({ cdp, report: r, fix }) {
       bases[id] = base;
       r.check(`[${id}] --color-base 유효(#rrggbb)`, /^#[0-9a-fA-F]{6}$/.test(base), base);
 
-      // 12 hue × row/row-on을 --color-panel 위에 합성해 실제 테마 토큰으로 WCAG 대비를 계산한다
-      // (사전 계산 대체가 아니라 브라우저 hsl 파싱으로 확정하는 측정 그 자체 — 태스크 28 §7.2).
-      const c = await cdp.eval(`(()=>{
-        const HUES=[0,25,45,75,140,168,190,215,250,280,310,335];
-        const css=getComputedStyle(document.documentElement), tok=(n)=>css.getPropertyValue(n).trim();
-        const hex=(h)=>{ const n=parseInt(h.slice(1),16); return [(n>>16)&255,(n>>8)&255,n&255]; };
-        const lum=([r,g,b])=>{ const f=(c)=>{ c/=255; return c<=0.03928?c/12.92:((c+0.055)/1.055)**2.4; }; return 0.2126*f(r)+0.7152*f(g)+0.0722*f(b); };
-        const ratio=(a,b)=>{ const [x,y]=[lum(a),lum(b)].sort((p,q)=>q-p); return (x+0.05)/(y+0.05); };
-        const probe=document.createElement('div'); document.body.appendChild(probe);
-        const rgba=(v)=>{ probe.style.backgroundColor=v; const m=getComputedStyle(probe).backgroundColor.match(/[\\d.]+/g).map(Number); return m.length===3?[...m,1]:m; };
-        const panel=hex(tok('--color-panel')), sel=hex(tok('--color-selection'));
-        const text={fg:hex(tok('--color-fg')),muted:hex(tok('--color-fg-muted')),dim:hex(tok('--color-fg-dim'))};
-        const out={ baseline:{} }; for (const k in text) out.baseline[k]=ratio(text[k],sel);
-        for (const lv of ['row','row-on']) { const m={fg:99,muted:99,dim:99};
-          for (const h of HUES) { const [r,g,b,a]=rgba('hsl(' + h + ' 70% var(--proj-l) / var(--proj-a-' + lv + '))');
-            const bg=[r,g,b].map((c,i)=>a*c+(1-a)*panel[i]);
-            for (const k in text) m[k]=Math.min(m[k], ratio(text[k],bg)); }
-          out[lv]=m; }
-        probe.remove(); return out; })()`);
-      const tol = TINT_TOL[id] ?? TINT_TOL.default;
-      const okFg = c.row.fg >= 4.5 && c["row-on"].fg >= 4.5;
-      const okRel = ["muted", "dim"].every(
-        (k) => c.row[k] >= c.baseline[k] - tol && c["row-on"][k] >= c.baseline[k] - tol,
-      );
-      r.check(
-        `[${id}] 사이드바 행 틴트 대비 — fg ≥ 4.5 · muted/dim ≥ 선택행 기준선 − ${tol} (12 hue 최악값)`,
-        okFg && okRel,
-        `row=${fmt(c.row)} on=${fmt(c["row-on"])} base=${fmt(c.baseline)}`,
-      );
+      // 슬롯 × 토큰 전수(다크는 2톤 포함)를 실제 테마 토큰 위에서 잰다.
+      // 글자가 얹히는 행 배경은 기준선 + 절대 하한, 글자가 없는 스트라이프는 비텍스트 3:1.
+      if (canMeasureTint) {
+        const c = await cdp.eval(`(()=>{
+          const css=getComputedStyle(document.documentElement), tok=(n)=>css.getPropertyValue('--color-'+n).trim();
+          const hex=(h)=>{const n=parseInt(h.slice(1),16);return [(n>>16)&255,(n>>8)&255,n&255];};
+          const lum=([r,g,b])=>{const f=(c)=>{c/=255;return c<=0.03928?c/12.92:((c+0.055)/1.055)**2.4;};return 0.2126*f(r)+0.7152*f(g)+0.0722*f(b);};
+          const ratio=(a,b)=>{const [x,y]=[lum(a),lum(b)].sort((p,q)=>q-p);return (x+0.05)/(y+0.05);};
+          const pc=window.__gpv.projectColor, T=pc.FG;
+          const panel=hex(tok('panel')), sel=hex(tok('selection'));
+          const pal=pc.projectPalette(document.documentElement.dataset.theme||'darcula');
+          const out={baseline:{},worst:{},stripe:99,n:pal.length,hues:pc.PROJECT_HUES.length,floors:pc.FLOORS};
+          for(const k of T){out.baseline[k]=ratio(hex(tok(k)),sel); out.worst[k]=99;}
+          for(const p of pal){const bg=hex(p.bg);
+            for(const k of T) out.worst[k]=Math.min(out.worst[k], ratio(hex(tok(k)),bg));
+            out.stripe=Math.min(out.stripe, ratio(hex(p.stripe),panel));}
+          return out;})()`);
+        const tol = TINT_TOL[id] ?? TINT_TOL.default;
+        // 하한 0인 토큰(mod/add/untrk/danger/accent)은 자동 통과 — 구현이 "의도적으로 하한 없음"
+        // 으로 0을 박아 둔 것이라 여기서 특별 취급하지 않는 게 맞다(기준선 몫은 okRel이 진다).
+        // 다만 그 개수는 detail에 찍는다 — FG에 토큰을 추가하는 사람이 컴파일 오류를 보고
+        // `newtok: 0`을 복붙하면 하한 목록에는 흔적이 안 남기 때문이다(판정에는 넣지 않는다).
+        const floors = Object.entries(c.floors);
+        const okAbs = floors.every(([k, min]) => c.worst[k] >= min);
+        const okRel = Object.keys(c.baseline).every((k) => c.worst[k] >= c.baseline[k] - tol);
+        const nTok = Object.keys(c.baseline).length;
+        const floorDesc = floors
+          .filter(([, m]) => m > 0)
+          .map(([k, m]) => `${k}≥${m}`)
+          .join(" ");
+        r.check(
+          `[${id}] 프로젝트 색 — ${c.n}슬롯 × ${nTok}토큰 ≥ 기준선 − ${tol} · 하한(${floorDesc}) · 스트라이프 ≥ 3:1`,
+          c.n === c.hues && okAbs && okRel && c.stripe >= 3.0,
+          `worst=${fmt(c.worst)} base=${fmt(c.baseline)} stripe=${c.stripe.toFixed(2)} n=${c.n}/${c.hues} floors0=${floors.length - floors.filter(([, m]) => m > 0).length}`,
+        );
+      }
 
       if (hasXterm) {
         const want = rgbOf(base);
@@ -143,7 +183,7 @@ export async function run({ cdp, report: r, fix }) {
     // 블록 누락 감지 — 한 블록이라도 빠지면 그 테마의 base가 기본(darcula) 값과 겹친다.
     const uniq = new Set(Object.values(bases).map((s) => s.toLowerCase()));
     r.check(
-      "6개 테마 --color-base 전부 상이 (styles.css 블록 ↔ THEMES 짝)",
+      `${THEME_IDS.length}개 테마 --color-base 전부 상이 (styles.css 블록 ↔ THEMES 짝)`,
       uniq.size === THEME_IDS.length,
       Object.entries(bases)
         .map(([k, v]) => `${k}=${v}`)
@@ -163,7 +203,7 @@ export async function run({ cdp, report: r, fix }) {
         await cdp.invoke("set_settings", { settings: { ...orig, theme: id } });
         await invalidateSettings();
         await poll(domTheme, (v) => v === id, 20, 250);
-        const bad = await cdp.eval(`(()=>{
+        const res = await cdp.eval(`(()=>{
           const want = window.__gpv.builtinTokens[${J(id)}];
           const css = getComputedStyle(document.documentElement);
           const out = [];
@@ -171,11 +211,12 @@ export async function run({ cdp, report: r, fix }) {
             const got = css.getPropertyValue('--color-' + k).trim().toLowerCase();
             if (got !== want[k]) out.push(k + ' css=' + got + ' 사본=' + want[k]);
           }
-          return out; })()`);
+          return { bad: out, n: Object.keys(want).length }; })()`);
+        const bad = res && res.bad;
         r.check(
-          `[${id}] 18토큰 == BUILTIN_TOKENS (theme-apply.ts 사본 ↔ styles.css)`,
-          Array.isArray(bad) && bad.length === 0,
-          Array.isArray(bad) ? bad.join(" · ") : String(bad),
+          `[${id}] ${res?.n ?? "?"}토큰 == BUILTIN_TOKENS (theme-apply.ts 사본 ↔ styles.css)`,
+          Array.isArray(bad) && bad.length === 0 && res.n > 0,
+          Array.isArray(bad) ? bad.join(" · ") : String(res),
         );
       }
 
