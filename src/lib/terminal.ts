@@ -4,7 +4,7 @@ import type { FitAddon } from "@xterm/addon-fit";
 import type { Terminal } from "@xterm/xterm";
 
 import { useUi } from "../stores/ui";
-import { copyText, readClipboardText } from "./clipboard";
+import { copyFailMessage, copyText, readClipboardText } from "./clipboard";
 import { isMac } from "./platform";
 import { forgetPtyInput } from "./prompt-capture";
 
@@ -292,10 +292,7 @@ export function installTerminalCopyFallback(): void {
     const sel = withSel?.term.getSelection();
     if (!withSel || !sel) return;
     e.preventDefault();
-    void copyText(sel).then((ok) => {
-      if (ok) withSel.term.clearSelection();
-      else useUi.getState().pushToast("error", "복사에 실패했습니다");
-    });
+    copyTerminalText(withSel.id, sel);
   });
 }
 
@@ -337,14 +334,20 @@ export async function pasteIntoTerminal(id: string) {
   }
 }
 
-/** 선택 영역을 클립보드로 복사 — 네이티브 플러그인 경로(WKWebView의 한글 MacRoman 깨짐 회피).
- *  실패는 무음이 아니라 토스트로 알린다. */
-export function copyTerminalSelection(id: string) {
-  const sel = registry.get(id)?.term.getSelection();
-  if (sel)
-    void copyText(sel).then((ok) => {
-      if (!ok) useUi.getState().pushToast("error", "복사에 실패했습니다");
-    });
+/** 터미널 복사의 **단일 경로** — Ctrl+C·Ctrl+Shift+C·Cmd+C·전역 폴백·우클릭 메뉴가 모두 여기로
+ *  온다. 성공하면 선택을 해제해 "복사됐다"를 눈으로 알리고(무음 성공이면 사용자는 다시 누른다),
+ *  실패는 **사유와 함께** 토스트로 알린다(clipboard.ts의 계층 쓰기가 남긴 lastCopyFailure).
+ *
+ *  **텍스트를 인자로 받는 게 핵심이다.** 메뉴에서 부를 때 여기서 `getSelection()`을 다시 읽으면
+ *  안 된다 — macOS는 xterm 기본값이 "우클릭 = 커서 아래 단어 선택"이라(rightClickSelectsWord),
+ *  메뉴가 뜨는 사이 선택이 통째로 바뀐 뒤였다. 지금은 그 옵션도 끄고(terminal-engine.ts),
+ *  메뉴는 열린 순간의 스냅샷을 넘긴다. */
+export function copyTerminalText(id: string, text: string) {
+  if (!text) return;
+  void copyText(text).then((ok) => {
+    if (ok) registry.get(id)?.term.clearSelection();
+    else useUi.getState().pushToast("error", copyFailMessage());
+  });
 }
 
 /** 플로팅 분리용 — xterm 인스턴스/host만 정리하고 PTY(term_close)는 호출하지 않는다.

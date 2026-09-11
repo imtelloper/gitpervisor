@@ -65,6 +65,7 @@ const SUITES = [
   "./suites/45-git-dialog.mjs",
   "./suites/50-file-tree-dialog.mjs",
   "./suites/51-viewer-split.mjs",
+  "./suites/52-terminal-copy.mjs",
   // 잔디·요약. 자기 전용 레포를 따로 만들어 쓴다(공유 픽스처엔 앞선 스위트의 오늘 커밋이 쌓인다).
   "./suites/48-report.mjs",
   // 번역 본문 단언은 LLM(런타임+모델)이 준비된 경우에만 — 아니면 그 부분만 skip 한다.
