@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import { isMac } from "../../lib/platform";
 import {
   attachTerminal,
   copyTerminalText,
@@ -335,11 +336,13 @@ export function TermClipboardItems({
 }
 
 /** 마우스 추적 모드(vim·lazygit·htop·tmux)에서는 드래그가 앱으로 가서 **선택이 생기지 않는다**.
- *  정답은 Shift+드래그인데, 안내가 없으면 "복사가 안 되는 앱"으로 오해한다. */
+ *  정답은 선택을 강제하는 수식키+드래그인데 그 키가 OS별로 다르다 — Windows/Linux는 Shift, mac은
+ *  Option이다(mac의 Shift+드래그는 앱으로 그대로 간다 — terminal-engine `XTERM_OVERRIDES`).
+ *  안내가 없거나 틀리면 "복사가 안 되는 앱"으로 오해한다. */
 function noSelectionHint(termId: string): string {
   const mouse = getTerminal(termId)?.term.modes.mouseTrackingMode;
   return mouse && mouse !== "none"
-    ? "앱이 마우스를 쓰는 중 — Shift+드래그로 선택하세요"
+    ? `앱이 마우스를 쓰는 중 — ${isMac ? "Option+드래그" : "Shift+드래그"}로 선택하세요`
     : "선택한 텍스트가 없습니다";
 }
 

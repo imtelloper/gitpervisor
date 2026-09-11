@@ -221,6 +221,34 @@ export function refreshTerminalThemesImpl(): void {
   }
 }
 
+/** xterm 기본값 중 **이 앱이 뒤집는 것** — createTerminalImpl이 옵션에 그대로 펼친다.
+ *  상수로 뺀 이유는 아래 DEV 노출이다(e2e 52가 선언 자체를 OS와 무관하게 잰다). */
+export const XTERM_OVERRIDES = {
+  // **macOS 기본값을 끈다.** xterm의 `rightClickSelectsWord` 기본은 "Macintosh면 true"라
+  // (xterm.mjs), mac에서만 드래그 선택 밖을 우클릭하면 그 순간 커서 아래 단어로 선택이
+  // 교체됐다 → 우클릭 메뉴의 [복사]가 엉뚱한 단어를 복사한다. 세 OS 모두 "우클릭은 선택을
+  // 건드리지 않는다"로 통일한다(태스크 65).
+  rightClickSelectsWord: false,
+  // **mac에서 Option+드래그로 선택을 강제한다.** 앱이 마우스를 쓰는 중(vim·tmux·lazygit — 마우스
+  // 추적 모드)엔 드래그가 앱으로 가서 선택이 안 생긴다. 이걸 뚫는 수식키가 xterm은 OS별로 다르다
+  // (SelectionService.shouldForceSelection): Windows/Linux는 Shift, mac은 "Option **이고** 이 옵션이
+  // 켜져 있을 때"뿐이다. 기본값이 false라 mac엔 뚫을 수단이 아예 없었다 — mac의 Shift+드래그는
+  // 앱으로 그대로 간다. 안내 문구(TerminalPane `noSelectionHint`)가 이 수식키를 OS별로 말한다.
+  // 대가: mac의 Option+드래그 **열(블록) 선택**이 사라진다(shouldColumnSelect가 이 옵션이 켜진
+  // mac에선 Alt를 열 선택으로 보지 않는다). Windows/Linux는 이 옵션을 읽지 않는다.
+  macOptionClickForcesSelection: true,
+} as const;
+
+if (import.meta.env.DEV) {
+  // e2e 52가 **선언**을 잰다 — 실효값(`term.options`)만 보면 rightClickSelectsWord는 mac이 아닌
+  // 곳에서 기본값이 이미 false라 위 줄을 지워도 초록이다. main.tsx의 `__gpv`를 건드리지 않는
+  // 이유는 clipboard.ts `__gpvClipboard`와 같다(그 파일은 저장 시 vite 풀 리로드). 이 모듈은 첫
+  // 터미널에서 동적 import되므로 그 전엔 없다.
+  (window as unknown as { __gpvXterm?: unknown }).__gpvXterm = {
+    overrides: XTERM_OVERRIDES,
+  };
+}
+
 /** xterm 인스턴스를 만들고 PTY를 띄운다. 이미 있으면 기존 것을 반환(멱등).
  *  attach=true면 새 PTY를 spawn하지 않고 살아있는 세션에 출력만 재연결(term_attach) —
  *  플로팅(별도 OS 창)에서 메인 창이 만든 세션을 이어받을 때 쓴다. */
@@ -247,11 +275,8 @@ export function createTerminalImpl(opts: {
       '"Cascadia Code", Consolas, "D2Coding", "Noto Sans Mono CJK KR", "Nanum Gothic Coding", monospace',
     cursorBlink: true,
     scrollback: 5000,
-    // **macOS 기본값을 끈다.** xterm의 `rightClickSelectsWord` 기본은 "Macintosh면 true"라
-    // (xterm.mjs), mac에서만 드래그 선택 밖을 우클릭하면 그 순간 커서 아래 단어로 선택이
-    // 교체됐다 → 우클릭 메뉴의 [복사]가 엉뚱한 단어를 복사한다. 세 OS 모두 "우클릭은 선택을
-    // 건드리지 않는다"로 통일한다(태스크 65).
-    rightClickSelectsWord: false,
+    // 우클릭·Option+드래그 선택 동작 — 이유는 XTERM_OVERRIDES 주석.
+    ...XTERM_OVERRIDES,
     // Unicode11Addon(아래 :223)이 `term.unicode`를 건드리는데 그게 proposed API다 — 이 플래그가
     // 없으면 `loadAddon`이 "You must set the allowProposedApi option to true"로 **던지고**,
     // createTerminalImpl이 통째로 중단돼 **터미널이 하나도 안 뜬다**(0036d06 이후 실측).

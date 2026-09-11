@@ -1,16 +1,23 @@
 // 태스크 65 — 터미널 텍스트 복사가 어디서나·어느 OS에서나 된다.
 //
-// 이 스위트가 지키는 계약 여섯:
+// 이 스위트가 지키는 계약 일곱:
 //   ① **모아보기 셀 우클릭에 [복사]·[붙여넣기]가 있다.** 없어서 모아보기로 Claude 세션을 읽다
 //      우클릭하면 복사가 아예 불가능했다(설계 §2 #1). 이 스위트의 핵심 회귀 방지다.
-//   ② `rightClickSelectsWord`가 꺼져 있다. xterm 기본값은 "Macintosh면 true"라 mac에서만
-//      선택 밖 우클릭이 커서 아래 단어로 선택을 갈아치웠다(§2 #4). 값 자체는 세 OS 공통이라
-//      mac 러너가 없어도 여기서 잰다.
+//   ② xterm 기본값 오버라이드(`XTERM_OVERRIDES`)가 **선언돼 있고 실제 Terminal에 들어갔다.**
+//      `rightClickSelectsWord`는 기본값이 "Macintosh면 true"라 mac에서만 선택 밖 우클릭이 커서
+//      아래 단어로 선택을 갈아치웠다(§2 #4). 그런데 mac이 아닌 곳에선 기본값이 이미 false라
+//      **실효값만 재면 오버라이드를 지워도 초록이다.** 그래서 선언(`__gpvXterm.overrides`)을 OS와
+//      무관하게 재고, 배선은 기본값이 모든 OS에서 false인 `macOptionClickForcesSelection`의 실효값
+//      (true)으로 증명한다. mac에서의 **동작**(우클릭·Option+드래그) 자체는 mac 러너에서만 보인다.
 //   ③ 메뉴 [복사]는 **메뉴가 열린 순간의 선택**을 복사한다 — 클릭 시점에 다시 읽지 않는다.
 //   ④ 계층 폴백이 실제로 작동한다: 네이티브 플러그인이 죽어도(Linux의 영구 Err, Windows의
 //      클립보드 경합) 브라우저 경로가 받아 낸다. `__gpvClipboard.fail()`로 단계를 죽여 증명한다.
 //   ⑤ 전부 실패하면 **무음이 아니다** — 사유가 담긴 토스트가 뜨고 선택은 유지된다(다시 시도 가능).
 //   ⑥ 선택이 없으면 죽은 [복사] 버튼 대신 **왜 없는지**가 보인다.
+//   ⑦ 앱이 마우스를 쓰는 중(마우스 추적 모드)이면 그 안내가 **이 OS에서 실제로 먹는 수식키**를
+//      말한다 — Windows/Linux는 Shift+드래그, mac은 Option+드래그(mac의 Shift+드래그는 앱으로 간다).
+//      기대값은 앱의 isMac이 아니라 xterm이 수식키를 고르는 기준(`navigator.platform`)으로 따로 정한다.
+//      Windows/Linux 러너에서는 답이 예전과 같은 Shift라, OS 분기 자체의 회귀는 mac 러너에서만 갈린다.
 //
 // 클립보드는 사용자 것이다 — 시작할 때 텍스트를 저장하고 끝에 되돌린다(best-effort).
 // [붙여넣기]는 **누르지 않는다.** 누르면 사용자의 셸에 실제로 글자가 들어간다 — 존재만 확인한다.
@@ -226,14 +233,24 @@ export async function run({ cdp, report: r, fix }) {
     // 셸이 프롬프트를 다 뱉은 뒤에 마커를 넣는다 — 뒤늦은 출력이 마커 줄을 밀면 선택이 흔들린다.
     await sleep(1200);
 
-    // ── ② xterm 옵션: 우클릭이 선택을 바꾸지 않는다 ──
-    const rcsw = await cdp.eval(
-      `window.__gpv.term.get(${J(paneId)}).term.options.rightClickSelectsWord`,
-    );
+    // ── ② xterm 오버라이드: 선언 + 실제 Terminal 배선 ──
+    // `__gpvXterm`은 엔진 청크(terminal-engine)가 로드돼야 생긴다 — 그래서 맨 앞 훅 폴링이 아니라
+    // 첫 터미널이 붙은 여기서 읽는다. 실효 rightClickSelectsWord만으로는 부족하다(헤더 ② 참조).
+    const xo = await cdp.eval(`(()=>{
+      const o = window.__gpvXterm && window.__gpvXterm.overrides;
+      const t = window.__gpv.term.get(${J(paneId)}).term.options;
+      return {
+        decl: o ? { rcsw: o.rightClickSelectsWord, mocfs: o.macOptionClickForcesSelection } : null,
+        eff: { rcsw: t.rightClickSelectsWord, mocfs: t.macOptionClickForcesSelection },
+      };
+    })()`);
     r.check(
-      "우클릭이 선택을 바꾸지 않는다(rightClickSelectsWord=false)",
-      rcsw === false,
-      `값=${String(rcsw)} — mac 기본값은 true라 선택 밖 우클릭이 단어를 갈아치운다`,
+      "xterm 오버라이드 선언·배선(rightClickSelectsWord=false · macOptionClickForcesSelection=true)",
+      xo?.decl?.rcsw === false &&
+        xo?.decl?.mocfs === true &&
+        xo?.eff?.mocfs === true &&
+        xo?.eff?.rcsw === false,
+      `선언=${J(xo?.decl)} 실효=${J(xo?.eff)} — macOptionClickForcesSelection 기본값은 모든 OS에서 false라 실효 true면 배선된 것`,
     );
 
     // ── ③ 워크스페이스 pane 우클릭 → 복사 ──
@@ -328,10 +345,53 @@ export async function run({ cdp, report: r, fix }) {
       Array.isArray(emptyLabels) &&
         !emptyLabels.includes("복사") &&
         emptyLabels.includes("붙여넣기") &&
-        /선택한 텍스트가 없습니다|Shift\+드래그/.test(emptyText),
+        /선택한 텍스트가 없습니다|(Shift|Option)\+드래그/.test(emptyText),
       `항목=${J(emptyLabels)} 본문=${J(emptyText.replace(/\s+/g, " ")).slice(0, 80)}`,
     );
     await closeMenu();
+
+    // ── ⑦ 마우스 추적 모드: 안내가 이 OS에서 먹는 수식키를 말한다 ──
+    // DECSET 1000을 PTY를 거치지 않고 xterm에 직접 써 넣는다(마커와 같은 이유 — 셸은 변수일 뿐).
+    // xterm은 쓰기를 비동기로 파싱하므로 모드가 바뀔 때까지 폴링한다. 메뉴는 ⑥과 같은 **합성
+    // contextmenu**로 연다 — 진짜 마우스 누름은 이 모드에서 마우스 리포트가 돼 픽스처 셸로 들어간다.
+    // 모드는 결과와 무관하게 finally에서 끈다 — 켜 둔 채면 뒤 단계(모아보기 셀)의 선택이 앱 쪽으로 간다.
+    const mouseMode = () =>
+      cdp.eval(`window.__gpv.term.get(${J(paneId)})?.term.modes.mouseTrackingMode`);
+    const writeRaw = (seq) =>
+      cdp.eval(
+        `(()=>{ window.__gpv.term.get(${J(paneId)})?.term.write(${J(seq)}); return true; })()`,
+      );
+    try {
+      await writeRaw("\x1b[?1000h");
+      const modeOn = await poll(
+        mouseMode,
+        (v) => typeof v === "string" && v !== "none",
+        12,
+        100,
+      );
+      await clearSelection(paneId);
+      const mouseLabels = await openMenu(paneId, "붙여넣기");
+      const mouseText = (await menuText()) ?? "";
+      // xterm이 수식키를 고르는 기준 그대로(Browser.isMac = navigator.platform) — 앱의 isMac(UA)과
+      // 독립이라 둘이 어긋나도 여기서 갈린다.
+      const want = await cdp.eval(
+        `/^Mac/.test(navigator.platform) ? "Option+드래그" : "Shift+드래그"`,
+      );
+      r.check(
+        "마우스 추적 모드 → 안내가 이 OS의 강제 선택 수식키를 말한다(mac=Option · 그 외=Shift)",
+        typeof want === "string" && mouseText.includes(want),
+        `모드=${modeOn} 기대=${want} 항목=${J(mouseLabels)} 본문=${J(mouseText.replace(/\s+/g, " ")).slice(0, 80)}`,
+      );
+    } finally {
+      await closeMenu().catch(() => {});
+      await writeRaw("\x1b[?1000l").catch(() => {});
+    }
+    const modeOff = await poll(mouseMode, (v) => v === "none", 12, 100);
+    r.check(
+      "마우스 추적 모드 해제(DECRST 1000) — 뒤 단계로 새지 않는다",
+      modeOff === "none",
+      `모드=${modeOff}`,
+    );
 
     // ── ① 모아보기 셀 우클릭 (핵심 회귀) ──
     // 여기에 두 항목이 없어서 "이 PC에서는 복사가 안 된다"가 났다. 모아보기는 별도 창이 아니라

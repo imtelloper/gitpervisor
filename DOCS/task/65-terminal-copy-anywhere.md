@@ -1,6 +1,6 @@
 # 태스크 65 — 터미널 텍스트 복사, 어디서나·어느 OS에서나 확실히
 
-> 상태: **구현 완료 · e2e 52 11/11 (전체 회차에서도 확인, 2026-09-10)** · 대상: gitpervisor ·
+> 상태: **구현 완료 · e2e 52 11/11 (전체 회차에서도 확인, 2026-09-10) → 리뷰 후속 수정 후 13/13 (2026-09-11)** · 대상: gitpervisor ·
 > 근거: 코드 실측 2026-09-09(워킹트리 기준) + CDP 실기(dev 빌드, Windows 11 / WebView2) ·
 > 선행: dc21cae(네이티브 클립보드 일원화), fe57b45·ab21f8e(mac 인터셉터·전역 폴백), 태스크 61(메뉴 선택
 > 스냅샷) · **Rust 변경 0**
@@ -59,9 +59,15 @@ export function lastCopyFailure(): string;                       // 마지막 �
 **읽기(`readClipboardText`)는 손대지 않는다.** 되읽기 검증도 하지 않는다 — macOS 26 페이스트보드 프라이버시
 프롬프트가 읽기마다 뜬다(`terminal.ts:300-306`).
 
-### 3.2 xterm 옵션 — `rightClickSelectsWord: false`
+### 3.2 xterm 옵션 — `rightClickSelectsWord: false` · `macOptionClickForcesSelection: true`
 
-`terminal-engine.ts:242`의 `new Terminal({...})`에 1줄. 세 OS 동일: 우클릭은 선택을 건드리지 않는다.
+`terminal-engine.ts`의 `new Terminal({...})`에 넣는다. 세 OS 동일: 우클릭은 선택을 건드리지 않는다.
+
+**(2026-09-11 추가)** mac에서 마우스 추적 모드 앱(vim `mouse=a`·htop·lazygit·tmux) 위의 드래그는 앱으로 간다.
+xterm 6은 mac에서 Shift가 아니라 **Option+드래그**만 강제 선택으로 받고, 그것도 `macOptionClickForcesSelection`
+(기본 false)이 켜져 있을 때만이다. 두 값은 `XTERM_OVERRIDES` 상수 하나에 모아 옵션에 펼치고, DEV에서는
+`window.__gpvXterm.overrides`로 노출한다(e2e 52 ②가 선언을 직접 잰다 — 효과값만 재면 Mac이 아닌 러너에서는
+`rightClickSelectsWord`의 기본값이 이미 false라 아무것도 증명하지 못한다).
 
 ### 3.3 메뉴 항목 공용화 — `components/workspace/TermClipboardItems.tsx` (신규 ~40줄)
 
@@ -73,8 +79,8 @@ export function lastCopyFailure(): string;                       // 마지막 �
   [복사]는 `copyText(selection)`이다. 클릭 시점 재조회 없음(#4).
 - 성공 시 `term.clearSelection()`(Ctrl+C와 같은 피드백 규약), 실패 시 §3.1 토스트.
 - 선택이 없으면 [복사] 대신 비활성 안내 한 줄: 기본 "선택한 텍스트가 없습니다",
-  `term.modes.mouseTrackingMode !== "none"`(xterm 공개 API)이면 "앱이 마우스를 쓰고 있습니다 — Shift+드래그로
-  선택하세요".
+  `term.modes.mouseTrackingMode !== "none"`(xterm 공개 API)이면 "앱이 마우스를 쓰는 중 — Shift+드래그로
+  선택하세요". **mac은 "Option+드래그"** 다(§3.2 — mac xterm은 Shift를 강제 선택으로 받지 않는다).
 - [붙여넣기]는 `pasteIntoTerminal(termId)` 그대로.
 
 사용처 2곳:
@@ -99,8 +105,9 @@ TS 단위 러너가 없다(vitest 없음) → e2e. 실패 주입은 DEV 한정 `
   2. **모아보기 셀**에서 1 반복 — 현재는 항목이 없어 실패하는 케이스. 이 태스크의 핵심 회귀 방지.
   3. `fail(["plugin"])` 후 1 반복 → 여전히 일치(폴백 증명). `fail(["plugin","navigator","exec"])` → 토스트에
      사유 포함, 선택은 유지.
-  4. 선택 없이 우클릭 → [복사] 없음·안내 있음. `printf '\e[?1000h'`로 마우스 모드 → Shift 안내 문구,
-     `\e[?1000l` 원복.
+  4. 선택 없이 우클릭 → [복사] 없음·안내 있음. `\e[?1000h`로 마우스 모드 → 플랫폼 수식키 안내 문구
+     (Windows·Linux "Shift+드래그", mac "Option+드래그"), `\e[?1000l` 원복. 구현(⑦)은 PTY 대신 xterm에
+     직접 쓰고 합성 `contextmenu`로 연다 — 실제 마우스 누름은 마우스 모드에서 셸에 보고로 들어간다.
   5. mac 러너: 선택 **밖** 우클릭 → [복사] → 드래그 텍스트 그대로(§3.2).
 - **회귀**: Ctrl+C(선택 있음)=복사·(없음)=SIGINT, Ctrl+Shift+C, 번역 항목, Monaco 인터셉터(`clipboard.ts:60`)
   무변경, 붙여넣기 `pasteInFlight` 가드.
@@ -121,7 +128,7 @@ TS 단위 러너가 없다(vitest 없음) → e2e. 실패 주입은 DEV 한정 `
 |---|---|---|
 | 계층 쓰기 + 사유 | `lib/clipboard.ts` — `copyText`(네이티브 6회 → `navigator.clipboard` → `execCommand`), `lastCopyFailure()`, `copyFailMessage()` | §3.1 그대로 |
 | 복사 단일 경로 | `lib/terminal.ts` — `copyTerminalText(id, text)` 신설 | §3.1 + 아래 ⓐ |
-| 우클릭 선택 고정 | `lib/terminal-engine.ts` — `rightClickSelectsWord: false` | §3.2 그대로 |
+| 우클릭 선택 고정 | `lib/terminal-engine.ts` — `XTERM_OVERRIDES`(`rightClickSelectsWord: false` · `macOptionClickForcesSelection: true` — 후자는 2026-09-11) | §3.2 |
 | 메뉴 두 줄 공용 | `workspace/TerminalPane.tsx` — `TermClipboardItems` export | §3.3 + 아래 ⓑ |
 | 모아보기 셀 | `AggregateTerminals.tsx` — `ChipMenu`에 삽입, 클램프 +72px | §3.3 그대로 |
 
@@ -149,7 +156,8 @@ TS 단위 러너가 없다(vitest 없음) → e2e. 실패 주입은 DEV 한정 `
 - 모아보기 셀 우클릭 메뉴 항목: `["복사","붙여넣기","그리드에서 숨기기",…]` — 이 두 줄이 §2 #1이
   말한, 원래 **없던** 항목이다.
 - 선택 없음: `["붙여넣기", …]` + 본문에 "선택한 텍스트가 없습니다".
-- `rightClickSelectsWord === false`.
+- `rightClickSelectsWord === false`. (2026-09-11부터 ②는 효과값 대신 `XTERM_OVERRIDES` **선언**과
+  `macOptionClickForcesSelection` 효과값을 잰다 — 아래 "리뷰 후속 수정".)
 
 ### 실제 고장이 드러낸 여섯째 구멍 — 거짓 성공 (2026-09-10)
 
@@ -206,3 +214,23 @@ party` 가 `humanize` 의 Windows 경합 분기에 걸린다.
    토스트 없음)가 "실패했지만 조용하지 않았다"는 **성공 조건과 세 항목 중 둘이 겹친다.**
    2026-09-10 회차에서 토스트만 비어 실패했는데 원인은 제품이 아니라 눌리지 않은 클릭이었다.
    눌렀는지를 따로 들고 있어야 그 둘이 구분된다(`openAndClick` 이 그 일을 한다).
+
+### 리뷰 후속 수정 (2026-09-11)
+
+병합 전 반박 검증 리뷰가 잡은 두 건을 고쳤다(브랜치 `fix/review-65-66`).
+
+- **mac 안내가 틀렸다.** 마우스 추적 모드에서 "Shift+드래그로 선택하세요"라고 했지만, mac의 xterm 6은
+  Shift+드래그를 앱으로 넘기고 Option+드래그도 `macOptionClickForcesSelection`이 꺼져 있어 선택을 만들지
+  않았다 — mac에서는 **어느 제스처로도** 복사할 수 없었다. 옵션을 켜고(§3.2) 안내를 플랫폼별로 갈랐다
+  (`TerminalPane.tsx` `noSelectionHint`). 대가: mac 마우스 모드에서 짧은 Option+클릭도 앱 대신 선택 경로를 탄다.
+- **e2e 52 ②가 Windows·Linux에서 실패할 수 없었다.** 효과값 `term.options.rightClickSelectsWord`를 쟀는데
+  xterm 기본값이 이미 "Mac이 아니면 false"라 옵션 줄을 지워도 초록이었다. 이제 ②는 DEV 브리지
+  `__gpvXterm.overrides`의 **선언**(키가 빠지면 모든 OS에서 빨강)과 `macOptionClickForcesSelection`의
+  **효과값**(기본이 모든 OS에서 false라 펼치기가 빠지면 빨강)을 함께 잰다.
+- **⑦ 신설** — 마우스 모드 안내 문구(§4의 4). `finally`에서 마우스 모드를 반드시 끈다.
+
+**남은 한계**: 안내의 `isMac` 분기만 되돌리면 Windows·Linux 러너에서는 초록이다 — 그 분기는 mac 러너만 잡는다.
+
+**e2e(2026-09-11, `F:\gp-fix` dev 빌드 · 셸을 `powershell.exe` 5.1 로 둔 회차)**: 52 **13/13**(새 ②·⑦ 포함),
+60 18/18, 14 67 pass / 2 skip. 14 는 첫 회차에서 "Claude 항목 → 셸에 `claude` 입력(에코)" 1건이 18초 대기 안에
+에코를 못 봐 실패했고 단독 재실행에서 통과했다 — 이 PC 는 Store pwsh 별칭이 깨져 있어 셸을 5.1 로 바꿔 돌린 회차다.
