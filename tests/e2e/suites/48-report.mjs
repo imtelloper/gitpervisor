@@ -4,13 +4,19 @@
 // 오늘 날짜로 만든 커밋이 여럿 쌓여 있어 "오늘 = 1건" 같은 단언이 성립하지 않는다. 그래서 이
 // 스위트만 쓰는 레포를 따로 만들고(커밋 4개: 오늘·3일 전·40일 전 + 다른 이메일 1개) 끝나면 지운다.
 //
-// 지키는 계약 여섯:
+// 지키는 계약 열하나(⑦~⑪ 은 태스크 67 — 다중 프로젝트 종합 · AI 채팅 · 별도 창):
 //   ① `git_activity` 가 **작성자 날짜**로 버킷하고, `mine=true` 는 다른 이메일 커밋을 뺀다.
 //   ② `claude_prompts` 가 전사에서 사용자 프롬프트만 뽑는다(`tool_result` 줄 제외) + 날짜별 개수.
 //   ③ 리포트 뷰의 잔디가 365칸이고 오늘 칸이 값·툴팁을 갖는다.
 //   ④ 오늘 칸 클릭 → 그 날 카드가 같은 카운트를 보여준다. LLM 준비 시 요약이 스트리밍되고 저장된다.
 //   ⑤ 커밋을 추가하면 `repo://changed` → `["activity"]` 무효화로 칸이 갱신된다.
 //   ⑥ 파일을 열면(`selectDiff`) 리포트가 닫힌다(모아보기와 같은 규칙).
+//   ⑦ 스코프를 2개 체크하면 종합 카드 1 + 개별 2 = 3장, 종합 카운트는 **합**, 키는 `multi:<해시>`.
+//   ⑧ `buildMessages` 가 날짜 섹션(`### YYYY-MM-DD (요일)`)으로 조립하고 예산 바닥(1,500자)을 지킨다.
+//   ⑨ 종합 카드 [AI에게 묻기] → 우측 채팅. [요약으로 저장] 게이트가 `## ` 유무와 일치하고,
+//      저장하면 **카드 본문이 그 답변으로 바뀐다**(스트리밍 잔여가 가리지 않는다).
+//   ⑩ [리포트] 우클릭 → "새 창으로 열기" → `doc-report` 싱글턴, 메인 뷰는 닫힌다.
+//   ⑪ 원시 `report_set`/`report_delete` → `report://changed` 로 메인 창 캐시가 따라 움직인다.
 //
 // **가짜 전사는 finally 에서 그 파일만 지운다** — 사용자의 실제 전사 디렉토리는 건드리지 않는다.
 import { existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
@@ -23,6 +29,9 @@ export const name = "작업 리포트 (잔디 · 전사 프롬프트 · 기간 �
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const J = JSON.stringify;
+const WIN_API = "/node_modules/@tauri-apps/api/webviewWindow.js";
+/** `lib/report.ts` 의 요일 표기와 같아야 한다 — ⑧ 이 조립 결과를 글자 그대로 맞춘다. */
+const WEEKDAY = ["일", "월", "화", "수", "목", "금", "토"];
 
 /** Claude Code 전사 디렉토리 이름 규약(`claude_usage.rs encode_project_dir`). */
 const encodeDir = (p) => p.replace(/[/\\:.]/g, "-");
@@ -38,6 +47,25 @@ function localNoon(offsetDays) {
   return d;
 }
 
+/**
+ * `git log %aI` 와 같은 모양 — 오프셋을 달고 있는 로컬 시각. **커밋의 날짜 버킷은 이 오프셋의
+ * 날짜**다(`report.rs` 의 `date_naive()` 와 같은 기준). 프롬프트 `at` 은 UTC 라 그쪽은
+ * `toISOString()` 을 그대로 쓴다 — 두 갈래의 기준이 다른 것이 계약이다.
+ */
+function localIso(offsetDays) {
+  const d = localNoon(offsetDays);
+  const tz = -d.getTimezoneOffset();
+  const p = (n) => String(n).padStart(2, "0");
+  return `${ymd(d)}T12:00:00${tz < 0 ? "-" : "+"}${p(Math.floor(Math.abs(tz) / 60))}:${p(Math.abs(tz) % 60)}`;
+}
+
+/**
+ * 오류·안내 문구는 assistant 자리에 그대로 앉는다(`ReportChat` 의 `notice()`) — 그걸 "답변"으로
+ * 세면 전송 경로가 통째로 고장 나 있어도 ⑨ 가 초록이다.
+ */
+const NOT_AN_ANSWER =
+  /^(다른 생성이 진행 중입니다|취소됨|AI 요청|AI 서버 오류|AI 응답 시간 초과|응답 수신 실패|IPC 응답 시간 초과)/;
+
 /** 폴링 — fn 이 truthy 를 돌려줄 때까지(또는 시한까지). */
 async function until(fn, timeoutMs, stepMs = 400) {
   const t0 = Date.now();
@@ -52,6 +80,8 @@ async function until(fn, timeoutMs, stepMs = 400) {
 export async function run({ cdp, report: r }) {
   const root = mkdtempSync(join(tmpdir(), "gpv-e2e-report-"));
   const repo = join(root, "repo");
+  /** ⑦ 의 둘째 레포 — 같은 임시 루트 안이라 finally 의 `rmSync(root)` 가 함께 거둔다. */
+  const repo2 = join(root, "repo2");
   const transcriptDir = join(homedir(), ".claude", "projects", encodeDir(repo));
   const transcript = join(transcriptDir, "e2e.jsonl");
   const MY_EMAIL = "e2e@gitpervisor.test";
@@ -61,7 +91,14 @@ export async function run({ cdp, report: r }) {
   const yearAgo = ymd(localNoon(-364));
 
   let projectId = null;
+  let projectId2 = null;
   let generatedKey = null;
+  /** ⑨ 가 채팅에서 저장한 종합 카드 키 · ⑪ 이 쓴 합성 키 — finally 에서 지운다. */
+  let combinedKey = null;
+  let syncKey = null;
+  /** 사용자가 골라 둔 스코프·채팅 열림 — 이 스위트가 덮기 전 값. finally 에서 **되돌린다**. */
+  let prevScope;
+  let prevChat;
 
   try {
     // ── 픽스처 레포: 날짜를 조작한 커밋 4개 ──
@@ -163,7 +200,18 @@ export async function run({ cdp, report: r }) {
     );
 
     // ── ③ 잔디 ──
-    await cdp.eval(`(()=>{ try{ localStorage.setItem("gp:report-mine","1"); }catch(_){} return true; })()`);
+    // 스코프·채팅 열림은 창 간 공유라 **지난 회차가 남긴 값**이 이 스위트의 전제를 깬다:
+    // "전체"로 남아 있으면 ③④ 가 보는 첫 카드가 종합 카드(다른 카운트)가 된다. 지워서
+    // 기본값(지금 고른 프로젝트 1개)으로 시작시킨다. 다만 **지우기만 하면 원복이 아니라
+    // 소거**다 — 사용자가 골라 둔 값을 먼저 받아 두었다가 finally 에서 되돌린다
+    // (14 의 `gp:project-colors`, 40 의 `gp:ie:toggles` 와 같은 처리).
+    prevScope = await cdp.eval(`localStorage.getItem("gp:report-scope")`);
+    prevChat = await cdp.eval(`localStorage.getItem("gp:report-chat-open")`);
+    await cdp.eval(
+      `(()=>{ try{ localStorage.setItem("gp:report-mine","1");
+        localStorage.removeItem("gp:report-scope"); localStorage.removeItem("gp:report-chat-open");
+      }catch(_){} return true; })()`,
+    );
     await cdp.eval(`window.__gpv.ui.getState().selectProject(${J(projectId)})`);
     await cdp.eval(`(()=>{ const s=window.__gpv.ui.getState(); if(!s.reportOpen) s.toggleReport(); return true; })()`);
     const cells = await until(
@@ -260,6 +308,402 @@ export async function run({ cdp, report: r }) {
     await sleep(300);
     const stillOpen = await cdp.eval(`window.__gpv.ui.getState().reportOpen`);
     r.check("⑥ selectDiff → reportOpen === false", stillOpen === false, `${stillOpen}`);
+
+    // ── ⑦ 다중 선택 → 종합 카드(태스크 67 §3.1) ──
+    // ⑥ 이 뷰를 닫았다 — 아래 단언이 전부 이 뷰 안에 있으므로 다시 연다.
+    await cdp.eval(
+      `(()=>{ const s=window.__gpv.ui.getState(); if(!s.reportOpen) s.toggleReport(); return true; })()`,
+    );
+
+    mkdirSync(repo2, { recursive: true });
+    git(repo2, ["init", "-b", "main"]);
+    git(repo2, ["config", "user.email", MY_EMAIL]);
+    git(repo2, ["config", "user.name", "gitpervisor-e2e"]);
+    git(repo2, ["config", "commit.gpgsign", "false"]);
+    writeFileSync(join(repo2, "two.txt"), "둘째 레포\n");
+    git(repo2, ["add", "-A"]);
+    git(repo2, ["commit", "-m", "둘째 레포 오늘 커밋", "--date", `${today}T12:00:00`]);
+
+    const project2 = await cdp.invoke("add_project", { path: repo2 }, { timeoutMs: 30000 });
+    projectId2 = project2.id;
+    await cdp
+      .eval(`window.__gpv.queryClient.invalidateQueries({ queryKey: ["projects"] })`)
+      .catch(() => {});
+    const listed2 = await until(
+      async () =>
+        (await cdp.eval(
+          `((window.__gpv.queryClient.getQueryData(["projects"])||[]).some(p=>p.id===${J(projectId2)}))`,
+        )) || null,
+      8000,
+    );
+    r.check("⑦ 둘째 레포(오늘 커밋 1) 등록", listed2 === true);
+
+    // 체크가 **전부** 켜지면 ScopePicker 는 "전체"로 접는다 — 그러면 선택이 2개가 아니게 되므로
+    // 셋 이상 등록돼 있어야 이 검사가 성립한다(러너 픽스처 1 + 이 스위트 2).
+    const nProjects = await cdp.eval(
+      `(window.__gpv.queryClient.getQueryData(["projects"])||[]).length`,
+    );
+    r.check("⑦ 사전 조건 — 등록 프로젝트 3개 이상", nProjects >= 3, `${nProjects}`);
+
+    await cdp.eval(
+      `(()=>{ const b=document.querySelector('[data-gpv="report-scope"]'); if(!b) return false; b.click(); return true; })()`,
+    );
+    // **`input` 을 붙여야 한다** — 사이드바의 프로젝트 행(ProjectItem)도 `data-project-id` 를
+    // 달고 있어 그냥 찾으면 그 `div` 가 먼저 잡히고, 클릭해도 체크는 아무 일도 일어나지 않는다.
+    const box2 = `input[data-project-id=${J(projectId2)}]`;
+    await until(
+      async () => (await cdp.eval(`!!document.querySelector(${J(box2)})`)) || null,
+      5000,
+    );
+    const checked = await cdp.eval(
+      `(()=>{ const el=document.querySelector(${J(box2)});
+        if(!el) return 'no-checkbox'; if(el.checked) return 'already-checked'; el.click(); return true; })()`,
+    );
+    r.check("⑦ 스코프 드롭다운에서 둘째 프로젝트 체크", checked === true, J(checked));
+    // 드롭다운은 카드 위를 덮는다 — 닫고 본다(Esc, ScopePicker 의 키 핸들러).
+    await cdp.eval(
+      `(()=>{ window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'})); return true; })()`,
+    );
+
+    // eval 안에서 그대로 정규식 리터럴이 되어야 한다(템플릿이 아니라 일반 문자열이라 `\\d`).
+    const cardCountRe = "/^커밋 \\d+ · 프롬프트 \\d+$/";
+    // 두 프로젝트의 커밋·프롬프트 쿼리가 **따로** 도착한다 — 한쪽만 온 회차의 합을 읽으면
+    // "커밋 2"로 떨어진다(③ 이 같은 이유로 두 시리즈를 함께 기다린다). 합이 맞을 때까지 본다.
+    const SUM = "커밋 3 · 프롬프트 2";
+    let cards = null;
+    await until(async () => {
+      const v = await cdp.eval(`(()=>{
+        const one=[...document.querySelectorAll('[data-gpv="report-card"]')];
+        const comb=document.querySelector('[data-gpv="report-card-combined"]');
+        if(!comb) return null;
+        const pick=(el)=>{ const s=[...el.querySelectorAll('span')]
+          .find(x=>${cardCountRe}.test((x.textContent||'').trim())); return s? s.textContent.trim():null; };
+        return { one: one.length, head: comb.innerText.split('\\n').slice(0,3).join(' | '),
+                 count: pick(comb), scopeKey: comb.dataset.scopeKey || null }; })()`);
+      if (v && v.count) cards = v; // 마지막 관측값 — 시한을 넘겨도 실패 메시지에 남는다
+      return v && v.count === SUM ? v : null;
+    }, 30000);
+    r.check("⑦ 카드 3장 — 종합 1 + 개별 2", !!cards && cards.one === 2, J(cards));
+    r.check(
+      "⑦ 종합 헤더 '종합 · 2개 프로젝트'",
+      !!cards && cards.head.includes("종합 · 2개 프로젝트"),
+      J(cards && cards.head),
+    );
+    // 합: 레포1 오늘 내 커밋 2("오늘 커밋"+⑤"방금 커밋", 남의 커밋은 mine=true 로 제외) + 레포2 1,
+    // 프롬프트는 레포1 전사 2 + 레포2 0.
+    r.check(
+      `⑦ 종합 카운트 = 두 레포의 합(${SUM})`,
+      !!cards && cards.count === SUM,
+      J(cards && cards.count),
+    );
+    r.check(
+      "⑦ 종합 저장 키가 조합 해시(multi:<16hex>)",
+      !!cards && /^multi:[0-9a-f]{16}$/.test(cards.scopeKey || ""),
+      J(cards && cards.scopeKey),
+    );
+    if (cards?.scopeKey) combinedKey = `${cards.scopeKey}|day|${today}`;
+
+    const savedScope = await cdp.eval(`localStorage.getItem("gp:report-scope")`);
+    let scopeOk = false;
+    try {
+      const v = JSON.parse(savedScope);
+      scopeOk =
+        Array.isArray(v) && v.length === 2 && v.includes(projectId) && v.includes(projectId2);
+    } catch (_) {
+      scopeOk = false;
+    }
+    r.check("⑦ gp:report-scope 에 두 프로젝트 id", scopeOk, String(savedScope));
+
+    // ── ⑧ 프롬프트 조립(LLM 없이 — 순수 함수) ──
+    const noonIso = localNoon(0).toISOString();
+    const wd = WEEKDAY[localNoon(0).getDay()];
+    const yday = ymd(localNoon(-1));
+    const wdY = WEEKDAY[localNoon(-1).getDay()];
+    /** 예산 상한 검사용 — 활동 10일(오늘 ~ 9일 전). 커밋은 오프셋 ISO, 프롬프트는 UTC. */
+    const spreadC = Array.from({ length: 10 }, (_, i) => localIso(-i));
+    const spreadP = Array.from({ length: 10 }, (_, i) => localNoon(-i).toISOString());
+    const asm = await cdp.eval(`(()=>{
+      const R = window.__gpv && window.__gpv.report;
+      if (!R || !R.buildMessages) return 'no-hook';
+      const AT = ${J(noonIso)};          // 프롬프트 — 전사 timestamp 는 UTC 다
+      const CAT = ${J(localIso(0))};     // 커밋 — %aI 는 오프셋을 달고 온다(버킷은 그 날짜)
+      const YAT = ${J(localIso(-1))};
+      const c = (sha, subject, at) => ({ sha, parents: [], subject, body: "",
+        authorName: "e2e", authorEmail: "e2e@x", authoredAt: at || CAT, refs: [] });
+      const mk = (id, name, commits, prompts) => ({ project: { id, name, path: "/"+id }, commits, prompts });
+      const two = [
+        mk("p1", "알파", [c("aaaaaaa1111", "알파 커밋")], [{ at: AT, text: "알파 프롬프트" }]),
+        mk("p2", "베타", [c("bbbbbbb2222", "베타 커밋")], []),
+      ];
+      const base = { period: "week", since: ${J(today)}, until: ${J(today)}, language: "ko" };
+      const m2 = R.buildMessages({ ...base, sources: two });
+      const m1 = R.buildMessages({ ...base, sources: [two[0]] });
+      // 예산 바닥 — ctx 2048·월간이면 (2048-2048-400)*1.5 < 0 이라 max(1500, …) 가 걸려야 한다.
+      const bulk = (n, prefix, at) => Array.from({ length: n },
+        (_, i) => c(prefix + String(i).padStart(6,"0"), "커밋 제목 " + i + " " + "가".repeat(60), at));
+      const many = [mk("p1", "알파", bulk(40, "a", CAT), [])];
+      const mb = R.buildMessages({ ...base, period: "month", sources: many, ctx: 2048 });
+      // 날짜별 균등 분배(§3.1 의 핵심 변경) — 두 날짜에 20건씩. 분배가 없으면 두 섹션이 각각
+      // 예산 전부를 써 합이 두 배가 되고, 날짜 정렬이 없으면 최신 날짜가 먼저 나온다.
+      const twoDays = [mk("p1", "알파", [...bulk(20, "b", CAT), ...bulk(20, "y", YAT)], [])];
+      const m2d = R.buildMessages({ ...base, period: "month", sources: twoDays, ctx: 2048 });
+      // 예산 상한 — 활동 10일 × (커밋 1 · 300자 프롬프트 1). 날짜마다 "최소 1줄"을 남기면
+      // 그 바닥이 날짜 수 × 2회로 곱해져 예산을 통째로 넘긴다.
+      const wide = [mk("p1", "알파",
+        ${J(spreadC)}.map((t, i) => c("c" + String(i).padStart(6,"0"), "커밋 " + i, t)),
+        ${J(spreadP)}.map((t, i) => ({ at: t, text: "프롬프트 " + i + " " + "가".repeat(300) })))];
+      const mw = R.buildMessages({ ...base, period: "month", sources: wide, ctx: 2048 });
+      return { sys2: m2[0].content, user2: m2[1].content, user1: m1[1].content,
+               budget: mb[1].content, twoDays: m2d[1].content, wide: mw[1].content };
+    })()`);
+    if (asm === "no-hook") {
+      r.check("⑧ __gpv.report.buildMessages 노출(dev 빌드)", false, "훅 없음");
+    } else {
+      r.check(
+        `⑧ 날짜 섹션 '### ${today} (${wd})' + 날짜별 머리글(커밋 2건)`,
+        asm.user2.includes(`### ${today} (${wd})`) && asm.user2.includes("커밋 2건"),
+        J(asm.user2.slice(0, 200)),
+      );
+      r.check(
+        "⑧ 여러 프로젝트면 줄머리에 [프로젝트명] · 프롬프트는 HH:MM",
+        asm.user2.includes("- [알파] aaaaaaa 알파 커밋") &&
+          asm.user2.includes("- [베타] bbbbbbb 베타 커밋") &&
+          asm.user2.includes("- [알파] [12:00] 알파 프롬프트"),
+        J(asm.user2.slice(0, 400)),
+      );
+      r.check(
+        "⑧ 1개면 접두 없음",
+        !asm.user1.includes("[알파]") && asm.user1.includes("- aaaaaaa 알파 커밋"),
+        J(asm.user1.slice(0, 200)),
+      );
+      r.check(
+        "⑧ system 에 '정확히 3개'(날짜당 3줄 지시)",
+        asm.sys2.includes("정확히 3개") && asm.sys2.includes("### YYYY-MM-DD (요일)"),
+        J(asm.sys2.slice(0, 200)),
+      );
+      // 바닥이 없으면 `(2048-2048-400)*1.5 < 0` 이라 날짜마다 **1줄만** 남는다.
+      // 바닥 1,500 → 커밋 몫 750자 → 80자짜리 줄이 아홉쯤 실린다.
+      const keptLines = (asm.budget.match(/^- /gm) || []).length;
+      r.check(
+        "⑧ ctx 2048 이어도 예산 바닥이 걸린다 — 여러 줄이 남고 '…외 N건' 으로 잘림을 알린다",
+        keptLines >= 5 && keptLines < 40 && /…외 \d+건/.test(asm.budget) && asm.budget.includes("커밋 40건"),
+        `kept=${keptLines} len=${asm.budget.length}`,
+      );
+
+      // 날짜별 분배(§3.1) — 두 날짜가 **둘 다** 남고, 각각 자기 몫만큼만 싣는다.
+      const iY = asm.twoDays.indexOf(`### ${yday} (${wdY})`);
+      const iT = asm.twoDays.indexOf(`### ${today} (${wd})`);
+      r.check(
+        "⑧ 두 날짜가 모두 남고 오래된 날짜가 먼저 — 예산이 날짜 수로 나뉜다",
+        iY >= 0 && iT > iY && (asm.twoDays.match(/…외 \d+건/g) || []).length === 2,
+        `yday@${iY} today@${iT} len=${asm.twoDays.length}`,
+      );
+      // 예산은 "컨텍스트에 들어간다"는 보장이다 — 활동 날짜가 많아도 그 보장이 깨지면 안 된다
+      // (날짜마다 최소 1줄 바닥이 있으면 여기서 4,000자쯤 나온다). 머리글 몫 10% 여유.
+      const sections = (asm.wide.match(/^### /gm) || []).length;
+      r.check(
+        "⑧ 활동 10일이어도 예산(1,500자) 안 · 날짜 섹션은 하나도 사라지지 않는다",
+        asm.wide.length <= 1500 * 1.1 && sections === 10,
+        `len=${asm.wide.length} sections=${sections}`,
+      );
+    }
+
+    // ── ⑨ 우측 AI 채팅(태스크 67 §3.2) ──
+    const asked = await cdp.eval(
+      `(()=>{ const b=document.querySelector('[data-gpv="report-card-combined"] [data-gpv="report-ask"]');
+        if(!b) return 'no-ask'; b.click(); return true; })()`,
+    );
+    r.check("⑨ 종합 카드 [AI에게 묻기]", asked === true, J(asked));
+    const chip = await until(
+      async () =>
+        (await cdp.eval(
+          `(()=>{ const c=document.querySelector('[data-gpv="report-chat-ctx"]'); return c? c.textContent.trim():null; })()`,
+        )) || null,
+      8000,
+    );
+    r.check(
+      "⑨ 우측 채팅 패널 등장 · 컨텍스트 칩(종합 · 기간)",
+      !!chip && chip.includes("종합 · 2개 프로젝트") && chip.includes(today),
+      J(chip),
+    );
+
+    const gate = await cdp.eval(`(()=>{
+      const t=document.querySelector('[data-gpv="report-chat-input"]');
+      const a=document.querySelector('[data-gpv="report-chat"]');
+      return { disabled: !t || !!t.disabled, text: a ? a.innerText.trim() : "" }; })()`);
+    if (gate.disabled) {
+      r.check(
+        "⑨ LLM 미준비 — 이유 문구 + [설정 열기](메인 창 분기)",
+        gate.text.length > 0 && gate.text.includes("설정 열기"),
+        J(gate.text.slice(0, 120)),
+      );
+      r.skip("⑨ 채팅 전송 · [요약으로 저장]", "LLM 미준비");
+    } else {
+      // 저장이 카드의 **스트리밍 잔여 텍스트**에 가려지는 회귀(§6)를 잡으려면 카드에 로컬
+      // text 가 남아 있어야 한다 — 그래서 종합 요약을 먼저 한 번 만든다.
+      const genStarted = await cdp.eval(
+        `(()=>{ const b=[...document.querySelectorAll('[data-gpv="report-card-combined"] button')]
+          .find(x=>/요약 생성|다시 생성/.test(x.textContent)); if(!b||b.disabled) return false; b.click(); return true; })()`,
+      );
+      r.check("⑨ 종합 카드 요약 생성 시작", genStarted === true);
+      const genText = await until(
+        async () =>
+          (await cdp.eval(
+            `(()=>{ const c=document.querySelector('[data-gpv="report-card-combined"]');
+              if(!c || c.querySelector('.animate-spin')) return null;
+              const b=c.querySelector('.md-body'); return b && b.innerText.trim() ? b.innerText.trim() : null; })()`,
+          )) || null,
+        180000,
+        1000,
+      );
+      r.check("⑨ 종합 요약이 카드 본문에 남는다", !!genText, J((genText || "").slice(0, 80)));
+
+      await cdp.eval(`(()=>{
+        const t=document.querySelector('[data-gpv="report-chat-input"]'); if(!t) return false;
+        const d=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value');
+        d.set.call(t, "한 줄로 요약해");
+        t.dispatchEvent(new Event('input',{bubbles:true}));
+        t.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));
+        return true; })()`);
+      const answer = await until(
+        async () => {
+          const v = await cdp.eval(`(()=>{
+            const p=document.querySelector('[data-gpv="report-chat"]'); if(!p) return null;
+            if(p.querySelector('.animate-spin')) return null;   // 아직 쓰는 중
+            const a=[...p.querySelectorAll('[data-role="assistant"]')].pop(); if(!a) return null;
+            const btn=a.querySelector('[data-gpv="report-chat-save"]'); if(!btn) return null;
+            const md=a.querySelector('.md-body');
+            return { text: md ? md.innerText.trim() : "", h2: !!a.querySelector('h2'),
+                     saveDisabled: !!btn.disabled }; })()`);
+          return v && v.text.length > 0 ? v : null;
+        },
+        120000,
+        1000,
+      );
+      // 오류·BUSY·취소 문구도 assistant 자리에 앉고 저장 버튼까지 달고 나온다 — 그걸 답변으로
+      // 세면 전송 경로가 통째로 고장 나도 여기가 초록이다(아래 게이트 단언도 `true === true` 로
+      // 통과하고 skip 으로 끝난다).
+      r.check(
+        "⑨ assistant 답변이 스트리밍돼 패널에 남는다 — 오류·BUSY 안내 문구가 아니다",
+        !!answer && !NOT_AN_ANSWER.test(answer.text),
+        J((answer?.text || "").slice(0, 120)),
+      );
+      // 게이트는 `/^## /m` — 렌더 결과에서 그것이 곧 h2 다(### 는 h3 라 걸리지 않는다).
+      r.check(
+        "⑨ [요약으로 저장] 활성 = 답변이 요약 형식(## 머리글)일 때만",
+        !!answer && answer.saveDisabled === !answer.h2,
+        J(answer && { h2: answer.h2, saveDisabled: answer.saveDisabled }),
+      );
+
+      if (answer && !answer.saveDisabled) {
+        await cdp.eval(
+          `(()=>{ const a=[...document.querySelectorAll('[data-gpv="report-chat"] [data-role="assistant"]')].pop();
+            a.querySelector('[data-gpv="report-chat-save"]').click(); return true; })()`,
+        );
+        const swapped = await until(
+          async () =>
+            (await cdp.eval(
+              `(()=>{ const c=document.querySelector('[data-gpv="report-card-combined"] .md-body');
+                const a=[...document.querySelectorAll('[data-gpv="report-chat"] [data-role="assistant"] .md-body')].pop();
+                if(!c||!a) return null;
+                return c.innerText.trim() === a.innerText.trim() ? true : null; })()`,
+            )) || null,
+          15000,
+        );
+        r.check(
+          "⑨ [요약으로 저장] → 카드 본문이 그 답변으로 바뀐다(스트리밍 잔여가 가리지 않는다)",
+          swapped === true && genText !== answer.text,
+          `생성본=${J((genText || "").slice(0, 40))} 답변=${J(answer.text.slice(0, 40))}`,
+        );
+      } else {
+        // 실패 원인을 skip 사유에 남긴다 — 오류 문구가 답변 자리에 앉아 있으면 여기서 드러난다.
+        r.skip(
+          "⑨ [요약으로 저장] → 카드 본문 교체",
+          `답변이 요약 형식이 아니라 저장 버튼이 잠겨 있다: ${J((answer?.text || "(답변 없음)").slice(0, 80))}`,
+        );
+      }
+    }
+
+    // ── ⑩ 우클릭 → 새 창으로 열기(태스크 67 §3.3) ──
+    const arr = (v) => (Array.isArray(v) ? v : []);
+    const labels = () =>
+      cdp.eval(
+        `(async()=>{ try{ const m=await import(${J(WIN_API)}); return (await m.getAllWebviewWindows()).map(w=>w.label); }catch(e){ return ['ERR:'+String(e.message||e)]; } })()`,
+      );
+    // "닫힌다"가 뜻을 가지려면 지금은 열려 있어야 한다.
+    const openBefore = await cdp.eval(`window.__gpv.ui.getState().reportOpen`);
+    r.check("⑩ 사전 조건 — 메인 리포트 뷰가 열려 있다", openBefore === true, `${openBefore}`);
+    const rightClicked = await cdp.eval(`(()=>{
+      const b=[...document.querySelectorAll('button')].find(x=>/^작업 리포트/.test(x.title||''));
+      if(!b) return 'no-report-button';
+      b.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:120,clientY:24}));
+      return true; })()`);
+    const menuShown = await until(
+      async () => (await cdp.eval(`!!document.querySelector('[data-gpv="report-open-window"]')`)) || null,
+      5000,
+    );
+    r.check(
+      "⑩ [리포트] 우클릭 메뉴 — '새 창으로 열기' 1항목",
+      rightClicked === true && menuShown === true,
+      J(rightClicked),
+    );
+    await cdp.eval(`document.querySelector('[data-gpv="report-open-window"]').click()`);
+    const opened = await until(
+      async () => (arr(await labels()).includes("doc-report") ? true : null),
+      20000,
+    );
+    r.check("⑩ doc-report OS 창 생성", opened === true, J(arr(await labels())));
+    const mainClosed = await until(
+      async () => ((await cdp.eval(`window.__gpv.ui.getState().reportOpen`)) === false ? true : null),
+      5000,
+    );
+    r.check("⑩ 메인 리포트 뷰는 닫힌다(공간 회수)", mainClosed === true);
+    // 싱글턴 — 라벨이 고정이라 Rust 가 포커스만 준다.
+    await cdp.eval(`window.__gpv.openReportWindow()`);
+    await sleep(2000);
+    const dupes = arr(await labels()).filter((l) => l === "doc-report").length;
+    r.check("⑩ 한 번 더 열어도 doc-report 는 1개(싱글턴)", dupes === 1, `${dupes}`);
+    await cdp
+      .eval(
+        `(async()=>{ try{ const m=await import(${J(WIN_API)}); for(const w of await m.getAllWebviewWindows()){ if(w.label==="doc-report") await w.close(); } return true; }catch(e){ return false; } })()`,
+      )
+      .catch(() => {});
+
+    // ── ⑪ 창 간 요약 동기화(report://changed) ──
+    // 리스너는 `useReports` 훅 안에 있다 — 리포트 뷰가 없는 창은 듣지 않는다(⑩ 이 닫았다).
+    await cdp.eval(
+      `(()=>{ const s=window.__gpv.ui.getState(); if(!s.reportOpen) s.toggleReport(); return true; })()`,
+    );
+    const cacheReady = await until(
+      async () => (await cdp.eval(`!!window.__gpv.queryClient.getQueryData(["reports"])`)) || null,
+      15000,
+    );
+    r.check("⑪ 사전 조건 — 메인 ['reports'] 캐시 존재", cacheReady === true);
+    syncKey = `e2e-sync|day|${today}`;
+    const has = () =>
+      cdp.eval(`!!(window.__gpv.queryClient.getQueryData(["reports"])||{})[${J(syncKey)}]`);
+    // 이 키는 어느 UI 도 쓰지 않는다 — 캐시에 나타나는 경로는 이벤트뿐이다
+    // (`["reports"]` 는 staleTime Infinity 라 스스로 다시 읽지 않는다).
+    r.check("⑪ 사전 조건 — 합성 키가 아직 캐시에 없다", (await has()) === false);
+    await cdp.invoke(
+      "report_set",
+      {
+        key: syncKey,
+        record: {
+          text: "## 한 줄 요약\n창 간 동기화 확인",
+          generatedAt: new Date().toISOString(),
+          inputHash: "e2e",
+          model: "e2e",
+        },
+      },
+      { timeoutMs: 10000 },
+    );
+    const appeared = await until(async () => (await has()) || null, 5000, 250);
+    r.check("⑪ report_set → report://changed 로 메인 캐시에 등장", appeared === true);
+    await cdp.invoke("report_delete", { key: syncKey }, { timeoutMs: 10000 });
+    const gone = await until(async () => ((await has()) === false ? true : null), 5000, 250);
+    r.check("⑪ report_delete → 메인 캐시에서 사라짐", gone === true);
+    if (gone === true) syncKey = null;
   } finally {
     // 가짜 전사 **파일만** 지운다(디렉토리는 남긴다 — 사용자 전사 보호).
     try {
@@ -267,13 +711,33 @@ export async function run({ cdp, report: r }) {
     } catch (e) {
       console.error("전사 정리 경고:", e.message);
     }
-    if (generatedKey) await cdp.try("report_delete", { key: generatedKey });
-    if (projectId) {
-      await cdp
-        .eval(`window.__gpv?.ui?.getState().closeProjectViewerTabs(${J(projectId)})`)
-        .catch(() => {});
-      await cdp.try("remove_project", { id: projectId });
+    // ⑩ 의 별도 창이 남아 있으면 다음 스위트의 창 열거가 어긋난다.
+    await cdp
+      .eval(
+        `(async()=>{ try{ const m=await import(${J(WIN_API)}); for(const w of await m.getAllWebviewWindows()){ if(w.label==="doc-report") await w.close(); } return true; }catch(e){ return false; } })()`,
+      )
+      .catch(() => {});
+    for (const k of [generatedKey, combinedKey, syncKey]) {
+      if (k) await cdp.try("report_delete", { key: k });
     }
+    for (const id of [projectId, projectId2]) {
+      if (!id) continue;
+      await cdp
+        .eval(`window.__gpv?.ui?.getState().closeProjectViewerTabs(${J(id)})`)
+        .catch(() => {});
+      await cdp.try("remove_project", { id });
+    }
+    // 스코프·채팅 열림은 창 간 공유(localStorage)다 — 이 스위트가 쓴 값을 사용자의 다음 세션까지
+    // 물려주지 않되, **원래 값이 있었으면 되돌린다**(지우기만 하면 사용자의 선택이 소거된다).
+    const restore = (k, v) =>
+      v === null || v === undefined
+        ? `localStorage.removeItem(${J(k)})`
+        : `localStorage.setItem(${J(k)}, ${J(String(v))})`;
+    await cdp
+      .eval(
+        `(()=>{ try{ ${restore("gp:report-scope", prevScope)}; ${restore("gp:report-chat-open", prevChat)}; }catch(_){} return true; })()`,
+      )
+      .catch(() => {});
     await cdp
       .eval(`(()=>{ const s=window.__gpv.ui.getState(); if(s.reportOpen) s.toggleReport(); return true; })()`)
       .catch(() => {});

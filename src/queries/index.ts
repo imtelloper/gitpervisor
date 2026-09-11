@@ -7,6 +7,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useState } from "react";
 
 import type {
@@ -1238,6 +1239,25 @@ export function useCommitsBetween(
   });
 }
 
+/**
+ * 종합 카드 입력 — 프로젝트 여러 개의 커밋을 한 번에(태스크 67 §3.1). 키가 `useCommitsBetween`과
+ * **같아** 종합 카드와 개별 카드가 같은 IPC를 나눠 쓴다(한 번만 읽는다).
+ */
+export function useCommitsBetweenMany(
+  projects: Project[],
+  since: string,
+  until: string,
+  mine: boolean,
+) {
+  return useQueries({
+    queries: projects.map((p) => ({
+      queryKey: ["commits-between", p.id, since, until, mine] as const,
+      queryFn: () => ipc.commitsBetween(p.id, since, until, mine),
+      staleTime: REPORT_STALE_MS,
+    })),
+  });
+}
+
 /** 카드 입력 — 선택 기간의 프롬프트 원문(히트맵의 1년 쿼리와 기간이 달라 키가 갈린다). */
 export function usePrompts(projectPath: string, since: string, until: string) {
   return useQuery({
@@ -1249,6 +1269,48 @@ export function usePrompts(projectPath: string, since: string, until: string) {
 
 /** 저장된 요약 전체 — 리포트 뷰를 열면 즉시 본문이 보이도록 1회 로드해 캐시. */
 export function useReports() {
+  const qc = useQueryClient();
+
+  /**
+   * 다른 창(별도 리포트 창 ↔ 메인)의 저장·삭제를 이 창의 캐시에도 반영한다(태스크 67 §3.3).
+   * `["reports"]`는 staleTime이 Infinity라 스스로 다시 읽지 않는다 — 이 구독이 없으면
+   * 저쪽 창에서 만든 요약이 이쪽엔 영영 안 보인다. 훅 안에 두므로 창(QueryClient)마다 따로
+   * 붙고, 리포트 뷰가 없는 창은 리스너도 없다. 보낸 창은 같은 값을 한 번 더 놓는다(멱등).
+   */
+  useEffect(() => {
+    // listen()이 resolve되기 전에 정리가 먼저 돌 수 있다 — 늦게 온 unlisten을 그 자리에서
+    // 호출해 리스너가 영구히 남지 않게 한다(DocWindow와 같은 처리).
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<{ key: string; record: ReportRecord | null }>(
+      "report://changed",
+      (e) => {
+        const { key, record } = e.payload;
+        qc.setQueryData<ReportMap>(["reports"], (old) => {
+          // 아직 한 번도 안 읽었으면 건드리지 않는다 — 여기서 데이터를 만들면 그게 "신선한"
+          // 캐시가 돼(staleTime Infinity) 최초 로드가 통째로 생략되고 이 한 건만 남는다.
+          // 대신 **다시 읽는다**: 진행 중이던 `report_get_all` 의 스냅샷이 이 쓰기 이전 것이면
+          // (읽기 락은 clone 직후 풀린다) 그냥 버릴 경우 그 키가 이 창에선 영영 없다.
+          if (!old) {
+            void qc.invalidateQueries({ queryKey: ["reports"] });
+            return old;
+          }
+          const next = { ...old };
+          if (record) next[key] = record;
+          else delete next[key];
+          return next;
+        });
+      },
+    ).then((un) => {
+      if (disposed) un();
+      else unlisten = un;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [qc]);
+
   return useQuery({
     queryKey: ["reports"] as const,
     queryFn: ipc.reportGetAll,

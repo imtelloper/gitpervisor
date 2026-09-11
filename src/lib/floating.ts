@@ -53,6 +53,12 @@ export interface DocTarget {
    * `edit` 과 같은 이유로 **옵셔널이어야 한다** — 이 필드 이전에 적힌 항목이 남아 있다.
    */
   folder?: string;
+  /**
+   * 있으면 이 창은 파일도 폴더도 아닌 **작업 리포트 뷰**를 띄운다(태스크 67).
+   * `projectId` 는 빈 문자열이고 `path` 는 창 안 제목용 문자열이다.
+   * `edit`·`folder` 와 같은 이유로 **옵셔널이어야 한다** — 이 필드 이전에 적힌 항목이 남아 있다.
+   */
+  report?: true;
 }
 
 /**
@@ -127,23 +133,24 @@ export function docTarget(id: string): DocTarget | null {
   return readDocs()[id] ?? null;
 }
 
-/** 경로 → 창 id. **결정적이어야 한다** — 같은 폴더를 다시 누르면 같은 라벨(`doc-<id>`)이 나와야
- *  Rust 가 새 창 대신 기존 창에 포커스만 준다(lib.rs open_doc_window 의 싱글턴 분기).
- *  crypto.randomUUID 를 쓰면 누를 때마다 창이 하나씩 늘어난다.
+/** 문자열 → 16자 hex. **결정적이어야 한다** — 폴더 창은 이 값이 곧 창 id 라, 같은 폴더를 다시
+ *  누르면 같은 라벨(`doc-<id>`)이 나와야 Rust 가 새 창 대신 기존 창에 포커스만 준다
+ *  (lib.rs open_doc_window 의 싱글턴 분기). crypto.randomUUID 를 쓰면 누를 때마다 창이 하나씩 늘어난다.
  *  FNV-1a 32bit 를 정·역방향으로 두 번 돌려 16자를 만든다 — 라벨 문자 집합(영숫자·`-`)에 맞고,
  *  충돌해도 결과는 "다른 폴더가 같은 창을 쓴다"가 아니라 그냥 그 창이 재사용될 뿐이다
- *  (창이 뜬 뒤 실제로 무엇을 여는지는 localStorage 의 항목이 정한다 — 그건 매번 덮어쓴다). */
-function folderWindowId(path: string): string {
-  const fnv = (s: string) => {
+ *  (창이 뜬 뒤 실제로 무엇을 여는지는 localStorage 의 항목이 정한다 — 그건 매번 덮어쓴다).
+ *  리포트 종합 카드의 저장 키(`lib/report.ts scopeKey`)도 같은 해시를 쓴다(태스크 67). */
+export function fnv16(s: string): string {
+  const fnv = (v: string) => {
     let h = 0x811c9dc5;
-    for (let i = 0; i < s.length; i++) {
-      h ^= s.charCodeAt(i);
+    for (let i = 0; i < v.length; i++) {
+      h ^= v.charCodeAt(i);
       h = Math.imul(h, 0x01000193) >>> 0;
     }
     return h.toString(16).padStart(8, "0");
   };
-  const rev = path.split("").reverse().join("");
-  return fnv(path) + fnv(rev);
+  const rev = s.split("").reverse().join("");
+  return fnv(s) + fnv(rev);
 }
 
 /**
@@ -154,7 +161,7 @@ function folderWindowId(path: string): string {
  * 그걸 보고 뷰어 대신 `FolderWindow` 를 그린다.
  */
 export function openFolderWindow(path: string): void {
-  const id = folderWindowId(path);
+  const id = fnv16(path);
   const docs = readDocs();
   docs[id] = { projectId: "", path, folder: path };
   const keys = Object.keys(docs);
@@ -176,5 +183,37 @@ export function openFolderWindow(path: string): void {
     size: [1100, 760],
   }).catch((e) => {
     console.error("폴더 창 생성 실패:", e);
+  });
+}
+
+/**
+ * 작업 리포트를 **별도 OS 창**으로 연다(타이틀바 [리포트] 우클릭 → 새 창으로 열기, 태스크 67).
+ *
+ * 폴더 창(66)과 같은 `doc-*` 경로를 그대로 탄다 — Rust 변경이 없다. 다른 점은 id 가 **고정
+ * 문자열**이라는 것뿐이다: 라벨이 `doc-report` 하나뿐이라 두 번 눌러도 Rust 가 기존 창에 포커스만
+ * 준다(lib.rs open_doc_window 의 싱글턴 분기). 리포트는 읽기 데이터라 창이 하나면 충분하다.
+ */
+export function openReportWindow(): void {
+  const docs = readDocs();
+  docs["report"] = { projectId: "", path: "작업 리포트", report: true };
+  const keys = Object.keys(docs);
+  const kept =
+    keys.length > DOC_MAX
+      ? Object.fromEntries(keys.slice(-DOC_MAX).map((k) => [k, docs[k]]))
+      : docs;
+  try {
+    localStorage.setItem(DOC_KEY, JSON.stringify(kept));
+  } catch {
+    /* 용량 초과 — 창은 그래도 띄운다(대상을 못 찾으면 그 창이 안내한다) */
+  }
+  // 카드 + 우측 채팅 패널(§3.2)이 함께 들어가는 창이라 폴더 창보다 넓게 연다.
+  // Rust 가 420..3000 으로 클램프한다.
+  void invoke("open_doc_window", {
+    docId: "report",
+    title: "작업 리포트",
+    origin: window.location.origin,
+    size: [1240, 820],
+  }).catch((e) => {
+    console.error("리포트 창 생성 실패:", e);
   });
 }

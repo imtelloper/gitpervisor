@@ -33,16 +33,26 @@ const ImageEditor = lazy(() => import("./components/image/ImageEditor"));
 /** 즐겨찾기 폴더 창(태스크 66). **lazy 여야 한다** — 위 세 개와 같은 이유로, 정적 import 면
  *  이 모듈이 앱 메인 청크에 인라인돼 파일 하나 보려고 뜬 창까지 그 값을 낸다. */
 const FolderWindow = lazy(() => import("./components/folder/FolderWindow"));
+/** 작업 리포트 창(태스크 67). 폴더 창과 **같은 이유로 lazy 여야 한다** — 리포트 뷰는 잔디·카드·
+ *  마크다운 렌더러를 끌고 오는데, 정적 import 면 그게 앱 메인 청크에 인라인돼 파일 하나 보려고
+ *  뜬 창까지 그 값을 낸다. */
+const ReportView = lazy(() =>
+  import("./components/report/ReportView").then((m) => ({ default: m.ReportView })),
+);
 
 /**
- * `doc-<id>` 창의 갈림길 — 대상에 `folder` 가 있으면 **폴더 목록 창**, 없으면 파일 뷰어 창이다.
+ * `doc-<id>` 창의 갈림길 — 대상에 `report` 가 있으면 **작업 리포트 창**, `folder` 가 있으면
+ * **폴더 목록 창**, 둘 다 없으면 파일 뷰어 창이다.
  *
- * 여기서 가르는 이유: 폴더 창은 아래 `FileDocWindow` 가 거는 훅(레포 워처 무효화·동영상 이벤트·
+ * 여기서 가르는 이유: 두 창 모두 아래 `FileDocWindow` 가 거는 훅(레포 워처 무효화·동영상 이벤트·
  * 이미지 편집기 호스트)을 하나도 쓰지 않는다. 한 컴포넌트 안에서 조건부로 처리하면 훅이 조건부가
- * 되거나, 쓰지도 않는 리스너를 폴더 창이 계속 달고 있게 된다.
+ * 되거나, 쓰지도 않는 리스너를 그 창들이 계속 달고 있게 된다.
  */
 export function DocWindow({ docId }: { docId: string }) {
   const target = useMemo(() => docTarget(docId), [docId]);
+  if (target?.report) {
+    return <ReportWindow />;
+  }
   if (target?.folder) {
     return (
       <Suspense fallback={<Loading />}>
@@ -51,6 +61,68 @@ export function DocWindow({ docId }: { docId: string }) {
     );
   }
   return <FileDocWindow docId={docId} />;
+}
+
+/**
+ * 작업 리포트 창(태스크 67) — 타이틀바 [리포트] 우클릭 → "새 창으로 열기".
+ *
+ * `ReportView` 는 prop 없이 그대로 쓴다. 이 창엔 `selectedProjectId` 가 없어 스코프 기본값이
+ * "전체"가 되고(창마다 스토어가 별개다), 선택은 `gp:report-scope` 로 메인 창과 공유된다.
+ * 저장된 요약이 창을 넘어 보이는 것은 Rust 의 `report://changed` 브로드캐스트가 맡는다.
+ */
+function ReportWindow() {
+  // 이 창에도 저장된 테마 적용 — 로드 전엔 main.tsx의 localStorage 선적용 값이 유지된다
+  // (FileDocWindow와 같은 처리).
+  const { data: settings } = useSettings();
+  const qc = useQueryClient();
+  useEffect(() => {
+    if (settings?.theme) document.documentElement.dataset.theme = settings.theme;
+  }, [settings?.theme]);
+
+  /**
+   * 이 창의 `settings`·`projects` 는 둘 다 `staleTime: Infinity` 이고, `settings://changed` 를
+   * 듣는 `attachRepoEvents` 는 메인 창에서만 걸린다 — 그대로 두면 이 창의 사본이 **창을 연
+   * 시점에 얼어붙는다.** 카드·채팅의 "메인 창의 설정 › AI에서 준비하세요"(§3.2) 안내를 따라
+   * 모델을 골라 와도 이 창은 모르고, 창을 닫았다 열어야 풀린다.
+   */
+  useEffect(() => {
+    // listen()이 resolve되기 전에 정리가 먼저 돌 수 있다 — 아래 FileDocWindow와 같은 처리.
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen("settings://changed", () => {
+      void qc.invalidateQueries({ queryKey: ["settings"] });
+    }).then((un) => {
+      if (disposed) un();
+      else unlisten = un;
+    });
+    // 프로젝트 추가·제거에는 이벤트가 없다 — 이 창이 포커스를 되찾을 때 다시 읽는다
+    // (staleTime Infinity 라 기본 refetchOnWindowFocus 로는 풀리지 않는다).
+    const refetchProjects = () => void qc.invalidateQueries({ queryKey: ["projects"] });
+    window.addEventListener("focus", refetchProjects);
+    return () => {
+      disposed = true;
+      unlisten?.();
+      window.removeEventListener("focus", refetchProjects);
+    };
+  }, [qc]);
+
+  return (
+    <div className="flex h-screen flex-col bg-base">
+      <FloatTitleBar title="작업 리포트" badge="리포트" />
+      <Suspense
+        fallback={
+          <div className="min-h-0 flex-1">
+            <Loading />
+          </div>
+        }
+      >
+        <ReportView />
+      </Suspense>
+      {/* 요약 저장 실패 토스트(useSetReport)는 이 창의 스토어를 본다 — 호스트가 여기 없으면
+          이 창에서만 아무 것도 안 뜬다(FileDocWindow 아래 주석과 같은 이유). */}
+      <Toasts />
+    </div>
+  );
 }
 
 /**

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::error::IpcError;
 use crate::git::runner;
@@ -21,5 +21,11 @@ pub fn set_settings(
 ) -> Result<(), IpcError> {
     runner::set_git_override(settings.git_path.as_ref().map(PathBuf::from));
     *state.settings.write().unwrap_or_else(|e| e.into_inner()) = settings.clone();
-    state::save_settings(&app, &settings)
+    state::save_settings(&app, &settings)?;
+    // 다른 창에도 알린다 — 설정 편집은 메인 창에서만 하는데 `["settings"]`는 창마다 별개이고
+    // staleTime이 Infinity라(queries/index.ts), 별도 리포트 창(67)은 자기 사본이 창을 연 시점에
+    // 얼어붙는다. 그러면 "메인 창의 설정 › AI에서 준비하세요" 안내를 따라와도 그 창은 영영 모른다.
+    // 이벤트는 신호일 뿐이고 진실은 재조회다(events.ts §10) — 페이로드를 싣지 않는다.
+    let _ = app.emit("settings://changed", ());
+    Ok(())
 }

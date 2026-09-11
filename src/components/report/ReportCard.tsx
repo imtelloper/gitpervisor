@@ -1,14 +1,21 @@
-import { Loader2, Sparkles, X } from "lucide-react";
+import { Loader2, MessageSquare, Sparkles, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { IS_DOC_WINDOW } from "../../lib/floating";
 import { errorMessage } from "../../lib/ipc";
 import type { Project } from "../../lib/ipc";
 import { chat, llmReadyReason, useLlmStatus } from "../../lib/llm";
-import type { Period } from "../../lib/report";
-import { buildMessages, inputHash, reportKey } from "../../lib/report";
+import type { ChatContext, Period, ReportSource } from "../../lib/report";
 import {
-  useCommitsBetween,
-  usePrompts,
+  buildMessages,
+  inputHash,
+  maxTokensFor,
+  reportKey,
+  scopeKey,
+} from "../../lib/report";
+import {
+  useCommitsBetweenMany,
+  usePromptDumps,
   useReports,
   useSetReport,
   useSettings,
@@ -18,13 +25,16 @@ import MarkdownView from "../diff/MarkdownView";
 import { ProjectLogo } from "../common/ProjectLogo";
 
 /**
- * 프로젝트 1개 × 선택 기간의 요약 카드.
+ * 프로젝트 N개 × 선택 기간의 요약 카드.
  *
- * 입력(커밋·프롬프트)은 LLM이 없어도 보인다 — "요약 생성"만 막힌다(설계 §1). 저장된 요약이
+ * 1개면 개별 카드, 2개 이상이면 **종합 카드**다(태스크 67 §3.1) — 카운트는 합, 근거는 한 블록에
+ * 섞여 들어가고 저장 키는 조합 해시(`scopeKey`)다.
+ *
+ * 입력(커밋·프롬프트)은 LLM이 없어도 보인다 — "요약 생성"만 막힌다(설계 60 §1). 저장된 요약이
  * 있으면 즉시 본문을 그리고, 입력 해시가 달라졌으면 "입력이 바뀜" 뱃지로 재생성을 권한다.
  */
 export function ReportCard({
-  project,
+  projects,
   period,
   since,
   until,
@@ -32,8 +42,9 @@ export function ReportCard({
   stripe,
   runNow,
   onFinish,
+  onAsk,
 }: {
-  project: Project;
+  projects: Project[];
   period: Period;
   since: string;
   until: string;
@@ -42,27 +53,22 @@ export function ReportCard({
   /** 배치("모두 생성")의 현재 차례 — true가 되는 순간 1회 생성한다. */
   runNow?: boolean;
   onFinish?: () => void;
+  /** [AI에게 묻기] — 뷰가 우측 채팅 패널을 이 컨텍스트로 연다(§3.2). */
+  onAsk?: (ctx: ChatContext) => void;
 }) {
-  const { data: commits, isPending: commitsPending } = useCommitsBetween(
-    project.id,
-    since,
-    until,
-    mine,
-  );
-  const { data: dump, isPending: promptsPending } = usePrompts(
-    project.path,
-    since,
-    until,
-  );
+  const commitQs = useCommitsBetweenMany(projects, since, until, mine);
+  const promptQs = usePromptDumps(projects, since, until);
   const { data: reports } = useReports();
   const { data: settings } = useSettings();
   const { data: status } = useLlmStatus();
   const setReport = useSetReport();
   const openSettings = useUi((s) => s.openSettings);
 
-  const key = reportKey(project.id, period, since);
+  const scope = scopeKey(projects);
+  const key = reportKey(scope, period, since);
   const saved = reports?.[key];
   const reason = llmReadyReason(status, settings);
+  const combined = projects.length > 1;
 
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -73,23 +79,37 @@ export function ReportCard({
   const keyRef = useRef(key);
   keyRef.current = key;
 
-  // 로딩 중 `?? []`가 매 렌더 새 배열이 되면 아래 해시 효과가 계속 재실행된다 — 고정해 둔다.
-  const items = useMemo(() => dump?.items ?? [], [dump]);
-  const list = useMemo(() => commits ?? [], [commits]);
+  // `useQueries` 결과는 렌더마다 새 배열·새 객체다(query-core는 combine 없이는 구조 공유를
+  // 하지 않는다) — 그대로 deps에 넣으면 아래 해시 효과가 매 렌더 돈다. 데이터가 실제로 바뀐
+  // 시점만 보는 `dataUpdatedAt`으로 서명을 만들어 고정한다(`?? []`도 같은 이유로 여기 안에).
+  const sig = [...commitQs, ...promptQs].map((q) => q.dataUpdatedAt).join(",");
+  const sources: ReportSource[] = useMemo(
+    () =>
+      projects.map((p, i) => ({
+        project: p,
+        commits: commitQs[i]?.data ?? [],
+        prompts: promptQs[i]?.data?.items ?? [],
+      })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [projects, sig],
+  );
+
+  const commitCount = sources.reduce((n, s) => n + s.commits.length, 0);
+  const promptCount = sources.reduce((n, s) => n + s.prompts.length, 0);
   // 아직 안 온 데이터를 "활동 없음"으로 읽으면 안 된다 — 배치가 그 카드를 조용히 건너뛴다.
-  const loading = commitsPending || promptsPending;
-  const empty = !loading && list.length === 0 && items.length === 0;
+  const loading = [...commitQs, ...promptQs].some((q) => q.isPending);
+  const empty = !loading && commitCount === 0 && promptCount === 0;
 
   // 저장된 요약이 아직 유효한가 — 입력이 바뀌면 뱃지를 띄운다.
   useEffect(() => {
     let alive = true;
-    void inputHash(list, items).then((h) => {
+    void inputHash(sources).then((h) => {
       if (alive) setHash(h);
     });
     return () => {
       alive = false;
     };
-  }, [list, items]);
+  }, [sources]);
 
   // 기간·프로젝트가 바뀌면 화면의 스트리밍 결과는 그 기간 것이 아니다 — 저장본으로 되돌린다.
   // 진행 중인 생성도 함께 끊는다: 카드는 key가 같아 리마운트되지 않으므로(ReportView가
@@ -101,8 +121,20 @@ export function ReportCard({
     setNote(null);
   }, [key]);
 
+  // 저장본이 새로 오면 로컬 텍스트를 비운다 — 채팅의 [요약으로 저장](§3.2)이 이 카드의 키에
+  // 쓰는데, 스트리밍 잔여 `text`가 남아 있으면 `body`가 그쪽을 먼저 골라 **옛 본문이 계속
+  // 보인다**("저장했는데 안 바뀐다").
+  useEffect(() => {
+    setText("");
+  }, [saved?.generatedAt]);
+
   const stale = !!saved && !!hash && saved.inputHash !== hash;
   const body = text || saved?.text || "";
+  const title = combined ? `종합 · ${projects.length}개 프로젝트` : (projects[0]?.name ?? "");
+  const model =
+    settings?.llmProvider === "external"
+      ? (settings.llmExternalModel ?? "external")
+      : (settings?.llmModel ?? "");
 
   const generate = async () => {
     if (busy || reason || empty) return;
@@ -116,13 +148,12 @@ export function ReportCard({
     try {
       const done = await chat(
         buildMessages({
-          projectName: project.name,
+          sources,
           period,
           since,
           until,
-          commits: list,
-          prompts: items,
           language: settings?.llmLanguage ?? "ko",
+          ctx: settings?.llmContext,
         }),
         // 취소는 `llm_cancel` IPC 왕복이라 abort 직후에도 델타가 몇 개 더 온다 —
         // 그걸 그리면 기간을 바꾼 카드에 옛 기간 본문이 도로 채워진다.
@@ -131,7 +162,8 @@ export function ReportCard({
           if (!ac.signal.aborted) setText(acc);
         },
         {
-          maxTokens: 1024,
+          // 날짜마다 3줄이라 응답이 기간에 비례한다(일간 768 … 월간 2048 — §3.1).
+          maxTokens: maxTokensFor(period),
           temperature: 0.3,
           signal: ac.signal,
           onProgress: (_phase, message) => setNote(message ?? "모델 로드 중…"),
@@ -144,11 +176,8 @@ export function ReportCard({
         record: {
           text: done.text,
           generatedAt: new Date().toISOString(),
-          inputHash: await inputHash(list, items),
-          model:
-            settings?.llmProvider === "external"
-              ? (settings.llmExternalModel ?? "external")
-              : (settings?.llmModel ?? ""),
+          inputHash: await inputHash(sources),
+          model,
         },
       });
     } catch (e) {
@@ -182,14 +211,32 @@ export function ReportCard({
   }, [runNow, loading]);
 
   return (
-    <div className="flex overflow-hidden rounded border border-edge bg-panel">
+    <div
+      data-gpv={combined ? "report-card-combined" : "report-card"}
+      data-scope-key={scope}
+      className="flex overflow-hidden rounded border border-edge bg-panel"
+    >
       <span aria-hidden style={{ background: stripe }} className="w-1 shrink-0" />
       <div className="min-w-0 flex-1 p-3">
         <div className="flex flex-wrap items-center gap-2">
-          <ProjectLogo projectId={project.id} size={16} />
-          <span className="truncate text-xs font-medium text-fg">{project.name}</span>
+          {combined ? (
+            // 로고 3개까지 겹쳐 그린다 — 어느 프로젝트가 섞였는지 한눈에 보이되 헤더가 길어지지 않게.
+            <span className="flex shrink-0 items-center">
+              {projects.slice(0, 3).map((p, i) => (
+                <ProjectLogo
+                  key={p.id}
+                  projectId={p.id}
+                  size={16}
+                  className={i > 0 ? "-ml-1.5 ring-1 ring-panel" : undefined}
+                />
+              ))}
+            </span>
+          ) : (
+            <ProjectLogo projectId={projects[0]?.id ?? ""} size={16} />
+          )}
+          <span className="truncate text-xs font-medium text-fg">{title}</span>
           <span className="text-[11px] text-fg-muted">
-            커밋 {list.length} · 프롬프트 {items.length}
+            커밋 {commitCount} · 프롬프트 {promptCount}
           </span>
           {stale && (
             <span className="rounded bg-warn/15 px-1.5 py-0.5 text-[10px] text-warn">
@@ -201,6 +248,18 @@ export function ReportCard({
               <span className="text-[10px] text-fg-dim">
                 {new Date(saved.generatedAt).toLocaleString()} · {saved.model}
               </span>
+            )}
+            {onAsk && (
+              <button
+                data-gpv="report-ask"
+                onClick={() =>
+                  onAsk({ key, title, sources, period, since, until, body, hash })
+                }
+                title="이 리포트를 두고 AI와 대화합니다"
+                className="flex items-center gap-1 rounded bg-raised px-2 py-0.5 text-[11px] text-fg-muted hover:text-fg"
+              >
+                <MessageSquare size={11} /> AI에게 묻기
+              </button>
             )}
             {busy ? (
               <button
@@ -225,12 +284,17 @@ export function ReportCard({
         {reason && (
           <div className="mt-2 flex items-center gap-2 text-[11px] text-fg-muted">
             <span>{reason}</span>
-            <button
-              onClick={() => openSettings("ai")}
-              className="rounded bg-raised px-1.5 py-0.5 text-fg-muted hover:text-fg"
-            >
-              설정 열기
-            </button>
+            {/* 별도 창(doc-*)엔 설정 다이얼로그가 없다 — 버튼을 두면 눌러도 아무 일이 없다(§3.3). */}
+            {IS_DOC_WINDOW ? (
+              <span className="text-fg-dim">메인 창의 설정 › AI에서 준비하세요</span>
+            ) : (
+              <button
+                onClick={() => openSettings("ai")}
+                className="rounded bg-raised px-1.5 py-0.5 text-fg-muted hover:text-fg"
+              >
+                설정 열기
+              </button>
+            )}
           </div>
         )}
 

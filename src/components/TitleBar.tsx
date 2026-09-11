@@ -1,6 +1,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   CalendarDays,
+  ExternalLink,
   FolderOpen,
   LayoutGrid,
   Plus,
@@ -11,10 +12,11 @@ import {
 import { useEffect, useRef, useState } from "react";
 
 import { openAggregateWindow } from "../lib/aggregate-window";
-import { openFolderWindow } from "../lib/floating";
+import { openFolderWindow, openReportWindow } from "../lib/floating";
 import { ipc, type FavoriteFolder } from "../lib/ipc";
 import { isMac, modLabel } from "../lib/platform";
 import { useProjects, useQuarantinedTools, useSettings, useSetSettings } from "../queries";
+import { useOccludesWebview } from "../stores/occlusion";
 import { useTerminals } from "../stores/terminals";
 import { useUi } from "../stores/ui";
 import { GlobalMemoPopover } from "./memo/GlobalMemoPopover";
@@ -283,24 +285,84 @@ function AggregateButton() {
   );
 }
 
-/** 작업 리포트 토글 — 잔디 + 기간 요약(태스크 60). 프로젝트가 하나도 없으면 보일 게 없어 숨긴다. */
+/**
+ * 작업 리포트 토글 — 잔디 + 기간 요약(태스크 60). 프로젝트가 하나도 없으면 보일 게 없어 숨긴다.
+ * 우클릭 메뉴로 별도 창(태스크 67)도 연다.
+ */
 function ReportButton() {
   const reportOpen = useUi((s) => s.reportOpen);
   const toggleReport = useUi((s) => s.toggleReport);
   const { data: projects } = useProjects();
+  // 우클릭 메뉴 — 네이티브 자식 webview(내장 브라우저)가 항상 DOM 위에 그려지므로, 열려 있는
+  // 동안 점유를 등록해 webview를 숨긴다(ViewerFileTabs 메뉴와 같은 계약).
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  useOccludesWebview(!!menu);
+  useEffect(() => {
+    if (!menu) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setMenu(null);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [menu]);
+
   if (!projects?.length) return null;
   return (
-    <button
-      onClick={toggleReport}
-      title="작업 리포트 — 잔디(활동 히트맵)와 일간·주간·월간 요약"
-      className={`mr-2.5 flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] ${
-        reportOpen
-          ? "bg-raised text-accent"
-          : "text-fg-muted hover:bg-raised hover:text-fg"
-      }`}
-    >
-      <CalendarDays size={11} /> 리포트
-    </button>
+    <>
+      <button
+        onClick={toggleReport}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          setMenu({ x: e.clientX, y: e.clientY });
+        }}
+        title={
+          "작업 리포트 — 잔디(활동 히트맵)와 일간·주간·월간 요약\n우클릭: 새 창으로 열기"
+        }
+        className={`mr-2.5 flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] ${
+          reportOpen
+            ? "bg-raised text-accent"
+            : "text-fg-muted hover:bg-raised hover:text-fg"
+        }`}
+      >
+        <CalendarDays size={11} /> 리포트
+      </button>
+
+      {menu && (
+        // 백드롭이 바깥 클릭·우클릭을 삼켜 메뉴를 닫는다(브라우저 기본 메뉴도 막는다).
+        <div
+          className="fixed inset-0 z-50"
+          onClick={() => setMenu(null)}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            setMenu(null);
+          }}
+        >
+          <div
+            data-gpv="report-menu"
+            className="fixed min-w-44 rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl"
+            style={{
+              left: Math.min(menu.x, window.innerWidth - 200),
+              top: Math.min(menu.y, window.innerHeight - 50),
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              data-gpv="report-open-window"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-fg-muted hover:bg-raised hover:text-fg"
+              onClick={() => {
+                openReportWindow();
+                // 메인 안의 리포트 뷰는 닫는다(공간 회수) — 같은 화면을 두 곳에서 보지 않는다.
+                // 토글 setter뿐이라 열려 있을 때만 뒤집으면 되지만, 상태를 직접 못 박는 편이
+                // "눌렀는데 도로 열렸다"를 만들지 않는다.
+                useUi.setState({ reportOpen: false });
+                setMenu(null);
+              }}
+            >
+              <ExternalLink size={14} className="shrink-0" />
+              새 창으로 열기
+            </button>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 

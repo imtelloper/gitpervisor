@@ -15,8 +15,14 @@ import { attachLogoEvents, attachRepoEvents } from "./lib/events";
 import { setupErrorLogging } from "./lib/logging";
 import { watchAggregateWindow } from "./lib/aggregate-window";
 import { armEngagementTracking } from "./lib/engagement";
-import { docTarget, openDocWindow, warmFloatingWindowPool } from "./lib/floating";
+import {
+  docTarget,
+  openDocWindow,
+  openReportWindow,
+  warmFloatingWindowPool,
+} from "./lib/floating";
 import { ipc } from "./lib/ipc";
+import { buildMessages, chatMessages, scopeKey } from "./lib/report";
 import { keys } from "./queries";
 import {
   getTerminal,
@@ -83,6 +89,9 @@ if (import.meta.env.DEV) {
     // FG·FLOORS도 같은 이유로 낀다 — 재는 토큰 목록과 하한까지 구현 쪽 단일 출처를 쓴다.
     projectColor: { PROJECT_HUES, projectPalette, assignProjectSlots, FG, FLOORS },
     openDocWindow, // 문서 창 e2e 34 — 더블클릭이 부르는 것과 같은 계약을 직접 구동
+    openReportWindow, // 리포트 창 e2e 48 ⑩ — 우클릭 메뉴가 부르는 것과 같은 계약
+    // 리포트 프롬프트 조립 e2e 48 ⑧ — LLM 없이 "무엇을 보내는가"만 잰다(순수 함수).
+    report: { buildMessages, chatMessages, scopeKey },
   };
 }
 
@@ -132,9 +141,9 @@ if (label === "aggregate") {
   // **같은 키**여야 하므로 queries.keys를 그대로 쓴다(키가 어긋나면 조용히 두 번 읽는다).
   {
     const t = docTarget(docId);
-    // 폴더 창(태스크 66)은 프로젝트 상대경로 diff 를 읽지 않는다 — projectId 가 빈 문자열이라
-    // 여기서 걸러 두지 않으면 뜰 때마다 실패할 게 뻔한 IPC 를 한 번씩 태운다.
-    if (t && !t.folder) {
+    // 폴더 창(태스크 66)·리포트 창(67)은 프로젝트 상대경로 diff 를 읽지 않는다 — projectId 가
+    // 빈 문자열이라 여기서 걸러 두지 않으면 뜰 때마다 실패할 게 뻔한 IPC 를 한 번씩 태운다.
+    if (t && !t.folder && !t.report) {
       const target = { mode: "file", path: t.path } as const;
       void docQc.prefetchQuery({
         queryKey: keys.diff(t.projectId, target),

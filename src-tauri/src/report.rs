@@ -11,7 +11,7 @@ use std::path::Path;
 
 use chrono::{DateTime, Local, NaiveDate, TimeZone};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::claude_usage::{encode_project_dir, home_dir};
 use crate::commands::project_path;
@@ -387,6 +387,19 @@ fn persist(app: &AppHandle, state: &AppState) -> Result<(), IpcError> {
     state::save_reports(app, &snapshot)
 }
 
+/// 바뀐 요약을 **모든 창에** 알린다. 창마다 QueryClient 가 별개인 데다 `["reports"]` 는
+/// `staleTime: Infinity` 라(queries/index.ts), 별도 리포트 창에서 저장한 것을 메인 창은 —
+/// 그 반대도 — 스스로 알 방법이 없다. `record` 는 삭제면 null 이다.
+/// 저장은 이미 끝난 뒤이므로 알림 실패는 로그만 남기고 삼킨다.
+fn emit_changed(app: &AppHandle, key: &str, record: Option<ReportRecord>) {
+    if let Err(e) = app.emit(
+        "report://changed",
+        serde_json::json!({ "key": key, "record": record }),
+    ) {
+        log::warn!("리포트 변경 알림 실패: {e}");
+    }
+}
+
 /// 저장된 요약 전체 — 리포트 뷰가 열릴 때 1회 로드해 카드가 즉시 본문을 그린다.
 #[tauri::command(async)]
 pub fn report_get_all(state: State<'_, AppState>) -> Reports {
@@ -405,9 +418,10 @@ pub fn report_set(
     key: String,
     record: ReportRecord,
 ) -> Result<(), IpcError> {
+    let mut evicted: Vec<String> = Vec::new();
     {
         let mut reports = state.reports.write().unwrap_or_else(|e| e.into_inner());
-        reports.insert(key, record);
+        reports.insert(key.clone(), record.clone());
         if reports.len() > MAX_REPORTS {
             let mut keys: Vec<(String, String)> = reports
                 .iter()
@@ -416,10 +430,18 @@ pub fn report_set(
             keys.sort();
             for (_, k) in keys.into_iter().take(reports.len() - MAX_REPORTS) {
                 reports.remove(&k);
+                evicted.push(k);
             }
         }
     }
-    persist(&app, &state)
+    persist(&app, &state)?;
+    // 퇴거된 키도 알린다 — 알리지 않으면 각 창의 `["reports"]` 캐시(staleTime: Infinity)에
+    // 디스크엔 없는 요약이 유령으로 남아 카드가 "저장된 요약"을 계속 그린다.
+    for k in evicted {
+        emit_changed(&app, &k, None);
+    }
+    emit_changed(&app, &key, Some(record));
+    Ok(())
 }
 
 /// 요약 1건 삭제(사용자가 카드에서 지울 때).
@@ -433,7 +455,9 @@ pub fn report_delete(
         let mut reports = state.reports.write().unwrap_or_else(|e| e.into_inner());
         reports.remove(&key);
     }
-    persist(&app, &state)
+    persist(&app, &state)?;
+    emit_changed(&app, &key, None);
+    Ok(())
 }
 
 #[cfg(test)]
