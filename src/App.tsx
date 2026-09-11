@@ -34,13 +34,14 @@ import { FileTreeDialog } from "./components/tree/FileTreeDialog";
 import { FileTreePanel } from "./components/tree/FileTreePanel";
 import { WorkspaceTabs } from "./components/workspace/WorkspaceTabs";
 import { useAgentNotifications } from "./lib/agent-notify";
-import { refreshTerminalThemes } from "./lib/terminal";
+import { getTerminal, listTerminals, refreshTerminalThemes } from "./lib/terminal";
 import {
   useProjectRootsPrefetch,
   useProjects,
   useSettings,
   useStatus,
 } from "./queries";
+import { useTerminals } from "./stores/terminals";
 import { useUi } from "./stores/ui";
 import { useUpdater } from "./stores/updater";
 
@@ -129,6 +130,36 @@ export default function App() {
     const un = listen<string>("capture://hotkey-error", (e) =>
       useUi.getState().pushToast("error", e.payload),
     );
+    return () => void un.then((f) => f());
+  }, []);
+
+  /**
+   * 폴더 창(태스크 66)의 "터미널에 경로 붙여넣기" — 그 창엔 터미널이 없어 이벤트로 넘어온다.
+   * 스크린샷을 찍고 그 경로를 Claude 프롬프트에 넣는 동선이 이 기능의 전부다.
+   *
+   * `term.paste()` 를 거치는 이유는 붙여넣기 경로와 같다 — xterm 이 bracketed paste 로 감싸
+   * 셸이 즉시 실행하지 않게 한다. 공백이 있으면 따옴표로 감싼다(경로에 공백은 흔하다).
+   */
+  useEffect(() => {
+    const un = listen<{ path: string }>("fav:paste-path", (e) => {
+      const ts = useTerminals.getState();
+      const tabId = ts.activeTab[useUi.getState().selectedProjectId ?? ""];
+      const tab = ts.terminals.find((t) => t.id === tabId);
+      // **레지스트리에 실제로 붙어 있는 터미널을 고른다.** 스토어의 탭만 보고 고르면 안 된다 —
+      // 선택된 프로젝트에 터미널 탭이 없으면 `terminals[0]`(다른 프로젝트의 탭)이 잡히는데,
+      // 그 탭은 마운트돼 있지 않아 xterm 인스턴스가 없다 → 화면에 터미널이 멀쩡히 보이는데도
+      // "터미널이 없습니다"가 뜬다(실측으로 여기서 걸렸다). 활성 탭 → 살아 있는 아무 것 순서.
+      const inst =
+        (tab && getTerminal(tab.activePaneId)) ??
+        listTerminals().find((t) => t.status === "live");
+      if (!inst) {
+        useUi.getState().pushToast("error", "경로를 넣을 터미널이 없습니다");
+        return;
+      }
+      const p = e.payload.path;
+      inst.term.paste(/\s/.test(p) ? `"${p}"` : p);
+      inst.term.focus();
+    });
     return () => void un.then((f) => f());
   }, []);
 

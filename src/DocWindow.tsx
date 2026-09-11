@@ -29,6 +29,28 @@ const MarkdownView = lazy(() => import("./components/diff/MarkdownView"));
 const DiffViewer = lazy(() => import("./components/diff/DiffViewer"));
 // 이미지 편집기도 같은 이유로 lazy다(App.tsx와 **같은 모듈 지정자** — 두 창이 한 청크를 공유한다).
 const ImageEditor = lazy(() => import("./components/image/ImageEditor"));
+/** 즐겨찾기 폴더 창(태스크 66). **lazy 여야 한다** — 위 세 개와 같은 이유로, 정적 import 면
+ *  이 모듈이 앱 메인 청크에 인라인돼 파일 하나 보려고 뜬 창까지 그 값을 낸다. */
+const FolderWindow = lazy(() => import("./components/folder/FolderWindow"));
+
+/**
+ * `doc-<id>` 창의 갈림길 — 대상에 `folder` 가 있으면 **폴더 목록 창**, 없으면 파일 뷰어 창이다.
+ *
+ * 여기서 가르는 이유: 폴더 창은 아래 `FileDocWindow` 가 거는 훅(레포 워처 무효화·동영상 이벤트·
+ * 이미지 편집기 호스트)을 하나도 쓰지 않는다. 한 컴포넌트 안에서 조건부로 처리하면 훅이 조건부가
+ * 되거나, 쓰지도 않는 리스너를 폴더 창이 계속 달고 있게 된다.
+ */
+export function DocWindow({ docId }: { docId: string }) {
+  const target = useMemo(() => docTarget(docId), [docId]);
+  if (target?.folder) {
+    return (
+      <Suspense fallback={<Loading />}>
+        <FolderWindow root={target.folder} />
+      </Suspense>
+    );
+  }
+  return <FileDocWindow docId={docId} />;
+}
 
 /**
  * 파일 하나만 띄우는 별도 OS 창 — 파일트리 우클릭 → "새 창으로 열기".
@@ -44,7 +66,7 @@ const ImageEditor = lazy(() => import("./components/image/ImageEditor"));
  * 것이 의도다 — 이 창은 "그 파일 하나"만 본다. 대신 그 독립성 때문에 이미지 편집기가 쓰는
  * 호스트(토스트·확인·프롬프트)도 **여기에** 있어야 한다: 메인 창의 호스트는 저쪽 스토어만 본다.
  */
-export function DocWindow({ docId }: { docId: string }) {
+function FileDocWindow({ docId }: { docId: string }) {
   const target = useMemo(() => docTarget(docId), [docId]);
   const { data: settings } = useSettings();
   const qc = useQueryClient();

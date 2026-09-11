@@ -98,7 +98,7 @@ arboard = { version = "3", default-features = false, features = ["image-data"] }
 # 같은 0.25를 가지므로 추가 컴파일 비용 최소.
 # jpeg: 화면 캡쳐(commands/capture.rs)의 프리뷰 인코딩은 `imp`(플랫폼 구현)와 달리 cfg로 갈리지
 # 않는 공용 코드다. 캡쳐 자체는 아직 Windows 전용이지만 이 피처가 없으면 여기서 컴파일이 깨진다.
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # term_paste의 파일 목록 읽기 — Finder ⌘C는 public.file-url을 올리지만 arboard는 이를 못 읽고,
@@ -121,7 +121,7 @@ windows-sys = { version = "0.59", features = ["Win32_System_Performance", "Win32
 # 추출한 아이콘 BGRA→PNG 인코딩(리소스 모니터). tauri image-png가 같은 0.25를 트리에 가져 비용 미미.
 # jpeg: 화면 캡쳐 오버레이의 **표시용** 프레임. PNG는 같은 프레임에 667ms/9.75MB가 들어 예산을
 # 통째로 먹는다(실측 — DOCS/screen-capture-design.md §2.3). 최종 결과물은 항상 무손실 원본에서 뜬다.
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 clipboard-win = "5"
 # AI 완료 OS 토스트를 앱 AUMID로 직접 띄운다 — 알림 플러그인은 dev(target/debug)에서 app_id를
 # 안 붙여 PowerShell 명의로 뜨므로, 직접 토스트 + AUMID(DisplayName/Icon) 레지스트리 등록으로 대체.

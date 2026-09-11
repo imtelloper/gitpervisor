@@ -1,10 +1,20 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { CalendarDays, LayoutGrid, ShieldAlert, StickyNote } from "lucide-react";
+import {
+  CalendarDays,
+  FolderOpen,
+  LayoutGrid,
+  Plus,
+  ShieldAlert,
+  StickyNote,
+  X,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { openAggregateWindow } from "../lib/aggregate-window";
+import { openFolderWindow } from "../lib/floating";
+import { ipc, type FavoriteFolder } from "../lib/ipc";
 import { isMac, modLabel } from "../lib/platform";
-import { useProjects, useQuarantinedTools } from "../queries";
+import { useProjects, useQuarantinedTools, useSettings, useSetSettings } from "../queries";
 import { useTerminals } from "../stores/terminals";
 import { useUi } from "../stores/ui";
 import { GlobalMemoPopover } from "./memo/GlobalMemoPopover";
@@ -62,6 +72,7 @@ export function TitleBar() {
 
       {/* 우: 모아보기 토글 + 작업 리포트 + 전체 프롬프트 히스토리 + 메모장 + 시스템 모니터 */}
       <AggregateButton />
+      <FavoritesButton />
       <ReportButton />
       <PromptHistoryButton />
       <GlobalMemoButton />
@@ -90,6 +101,153 @@ export function TitleBar() {
 
 // 모아보기 토글 단축키 라벨 — mac은 심볼 관례(⌘⇧A), 그 외는 Ctrl+Shift+A
 const hotkeyLabel = isMac ? `${modLabel}⇧A` : `${modLabel}+Shift+A`;
+
+/**
+ * 즐겨찾기 폴더 버튼 (태스크 66) — 스크린샷·다운로드 폴더를 한 번에 열어 본다.
+ *
+ * 이 드롭다운이 **관리 UI 자체다** — 설정 다이얼로그에 섹션을 따로 두지 않는다. 등록·삭제·이름
+ * 바꾸기가 전부 여기 있고, 항목을 누르면 별도 창이 뜬다(`openFolderWindow`).
+ *
+ * 목록은 `Settings.favoriteFolders` 에 저장되고, **그 목록이 곧 백엔드의 허용 루트다** —
+ * 여기서 지우면 그 폴더를 읽을 방법도 함께 사라진다(commands/favorites.rs `allowed`).
+ */
+function FavoritesButton() {
+  const [open, setOpen] = useState(false);
+  const [presets, setPresets] = useState<FavoriteFolder[]>([]);
+  const { data: settings } = useSettings();
+  const setSettings = useSetSettings();
+  const favs = settings?.favoriteFolders ?? [];
+
+  useEffect(() => {
+    if (!open) return;
+    // 프리셋은 열 때마다 다시 묻는다 — 사용자가 그 사이 스크린샷 폴더를 만들었을 수 있다(값싸다).
+    void ipc.favPresets().then(setPresets).catch(() => setPresets([]));
+    const close = () => setOpen(false);
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    window.addEventListener("click", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  /** **직전 설정을 다시 읽어** 쓴다 — 설정 다이얼로그가 열린 채로 저장하면 그쪽 폼이 들고 있던
+   *  낡은 스냅샷이 여기 추가분을 덮는다. `lspEnabledProjects` 와 같은 성질이라 완전히는 못 막지만,
+   *  적어도 이 버튼이 원인이 되지는 않게 한다. */
+  const write = async (next: (cur: FavoriteFolder[]) => FavoriteFolder[]) => {
+    try {
+      const cur = await ipc.getSettings();
+      await setSettings.mutateAsync({
+        ...cur,
+        favoriteFolders: next(cur.favoriteFolders ?? []),
+      });
+    } catch (e) {
+      useUi
+        .getState()
+        .pushToast("error", `즐겨찾기를 저장하지 못했습니다 — ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  const add = (f: FavoriteFolder) =>
+    void write((cur) => (cur.some((x) => x.path === f.path) ? cur : [...cur, f]));
+  const remove = (path: string) => void write((cur) => cur.filter((x) => x.path !== path));
+  const rename = (f: FavoriteFolder) =>
+    useUi.getState().askPrompt({
+      title: "즐겨찾기 이름 바꾸기",
+      label: f.path,
+      defaultValue: f.name,
+      confirmLabel: "저장",
+      validate: (v) => (v.trim() ? null : "이름을 입력하세요"),
+      onConfirm: (v) =>
+        void write((cur) =>
+          cur.map((x) => (x.path === f.path ? { ...x, name: v.trim() } : x)),
+        ),
+    });
+
+  const browse = async () => {
+    const { open: pick } = await import("@tauri-apps/plugin-dialog");
+    const picked = await pick({ directory: true, title: "즐겨찾기에 추가할 폴더" });
+    if (typeof picked !== "string") return;
+    add({ path: picked, name: picked.split(/[\\/]/).filter(Boolean).pop() ?? picked });
+  };
+
+  const unadded = presets.filter((p) => !favs.some((f) => f.path === p.path));
+
+  return (
+    <div className="relative mr-2.5" onClick={(e) => e.stopPropagation()}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        title="즐겨찾기 폴더 — 스크린샷·다운로드 폴더를 새 창으로 열어 봅니다"
+        className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] ${
+          open ? "bg-raised text-accent" : "text-fg-muted hover:bg-raised hover:text-fg"
+        }`}
+      >
+        <FolderOpen size={11} /> 폴더
+      </button>
+
+      {open && (
+        <div className="absolute right-0 top-6 z-50 min-w-56 rounded-md border border-edge bg-panel py-1 text-[12px] shadow-xl">
+          {favs.length === 0 && unadded.length === 0 && (
+            <div className="px-3 py-1.5 text-[11px] text-fg-dim">
+              등록된 폴더가 없습니다
+            </div>
+          )}
+
+          {favs.map((f) => (
+            <div key={f.path} className="group/fav flex items-center">
+              <button
+                onClick={() => {
+                  openFolderWindow(f.path);
+                  setOpen(false);
+                }}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  rename(f);
+                  setOpen(false);
+                }}
+                title={`${f.path}\n우클릭: 이름 바꾸기`}
+                className="flex min-w-0 flex-1 items-center gap-2 px-3 py-1.5 text-left text-fg-muted hover:bg-raised hover:text-fg"
+              >
+                <FolderOpen size={13} className="shrink-0" />
+                <span className="min-w-0 flex-1 truncate">{f.name}</span>
+              </button>
+              <button
+                onClick={() => remove(f.path)}
+                title="즐겨찾기에서 제거"
+                className="mr-1 shrink-0 rounded p-1 text-fg-dim opacity-0 hover:bg-raised hover:text-danger group-hover/fav:opacity-100"
+              >
+                <X size={12} />
+              </button>
+            </div>
+          ))}
+
+          {unadded.length > 0 && <div className="my-1 border-t border-edge" />}
+          {unadded.map((p) => (
+            <button
+              key={p.path}
+              onClick={() => add(p)}
+              title={`${p.path}\n클릭하면 즐겨찾기에 추가합니다`}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-fg-dim hover:bg-raised hover:text-fg"
+            >
+              <Plus size={13} className="shrink-0" />
+              <span className="min-w-0 flex-1 truncate">{p.name}</span>
+            </button>
+          ))}
+
+          <div className="my-1 border-t border-edge" />
+          <button
+            onClick={() => void browse()}
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-fg-muted hover:bg-raised hover:text-fg"
+          >
+            <Plus size={13} className="shrink-0" />
+            <span>폴더 추가…</span>
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 /** 터미널 모아보기 토글 버튼 — 열린 터미널이 하나라도 있을 때만 표시. 클릭할 때마다 열림/닫힘. */
 function AggregateButton() {
