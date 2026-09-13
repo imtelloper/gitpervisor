@@ -12,6 +12,7 @@ import { collectPanes } from "../../lib/pane-tree";
 import { translateRequest } from "../../lib/translate";
 import { useUi, VIEWER_MAX_PANES } from "../../stores/ui";
 import { MenuItem } from "./TerminalPane";
+import { modLabel } from "../../lib/platform";
 
 /**
  * 뷰어 패널 우클릭 메뉴 — 터미널 pane 메뉴(`TerminalPane.tsx`의 PaneMenu)와 같은 모양·같은
@@ -89,7 +90,7 @@ export function ViewerPaneMenu({
         <MenuItem
           icon={<SplitSquareHorizontal size={14} />}
           label="오른쪽으로 분할"
-          hint="Ctrl+Shift+D"
+          hint={`${modLabel}+Shift+D`}
           onClick={run(() => split(paneId, "row", false))}
         />
         <MenuItem
@@ -100,7 +101,7 @@ export function ViewerPaneMenu({
         <MenuItem
           icon={<SplitSquareVertical size={14} />}
           label="아래로 분할"
-          hint="Ctrl+Shift+E"
+          hint={`${modLabel}+Shift+E`}
           onClick={run(() => split(paneId, "col", false))}
         />
         <MenuItem
@@ -120,7 +121,7 @@ export function ViewerPaneMenu({
         <MenuItem
           icon={<X size={14} />}
           label="패널 닫기"
-          hint="Ctrl+Shift+W"
+          hint={`${modLabel}+Shift+W`}
           danger
           onClick={run(() => closePane(paneId))}
         />

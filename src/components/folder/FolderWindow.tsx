@@ -1,4 +1,5 @@
 import { emit } from "@tauri-apps/api/event";
+import { isMod } from "../../lib/platform";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   ClipboardPaste,
@@ -23,6 +24,7 @@ import { useUi } from "../../stores/ui";
 import { EmptyState } from "../common/EmptyState";
 import { Toasts } from "../common/Toast";
 import { FloatTitleBar } from "../FloatTitleBar";
+import { modLabel } from "../../lib/platform";
 
 /**
  * 즐겨찾기 폴더 창 (태스크 66) — 스크린샷·다운로드 폴더를 빠르게 훑어보는 창.
@@ -210,12 +212,12 @@ export default function FolderWindow({ root }: { root: string }) {
         return;
       }
       if (typing) return;
-      if (ev.ctrlKey && ev.key >= "1" && ev.key <= "4") {
+      if (isMod(ev) && ev.key >= "1" && ev.key <= "4") {
         ev.preventDefault();
         setView((v) => ({ ...v, mode: MODES[Number(ev.key) - 1].id }));
         return;
       }
-      if (ev.ctrlKey && ev.key.toLowerCase() === "c") {
+      if (isMod(ev) && ev.key.toLowerCase() === "c") {
         const e = shown[cursor];
         if (e) {
           ev.preventDefault();
@@ -844,7 +846,7 @@ function ItemMenu({
     >
       <div className="truncate px-3 py-1 text-[11px] text-fg-dim">{entry.name}</div>
       <div className="my-1 border-t border-edge" />
-      <Row icon={<Copy size={14} />} label="경로 복사" hint="Ctrl+C" onClick={run(onCopyPath)} />
+      <Row icon={<Copy size={14} />} label="경로 복사" hint={`${modLabel}+C`} onClick={run(onCopyPath)} />
       <Row
         icon={<ClipboardPaste size={14} />}
         label="터미널에 경로 붙여넣기"

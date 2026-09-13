@@ -434,10 +434,11 @@ export function createTerminalImpl(opts: {
 
     // 앱 단축키(터미널 토글 Ctrl+`, 분할 Ctrl+Shift+D/E, 닫기 Ctrl+Shift+W)는
     // PTY로 보내지 않고 window 핸들러로 흘려보낸다.
+    // 터미널 토글만 세 플랫폼 공통 Ctrl+` 다(mac 의 ⌘` 는 시스템이 창 순환에 쓴다).
     if (e.ctrlKey && e.key === "`") return false;
-    if (e.ctrlKey && e.shiftKey && ["d", "e", "w"].includes(k)) return false;
-    // 프로젝트 위/아래 이동(Ctrl+Shift+↑/↓)도 PTY로 보내지 않고 window 핸들러로 흘려보낸다.
-    if (e.ctrlKey && e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown"))
+    if (isMod(e) && e.shiftKey && ["d", "e", "w"].includes(k)) return false;
+    // 프로젝트 위/아래 이동(mod+Shift+↑/↓)도 PTY로 보내지 않고 window 핸들러로 흘려보낸다.
+    if (isMod(e) && e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown"))
       return false;
     // 모아보기 토글(mod+Shift+A) — 모아보기 그리드는 전부 터미널이라 이 통과가 닫기 경로에 필수.
     if (isMod(e) && e.shiftKey && k === "a") return false;
@@ -448,7 +449,9 @@ export function createTerminalImpl(opts: {
     // Ctrl+W: 포커스된(=이 키를 받은) 이 터미널 패널을 닫는다(Shift 없이 — Ctrl+Shift+W는
     // 기존대로 활성 패널 닫기). dispose를 키 이벤트 도중 하지 않도록 마이크로태스크로 미뤄,
     // 처리 중인 xterm을 그 자리에서 파괴하는 걸 피한다.
-    if (e.ctrlKey && !e.shiftKey && !e.altKey && k === "w") {
+    // mac 에서는 **⌘W** 다. ⌃W 를 가로채면 셸의 단어 삭제(unix-word-rubout)가 죽는다 —
+    // 터미널에서 가장 자주 쓰는 편집 키 중 하나라 앱이 먹으면 안 된다.
+    if (isMod(e) && !e.shiftKey && !e.altKey && k === "w") {
       e.preventDefault();
       const id = opts.id;
       queueMicrotask(() => {
@@ -462,7 +465,9 @@ export function createTerminalImpl(opts: {
     // 복사: Ctrl+Shift+C, 또는 선택영역이 있을 때 Ctrl+C (없으면 통과 → SIGINT)
     // 성공 시에만 선택을 해제한다 — 실패 시 선택을 유지하고 토스트로 알린다(무음+선택 해제면
     // 사용자는 복사가 된 줄 알고, SIGINT도 안 나가서 "복사가 안 된다"로만 체감된다).
-    if (e.ctrlKey && k === "c" && (e.shiftKey || term.hasSelection())) {
+    // **mac 은 제외한다.** 거기서 ⌃C 는 언제나 SIGINT 여야 한다 — 선택이 남아 있다는 이유로
+    // 복사로 새면 "실행 중인 명령이 안 멈춘다"가 된다(복사는 ⌘C 로, 아래 블록).
+    if (!isMacWebKit && e.ctrlKey && k === "c" && (e.shiftKey || term.hasSelection())) {
       copyTerminalText(opts.id, term.getSelection());
       e.preventDefault();
       return false;
@@ -470,7 +475,8 @@ export function createTerminalImpl(opts: {
     // 붙여넣기: Ctrl+V / Ctrl+Shift+V — 스마트(파일·이미지→경로) 붙여넣기로 대체.
     // term_paste는 세 플랫폼 모두 실구현이다(win: clipboard-win, unix: arboard —
     // DOCS/TROUBLESHOOTING.md §6).
-    if (e.ctrlKey && k === "v") {
+    // 같은 이유로 mac 제외 — ⌃V 는 터미널에서 "다음 문자를 그대로"(literal-next)다.
+    if (!isMacWebKit && e.ctrlKey && k === "v") {
       e.preventDefault();
       void pasteIntoTerminal(opts.id);
       return false;

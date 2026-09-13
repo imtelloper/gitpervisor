@@ -1,4 +1,5 @@
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { isMod } from "../../lib/platform";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   ArrowDownUp,
@@ -209,7 +210,7 @@ export function ProjectList() {
   navRef.current = { orderedProjects, selectedProjectId };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!e.ctrlKey || !e.shiftKey) return;
+      if (!isMod(e) || !e.shiftKey) return;
       if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
       const { orderedProjects: list, selectedProjectId: sel } = navRef.current;
       if (list.length === 0) return;

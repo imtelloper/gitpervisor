@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { isMod } from "./lib/platform";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -146,7 +147,7 @@ function FloatWorkspace({
   // Ctrl+W(셸 단어삭제 대체)는 엔진이 포커스 패널 닫기로 처리하고, 2/4/8 그리드는 우클릭 메뉴에 있다.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!e.ctrlKey || !e.shiftKey) return;
+      if (!isMod(e) || !e.shiftKey) return;
       const k = e.key.toLowerCase();
       if (k !== "d" && k !== "e" && k !== "w") return;
       const ts = useTerminals.getState();

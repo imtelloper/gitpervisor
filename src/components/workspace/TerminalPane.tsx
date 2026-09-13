@@ -30,6 +30,7 @@ import { usePromptHistory } from "../../stores/promptHistory";
 import { useTerminals } from "../../stores/terminals";
 import { useUi } from "../../stores/ui";
 import { PromptSidePanel } from "./TermSessionControls";
+import { modLabel } from "../../lib/platform";
 
 /**
  * 단일 터미널 패널 — xterm 인스턴스(레지스트리 소유)를 이 컨테이너에 붙인다.
@@ -230,7 +231,7 @@ function PaneMenu({
       <MenuItem
         icon={<SplitSquareHorizontal size={14} />}
         label="오른쪽으로 분할"
-        hint="Ctrl+Shift+D"
+        hint={`${modLabel}+Shift+D`}
         onClick={run(() => ts.splitPane(tabId, paneId, "row", false))}
       />
       <MenuItem
@@ -241,7 +242,7 @@ function PaneMenu({
       <MenuItem
         icon={<SplitSquareVertical size={14} />}
         label="아래로 분할"
-        hint="Ctrl+Shift+E"
+        hint={`${modLabel}+Shift+E`}
         onClick={run(() => ts.splitPane(tabId, paneId, "col", false))}
       />
       <MenuItem
@@ -284,7 +285,7 @@ function PaneMenu({
       <MenuItem
         icon={<X size={14} />}
         label="패널 닫기"
-        hint="Ctrl+Shift+W"
+        hint={`${modLabel}+Shift+W`}
         danger
         onClick={run(() => ts.closePane(tabId, paneId))}
       />
@@ -315,7 +316,7 @@ export function TermClipboardItems({
         <MenuItem
           icon={<Copy size={14} />}
           label="복사"
-          hint="Ctrl+Shift+C"
+          hint={`${modLabel}+Shift+C`}
           onClick={run(() => copyTerminalText(termId, selection))}
         />
       ) : (
@@ -328,7 +329,7 @@ export function TermClipboardItems({
       <MenuItem
         icon={<ClipboardPaste size={14} />}
         label="붙여넣기"
-        hint="Ctrl+V"
+        hint={`${modLabel}+V`}
         onClick={run(() => void pasteIntoTerminal(termId))}
       />
     </>

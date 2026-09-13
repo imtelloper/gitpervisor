@@ -79,12 +79,31 @@ export function KeyboardShortcuts({ projectId }: { projectId: string }) {
         useSearch.getState().setOpen(true);
         return;
       }
-      // 아래 분기들은 전부 **Ctrl(+Shift) 전용**이다 — Alt가 눌린 조합은 여기서 통째로 막는다.
+      // 터미널 토글만 **세 플랫폼 모두 Ctrl+`** 로 남긴다. macOS 의 ⌘` 는 시스템이 "같은 앱의
+      // 창 순환"에 이미 쓰고 있어 가로챌 수 없고, VS Code 도 mac 에서 ⌃` 를 쓴다.
+      // mod 게이트 **앞**이어야 한다 — 그 게이트는 mac 에서 metaKey 만 통과시킨다.
+      if (e.ctrlKey && !e.altKey && !e.shiftKey && e.key === "`") {
+        e.preventDefault();
+        const pid = pidRef.current;
+        const ts = useTerminals.getState();
+        const active = ts.activeTab[pid] ?? "viewer";
+        if (active !== "viewer") {
+          ts.setActiveTab(pid, "viewer");
+          return;
+        }
+        const terms = ts.terminals.filter((t) => t.projectId === pid);
+        if (terms.length) ts.setActiveTab(pid, terms[terms.length - 1].id);
+        else ts.openTerminal(pid);
+        return;
+      }
+      // 아래 분기들은 전부 **mod(+Shift) 전용**이다 — Alt가 눌린 조합은 여기서 통째로 막는다.
       // **Windows의 AltGr은 ctrlKey=true + altKey=true로 온다**: 국제 키보드로 `@`·`\`·`|`·`€`를
       // 치면 커밋·push·pull이 사용자 의도 없이 나갔다(Ctrl+Alt+Shift+K → 업스트림 설정 확인창
       // 실측 재현). 분기마다 !altKey를 붙이면 나중에 추가되는 분기가 또 빠뜨리므로 게이트로 막는다.
       // Alt를 **쓰는** 단축키(mod+Alt+N = Go to Symbol)는 이 위에서 이미 처리하고 return 한다.
-      if (!e.ctrlKey || e.altKey) return;
+      // mac 에서는 ⌘ 다. Ctrl 로 고정해 두면 ⌘W·⌘K 처럼 mac 사용자가 반사적으로 누르는 조합이
+      // 죽고, 반대로 ⌃C(SIGINT)·⌃W(단어 삭제) 같은 **터미널 제어문자**를 앱이 가로챈다.
+      if (!isMod(e) || e.altKey) return;
       const k = e.key.toLowerCase();
       // Ctrl+Shift+D/E/W: 패널 분할/닫기. Viewer 탭이면 뷰어 패널, 그 밖(DB·브라우저 등)이면 터미널.
       // 대상 터미널 탭을 해석: 활성 터미널 → 이 프로젝트의 마지막 터미널 → 없으면 새로 연다.
@@ -142,19 +161,6 @@ export function KeyboardShortcuts({ projectId }: { projectId: string }) {
       } else if (k === "t" && !e.shiftKey) {
         e.preventDefault();
         actions.pull.mutate(undefined);
-      } else if (k === "`") {
-        // Ctrl+`: 터미널 토글 — 터미널 보는 중이면 Viewer로, 아니면 마지막(없으면 새) 터미널로
-        e.preventDefault();
-        const pid = pidRef.current; // 현재 선택 프로젝트 (클로저 고착 방지)
-        const ts = useTerminals.getState();
-        const active = ts.activeTab[pid] ?? "viewer";
-        if (active !== "viewer") {
-          ts.setActiveTab(pid, "viewer");
-          return;
-        }
-        const terms = ts.terminals.filter((t) => t.projectId === pid);
-        if (terms.length) ts.setActiveTab(pid, terms[terms.length - 1].id);
-        else ts.openTerminal(pid);
       }
     };
     window.addEventListener("keydown", onKey);
