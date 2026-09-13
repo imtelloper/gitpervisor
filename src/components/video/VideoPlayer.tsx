@@ -7,6 +7,7 @@
 // - 단축키는 window가 아니라 **포커스된 컨테이너**에 바인딩 — 전역 Ctrl+W(탭 닫기) 등과 충돌 없음.
 // - 확대(F)는 OS 전체화면이 아니라 앱 내 오버레이(WKWebView requestFullscreen 신뢰 불가) —
 //   네이티브 자식 webview 점유는 useOccludesWebview로 등록한다(ui.ts 차단 오버레이 계약).
+import { useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import {
   ExternalLink,
@@ -19,6 +20,7 @@ import {
   ChevronsRight,
   Pause,
   Play,
+  Camera,
   Repeat,
   Redo2,
   RotateCcw,
@@ -48,12 +50,14 @@ import {
   useVideoWaveform,
 } from "../../queries";
 import { isVideo } from "../../lib/language-map";
+import { isMac, modLabel } from "../../lib/platform";
 import { useDb } from "../../stores/db";
 import { planSegments, type SplitSegment } from "../../stores/videoSplit";
 import { useOcclusion, useOccludesWebview } from "../../stores/occlusion";
 import { selectBlockingOverlay, useUi } from "../../stores/ui";
 import { EmptyState } from "../common/EmptyState";
 import { CropOverlay, type CropRect } from "./CropOverlay";
+import { captureFrame } from "./frameCapture";
 import { LibraryRail, type RailClip, type RailMedia } from "./LibraryRail";
 import { PlayerStatusBar } from "./PlayerStatusBar";
 import { ExportPanel } from "./ExportPanel";
@@ -145,6 +149,8 @@ export default function VideoPlayer({
   onOpenPath?: (path: string) => void;
 }) {
   const pushToast = useUi((s) => s.pushToast);
+  const askConfirm = useUi((s) => s.askConfirm);
+  const qc = useQueryClient();
   const [url, setUrl] = useState<string | null>(null);
   const [mintError, setMintError] = useState<string | null>(null);
   const [playError, setPlayError] = useState(false);
@@ -277,6 +283,9 @@ export default function VideoPlayer({
 
   const tool = useVideoToolStatus();
   const canEdit = !!tool.data?.found && !!tool.data?.probeFound;
+  // 프레임 캡처는 ffprobe가 필요 없다(video_capture_frame은 find_ffmpeg만 쓴다) —
+  // canEdit으로 묶으면 ffprobe만 없는 환경에서 멀쩡한 기능이 잠긴다.
+  const hasFfmpeg = !!tool.data?.found;
   const probe = useVideoProbe(projectId, path, canEdit);
   // 타임라인 트랙 자산 — 파일당 한 번. ffmpeg 스폰이라 **편집 패널이 열렸을 때만** 뽑는다
   // (뷰어에서 영상 훑기만 하는 사용자에게 매번 ffmpeg를 띄우면 프로세스 위생에 어긋난다).
@@ -493,6 +502,22 @@ export default function VideoPlayer({
     // ③ 변환한 것마저 못 틀면 더 해 볼 것이 없다.
     setPlayError(true);
   };
+
+  /** 현재 프레임을 PNG로 저장(S). 화면 픽셀을 긁는 것이 아니라 **원본 파일에서** ffmpeg가
+   *  뽑는다 — 코덱 폴백 중이면 화면에 보이는 건 1080p 재인코딩본이라 원본만 못하다
+   *  (frameCapture.ts 모듈 doc). 그래서 ffmpeg가 없으면 이 버튼은 비활성이다. */
+  const saveFrame = useCallback(() => {
+    const el = videoRef.current;
+    if (!el) return;
+    captureFrame({
+      projectId,
+      path,
+      atMs: el.currentTime * 1000,
+      pushToast,
+      askConfirm,
+      qc,
+    });
+  }, [projectId, path, pushToast, askConfirm, qc]);
 
   const openExternally = () => {
     void ipc
@@ -810,6 +835,10 @@ export default function VideoPlayer({
       case "R":
         setLoopOn((v) => !v);
         break;
+      case "s":
+      case "S":
+        if (hasFfmpeg) saveFrame();
+        break;
       case "m":
       case "M":
         toggleMute();
@@ -961,6 +990,18 @@ export default function VideoPlayer({
             <SlidersHorizontal size={11} /> 편집
           </button>
         </div>
+        <button
+          onClick={saveFrame}
+          disabled={!hasFfmpeg}
+          title={
+            hasFfmpeg
+              ? "현재 프레임을 원본 해상도 PNG로 영상 옆에 저장합니다 (S)"
+              : "ffmpeg가 필요합니다 — 설정 › 코드 도구에서 설치하세요"
+          }
+          className="flex items-center gap-1 rounded px-2 py-0.5 hover:bg-raised hover:text-fg disabled:text-fg-dim/50 disabled:hover:bg-transparent"
+        >
+          <Camera size={12} /> 프레임
+        </button>
         <button
           onClick={openExternally}
           title="시스템 기본 앱으로 열기"
@@ -1386,8 +1427,10 @@ export default function VideoPlayer({
           { keys: "Space", label: "재생" },
           { keys: "I / O", label: "구간 지정" },
           { keys: "T", label: "분할" },
-          { keys: "Ctrl+Z", label: "되돌리기" },
-          { keys: "Ctrl+Y", label: "다시 실행" },
+          // 표기는 플랫폼을 따른다 — 핸들러는 이미 ctrlKey·metaKey 를 모두 받는다(위 onKeyDown).
+          // mac 의 "다시 실행"은 ⌘Y 가 아니라 ⇧⌘Z 가 관례다(핸들러도 둘 다 받는다).
+          { keys: `${modLabel}+Z`, label: "되돌리기" },
+          { keys: isMac ? `⇧${modLabel}+Z` : "Ctrl+Y", label: "다시 실행" },
         ]}
         zoomPct={zoomPct}
       />

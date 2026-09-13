@@ -25,6 +25,7 @@ import { errorMessage, ipc, isIpcError } from "../../lib/ipc";
 import { useUi } from "../../stores/ui";
 import { planSegments, useVideoSplit } from "../../stores/videoSplit";
 import type { CropRect } from "./CropOverlay";
+import { captureFrame as captureFrameTo, cleanStem, splitPath } from "./frameCapture";
 import { fmtTime } from "./VideoPlayer";
 
 type Format = "mp4" | "gif" | "audio";
@@ -46,22 +47,6 @@ const primaryCls =
 const secondaryCls =
   "flex items-center justify-center gap-1 rounded border border-edge px-2 py-1.5 hover:bg-raised hover:text-fg disabled:bg-transparent disabled:text-fg-muted";
 const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4];
-/** 이 패널이 스스로 만든 접미사 — 산출물을 다시 열었을 때 무한히 쌓이는 것을 막는다
- *  (`cam03.part-03.copy.mp4` -> 다시 열면 `cam03.part-03.copy.clip.mp4` 였다). */
-const GEN_SUFFIX = /(\.(clip|crop|mute|edit|copy|mosaic|blur|x[\d.]+|\d{3,4}p|part-\d+|frame-[\dms]+))+$/i;
-
-function splitPath(path: string): { dir: string; stem: string } {
-  const slash = path.lastIndexOf("/");
-  const base = slash >= 0 ? path.slice(slash + 1) : path;
-  const dir = slash >= 0 ? path.slice(0, slash + 1) : "";
-  const dot = base.lastIndexOf(".");
-  return { dir, stem: dot > 0 ? base.slice(0, dot) : base };
-}
-
-/** 접미사를 벗긴 원본 stem — 패널이 만드는 모든 이름(파일명·폴더·프레임)이 여기서 나온다. */
-function cleanStem(path: string): string {
-  return splitPath(path).stem.replace(GEN_SUFFIX, "");
-}
 
 /** 오디오 추출 규칙 — aac/mp3는 무손실 복사(컨테이너만 교체), 그 외는 aac 재인코딩. */
 function audioPlan(acodec: string | null, forceEncode: boolean): { ext: string; mode: "copy" | "encode" } {
@@ -331,33 +316,10 @@ export const ExportPanel = memo(function ExportPanel({
     });
   };
 
-  const captureFrame = (overwrite: boolean) => {
-    const t = getTime();
-    const ms = Math.round(t * 1000);
-    const stem = cleanStem(path);
-    const m = Math.floor(ms / 60000);
-    const s = Math.floor((ms % 60000) / 1000);
-    const frac = ms % 1000;
-    const out = `${dir}${stem}.frame-${String(m).padStart(2, "0")}m${String(s).padStart(2, "0")}s${String(frac).padStart(3, "0")}.png`;
-    void ipc
-      .videoCaptureFrame(projectId, path, ms, out, overwrite)
-      .then(() => {
-        pushToast("success", `프레임 저장됨 — ${out.split("/").pop()}`);
-        void qc.invalidateQueries({ queryKey: ["dir"] });
-        void qc.invalidateQueries({ queryKey: ["statuses"] });
-      })
-      .catch((e) => {
-        if (isIpcError(e) && e.code === "ALREADY_EXISTS" && !overwrite) {
-          askConfirm({
-            title: "덮어쓰기",
-            message: "같은 이름의 프레임 파일이 있습니다. 덮어쓸까요?",
-            confirmLabel: "덮어쓰기",
-            danger: true,
-            onConfirm: () => captureFrame(true),
-          });
-        } else pushToast("error", errorMessage(e));
-      });
-  };
+  /** 현재 위치 프레임 저장 — 구현은 플레이어 툴바와 공유한다(frameCapture.ts).
+   *  이 패널의 파일명·구간·영역·해상도 설정은 적용되지 않는다(원본 프레임 그대로다). */
+  const captureFrame = () =>
+    captureFrameTo({ projectId, path, atMs: getTime() * 1000, pushToast, askConfirm, qc });
 
   const busy = jobId != null;
   // 분할 배치는 앱 전역에 하나뿐(스토어) — 이 파일 것인지 남의 것인지 나눠 본다.
@@ -918,7 +880,7 @@ export const ExportPanel = memo(function ExportPanel({
             </button>
           )}
           <button
-            onClick={() => captureFrame(false)}
+            onClick={captureFrame}
             disabled={busy}
             title="현재 재생 위치의 프레임을 PNG로 저장합니다. 파일명·구간·영역·해상도 설정은 적용되지 않습니다"
             className={secondaryCls}
