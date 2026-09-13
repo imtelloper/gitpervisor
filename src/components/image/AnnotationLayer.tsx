@@ -965,6 +965,20 @@ function AnnotationLayerImpl(
       <canvas
         ref={canvasRef}
         onPointerDown={onPointerDown}
+        // 캔버스는 포커스 대상이 아니라, 누르면 브라우저가 **가장 가까운 포커스 가능 조상**인
+        // 편집기 루트(`role="application"` · `tabIndex={-1}`)로 포커스를 옮긴다. 평소엔 그게
+        // 맞다(Space = 손 도구). 그러나 텍스트 편집이 열려 있으면 그 이동이 textarea 를 blur
+        // 시키고 `onBlur → finishEditing` 이 빈 글자를 "취소"로 읽어 노드를 버린다 —
+        // **글자를 한 자도 못 친다.** 편집 중에는 포커스가 textarea 의 것이다(Space 도
+        // 손 도구가 아니라 공백이어야 한다).
+        //
+        // pointerdown 이 아니라 mousedown 을 막는 이유: 포커스 이동은 mousedown 의 기본
+        // 동작이고, pointerdown 의 preventDefault 는 엔진마다 이를 막아 주지 않는다.
+        // 한 프레임 미뤄 포커스하는 우회는 실패했다 — rAF(~16ms)가 pointerup/click 보다
+        // 먼저라, 잡은 포커스를 제스처 후반이 다시 뺏어갔다(실측).
+        onMouseDown={(e) => {
+          if (editingRef.current) e.preventDefault();
+        }}
         onPointerMove={(e) => {
           trackCursor(e);
           onPointerMove(e);

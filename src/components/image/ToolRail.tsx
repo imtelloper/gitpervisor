@@ -208,7 +208,14 @@ export default function ToolRail({
     if (item.id === "crop") setMode({ kind: "crop" });
     else if (item.id === "curvature") setToggle("curvature", !curvature);
     else if (item.id === "image") onPlaceImage();
-    else setTool(item.id);
+    else {
+      // 크롭은 **모드**라 도구를 고르는 것만으로는 안 빠져나온다. 안 빠져나오면
+      // `onPointerDown` 첫 줄의 크롭 분기가 모든 클릭을 삼켜(`pointer.ts`) 무슨 도구를
+      // 골라도 아무 일이 안 일어난다 — 배너는 떠 있지만 방금 도구를 고른 사람에게는
+      // "도구가 고장났다"로 보인다. 도구를 고른 것 = 크롭을 그만두겠다는 뜻으로 읽는다.
+      if (mode.kind === "crop") setMode({ kind: "design" });
+      setTool(item.id);
+    }
     onFocusRoot();
   };
 

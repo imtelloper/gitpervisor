@@ -90,6 +90,10 @@ export function TextEditOverlay({
     if (!editing) return;
     const ta = taRef.current;
     if (!ta) return;
+    // 즉시 포커스한다. 캔버스 클릭이 편집기 루트로 포커스를 뺏어가는 문제는 이쪽이 아니라
+    // **캔버스의 mousedown 기본 동작을 막아서** 푼다(AnnotationLayer 의 onMouseDown) — 편집 중에는
+    // 포커스가 textarea 의 것이기 때문이다. 여기서 한 프레임 미루는 우회는 실패했다:
+    // rAF(~16ms)가 pointerup/click 보다 먼저라, 잡은 포커스를 제스처 후반이 다시 뺏어갔다.
     ta.focus();
     ta.setSelectionRange(ta.value.length, ta.value.length);
   }, [editing]);
