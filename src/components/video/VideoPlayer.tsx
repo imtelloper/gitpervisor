@@ -513,6 +513,7 @@ export default function VideoPlayer({
       projectId,
       path,
       atMs: el.currentTime * 1000,
+      hls: hlsRef.current,
       pushToast,
       askConfirm,
       qc,
@@ -778,6 +779,7 @@ export default function VideoPlayer({
     [segments, ticks.length],
   );
   const getTime = useCallback(() => videoRef.current?.currentTime ?? 0, []);
+  const isHls = useCallback(() => hlsRef.current, []);
 
   // ── 단축키(포커스된 컨테이너 한정) ──
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -1402,6 +1404,7 @@ export default function VideoPlayer({
           onClearMasks={clearMasks}
               onSetMaskKind={setMaskKind}
               getTime={getTime}
+              isHls={isHls}
             />
           </div>
         )}

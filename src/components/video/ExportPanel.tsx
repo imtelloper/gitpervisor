@@ -115,6 +115,7 @@ export const ExportPanel = memo(function ExportPanel({
   onClearMasks,
   onSetMaskKind,
   getTime,
+  isHls,
 }: {
   projectId: string;
   path: string;
@@ -139,6 +140,8 @@ export const ExportPanel = memo(function ExportPanel({
   onClearMasks: () => void;
   onSetMaskKind: (k: "mosaic" | "blur") => void;
   getTime: () => number;
+  /** 코덱 폴백(HLS) 재생 중인가 — 프레임 저장의 시각 기준이 달라진다(frameCapture). */
+  isHls: () => boolean;
 }) {
   const pushToast = useUi((s) => s.pushToast);
   const askConfirm = useUi((s) => s.askConfirm);
@@ -319,7 +322,7 @@ export const ExportPanel = memo(function ExportPanel({
   /** 현재 위치 프레임 저장 — 구현은 플레이어 툴바와 공유한다(frameCapture.ts).
    *  이 패널의 파일명·구간·영역·해상도 설정은 적용되지 않는다(원본 프레임 그대로다). */
   const captureFrame = () =>
-    captureFrameTo({ projectId, path, atMs: getTime() * 1000, pushToast, askConfirm, qc });
+    captureFrameTo({ projectId, path, atMs: getTime() * 1000, hls: isHls(), pushToast, askConfirm, qc });
 
   const busy = jobId != null;
   // 분할 배치는 앱 전역에 하나뿐(스토어) — 이 파일 것인지 남의 것인지 나눠 본다.

@@ -1386,11 +1386,13 @@ export const ipc = {
     atMs: number,
     outRel: string,
     overwrite: boolean,
+    hls: boolean,
   ) =>
     callMutating<void>(
       "video_capture_frame",
-      { projectId, relPath, atMs, outRel, overwrite },
-      60_000,
+      { projectId, relPath, atMs, outRel, overwrite, hls },
+      // 백엔드 상한 = ffprobe 5초 ×2 + ffmpeg 60초 — 먼저 끊으면 저장은 되는데 실패 토스트가 뜬다.
+      75_000,
     ),
   // 린트 — 마커는 배경 장식이라 background lane, 재시도 없음(다음 트리거가 자기치유).
   // content 있으면 ruff는 stdin으로 저장 전 버퍼를 실시간 린트(on-type). biome는 디스크 파일.

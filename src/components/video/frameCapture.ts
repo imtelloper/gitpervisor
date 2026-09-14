@@ -51,6 +51,9 @@ export interface CaptureDeps {
   path: string;
   /** 캡처 시각(ms) — 호출 시점의 `currentTime`. */
   atMs: number;
+  /** 코덱 폴백(HLS) 재생 중인가. 원본 직접 재생의 currentTime 은 컨테이너 pts 그대로이고 HLS 는
+   *  파일 시작 기준 상대 시각이라, 백엔드가 기준을 맞춘다(video.rs frame_seek_secs). */
+  hls: boolean;
   pushToast: (kind: "success" | "error" | "info", message: string) => void;
   askConfirm: (opts: {
     title: string;
@@ -69,10 +72,12 @@ export interface CaptureDeps {
  * "저장됐다는데 어디 있냐"가 된다.
  */
 export function captureFrame(deps: CaptureDeps, overwrite = false): void {
-  const { projectId, path, atMs, pushToast, askConfirm, qc } = deps;
+  const { projectId, path, atMs, hls, pushToast, askConfirm, qc } = deps;
   const out = frameOutRel(path, atMs);
+  // 반올림하지 않는다 — 백엔드가 이 시각 이하의 마지막 프레임(=화면 프레임)을 고르는데,
+  // ms 반올림은 프레임 경계를 넘겨 다음 프레임을 고르게 만든다(파일명만 ms로 자른다).
   void ipc
-    .videoCaptureFrame(projectId, path, Math.max(0, Math.round(atMs)), out, overwrite)
+    .videoCaptureFrame(projectId, path, Math.max(0, atMs), out, overwrite, hls)
     .then(() => {
       pushToast("success", `프레임 저장됨 — ${out.split("/").pop()}`);
       void qc.invalidateQueries({ queryKey: ["dir"] });

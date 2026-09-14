@@ -1030,15 +1030,108 @@ pub fn video_export_cancel(state: State<'_, AppState>, job_id: String) -> Result
 
 // ══════════════════════════ 프레임 캡처 ══════════════════════════
 
+/// ffprobe `-show_entries format=start_time -of json` → 초. 없거나 N/A면 0.
+fn parse_start_time(json: &str) -> f64 {
+    serde_json::from_str::<serde_json::Value>(json)
+        .ok()
+        .and_then(|v| v["format"]["start_time"].as_str()?.parse::<f64>().ok())
+        .filter(|s| s.is_finite())
+        .unwrap_or(0.0)
+}
+
+/// ffprobe `-show_entries packet=pts_time -of json` → pts(초) 목록. N/A 패킷은 버린다.
+fn parse_packet_pts(json: &str) -> Vec<f64> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
+        return Vec::new();
+    };
+    v["packets"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|p| p["pts_time"].as_str()?.parse::<f64>().ok())
+                .filter(|t| t.is_finite())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 웹뷰가 그리는 프레임 = pts ≤ 재생 시각인 **마지막** 프레임. 비교는 µs 단위로 엄격하다 —
+/// Chromium은 시각을 µs로 자르고 프레임 pts는 µs로 반올림해 비교하므로, "." 두 번(2/30초)은
+/// 0.066666 이 되어 pts 0.066667 인 프레임 2가 아니라 프레임 1을 그린다(실측). ffprobe의 pts_time도
+/// µs 반올림이라 같은 기준이다. 0.5µs 여유는 ms→초 왕복의 부동소수 잡음 몫일 뿐이다.
+fn pick_displayed_pts(pts: &[f64], at_abs: f64) -> Option<f64> {
+    pts.iter().copied().filter(|&p| p <= at_abs + 0.000_000_5).reduce(f64::max)
+}
+
+/// 캡처용 입력 시크(초, 파일 시작 기준).
+///
+/// ffmpeg 입력 `-ss`는 pts ≥ ss 인 **첫** 프레임을 내는데 웹뷰는 pts ≤ currentTime 인 **마지막**
+/// 프레임을 그린다. 재생 시각을 그대로 넘기면 멈춘 위치가 두 프레임 사이일 때(= 거의 항상) 저장본이
+/// 화면보다 1~2프레임 뒤였고, 영상 끝(currentTime = duration)에서는 ss 뒤에 프레임이 없어 ffmpeg가
+/// 아무것도 안 쓰고 exit 0 했다. 그래서 at 부근 패킷 pts를 읽어 화면 프레임을 고르고 그 pts
+/// **0.5ms 앞**으로 시크한다 — pts ≥ ss 인 첫 프레임이 곧 그 프레임이다.
+///
+/// 패킷만 읽고 디코드하지 않아 싸다. read_intervals 시작은 그 앞 키프레임으로 시크되므로 "at 이하
+/// 마지막 프레임"이 반드시 포함되고, 끝을 1초 더 읽는 것은 B프레임 재정렬로 뒤에 오는 패킷 몫이다.
+/// ffprobe가 없으면 예전처럼 재생 시각 그대로, at 이하 pts를 못 읽으면 start만 맞춰 시크한다.
+///
+/// **시각의 기준이 재생 경로마다 다르다.** 원본을 직접 재생하면 Chromium의 currentTime은 컨테이너
+/// pts 그대로다(ffmpeg_demuxer가 비디오 타임스탬프를 start_time만큼 옮기지 않는다 — Chrome 실측:
+/// start 1.5초 webm은 로드 직후 currentTime 1.5에 첫 프레임). 코덱 폴백(hls.rs)은 `-output_ts_offset`
+/// 으로 **start 기준 상대** 시각을 만든다. ffprobe pts는 절대, ffmpeg -ss는 start 기준 상대라서
+/// 둘 사이를 start로 옮긴다. start가 0인 대부분의 파일은 어느 쪽이든 같지만, Opus webm(-0.007)·
+/// edit list 없는 B프레임 mp4(+0.067)·방송 녹화 ts(+1.4)는 이 구분이 없으면 프레임이 밀린다.
+async fn frame_seek_secs(probe: Option<&Path>, src: &str, at_secs: f64, relative: bool) -> f64 {
+    let Some(probe) = probe else { return at_secs };
+    let start = match run_capture(
+        probe,
+        &["-v", "error", "-show_entries", "format=start_time", "-of", "json", src],
+        5,
+    )
+    .await
+    {
+        Ok((0, out, _)) => parse_start_time(&out),
+        _ => return at_secs,
+    };
+    let at_abs = if relative { start + at_secs } else { at_secs };
+    // start 를 안 뒤의 폴백은 **start 기준으로 옮긴** 재생 시각이다(-ss 는 start 기준 상대).
+    // at 이 키프레임 pts 바로 아래(µs 로 잘린 "." 스텝)면 read_intervals 가 그 키프레임으로 반올림
+    // 시크해 at 이하 패킷이 없는데, 그때 웹뷰도 그 키프레임을 그리므로 pts ≥ ss 첫 프레임이 맞다.
+    let fallback = (at_abs - start).max(0.0);
+    let interval = format!("{:.6}%{:.6}", at_abs, at_abs + 1.0);
+    let pts = match run_capture(
+        probe,
+        &[
+            // V(대문자) = 커버 아트·썸네일(attached pic)을 뺀 영상 스트림. v:0 이면 썸네일을 품은
+            // mp4(yt-dlp --embed-thumbnail 등)에서 pts 0 짜리 그림 한 장을 골라 늘 첫 프레임이 된다.
+            "-v", "error", "-select_streams", "V:0", "-read_intervals", &interval,
+            "-show_entries", "packet=pts_time", "-of", "json", src,
+        ],
+        5,
+    )
+    .await
+    {
+        Ok((0, out, _)) => parse_packet_pts(&out),
+        _ => return fallback,
+    };
+    match pick_displayed_pts(&pts, at_abs) {
+        Some(p) => (p - start - 0.000_5).max(0.0),
+        None => fallback,
+    }
+}
+
 #[tauri::command]
 pub async fn video_capture_frame(
     app: AppHandle,
     state: State<'_, AppState>,
     project_id: String,
     rel_path: String,
-    at_ms: u64,
+    // 소수 ms 그대로 받는다 — ms로 반올림하면 프레임 경계를 넘어가는 경우가 있었다.
+    at_ms: f64,
     out_rel: String,
     overwrite: bool,
+    // at_ms가 코덱 폴백(HLS) 재생의 시각인가 — frame_seek_secs의 "시각의 기준" 참고.
+    hls: Option<bool>,
 ) -> Result<(), IpcError> {
     let repo = project_path(&state, &project_id)?;
     let bin = find_ffmpeg(&app, state.inner())?;
@@ -1052,10 +1145,13 @@ pub async fn video_capture_frame(
     }
     let tmp = out.with_file_name(format!(".gpv-frame-{}.tmp", uuid::Uuid::new_v4().simple()));
     let (src_s, tmp_s) = (src.display().to_string(), tmp.display().to_string());
+    let at_secs = if at_ms.is_finite() { at_ms.max(0.0) / 1000.0 } else { 0.0 };
+    let relative = hls.unwrap_or(false);
+    let seek = format!("{:.6}", frame_seek_secs(bin.ffprobe.as_deref(), &src_s, at_secs, relative).await);
     // -c:v png 명시 — 임시 이름(.tmp)이라 image2 muxer가 확장자로 인코더를 못 고른다.
     let args = [
         "-hide_banner", "-nostdin", "-y",
-        "-ss", &fmt_secs(at_ms), "-i", &src_s,
+        "-ss", &seek, "-i", &src_s,
         "-frames:v", "1", "-update", "1", "-c:v", "png", "-f", "image2", &tmp_s,
     ];
     // ?를 쓰지 않는다 — 타임아웃 경로에서도 레포 안 임시파일을 지워야 한다.
@@ -1071,6 +1167,15 @@ pub async fn video_capture_frame(
         return Err(IpcError {
             code: ErrorCode::Io,
             message: format!("프레임 캡처 실패: {}", last_error_line(&stderr)),
+            stderr: Some(stderr),
+        });
+    }
+    // ss 뒤에 프레임이 없으면 ffmpeg는 아무것도 안 쓰고도 exit 0 이다("Output file is empty").
+    // 그대로 rename 하면 "산출물 이동 실패(os error 2)"라는 엉뚱한 말이 나갔다.
+    if !tmp.is_file() {
+        return Err(IpcError {
+            code: ErrorCode::Io,
+            message: "이 위치에서 저장할 프레임을 찾지 못했습니다 — 한 프레임 앞으로 옮긴 뒤 다시 시도하세요".into(),
             stderr: Some(stderr),
         });
     }
@@ -1561,6 +1666,100 @@ mod tests {
             duration_ms: 60_000,
             has_audio: true,
         }
+    }
+
+    /// 프레임 캡처가 고르는 프레임 = 웹뷰가 그리는 프레임(pts ≤ 재생 시각인 마지막).
+    /// 실측(ffmpeg 8.0, 30fps B프레임 mp4)에서 재생 시각을 -ss 로 그대로 넘기면 저장본이 1~2프레임
+    /// 뒤였고 영상 끝에서는 아무것도 안 나왔다 — 그 두 경우를 고정한다.
+    #[test]
+    fn capture_picks_last_frame_at_or_before_playhead() {
+        // B프레임 재정렬로 패킷 순서가 pts 순서와 다르다(실제 ffprobe 출력 순서).
+        let json = r#"{"packets":[{"pts_time":"0.500000"},{"pts_time":"0.633333"},
+            {"pts_time":"0.566667"},{"pts_time":"0.533333"},{"pts_time":"0.600000"},
+            {"pts_time":"N/A"},{"pts_time":"0.966667"},{"pts_time":"0.933333"}],
+            "format":{}}"#;
+        let pts = parse_packet_pts(json);
+        assert_eq!(pts.len(), 7, "N/A 패킷은 버린다");
+        // 두 프레임 사이(0.51)에 멈추면 앞 프레임(0.5)이 화면에 있다.
+        assert_eq!(pick_displayed_pts(&pts, 0.51), Some(0.5));
+        // "." 두 번(2/30)은 Chromium이 µs로 잘라 0.066666 — pts 0.066667 보다 앞이라 프레임 1이 보인다.
+        assert_eq!(pick_displayed_pts(&[0.033333, 0.066667, 0.1], 0.066666), Some(0.033333));
+        // 정확히 pts 에 멈추면 그 프레임 — ms→초 왕복이 pts 보다 **작게** 떨어지는 값(µs 의 약 1%)으로
+        // 0.5µs 여유를 실제로 거치게 한다.
+        let at = (0.001309_f64 * 1000.0) / 1000.0;
+        assert!(at < 0.001309, "왕복 잡음이 아래로 떨어지는 값이어야 이 단언이 의미 있다");
+        assert_eq!(pick_displayed_pts(&[0.0, 0.001309, 0.0015], at), Some(0.001309));
+        // B프레임이 뒤에 와도 최댓값을 고른다.
+        assert_eq!(pick_displayed_pts(&pts, 0.6), Some(0.6));
+        // 영상 끝(duration 1.0)은 마지막 프레임.
+        assert_eq!(pick_displayed_pts(&pts, 1.0), Some(0.966667));
+        // at 이하 프레임이 없으면 None → 호출자가 재생 시각으로 폴백.
+        assert_eq!(pick_displayed_pts(&pts, 0.4), None);
+        assert!(parse_packet_pts("not json").is_empty());
+    }
+
+    /// 실제 ffmpeg·ffprobe(PATH)로 캡처 시크를 끝까지 돌려 본다 — 인자 조합까지 검증하는 수동 테스트.
+    /// `cargo test --lib capture_real_ffmpeg -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore = "PATH의 ffmpeg·ffprobe 필요"]
+    async fn capture_real_ffmpeg_matches_displayed_frame() {
+        let ffmpeg = crate::tools::runner::find_on_path("ffmpeg").expect("ffmpeg");
+        let probe = crate::tools::runner::find_on_path("ffprobe").expect("ffprobe");
+        let dir = std::env::temp_dir().join(format!("gpv-cap-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("a.mp4").display().to_string();
+        // 30fps 1초, 프레임 N의 밝기 N*7+24(전부 구분됨), B프레임 있음.
+        let gen = [
+            "-v", "error", "-y", "-f", "lavfi",
+            "-i", "color=black:s=64x36:r=30:d=1,geq=lum='N*7+24':cb=128:cr=128",
+            "-c:v", "libx264", "-bf", "3", "-g", "15", "-pix_fmt", "yuv420p", &src,
+        ];
+        assert_eq!(run_capture(&ffmpeg, &gen, 30).await.unwrap().0, 0);
+        // format=gray 먼저 — yuv420p 에서 폭 1 crop 은 크로마 정렬로 0이 된다.
+        let gray = ["-vf", "format=gray,crop=1:1:10:10", "-f", "rawvideo", "-"];
+        let mut all = vec!["-v", "error", "-i", src.as_str()];
+        all.extend(gray);
+        let (code, reference, err) = run_capture_bytes(&ffmpeg, &all, 30).await.unwrap();
+        assert_eq!(reference.len(), 30, "code={code} stderr={err}");
+        assert!(reference.windows(2).all(|w| w[0] < w[1]), "프레임이 구분돼야 단언이 의미 있다");
+
+        // 같은 프레임을 start_time 1.5초로 옮긴 mkv(ms 타임베이스) — 직접 재생의 currentTime 은 절대 pts,
+        // HLS 폴백은 start 기준 상대 시각이다.
+        let offset = dir.join("b.mkv").display().to_string();
+        let remux = ["-v", "error", "-y", "-i", src.as_str(), "-c", "copy", "-output_ts_offset", "1.5", offset.as_str()];
+        assert_eq!(run_capture(&ffmpeg, &remux, 30).await.unwrap().0, 0);
+
+        let cases = [
+            (&src, false, 0.0, 0), (&src, false, 0.05, 1), (&src, false, 0.066666, 1),
+            (&src, false, 0.0666667, 2), (&src, false, 0.51, 15), (&src, false, 0.95, 28),
+            (&src, false, 1.0, 29),
+            (&offset, false, 1.5, 0), (&offset, false, 1.55, 1), (&offset, false, 2.0, 15),
+            (&offset, false, 2.5, 29),
+            // 키프레임(2.0) µs 아래 — read_intervals 가 키프레임으로 반올림 시크해 at 이하 패킷이 없는
+            // 폴백 경로. 웹뷰도 키프레임을 그린다(Chrome 실측). 폴백이 start 를 안 빼면 끝을 넘어 None.
+            (&offset, false, 1.999989, 15),
+            (&offset, true, 0.05, 1), (&offset, true, 0.5, 15), (&offset, true, 1.0, 29),
+        ];
+        for (file, hls, at, want) in cases {
+            let seek = format!("{:.6}", frame_seek_secs(Some(&probe), file, at, hls).await);
+            let mut one = vec!["-v", "error", "-ss", seek.as_str(), "-i", file.as_str(), "-frames:v", "1"];
+            one.extend(gray);
+            let got = run_capture_bytes(&ffmpeg, &one, 30).await.unwrap().1;
+            assert_eq!(
+                got.first(),
+                Some(&reference[want]),
+                "{file} hls={hls} at={at} seek={seek} → 프레임 {want} 이어야 한다"
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn capture_parses_ffprobe_start_time() {
+        assert_eq!(parse_start_time(r#"{"format":{"start_time":"1.500000"}}"#), 1.5);
+        assert_eq!(parse_start_time(r#"{"format":{"start_time":"N/A"}}"#), 0.0);
+        assert_eq!(parse_start_time(r#"{"format":{}}"#), 0.0);
+        assert_eq!(parse_start_time(""), 0.0);
     }
 
     /// 무손실 구간 추출 — -ss는 -i 앞(입력 시킹), 길이는 -t. -to를 쓰면 입력 시킹 후
