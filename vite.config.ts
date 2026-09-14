@@ -11,8 +11,9 @@ export default defineConfig(async () => ({
 
   // @jsquash/avif는 emscripten 글루 + .wasm을 동적 import한다. esbuild 사전번들에 끌려가면
   // 코덱 wasm 경로 해석이 깨지므로 제외해 런타임 동적 import 그대로 둔다(AVIF 인코딩 전용).
+  // pdfjs-dist는 첫 PDF를 열 때 처음 만나는 bare import라 사전번들 재최적화→full reload를 부른다.
   optimizeDeps: {
-    exclude: ["@jsquash/avif"],
+    exclude: ["@jsquash/avif", "pdfjs-dist"],
   },
 
   // avif 멀티스레드 코덱(avif_enc_mt.js)은 emscripten pthread 워커를 쓴다. Vite 기본

@@ -3555,7 +3555,8 @@ export default function ImageEditor() {
                   <AnnotationLayer
                     ref={layerRef}
                     scene={scene}
-                    oriented={oriented}
+                    bounds={oriented}
+                    background={oriented}
                     backW={backW}
                     backH={backH}
                     scale={previewScale}

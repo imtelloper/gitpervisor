@@ -75,6 +75,28 @@ export interface Point {
   y: number;
 }
 
+/**
+ * 화면(clientX/Y) → 문서 좌표. 클램프하지 **않는다**.
+ *
+ * 캔버스 css 박스가 덮는 문서 영역은 `viewport`(없으면 `bounds` 전체)라서, 박스 안 비율에 그
+ * 영역 크기를 곱하고 원점을 더한다. 포인터·더블클릭·에셋 드롭(`clientToOriented`)이 전부 이
+ * 한 벌을 쓴다 — 갈리면 놓은 자리와 생기는 자리가 어긋난다. 뷰포트가 없으면 종전 식 그대로다.
+ */
+export function clientToDoc(
+  c: HTMLCanvasElement,
+  cx: number,
+  cy: number,
+  s: Pick<AnnotationLayerProps, "bounds" | "viewport">,
+): Point {
+  const r = c.getBoundingClientRect();
+  const fx = (cx - r.left) / Math.max(1, r.width);
+  const fy = (cy - r.top) / Math.max(1, r.height);
+  const v = s.viewport;
+  return v
+    ? { x: v.x + fx * v.width, y: v.y + fy * v.height }
+    : { x: fx * s.bounds.width, y: fy * s.bounds.height };
+}
+
 /** 핸들 집기 허용 반경(css px) — 손가락/트랙패드로도 집히게 넉넉히. */
 export const HANDLE_GRAB_CSS = 10;
 /** 이보다 작은 드래그는 클릭 오조작으로 보고 객체를 만들지 않는다(oriented px). */
@@ -331,21 +353,13 @@ export function createPointerHandlers(ctx: PointerCtx) {
   // ── 좌표 변환 ───────────────────────────────────────────────────────────
 
   /** 클램프 **전** 좌표 — 가이드를 이미지 밖으로 끌어내 지우려면 음수/초과가 살아 있어야 한다. */
-  const rawOriented = (e: React.PointerEvent): Point => {
-    const c = canvasRef.current!;
-    const r = c.getBoundingClientRect();
-    const ow = p.current.oriented.width;
-    const oh = p.current.oriented.height;
-    return {
-      x: ((e.clientX - r.left) / Math.max(1, r.width)) * ow,
-      y: ((e.clientY - r.top) / Math.max(1, r.height)) * oh,
-    };
-  };
+  const rawOriented = (e: React.PointerEvent): Point =>
+    clientToDoc(canvasRef.current!, e.clientX, e.clientY, p.current);
 
   const toOriented = (e: React.PointerEvent): Point => {
     const q = rawOriented(e);
-    const ow = p.current.oriented.width;
-    const oh = p.current.oriented.height;
+    const ow = p.current.bounds.width;
+    const oh = p.current.bounds.height;
     return {
       x: Math.max(0, Math.min(ow, q.x)),
       y: Math.max(0, Math.min(oh, q.y)),
@@ -364,8 +378,8 @@ export function createPointerHandlers(ctx: PointerCtx) {
   const canvasRect = (): Rect => ({
     x: 0,
     y: 0,
-    w: p.current.oriented.width,
-    h: p.current.oriented.height,
+    w: p.current.bounds.width,
+    h: p.current.bounds.height,
   });
 
   /** 흡착 반경. 화면 css px 가 정본이라 **확대할수록 정밀해진다**(시안 `임계값 4px`). */
@@ -993,7 +1007,7 @@ export function createPointerHandlers(ctx: PointerCtx) {
       return;
     }
     if (d.mode === "guide") {
-      const max = d.axis === "x" ? s.oriented.width : s.oriented.height;
+      const max = d.axis === "x" ? s.bounds.width : s.bounds.height;
       const next = s.guides.map((g) => ({ ...g }));
       if (d.pos < 0 || d.pos > max) {
         next.splice(d.index, 1);
@@ -1047,10 +1061,7 @@ export function createPointerHandlers(ctx: PointerCtx) {
   const onDoubleClick = (e: React.MouseEvent) => {
     const s = p.current;
     if (s.cropMode) return;
-    const c = canvasRef.current!;
-    const r = c.getBoundingClientRect();
-    const x = ((e.clientX - r.left) / Math.max(1, r.width)) * s.oriented.width;
-    const y = ((e.clientY - r.top) / Math.max(1, r.height)) * s.oriented.height;
+    const { x, y } = clientToDoc(canvasRef.current!, e.clientX, e.clientY, s);
     // 펜 드래프트 완료·정점 모드 토글은 도구가 `vpen` 이어도 와야 한다(47 §3.1 표·§3.6).
     if (node.onDouble({ x, y })) {
       schedule();

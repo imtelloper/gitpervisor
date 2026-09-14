@@ -55,3 +55,6 @@ tsconfig.tsbuildinfo
 tsconfig.node.tsbuildinfo
 vite.config.js
 vite.config.d.ts
+
+# pdf.js 정적 자산 — predev/prebuild가 node_modules/pdfjs-dist에서 복사한다(scripts/copy-pdfjs-assets.mjs)
+/public/pdfjs/

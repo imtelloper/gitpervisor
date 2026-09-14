@@ -69,6 +69,7 @@ import {
   type PenDraft,
 } from "./annotation/pen";
 import {
+  clientToDoc,
   createPointerHandlers,
   HANDLE_GRAB_CSS,
   marqueeRect,
@@ -107,7 +108,7 @@ export interface AnnotationLayerHandle {
    *
    * HTML5 drop 은 `PointerEvent` 가 아니라 좌표 두 개만 준다(51 §3.8 에셋 카드 드롭).
    * 포인터 경로(`annotation/pointer.ts` 의 `rawOriented`)와 **같은 산술**이어야 카드를 놓은
-   * 자리와 인스턴스가 생기는 자리가 어긋나지 않는다.
+   * 자리와 인스턴스가 생기는 자리가 어긋나지 않는다 — 그래서 둘 다 `clientToDoc` 한 벌을 쓴다.
    */
   clientToOriented(clientX: number, clientY: number): Point;
 
@@ -144,13 +145,29 @@ export interface AnnotationLayerHandle {
 }
 
 export interface AnnotationLayerProps {
-  /** 회전·반전이 적용된 원본 캔버스 — 모자이크가 샘플링할 픽셀 소스(§5.2). */
-  oriented: HTMLCanvasElement;
+  /** 문서 크기(oriented px·pt 등 문서 단위) — 포인터 환산·클램프·스냅 경계. */
+  bounds: { readonly width: number; readonly height: number };
+  /**
+   * 씬 아래 깔 픽셀 소스 — 1px = 문서 1단위여야 한다(render.ts 가 배율 변환 아래 `drawImage(img,0,0)`).
+   * 이미지 편집기는 회전·반전이 적용된 원본 캔버스(모자이크 샘플 소스, §5.2)를 넘긴다. 없으면 투명.
+   */
+  background?: CanvasImageSource;
   /** 백킹 스토어 크기(base 캔버스와 반드시 동일). */
   backW: number;
   backH: number;
   /** oriented → backing px 배율. */
   scale: number;
+  /**
+   * 백킹 해석. "image"(기본) = 원본 픽셀 미리보기라 고배율에서 `pixelated`.
+   * "display" = 호출부가 backW/backH 를 디바이스 px 로 잡는다 — 보간 규칙을 건드리지 않는다.
+   */
+  backing?: "image" | "display";
+  /**
+   * 백킹이 덮는 문서 영역(문서 단위). 없으면 `bounds` 전체(이미지 편집기).
+   * 있으면 backW/backH = round(viewport 크기 × scale)(호출부 몫)이고, 두 캔버스는 이 영역
+   * 자리에만 css 로 놓인다. 씬 변환 원점·포인터 환산·커서 픽셀 좌표가 이 원점만큼 밀린다.
+   */
+  viewport?: { x: number; y: number; width: number; height: number };
   /**
    * oriented → **화면** css px 배율(맞춤 배율 × 줌). 히트 허용오차·핸들 집기 반경·핸들
    * 그리기 크기가 전부 이 값을 화면 실배율로 믿는다 — 그래서 줌이 여기 곱해져 들어온다.
@@ -291,11 +308,13 @@ function AnnotationLayerImpl(
     const excluded = new Set<ObjId>();
     if (liveRef.current) for (const o of liveRef.current) excluded.add(o.id);
     if (editingRef.current) excluded.add(editingRef.current.obj.id);
-    const key = `${s.backW}x${s.backH}|${s.scale}|${s.filterStr}|${s.assetsVer}|${[...excluded].join(",")}`;
+    const v = s.viewport;
+    // 뷰포트는 크기가 같아도 원점만 옮겨질 수 있다 — 키에 넣지 않으면 옛 영역 픽셀이 굳는다.
+    const key = `${s.backW}x${s.backH}|${s.scale}|${s.filterStr}|${s.assetsVer}${v ? `|${v.x},${v.y},${v.width},${v.height}` : ""}|${[...excluded].join(",")}`;
     if (
       cacheRef.current &&
       cacheSrcRef.current === s.objects &&
-      cacheImgRef.current === s.oriented &&
+      cacheImgRef.current === (s.background ?? null) &&
       cacheKeyRef.current === key
     ) {
       return cacheRef.current;
@@ -314,15 +333,15 @@ function AnnotationLayerImpl(
     ctx.clearRect(0, 0, cv.width, cv.height);
     // 이미지도 **같은 캔버스**에 그린다 — 그래야 형광펜 multiply·가림 샘플링이 재구성 없이
     // 성립한다. 조정 필터는 이미지에만 걸린다(renderScene 안 한 곳, D2).
-    renderScene(ctx, s.scene, sceneTransform(s.scale), {
-      image: s.oriented,
+    renderScene(ctx, s.scene, sceneTransform(s.scale, v), {
+      image: s.background,
       background: "image",
       filter: s.filterStr,
       skipIds: excluded,
       store: s.store,
     });
     cacheSrcRef.current = s.objects;
-    cacheImgRef.current = s.oriented;
+    cacheImgRef.current = s.background ?? null;
     cacheKeyRef.current = key;
     return cv;
   }, []);
@@ -354,7 +373,7 @@ function AnnotationLayerImpl(
     if (live.length) {
       // 드래그 중인 것은 아직 문서에 없다 — 임시 씬으로 감싸 **같은 렌더 진입**을 쓴다.
       // 배경(이미지 + 커밋 노드)은 이미 캐시로 깔려 있어 가림·multiply 가 그대로 성립한다.
-      renderScene(ctx, sceneOfNodes(live), sceneTransform(s.scale), {
+      renderScene(ctx, sceneOfNodes(live), sceneTransform(s.scale, s.viewport), {
         background: "transparent",
         store: s.store,
       });
@@ -414,7 +433,9 @@ function AnnotationLayerImpl(
     props.filterStr,
     props.cropRect,
     props.cropMode,
-    props.oriented,
+    props.bounds,
+    props.background,
+    props.viewport,
     // 팬은 배율을 바꾸지 않는다 — `screen` 이 없으면 화면을 밀어도 크롬만 제자리에 남는다.
     props.screen,
     props.guides,
@@ -423,6 +444,19 @@ function AnnotationLayerImpl(
     mode,
     editing,
   ]);
+
+  // 뷰포트가 옮겨지면 **이 커밋 안에서** 칠한다. css 박스(vpBox)는 커밋에서 곧바로 새 자리로
+  // 가는데 픽셀을 rAF 로 미루면, 스크롤 rAF 안의 커밋이 등록한 rAF 는 다음 프레임이라 한 프레임
+  // 동안 "박스 = 새 원점 · 픽셀 = 옛 원점"이 합성된다(연속 스크롤이면 매 프레임). 위 effect 가
+  // 방금 건 rAF 는 거둔다. 뷰포트가 없으면(이미지 편집기) 아무것도 하지 않는다 — 종전 경로 그대로.
+  useLayoutEffect(() => {
+    if (!props.viewport) return;
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = 0;
+    }
+    paintNow();
+  }, [paintNow, props.viewport, props.backW, props.backH, props.scale]);
 
   // 가이드 선택은 **캔버스 포인터가 만든 화면 상태**라 밖에서 선택이 바뀌면 낡는다
   // (레이어 패널 행 클릭·Ctrl+A·Esc 는 `pointer.ts` 를 거치지 않는다). 낡은 채로 두면
@@ -701,11 +735,7 @@ function AnnotationLayerImpl(
   const clientToOriented = useCallback((cx: number, cy: number): Point => {
     const c = canvasRef.current;
     if (!c) return { x: 0, y: 0 };
-    const r = c.getBoundingClientRect();
-    return {
-      x: ((cx - r.left) / Math.max(1, r.width)) * p.current.oriented.width,
-      y: ((cy - r.top) / Math.max(1, r.height)) * p.current.oriented.height,
-    };
+    return clientToDoc(c, cx, cy, p.current);
   }, []);
 
   const flushCursor = useCallback(() => {
@@ -714,8 +744,8 @@ function AnnotationLayerImpl(
     const c = canvasRef.current;
     const pos = cursorPosRef.current;
     if (!h || !c || !pos) return;
-    const ow = p.current.oriented.width;
-    const oh = p.current.oriented.height;
+    const ow = p.current.bounds.width;
+    const oh = p.current.bounds.height;
     const { x, y } = clientToOriented(pos.cx, pos.cy);
     if (x < 0 || y < 0 || x >= ow || y >= oh) {
       h.setCursor(null, null, null);
@@ -723,10 +753,13 @@ function AnnotationLayerImpl(
     }
     // 색은 **이 캔버스**에서 읽는다 — 39 이후 여기에 이미지와 노드가 불투명 합성돼 있어
     // 화면에 보이는 색 그대로다. 좌표는 oriented 지만 픽셀은 백킹 스토어 기준이라 scale 을 건다.
+    // 뷰포트가 있으면 백킹 원점이 그 모서리다(없으면 0 을 빼므로 값이 그대로다).
+    const vx = p.current.viewport?.x ?? 0;
+    const vy = p.current.viewport?.y ?? 0;
     let rgb: string | null = null;
     try {
-      const bx = Math.min(c.width - 1, Math.max(0, Math.floor(x * p.current.scale)));
-      const by = Math.min(c.height - 1, Math.max(0, Math.floor(y * p.current.scale)));
+      const bx = Math.min(c.width - 1, Math.max(0, Math.floor((x - vx) * p.current.scale)));
+      const by = Math.min(c.height - 1, Math.max(0, Math.floor((y - vy) * p.current.scale)));
       const d = c.getContext("2d")!.getImageData(bx, by, 1, 1).data;
       rgb =
         "#" +
@@ -951,6 +984,14 @@ function AnnotationLayerImpl(
     ],
   );
 
+  // 뷰포트가 있으면 두 캔버스를 그 영역 자리에만 놓는다(inline 이 inset-0·h-full·w-full 을 이긴다).
+  // 레이아웃 px 라 줌을 되나눈다 — textarea(textEdit.tsx)와 같은 식이다. 없으면 부모를 채운다.
+  const vp = props.viewport;
+  const vds = props.displayScale / Math.max(props.zoom ?? 1, 1e-6);
+  const vpBox = vp
+    ? { left: vp.x * vds, top: vp.y * vds, width: vp.width * vds, height: vp.height * vds }
+    : undefined;
+
   return (
     <>
       {/* [0] 커밋 캐시 — 화면에는 안 보이지만 DOM 에 있어야 한다. e2e 가 canvases()[0] 의
@@ -960,7 +1001,7 @@ function AnnotationLayerImpl(
         ref={cacheRef}
         aria-hidden
         className="pointer-events-none absolute inset-0 h-full w-full"
-        style={{ visibility: "hidden" }}
+        style={{ visibility: "hidden", ...vpBox }}
       />
       <canvas
         ref={canvasRef}
@@ -997,8 +1038,11 @@ function AnnotationLayerImpl(
         style={{
           touchAction: "none",
           // 100%를 넘겨 확대하면 보간을 끄고 픽셀을 그대로 보여준다(뷰어와 같은 규칙).
-          // v1 에서 베이스 캔버스가 하던 일 — 씬 캔버스로 옮겨 왔다.
-          imageRendering: props.displayScale >= 2 ? "pixelated" : "auto",
+          // v1 에서 베이스 캔버스가 하던 일 — 씬 캔버스로 옮겨 왔다. display 백킹은 이미
+          // 디바이스 px 라 확대할 원본 픽셀이 없다 — 켜면 반올림 틈에서 계단만 생긴다.
+          imageRendering:
+            props.backing !== "display" && props.displayScale >= 2 ? "pixelated" : "auto",
+          ...vpBox,
         }}
       />
       <TextEditOverlay
@@ -1019,8 +1063,9 @@ export default AnnotationLayer;
 
 // ── 순수 헬퍼 ───────────────────────────────────────────────────────────────
 
-function sceneTransform(scale: number): SceneTransform {
-  return { tx: 0, ty: 0, sx: scale, sy: scale };
+/** 문서 → 백킹 px. 뷰포트가 있으면 그 모서리가 백킹 원점이다(target = (p + t) × s). */
+function sceneTransform(scale: number, v?: AnnotationLayerProps["viewport"]): SceneTransform {
+  return { tx: v ? -v.x : 0, ty: v ? -v.y : 0, sx: scale, sy: scale };
 }
 
 /**

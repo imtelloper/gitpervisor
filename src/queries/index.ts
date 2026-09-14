@@ -23,7 +23,7 @@ import type {
 } from "../lib/ipc";
 import { formatBytes } from "../lib/format";
 import { errorMessage, ipc, isIpcError } from "../lib/ipc";
-import { isImage, isOffice, isPlayable } from "../lib/language-map";
+import { opensInOwnViewer } from "../lib/language-map";
 import { useDb } from "../stores/db";
 import type { SyncOp } from "../stores/ops";
 import { useOps } from "../stores/ops";
@@ -503,10 +503,9 @@ export function useClearQuarantine() {
 }
 
 export function useDiff(projectId: string | null, target: DiffTarget | null) {
-  // 이미지·동영상·오디오·Office는 뷰어가 diff보다 먼저 분기해 결과를 쓰지 않는다 — 부르면
+  // 이미지·동영상·오디오·Office·PDF는 뷰어가 diff보다 먼저 분기해 결과를 쓰지 않는다 — 부르면
   // 순수 낭비고, 동영상은 파일이 GB 단위일 수 있어 git spawn 비용이 더 크다. 아예 끈다.
-  const media =
-    !!target && (isImage(target.path) || isPlayable(target.path) || isOffice(target.path));
+  const media = !!target && opensInOwnViewer(target.path);
   return useQuery({
     queryKey: target ? keys.diff(projectId ?? "none", target) : ["diff", "none"],
     queryFn: () => ipc.getDiff(projectId!, target!),
@@ -609,7 +608,10 @@ export function usePrefetchDiffs(projectId: string) {
       ...status.conflicted,
       ...status.unstaged,
       ...status.untracked,
-    ].map((c) => c.path);
+    ]
+      .map((c) => c.path)
+      // 자기 뷰어로 여는 파일(PDF·이미지 등)은 diff를 쓰지 않는다 — git spawn 낭비·30개 슬롯 잠식
+      .filter((p) => !opensInOwnViewer(p));
 
     // 한 번도 읽지 않은 파일만 적재한다 — 캐시에 있는 파일은 무효화돼도
     // 클릭 시 기존 내용이 즉시 표시되고 백그라운드로 갱신되므로 프리페치가 불필요.

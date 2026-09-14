@@ -1,0 +1,19 @@
+/* pdf_viewer.css 격리 — PdfView lazy 청크에만 실린다(styles.css 에 넣지 않는다). */
+
+/* pdf_viewer.css 의 :root{color-scheme:light dark} 가 PDF 를 한 번 연 뒤부터 앱 전역 네이티브
+   컨트롤을 OS 다크에 끌고 간다. 명시도를 한 단계 올려 되돌린다. */
+:root:root {
+  color-scheme: normal;
+}
+
+/* 9px 투명 테두리 → 앱 톤 1px 선. :root 가 아니라 .pdfViewer 에 둔다(전역 변수를 건드리지 않게). */
+.pdfViewer {
+  --page-border: 1px solid var(--color-edge);
+  --page-margin: 8px auto;
+}
+
+/* Tailwind preflight 의 border-box 가 페이지 테두리만큼 캔버스·텍스트 레이어를 어긋나게 한다.
+   annotationLayer section 은 pdf.js 가 일부러 border-box 라 .page 에만 리셋한다. */
+.pdfViewer .page {
+  box-sizing: content-box;
+}

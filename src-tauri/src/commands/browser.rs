@@ -146,6 +146,7 @@ fn navigation_gate(target: &Url) -> bool {
 pub(crate) fn open_external(url: &str) {
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let url = escape_for_shell_handler(url);
     let file: Vec<u16> = url.encode_utf16().chain(std::iter::once(0)).collect();
     let verb: Vec<u16> = "open\0".encode_utf16().collect();
     unsafe {
@@ -158,6 +159,25 @@ pub(crate) fn open_external(url: &str) {
             SW_SHOWNORMAL,
         );
     }
+}
+/// **보안(인자 주입)**: ShellExecuteW는 셸 파싱은 없지만, 프로토콜 핸들러의 레지스트리 명령
+/// (예: 전통 Outlook `OUTLOOK.EXE -c IPM.Note /m "%1"`)의 `%1`에 문자열을 **원문 그대로** 치환한다.
+/// url crate는 mailto 같은 opaque path의 `"`·공백을 인코딩하지 않으므로, PDF 링크
+/// `mailto:a@b" /a "C:/secret`가 핸들러 명령줄에 `/a C:/secret` 인자를 끼워 넣는다(CVE-2007-3845 류).
+/// Chromium EscapeExternalHandlerValue와 같은 집합(제어문자·공백·`"<>\^`{|}`·비ASCII)을 %XX로 바꾼다.
+/// 기존 `%XX`는 건드리지 않고(이중 인코딩 없음), 합법 URL은 핸들러가 디코드하므로 뜻이 같다.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn escape_for_shell_handler(url: &str) -> String {
+    use std::fmt::Write;
+    let mut out = String::with_capacity(url.len());
+    for b in url.bytes() {
+        if b <= 0x20 || b >= 0x7F || matches!(b, b'"' | b'<' | b'>' | b'\\' | b'^' | b'`' | b'{' | b'|' | b'}') {
+            let _ = write!(out, "%{b:02X}");
+        } else {
+            out.push(b as char);
+        }
+    }
+    out
 }
 /// unix 계열은 open.rs의 공용 런처를 지난다 — URL은 argv 배열 원소로만 전달되고(셸 미개입),
 /// 자식은 반드시 회수되며(좀비 방지), 리눅스에서는 systemd-run 위임으로 **기본 브라우저가 앱
@@ -174,6 +194,25 @@ pub(crate) fn open_external(url: &str) {
     let mut cmd = std::process::Command::new("xdg-open");
     cmd.arg(url);
     let _ = super::open::spawn_launcher(cmd, "외부 브라우저");
+}
+
+/// 문서 창(PDF 링크)이 OS로 넘겨도 되는 스킴 — http/https/mailto만. file:/javascript:/tauri: 등은
+/// 로컬 실행·특권 스킴이라 신뢰 경계(여기)에서 막는다. 프론트 1차 필터와 별개로 반드시 재검증.
+pub(crate) fn external_url_allowed(url: &Url) -> bool {
+    matches!(url.scheme(), "http" | "https" | "mailto")
+}
+
+/// PDF 뷰어 외부 링크 열기. 문서 창에는 on_new_window가 없어 window.open이 조용히 막히므로
+/// 전용 커맨드로 연다. OS 런처가 실제로 떴는지는 보장하지 않는다(open_external과 동일).
+#[tauri::command]
+pub fn open_external_url(url: String) -> Result<(), IpcError> {
+    let parsed =
+        Url::parse(&url).map_err(|_| IpcError::new(ErrorCode::InvalidUrl, "잘못된 링크입니다"))?;
+    if !external_url_allowed(&parsed) {
+        return Err(IpcError::new(ErrorCode::InvalidUrl, "허용되지 않는 링크입니다"));
+    }
+    open_external(parsed.as_str());
+    Ok(())
 }
 
 /// 다운로드 정책 — child·popup 공용. 인앱 다운로드는 항상 취소(특권 앱 옆 drive-by-write 방지),
@@ -563,4 +602,42 @@ pub fn browser_kill_all(app: &AppHandle, state: &AppState) {
         }
     }
     state.browser.lock().unwrap_or_else(|e| e.into_inner()).last_bounds.clear();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn external_url_allowlist() {
+        let ok = |s: &str| external_url_allowed(&Url::parse(s).unwrap());
+        assert!(ok("http://example.com/"));
+        assert!(ok("https://example.com/a?b=1&c=2"));
+        assert!(ok("mailto:someone@example.com"));
+        assert!(!ok("javascript:alert(1)"));
+        assert!(!ok("file:///C:/Windows/System32/calc.exe"));
+        assert!(!ok("ftp://example.com/f"));
+        assert!(!ok("tauri://localhost/"));
+        assert!(!ok("data:text/html,<script>1</script>"));
+    }
+
+    #[test]
+    fn shell_handler_escape_blocks_argument_injection() {
+        // 실제 호출 경로: Url::parse → 허용목록 통과 → as_str() 가 `"`·공백을 그대로 남긴다(전제 확인)
+        let u = Url::parse("mailto:a@b.c\" /a \"C:/Users/x/secret.txt").unwrap();
+        assert!(external_url_allowed(&u));
+        assert!(u.as_str().contains('"') && u.as_str().contains(' '));
+        let esc = escape_for_shell_handler(u.as_str());
+        assert!(!esc.contains('"') && !esc.contains(' '), "{esc}");
+        assert_eq!(escape_for_shell_handler("mailto:a@b.c\" /a \"C:/x"), "mailto:a@b.c%22%20/a%20%22C:/x");
+        assert_eq!(escape_for_shell_handler("mailto:a\tb\u{7f}é"), "mailto:a%09b%7F%C3%A9");
+        // 반증: 합법 URL 은 바이트 그대로 — 기존 %XX 이중 인코딩 없음
+        for s in [
+            "mailto:a@b.c?subject=hi",
+            "https://example.com/a%20b?q=1&r=%222%22#frag",
+            "http://example.com/",
+        ] {
+            assert_eq!(escape_for_shell_handler(s), s);
+        }
+    }
 }

@@ -121,10 +121,17 @@ export interface ToolRailProps {
    * 이 컴포넌트 안에서는 Esc 를 볼 수 없다 — 편집기가 이 핸들로 계층 0을 처리한다.
    */
   handleRef?: RefObject<ToolRailHandle | null>;
+  /**
+   * 레일에 둘 항목과 순서(PDF 주석 모드). 주면 **정확히 이 목록**만(ready 인 것) 이 순서로 놓고
+   * 플라이아웃은 비운다 — 플라이아웃 전용 형광펜도 레일로 올라오고, 사각형 캐럿의 직선·화살표가
+   * 레일 버튼과 겹치지 않는다. 없으면 종전 레일 그대로다(e2e 30·53 이 title·클래스를 읽는다).
+   */
+  tools?: readonly RailItem["id"][];
 }
 
 /** 표시할 플라이아웃 항목 — 소유 태스크가 없는 도구는 뺀다(캐럿 자체가 사라진다). */
-function flyoutItems(item: RailItem): RailItem[] {
+function flyoutItems(item: RailItem, tools?: readonly RailItem["id"][]): RailItem[] {
+  if (tools) return [];
   const out: RailItem[] = [];
   for (const id of item.flyout ?? []) {
     const meta = BY_ID.get(id);
@@ -153,6 +160,7 @@ export default function ToolRail({
   paint,
   handleRef,
   onPlaceImage,
+  tools,
 }: ToolRailProps) {
   const tool = useImageEditorUi((s) => s.tool);
   const mode = useImageEditorUi((s) => s.mode);
@@ -196,7 +204,7 @@ export default function ToolRail({
   useEffect(() => cancelHold, []);
 
   const openFlyout = (item: RailItem, el: HTMLElement) => {
-    const items = flyoutItems(item);
+    const items = flyoutItems(item, tools);
     if (items.length === 0) return;
     const r = el.getBoundingClientRect();
     setFlyout({ items, x: r.right + 4, y: r.top });
@@ -219,7 +227,12 @@ export default function ToolRail({
     onFocusRoot();
   };
 
-  const rail = TOOLS.filter((t) => t.ready);
+  const rail = tools
+    ? tools.flatMap((id) => {
+        const t = BY_ID.get(id);
+        return t?.ready ? [t] : [];
+      })
+    : TOOLS.filter((t) => t.ready);
   const stroke = paint.strokes.find((f) => f.visible);
   const strokeColor = stroke && stroke.type === "solid" ? stroke.color : null;
   const fill = paint.fills.find((f) => f.visible);
@@ -239,7 +252,7 @@ export default function ToolRail({
       >
         {rail.map((item) => {
           const on = isActive(item, tool, mode, curvature);
-          const hasFlyout = flyoutItems(item).length > 0;
+          const hasFlyout = flyoutItems(item, tools).length > 0;
           return (
             <button
               key={item.id}

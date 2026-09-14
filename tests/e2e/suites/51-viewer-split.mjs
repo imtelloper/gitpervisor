@@ -630,12 +630,38 @@ export async function run({ cdp, report: r, fix }) {
       16,
       250,
     );
-    const modalMonaco = await poll(
-      () => cdp.eval(`!!${MODAL} && !!${MODAL}.querySelector('.monaco-editor .view-lines')`),
-      (v) => v === true,
+    // 준비 = 아래 우클릭이 겨누는 "글자 있는 줄"이 **같은 요소로** 두 폴링(250ms) 연속 붙어 있다. `.view-lines` 존재만
+    // 보면 DiffEditor 가 모델을 갈아 끼우는 중(옛 뷰 해체 ~ 새 뷰 전)에 쏠 수 있다 — 단언 시점엔 글자 있는 줄이 없었는데
+    // 수 ms 뒤 진단에서는 있던 실측(prevented=no-line)이 그 모양이다. 판정 조건은 그대로다.
+    // 끝내 안정되지 않으면 skip 이 아니라 아래 단언으로 간다('no-line' → 실패) — skip 은 예전처럼 에디터가 없을 때만.
+    //
+    // 대상 줄은 DOM 순서가 아니라 **적중 판정**으로 고른다 — 그 좌표의 최상단 요소가 그 줄 안이어야 한다. 좁은 모달의
+    // 수정 파일 DiffEditor 는 인라인 배치라 원본 에디터가 30px 로 접히는데, DOM 상 첫 글자 줄(원본 'line1')은 그 밖으로
+    // 넘쳐 수정 에디터 줄번호 거터 **밑에** 깔린다. 거기 우클릭은 거터에 가고 Monaco 는 거터 대상이면 preventDefault 만
+    // 하고 메뉴를 안 띄운다(03 뒤 커밋 'e2e: modify app.txt' 에서 prevented=true 항목=[] 실측). 추가 파일은 원본이 비어 통과했다.
+    const PICK_LINE = `((m) => {
+      for (const l of m.querySelectorAll('.monaco-editor .view-line')) {
+        const b = l.getBoundingClientRect();
+        if (!b.width || (l.textContent || '').trim().length <= 2) continue;
+        const x = Math.round(b.left + 12), y = Math.round(b.top + b.height / 2);
+        const el = document.elementFromPoint(x, y);
+        if (el && l.contains(el)) return { line: l, el, x, y };
+      }
+      return null;
+    })`;
+    const modalReady = await poll(
+      () => cdp.eval(`(()=>{ const m = ${MODAL}; if (!m) return false;
+        const hit = ${PICK_LINE}(m);
+        const line = hit ? hit.line : null;
+        const prev = window.__gpv51line; window.__gpv51line = line;
+        if (line && line === prev && line.isConnected) return 'stable';
+        return m.querySelector('.monaco-editor .view-lines') ? 'lines' : false; })()`),
+      (v) => v === "stable",
       40,
       250,
     );
+    await cdp.eval(`(()=>{ delete window.__gpv51line; return true; })()`).catch(() => {});
+    const modalMonaco = modalReady === "stable" || modalReady === "lines";
     if (modalShown !== true || commitRow !== "ok" || modalMonaco !== true) {
       r.skip(
         "Git 모달 Monaco 우클릭",
@@ -657,24 +683,19 @@ export async function run({ cdp, report: r, fix }) {
       // 닿지 않아 "메뉴가 안 뜬다"가 항상 참이 된다. 판정은 `defaultPrevented`(Monaco 는 자기
       // 메뉴를 띄우는 경로에서만 부른다) + 섀도루트 안 실제 항목.
       const prevented = await cdp.eval(`(()=>{
-        const m = ${MODAL};
-        const line = Array.from(m.querySelectorAll('.monaco-editor .view-line'))
-          .find(l => l.getBoundingClientRect().width > 0 && (l.textContent || '').trim().length > 2);
-        if (!line) return 'no-line';
-        const b = line.getBoundingClientRect();
-        const x = Math.round(b.left + 12), y = Math.round(b.top + b.height / 2);
-        const el = document.elementFromPoint(x, y) || line;
+        const hit = ${PICK_LINE}(${MODAL});
+        if (!hit) return 'no-line';
         const ev = new MouseEvent('contextmenu', {
-          bubbles: true, cancelable: true, clientX: x, clientY: y, button: 2, buttons: 2, view: window,
+          bubbles: true, cancelable: true, clientX: hit.x, clientY: hit.y, button: 2, buttons: 2, view: window,
         });
-        el.dispatchEvent(ev);
+        hit.el.dispatchEvent(ev);
         return ev.defaultPrevented;
       })()`);
       const items = await poll(monacoMenuItems, (v) => Array.isArray(v) && v.length > 0, 12, 250);
       r.check(
         "Git 모달 본문 우클릭 → Monaco **자체** 메뉴가 뜬다(이번 회귀의 핵심)",
         prevented === true && Array.isArray(items) && items.length > 0,
-        `prevented=${prevented} 항목=${J(items)}`,
+        `prevented=${prevented} 항목=${J(items)} 준비=${modalReady}`,
       );
       // 앱 pane 메뉴는 모달 안에서 뜨지 않는다(뷰어 리프가 아니다).
       const modalSplitItem = await menuItem("오른쪽으로 분할");

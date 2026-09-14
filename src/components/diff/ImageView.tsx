@@ -400,10 +400,11 @@ function ZoomableImage({
   );
 }
 
-function TBtn({
+export function TBtn({
   label,
   onClick,
   children,
+  ...rest // data-*·aria-* — TSX 는 하이픈 속성을 props 타입 검사에서 빼므로 PdfView 가 셀렉터를 달 수 있다
 }: {
   label: string;
   onClick: () => void;
@@ -411,6 +412,7 @@ function TBtn({
 }) {
   return (
     <button
+      {...rest}
       onClick={onClick}
       title={label}
       className="rounded p-1 hover:bg-raised hover:text-fg"

@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 
+import { isPdf } from "./language-map";
+
 /**
  * 터미널 패널을 별도 OS 창으로 띄운다. 창 생성은 Rust(open_float_window)가 담당한다 —
  * JS의 new WebviewWindow는 메인 창과 WebView2 환경 인자가 어긋나 웹뷰가 빈 채로 뜨기 때문.
@@ -122,7 +124,8 @@ export function openDocWindow(
     docId: id,
     title: path.split("/").pop() ?? path,
     origin: window.location.origin,
-    size: opts?.size,
+    // PDF는 크기를 안 주는 호출부(트리·탭 우클릭)도 넓게 — 900×760에선 A4 한 쪽이 너무 작다.
+    size: opts?.size ?? (isPdf(path) ? [1180, 860] : undefined),
   }).catch((e) => {
     console.error("문서 창 생성 실패:", e);
   });

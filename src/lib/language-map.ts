@@ -155,6 +155,16 @@ export function isOffice(path: string): boolean {
   return OFFICE_EXT.has(extOf(path));
 }
 
+/** 내장 PDF 뷰어로 열 문서인가. */
+export function isPdf(path: string): boolean {
+  return extOf(path) === "pdf";
+}
+
+/** 텍스트 diff를 스폰하지 않고 자기 뷰어로 여는 파일인가 — useDiff·diff 프리페치·문서 창 prefetch 공용 게이트. */
+export function opensInOwnViewer(path: string): boolean {
+  return isImage(path) || isPlayable(path) || isOffice(path) || isPdf(path);
+}
+
 // 브라우저로 렌더 가능한 HTML 문서 확장자만. languageOf(path)==="html"은 .vue/.svelte도
 // 잡지만 그건 렌더 가능한 페이지가 아니라 별도로 좁게 판정한다.
 const HTML_EXT = new Set(["html", "htm", "xhtml"]);

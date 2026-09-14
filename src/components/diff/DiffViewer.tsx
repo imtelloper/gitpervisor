@@ -37,12 +37,12 @@ import {
   UnfoldVertical,
   Wand2,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { errorMessage, ipc } from "../../lib/ipc";
 import type { DiffTarget } from "../../lib/ipc";
 import { isMod } from "../../lib/platform";
-import { isImage, isOffice, isPlayable, languageOf } from "../../lib/language-map";
+import { isImage, isOffice, isPdf, isPlayable, languageOf, opensInOwnViewer } from "../../lib/language-map";
 import { translateRequest } from "../../lib/translate";
 import { useDiff, useSettings, useWriteFile } from "../../queries";
 import { useUi } from "../../stores/ui";
@@ -50,6 +50,9 @@ import { EmptyState } from "../common/EmptyState";
 import ImageView from "./ImageView";
 import MediaView from "./MediaView";
 import MarkdownView from "./MarkdownView";
+
+// PDF 뷰어는 lazy — 이 파일은 유휴 선로딩(main.tsx)되므로 정적 import면 pdf.js가 앱 시작마다 실린다.
+const PdfView = lazy(() => import("../pdf/PdfView"));
 
 /** Office 문서 종류별 아이콘·이름. 확장자 접두사로 가족을 가른다(doc/xls/ppt + m·x 변형). */
 const OFFICE_KIND = [
@@ -254,11 +257,13 @@ export default function DiffViewer({
   const isMediaView = isPlayable(target.path);
   // Office 문서(docx/xlsx/pptx…) — 웹뷰가 못 그리는 바이너리라 OS 기본 앱으로 넘긴다.
   const isOfficeView = isOffice(target.path);
+  // PDF — 모드와 무관하게 워크트리 파일을 내장 pdf.js 뷰어로 렌더(보기 전용, M1).
+  const isPdfView = isPdf(target.path);
   const isMarkdown =
     isFileView && !isImageView && !isMediaView && languageOf(target.path) === "markdown";
   // 파일뷰만 직접 편집한다. diff뷰(worktree/index)는 "편집" 버튼으로 파일뷰 전환.
   // 이미지·미디어는 편집 불가.
-  const editable = isFileView && !isImageView && !isMediaView && !isOfficeView;
+  const editable = isFileView && !isImageView && !isMediaView && !isOfficeView && !isPdfView;
   const fileOptions = useMemo(
     () => ({
       ...FILE_OPTIONS,
@@ -353,12 +358,15 @@ export default function DiffViewer({
   // 파일 내용이 로드되면 import 심볼 정의를 백그라운드로 예열 — Ctrl+호버 첫 반응 가속.
   // setDefContext 효과 뒤에 선언돼 컨텍스트가 잡힌 상태에서 돈다. 캐시가 중복을 걸러낸다.
   const warmedKeyRef = useRef("");
+  // 자기 뷰어로 여는 파일(이미지·미디어·Office·PDF)은 useDiff 가 꺼져 있어 diff 가 **직전 파일의 placeholder**
+  // (keepPreviousData)다 — 그 import 로 이 파일 확장자(pdf 등, pathspec 없는 레포 전체 git grep)를 데우지 않는다.
+  const ownViewer = opensInOwnViewer(path);
   useEffect(() => {
     const content = diff?.newContent;
-    if (!content || isImageView || isMediaView || warmedKeyRef.current === editorKey) return;
+    if (!content || ownViewer || warmedKeyRef.current === editorKey) return;
     warmedKeyRef.current = editorKey;
     warmDefinitionCache(content);
-  }, [diff, editorKey, isImageView, isMediaView]);
+  }, [diff, editorKey, ownViewer]);
 
   // ── 편집/저장 상태 ──
   const writeFile = useWriteFile(projectId);
@@ -613,8 +621,9 @@ export default function DiffViewer({
     });
   }, [selectionRef]);
 
+  // ownViewer 면 diff 는 직전 파일의 placeholder 라 그 추가됨·삭제됨을 이 헤더에 붙이면 안 된다(warm 과 같은 이유).
   const stateBadge =
-    !isFileView && diff
+    !isFileView && diff && !ownViewer
       ? diff.oldContent === null && diff.newContent !== null
         ? { text: "추가됨", className: "text-add" }
         : diff.newContent === null && diff.oldContent !== null
@@ -627,6 +636,7 @@ export default function DiffViewer({
     !isImageView &&
     !isMediaView &&
     !isOfficeView &&
+    !isPdfView &&
     (target.mode === "worktree" || target.mode === "index");
 
   return (
@@ -683,7 +693,7 @@ export default function DiffViewer({
             {mdRaw ? <Eye size={14} /> : <Code2 size={14} />}
           </button>
         )}
-        {!isFileView && !isImageView && !isMediaView && !isOfficeView && (
+        {!isFileView && !isImageView && !isMediaView && !isOfficeView && !isPdfView && (
           <button
             onClick={toggleDiffCollapse}
             title={
@@ -726,6 +736,17 @@ export default function DiffViewer({
           <ImageView projectId={projectId} path={path} />
         ) : isMediaView ? (
           <MediaView projectId={projectId} path={path} onOpenPath={openPath} />
+        ) : isPdfView ? (
+          // isLoading보다 앞이어야 한다 — keepPreviousData가 이전 파일 diff를 잔상으로 남긴다.
+          <Suspense fallback={<EmptyState title="PDF 뷰어 로딩 중…" />}>
+            <PdfView
+              key={`${projectId}:${path}`}
+              projectId={projectId}
+              path={path}
+              mode={target.mode}
+              selectionRef={selectionRef}
+            />
+          </Suspense>
         ) : isOfficeView ? (
           <OfficeView projectId={projectId} path={path} mode={target.mode} />
         ) : isLoading ? (

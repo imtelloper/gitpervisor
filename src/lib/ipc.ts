@@ -1011,6 +1011,8 @@ interface CallOpts {
   attempts?: number;
   /** background는 큐 맨 뒤에 선다 — 프리페치가 사용자 클릭을 막지 않게 (§12) */
   lane?: "interactive" | "background";
+  /** false면 single-flight 합치기를 건너뛴다(슬롯·타임아웃·재시도 규칙은 그대로). */
+  dedup?: boolean;
 }
 
 // 진행 중인 동일 (cmd+args) 읽기 호출을 1건으로 합친다(single-flight).
@@ -1023,6 +1025,8 @@ async function call<T>(
   args?: Record<string, unknown>,
   opts: CallOpts = {},
 ): Promise<T> {
+  // 소비 시 파괴되는 결과(워커로 transfer되는 ArrayBuffer) 전용 — 합치면 두 번째 소비자가 빈 버퍼를 받는다.
+  if (opts.dedup === false) return runCall<T>(cmd, args, opts);
   const dedupKey = `${cmd}:${JSON.stringify(args ?? {})}`;
   const existing = inflightByKey.get(dedupKey);
   if (existing) return existing as Promise<T>;
@@ -1133,6 +1137,25 @@ export const ipc = {
       { projectId, relPath },
       { timeoutMs: 30_000, attempts: 1 },
     ),
+  // PDF 외부 변경 감지 폴링 — `<mtime_ms>:<len>`(diff.rs stamp_of). PdfView만 mtime을 해석한다.
+  // 파일이 없거나 파일이 아니면 null(오류 아님). 상위 폴더가 없으면 NOT_FOUND로 reject.
+  fileStamp: (projectId: string, relPath: string) =>
+    call<string | null>(
+      "file_stamp",
+      { projectId, relPath },
+      { lane: "background", attempts: 1, timeoutMs: 4000 },
+    ),
+  // PDF 원본 바이트(raw IPC, 256MB 상한). 결과는 pdf.js 워커로 transfer되어 파괴되므로
+  // 합치기 끔 — react-query 캐시에 넣거나 소비자끼리 공유하지 마라.
+  readFileRaw: (projectId: string, relPath: string) =>
+    call<ArrayBuffer>(
+      "read_file_raw",
+      { projectId, relPath },
+      { timeoutMs: 60_000, attempts: 1, dedup: false },
+    ),
+  // PDF 링크를 OS 기본 앱으로 — http/https/mailto만 허용(Rust가 신뢰 경계에서 재검증).
+  openExternalUrl: (url: string) =>
+    callMutating<void>("open_external_url", { url }, 10_000),
   // 프리페치 배치 (worktree 전용) — background 레인(클릭에 양보), 재시도 없음, 짧은 타임아웃
   getWorktreeDiffs: (projectId: string, paths: string[]) =>
     call<FileDiff[]>(
