@@ -837,7 +837,7 @@ export default function VideoPlayer({
         break;
       case "s":
       case "S":
-        if (hasFfmpeg) saveFrame();
+        if (hasFfmpeg && !e.repeat) saveFrame(); // 꾹 누르면 반복마다 ffmpeg 가 하나씩 뜬다
         break;
       case "m":
       case "M":

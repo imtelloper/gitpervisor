@@ -373,10 +373,10 @@ export default function FolderWindow({ root }: { root: string }) {
 // ---- 보기 상태 (폴더별 기억) ---------------------------------------------------------
 
 const MODES = [
-  { id: "grid-s", Icon: LayoutGrid, title: "작은 썸네일 (Ctrl+1)" },
-  { id: "grid-m", Icon: LayoutGrid, title: "중간 썸네일 (Ctrl+2)" },
-  { id: "grid-l", Icon: LayoutGrid, title: "큰 썸네일 (Ctrl+3)" },
-  { id: "list", Icon: List, title: "목록 (Ctrl+4)" },
+  { id: "grid-s", Icon: LayoutGrid, title: `작은 썸네일 (${modLabel}+1)` },
+  { id: "grid-m", Icon: LayoutGrid, title: `중간 썸네일 (${modLabel}+2)` },
+  { id: "grid-l", Icon: LayoutGrid, title: `큰 썸네일 (${modLabel}+3)` },
+  { id: "list", Icon: List, title: `목록 (${modLabel}+4)` },
 ] as const;
 type Mode = (typeof MODES)[number]["id"];
 /** 썸네일 한 변 — 백엔드가 **이 셋만** 받는다(캐시 폭주 방지). */

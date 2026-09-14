@@ -1,5 +1,5 @@
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { isMod } from "../../lib/platform";
+import { isMac, isMod } from "../../lib/platform";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   ArrowDownUp,
@@ -212,6 +212,13 @@ export function ProjectList() {
     const onKey = (e: KeyboardEvent) => {
       if (!isMod(e) || !e.shiftKey) return;
       if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+      // mac 의 ⌘⇧↑/↓ 는 텍스트 "처음/끝까지 선택"이다 — 입력칸에서는 프로젝트를 바꾸지 않는다.
+      // xterm 의 입력용 textarea 는 제외(터미널에서도 이동이 되도록 흘려보내는 조합이다).
+      const t = e.target as HTMLElement | null;
+      if (
+        isMac && t && !t.closest(".xterm") &&
+        (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)
+      ) return;
       const { orderedProjects: list, selectedProjectId: sel } = navRef.current;
       if (list.length === 0) return;
       e.preventDefault();

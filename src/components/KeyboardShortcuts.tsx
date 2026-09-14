@@ -82,7 +82,8 @@ export function KeyboardShortcuts({ projectId }: { projectId: string }) {
       // 터미널 토글만 **세 플랫폼 모두 Ctrl+`** 로 남긴다. macOS 의 ⌘` 는 시스템이 "같은 앱의
       // 창 순환"에 이미 쓰고 있어 가로챌 수 없고, VS Code 도 mac 에서 ⌃` 를 쓴다.
       // mod 게이트 **앞**이어야 한다 — 그 게이트는 mac 에서 metaKey 만 통과시킨다.
-      if (e.ctrlKey && !e.altKey && !e.shiftKey && e.key === "`") {
+      // Shift 는 보지 않는다 — JIS 배열은 ` 자체가 Shift+@ 라 Ctrl+` 가 shiftKey=true 로 온다.
+      if (e.ctrlKey && !e.altKey && e.key === "`") {
         e.preventDefault();
         const pid = pidRef.current;
         const ts = useTerminals.getState();
@@ -153,6 +154,14 @@ export function KeyboardShortcuts({ projectId }: { projectId: string }) {
         else ui.selectDiff(null); // 탭 없이 열린 선택(엣지) — 선택만 해제
         return;
       }
+      // 터미널 포커스의 커밋·pull 은 무시한다. Windows/Linux 의 Ctrl+K/T 는 xterm 이 제어문자로
+      // 소비해 여기 오지 않지만, mac 의 ⌘K(화면 지우기 습관)·⌘T(새 탭 습관)는 xterm 이 흘려보내
+      // 확인 없이 커밋·pull 이 나갔다. Shift 조합(push)은 xterm 이 어느 플랫폼에서도 소비하지 않아
+      // Windows 에서도 터미널에서 동작해 왔으므로 그대로 둔다.
+      if (
+        !e.shiftKey && (k === "k" || k === "t") &&
+        (e.target as Element | null)?.closest?.(".xterm")
+      ) return;
       if (k === "k") {
         e.preventDefault();
         if (e.shiftKey) actions.push();
