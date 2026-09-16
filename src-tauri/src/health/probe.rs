@@ -379,29 +379,10 @@ mod imp {
         }
         unsafe { CloseHandle(snap) };
 
-        // 자기 PID에서 시작해 자손을 폐포로 모은다. 부모→자식 인접 리스트를 한 번 만들고
-        // BFS — 엔트리 수가 수백이라 O(n) 순회 한 번이면 충분하다.
         let me = unsafe { GetCurrentProcessId() };
-        let mut children: std::collections::HashMap<u32, Vec<u32>> = std::collections::HashMap::new();
-        let mut names: std::collections::HashMap<u32, &str> = std::collections::HashMap::new();
-        for (pid, ppid, name) in &entries {
-            children.entry(*ppid).or_default().push(*pid);
-            names.insert(*pid, name.as_str());
-        }
-        let mut tree = vec![me];
-        let mut queue = vec![me];
-        let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::from([me]);
-        while let Some(p) = queue.pop() {
-            if let Some(kids) = children.get(&p) {
-                for k in kids {
-                    // 자기 자신을 부모로 갖는 이상 엔트리(PID 0 등)로 무한 루프에 빠지지 않게.
-                    if seen.insert(*k) {
-                        tree.push(*k);
-                        queue.push(*k);
-                    }
-                }
-            }
-        }
+        let names: std::collections::HashMap<u32, &str> =
+            entries.iter().map(|(pid, _, name)| (*pid, name.as_str())).collect();
+        let tree = tree_pids(me, &entries);
 
         // 권한이 없어 못 읽은 프로세스도 0바이트로 남긴다 — 개수(scope_procs)와 내역 길이가
         // 어긋나면 로그를 읽는 쪽에서 "빠진 게 있나"를 계속 의심하게 된다.
@@ -431,6 +412,43 @@ mod imp {
     }
 
     /// `PROCESSENTRY32W.szExeFile`(널 종료 UTF-16 배열) → 문자열.
+    /// 자기 PID에서 시작해 자손을 폐포로 모은다. 부모→자식 인접 리스트를 한 번 만들고
+    /// BFS — 엔트리 수가 수백이라 O(n) 순회 한 번이면 충분하다.
+    ///
+    /// **터미널에서 띄운 또 다른 Gitpervisor(dev 앱·e2e 샤드 앱)는 그 아래째 뺀다.** 그건 자기
+    /// health 를 따로 가진 별개의 앱이다. 세면 그 앱의 WebView2 가 "앱 자체" 메모리로 잡혀 이쪽이
+    /// danger 로 오르고 PTY 출력을 128KB/s 로 조인다 — 2026-09-17 샤드 e2e(앱 4개) 동안 설치본이
+    /// 실제로 그랬다. 판정은 실행 파일 이름이 자기와 같은가로 한다(설치본·debug 빌드 모두 같은 이름).
+    pub(super) fn tree_pids(me: u32, entries: &[(u32, u32, String)]) -> Vec<u32> {
+        let mut children: std::collections::HashMap<u32, Vec<u32>> = std::collections::HashMap::new();
+        let mut names: std::collections::HashMap<u32, &str> = std::collections::HashMap::new();
+        for (pid, ppid, name) in entries {
+            children.entry(*ppid).or_default().push(*pid);
+            names.insert(*pid, name.as_str());
+        }
+        let own_name = names.get(&me).copied().unwrap_or_default();
+        let mut tree = vec![me];
+        let mut queue = vec![me];
+        let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::from([me]);
+        while let Some(p) = queue.pop() {
+            if let Some(kids) = children.get(&p) {
+                for k in kids {
+                    // 자기 자신을 부모로 갖는 이상 엔트리(PID 0 등)로 무한 루프에 빠지지 않게.
+                    if !seen.insert(*k) {
+                        continue;
+                    }
+                    let nested_app = !own_name.is_empty()
+                        && names.get(k).is_some_and(|n| n.eq_ignore_ascii_case(own_name));
+                    if !nested_app {
+                        tree.push(*k);
+                        queue.push(*k);
+                    }
+                }
+            }
+        }
+        tree
+    }
+
     fn exe_name(buf: &[u16]) -> String {
         let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
         String::from_utf16_lossy(&buf[..end])
@@ -470,6 +488,24 @@ impl Probe {
 #[cfg(all(test, windows))]
 mod windows_tests {
     use super::*;
+
+    #[test]
+    fn tree_pids_excludes_nested_gitpervisor_subtree() {
+        let e = |pid: u32, ppid: u32, name: &str| (pid, ppid, name.to_string());
+        let entries = vec![
+            e(10, 1, "gitpervisor.exe"),
+            e(11, 10, "msedgewebview2.exe"),
+            e(12, 10, "pwsh.exe"),
+            e(13, 12, "claude.exe"),
+            e(14, 13, "node.exe"),
+            e(15, 14, "Gitpervisor.exe"), // 터미널에서 띄운 e2e 샤드 앱
+            e(16, 15, "msedgewebview2.exe"),
+            e(17, 14, "git.exe"),
+        ];
+        let mut got = imp::tree_pids(10, &entries);
+        got.sort_unstable();
+        assert_eq!(got, vec![10, 11, 12, 13, 14, 17]);
+    }
 
     /// Windows 프로브가 **실제로 값을 읽는지** 확인한다.
     ///
