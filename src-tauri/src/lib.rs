@@ -209,6 +209,36 @@ pub(crate) fn webview_data_dir() -> Option<std::path::PathBuf> {
     }
 }
 
+/// 설치본 identifier. setup 의 AUMID 줄은 이 값을 **일부러** 직접 적어 둔다(CLAUDE.md "여기 손대지
+/// 마라") — 이 상수는 "테스트 인스턴스가 설치본 폴더를 쓰려 하는가" 판정에만 쓴다.
+const INSTALLED_IDENTIFIER: &str = "com.greathoon.gitpervisor";
+
+/// e2e 격리 환경변수를 받은 디버그 앱이 **설치본 identifier 로 빌드돼 있는가.**
+///
+/// 2026-09-17: plain `cargo build` 로 만든 debug exe 는 `tauri.dev.conf.json` 이 안 먹어 설치본
+/// identifier 를 달았고, 샤드 앱 4개가 **설치본의** 로그·session.json(거짓 "비정상 종료")·썸네일
+/// 캐시·인앱 브라우저 프로필에 썼다. `GPV_DATA_DIR`·`GPV_WEBVIEW_DIR` 은 경로 일부만 가른다.
+/// 어느 런처로 띄우든 여기서 막는다 — 로그 플러그인이 파일을 열기 **전**이어야 한다.
+fn e2e_env_on_installed_identifier(debug: bool, identifier: &str, has_e2e_env: bool) -> bool {
+    debug && has_e2e_env && identifier == INSTALLED_IDENTIFIER
+}
+
+/// 샤드 드라이버(`tests/e2e/shard.mjs`)가 띄운 테스트 인스턴스인가 — 디버그 빌드 전용.
+pub(crate) fn is_e2e_shard_instance() -> bool {
+    cfg!(debug_assertions) && std::env::var_os("GPV_E2E_CDP_PORT").is_some()
+}
+
+/// 창을 앞으로 가져온다 — **샤드 테스트 인스턴스만 빼고.** tao 의 `set_focus` 는 전경을 못 얻으면
+/// 전역 Alt 키를 `SendInput` 으로 주입해 강제로 뺏는다(tao `platform_impl/windows/window.rs`
+/// `force_window_active`). 사용자가 설치본에서 타이핑하는 중에 샤드 앱들이 그러면 입력이 테스트
+/// 창으로 새고 Alt 가 섞인다. 스위트는 CDP 로 입력하므로 창 활성화가 필요 없고, 웹뷰 포커스는 러너가
+/// 전경을 안 뺏는 MoveFocus 로 되돌린다(`tests/e2e/run.mjs` restoreMainWebviewFocus).
+pub(crate) fn focus_window<R: tauri::Runtime>(win: &tauri::WebviewWindow<R>) {
+    if !is_e2e_shard_instance() {
+        let _ = win.set_focus();
+    }
+}
+
 /// 모든 `WebviewWindowBuilder` 가 지나는 단일 훅 — 브라우저 인자와 유저데이터 폴더를 **한 곳에서**
 /// 맞춘다. 한 창이라도 빠뜨리면 그 창만 다른 폴더/인자를 써서 초기화에 실패한다(같은 프로세스
 /// 안에서도 그렇다). 그래서 `.additional_browser_args()` 를 직접 부르지 말고 이걸 쓴다.
@@ -265,7 +295,7 @@ async fn open_float_window(
                 },
             );
             let _ = win.show();
-            let _ = win.set_focus();
+            focus_window(&win);
             // 다음 분리에 대비해 풀을 보충한다(백그라운드 — 이번 분리 속도와 무관).
             spawn_float_pool_window(&app, url);
             return Ok(());
@@ -491,7 +521,7 @@ fn close_unless_redocking(state: &AppState, term_id: &str) {
 #[tauri::command]
 async fn open_sysmon_window(app: tauri::AppHandle, origin: String) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("sysmon") {
-        let _ = win.set_focus();
+        focus_window(&win);
         return Ok(());
     }
     let url = tauri::Url::parse(&origin).map_err(|e| format!("잘못된 origin: {e}"))?;
@@ -524,7 +554,7 @@ async fn open_sysmon_window(app: tauri::AppHandle, origin: String) -> Result<(),
 #[tauri::command]
 async fn open_aggregate_window(app: tauri::AppHandle, origin: String) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("aggregate") {
-        let _ = win.set_focus();
+        focus_window(&win);
         return Ok(());
     }
     let url = tauri::Url::parse(&origin).map_err(|e| format!("잘못된 origin: {e}"))?;
@@ -576,7 +606,7 @@ async fn open_doc_window(
     }
     let label = format!("{DOC_LABEL_PREFIX}{doc_id}");
     if let Some(win) = app.get_webview_window(&label) {
-        let _ = win.set_focus();
+        focus_window(&win);
         return Ok(());
     }
     let url = tauri::Url::parse(&origin).map_err(|e| format!("잘못된 origin: {e}"))?;
@@ -867,6 +897,18 @@ pub fn run() {
         }
     }
 
+    let context = tauri::generate_context!();
+    let has_e2e_env = ["GPV_DATA_DIR", "GPV_WEBVIEW_DIR", "GPV_E2E_CDP_PORT"]
+        .iter()
+        .any(|k| std::env::var_os(k).is_some());
+    if e2e_env_on_installed_identifier(cfg!(debug_assertions), &context.config().identifier, has_e2e_env) {
+        eprintln!(
+            "[e2e] 이 디버그 exe 는 설치본 identifier({INSTALLED_IDENTIFIER})로 빌드됐다 — 띄우면 설치본의 \
+             로그·세션·캐시를 쓴다. tests/e2e/shard.mjs 가 .dev 설정으로 다시 빌드한다(또는 npm run dev:app)."
+        );
+        std::process::exit(3);
+    }
+
     install_panic_hook();
 
     let result = tauri::Builder::default()
@@ -954,6 +996,10 @@ pub fn run() {
                 .inner_size(1440.0, 900.0)
                 .min_inner_size(1100.0, 700.0)
                 .center()
+                // 샤드 테스트 앱이라도 `.focused(false)` 로 만들지 마라 — 한 번도 활성화되지 않은 창은
+                // WebView2 내부 포커스를 영영 못 받아 Monaco 가 안 뜨고 peek·클립보드가 조용히 죽는다
+                // (2026-09-17 실측, CDP 포커스 에뮬레이션으로도 안 메워진다). 생성 시 tao 는 SW_SHOW 만
+                // 쓰고 Alt 주입(force_window_active)은 set_focus 경로에만 있다 — 그쪽은 focus_window 가 막는다.
                 // OS 기본 타이틀바 제거 — 프론트의 커스텀 TitleBar로 대체 (리사이즈는 유지)
                 .decorations(false)
                 // OS 레벨 드래그-드롭을 끈다 — Windows(WebView2)에서 이게 켜져 있으면 OS 핸들러가
@@ -1009,7 +1055,10 @@ pub fn run() {
             });
             // 원격 최신상태 배경 fetch 스케줄러 — 주기 실행에 invoke가 없다 (태스크 04 §3.1).
             fetch_scheduler::spawn(app.handle().clone());
-            register_capture_hotkey(app.handle());
+            // 샤드 테스트 앱이 Ctrl+Shift+X 를 쥐면 회차 중 재시작한 설치본이 단축키를 잃는다.
+            if !is_e2e_shard_instance() {
+                register_capture_hotkey(app.handle());
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1290,7 +1339,7 @@ pub fn run() {
         // build()가 돌려주는 Err는 예전 `.run()`이 돌려주던 Err와 동일하다(setup 실패는 build가
         // 아니라 RunEvent::Ready에서 패닉 → 전역 패닉 훅이 crash 로그에 남긴다). 따라서 아래
         // 실패 처리(append_crash_log + exit 1)는 이전과 정확히 같은 조건에서 돈다.
-        .build(tauri::generate_context!());
+        .build(context);
     match result {
         Ok(app) => app.run(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
@@ -1311,6 +1360,15 @@ pub fn run() {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn e2e_env_refused_only_on_debug_installed_identifier() {
+        assert!(e2e_env_on_installed_identifier(true, INSTALLED_IDENTIFIER, true));
+        // .dev 빌드·환경변수 없음·릴리스는 그대로 뜬다.
+        assert!(!e2e_env_on_installed_identifier(true, "com.greathoon.gitpervisor.dev", true));
+        assert!(!e2e_env_on_installed_identifier(true, INSTALLED_IDENTIFIER, false));
+        assert!(!e2e_env_on_installed_identifier(false, INSTALLED_IDENTIFIER, true));
+    }
 
     /// 종료 정리는 경로가 여럿이라(창 Destroyed / RunEvent::Exit / 업데이터 커맨드)
     /// 반드시 한 번만 돌아야 한다 — kill_all이 join으로 기다리므로 중복은 종료 지연이 된다.

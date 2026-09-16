@@ -348,7 +348,7 @@ fn show_overlay_for(app: &AppHandle, id: &str) {
     let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
     let _ = win.set_size(tauri::PhysicalSize::new(w, h));
     let _ = win.show();
-    let _ = win.set_focus();
+    crate::focus_window(&win);
 }
 
 /// 오버레이가 프레임을 못 그려도 창은 뜨게 하는 최후 보루.

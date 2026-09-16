@@ -98,6 +98,11 @@ fn parse_url(s: &str) -> Result<Url, IpcError> {
 /// (브라우저 탭·팝업 창끼리는 로그인 세션을 공유한다.) temp 폴백 금지 — 조용히 임시 프로필로
 /// 새어 세션이 증발하느니 browser_open이 에러를 반환하는 게 낫다(07 F1).
 fn browser_data_dir(app: &AppHandle) -> Result<PathBuf, IpcError> {
+    // 샤드 테스트 앱은 자기 폴더 안에 둔다(디버그 전용 GPV_WEBVIEW_DIR). 인스턴스끼리 한 프로필을
+    // 동시에 열면 CDP 포트 인자가 달라 WebView2 가 두 번째 환경을 거부한다(lib.rs webview_data_dir).
+    if let Some(dir) = crate::webview_data_dir() {
+        return Ok(dir.join("browser-session"));
+    }
     let base = app.path().app_local_data_dir().map_err(|e| {
         IpcError::new(ErrorCode::Io, format!("앱 데이터 폴더를 찾을 수 없습니다: {e}"))
     })?;
