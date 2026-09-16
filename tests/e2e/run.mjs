@@ -104,6 +104,44 @@ function readTimes() {
  * 바닥은 **가장 긴 스위트 하나**(112s)다 — 스위트는 쪼갤 수 없으므로 6샤드(153s)를 넘기면
  * 이득이 급격히 준다.
  */
+/**
+ * **머신 전역 자원을 쓰는 스위트** — 샤딩해도 서로 동시에 돌면 안 되므로 **한 샤드에 몰아넣는다.**
+ *
+ * 클립보드는 OS 에 하나뿐이다. 실측(4샤드 회차)에서 52 의 "사이드바 경로 복사" 단언이
+ * `클립="-paste-…bmp"` 로 떨어졌다 — 다른 샤드의 **이미지 복사**가 그 사이에 클립보드를 덮은
+ * 것이다. 전역 단축키(`capture` 의 Ctrl+Shift+X)와 전체화면 오버레이도 같은 성질이다.
+ *
+ * 비용은 거의 없다: 이 목록의 합이 244s 인데 4샤드의 이상적 임계경로가 229s 라 15s 차이다.
+ * 대신 **재현 불가능한 간헐**이 사라진다 — 그 거래는 언제나 남는 장사다.
+ */
+const GLOBAL_RESOURCE = [
+  "/06-", // 터미널: 클립보드 붙여넣기
+  "/13-", // 플로팅 창: 복사
+  "/30-", // 이미지 주석: 이미지 복사
+  "/31-", // 캡처: 전역 단축키 + 전체화면 오버레이 + 클립보드
+  "/37-", // 이미지 문서 영속: 복사
+  "/40-", // 이미지 편집기 셸: PNG 복사
+  "/46-", // 이미지 화살표 이동: 전역 키
+  "/52-", // 터미널 복사: 클립보드 단언 덩어리
+  "/60-", // 즐겨찾기 폴더: 경로 복사
+  "/61-", // PDF: 텍스트 복사
+];
+
+/**
+ * **앞 스위트가 만든 픽스처 상태에 기대는 사슬** — 같은 샤드에 묶는다.
+ *
+ * 샤드마다 픽스처가 따로이므로(각자 `mkdtemp`) 사슬이 갈리면 뒤쪽은 **씨앗 커밋만 있는 레포**를
+ * 보게 된다. 실측(4샤드): `push: 원격에 커밋 도달 — remote=init: seed fixture`,
+ * `get_log: 3개 이상 커밋 — 2개`, `배경 fetch 후 behind≥1 — behind=0`.
+ * 03 이 커밋을 만들고 04 가 그걸 push 하고 17 이 그 원격을 fetch 하는 구조다.
+ *
+ * **이 목록은 "지금까지 관측된 것"이지 완전하지 않다.** 샤딩에서 새 실패가 나오면 먼저
+ * "앞 스위트가 만들어 둔 것에 기대는가"를 의심하고, 맞으면 여기 사슬로 선언한다.
+ */
+const CHAINS = [
+  ["/02-", "/03-", "/04-", "/17-"], // 프로젝트 → 커밋 → push/pull → 원격 신선도
+];
+
 function pickShard(all) {
   const raw = (process.env.GPV_E2E_SHARD || "").trim();
   if (!raw) return null;
@@ -115,10 +153,31 @@ function pickShard(all) {
     throw new Error(`GPV_E2E_SHARD 범위 오류: ${raw}`);
 
   const times = readTimes();
+  const isGlobal = (p) => GLOBAL_RESOURCE.some((g) => p.includes(g));
+  const bins = Array.from({ length: total }, () => ({ sec: 0, suites: [] }));
+
+  // 전역 자원 스위트는 **무조건 1번 샤드**에 — LPT 에 맡기면 회차마다 흩어진다.
+  for (const p of all.filter(isGlobal)) {
+    bins[0].sec += times[p] ?? DEFAULT_SUITE_SEC;
+    bins[0].suites.push(p);
+  }
+  // 사슬은 **덩어리째** 가장 한가한 샤드로 — 하나라도 갈리면 뒤쪽이 씨앗 레포를 보게 된다.
+  const chained = new Set();
+  for (const chain of CHAINS) {
+    const members = all.filter((p) => chain.some((c) => p.includes(c)) && !isGlobal(p));
+    if (!members.length) continue;
+    members.forEach((p) => chained.add(p));
+    const sec = members.reduce((a, p) => a + (times[p] ?? DEFAULT_SUITE_SEC), 0);
+    const bin = bins.reduce((lo, b) => (b.sec < lo.sec ? b : lo), bins[0]);
+    bin.sec += sec;
+    bin.suites.push(...members);
+  }
+
+  // 나머지는 긴 것부터 **가장 한가한 샤드**로(1번도 후보다 — 전역 목록이 가벼우면 놀게 둘 이유가 없다).
   const weighted = all
+    .filter((p) => !isGlobal(p) && !chained.has(p))
     .map((p) => ({ p, sec: times[p] ?? DEFAULT_SUITE_SEC }))
     .sort((a, b) => b.sec - a.sec || a.p.localeCompare(b.p)); // 동점은 이름으로 — 회차마다 같아야 한다
-  const bins = Array.from({ length: total }, () => ({ sec: 0, suites: [] }));
   for (const w of weighted) {
     const bin = bins.reduce((lo, b) => (b.sec < lo.sec ? b : lo), bins[0]);
     bin.sec += w.sec;
