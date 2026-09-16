@@ -714,7 +714,8 @@ Claude Code는 둘 다 줄바꿈으로 받는다(태스크 32에서 실측). **W
 
 - **배포**: `website/public/install.sh`(`curl -fsSL https://gitpervisor.aickyway.com/install.sh | bash`).
   `curl`은 격리 속성을 붙이지 않으므로 이 경로로 설치하면 차단 창이 뜨지 않는다. `latest.json`의 `darwin-*`
-  URL(자동 업데이트가 받는 것과 같은 `.app.tar.gz`)을 설치한다. 차단 창 자체를 없애는 근본 해결은
+  URL(자동 업데이트가 받는 것과 같은 `.app.tar.gz`)을 설치한다. 사이트는 macOS 방문자에게만 이 명령을 보여준다
+  (`website/components/DownloadButtons.tsx`). 차단 창 자체를 없애는 근본 해결은
   Apple Developer ID 서명 + 공증(연 $99)이며, 아직 도입하지 않았다.
 - **이미 설치한 앱**: `xattr -dr com.apple.quarantine /Applications/Gitpervisor.app`.
 - 앱 내 자동 업데이트로 받은 번들은 격리 속성이 붙지 않아 이 문제가 없다.
@@ -722,7 +723,12 @@ Claude Code는 둘 다 줄바꿈으로 받는다(태스크 32에서 실측). **W
 ### 진단할 때의 함정
 
 - **터미널(iTerm/Claude Code 셸)에서 `open`으로 띄우면 차단이 재현되지 않는다.** 격리 속성을 붙인 무서명
-  복사본도 그냥 실행됐다(터미널의 "개발자 도구" 예외로 추정, 미확인). 차단 재현은 Finder 더블클릭으로 한다. 판정은 사용자가 실행을 시도한 시각의
+  복사본도 그냥 실행됐다(터미널의 "개발자 도구" 예외로 추정, 미확인).
+- **셸에서 차단을 재현하려면 launchd 작업으로 띄운다.** `ProgramArguments=[/usr/bin/open, <앱>]`,
+  `RunAtLoad=true`, `KeepAlive=false` plist를 `launchctl bootstrap gui/$(id -u) <plist>` → 끝나면 `bootout`.
+  Finder 더블클릭과 같은 판정을 받는다(2026-09-17 실측: 격리 속성 있는 더미 앱 → 차단 창, `main()` 미실행 /
+  curl로 받은 같은 앱 → 차단 없이 실행). 실제 앱 대신 **다른 bundle id의 더미 앱**으로 시험하라 —
+  같은 identifier로 띄우면 위의 `session.json` 공유 문제가 난다. 대조군을 띄우면 화면에 차단 창이 하나 남는다. 판정은 사용자가 실행을 시도한 시각의
   `/usr/bin/log show --predicate 'process == "CoreServicesUIAgent"'`에서 `present code-evaluation prompt`로 확인한다.
 - **zsh에 `log` 별칭이 있어 `log show`가 조용히 실패한다**(`too many arguments`). 반드시 `/usr/bin/log`.
 - **Claude Code 샌드박스에서는 `pgrep`이 실행 중인 앱을 못 찾는다.** `ps -Axo pid,comm | grep Gitpervisor`를 쓴다.
