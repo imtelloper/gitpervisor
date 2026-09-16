@@ -1,0 +1,16 @@
+* text=auto eol=lf
+
+# 워킹트리 줄바꿈을 LF로 못 박는다. 이게 없으면 Windows의 `core.autocrlf=true`가
+# **git이 파일을 만질 때마다**(checkout·stash·switch·merge) 인덱스의 LF를 CRLF로 다시 쓴다.
+# 내용은 그대로인데 파일이 바뀌므로 감시자들이 전부 깨어난다 — 특히 `src-tauri/Cargo.toml`이
+# 그렇게 바뀌면 tauri dev가 "File src-tauri\Cargo.toml changed. Rebuilding application..."으로
+# **앱을 통째로 내렸다 올린다**(실측 회차당 ~3분, 2026-09-16에 baseline 비교를 하다 두 번 겪었다).
+# vite도 같은 이유로 무의미한 HMR·풀 리로드를 돈다.
+#
+# 실측 근거(`git ls-files --eol`): 도입 시점에 추적 파일의 **316개가 이미 w/lf**, 212개가 w/crlf였다.
+# 인덱스는 전부 i/lf다. 즉 LF로 고정하는 쪽이 churn이 적고, 다수 파일은 애초에 손댈 것도 없다.
+#
+# `text=auto`가 핵심이다 — `text`만 쓰면 이미지·폰트·exe까지 텍스트로 보고 **깨뜨린다**.
+# auto면 git이 내용으로 바이너리를 판별해 건너뛴다(git 2.10+ 에서 eol과 함께 써도 판별이 살아 있다).
+# CRLF가 필요한 파일이 생기면(`.bat`·`.cmd`는 LF에서 label/goto가 깨질 수 있다) 그때 아래에
+# 예외 한 줄을 더한다 — 지금 이 저장소엔 그런 파일이 없다(스크립트는 `scripts/build-mac-dmg.sh` 뿐).
