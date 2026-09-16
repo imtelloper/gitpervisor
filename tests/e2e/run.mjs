@@ -7,13 +7,13 @@
 //   사용법:  npm run test:e2e          (앱이 'npm run tauri dev' 로 떠 있어야 함)
 //            GPV_E2E_PORT=9222 node tests/e2e/run.mjs
 //
-import { existsSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { connect } from "./lib/cdp.mjs";
 import { createReport } from "./lib/report.mjs";
-import { createFixture } from "./lib/git-fixture.mjs";
+import { createFixture, FIXTURE_SEEDS, OWNER_FILE } from "./lib/git-fixture.mjs";
 
 const SUITES = [
   "./suites/01-system.mjs",
@@ -96,25 +96,60 @@ async function takeSnapshot() {
   };
 }
 
+/** 이 픽스처를 **지금 쓰고 있는 러너가 살아 있는가.** 소유자 PID 파일(`OWNER_FILE`)로 본다.
+ *  마커가 없으면(옛 러너가 만든 픽스처) 잔여물로 본다 — 그 시절엔 마커 자체가 없었다. */
+function ownedByLiveRunner(dir) {
+  let pid;
+  try {
+    pid = Number(readFileSync(join(dir, OWNER_FILE), "utf8").trim());
+  } catch {
+    return false; // 마커 없음 = 옛 픽스처 = 잔여물
+  }
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0); // 신호 0 = 존재 확인만
+    return true;
+  } catch (e) {
+    // EPERM 은 "있는데 못 건드린다" — 살아 있다는 뜻이다. ESRCH 만 죽은 것.
+    return e.code === "EPERM";
+  }
+}
+
 /**
- * 이전 러너가 남긴 픽스처 디렉토리(%TEMP%\gpv-e2e-*) 정리 — 새 픽스처를 만들기 **전에** 부르므로
- * 그 시점의 gpv-e2e-* 는 전부 잔여물이다. 앱(파일 워처·LSP)이 잡고 있으면 EPERM 이 나는데,
- * 그건 이번 실행의 문제가 아니므로 로그만 남기고 진행한다(best-effort).
+ * 이전 러너가 남긴 픽스처 디렉토리(%TEMP%\gpv-e2e-*) 정리. 앱(파일 워처·LSP)이 잡고 있으면
+ * EPERM 이 나는데, 그건 이번 실행의 문제가 아니므로 로그만 남기고 진행한다(best-effort).
+ *
+ * **"그 시점의 gpv-e2e-* 는 전부 잔여물"이 아니다.** 예전 주석이 그렇게 단정했는데, 러너가
+ * 두 개 돌면 거짓이다 — 뒤에 시작한 쪽이 앞 러너의 **살아 있는 픽스처를 통째로 지운다.**
+ * 그러면 파일만 사라지고 디렉터리는 열린 핸들 때문에 남아, 앞 러너는 `ENOENT: ...\repo\src\app.txt`
+ * 나 빈 파일 트리로 뒤늦게 죽는다. 원인이 자기 로그 어디에도 없어서 추적이 거의 불가능하다.
+ * 2026-09-16 회차의 실패 8건이 이 모양이었다(넷 다 격리 실행하면 통과).
+ *
+ * 그래서 **소유자 PID 가 살아 있는 픽스처는 건너뛴다.** 이건 위생 문제만이 아니라
+ * **샤딩(여러 러너 동시 실행)의 전제 조건**이다 — 이게 없으면 샤드끼리 서로를 지운다.
  */
 function purgeStaleFixtures() {
   const tmp = tmpdir();
   let removed = 0;
   let kept = 0;
+  let live = 0;
   for (const entry of readdirSync(tmp).filter((n) => n.startsWith("gpv-e2e-"))) {
+    const dir = join(tmp, entry);
+    if (ownedByLiveRunner(dir)) {
+      live++;
+      console.log(`  다른 러너가 쓰는 중 — 건너뜀: ${entry}`);
+      continue;
+    }
     try {
-      rmSync(join(tmp, entry), { recursive: true, force: true, maxRetries: 5 });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
       removed++;
     } catch (e) {
       kept++;
       console.log(`  잔여 픽스처 삭제 실패(무시): ${entry} — ${e.code || e.message}`);
     }
   }
-  if (removed || kept) console.log(`  잔여 픽스처 정리: ${removed}개 삭제, ${kept}개 남김`);
+  if (removed || kept || live)
+    console.log(`  잔여 픽스처 정리: ${removed}개 삭제, ${kept}개 남김, ${live}개 사용중(건너뜀)`);
 }
 
 /**
@@ -227,6 +262,39 @@ async function main() {
   // 이전 러너 잔여 픽스처 정리 — 새 픽스처를 만들기 전에(그래야 "현재 것 제외"가 자명하다).
   purgeStaleFixtures();
 
+  /**
+   * 스위트 하나가 끝날 때마다 **픽스처 시드 파일이 아직 있는지** 본다.
+   *
+   * 왜: 모든 스위트가 픽스처 하나를 공유하므로, 한 스위트가 시드 파일을 지우면 그 뒤 스위트들이
+   * 줄줄이 죽는다. 그런데 러너는 **죽은 쪽만** 보여 주므로 원인이 보이지 않는다 — 2026-09-16
+   * 회차에서 실패 8건이 났는데(44·45·50·51), 넷 다 격리 실행하면 76/0 으로 멀쩡했다.
+   * `src/app.txt` 가 회차 도중 사라진 것이 진짜 사건이었고, **누가 지웠는지는 로그에 없었다.**
+   * 여기서 직전 스위트 이름과 함께 빨갛게 찍으면 그 연쇄가 다음부터 한 줄로 끝난다.
+   *
+   * 확인 뒤 **복원한다.** 안 하면 첫 범인만 보이고 그 뒤 범인은 연쇄에 묻혀 영영 안 보인다
+   * (그리고 남은 스위트 수십 개가 무의미해진다). 복원은 시드 내용 그대로다 — 원본 출처는
+   * `FIXTURE_SEEDS` 하나라 검사와 생성이 어긋날 수 없다.
+   */
+  function checkFixture(afterSuite) {
+    const missing = Object.keys(FIXTURE_SEEDS).filter(
+      (rel) => !existsSync(join(fix.repo, ...rel.split("/"))),
+    );
+    if (!missing.length) return;
+    report.check(
+      "픽스처 불변식: 시드 파일이 남아 있다",
+      false,
+      `사라짐=[${missing.join(", ")}] · 직전 스위트="${afterSuite}" — 이 스위트가 지웠다(복원하고 계속)`,
+    );
+    for (const rel of missing) {
+      try {
+        mkdirSync(dirname(join(fix.repo, ...rel.split("/"))), { recursive: true });
+        writeFileSync(join(fix.repo, ...rel.split("/")), FIXTURE_SEEDS[rel]);
+      } catch (e) {
+        report.check("픽스처 복원", false, `${rel}: ${e.message}`);
+      }
+    }
+  }
+
   fix = createFixture();
   const project = await cdp.invoke("add_project", { path: fix.repo }, { timeoutMs: 30000 });
   fix.projectId = project.id;
@@ -251,6 +319,7 @@ async function main() {
     } catch (e) {
       report.check("(스위트 실행 중 예외)", false, e.message);
     }
+    checkFixture(mod.name || path);
   }
 }
 

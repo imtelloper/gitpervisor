@@ -48,8 +48,25 @@ export function createMinimalRepo() {
   };
 }
 
+/** 시드 파일 — **생성과 무결성 검사·복원이 같은 출처를 쓴다.** 두 벌로 두면 한쪽만 바뀌어
+ *  검사가 조용히 무력해진다(그러면 "픽스처가 멀쩡하다"는 초록이 아무것도 보장하지 않는다).
+ *  전부 최초 커밋에 들어가는 **추적 파일**이라, 사라졌다면 `git clean` 류가 아니라 누군가
+ *  능동적으로 지운 것이다. */
+export const FIXTURE_SEEDS = {
+  "README.md": "# gitpervisor e2e fixture\n",
+  "src/app.txt": "line1\nline2\nline3\n",
+  ".gitignore": "ignored.txt\n",
+};
+
+/** 이 픽스처를 쓰고 있는 러너의 PID 를 적어 두는 파일 — **레포 밖**(root 바로 아래)에 둔다.
+ *  `repo/` 안에 두면 git 픽스처에 낯선 파일이 섞여 status·트리 단언이 흔들린다. */
+export const OWNER_FILE = ".gpv-owner";
+
 export function createFixture() {
   const root = mkdtempSync(join(tmpdir(), "gpv-e2e-"));
+  // 동시에 도는 다른 러너가 이 픽스처를 "잔여물"로 보고 지우지 못하게 소유자를 남긴다
+  // (run.mjs `purgeStaleFixtures` 주석 참조).
+  writeFileSync(join(root, OWNER_FILE), String(process.pid));
   const repo = join(root, "repo");
   const remote = join(root, "remote.git");
   mkdirSync(repo);
@@ -57,10 +74,9 @@ export function createFixture() {
   // 시드 레포: 초기 커밋 1개 + 추적 파일(수정/디프/discard 테스트용) + 원격 연결(아직 push 안 함)
   git(repo, ["init", "-b", "main"]);
   configRepo(repo);
-  writeFileSync(join(repo, "README.md"), "# gitpervisor e2e fixture\n");
   mkdirSync(join(repo, "src"));
-  writeFileSync(join(repo, "src", "app.txt"), "line1\nline2\nline3\n");
-  writeFileSync(join(repo, ".gitignore"), "ignored.txt\n");
+  for (const [rel, body] of Object.entries(FIXTURE_SEEDS))
+    writeFileSync(join(repo, ...rel.split("/")), body);
   git(repo, ["add", "-A"]);
   git(repo, ["commit", "-m", "init: seed fixture"]);
 
