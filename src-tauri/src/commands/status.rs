@@ -165,25 +165,35 @@ async fn status_of(project_id: &str, path: &Path) -> RepoStatus {
     status
 }
 
+/// `.git` 의 실제 위치 — **git 프로세스를 띄우지 않고** 규약으로만 푼다.
+///
+/// 규약(git 문서 gitrepository-layout): `<repo>/.git` 이 디렉터리면 그게 git dir 이고,
+/// 파일이면 첫 줄이 `gitdir: <경로>`(워크트리·서브모듈)다. 경로는 절대일 수도, repo 기준
+/// 상대일 수도 있다. 둘 다 아니면(레포가 아니거나 읽기 실패) None.
+async fn resolve_git_dir(repo: &Path) -> Option<PathBuf> {
+    let dot = repo.join(".git");
+    let meta = tokio::fs::metadata(&dot).await.ok()?;
+    if meta.is_dir() {
+        return Some(dot);
+    }
+    let text = tokio::fs::read_to_string(&dot).await.ok()?;
+    let rest = text.lines().next()?.strip_prefix("gitdir:")?.trim();
+    if rest.is_empty() {
+        return None;
+    }
+    let p = PathBuf::from(rest);
+    Some(if p.is_relative() { repo.join(p) } else { p })
+}
+
 /// merge/rebase/cherry-pick/bisect 진행 중인지 .git 디렉토리 마커 파일로 감지.
+///
+/// **git 을 띄우지 않는다.** 예전엔 `rev-parse --git-dir` 로 물었는데, 레포마다 도는 바람에
+/// status 배치의 프로세스 수가 두 배였다(위 주석의 21개 22.5초 실측에서 지목된 그 절반).
+/// 어차피 그 답으로 하는 일은 마커 **파일 존재 확인**뿐이라 `.git` 위치만 알면 된다.
 async fn detect_op_state(repo: &Path) -> RepoOpState {
-    let Ok(out) = runner::run_git(
-        Some(repo),
-        &["rev-parse", "--git-dir"],
-        runner::READ_TIMEOUT_SECS,
-    )
-    .await
-    else {
+    let Some(git_dir) = resolve_git_dir(repo).await else {
         return RepoOpState::Normal;
     };
-    if out.code != 0 {
-        return RepoOpState::Normal;
-    }
-
-    let mut git_dir = PathBuf::from(out.stdout_str().trim());
-    if git_dir.is_relative() {
-        git_dir = repo.join(git_dir);
-    }
 
     if git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists() {
         RepoOpState::Rebasing
@@ -252,5 +262,59 @@ mod tests {
             nested.untracked.iter().any(|c| c.path == "inner.txt"),
             "임베디드 저장소의 새 파일은 그 저장소 untracked로 잡힌다"
         );
+    }
+
+    /// `rev-parse --git-dir` 을 없앤 자리 — 세 모양(디렉터리·상대 gitdir·절대 gitdir)과
+    /// "레포가 아님"을 규약만으로 가려야 한다. 틀리면 병합/리베이스 배지가 조용히 안 뜬다.
+    #[tokio::test]
+    async fn resolve_git_dir_handles_dir_file_and_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // ① 보통 레포 — .git 이 디렉터리
+        let plain = tmp.path().join("plain");
+        std::fs::create_dir_all(plain.join(".git")).unwrap();
+        assert_eq!(resolve_git_dir(&plain).await, Some(plain.join(".git")));
+
+        // ② 워크트리·서브모듈 — .git 이 `gitdir: <상대경로>` 파일
+        let wt = tmp.path().join("wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt.join(".git"), "gitdir: ../real/.git/worktrees/wt\n").unwrap();
+        assert_eq!(
+            resolve_git_dir(&wt).await,
+            Some(wt.join("../real/.git/worktrees/wt")),
+            "상대 gitdir 은 repo 기준으로 붙인다"
+        );
+
+        // ③ 절대 경로 gitdir
+        let abs_target = tmp.path().join("elsewhere");
+        let abs = tmp.path().join("abs");
+        std::fs::create_dir_all(&abs).unwrap();
+        std::fs::write(abs.join(".git"), format!("gitdir: {}\n", abs_target.display())).unwrap();
+        assert_eq!(resolve_git_dir(&abs).await, Some(abs_target));
+
+        // ④ 레포가 아니다 / 내용이 이상하다 → None(호출부는 Normal 로 떨어진다)
+        let bare = tmp.path().join("bare");
+        std::fs::create_dir_all(&bare).unwrap();
+        assert_eq!(resolve_git_dir(&bare).await, None);
+        std::fs::write(bare.join(".git"), "쓰레기\n").unwrap();
+        assert_eq!(resolve_git_dir(&bare).await, None);
+        std::fs::write(bare.join(".git"), "gitdir:   \n").unwrap();
+        assert_eq!(resolve_git_dir(&bare).await, None, "빈 gitdir 은 거절");
+    }
+
+    /// 실제 레포에서 rebase 마커를 직접 만들어, git 없이도 op_state 가 잡히는지 본다.
+    #[tokio::test]
+    async fn detect_op_state_reads_markers_without_git() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        init(root).await;
+        assert_eq!(detect_op_state(root).await, RepoOpState::Normal);
+
+        std::fs::create_dir_all(root.join(".git").join("rebase-merge")).unwrap();
+        assert_eq!(detect_op_state(root).await, RepoOpState::Rebasing);
+        std::fs::remove_dir_all(root.join(".git").join("rebase-merge")).unwrap();
+
+        std::fs::write(root.join(".git").join("MERGE_HEAD"), "x").unwrap();
+        assert_eq!(detect_op_state(root).await, RepoOpState::Merging);
     }
 }

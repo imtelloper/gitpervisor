@@ -1,9 +1,11 @@
 import {
   readText,
+  writeImage,
   writeText,
 } from "@tauri-apps/plugin-clipboard-manager";
 import { warn } from "@tauri-apps/plugin-log";
 
+import { useUi } from "../stores/ui";
 import { isMac, isWindows } from "./platform";
 
 // 네이티브 클립보드(arboard, Rust)를 거쳐 텍스트를 읽고 쓴다.
@@ -31,16 +33,34 @@ let lastFailure = "";
  *  죽은 것으로 표시돼도 **매번 1회는 시도한다** — 복구(디스플레이 연결 등)를 놓치지 않는다. */
 let pluginDead = false;
 
-/** DEV 전용 실패 주입(e2e 52) — `__gpvClipboard.fail(["plugin","navigator","exec"])`. */
+/** DEV 전용 실패 주입(e2e 52) — `__gpvClipboard.fail(["plugin","navigator","exec","verify"])`.
+ *  `"verify"`는 execCommand 단계만 **거짓 성공**으로 만든다(아래 주석 참조). */
 const forced = new Set<string>();
 
 const NON_ASCII = /[^\x20-\x7E\t\r\n]/;
+
+const PLAT = isWindows ? "win" : isMac ? "mac" : "linux";
+
+/** 복사 상한 — **자르지 않는다**(A-K7). 넘으면 로그만 남기고 그대로 시도한다: 잘라 넣는 건
+ *  데이터 손실이고, 이 상한은 "정말 큰 복사가 실패하는가"를 나중에 근거로 좁히기 위한 관측용이다. */
+const BIG_TEXT = 5_000_000;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function short(e: unknown): string {
   const s = e instanceof Error ? e.message : String(e);
   return s.length > 120 ? `${s.slice(0, 120)}…` : s;
+}
+
+/** 실패를 사람 말로 옮겨 `lastFailure`에 넣고 로그를 남긴다 — 텍스트·이미지 공통. */
+function noteFailure(detail: string, what: string): void {
+  // Windows 경합은 사람 말로 옮긴다 — capture.rs가 쓰는 것과 같은 문장.
+  lastFailure =
+    isWindows && /open|another|held|busy|access/i.test(detail)
+      ? "다른 프로그램이 클립보드를 쓰고 있습니다 — 다시 시도하세요"
+      : detail || "알 수 없는 오류";
+  // 로그 파일에 남긴다 — 다음번 "어떤 PC에서는 안 된다"를 추측이 아니라 근거로 좁힌다.
+  void warn(`[clipboard] ${what}: ${detail}`).catch(() => {});
 }
 
 /** 화면 밖 textarea + `execCommand("copy")` — 마지막 그물. WebView2·WebKitGTK 모두 지원한다.
@@ -71,6 +91,11 @@ function execCommandCopy(text: string): boolean {
  *  수정이 이미 네이티브 copy를 없앤 경로에선 같은 값의 무해한 중복 쓰기일 뿐. */
 export async function copyText(text: string): Promise<boolean> {
   const errors: string[] = [];
+  if (text.length > BIG_TEXT) {
+    void warn(`[clipboard] 큰 복사 (${PLAT}, ${text.length}자) — 자르지 않고 시도`).catch(
+      () => {},
+    );
+  }
 
   // ① 네이티브 플러그인(arboard) — 경합 재시도. 곡선은 capture.rs의 이미지 복사와 같다.
   const tries = pluginDead ? 1 : 6;
@@ -103,7 +128,11 @@ export async function copyText(text: string): Promise<boolean> {
     }
     try {
       if (forced.has("exec")) throw new Error("forced(exec)");
-      if (!execCommandCopy(text)) throw new Error("execCommand가 false를 반환했습니다");
+      // `"verify"` 주입은 **쓰지 않고 true 만 받은** 상태를 만든다 — 아래 되읽기가 그 거짓 성공을
+      // 실제로 잡는지 보려는 것이라, 되읽은 값을 가짜로 바꾸면 검증 경로가 아니라 주입을 테스트하게 된다.
+      if (!forced.has("verify") && !execCommandCopy(text)) {
+        throw new Error("execCommand가 false를 반환했습니다");
+      }
       // **`execCommand` 의 true 는 "명령을 보냈다"이지 "클립보드에 들어갔다"가 아니다.**
       // 2026-09-10 이 머신에서 실측: OS 클립보드가 통째로 고장 나 앞의 두 단계가 각각
       // "held by another party"(arboard)와 "Document is not focused"(웹뷰)로 정직하게 던졌는데,
@@ -132,17 +161,30 @@ export async function copyText(text: string): Promise<boolean> {
     errors.push("webview: macOS 비-ASCII는 인코딩이 깨져 건너뜀");
   }
 
-  const detail = errors.join(" | ");
-  // Windows 경합은 사람 말로 옮긴다 — capture.rs가 쓰는 것과 같은 문장.
-  lastFailure =
-    isWindows && /open|another|held|busy|access/i.test(detail)
-      ? "다른 프로그램이 클립보드를 쓰고 있습니다 — 다시 시도하세요"
-      : detail || "알 수 없는 오류";
-  const plat = isWindows ? "win" : isMac ? "mac" : "linux";
-  // 로그 파일에 남긴다 — 다음번 "어떤 PC에서는 안 된다"를 추측이 아니라 근거로 좁힌다.
-  void warn(`[clipboard] 복사 실패 (${plat}, ${text.length}자): ${detail}`).catch(
-    () => {},
-  );
+  noteFailure(errors.join(" | "), `복사 실패 (${PLAT}, ${text.length}자)`);
+  return false;
+}
+
+/** 이미지(PNG 바이트)를 클립보드에 쓴다 — 텍스트와 같은 "문"(A-K3).
+ *
+ *  경로는 네이티브 플러그인 하나뿐이다(웹뷰에는 대응 폴백이 없다 — `navigator.clipboard.write`는
+ *  WebView2/WebKitGTK에서 사용자 제스처·권한 제약이 제각각이라 더 조용히 실패한다). 대신 Windows
+ *  클립보드 경합에 맞서 **capture.rs와 같은 8회 백오프(40~110ms)** 를 쓴다: Rust 화면 캡처가
+ *  이미 같은 함정을 겪고 그 곡선으로 고쳤다(capture.rs "첫 시도가 그대로 깨졌다"). */
+export async function copyImage(bytes: Uint8Array): Promise<boolean> {
+  let last = "";
+  for (let i = 0; i < 8; i++) {
+    if (i) await sleep(40 + i * 10);
+    try {
+      if (forced.has("plugin")) throw new Error("forced(plugin)");
+      await writeImage(bytes);
+      lastFailure = "";
+      return true;
+    } catch (e) {
+      last = short(e);
+    }
+  }
+  noteFailure(last, `이미지 복사 실패 (${PLAT}, ${bytes.length}B, 8회 재시도)`);
   return false;
 }
 
@@ -154,6 +196,24 @@ export function lastCopyFailure(): string {
 /** 실패 토스트 문구 — 복사 호출부 전부가 같은 문장을 쓰게 한다. */
 export function copyFailMessage(): string {
   return `복사에 실패했습니다 — ${lastCopyFailure()}`;
+}
+
+/** 복사 + 토스트 — 메뉴에서 텍스트를 복사하는 **모든** 호출부가 지나는 한 문(A-K1).
+ *
+ *  각 호출부가 자기 토스트를 들고 있으면 실패 문구가 여섯 벌로 갈리고(실제로 "복사에 실패했습니다"
+ *  고정 문구 6개였다 — 사유 없음·재시도 없음·폴백 없음), 무엇보다 `copyText`의 계층 폴백을 지나지
+ *  않는다. 실패 토스트에는 **[다시 시도]** 를 단다(A-K6): 잠금 해제 뒤 자동 재시도는 사용자가
+ *  원치 않는 시점에 클립보드를 덮을 수 있어 사람이 누르게 한다. */
+export function copyWithToast(text: string, okMsg = "복사했습니다"): void {
+  const pushToast = useUi.getState().pushToast;
+  void copyText(text).then((ok) => {
+    if (ok) pushToast("success", okMsg);
+    else
+      pushToast("error", copyFailMessage(), {
+        label: "다시 시도",
+        run: () => copyWithToast(text, okMsg),
+      });
+  });
 }
 
 if (import.meta.env.DEV) {

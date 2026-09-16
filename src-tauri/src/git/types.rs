@@ -113,6 +113,15 @@ pub struct FileDiff {
     pub new_content: Option<String>,
     pub is_binary: bool,
     pub too_large: bool,
+    /// 이 내용을 **무엇으로 읽었는지**(encoding_rs 정규 이름: "UTF-8" / "EUC-KR" / "UTF-16LE" …).
+    /// 저장할 때 그대로 되돌려 보내야 원본 인코딩이 유지된다(설계 B-K1·B-K3). 이 필드가
+    /// 왕복하지 않으면 CP949 파일이 저장 한 번에 UTF-8 로 통째 변환된다(동의 없는 파일 변경).
+    pub encoding: String,
+    /// 원본에 BOM 이 있었다(텍스트에는 포함돼 있지 않다) — 저장 시 다시 붙인다.
+    pub bom: bool,
+    /// 어떤 인코딩으로도 깨끗이 읽지 못했다(치환 문자 발생). 프론트는 **읽기 전용**으로 연다 —
+    /// 이 상태로 저장하면 읽으면서 잃은 바이트가 그대로 디스크에 박힌다.
+    pub lossy: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

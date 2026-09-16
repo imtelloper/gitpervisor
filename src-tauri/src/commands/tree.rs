@@ -13,6 +13,7 @@ use crate::error::{ErrorCode, IpcError};
 use crate::git::runner;
 use crate::git::types::DirEntry;
 use crate::state::AppState;
+use crate::text::encoding::{self, EncodeError};
 
 /// 프로젝트 내 한 디렉토리의 항목을 나열한다 (지연 로딩 — 폴더 펼칠 때 한 단계씩).
 /// `rel_path`는 레포 루트 기준 상대 경로(빈 문자열이면 루트).
@@ -66,12 +67,19 @@ pub async fn list_dirs(
 
 /// Viewer 편집 저장 — 텍스트 파일 내용을 디스크에 쓴다. `rel_path`는 레포 루트 기준 상대 경로.
 /// 경로 탈출(절대경로·`..`·`.git`)을 막고, 새 디렉토리는 만들지 않는다(기존 파일 편집 전제).
+///
+/// `encoding`·`bom` 은 **열 때 받은 값을 그대로 되돌려 받은 것**이다(FileDiff 왕복, 설계 B-K3).
+/// 생략하면 UTF-8 로 쓴다 — 기존 동작과 바이트 단위로 같다. 그 인코딩으로 표현할 수 없는
+/// 문자가 있으면 `UNMAPPABLE` 로 거절하고 **파일은 손대지 않는다**(B-K4) — 프론트가
+/// "UTF-8 로 저장 / 취소"를 묻는다. 조용히 `?` 로 뭉개는 것이 이 함수의 금지 사항이다.
 #[tauri::command]
 pub async fn write_file(
     state: State<'_, AppState>,
     project_id: String,
     rel_path: String,
     content: String,
+    encoding: Option<String>,
+    bom: Option<bool>,
 ) -> Result<(), IpcError> {
     let repo = project_path(&state, &project_id)?;
     // 상위 디렉토리를 정규화해 레포 안임을 보장(루트/드라이브 상대·정션 탈출 차단). 새 트리는 안 만든다.
@@ -85,7 +93,22 @@ pub async fn write_file(
             return Err(IpcError::new(ErrorCode::Io, "디렉토리에는 쓸 수 없습니다"));
         }
     }
-    tokio::fs::write(&target, content).await.map_err(write_io_err)
+    // 바이트를 **먼저 다 만든 뒤** 쓴다 — 인코딩 실패가 반쯤 쓰인 파일을 남기지 않게.
+    let bytes = match encoding.as_deref().filter(|e| !e.is_empty()) {
+        None => content.into_bytes(),
+        Some(label) => encoding::encode(&content, label, bom.unwrap_or(false)).map_err(|e| {
+            match e {
+                EncodeError::Unmappable(chars) => IpcError::new(
+                    ErrorCode::Unmappable,
+                    format!("{label} 인코딩으로 표현할 수 없는 문자가 있습니다: {chars}"),
+                ),
+                EncodeError::Unknown => {
+                    IpcError::new(ErrorCode::Io, format!("알 수 없는 인코딩입니다: {label}"))
+                }
+            }
+        })?,
+    };
+    tokio::fs::write(&target, bytes).await.map_err(write_io_err)
 }
 
 /// 파일 쓰기 io 오류 → 사용자가 **다음 행동을 알 수 있는** IpcError.
@@ -969,7 +992,9 @@ pub async fn find_definition(
         Ok(o) => o,
         Err(_) => return Ok(Vec::new()),
     };
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    // 줄마다 디코드한다(B-K7) — grep 출력은 여러 파일의 줄이 섞인 스트림이라 통째 판정은
+    // 한 CP949 파일 때문에 나머지 전부를 깨뜨린다. UTF-8 줄의 결과는 종전과 동일하다.
+    let stdout = encoding::decode_lines(&out.stdout);
 
     let mut matches: Vec<DefMatch> = Vec::new();
     let mut weak: Vec<DefMatch> = Vec::new(); // 대입문 매치 — 정의문(def/class 등)보다 후순위
@@ -1095,7 +1120,7 @@ pub async fn find_symbols(
         Ok(o) => o,
         Err(_) => return Ok(Vec::new()),
     };
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stdout = encoding::decode_lines(&out.stdout); // 줄 단위 디코드(B-K7)
 
     let q_lower = query.to_lowercase();
     let hint = ext_hint.as_deref().unwrap_or("").to_lowercase();
@@ -1177,9 +1202,13 @@ pub async fn find_symbols(
     let results: Vec<SymbolMatch> = raws
         .into_iter()
         .map(|r| {
-            let content = contents
-                .entry(r.path.clone())
-                .or_insert_with(|| std::fs::read_to_string(repo.join(&r.path)).unwrap_or_default());
+            // read_to_string 이 아니라 decode — 비-UTF8 파일은 그쪽에서 **통째로 빈 문자열**이
+            // 돼(시그니처가 사라진다) 검색은 되는데 미리보기만 없는 이상 상태가 됐다(B-K7).
+            let content = contents.entry(r.path.clone()).or_insert_with(|| {
+                std::fs::read(repo.join(&r.path))
+                    .map(|b| encoding::decode(&b).text)
+                    .unwrap_or_default()
+            });
             let signature = sig_from_content(content, r.line, &r.name);
             SymbolMatch {
                 name: r.name,
@@ -1328,7 +1357,7 @@ pub async fn find_references(
             })
         }
     };
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stdout = encoding::decode_lines(&out.stdout); // 줄 단위 디코드(B-K7)
     let mut matches: Vec<RefMatch> = Vec::new();
     let mut files: HashSet<String> = HashSet::new();
     let mut truncated = false;
@@ -1511,8 +1540,10 @@ fn extract_sig_doc(
     line_no: u32,
     fallback: &str,
 ) -> (String, Option<String>) {
-    let content = match std::fs::read_to_string(repo.join(rel)) {
-        Ok(c) => c,
+    // decode 를 쓰는 이유는 find_symbols 쪽(B-K7)과 같다 — read_to_string 은 비-UTF8 파일에서
+    // Err 이라 시그니처·독스트링이 통째로 사라졌다.
+    let content = match std::fs::read(repo.join(rel)) {
+        Ok(b) => encoding::decode(&b).text,
         Err(_) => return (fallback.trim().to_string(), None),
     };
     let lines: Vec<&str> = content.lines().collect();

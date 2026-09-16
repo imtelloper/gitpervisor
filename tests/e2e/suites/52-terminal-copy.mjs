@@ -45,6 +45,43 @@ const MENU = `document.querySelector('div.fixed.z-50.min-w-52')`;
 const VIS_XTERM = `Array.from(document.querySelectorAll('.xterm')).find((e) => e.getBoundingClientRect().width > 0)`;
 
 export async function run({ cdp, report: r, fix }) {
+  // ── ⓪ 구조 게이트 — 클립보드 쓰기의 문은 `src/lib/clipboard.ts` 하나다 ────────────────────
+  // 계층 폴백(플러그인→웹뷰→execCommand + 재시도 + 되읽기)이 있었는데도 호출부 6곳이 그 문을
+  // 안 지나고 플러그인을 직접 불러(재시도 0·폴백 0·사유 0) Windows 경합·Linux 영구 실패가 거기서만
+  // 살아 있었다. 사람이 지키는 규칙은 다음 기능에서 또 새므로 **소스를 직접 훑어** 막는다.
+  // (ESLint 를 새로 들이는 대신 이 8줄로 끝낸다 — 이 저장소엔 린트 설정도 CI 단계도 없다.)
+  {
+    const { readdirSync, readFileSync } = await import("node:fs");
+    const { join, relative } = await import("node:path");
+    const { fileURLToPath } = await import("node:url");
+    const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
+    const SRC = join(ROOT, "src");
+    const GATE = join("src", "lib", "clipboard.ts");
+    const bad = [];
+    const walk = (dir) => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (/\.(ts|tsx)$/.test(e.name)) {
+          const rel = relative(ROOT, p);
+          if (rel === GATE) continue;
+          const src = readFileSync(p, "utf8");
+          if (/from\s+["']@tauri-apps\/plugin-clipboard-manager["']/.test(src)) bad.push(rel);
+        }
+      }
+    };
+    walk(SRC);
+    // 반증: 같은 훑기가 그 문 자체에서는 import 를 **찾는다**(정규식·경로가 살아 있다는 증거).
+    const gateHas = /from\s+["']@tauri-apps\/plugin-clipboard-manager["']/.test(
+      readFileSync(join(ROOT, GATE), "utf8"),
+    );
+    r.check(
+      "클립보드 플러그인 직접 import 0건(src/lib/clipboard.ts 만 예외) · 반증: 그 파일에서는 찾는다",
+      bad.length === 0 && gateHas,
+      `위반=${JSON.stringify(bad)} 게이트파일=${gateHas}`,
+    );
+  }
+
   const poll = async (fn, ok, tries = 20, ms = 250) => {
     let v;
     for (let i = 0; i < tries; i++) {
@@ -357,6 +394,184 @@ export async function run({ cdp, report: r, fix }) {
     );
     await setFail([]);
     await closeMenu();
+
+    // ── ⑨ 터미널 **밖** 복사 호출부도 같은 문을 지난다 (A-K1) ──
+    // 계층 폴백은 태스크 65가 만들어 뒀는데, **13곳 중 6곳이 그 문을 안 지났다**(커밋 해시·경로·
+    // 파일명·PID 복사 — `plugin-clipboard-manager.writeText` 직접 호출, 재시도 0 · 폴백 0 · 사유 0).
+    // 여섯이 한 헬퍼(`copyWithToast`)로 모였는지를 **사이드바 [프로젝트 경로 복사]** 로 증명한다.
+    //
+    // **주입 없이 성공하는 것은 증거가 아니다** — 직접 호출도 평소엔 성공한다. 플러그인을 죽인
+    // 상태에서 성공해야 계층 폴백을 탄 것이다(④가 터미널에 대해 하는 일과 같은 논리).
+    const SIDE_ITEM = "프로젝트 경로 복사";
+    const rightClickProject = () =>
+      cdp.eval(`(()=>{
+        const el = document.querySelector('[data-project-id=${J(fix.projectId)}]');
+        if (!el) return false;
+        const rc = el.getBoundingClientRect();
+        el.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,clientX:rc.left+20,clientY:rc.top+8}));
+        return true;
+      })()`);
+    /** 사이드바 메뉴에서 그 항목을 찾아 누른다. 터미널 메뉴(`min-w-52`)와 껍데기가 달라
+     *  (`min-w-44`) 선택자가 겹치지 않지만, 라벨로 찾으므로 어느 쪽이든 정확하다. */
+    const clickSideItem = () =>
+      cdp.eval(`(()=>{
+        const b = Array.from(document.querySelectorAll('div.fixed.z-50 button'))
+          .find(el => (((el.querySelector('span.min-w-0') || el).textContent) || '').trim() === ${J(SIDE_ITEM)});
+        if (b) { b.click(); return true; }
+        return false;
+      })()`);
+    const openAndClickSide = async () => {
+      for (let i = 0; i < 3; i++) {
+        await closeMenu();
+        if ((await rightClickProject()) !== true) return false;
+        const ok = await poll(
+          () =>
+            cdp.eval(
+              `Array.from(document.querySelectorAll('div.fixed.z-50 button')).some(el => (((el.querySelector('span.min-w-0') || el).textContent) || '').trim() === ${J(SIDE_ITEM)})`,
+            ),
+          (v) => v === true,
+          8,
+          150,
+        );
+        if (ok === true && (await clickSideItem()) === true) return true;
+      }
+      return false;
+    };
+    const projPath = await cdp.eval(
+      `(window.__gpv.queryClient.getQueryData(["projects"]) || []).find(p => p.id === ${J(fix.projectId)})?.path ?? ""`,
+    );
+
+    const sent9 = `${SENTINEL}-9`;
+    const primed9 = await primeClipboard(sent9);
+    await setFail(["plugin"]);
+    const sideClicked = await openAndClickSide();
+    const clip9 = str(
+      await poll(
+        clipboard,
+        (v) => str(v).length > 0 && !str(v).includes(sent9),
+        14,
+        250,
+      ),
+    );
+    r.check(
+      "터미널 밖 복사(사이드바 [프로젝트 경로 복사])도 계층 폴백을 지난다 — 플러그인 강제 실패 상태에서 성공",
+      sideClicked === true &&
+        primed9 === true &&
+        typeof projPath === "string" &&
+        projPath.length > 0 &&
+        clip9 === projPath,
+      `클릭=${sideClicked} 기준선=${primed9} 경로=${J(String(projPath).slice(-30))} 클립=${J(clip9.slice(-30))}`,
+    );
+
+    // ── ⑩ 같은 호출부: 세 단계 모두 실패 → 클립보드 불변 · 사유 토스트 · [다시 시도] ──
+    // 예전엔 사유 없는 고정 문구("복사에 실패했습니다") 여섯 벌이었다. 이제 `copyFailMessage()`
+    // 한 벌을 쓰고, 잠금·경합이면 사람이 직접 누르는 [다시 시도]가 붙는다(A-K6 — 자동 재시도는
+    // 사용자가 원치 않는 시점에 클립보드를 덮는다).
+    await cdp.eval(
+      `window.__gpv.ui.getState().toasts.slice().forEach(t => window.__gpv.ui.getState().dismissToast(t.id))`,
+    );
+    const sent10 = `${SENTINEL}-10`;
+    const primed10 = await primeClipboard(sent10);
+    await setFail(["plugin", "navigator", "exec"]);
+    const sideClicked2 = await openAndClickSide();
+    const toast10 = await poll(
+      () =>
+        cdp.eval(
+          `(()=>{ const t = window.__gpv.ui.getState().toasts.find(t => t.kind === 'error' && /복사에 실패/.test(t.message));
+            return t ? { msg: t.message, action: t.action ? t.action.label : null } : null; })()`,
+        ),
+      (v) => !!(v && v.msg),
+      14,
+      250,
+    );
+    const clip10 = str(await clipboard());
+    r.check(
+      "터미널 밖 복사: 모든 경로 실패 → 클립보드 불변 · 사유 토스트 · [다시 시도] 노출",
+      sideClicked2 === true &&
+        primed10 === true &&
+        clip10.includes(sent10) &&
+        typeof projPath === "string" &&
+        projPath.length > 0 &&
+        !clip10.includes(projPath) &&
+        /복사에 실패했습니다 — .+/.test(toast10?.msg ?? "") &&
+        toast10?.action === "다시 시도",
+      `클릭=${sideClicked2} 기준선=${primed10} 클립=${J(clip10.slice(0, 40))} 토스트=${J(toast10?.msg ?? "")} 액션=${J(toast10?.action ?? null)}`,
+    );
+    await setFail([]);
+    await closeMenu();
+
+    // ── ⑪ 되읽기 검증이 **거짓 성공**을 잡는다 (태스크 65가 "남은 것"으로 남긴 자리) ──
+    // `execCommand("copy")` 의 true 는 "명령을 보냈다"이지 "클립보드에 들어갔다"가 아니다.
+    // 2026-09-10 실측: 앞 두 단계가 정직하게 던진 상황에서 **이 단계만 true 를 돌려줬다** —
+    // 그대로 두면 성공을 보고하고 호출부가 선택을 해제한다(붙여넣을 때까지 발각되지 않는 무음 실패의 쌍둥이).
+    // `"verify"` 주입은 execCommand 를 **쓰지 않고 true 만 받은** 상태를 만든다. 실제 되읽기가 돌아
+    // 불일치를 잡아야 한다 — 잡지 못하면 `ok === true` 로 빨개진다.
+    // macOS 는 되읽기 자체를 건너뛴다(페이스트보드 프라이버시 프롬프트, clipboard.ts §4) — 스킵.
+    const isMacRunner = await cdp.eval(`/^Mac/.test(navigator.platform)`);
+    if (isMacRunner === true) {
+      r.skip("되읽기 검증(거짓 성공)", "macOS 는 되읽기를 건너뛴다(프라이버시 프롬프트) — 스킵");
+    } else {
+      const sent11 = `${SENTINEL}-11`;
+      const primed11 = await primeClipboard(sent11);
+      await setFail(["plugin", "navigator", "verify"]);
+      const res11 = await cdp.eval(
+        `window.__gpvClipboard.copy(${J(`${MARK}-11`)})`,
+      );
+      const clip11 = str(await clipboard());
+      await setFail([]);
+      r.check(
+        "되읽기 검증이 거짓 성공을 잡는다 — execCommand 가 true 인데 클립보드는 그대로면 실패로 본다",
+        primed11 === true &&
+          res11?.ok === false &&
+          /되읽기|반영되지/.test(res11?.reason ?? "") &&
+          clip11.includes(sent11),
+        `기준선=${primed11} ok=${J(res11?.ok)} 사유=${J(String(res11?.reason ?? "").slice(0, 60))} 클립=${J(clip11.slice(0, 40))}`,
+      );
+    }
+
+    // ── ⑫ 빈 클립보드에서 붙여넣기: 무음이 아니다 (A-K4·A-K5) ──
+    // 예전엔 `term_paste` 가 "타임아웃"과 "비었음"을 **둘 다 빈 문자열**로 돌려줬고 프론트는
+    // `catch { noop }` 로 삼켰다 — 사용자에겐 "눌렀는데 아무 일도 안 일어남"이고 로그도 없었다.
+    // 이제 빈 클립보드는 `null`(info 토스트), 실패는 reject(사유 + [다시 시도])다.
+    //
+    // **[붙여넣기]를 실제로 누르는 유일한 자리다.** 다른 단계에서 누르면 사용자의 셸에 글자가
+    // 들어가지만, 여기선 클립보드가 비어 있어 정의상 아무것도 들어가지 않는다.
+    await cdp.eval(
+      `window.__gpv.ui.getState().toasts.slice().forEach(t => window.__gpv.ui.getState().dismissToast(t.id))`,
+    );
+    const emptied = await cdp
+      .eval(`navigator.clipboard.writeText("").then(()=>true).catch(()=>false)`)
+      .catch(() => false);
+    // 진짜로 비었는지는 백엔드에게 묻는다 — 못 비웠으면 아래 단언이 공허해지므로 스킵한다.
+    const rawEmpty = await poll(
+      () => cdp.try("term_paste").then((x) => (x.ok ? x.r : "ERR")),
+      (v) => v === null || v === "",
+      10,
+      200,
+    );
+    if (emptied !== true || !(rawEmpty === null || rawEmpty === "")) {
+      r.skip(
+        "빈 클립보드 붙여넣기 안내",
+        `클립보드를 비우지 못했다(emptied=${emptied} term_paste=${J(rawEmpty)}) — 공허한 단언 대신 스킵`,
+      );
+    } else {
+      const pasteClicked = await openAndClick(paneId, "붙여넣기");
+      const emptyToast = await poll(
+        () =>
+          cdp.eval(
+            `(window.__gpv.ui.getState().toasts.find(t => /클립보드가 비어/.test(t.message)) || {}).message || ''`,
+          ),
+        (v) => typeof v === "string" && v.length > 0,
+        14,
+        250,
+      );
+      r.check(
+        "빈 클립보드에서 [붙여넣기] → 무음이 아니라 안내 토스트(A-K5: null 과 실패를 구분)",
+        pasteClicked === true && /클립보드가 비어/.test(emptyToast),
+        `클릭=${pasteClicked} term_paste=${J(rawEmpty)} 토스트=${J(emptyToast)}`,
+      );
+      await closeMenu();
+    }
 
     // ── ⑥ 선택이 없을 때: 죽은 버튼 대신 안내 ──
     await clearSelection(paneId);

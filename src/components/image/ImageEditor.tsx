@@ -1,4 +1,3 @@
-import { writeImage } from "@tauri-apps/plugin-clipboard-manager";
 import { AlertTriangle, FileWarning, Loader2, Minus, Plus } from "lucide-react";
 import {
   useCallback,
@@ -165,7 +164,7 @@ import {
 } from "../../lib/image-codec";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 
-import { copyText } from "../../lib/clipboard";
+import { copyFailMessage, copyImage, copyText } from "../../lib/clipboard";
 import { IS_DOC_WINDOW } from "../../lib/floating";
 import { errorMessage, ipc, isIpcError } from "../../lib/ipc";
 import {
@@ -1762,14 +1761,19 @@ export default function ImageEditor() {
       onConfirm: (name) => writeTo(`${dir}${name}`, false),
     });
 
-  /** 편집 결과를 PNG로 클립보드에 넣는다(§6.2). 파일 저장 포맷과 무관하게 항상 PNG. */
+  /** 편집 결과를 PNG로 클립보드에 넣는다(§6.2). 파일 저장 포맷과 무관하게 항상 PNG.
+   *  쓰기는 `copyImage`(8회 백오프)를 지난다 — 1회 시도는 Windows 클립보드 경합에 그대로 깨졌다(A-K3). */
   const copyToClipboard = () => {
     if (!oriented) return;
     setBusy(true);
     void ensureAssets(docRef.current)
       .then(() => encodeCanvas(renderOutput(false), "png"))
-      .then((bytes) => writeImage(bytes))
-      .then(() => pushToast("success", "클립보드에 복사됨 (PNG)"))
+      .then((bytes) => copyImage(bytes))
+      .then((ok) =>
+        ok
+          ? pushToast("success", "클립보드에 복사됨 (PNG)")
+          : pushToast("error", copyFailMessage()),
+      )
       .catch((e) => pushToast("error", errorMessage(e)))
       .finally(() => setBusy(false));
   };
@@ -2019,7 +2023,13 @@ export default function ImageEditor() {
   const copySel = () => {
     const ids = new Set(selIds());
     const nodes = docRef.current.objects.filter((o) => ids.has(o.id));
-    if (nodes.length) void copyText(CLIP_PREFIX + JSON.stringify(nodes));
+    // 결과를 버리지 않는다 — 실패를 삼키면 Ctrl+X 가 지운 노드를 붙여넣을 수 없게 되고도
+    // 화면엔 아무 말이 없다. 성공 토스트는 달지 않는다(선택 복사는 초당 여러 번 눌린다).
+    if (nodes.length) {
+      void copyText(CLIP_PREFIX + JSON.stringify(nodes)).then((ok) => {
+        if (!ok) pushToast("error", copyFailMessage());
+      });
+    }
     return nodes.length;
   };
 

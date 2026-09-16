@@ -1,7 +1,7 @@
-import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { Copy } from "lucide-react";
 
 import { KIND_BADGE } from "../../lib/change-kind";
+import { copyWithToast } from "../../lib/clipboard";
 import { splitPath } from "../../lib/format";
 import { errorMessage } from "../../lib/ipc";
 import type { DiffTarget } from "../../lib/ipc";
@@ -9,14 +9,6 @@ import { usePanelWidth } from "../../lib/use-panel-width";
 import { useCommitDetail } from "../../queries";
 import { selectActiveDiff, useUi } from "../../stores/ui";
 import { ResizeHandle } from "../common/ResizeHandle";
-
-/** 클립보드 복사 + 토스트 (커밋 메시지·해시). */
-function copyText(text: string, ok: string) {
-  const pushToast = useUi.getState().pushToast;
-  void writeText(text)
-    .then(() => pushToast("success", ok))
-    .catch(() => pushToast("error", "복사에 실패했습니다"));
-}
 
 /** Log 패널 우측: 선택 커밋의 전체 메시지 + 변경 파일 트리. 파일 클릭 → 중앙 뷰어에 커밋 diff.
  *  onSelect·active를 주면 그 클릭이 호출자 로컬 선택이 된다(Git 모달, 태스크 55 — ChangesPanel과 동일).
@@ -88,7 +80,7 @@ export function CommitDetailPane({
             {commit.subject}
           </div>
           <button
-            onClick={() => copyText(fullMessage, "커밋 메시지를 복사했습니다")}
+            onClick={() => copyWithToast(fullMessage, "커밋 메시지를 복사했습니다")}
             title="커밋 메시지 복사"
             className="shrink-0 select-none rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
           >
@@ -105,7 +97,7 @@ export function CommitDetailPane({
             {commit.authorName} &lt;{commit.authorEmail}&gt;
           </div>
           <button
-            onClick={() => copyText(commit.sha, "커밋 해시를 복사했습니다")}
+            onClick={() => copyWithToast(commit.sha, "커밋 해시를 복사했습니다")}
             title="전체 해시 복사"
             className="flex select-none items-center gap-1 font-mono hover:text-fg"
           >

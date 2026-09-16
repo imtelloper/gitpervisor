@@ -9,13 +9,14 @@ use super::projects::project_path;
 use crate::error::{ErrorCode, IpcError};
 use crate::git::runner;
 use crate::state::AppState;
+use crate::text::encoding;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchMatch {
     pub line: u32,   // 1-based
     pub column: u32, // 1-based, 문자 단위(text 윈도우 기준)
-    pub text: String, // 매치 라인(매치 중심 최대 240자 윈도우, lossy UTF-8)
+    pub text: String, // 매치 라인(매치 중심 최대 240자 윈도우, 줄 단위 인코딩 디코드)
 }
 
 #[derive(Serialize)]
@@ -101,7 +102,9 @@ pub async fn search_in_project(
         };
         return Err(IpcError::new(ErrorCode::GitError, msg));
     }
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    // 줄 단위 디코드(B-K7) — 여러 파일의 줄이 섞인 스트림이라 통째 판정은 한 CP949 파일 때문에
+    // 나머지 전부를 깨뜨린다. 뷰어에서는 한글이 보이는데 검색 결과만 깨지는 비대칭도 막는다.
+    let stdout = encoding::decode_lines(&out.stdout);
 
     let mut files: Vec<SearchFile> = Vec::new();
     let mut total: usize = 0;

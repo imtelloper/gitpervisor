@@ -315,7 +315,12 @@ export function createTerminalImpl(opts: {
     fit,
     host,
     status: "live",
-    win32Input: false,
+    // **Windows 는 참으로 시작한다.** ConPTY 는 portable-pty 가 PSEUDOCONSOLE_WIN32_INPUT_MODE 로
+    // 무조건 열어서 항상 이 모드다. 감지(아래 CSI 9001)에만 기대면, 살아 있는 PTY 에 나중에 붙는
+    // 창(플로팅 분리·모아보기 재도킹 = `term_attach`)은 시작 프리앰블을 다시 못 받아 영영 false 로
+    // 남고, Shift/Alt+Enter 가 `\x1b\r` 폴백을 타 Claude Code 에서 줄바꿈이 안 된다.
+    // 감지는 보조로 남긴다 — 9001 을 끄는 판이 오면 아래 `?l` 핸들러가 false 로 내린다.
+    win32Input: isWindows,
     lastSelection: "",
   };
 

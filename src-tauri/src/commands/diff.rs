@@ -10,6 +10,7 @@ use crate::error::{ErrorCode, IpcError};
 use crate::git::runner;
 use crate::git::types::{DiffTarget, FileDiff};
 use crate::state::AppState;
+use crate::text::encoding;
 
 /// 한쪽이 이 크기를 넘으면 내용 전송을 생략한다 (뷰어 멈춤 방지).
 const MAX_DIFF_BYTES: usize = 1_572_864; // 1.5MB
@@ -17,18 +18,22 @@ const MAX_DIFF_BYTES: usize = 1_572_864; // 1.5MB
 /// 한 번의 배치 프리페치에서 읽는 최대 파일 수 — 거대 변경 목록의 spawn 폭주 방지
 const MAX_BATCH_FILES: usize = 30;
 
+/// `encoding` 은 사용자가 상태바에서 **직접 고른** 인코딩(B-K6). 생략하면 자동 탐지다.
+/// 탐지가 틀렸을 때 사람이 뒤집을 유일한 수단이므로, 여기 없으면 오탐이 곧 저장 사고가 된다.
 #[tauri::command]
 pub async fn get_file_diff(
     state: State<'_, AppState>,
     project_id: String,
     target: DiffTarget,
+    encoding: Option<String>,
 ) -> Result<FileDiff, IpcError> {
     let repo = project_path(&state, &project_id)?;
+    let enc = encoding.as_deref().filter(|e| !e.is_empty());
     match target {
-        DiffTarget::Worktree { path } => worktree_diff(&repo, path).await,
-        DiffTarget::Index { path } => index_diff(&repo, path).await,
-        DiffTarget::Commit { sha, path } => commit_diff(&repo, sha, path).await,
-        DiffTarget::File { path } => file_content(&repo, path).await,
+        DiffTarget::Worktree { path } => worktree_diff(&repo, path, enc).await,
+        DiffTarget::Index { path } => index_diff(&repo, path, enc).await,
+        DiffTarget::Commit { sha, path } => commit_diff(&repo, sha, path, enc).await,
+        DiffTarget::File { path } => file_content(&repo, path, enc).await,
     }
 }
 
@@ -77,16 +82,19 @@ fn too_large_diff(path: String) -> FileDiff {
         new_content: None,
         is_binary: false,
         too_large: true,
+        encoding: "UTF-8".to_string(),
+        bom: false,
+        lossy: false,
     }
 }
 
 /// 단일 파일 보기 — 워크트리 내용만 new_content로 반환(old=None). 트리 클릭용.
-async fn file_content(repo: &Path, path: String) -> Result<FileDiff, IpcError> {
+async fn file_content(repo: &Path, path: String, enc: Option<&str>) -> Result<FileDiff, IpcError> {
     validate_rel_path(&path)?;
     match read_capped(&repo.join(&path)).await? {
         Blob::TooLarge => Ok(too_large_diff(path)),
-        Blob::Missing => Ok(build_diff(path, None, None)),
-        Blob::Bytes(b) => Ok(build_diff(path, None, Some(b))),
+        Blob::Missing => Ok(build_diff(path, None, None, enc)),
+        Blob::Bytes(b) => Ok(build_diff(path, None, Some(b), enc)),
     }
 }
 
@@ -105,7 +113,8 @@ pub async fn get_file_diffs(
     // 대해 `git show` 자체를 없애 herd를 이미 줄여 놓았다. 근거 없이 동작을 바꾸지 않는다.
     let futures = paths.into_iter().take(MAX_BATCH_FILES).map(|path| {
         let repo = repo.clone();
-        async move { worktree_diff(&repo, path).await.ok() }
+        // 프리페치는 언제나 자동 탐지다 — 수동 인코딩은 "지금 보고 있는 한 파일"의 이야기다.
+        async move { worktree_diff(&repo, path, None).await.ok() }
     });
     let results = futures::future::join_all(futures).await;
 
@@ -126,7 +135,11 @@ pub async fn get_file_diffs(
 }
 
 /// old = 인덱스 버전(`git show :<path>`, 없으면 None) / new = 워크트리 파일.
-async fn worktree_diff(repo: &Path, path: String) -> Result<FileDiff, IpcError> {
+async fn worktree_diff(
+    repo: &Path,
+    path: String,
+    enc: Option<&str>,
+) -> Result<FileDiff, IpcError> {
     validate_rel_path(&path)?;
 
     // 워크트리 쪽을 **먼저** 판정한다 — 초과면 인덱스 버전을 뜨는 `git show` 자식 프로세스도
@@ -142,26 +155,31 @@ async fn worktree_diff(repo: &Path, path: String) -> Result<FileDiff, IpcError> 
         _ => None, // 워크트리에서 삭제됨
     };
 
-    Ok(build_diff(path, old_bytes, new_bytes))
+    Ok(build_diff(path, old_bytes, new_bytes, enc))
 }
 
 /// staged 변경 검토: HEAD 버전 ↔ 인덱스 버전. (설계 §7 index 모드)
-async fn index_diff(repo: &Path, path: String) -> Result<FileDiff, IpcError> {
+async fn index_diff(repo: &Path, path: String, enc: Option<&str>) -> Result<FileDiff, IpcError> {
     validate_rel_path(&path)?;
     let old_bytes = content_at(repo, &format!("HEAD:{path}")).await?;
     let new_bytes = content_at(repo, &format!(":{path}")).await?;
-    Ok(build_diff(path, old_bytes, new_bytes))
+    Ok(build_diff(path, old_bytes, new_bytes, enc))
 }
 
 /// 커밋 기준 diff: 첫 부모 버전 ↔ 해당 커밋 버전. root 커밋은 부모가 없어 old = None.
-async fn commit_diff(repo: &Path, sha: String, path: String) -> Result<FileDiff, IpcError> {
+async fn commit_diff(
+    repo: &Path,
+    sha: String,
+    path: String,
+    enc: Option<&str>,
+) -> Result<FileDiff, IpcError> {
     validate_rel_path(&path)?;
     if !runner::is_valid_sha(&sha) {
         return Err(IpcError::new(ErrorCode::GitError, "잘못된 커밋 해시입니다"));
     }
     let old_bytes = content_at(repo, &format!("{sha}^:{path}")).await?;
     let new_bytes = content_at(repo, &format!("{sha}:{path}")).await?;
-    Ok(build_diff(path, old_bytes, new_bytes))
+    Ok(build_diff(path, old_bytes, new_bytes, enc))
 }
 
 /// `git show <spec>` 내용 — 존재하지 않으면(없는 경로/없는 부모) None으로 added/deleted를 표현.
@@ -174,7 +192,17 @@ async fn content_at(repo: &Path, spec: &str) -> Result<Option<Vec<u8>>, IpcError
 }
 
 /// 양쪽 바이트에서 바이너리/크기 가드를 적용해 FileDiff를 만든다 (모든 diff 모드 공용).
-fn build_diff(path: String, old_bytes: Option<Vec<u8>>, new_bytes: Option<Vec<u8>>) -> FileDiff {
+///
+/// **여기가 원본 바이트를 잃던 자리다**(설계 B.1). `from_utf8_lossy` 는 유효하지 않은 바이트를
+/// `U+FFFD` 로 비가역 치환했고, 그 문자열을 그대로 저장하면 CP949 주석이 영구 소실됐다.
+/// 이제 인코딩을 탐지해 디코드하고, **무엇으로 읽었는지를 FileDiff 로 실어 보낸다** —
+/// 저장 경로가 그걸 되돌려 줘야 왕복이 성립한다(B-K1).
+fn build_diff(
+    path: String,
+    old_bytes: Option<Vec<u8>>,
+    new_bytes: Option<Vec<u8>>,
+    enc: Option<&str>,
+) -> FileDiff {
     let too_large = [&old_bytes, &new_bytes]
         .iter()
         .any(|b| b.as_ref().is_some_and(|b| b.len() > MAX_DIFF_BYTES));
@@ -190,13 +218,27 @@ fn build_diff(path: String, old_bytes: Option<Vec<u8>>, new_bytes: Option<Vec<u8
             new_content: None,
             is_binary,
             too_large,
+            encoding: "UTF-8".to_string(),
+            bom: false,
+            lossy: false,
         };
     }
 
+    let decode = |b: Vec<u8>| {
+        enc.and_then(|e| encoding::decode_as(&b, e))
+            .unwrap_or_else(|| encoding::decode(&b))
+    };
+    let old = old_bytes.map(&decode);
+    let new = new_bytes.map(&decode);
+    // 인코딩 정체는 **저장 대상**(new = 워크트리 파일)을 따른다. 저장은 그쪽으로만 간다.
+    let of = new.as_ref().or(old.as_ref());
     FileDiff {
         path,
-        old_content: old_bytes.map(|b| String::from_utf8_lossy(&b).into_owned()),
-        new_content: new_bytes.map(|b| String::from_utf8_lossy(&b).into_owned()),
+        encoding: of.map_or("UTF-8", |d| d.encoding).to_string(),
+        bom: of.is_some_and(|d| d.bom),
+        lossy: of.is_some_and(|d| d.lossy),
+        old_content: old.map(|d| d.text),
+        new_content: new.map(|d| d.text),
         is_binary: false,
         too_large: false,
     }
@@ -220,8 +262,12 @@ fn validate_rel_path(path: &str) -> Result<(), IpcError> {
     Ok(())
 }
 
+/// NUL 바이트가 보이면 바이너리 — 단 **BOM 이 있으면 텍스트다**(B-K5).
+///
+/// UTF-16 은 ASCII 문자마다 NUL 이 끼므로 NUL 검사만 하면 `.rc`·일부 로그처럼 실무에서 흔한
+/// UTF-16 파일이 전부 "바이너리 파일"로 빠진다. BOM 은 추측이 아니라 선언이므로 먼저 본다.
 fn looks_binary(bytes: &[u8]) -> bool {
-    bytes.iter().take(8192).any(|&b| b == 0)
+    !encoding::has_bom(bytes) && bytes.iter().take(8192).any(|&b| b == 0)
 }
 
 /// 이미지 뷰어용 파일 한도 — base64로 IPC 전송하므로 과대 파일을 막는다.

@@ -61,6 +61,13 @@ export interface DocTarget {
    * `edit`·`folder` 와 같은 이유로 **옵셔널이어야 한다** — 이 필드 이전에 적힌 항목이 남아 있다.
    */
   report?: true;
+  /**
+   * 있으면 이 창은 그 프로젝트의 **git 로그 뷰**를 띄운다(사이드바 프로젝트 우클릭 → git log).
+   * 값은 그 프로젝트 id 이고 `projectId` 에도 같은 값이 들어간다(창 안 쿼리가 그걸 읽는다).
+   * `path` 는 창 제목용 프로젝트 이름이다.
+   * 위 필드들과 같은 이유로 **옵셔널이어야 한다** — 이 필드 이전에 적힌 항목이 남아 있다.
+   */
+  log?: string;
 }
 
 /**
@@ -218,5 +225,38 @@ export function openReportWindow(): void {
     size: [1240, 820],
   }).catch((e) => {
     console.error("리포트 창 생성 실패:", e);
+  });
+}
+
+/**
+ * 프로젝트의 git 로그를 **별도 OS 창**으로 연다(사이드바 프로젝트 우클릭 → git log).
+ *
+ * 폴더·리포트 창과 같은 `doc-*` 경로다 — Rust·캡처빌리티 변경이 없다. id 는 프로젝트마다
+ * 결정적(`fnv16("log:"+projectId)`)이라 **프로젝트당 창 하나**이고, 다시 누르면 Rust 싱글턴
+ * 분기가 기존 창에 포커스만 준다. 리포트처럼 고정 id 를 쓰면 다른 프로젝트를 열 때 한 창이
+ * 재사용돼 "옛 프로젝트 로그가 그 창에 덮인다".
+ */
+export function openLogWindow(projectId: string, name: string): void {
+  const id = fnv16(`log:${projectId}`);
+  const docs = readDocs();
+  docs[id] = { projectId, path: name, log: projectId };
+  const keys = Object.keys(docs);
+  const kept =
+    keys.length > DOC_MAX
+      ? Object.fromEntries(keys.slice(-DOC_MAX).map((k) => [k, docs[k]]))
+      : docs;
+  try {
+    localStorage.setItem(DOC_KEY, JSON.stringify(kept));
+  } catch {
+    /* 용량 초과 — 창은 그래도 띄운다(대상을 못 찾으면 그 창이 안내한다) */
+  }
+  // 브랜치 | 커밋 목록 | 상세 | diff 4단이라 리포트 창과 같은 폭으로 연다(Rust 가 420..3000 클램프).
+  void invoke("open_doc_window", {
+    docId: id,
+    title: `${name} — git log`,
+    origin: window.location.origin,
+    size: [1240, 820],
+  }).catch((e) => {
+    console.error("로그 창 생성 실패:", e);
   });
 }

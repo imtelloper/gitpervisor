@@ -5,6 +5,7 @@ import type { Terminal } from "@xterm/xterm";
 
 import { useUi } from "../stores/ui";
 import { copyFailMessage, copyText, readClipboardText } from "./clipboard";
+import { errorMessage } from "./ipc";
 import { isMac } from "./platform";
 import { forgetPtyInput } from "./prompt-capture";
 
@@ -318,19 +319,38 @@ let pasteInFlight = false;
  *  한계: 플로팅 분리/재도킹으로 새로 만든 xterm(attach)은 이전 출력의 \x1b[?2004h를 못 봐
  *  모드 플래그가 꺼진 채 시작한다 — 그 창의 첫 멀티라인 붙여넣기는 비브래킷으로 나갈 수 있다
  *  (zsh는 다음 프롬프트에서 재설정, Claude Code류 TUI는 세션 내 지속). 근본 해결은 Rust가
- *  세션별 2004 모드를 추적해 attach 시 프론트 파서에 되살리는 것 — 후속 과제. */
+ *  세션별 2004 모드를 추적해 attach 시 프론트 파서에 되살리는 것 — 후속 과제.
+ *
+ *  **무음 실패를 남기지 않는다**(A-K4). 예전엔 `catch { noop }` 하나에 모든 게 삼켜져
+ *  "붙여넣기를 눌렀는데 아무 일도 안 일어남"이 로그조차 없이 끝났다. 이제 백엔드가 세 갈래를
+ *  구분해 주므로(term_paste 주석) 각각에 말을 붙인다: 빈 클립보드=info, 못 읽음=사유 + [다시 시도]. */
 export async function pasteIntoTerminal(id: string) {
   if (pasteInFlight) return;
   pasteInFlight = true;
   try {
-    let text: string;
+    // `null`은 "클립보드가 비었다"는 **유효한 답**이다 — 플러그인 폴백은 invoke가 reject했을
+    // 때만 탄다(위 주석: 빈 값에 또 읽으면 macOS 프롬프트가 하나 더 뜬다).
+    let text: string | null;
+    let failure = "";
     try {
-      text = await invoke<string>("term_paste");
-    } catch {
+      text = await invoke<string | null>("term_paste");
+    } catch (e) {
       text = await readClipboardText();
+      if (!text) failure = errorMessage(e);
     }
     const inst = getTerminal(id);
-    if (text && inst) inst.term.paste(text);
+    if (text) inst?.term.paste(text);
+    else if (failure) {
+      useUi
+        .getState()
+        .pushToast("error", `붙여넣기에 실패했습니다 — ${failure}`, {
+          label: "다시 시도",
+          run: () => void pasteIntoTerminal(id),
+        });
+    } else {
+      useUi.getState().pushToast("info", "클립보드가 비어 있습니다");
+    }
+    // 포커스는 **어느 갈래에서든** 돌려준다 — 안 돌려주면 다음 키 입력이 PTY로 안 간다.
     inst?.term.focus();
   } catch {
     /* noop */

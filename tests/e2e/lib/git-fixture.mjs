@@ -58,6 +58,41 @@ export const FIXTURE_SEEDS = {
   ".gitignore": "ignored.txt\n",
 };
 
+/**
+ * 비-UTF8 인코딩 픽스처 — **바이트를 하드코딩한다.**
+ *
+ * 문자열로 두고 Node 에게 인코딩을 맡기면(`writeFileSync(p, s, "binary")` 류) 이 파일 자신의
+ * 인코딩·Node 버전·로캘에 결과가 좌우돼, 정작 검사하려는 바이트가 조용히 달라진다. 그러면
+ * "인코딩이 보존됐다"는 초록이 아무것도 보장하지 않는다.
+ *
+ * `enc/` 밑에 두는 이유: 루트 목록·status 개수를 단언하는 기존 스위트(02·03·11·24)를
+ * 흔들지 않기 위함이다. 시드가 아니라 **쓰는 스위트가 만들고 지운다**(추적되지 않는다).
+ */
+export const ENCODING_FIXTURES = {
+  // CP949: "// 일반 사용" / "#define MAX 10" / "// 연결검사" / "int main(void) { return 0; }" (CRLF)
+  // 0xC0 0xCF 0xB9 0xDD = "일반" — 사용자 사례(`.h` 주석)에서 그대로 가져온 바이트다.
+  "enc/cp949.h": Buffer.from([
+    0x2f, 0x2f, 0x20, 0xc0, 0xcf, 0xb9, 0xdd, 0x20, 0xbb, 0xe7, 0xbf, 0xeb, 0x0d, 0x0a, 0x23, 0x64,
+    0x65, 0x66, 0x69, 0x6e, 0x65, 0x20, 0x4d, 0x41, 0x58, 0x20, 0x31, 0x30, 0x0d, 0x0a, 0x2f, 0x2f,
+    0x20, 0xbf, 0xac, 0xb0, 0xe1, 0xb0, 0xcb, 0xbb, 0xe7, 0x0d, 0x0a, 0x69, 0x6e, 0x74, 0x20, 0x6d,
+    0x61, 0x69, 0x6e, 0x28, 0x76, 0x6f, 0x69, 0x64, 0x29, 0x20, 0x7b, 0x20, 0x72, 0x65, 0x74, 0x75,
+    0x72, 0x6e, 0x20, 0x30, 0x3b, 0x20, 0x7d, 0x0d, 0x0a,
+  ]),
+  // UTF-8 + BOM: "안녕 BOM 테스트\n" — 앞 3바이트가 BOM(EF BB BF).
+  "enc/utf8bom.txt": Buffer.from([
+    0xef, 0xbb, 0xbf, 0xec, 0x95, 0x88, 0xeb, 0x85, 0x95, 0x20, 0x42, 0x4f, 0x4d, 0x20, 0xed, 0x85,
+    0x8c, 0xec, 0x8a, 0xa4, 0xed, 0x8a, 0xb8, 0x0a,
+  ]),
+  // UTF-16LE + BOM: "가나다 UTF-16 줄\n" — ASCII 자리마다 NUL 이 들어가 NUL 검사만으로는
+  // "바이너리"로 오판된다(그게 B-K5 가 막는 것이다).
+  "enc/utf16le.txt": Buffer.from([
+    0xff, 0xfe, 0x00, 0xac, 0x98, 0xb0, 0xe4, 0xb2, 0x20, 0x00, 0x55, 0x00, 0x54, 0x00, 0x46, 0x00,
+    0x2d, 0x00, 0x31, 0x00, 0x36, 0x00, 0x20, 0x00, 0x04, 0xc9, 0x0a, 0x00,
+  ]),
+  // 순수 UTF-8(BOM 없음) — "기존 파일의 동작이 바이트 단위로 같다"의 회귀 반증용.
+  "enc/utf8.txt": Buffer.from("한글 UTF-8 줄\nsecond line\n", "utf8"),
+};
+
 /** 이 픽스처를 쓰고 있는 러너의 PID 를 적어 두는 파일 — **레포 밖**(root 바로 아래)에 둔다.
  *  `repo/` 안에 두면 git 픽스처에 낯선 파일이 섞여 status·트리 단언이 흔들린다. */
 export const OWNER_FILE = ".gpv-owner";
@@ -97,6 +132,21 @@ export function createFixture() {
     /** repo 안 파일 읽기(레포 루트 상대). */
     readFile(rel) {
       return readFileSync(join(repo, rel), "utf8");
+    },
+    /** repo 안 파일을 **바이트 그대로** 읽는다 — 인코딩 보존 단언은 문자열로는 못 한다
+     *  (문자열로 비교하면 디코드가 손실을 이미 흡수한 뒤라 아무것도 못 잡는다). */
+    readBytes(rel) {
+      return readFileSync(join(repo, ...rel.split("/")));
+    },
+    /** 비-UTF8 픽스처를 repo 에 푼다(`enc/`). 쓰는 스위트가 끝나면 지운다. */
+    writeEncodingFixtures() {
+      mkdirSync(join(repo, "enc"), { recursive: true });
+      for (const [rel, bytes] of Object.entries(ENCODING_FIXTURES))
+        writeFileSync(join(repo, ...rel.split("/")), bytes);
+    },
+    /** 푼 비-UTF8 픽스처를 통째로 지운다(다른 스위트의 status·검색 단언에 새지 않게). */
+    removeEncodingFixtures() {
+      rmSync(join(repo, "enc"), { recursive: true, force: true, maxRetries: 3 });
     },
     /** 추적 파일의 워킹트리 변경을 되돌린다(다른 스위트로 더러움이 새지 않게). */
     revert(rel) {

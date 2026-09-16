@@ -1,8 +1,7 @@
 import { AppWindow, Copy, FolderOpen, Search, Square } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-
+import { copyWithToast } from "../../lib/clipboard";
 import { formatBytes } from "../../lib/format";
 import { errorMessage, ipc } from "../../lib/ipc";
 import type { ProcSortKey, ProcessSample } from "../../lib/ipc";
@@ -351,9 +350,7 @@ export function SysMonitorWindow() {
     setMenu({ x: e.clientX, y: e.clientY, p });
   };
   const copy = (text: string, ok: string) => {
-    void writeText(text)
-      .then(() => pushToast("success", ok))
-      .catch(() => pushToast("error", "복사에 실패했습니다"));
+    copyWithToast(text, ok);
     setMenu(null);
   };
   const revealExe = (p: ProcessSample) => {

@@ -6,7 +6,7 @@ import { useOps } from "../stores/ops";
 import { useUi } from "../stores/ui";
 import { setSplitQueryClient, useVideoSplit } from "../stores/videoSplit";
 import type { SyncOp } from "../stores/ops";
-import type { VideoExportFinished } from "./ipc";
+import type { RepoStatus, VideoExportFinished } from "./ipc";
 import { ipc } from "./ipc";
 
 interface RepoChanged {
@@ -93,6 +93,48 @@ export function attachLogoEvents(qc: QueryClient) {
   });
 }
 
+/**
+ * 바뀐 프로젝트의 status 만 다시 재고 배치 캐시에 **끼워 넣는다**.
+ *
+ * 쿼리 키가 `["statuses", 전체 id 배열]` 하나라 무효화는 늘 전체 배치를 부른다. 여기서는
+ * `get_statuses(바뀐 것)` 만 부른 뒤 결과를 캐시 배열에 병합한다 — 중첩 저장소는 부모 id 로
+ * 딸려 오므로(`parentId`) 그 프로젝트에 속한 항목을 통째로 교체한다.
+ *
+ * 캐시가 아직 없거나(첫 로드 전) 호출이 실패하면 **예전 동작(전체 무효화)** 으로 떨어진다 —
+ * 신선도가 이 최적화 때문에 나빠지지는 않게.
+ */
+async function refreshChangedStatuses(qc: QueryClient, pids: string[]) {
+  if (!pids.length) return;
+  const cached = qc.getQueriesData<RepoStatus[]>({ queryKey: ["statuses"] });
+  const hasData = cached.some(([, v]) => Array.isArray(v) && v.length > 0);
+  if (!hasData) {
+    void qc.invalidateQueries({ queryKey: ["statuses"] });
+    return;
+  }
+  let fresh: RepoStatus[];
+  try {
+    fresh = await ipc.getStatuses(pids);
+  } catch {
+    void qc.invalidateQueries({ queryKey: ["statuses"] });
+    return;
+  }
+  const touched = new Set(pids);
+  const mine = (s: RepoStatus) =>
+    touched.has(s.projectId) || (s.parentId != null && touched.has(s.parentId));
+  qc.setQueriesData<RepoStatus[]>({ queryKey: ["statuses"] }, (prev) => {
+    if (!prev) return prev;
+    const byId = new Map(fresh.map((s) => [s.projectId, s]));
+    // 순서 유지 — 있던 자리에 새 값을 놓고, 사라진 중첩은 빠지고, 새 중첩은 뒤에 붙는다.
+    const next = prev.flatMap((s) => {
+      if (!mine(s)) return [s];
+      const hit = byId.get(s.projectId);
+      if (hit) byId.delete(s.projectId);
+      return hit ? [hit] : [];
+    });
+    return [...next, ...byId.values()];
+  });
+}
+
 /** 백엔드 이벤트 구독 — 앱 시작 시 1회. 이벤트는 신호일 뿐, 진실은 상태 재조회 (§10). */
 export function attachRepoEvents(qc: QueryClient) {
   attachVideoEvents(qc);
@@ -128,7 +170,10 @@ export function attachRepoEvents(qc: QueryClient) {
     // watcher 폭주 코얼레싱 — 마지막 신호 후 250ms 지나면 한 번만 재조회
     window.clearTimeout(timer);
     timer = window.setTimeout(() => {
-      void qc.invalidateQueries({ queryKey: ["statuses"] });
+      // **바뀐 프로젝트만 다시 잰다.** 전체 무효화는 `get_statuses(전체)` 를 부르는데, 그건
+      // 레포마다 git 프로세스를 띄우는 배치다(프로젝트 21개 실측 22.5초 — status.rs 주석).
+      // 파일 하나 저장할 때마다 그게 도는 구조였다. 실패하면 예전처럼 전체 무효화로 떨어진다.
+      void refreshChangedStatuses(qc, [...changedProjects]);
       void qc.invalidateQueries({ queryKey: ["diff"] });
       void qc.invalidateQueries({ queryKey: ["log"] });
       // 리포트 히트맵도 커밋을 세므로 로그와 같은 신호에 딸려 간다(태스크 60 §3.5).

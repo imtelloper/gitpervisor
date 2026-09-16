@@ -1,7 +1,7 @@
-import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { GitCommitHorizontal } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import { copyWithToast } from "../../lib/clipboard";
 import { errorMessage } from "../../lib/ipc";
 import { shortDate } from "../../lib/format";
 import { useLog } from "../../queries";
@@ -13,13 +13,6 @@ interface CommitMenu {
   y: number;
   sha: string;
   message: string; // 제목 + 본문(있으면) — 상세 패널의 "메시지 복사"와 동일
-}
-
-function copyText(text: string, ok: string) {
-  const pushToast = useUi.getState().pushToast;
-  void writeText(text)
-    .then(() => pushToast("success", ok))
-    .catch(() => pushToast("error", "복사에 실패했습니다"));
 }
 
 /** 데코레이션 칩: HEAD/브랜치는 강조, tag는 별색, 그 외(리모트)는 흐리게. */
@@ -166,21 +159,21 @@ export function CommitList({
           <CommitMenuItem
             label="메시지 복사"
             onClick={() => {
-              copyText(menu.message, "커밋 메시지를 복사했습니다");
+              copyWithToast(menu.message, "커밋 메시지를 복사했습니다");
               setMenu(null);
             }}
           />
           <CommitMenuItem
             label="전체 해시 복사"
             onClick={() => {
-              copyText(menu.sha, "커밋 해시를 복사했습니다");
+              copyWithToast(menu.sha, "커밋 해시를 복사했습니다");
               setMenu(null);
             }}
           />
           <CommitMenuItem
             label="짧은 해시 복사"
             onClick={() => {
-              copyText(menu.sha.slice(0, 7), "짧은 해시를 복사했습니다");
+              copyWithToast(menu.sha.slice(0, 7), "짧은 해시를 복사했습니다");
               setMenu(null);
             }}
           />

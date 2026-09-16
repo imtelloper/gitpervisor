@@ -233,7 +233,9 @@ export function registerLspProviders(): void {
           try {
             const cur = await ipc.getDiff(doc.session.projectId, { mode: "file", path: rel });
             const next = applyLspEdits(cur.newContent ?? "", edits);
-            await ipc.writeFile(doc.session.projectId, rel, next);
+            // 읽은 인코딩 그대로 되돌려 쓴다(설계 B-K3). 여기만 빼먹으면 이름 바꾸기가
+            // 손댄 적 없는 CP949 파일을 **조용히 UTF-8 로 변환**한다 — 되돌리기 어려운 변경이다.
+            await ipc.writeFile(doc.session.projectId, rel, next, cur.encoding, cur.bom);
             otherFiles += 1;
           } catch {
             /* 개별 파일 실패는 무시 — 나머지는 진행 */

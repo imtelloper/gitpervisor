@@ -663,28 +663,45 @@ fn session_tree(root: i32) -> Vec<i32> {
 /// 1) 파일 목록(탐색기/폴더에서 복사) → 인용된 경로(여러 개면 공백 구분)
 /// 2) 이미지 데이터(스크린샷 등) → 임시 파일로 저장 후 그 경로
 /// 3) 일반 텍스트 → 그대로
+///
+/// **반환은 세 갈래다**(A-K5). 예전엔 전부 빈 문자열이라 "클립보드가 비었다"와 "읽지 못했다"가
+/// 구분되지 않았고, 프론트는 둘 다 조용한 no-op으로 삼켰다 — 사용자에겐 "눌렀는데 아무 일도
+/// 안 일어남"이고 로그도 없었다.
+/// - `Ok(Some(text))` — 붙여넣을 것이 있다
+/// - `Ok(None)` — 클립보드가 비었다(정상. 프론트는 info 토스트)
+/// - `Err(사유)` — 못 읽었다(타임아웃·OS 오류. 프론트는 사유 토스트 + [다시 시도])
 #[cfg(windows)]
 #[tauri::command]
-pub fn term_paste() -> String {
-    use clipboard_win::{formats, get_clipboard};
+pub fn term_paste() -> Result<Option<String>, String> {
+    use clipboard_win::{formats, get_clipboard, raw};
 
     let files: Vec<String> = get_clipboard(formats::FileList).unwrap_or_default();
     if !files.is_empty() {
-        return files
-            .iter()
-            .map(|p| shell_quote(p))
-            .collect::<Vec<_>>()
-            .join(" ");
+        return Ok(Some(
+            files
+                .iter()
+                .map(|p| shell_quote(p))
+                .collect::<Vec<_>>()
+                .join(" "),
+        ));
     }
 
     let bmp: Vec<u8> = get_clipboard(formats::Bitmap).unwrap_or_default();
     if bmp.len() > 64 {
         if let Some(path) = save_temp_image(&bmp) {
-            return shell_quote(&path);
+            return Ok(Some(shell_quote(&path)));
         }
     }
 
-    get_clipboard(formats::Unicode).unwrap_or_default()
+    match get_clipboard::<String, _>(formats::Unicode) {
+        Ok(s) if s.is_empty() => Ok(None),
+        Ok(s) => Ok(Some(s)),
+        // `get_clipboard`는 "텍스트 형식이 아예 없다"와 "클립보드를 못 열었다"를 둘 다 Err로 준다.
+        // 둘을 가르는 건 `IsClipboardFormatAvailable`이다 — OpenClipboard가 필요 없어 경합의
+        // 영향을 받지 않는다. 형식이 없으면 그냥 빈 클립보드다(이미지도 파일도 아닌 무언가 포함).
+        Err(_) if !raw::is_format_avail(formats::CF_UNICODETEXT) => Ok(None),
+        Err(e) => Err(format!("클립보드를 읽지 못했습니다 ({e})")),
+    }
 }
 
 /// Linux(X11/XWayland)·macOS: 파일→경로, 이미지→임시 PNG 경로, 그 외 텍스트.
@@ -695,7 +712,7 @@ pub fn term_paste() -> String {
 /// X11 클립보드는 "소유자가 요청에 응답"하는 모델이라 웹뷰(이 앱 자신)가 복사 주체일 때
 /// 메인루프가 막혀 있으면 자기 자신을 기다리는 데드락이 된다(tauri plugins-workspace#2267과 동일 기전).
 /// 여기에 더해 소유자가 끝내 응답하지 않는 경우를 대비해 워커 스레드 + 타임아웃으로 감싼다
-/// — 실패 시 빈 문자열(붙여넣기 no-op)로 강등되며 UI는 절대 매달리지 않는다.
+/// — 타임아웃은 `Err`로 올라가고(Windows판 주석의 세 갈래) UI는 절대 매달리지 않는다.
 ///
 /// **타임아웃은 플랫폼별로 다르다.** Linux의 2초는 위 X11 "소유자 무응답" 대비다. macOS는
 /// 15.4+/26의 페이스트보드 프라이버시 프롬프트("~에서 붙여넣으려고 합니다")가 읽기를 **사용자가
@@ -705,7 +722,7 @@ pub fn term_paste() -> String {
 /// 읽고 누를 시간으로 120초를 준다 — 데드락 기전 자체가 macOS엔 없으므로 길어도 안전하다.
 #[cfg(not(windows))]
 #[tauri::command(async)]
-pub fn term_paste() -> String {
+pub fn term_paste() -> Result<Option<String>, String> {
     #[cfg(target_os = "macos")]
     const TIMEOUT_MS: u64 = 120_000;
     #[cfg(not(target_os = "macos"))]
@@ -715,37 +732,49 @@ pub fn term_paste() -> String {
     std::thread::spawn(move || {
         let _ = tx.send(read_clipboard_unix());
     });
-    rx.recv_timeout(std::time::Duration::from_millis(TIMEOUT_MS))
-        .unwrap_or_default()
+    match rx.recv_timeout(std::time::Duration::from_millis(TIMEOUT_MS)) {
+        Ok(r) => r,
+        // 소유자가 끝내 응답하지 않았다. 워커는 그대로 두고(다음 요청과 경쟁하지 않는다) 사유만 올린다.
+        Err(_) => Err("클립보드 소유자가 응답하지 않습니다".into()),
+    }
 }
 
+/// `Ok(None)` = 클립보드가 비었다 · `Err` = 읽지 못했다(term_paste의 세 갈래 주석 참조).
 #[cfg(not(windows))]
-fn read_clipboard_unix() -> String {
+fn read_clipboard_unix() -> Result<Option<String>, String> {
     // macOS는 파일 목록을 **이미지보다 먼저** 본다 — 이유는 macos_clipboard_files 주석 참조.
     // 이로써 세 플랫폼 모두 "파일 → 이미지 → 텍스트" 우선순위로 일치한다.
     #[cfg(target_os = "macos")]
     {
         let files = macos_clipboard_files();
         if !files.is_empty() {
-            return files
-                .iter()
-                .map(|p| shell_quote(p))
-                .collect::<Vec<_>>()
-                .join(" ");
+            return Ok(Some(
+                files
+                    .iter()
+                    .map(|p| shell_quote(p))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ));
         }
     }
 
-    let mut cb = match arboard::Clipboard::new() {
-        Ok(cb) => cb,
-        Err(_) => return String::new(),
-    };
+    // Linux에서 여기가 Err면 흔히 `DISPLAY` 없는 세션이다 — 앱 수명 내내 재발하므로
+    // 조용한 no-op이 아니라 사유로 올린다(clipboard.ts의 "플러그인 영구 실패"와 같은 함정).
+    let mut cb = arboard::Clipboard::new()
+        .map_err(|e| format!("클립보드를 열지 못했습니다 ({e})"))?;
     // Windows 구현과 같은 우선순위: 이미지(스크린샷) 먼저, 아니면 텍스트.
     if let Ok(img) = cb.get_image() {
         if let Some(path) = save_temp_png(&img) {
-            return shell_quote(&path);
+            return Ok(Some(shell_quote(&path)));
         }
     }
-    cb.get_text().unwrap_or_default()
+    match cb.get_text() {
+        Ok(s) if s.is_empty() => Ok(None),
+        Ok(s) => Ok(Some(s)),
+        // 요청한 형식이 없거나 클립보드가 비었다 — arboard가 둘을 한 변형으로 준다(common.rs:24).
+        Err(arboard::Error::ContentNotAvailable) => Ok(None),
+        Err(e) => Err(format!("클립보드를 읽지 못했습니다 ({e})")),
+    }
 }
 
 /// macOS: Finder ⌘C가 올린 `public.file-url`을 실제 파일 경로로 읽는다(Windows FileList 대응).

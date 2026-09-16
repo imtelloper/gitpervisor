@@ -66,6 +66,16 @@ export interface FileDiff {
   newContent: string | null;
   isBinary: boolean;
   tooLarge: boolean;
+  /**
+   * 이 내용을 **무엇으로 읽었는지** ("UTF-8" / "EUC-KR" / "Shift_JIS" / "UTF-16LE" …).
+   * 저장할 때 그대로 되돌려 보내야 원본 인코딩이 유지된다(설계 B-K1·B-K3) — 안 보내면
+   * CP949 파일이 저장 한 번에 UTF-8 로 통째 변환된다(동의 없는 파일 변경).
+   */
+  encoding: string;
+  /** 원본에 BOM 이 있었다(텍스트에는 없다). 저장 시 다시 붙인다. */
+  bom: boolean;
+  /** 어떤 인코딩으로도 깨끗이 못 읽었다 — 뷰어는 읽기 전용 + 배너(저장하면 원본이 손상된다). */
+  lossy: boolean;
 }
 
 /** 이미지 미리보기용 파일 바이트 (read_file_base64). */
@@ -874,7 +884,10 @@ export type ErrorCode =
   | "TOOL_NOT_FOUND"
   // 같은 자원에 이미 요청이 진행 중 — 로컬 LLM은 한 번에 한 요청만 받는다(error.rs ErrorCode::Busy).
   // 61 번역 카드가 이 코드로 "대기 중"을 표시하고 3초 간격으로 재시도한다.
-  | "BUSY";
+  | "BUSY"
+  // 원본 인코딩으로 표현 못 하는 문자가 있어 저장을 **막았다**(설계 B-K4). 파일은 불변이다.
+  // 실패 토스트가 아니라 "UTF-8 로 저장 / 취소" 확인창을 띄우는 것이 이 코드의 계약이다.
+  | "UNMAPPABLE";
 
 // ---- API 클라이언트 전송 계약 (commands/http.rs §4.9 / §5.1) ----
 // 백엔드 HttpRequest의 camelCase serde와 1:1 정합. lib/apiclient.ts에서 조립한
@@ -985,6 +998,13 @@ export function isIpcError(e: unknown): e is IpcError {
 export function errorMessage(e: unknown): string {
   if (isIpcError(e)) return e.message;
   return e instanceof Error ? e.message : String(e);
+}
+
+/** `FileDiff.encoding`(encoding_rs 정규 이름)의 표시용 이름. 한국 사용자에게 "EUC-KR"은
+ *  낯선 표기라 실제로 쓰는 이름(CP949)으로 보여 준다. 저장·재조회에 나가는 값은 언제나
+ *  정규 이름 그대로다(이 함수는 화면 전용). */
+export function encodingLabel(name: string): string {
+  return name === "EUC-KR" ? "CP949" : name;
 }
 
 class IpcTimeoutError extends Error {
@@ -1122,11 +1142,15 @@ export const ipc = {
       { projectIds },
       // 백엔드 status 타임아웃(45초)보다 길게 — 거대/바쁜 레포에서 status가 느려도
       // 프론트가 먼저 끊지 않게 한다.
-      { timeoutMs: 50000, attempts: 2, lane: "background" },
+      // **재시도는 백엔드를 두 배로 만든다**(위 주석이 원래 의도한 값이 1이다): 타임아웃은 프론트
+      // 프라미스만 끊고 Rust 태스크는 취소되지 않아, 1차 배치의 git 프로세스가 살아 있는 채로
+      // 2차 배치가 또 뜬다. 유실되면 다음 워처 이벤트·포커스 복귀가 다시 조회한다.
+      { timeoutMs: 50000, attempts: 1, lane: "background" },
     ),
-  // 단일 diff — DiffTarget(worktree/index/commit) 어느 모드든 처리
-  getDiff: (projectId: string, target: DiffTarget) =>
-    call<FileDiff>("get_file_diff", { projectId, target }),
+  // 단일 diff — DiffTarget(worktree/index/commit) 어느 모드든 처리.
+  // encoding 을 주면 자동 탐지 대신 그 인코딩으로 읽는다(상태바의 "다른 인코딩으로 다시 열기", B-K6).
+  getDiff: (projectId: string, target: DiffTarget, encoding?: string) =>
+    call<FileDiff>("get_file_diff", { projectId, target, encoding }),
   // 플로팅 창이 floated PTY의 프로젝트 id를 조회 — 새 분할 패널을 같은 프로젝트로 연다.
   termProject: (termId: string) =>
     call<string | null>("term_project", { termId }),
@@ -1222,8 +1246,17 @@ export const ipc = {
       timeoutMs: 20_000,
     }),
   // Viewer 편집 저장 — 텍스트 파일 내용을 디스크에 쓴다(레포 상대 경로). 재시도 금지.
-  writeFile: (projectId: string, relPath: string, content: string) =>
-    callMutating<void>("write_file", { projectId, relPath, content }),
+  // encoding·bom 은 **열 때 받은 FileDiff 의 값을 그대로 되돌려 주는 것**이다(왕복, B-K3).
+  // 생략하면 UTF-8(기존 동작). 그 인코딩으로 못 쓰는 문자가 있으면 UNMAPPABLE 로 거절되고
+  // 파일은 손대지 않은 상태로 남는다 — 호출부가 "UTF-8 로 저장 / 취소"를 묻는다(B-K4).
+  writeFile: (
+    projectId: string,
+    relPath: string,
+    content: string,
+    encoding?: string,
+    bom?: boolean,
+  ) =>
+    callMutating<void>("write_file", { projectId, relPath, content, encoding, bom }),
   // 새 폴더 생성 (트리 컨텍스트 메뉴). 재시도 금지.
   createDir: (projectId: string, relPath: string) =>
     callMutating<void>("create_dir", { projectId, relPath }),

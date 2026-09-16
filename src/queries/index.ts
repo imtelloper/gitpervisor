@@ -1,6 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 import {
   keepPreviousData,
+  replaceEqualDeep,
   useInfiniteQuery,
   useMutation,
   useQueries,
@@ -353,11 +354,16 @@ function keepLastGoodStatuses(
 ): RepoStatus[] {
   if (!prev) return next;
   const prevById = new Map(prev.map((s) => [s.projectId, s]));
-  return next.map((s) => {
+  const merged = next.map((s) => {
     const old = prevById.get(s.projectId);
     if (s.error?.includes("시간 초과") && old && !old.error) return old;
     return s;
   });
+  // **구조 공유를 되살린다.** `structuralSharing` 에 함수를 주면 react-query 는 기본
+  // `replaceEqualDeep` 를 건너뛴다 — 위 map 이 매번 새 배열·새 객체 참조를 내므로 변경이
+  // 0건인 재조회(워처 폭풍·포커스 복귀)에도 `useStatus` 구독자 전원(사이드바 N개 + 변경 패널 +
+  // 툴바 + 상태바 + 파일트리)이 리렌더되고 프리페치 effect 까지 매번 다시 돈다.
+  return replaceEqualDeep(prev, merged) as RepoStatus[];
 }
 
 /** 전 프로젝트 상태 단일 배치 쿼리 — 요청 1개로 모든 사이드바 뱃지를 채운다 */
@@ -369,6 +375,10 @@ export function useStatuses() {
   return useQuery({
     queryKey: keys.statuses(key),
     queryFn: () => ipc.getStatuses(ids),
+    // 신선도는 워처(`repo://changed`)가 책임진다 — 0이면 알트탭 한 번마다
+    // (`refetchOnWindowFocus: true`) 전 레포 배치가 통째로 다시 돈다(프로젝트 21개 실측 22.5초).
+    // 10초면 창을 오가는 동안은 캐시를 쓰고, 워처가 놓친 변경도 곧 따라잡는다.
+    staleTime: 10_000,
     enabled: ids.length > 0,
     // 프로젝트 추가/제거로 키(전체 id 목록)가 바뀌어도 직전 상태를 유지한다 —
     // 그렇지 않으면 기존 프로젝트까지 전부 "불러오는 중"으로 떨어진다. 기존은 그대로
@@ -502,13 +512,43 @@ export function useClearQuarantine() {
   });
 }
 
+/**
+ * 사용자가 상태바에서 **직접 고른** 인코딩(설계 B-K6) — `projectId::path` → 인코딩 이름.
+ *
+ * 쿼리 키가 아니라 키 밖의 맵인 이유: 워처·저장이 diff 를 무효화하면 같은 키로 **다시**
+ * 조회되는데, 그때도 사용자의 선택이 살아 있어야 한다. 키에 넣으면 무효화 때마다
+ * 자동 탐지로 조용히 되돌아가고(=사용자가 고친 것이 풀리고), 그 상태로 저장하면 탐지가
+ * 틀린 인코딩으로 파일이 기록된다.
+ */
+const encodingOverrides = new Map<string, string>();
+const encodingKey = (projectId: string, path: string) => `${projectId}::${path}`;
+
+/**
+ * 지금 열려 있는 파일을 다른 인코딩으로 다시 연다(`null` = 자동 탐지로 복귀).
+ * 선택은 이 세션 동안 그 파일에 붙어 있고, 저장도 그 인코딩으로 나간다.
+ */
+export function useReopenWithEncoding() {
+  const qc = useQueryClient();
+  return (projectId: string, target: DiffTarget, encoding: string | null) => {
+    const k = encodingKey(projectId, target.path);
+    if (encoding) encodingOverrides.set(k, encoding);
+    else encodingOverrides.delete(k);
+    void qc.invalidateQueries({ queryKey: keys.diff(projectId, target) });
+  };
+}
+
 export function useDiff(projectId: string | null, target: DiffTarget | null) {
   // 이미지·동영상·오디오·Office·PDF는 뷰어가 diff보다 먼저 분기해 결과를 쓰지 않는다 — 부르면
   // 순수 낭비고, 동영상은 파일이 GB 단위일 수 있어 git spawn 비용이 더 크다. 아예 끈다.
   const media = !!target && opensInOwnViewer(target.path);
   return useQuery({
     queryKey: target ? keys.diff(projectId ?? "none", target) : ["diff", "none"],
-    queryFn: () => ipc.getDiff(projectId!, target!),
+    queryFn: () =>
+      ipc.getDiff(
+        projectId!,
+        target!,
+        encodingOverrides.get(encodingKey(projectId!, target!.path)),
+      ),
     enabled: !!projectId && !!target && !media,
     // 신선도는 watcher·변경 액션의 invalidate가 책임진다 — 캐시 히트 시 재스폰 없음
     staleTime: Infinity,
@@ -940,13 +980,24 @@ export function useDiscardFiles(projectId: string) {
   });
 }
 
-/** Viewer 편집 저장 — 파일을 디스크에 쓰고 status/diff만 갱신(히스토리·브랜치는 불변). */
+/** Viewer 편집 저장 — 파일을 디스크에 쓰고 status/diff만 갱신(히스토리·브랜치는 불변).
+ *  `encoding`·`bom` 은 연 파일의 것을 그대로 돌려보내는 값이다(왕복 — 설계 B-K3).
+ *  생략하면 UTF-8(기존 동작). */
 export function useWriteFile(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (v: { path: string; content: string }) =>
-      ipc.writeFile(projectId, v.path, v.content),
-    onError: (e) => useUi.getState().pushToast("error", errorMessage(e)),
+    mutationFn: (v: {
+      path: string;
+      content: string;
+      encoding?: string;
+      bom?: boolean;
+    }) => ipc.writeFile(projectId, v.path, v.content, v.encoding, v.bom),
+    // UNMAPPABLE 은 실패가 아니라 **질문**이다 — 호출부(DiffViewer)가 "UTF-8 로 저장 / 취소"를
+    // 묻는다. 여기서 토스트까지 띄우면 확인창과 빨간 토스트가 같이 뜬다.
+    onError: (e) => {
+      if (isIpcError(e) && e.code === "UNMAPPABLE") return;
+      useUi.getState().pushToast("error", errorMessage(e));
+    },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["statuses"] });
       void qc.invalidateQueries({ queryKey: ["diff"] });

@@ -251,8 +251,9 @@ export interface UiState {
   openImageEditor: (path: string, repoId?: string) => void;
   closeImageEditor: () => void;
   /** 터미널 세션 헤더의 Git 버튼이 여는 변경·로그 모달 대상(태스크 55). null = 닫힘. */
-  gitDialog: { projectId: string } | null;
-  openGitDialog: (projectId: string) => void;
+  gitDialog: { projectId: string; tab?: "changes" | "log" } | null;
+  /** tab 을 주면 그 탭으로 연다(사이드바 우클릭 → git log). 생략하면 기존대로 변경 탭. */
+  openGitDialog: (projectId: string, tab?: "changes" | "log") => void;
   closeGitDialog: () => void;
   /** 터미널 세션 헤더의 파일 트리 버튼이 여는 파일 트리 모달 대상(태스크 62). null = 닫힘. */
   fileTreeDialog: { projectId: string } | null;
@@ -803,7 +804,7 @@ export const useUi = create<UiState>((set) => ({
   closeImageEditor: () =>
     set({ imageEditorPath: null, imageEditorRepoId: null }),
   gitDialog: null,
-  openGitDialog: (projectId) => set({ gitDialog: { projectId } }),
+  openGitDialog: (projectId, tab) => set({ gitDialog: { projectId, tab } }),
   closeGitDialog: () => set({ gitDialog: null }),
   fileTreeDialog: null,
   openFileTreeDialog: (projectId) => set({ fileTreeDialog: { projectId } }),

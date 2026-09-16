@@ -660,3 +660,34 @@ powershell.exe -NoProfile -c "(Get-AppxPackage Microsoft.PowerShell).Version"   
   실제로 띄워 봐야 한다.
 - **CreateProcessW도 수십 초 막힐 수 있다.** 별칭 활성화는 AppInfo 서비스를 거친다 — 실행 호출에도 시간 제한이 필요하다.
 - 셸 하나가 깨지면 앱의 **모든** 터미널이 동시에 죽는다 — 대체 경로가 항상 있어야 한다.
+
+---
+
+## 13. Claude Code에서 Shift+Enter·Alt+Enter로 줄바꿈이 안 된다
+
+**증상.** 앱 터미널에서 Claude Code를 쓰는데 Shift+Enter(또는 Alt+Enter)를 누르면 줄이 바뀌는 대신
+**메시지가 그대로 전송**된다. 메인 pane에서는 되는데 **플로팅 창으로 분리한 터미널에서만** 그런 경우도 있다.
+
+**배경.** xterm.js는 기본적으로 Shift+Enter를 그냥 CR로 보낸다(Shift를 아예 안 본다) — Enter와 구분이
+없다. 그래서 앱이 직접 가로채 보낸다(`terminal-engine.ts`의 커스텀 키 핸들러):
+
+| 환경 | 나가는 바이트 |
+|---|---|
+| Windows + ConPTY(win32-input-mode) | `ESC [ 13;28;13;1;2;1 _` + up 레코드 (VK_RETURN, ALT 수식) |
+| macOS·Linux | `ESC CR` |
+
+Claude Code는 둘 다 줄바꿈으로 받는다(태스크 32에서 실측). **Windows에서 win32-input-mode 분기를 타지
+못하면** ESC CR 폴백이 나가는데, Windows ConPTY는 그걸 분해해 버려 전송으로 읽힐 수 있다.
+
+**확인.** 어느 경로를 타는지 그 창에서 직접 본다(디버그 빌드) — `window.__gpv.term.get(paneId).win32Input`
+이 Windows면 true여야 한다. PTY로 실제 나가는 바이트는 그 터미널에서 node를 raw 모드로 띄워 키를 눌러
+찍히는 값으로 본다(e2e 06이 같은 방식): CR이면 전송, ESC+CR이나 `ESC [ 13;28;…`이면 줄바꿈이다.
+
+**원인과 수정(2026-09-16).** `win32Input`은 그 xterm이 ConPTY 시작 프리앰블(DECSET 9001)을 **직접 파싱**
+했을 때만 켜졌다. 플로팅 분리·모아보기 재도킹은 살아 있는 PTY에 `term_attach`로 붙어 프리앰블을 다시
+받지 못하므로 영영 false로 남았다 — 그 창에서만 줄바꿈이 죽는 이유다. 지금은 Windows에서 **참으로 시작**
+한다(portable-pty가 `PSEUDOCONSOLE_WIN32_INPUT_MODE`로 무조건 연다). 감지는 보조로 남아 9001을 끄는 판이
+오면 내려간다. 회귀 가드는 e2e 13(플로팅 창의 `win32Input`)과 06(PTY 실제 바이트).
+
+**고치지 말 것.** CSI u(kitty 키보드 프로토콜)로 바꾸지 마라 — xterm.js 6에는 그 프로토콜 코드가 아예
+없어 협상이 불가능하고, 요청하지 않은 클라이언트에는 시퀀스가 프롬프트에 리터럴로 찍힌다.

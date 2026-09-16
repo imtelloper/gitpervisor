@@ -17,7 +17,6 @@ import {
   Type,
   X,
 } from "lucide-react";
-import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import {
   createContext,
   useCallback,
@@ -30,6 +29,7 @@ import {
 
 import { useQueryClient } from "@tanstack/react-query";
 
+import { copyWithToast } from "../../lib/clipboard";
 import { fileIcon, folderIcon } from "../../lib/file-icon";
 import {
   bytesToBase64,
@@ -551,9 +551,7 @@ export function FileTreePanel({
     projectPath ? `${projectPath}${sep}${toOsPath(rel)}` : toOsPath(rel);
 
   function copy(text: string, ok: string) {
-    void writeText(text)
-      .then(() => pushToast("success", ok))
-      .catch(() => pushToast("error", "복사에 실패했습니다"));
+    copyWithToast(text, ok);
     setMenu(null);
   }
 

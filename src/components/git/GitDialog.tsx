@@ -53,16 +53,32 @@ export function GitDialog() {
         onClick={(e) => e.stopPropagation()}
       >
         {/* key — 프로젝트가 바뀌면 탭·선택을 처음 상태로 되돌린다. */}
-        <Body key={gitDialog.projectId} projectId={gitDialog.projectId} onClose={close} />
+        <Body
+          key={gitDialog.projectId}
+          projectId={gitDialog.projectId}
+          initialTab={gitDialog.tab ?? "changes"}
+          onClose={close}
+        />
       </div>
     </div>
   );
 }
 
-function Body({ projectId, onClose }: { projectId: string; onClose: () => void }) {
+function Body({
+  projectId,
+  initialTab,
+  onClose,
+}: {
+  projectId: string;
+  initialTab: Tab;
+  onClose: () => void;
+}) {
   const { data: projects } = useProjects();
   const name = projects?.find((p) => p.id === projectId)?.name ?? projectId;
-  const [tab, setTab] = useState<Tab>("changes");
+  // Body 는 key={projectId} 라 프로젝트가 같으면 마운트가 유지된다 — 같은 프로젝트를 다른 탭으로
+  // 다시 열었을 때도 따라가게 effect 로 한 번 더 맞춘다(초기값만 두면 두 번째 호출이 무시된다).
+  const [tab, setTab] = useState<Tab>(initialTab);
+  useEffect(() => setTab(initialTab), [initialTab]);
   // 탭별 선택 — 변경/로그가 서로의 선택을 지우지 않는다.
   const [sel, setSel] = useState<Record<Tab, Sel | null>>({
     changes: null,

@@ -306,6 +306,22 @@ export async function run({ cdp, report: r, fix, port }) {
             (n) => n === 1,
           );
           r.check("플로팅 창: 로컬 스토어 시드", seeded === 1, `tabs=${seeded}`);
+          // **분리한 창에서도 Shift/Alt+Enter 가 같은 바이트로 나가야 한다.** 이 창의 xterm 은
+          // 살아 있는 PTY 에 `term_attach` 로 붙어 ConPTY 시작 프리앰블(`\x1b[?9001h`)을 다시 못
+          // 본다 — 감지에만 기대면 Windows 에서 win32Input 이 false 로 남아 `\x1b\r` 폴백을 타고,
+          // Claude Code 에서 줄바꿈이 안 된다(태스크 32 의 경로가 분리 창에서만 새던 구멍).
+          const fWin32 = await poll(
+            () =>
+              fcdp.eval(`(()=>{ const s=window.__gpv.terminals.getState(); const t=s.terminals[0];
+                const i = t && window.__gpv.term.get(t.activePaneId); return i ? i.win32Input : null; })()`),
+            (v) => v !== null,
+          );
+          const fIsWin = await fcdp.eval(`/Windows/i.test(navigator.userAgent)`);
+          r.check(
+            "플로팅 창(attach)도 win32-input-mode 로 친다 — Shift/Alt+Enter 가 메인과 같은 바이트",
+            fWin32 === fIsWin,
+            `win32Input=${fWin32} isWindows=${fIsWin}`,
+          );
           const mainTabs = await cdp.eval(`window.__gpv.terminals.getState().terminals.length`);
           await fcdp.eval(`(()=>{ const s=window.__gpv.terminals.getState(); const t=s.terminals[0];
             s.splitPane(t.id, t.activePaneId, "row", false); })()`);

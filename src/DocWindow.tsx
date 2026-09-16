@@ -39,6 +39,8 @@ const FolderWindow = lazy(() => import("./components/folder/FolderWindow"));
 const ReportView = lazy(() =>
   import("./components/report/ReportView").then((m) => ({ default: m.ReportView })),
 );
+/** git 로그 창. 위와 **같은 이유로 lazy** — 이 뷰는 DiffViewer(→Monaco)를 끌고 온다. */
+const LogWindow = lazy(() => import("./components/log/LogWindow"));
 
 /**
  * `doc-<id>` 창의 갈림길 — 대상에 `report` 가 있으면 **작업 리포트 창**, `folder` 가 있으면
@@ -57,6 +59,13 @@ export function DocWindow({ docId }: { docId: string }) {
     return (
       <Suspense fallback={<Loading />}>
         <FolderWindow root={target.folder} />
+      </Suspense>
+    );
+  }
+  if (target?.log) {
+    return (
+      <Suspense fallback={<Loading />}>
+        <LogWindow projectId={target.log} name={target.path} />
       </Suspense>
     );
   }

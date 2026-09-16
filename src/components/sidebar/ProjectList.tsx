@@ -1,4 +1,4 @@
-import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { copyWithToast } from "../../lib/clipboard";
 import { isMac, isMod } from "../../lib/platform";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
@@ -9,6 +9,7 @@ import {
   FolderPlus,
   FolderSync,
   HardDrive,
+  History,
   ImageOff,
   Palette,
   Plus,
@@ -20,6 +21,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { openLogWindow } from "../../lib/floating";
 import type { OpenTarget, Project } from "../../lib/ipc";
 import { errorMessage, ipc } from "../../lib/ipc";
 import { usePanelWidth } from "../../lib/use-panel-width";
@@ -329,11 +331,7 @@ export function ProjectList() {
   }
 
   function handleCopyPath(project: Project) {
-    void writeText(project.path)
-      .then(() =>
-        useUi.getState().pushToast("success", "프로젝트 경로를 복사했습니다"),
-      )
-      .catch(() => useUi.getState().pushToast("error", "경로 복사에 실패했습니다"));
+    copyWithToast(project.path, "프로젝트 경로를 복사했습니다");
     setMenu(null);
   }
 
@@ -468,7 +466,9 @@ export function ProjectList() {
           className="fixed z-50 min-w-44 rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl"
           style={{
             left: Math.min(menu.x, window.innerWidth - 190),
-            top: Math.min(menu.y, window.innerHeight - 300),
+            // 항목이 늘면 이 상수도 같이 늘려야 한다 — 안 그러면 마지막 항목이 화면 밖으로 나간다
+            // (항목 하나 ≈ 30px · 지금 11~12개 + 구분선 3개).
+            top: Math.min(menu.y, window.innerHeight - 340),
           }}
           onClick={(e) => e.stopPropagation()}
         >
@@ -481,6 +481,16 @@ export function ProjectList() {
             icon={Upload}
             label="git push"
             onClick={() => handlePush(menu.project)}
+          />
+          <MenuItem
+            icon={History}
+            label="git log"
+            onClick={() => {
+              // 별도 OS 창 — 프로젝트당 하나(다시 누르면 포커스). 하단 Log 패널·Git 모달과 달리
+              // 선택 프로젝트를 바꾸지 않아 지금 보던 화면을 가리지 않는다.
+              openLogWindow(menu.project.id, menu.project.name);
+              setMenu(null);
+            }}
           />
           <div className="my-1 border-t border-edge" />
           <MenuItem

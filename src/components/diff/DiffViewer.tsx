@@ -39,12 +39,12 @@ import {
 } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { errorMessage, ipc } from "../../lib/ipc";
+import { encodingLabel, errorMessage, ipc, isIpcError } from "../../lib/ipc";
 import type { DiffTarget } from "../../lib/ipc";
 import { isMod } from "../../lib/platform";
 import { isImage, isOffice, isPdf, isPlayable, languageOf, opensInOwnViewer } from "../../lib/language-map";
 import { translateRequest } from "../../lib/translate";
-import { useDiff, useSettings, useWriteFile } from "../../queries";
+import { useDiff, useReopenWithEncoding, useSettings, useWriteFile } from "../../queries";
 import { useUi } from "../../stores/ui";
 import { EmptyState } from "../common/EmptyState";
 import ImageView from "./ImageView";
@@ -259,11 +259,23 @@ export default function DiffViewer({
   const isOfficeView = isOffice(target.path);
   // PDF — 모드와 무관하게 워크트리 파일을 내장 pdf.js 뷰어로 렌더(보기 전용, M1).
   const isPdfView = isPdf(target.path);
+  // 자기 뷰어로 여는 파일(이미지·미디어·Office·PDF)은 useDiff 가 꺼져 있어 diff 가 **직전 파일의
+  // placeholder** 다 — 그 값으로 이 파일을 판정하면 안 된다(아래 lossy·nonUtf8·예열 공용 가드).
+  const ownViewer = opensInOwnViewer(target.path);
   const isMarkdown =
     isFileView && !isImageView && !isMediaView && languageOf(target.path) === "markdown";
+  // 인코딩을 확정하지 못했다(어떤 인코딩으로도 깨끗이 못 읽음) — 저장하면 읽으면서 잃은
+  // 바이트가 그대로 디스크에 박히므로 **읽기 전용**으로 연다(설계 B.3). placeholder(직전 파일
+  // 데이터)로는 판정하지 않는다 — 파일 전환 순간에 엉뚱한 파일이 잠긴다.
+  const lossy = !!diff?.lossy && !isPlaceholderData && !ownViewer;
+  // 비-UTF8 파일은 LSP 를 끈다(B-K8). LSP 프로토콜은 UTF-8 오프셋 전제라 위치가 어긋나고,
+  // 이름 바꾸기 같은 **되돌리기 어려운** 오작동으로 이어진다.
+  const nonUtf8 =
+    !!diff && !isPlaceholderData && !ownViewer && diff.encoding !== "UTF-8";
   // 파일뷰만 직접 편집한다. diff뷰(worktree/index)는 "편집" 버튼으로 파일뷰 전환.
   // 이미지·미디어는 편집 불가.
-  const editable = isFileView && !isImageView && !isMediaView && !isOfficeView && !isPdfView;
+  const editable =
+    isFileView && !isImageView && !isMediaView && !isOfficeView && !isPdfView && !lossy;
   const fileOptions = useMemo(
     () => ({
       ...FILE_OPTIONS,
@@ -284,6 +296,7 @@ export default function DiffViewer({
   // LSP 옵트인 — 이 프로젝트가 활성 목록에 있고 지원 언어일 때만 서버 기동(태스크 17 §3.4).
   const lspOn =
     editable &&
+    !nonUtf8 && // B-K8 — 비-UTF8 파일에서는 LSP 를 아예 켜지 않는다
     (settings?.lspEnabledProjects ?? []).includes(projectId) &&
     extToLang(path.split(".").pop() ?? "") != null;
   // projectId 포함 — 프로젝트가 달라도 상대경로가 같으면(예: 둘 다 src/App.tsx) 키가 겹쳐
@@ -360,7 +373,7 @@ export default function DiffViewer({
   const warmedKeyRef = useRef("");
   // 자기 뷰어로 여는 파일(이미지·미디어·Office·PDF)은 useDiff 가 꺼져 있어 diff 가 **직전 파일의 placeholder**
   // (keepPreviousData)다 — 그 import 로 이 파일 확장자(pdf 등, pathspec 없는 레포 전체 git grep)를 데우지 않는다.
-  const ownViewer = opensInOwnViewer(path);
+  // (ownViewer 는 위에서 정의 — lossy/nonUtf8 판정도 같은 가드를 쓴다.)
   // **placeholder 로는 데우지 않는다**(텍스트→텍스트 전환도 같은 함정이다). 새 파일의 쿼리가 아직
   // pending 인 첫 렌더에서 diff 는 직전 파일 내용이다. 그대로 돌면 warmedKeyRef 에 **새 키**를 찍어
   // 버려서, 진짜 내용이 도착한 렌더는 키가 같다는 이유로 건너뛴다 → 새 파일 import 는 첫 방문에
@@ -374,6 +387,11 @@ export default function DiffViewer({
 
   // ── 편집/저장 상태 ──
   const writeFile = useWriteFile(projectId);
+  const reopenWithEncoding = useReopenWithEncoding();
+  // 저장 때 **그대로 되돌려 줄** 인코딩(왕복 — B-K3). placeholder(직전 파일 데이터)로는
+  // 판정하지 않는다 — 값이 없으면 UTF-8 로 쓰는 기존 동작이다.
+  const encoding = diff && !isPlaceholderData ? diff.encoding : undefined;
+  const bom = diff && !isPlaceholderData ? diff.bom : undefined;
   const [dirty, setDirty] = useState(false);
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
   const baselineRef = useRef<string>(""); // 로드(또는 저장) 시 내용 — 변경 판정 기준
@@ -438,6 +456,39 @@ export default function DiffViewer({
     window.clearTimeout(lspChangeTimerRef.current);
     lspChangeTimerRef.current = window.setTimeout(() => lspChangeDoc(model), 250);
   };
+  // 마운트 시점의 diff 는 직전 파일의 placeholder 일 수 있어 nonUtf8 판정이 뒤늦게 확정된다 —
+  // 진짜 데이터가 온 뒤 여기서 바로잡는다(B-K8). 이게 없으면 CP949 파일이 UTF-8 파일에 이어
+  // 열렸을 때 LSP 가 그대로 붙어 있고, 반대로 UTF-8 파일이 영영 LSP 없이 열린다.
+  useEffect(() => {
+    if (!isFileView) return;
+    if (nonUtf8) {
+      if (lspModelRef.current) {
+        lspCloseDoc(lspModelRef.current);
+        lspModelRef.current = null;
+      }
+    } else if (lspOn && !lspModelRef.current) {
+      lspOpenRef.current();
+    }
+  }, [nonUtf8, lspOn, isFileView, editorKey]);
+
+  // 저장 성공 뒤 뒤처리(기준 갱신·초안 폐기·린트·LSP didSave) — 원래 인코딩 저장과
+  // "UTF-8 로 저장" 폴백(확인창)이 같은 것을 해야 하므로 한 곳에 둔다.
+  //
+  // `key` 는 **저장을 시작한 시점의** 파일이다. 확인창은 사용자가 누를 때까지 떠 있으므로
+  // 그 사이 다른 파일로 갈아탈 수 있는데, 그때 현재 에디터의 기준(baseline)을 남의 내용으로
+  // 덮으면 그 파일이 통째로 "변경 없음"이 되거나 방금 편집이 사라진다.
+  const afterSave = (content: string, key: string) => {
+    pushToast("success", "저장됨");
+    clearFileDraft(key); // 디스크에 반영됐으니 그 파일의 초안은 역할이 끝났다
+    if (editorKeyRef.current !== key) return; // 다른 파일로 옮겨 갔다 — 에디터 상태는 그쪽 것
+    baselineRef.current = content;
+    setDirty(false);
+    window.clearTimeout(draftTimerRef.current); // 대기 중 디바운스도 함께 취소
+    setRecoveredDraft(false);
+    lintRef.current(true); // 저장 후 린트 재실행(500ms 디바운스)
+    const savedModel = editorRef.current?.getModel();
+    if (savedModel) lspSaveDoc(savedModel); // LSP didSave(바인딩 안 됐으면 no-op)
+  };
 
   // 저장 — 에디터 현재 내용을 디스크에 쓴다. addCommand 클로저가 최신 값을 보도록 ref로.
   saveRef.current = () => {
@@ -454,20 +505,34 @@ export default function DiffViewer({
       }
       const content = ed.getValue();
       if (content === baselineRef.current) return; // 변경 없음
+      const key = editorKeyRef.current;
       try {
-        await writeFile.mutateAsync({ path, content });
-        baselineRef.current = content;
-        setDirty(false);
-        // 디스크에 반영됐으니 초안은 역할이 끝났다(대기 중 디바운스도 함께 취소).
-        window.clearTimeout(draftTimerRef.current);
-        clearFileDraft(editorKeyRef.current);
-        setRecoveredDraft(false);
-        pushToast("success", "저장됨");
-        lintRef.current(true); // 저장 후 린트 재실행(500ms 디바운스)
-        const savedModel = ed.getModel();
-        if (savedModel) lspSaveDoc(savedModel); // LSP didSave(바인딩 안 됐으면 no-op)
-      } catch {
-        /* useWriteFile onError가 토스트 처리 */
+        // **연 인코딩 그대로 되돌려 쓴다**(B-K3). 이 두 값을 빼먹으면 CP949 파일이 저장
+        // 한 번에 UTF-8 로 통째 변환된다 — 동의 없는 파일 변경이고 git diff 가 전체로 뜬다.
+        await writeFile.mutateAsync({ path, content, encoding, bom });
+        afterSave(content, key);
+      } catch (e) {
+        // 표현 불가 문자(B-K4) — **파일은 손대지 않은 상태**다. 조용히 `?` 로 뭉개지 않고 묻는다.
+        if (!isIpcError(e) || e.code !== "UNMAPPABLE") return; // 그 외는 useWriteFile 이 토스트
+        useUi.getState().askConfirm({
+          title: `${encodingLabel(encoding ?? "UTF-8")} 로 저장할 수 없습니다`,
+          message:
+            "이 인코딩으로 표현할 수 없는 문자가 있습니다. UTF-8 로 저장하면 파일 인코딩이 UTF-8 로 바뀝니다(취소하면 파일은 그대로입니다).",
+          detail: errorMessage(e),
+          confirmLabel: "UTF-8 로 저장",
+          onConfirm: () =>
+            void (async () => {
+              try {
+                await writeFile.mutateAsync({ path, content, encoding: "UTF-8", bom: false });
+                afterSave(content, key);
+                // 파일이 실제로 UTF-8 이 됐으니 수동 인코딩 선택(있었다면)도 풀어 자동 탐지로
+                // 돌린다 — 안 그러면 다음 조회가 UTF-8 파일을 옛 인코딩으로 읽는다.
+                reopenWithEncoding(projectId, target, null);
+              } catch {
+                /* useWriteFile onError가 토스트 처리 */
+              }
+            })(),
+        });
       }
     })();
   };
@@ -510,12 +575,15 @@ export default function DiffViewer({
     lintRef.current(); // 외부 디스크 변경 반영 시 구 마커 위치가 무효 → 재계산
   }, [diff, isFileView, revealTarget]);
 
+  // onFileMount 는 1회 등록 useCallback(=stale 클로저)이라 editable 을 ref 로 본다.
+  // 인코딩 탐지 실패 파일(lossy)은 editable=false 이므로 마운트에서 잠가야 한다.
+  const editableRef = useRef(editable);
+  editableRef.current = editable;
   const onFileMount: OnMount = useCallback((editor) => {
     editorRef.current = editor;
     if (selectionRef) selectionRef.current = () => selectedText(editor);
-    // 파일뷰 에디터는 항상 편집 가능 — options.readOnly가 마운트 시 안 먹는 경우가 있어
-    // 에디터 API로 명시 적용한다(편집 보장).
-    editor.updateOptions({ readOnly: false });
+    // options.readOnly가 마운트 시 안 먹는 경우가 있어 에디터 API로 명시 적용한다.
+    editor.updateOptions({ readOnly: !editableRef.current });
     baselineRef.current = editor.getValue();
     // 미저장 초안 복구 — 지난번 편집이 남아 있고 디스크 내용과 다르면 그 내용으로 되살린다.
     // 변경 리스너를 걸기 **전에** setValue 해야 복구 자체가 초안 저장을 다시 트리거하지 않는다.
@@ -736,6 +804,16 @@ export default function DiffViewer({
           {modeLabel(target)}
         </span>
       </div>
+
+      {lossy && (
+        <div className="flex h-7 shrink-0 items-center gap-2 border-b border-edge bg-panel px-3 text-[11px]">
+          <FileWarning size={12} className="shrink-0 text-warn" />
+          <span className="flex-1 truncate text-fg-muted">
+            인코딩을 확정하지 못했습니다 — 읽기 전용으로 엽니다. 저장하면 원본이 손상됩니다.
+            상태바에서 인코딩을 직접 고르면 편집할 수 있습니다.
+          </span>
+        </div>
+      )}
 
       {recoveredDraft && (
         <div className="flex h-7 shrink-0 items-center gap-2 border-b border-edge bg-panel px-3 text-[11px]">

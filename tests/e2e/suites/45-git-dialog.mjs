@@ -11,13 +11,17 @@
 // 픽스처의 추적 파일 `src/app.txt`를 한 줄 고쳐 미커밋 변경 1개를 만든다(03-status-changes 관례).
 export const name = "Git 변경·로그 모달 (모달 로컬 선택 · 전역 불변 · 모아보기 유지 · 헤더 버튼·Esc)";
 
+import { connectLabel } from "../lib/cdp.mjs";
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const J = JSON.stringify;
 
+const WIN_API = "/node_modules/@tauri-apps/api/webviewWindow.js";
 const REL = "src/app.txt";
 const MODAL = `document.querySelector('div.fixed.inset-0.z-50')`;
 
-export async function run({ cdp, report: r, fix }) {
+export async function run({ cdp, report: r, fix, port }) {
+  const cdpPort = port ?? cdp.cdpPort ?? 29222;
   const hooks = await cdp.eval(
     `!!(window.__gpv && window.__gpv.ui && window.__gpv.queryClient)`,
   );
@@ -241,6 +245,90 @@ export async function run({ cdp, report: r, fix }) {
     await esc();
     const closed = await poll(dialogOpen, (v) => v === false, 12, 250);
     r.check("Esc → 모달 닫힘(gitDialog === null)", closed === false, `open=${closed}`);
+
+    // ── ⑤ 탭을 지정해 열기(사이드바 우클릭 → git log 가 쓰는 계약) ──────────
+    // 기본값은 '변경'이라, 지정이 안 먹으면 아래 selected 가 '변경'으로 남아 빨개진다.
+    const tabState = () =>
+      cdp.eval(`(()=>{
+        const bs = Array.from(document.querySelectorAll('div.fixed.inset-0.z-50 button[role="tab"]'));
+        const on = bs.find(b => b.getAttribute('aria-selected') === 'true');
+        return { tabs: bs.map(b => b.textContent.trim()), selected: on ? on.textContent.trim() : null };
+      })()`);
+    await cdp.eval(
+      `window.__gpv.ui.getState().openGitDialog(${J(fix.projectId)}, "log")`,
+    );
+    await poll(dialogOpen, (v) => v === true, 12, 250);
+    const onLog = await poll(tabState, (v) => v?.selected === "로그", 16, 250);
+    // 반증: 같은 모달을 탭 인자 없이 다시 열면 '변경'이다(선택 표시 판정이 유효하다는 증거).
+    await cdp.eval(`window.__gpv.ui.getState().closeGitDialog()`);
+    await sleep(150);
+    await cdp.eval(`window.__gpv.ui.getState().openGitDialog(${J(fix.projectId)})`);
+    await poll(dialogOpen, (v) => v === true, 12, 250);
+    const onChanges = await poll(tabState, (v) => v?.selected === "변경", 16, 250);
+    r.check(
+      "openGitDialog(pid, 'log') → 로그 탭으로 열린다 · 반증: 인자 없이 열면 변경 탭",
+      onLog?.selected === "로그" && onChanges?.selected === "변경",
+      `log=${J(onLog)} 기본=${J(onChanges)}`,
+    );
+    await cdp.eval(`window.__gpv.ui.getState().closeGitDialog()`);
+    await poll(dialogOpen, (v) => v === false, 12, 250);
+
+    // ── ⑥ git log **별도 창**(사이드바 우클릭 메뉴가 부르는 것과 같은 계약) ──────────
+    // 창 개수만 세면 "엉뚱한 프로젝트를 열어도 초록"이라 **그 창이 읽은 프로젝트**로 판정한다.
+    const arr = (v) => (Array.isArray(v) ? v : []);
+    const labels = () =>
+      cdp.eval(
+        `(async()=>{ try{ const m=await import(${J(WIN_API)}); return (await m.getAllWebviewWindows()).map(w=>w.label); }catch(e){ return ['ERR:'+String(e.message||e)]; } })()`,
+      );
+    const before = arr(await labels());
+    await cdp.eval(`window.__gpv.openLogWindow(${J(fix.projectId)}, "e2e-log")`);
+    const logLabel = await poll(
+      async () => arr(await labels()).find((l) => l.startsWith("doc-") && !before.includes(l)) ?? null,
+      (v) => !!v,
+      24,
+      500,
+    );
+    let inWindow = null;
+    if (logLabel) {
+      const lcdp = await connectLabel(logLabel, { port: cdpPort }).catch(() => null);
+      if (lcdp) {
+        // 그 창이 **이 프로젝트의** 로그를 읽었나 — 커밋 행이 뜨고, 쿼리 키에 이 projectId 가 있다.
+        inWindow = await poll(
+          () =>
+            lcdp.eval(`(()=>{
+              // doc 창의 QueryClient 는 __gpv.docQueryClient 로 노출된다(main.tsx, 창별 분리).
+              const qc = window.__gpv && (window.__gpv.docQueryClient || window.__gpv.queryClient);
+              const keys = qc ? qc.getQueryCache().getAll().map(q => JSON.stringify(q.queryKey)) : [];
+              return {
+                title: (document.body.textContent || '').includes('git log'),
+                log: keys.filter(k => k.startsWith('["log"')),
+              };
+            })()`),
+          (v) => Array.isArray(v?.log) && v.log.some((k) => k.includes(fix.projectId)),
+          24,
+          500,
+        );
+        lcdp.close();
+      }
+    }
+    // 싱글턴 — 같은 프로젝트를 다시 열면 창이 늘지 않는다(Rust 가 포커스만 준다).
+    await cdp.eval(`window.__gpv.openLogWindow(${J(fix.projectId)}, "e2e-log")`);
+    await sleep(1500);
+    const dupes = arr(await labels()).filter((l) => l === logLabel).length;
+    r.check(
+      "사이드바 계약 — openLogWindow → doc-* 창이 **그 프로젝트의** 로그를 읽는다 · 다시 열어도 1개(싱글턴)",
+      !!logLabel &&
+        Array.isArray(inWindow?.log) &&
+        inWindow.log.some((k) => k.includes(fix.projectId)) &&
+        dupes === 1,
+      `label=${logLabel} 창안=${J(inWindow)} 중복=${dupes}`,
+    );
+    if (logLabel)
+      await cdp
+        .eval(
+          `(async()=>{ try{ const m=await import(${J(WIN_API)}); for(const w of await m.getAllWebviewWindows()){ if(w.label===${J(logLabel)}) await w.close(); } return true; }catch(e){ return false; } })()`,
+        )
+        .catch(() => {});
 
     // ── ③ 모아보기가 열린 채로 같은 조작 → 모아보기 유지 ────────────────────
     await cdp.eval(`window.__gpv.ui.getState().setAggregateOpen(true)`);

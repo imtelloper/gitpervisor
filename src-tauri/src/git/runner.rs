@@ -148,6 +148,12 @@ pub async fn run_git_env(
     #[cfg(unix)]
     cmd.process_group(0); // 새 프로세스 그룹 리더 — 타임아웃 시 손자까지 killpg로 정리
 
+    // 스폰부터 수집까지 잰다 — 이 앱에서 git 비용은 **프로세스 생성**이 지배한다(이 머신 실측 바닥 ≈60ms,
+    // `DOCS/file-tree-performance-design.md`). 여기 한 곳이 모든 git 호출의 관문이라 로그도 여기 하나면 된다.
+    // `GPV_GIT_TIMING=1` 일 때만 찍는다 — 상시 켜면 status 배치 한 번에 수십 줄이 쌓인다.
+    let timing = std::env::var_os("GPV_GIT_TIMING").is_some();
+    let started = timing.then(std::time::Instant::now);
+
     let child = cmd
         .spawn()
         .map_err(|e| IpcError::new(ErrorCode::Io, format!("git 실행 실패: {e}")))?;
@@ -168,6 +174,17 @@ pub async fn run_git_env(
             )
         })?
         .map_err(|e| IpcError::new(ErrorCode::Io, format!("git 출력 수집 실패: {e}")))?;
+
+    if let Some(t0) = started {
+        // 인자 전문을 찍는다 — 어떤 하위 명령이 느린지가 핵심이고, 인자는 배열이라 비밀이 섞이지 않는다.
+        log::info!(
+            "[git] {}ms {:?} cwd={} out={}B",
+            t0.elapsed().as_millis(),
+            args,
+            cwd.map(|p| p.display().to_string()).unwrap_or_default(),
+            out.stdout.len()
+        );
+    }
 
     Ok(GitOutput {
         code: out.status.code().unwrap_or(-1),

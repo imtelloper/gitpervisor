@@ -69,6 +69,8 @@ const SUITES = [
   "./suites/60-favorite-folders.mjs",
   "./suites/61-pdf.mjs",
   "./suites/62-pdf-spike.mjs",
+  // 비-UTF8 파일을 만들었다가 지운다 — 루트 목록·status 개수를 재는 스위트 뒤에 둔다.
+  "./suites/63-encoding.mjs",
   // 잔디·요약. 자기 전용 레포를 따로 만들어 쓴다(공유 픽스처엔 앞선 스위트의 오늘 커밋이 쌓인다).
   "./suites/48-report.mjs",
   // 번역 본문 단언은 LLM(런타임+모델)이 준비된 경우에만 — 아니면 그 부분만 skip 한다.

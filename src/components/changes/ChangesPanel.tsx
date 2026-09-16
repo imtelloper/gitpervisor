@@ -10,11 +10,11 @@ import {
   Undo2,
   X,
 } from "lucide-react";
-import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { useEffect, useRef, useState } from "react";
 
 import type { DiffTarget, FileChange, RepoStatus } from "../../lib/ipc";
 import { KIND_BADGE } from "../../lib/change-kind";
+import { copyWithToast } from "../../lib/clipboard";
 import { fileIcon } from "../../lib/file-icon";
 import { splitPath } from "../../lib/format";
 import { usePanelCollapsed, usePanelWidth } from "../../lib/use-panel-width";
@@ -440,9 +440,7 @@ function RepoChanges({
   };
 
   const copyText = (text: string, ok: string) => {
-    void writeText(text)
-      .then(() => pushToast("success", ok))
-      .catch(() => pushToast("error", "복사에 실패했습니다"));
+    copyWithToast(text, ok);
     setMenu(null);
   };
 

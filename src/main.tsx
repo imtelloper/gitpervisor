@@ -18,6 +18,7 @@ import { armEngagementTracking } from "./lib/engagement";
 import {
   docTarget,
   openDocWindow,
+  openLogWindow,
   openReportWindow,
   warmFloatingWindowPool,
 } from "./lib/floating";
@@ -91,6 +92,7 @@ if (import.meta.env.DEV) {
     projectColor: { PROJECT_HUES, projectPalette, assignProjectSlots, FG, FLOORS },
     openDocWindow, // 문서 창 e2e 34 — 더블클릭이 부르는 것과 같은 계약을 직접 구동
     openReportWindow, // 리포트 창 e2e 48 ⑩ — 우클릭 메뉴가 부르는 것과 같은 계약
+    openLogWindow, // git 로그 창 — 사이드바 우클릭 메뉴가 부르는 것과 같은 계약
     // 리포트 프롬프트 조립 e2e 48 ⑧ — LLM 없이 "무엇을 보내는가"만 잰다(순수 함수).
     report: { buildMessages, chatMessages, scopeKey },
     // PDF 주석 스파이크 하니스(S1) — e2e 62. 동적 import 라 메인 청크에 안 들어간다. 첫 open 이
@@ -156,7 +158,7 @@ if (label === "aggregate") {
     // 폴더 창(태스크 66)·리포트 창(67)은 프로젝트 상대경로 diff 를 읽지 않는다 — projectId 가
     // 빈 문자열이라 여기서 걸러 두지 않으면 뜰 때마다 실패할 게 뻔한 IPC 를 한 번씩 태운다.
     // 자기 뷰어로 여는 파일(PDF·이미지 등)은 diff를 쓰지 않는다 — git spawn 0회.
-    if (t && !t.folder && !t.report && !opensInOwnViewer(t.path)) {
+    if (t && !t.folder && !t.report && !t.log && !opensInOwnViewer(t.path)) {
       const target = { mode: "file", path: t.path } as const;
       void docQc.prefetchQuery({
         queryKey: keys.diff(t.projectId, target),

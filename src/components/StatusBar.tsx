@@ -1,9 +1,11 @@
+import { skipToken, useQuery } from "@tanstack/react-query";
 import { GitBranch, Gauge } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import type { Project, UsageWindow } from "../lib/ipc";
+import type { FileDiff, Project, UsageWindow } from "../lib/ipc";
+import { encodingLabel } from "../lib/ipc";
 import { relativeTime } from "../lib/format";
-import { useClaudeUsage, useProjects, useStatus } from "../queries";
+import { keys, useClaudeUsage, useProjects, useReopenWithEncoding, useStatus } from "../queries";
 import { useAgentActivity } from "../stores/agentActivity";
 import { useUi } from "../stores/ui";
 
@@ -17,7 +19,7 @@ export function StatusBar({ project }: { project: Project | null }) {
   }, []);
 
   return (
-    <footer className="flex h-6 shrink-0 items-center gap-3 border-t border-edge bg-panel px-3 text-[11px] text-fg-dim">
+    <footer className="relative flex h-6 shrink-0 items-center gap-3 border-t border-edge bg-panel px-3 text-[11px] text-fg-dim">
       <ClaudeUsageBar />
       {project ? (
         <>
@@ -32,6 +34,7 @@ export function StatusBar({ project }: { project: Project | null }) {
           )}
           <div className="ml-auto flex shrink-0 items-center gap-2">
             <AgentChips />
+            <EncodingPicker projectId={project.id} />
             <span>
               {dataUpdatedAt > 0 &&
                 `마지막 갱신 ${relativeTime(dataUpdatedAt, now)}`}
@@ -42,6 +45,98 @@ export function StatusBar({ project }: { project: Project | null }) {
         <span>Gitpervisor</span>
       )}
     </footer>
+  );
+}
+
+/** 다시 열기 메뉴에 올리는 인코딩 — 국내에서 실제로 마주치는 것들만. 값은 encoding_rs
+ *  정규 이름(= 백엔드가 그대로 되받는 label)이다. */
+const ENCODING_CHOICES = [
+  "UTF-8",
+  "EUC-KR",
+  "Shift_JIS",
+  "GBK",
+  "Big5",
+  "UTF-16LE",
+  "UTF-16BE",
+  "windows-1252",
+];
+
+/**
+ * 지금 뷰어에 열린 파일의 인코딩 표시 + **다른 인코딩으로 다시 열기**(설계 B-K6).
+ *
+ * 탐지는 언제나 확률이다. 사람이 뒤집을 수단 없이 자동 탐지만 두면 오탐이 곧 버그 신고가
+ * 되고, 더 나쁘게는 오탐된 인코딩으로 **저장**된다. 여기서 고른 값은 그 파일에 붙어
+ * 저장 경로까지 따라간다.
+ *
+ * diff 를 **조회하지 않는다**(`skipToken`) — 뷰어가 이미 채워 둔 캐시만 읽는다. 여기서
+ * 진짜 쿼리를 걸면 워처가 diff 를 무효화할 때마다 상태바가 git show 를 한 번씩 더 태운다.
+ */
+function EncodingPicker({ projectId }: { projectId: string }) {
+  const target = useUi((s) => s.selectedDiff);
+  const repoId = useUi((s) => s.selectedDiffRepoId);
+  const reopen = useReopenWithEncoding();
+  const [open, setOpen] = useState(false);
+  const id = repoId ?? projectId;
+  const { data: diff } = useQuery<FileDiff>({
+    queryKey: target ? keys.diff(id, target) : ["diff", "none"],
+    queryFn: skipToken,
+  });
+
+  if (!target || !diff || diff.isBinary || diff.tooLarge) return null;
+  const label = `${encodingLabel(diff.encoding)}${diff.bom ? " (BOM)" : ""}`;
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        title={
+          diff.lossy
+            ? "인코딩을 확정하지 못했습니다 — 직접 고르세요"
+            : "파일 인코딩 — 클릭해 다른 인코딩으로 다시 엽니다"
+        }
+        className={`shrink-0 rounded px-1.5 py-0.5 font-mono hover:bg-raised hover:text-fg ${
+          diff.lossy ? "text-warn" : ""
+        }`}
+      >
+        {label}
+        {diff.lossy && " ?"}
+      </button>
+      {open && (
+        <>
+          {/* 바깥 클릭으로 닫기 — 메뉴보다 아래(z) 에 깔린다 */}
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute bottom-full right-2 z-50 mb-1 min-w-40 rounded-md border border-edge bg-panel py-1 text-[12px] shadow-xl">
+            <button
+              type="button"
+              onClick={() => {
+                reopen(id, target, null);
+                setOpen(false);
+              }}
+              className="block w-full px-3 py-1 text-left hover:bg-raised hover:text-fg"
+            >
+              자동 탐지
+            </button>
+            <div className="my-1 border-t border-edge" />
+            {ENCODING_CHOICES.map((enc) => (
+              <button
+                key={enc}
+                type="button"
+                onClick={() => {
+                  reopen(id, target, enc);
+                  setOpen(false);
+                }}
+                className={`block w-full px-3 py-1 text-left font-mono hover:bg-raised hover:text-fg ${
+                  enc === diff.encoding ? "text-accent" : ""
+                }`}
+              >
+                {encodingLabel(enc)}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </>
   );
 }
 

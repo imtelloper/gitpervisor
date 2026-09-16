@@ -14,6 +14,7 @@ mod proc_icons;
 mod report;
 mod state;
 mod sysinfo_static;
+mod text;
 mod tools;
 mod watcher;
 mod webview_guard;
