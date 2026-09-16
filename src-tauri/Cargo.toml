@@ -74,6 +74,7 @@ tauri-plugin-process = "2"
 # 화면 캡쳐 전역 단축키(DOCS/screen-capture-design.md §5.4). 앱이 포커스가 아닐 때 동작하는 것이
 # 기능의 전제라 인앱 단축키로는 대체되지 않는다. 등록은 Rust에서만 하므로 JS 권한은 안 준다.
 tauri-plugin-global-shortcut = "2"
+trash = "5.2.9"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # native-tls(tiberius/sqlx/lettre/redis)가 Linux에서 링크하는 시스템 openssl 대신 소스에서 빌드한다 —

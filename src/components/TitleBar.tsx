@@ -19,6 +19,7 @@ import { useProjects, useQuarantinedTools, useSettings, useSetSettings } from ".
 import { useOccludesWebview } from "../stores/occlusion";
 import { useTerminals } from "../stores/terminals";
 import { useUi } from "../stores/ui";
+import { FolderPeek } from "./folder/FolderPeek";
 import { GlobalMemoPopover } from "./memo/GlobalMemoPopover";
 import { SysMonitor } from "./SysMonitor";
 import { PromptHistoryButton } from "./workspace/TermSessionControls";
@@ -113,15 +114,43 @@ const hotkeyLabel = isMac ? `${modLabel}⇧A` : `${modLabel}+Shift+A`;
  * 목록은 `Settings.favoriteFolders` 에 저장되고, **그 목록이 곧 백엔드의 허용 루트다** —
  * 여기서 지우면 그 폴더를 읽을 방법도 함께 사라진다(commands/favorites.rs `allowed`).
  */
-function FavoritesButton() {
+export function FavoritesButton({ className }: { className?: string }) {
   const [open, setOpen] = useState(false);
   const [presets, setPresets] = useState<FavoriteFolder[]>([]);
   const { data: settings } = useSettings();
   const setSettings = useSetSettings();
   const favs = settings?.favoriteFolders ?? [];
 
+  /** 지금 미리보기를 펼친 즐겨찾기 경로(없으면 null) — FolderPeek 참조. */
+  const [peek, setPeek] = useState<string | null>(null);
+  const peekTimer = useRef<number | null>(null);
+  /** 항목 위를 **스쳐 지나갈 때마다** favList/favThumb 가 나가지 않게 한 박자 쉰다.
+   *  닫기는 지연 없이 즉시다 — 늦게 닫히면 남의 폴더 내용이 잠깐 남아 오해를 준다. */
+  const showPeek = (p: string | null) => {
+    if (peekTimer.current !== null) window.clearTimeout(peekTimer.current);
+    if (p === null) {
+      setPeek(null);
+      return;
+    }
+    peekTimer.current = window.setTimeout(() => setPeek(p), 160);
+  };
+  useEffect(
+    () => () => {
+      if (peekTimer.current !== null) window.clearTimeout(peekTimer.current);
+    },
+    [],
+  );
+
+  // **네이티브 자식 webview를 가려야 한다.** 미리보기는 드롭다운보다 훨씬 왼쪽(256px)까지
+  // 뻗어 브라우저 pane 위로 올라가는데, webview는 React DOM과 z-합성되지 않아 가만두면
+  // 패널이 그 뒤로 숨는다 — "호버해도 아무것도 안 뜬다"로 보인다(stores/occlusion 주석의 그 유형).
+  useOccludesWebview(open);
+
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      setPeek(null);
+      return;
+    }
     // 프리셋은 열 때마다 다시 묻는다 — 사용자가 그 사이 스크린샷 폴더를 만들었을 수 있다(값싸다).
     void ipc.favPresets().then(setPresets).catch(() => setPresets([]));
     const close = () => setOpen(false);
@@ -180,16 +209,23 @@ function FavoritesButton() {
     <div className="relative mr-2.5" onClick={(e) => e.stopPropagation()}>
       <button
         onClick={() => setOpen((v) => !v)}
-        title="즐겨찾기 폴더 — 스크린샷·다운로드 폴더를 새 창으로 열어 봅니다"
-        className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] ${
+        title="즐겨찾기 폴더 — 항목에 호버하면 최근 파일 미리보기(클릭: 경로 복사), 항목 클릭은 새 창"
+        className={`flex items-center gap-1 rounded ${
           open ? "bg-raised text-accent" : "text-fg-muted hover:bg-raised hover:text-fg"
-        }`}
+        } ${className ?? "px-1.5 py-0.5 text-[10px]"}`}
       >
         <FolderOpen size={11} /> 폴더
       </button>
 
       {open && (
-        <div className="absolute right-0 top-6 z-50 min-w-56 rounded-md border border-edge bg-panel py-1 text-[12px] shadow-xl">
+        // onMouseLeave 는 **컨테이너에** 건다(항목이 아니라) — 항목에서 왼쪽 미리보기 패널로
+        // 넘어가는 순간 항목의 mouseleave 가 떠서 패널이 닫히기 때문이다. 패널은 이 컨테이너의
+        // 자식이라 그 이동이 컨테이너를 벗어나지 않는다.
+        <div
+          onMouseLeave={() => showPeek(null)}
+          className="absolute right-0 top-6 z-50 min-w-56 rounded-md border border-edge bg-panel py-1 text-[12px] shadow-xl"
+        >
+          {peek && <FolderPeek path={peek} />}
           {favs.length === 0 && unadded.length === 0 && (
             <div className="px-3 py-1.5 text-[11px] text-fg-dim">
               등록된 폴더가 없습니다
@@ -197,7 +233,11 @@ function FavoritesButton() {
           )}
 
           {favs.map((f) => (
-            <div key={f.path} className="group/fav flex items-center">
+            <div
+              key={f.path}
+              onMouseEnter={() => showPeek(f.path)}
+              className="group/fav flex items-center"
+            >
               <button
                 onClick={() => {
                   openFolderWindow(f.path);
@@ -208,7 +248,7 @@ function FavoritesButton() {
                   rename(f);
                   setOpen(false);
                 }}
-                title={`${f.path}\n우클릭: 이름 바꾸기`}
+                title={`${f.path}\n호버: 최근 파일 미리보기 · 클릭: 창으로 열기 · 우클릭: 이름 바꾸기`}
                 className="flex min-w-0 flex-1 items-center gap-2 px-3 py-1.5 text-left text-fg-muted hover:bg-raised hover:text-fg"
               >
                 <FolderOpen size={13} className="shrink-0" />
@@ -229,6 +269,7 @@ function FavoritesButton() {
             <button
               key={p.path}
               onClick={() => add(p)}
+              onMouseEnter={() => showPeek(null)}
               title={`${p.path}\n클릭하면 즐겨찾기에 추가합니다`}
               className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-fg-dim hover:bg-raised hover:text-fg"
             >
@@ -240,6 +281,7 @@ function FavoritesButton() {
           <div className="my-1 border-t border-edge" />
           <button
             onClick={() => void browse()}
+            onMouseEnter={() => showPeek(null)}
             className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-fg-muted hover:bg-raised hover:text-fg"
           >
             <Plus size={13} className="shrink-0" />
@@ -289,7 +331,7 @@ function AggregateButton() {
  * 작업 리포트 토글 — 잔디 + 기간 요약(태스크 60). 프로젝트가 하나도 없으면 보일 게 없어 숨긴다.
  * 우클릭 메뉴로 별도 창(태스크 67)도 연다.
  */
-function ReportButton() {
+export function ReportButton({ className }: { className?: string }) {
   const reportOpen = useUi((s) => s.reportOpen);
   const toggleReport = useUi((s) => s.toggleReport);
   const { data: projects } = useProjects();
@@ -316,11 +358,11 @@ function ReportButton() {
         title={
           "작업 리포트 — 잔디(활동 히트맵)와 일간·주간·월간 요약\n우클릭: 새 창으로 열기"
         }
-        className={`mr-2.5 flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] ${
+        className={`flex items-center gap-1 rounded ${
           reportOpen
             ? "bg-raised text-accent"
             : "text-fg-muted hover:bg-raised hover:text-fg"
-        }`}
+        } ${className ?? "mr-2.5 px-1.5 py-0.5 text-[10px]"}`}
       >
         <CalendarDays size={11} /> 리포트
       </button>
@@ -371,7 +413,7 @@ function ReportButton() {
  * 프로젝트 메모(사이드바 우클릭 → 메모)와 목록이 완전히 분리돼 있어 프로젝트 선택·터미널
  * 유무와 무관하다 — 그래서 모아보기 버튼과 달리 **항상 표시**한다.
  */
-function GlobalMemoButton() {
+export function GlobalMemoButton({ className }: { className?: string }) {
   const btnRef = useRef<HTMLButtonElement>(null);
   // 타이틀바 우측 버튼이라 좌측 기준(left)이면 팝오버가 창 밖으로 잘린다 — 우측 모서리 정렬
   const [anchor, setAnchor] = useState<{ right: number; top: number } | null>(
@@ -396,11 +438,11 @@ function GlobalMemoButton() {
         ref={btnRef}
         onClick={onClick}
         title="메모장 — 프로젝트와 무관한 전역 메모"
-        className={`mr-2.5 flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] ${
+        className={`flex items-center gap-1 rounded ${
           anchor
             ? "bg-raised text-accent"
             : "text-fg-muted hover:bg-raised hover:text-fg"
-        }`}
+        } ${className ?? "mr-2.5 px-1.5 py-0.5 text-[10px]"}`}
       >
         <StickyNote size={11} /> 메모장
       </button>

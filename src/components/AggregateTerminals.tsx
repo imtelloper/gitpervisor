@@ -34,6 +34,11 @@ import {
   snapshotSelection,
 } from "../lib/terminal";
 import { translateRequest } from "../lib/translate";
+import {
+  FavoritesButton,
+  GlobalMemoButton,
+  ReportButton,
+} from "./TitleBar";
 import { useProjects, useSettings } from "../queries";
 import { useAgentActivity } from "../stores/agentActivity";
 import { useBrowsers } from "../stores/browser";
@@ -590,10 +595,19 @@ export function AggregateTerminals() {
             </button>
           </span>
         )}
-        {/* 전체 프롬프트 컬럼 마스터 토글 — 별도 창에만 둔다. 메인 안 모아보기는 바로 위
-            TitleBar에 같은 버튼이 있어 한 화면에 두 개가 보이면 안 된다. */}
+        {/* 아래 넷은 **별도 창에만 둔다.** 메인 안 모아보기는 바로 위 TitleBar에 같은 버튼이
+            있어 한 화면에 두 개가 보이면 안 된다. 별도 창은 TitleBar가 없어서, 없으면 이 창에서
+            스크린샷 경로를 집거나 메모를 열려고 메인 창으로 건너가야 한다 — 모아보기를 따로
+            띄우는 이유(터미널 벽을 한 화면에 두는 것) 자체를 깨는 왕복이다.
+            TitleBar에서 그대로 가져온다(같은 동작이 두 벌이 되면 한쪽만 고쳐진다).
+            className을 넘기면 크기 기본값이 **교체된다** — 이 헤더의 다른 버튼과 같은 치수로. */}
         {IS_AGGREGATE_WINDOW && (
-          <PromptHistoryButton className="shrink-0 px-2 py-1 text-xs" />
+          <>
+            <FavoritesButton className="shrink-0 px-2 py-1 text-xs" />
+            <ReportButton className="shrink-0 px-2 py-1 text-xs" />
+            <PromptHistoryButton className="shrink-0 px-2 py-1 text-xs" />
+            <GlobalMemoButton className="shrink-0 px-2 py-1 text-xs" />
+          </>
         )}
         {/* 탭 모으기 ON/OFF — 프로젝트·탭이 늘면 칩 바가 스크롤로 밀린다. 묶으면 프로젝트당
             칩 하나로 줄고, 개별 탭은 묶음 칩 호버 시 드롭다운으로 편다. */}

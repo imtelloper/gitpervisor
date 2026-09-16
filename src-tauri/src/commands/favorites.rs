@@ -428,6 +428,22 @@ pub fn fav_open(state: State<'_, AppState>, path: String, how: String) -> Result
     }
 }
 
+/// 즐겨찾기 폴더 안의 항목을 **휴지통으로 보낸다**(영구 삭제가 아니다).
+///
+/// 미리보기 패널(FolderPeek)의 삭제는 확인창 없이 한 번에 나가는 동선이다 — 그래야 "스크린샷
+/// 찍고 바로 정리"가 성립한다. 그 대가로 **되돌릴 수 있어야 한다**: 오발 한 번에 스크린샷이
+/// 영영 사라지면 안 되므로 `std::fs::remove_file` 이 아니라 OS 휴지통으로 보낸다
+/// (Windows 휴지통 / macOS 휴지통 / freedesktop Trash — `trash` 크레이트가 세 경로를 덮는다).
+///
+/// 허용 루트 검사는 다른 `fav_*` 와 **같은 `allowed`** 를 쓴다. 이 커맨드만 따로 검사하면
+/// 루트 규칙이 두 벌이 되고, 파괴적인 쪽이 느슨해지는 건 시간 문제다.
+#[tauri::command(async)]
+pub fn fav_delete(state: State<'_, AppState>, path: String) -> Result<(), IpcError> {
+    let p = allowed(&state, &path)?;
+    trash::delete(&p)
+        .map_err(|e| IpcError::new(ErrorCode::Io, format!("휴지통으로 보내지 못했습니다: {e}")))
+}
+
 /// `fav_open` 의 분기 — 프로세스를 띄우지 않고 테스트할 수 있게 떼어 냈다.
 #[derive(Debug, PartialEq)]
 enum Launch {

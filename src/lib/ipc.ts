@@ -1201,6 +1201,9 @@ export const ipc = {
   favRead: (path: string) => call<FileBytes>("fav_read", { path }),
   favOpen: (path: string, how: "default" | "reveal") =>
     callMutating<void>("fav_open", { path, how }),
+  /** **휴지통으로** 보낸다(영구 삭제 아님) — 확인창 없이 나가는 동선이라 되돌릴 수 있어야 한다.
+   *  백엔드가 다른 `fav_*` 와 같은 허용 루트 검사를 거친다(commands/favorites.rs `fav_delete`). */
+  favDelete: (path: string) => callMutating<void>("fav_delete", { path }),
   // 파일트리에서 실행 파일 더블클릭 → OS 기본 실행기로 띄운다(프론트가 확인 후 호출).
   runExecutable: (projectId: string, relPath: string) =>
     callMutating<void>("run_executable", { projectId, relPath }),
