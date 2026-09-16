@@ -124,12 +124,20 @@ Gitpervisor는 스스로를 최신으로 유지합니다. **설정 › 업데이
 | OS | 파일 |
 |----|------|
 | **Windows** | `.exe` (NSIS 설치 → Program Files + 바로가기) |
-| **macOS** | `.dmg` (universal — Apple Silicon + Intel) |
+| **macOS** | `.dmg` (universal — Apple Silicon + Intel) · 또는 아래 터미널 설치 명령 |
 | **Linux** | `.AppImage` (포터블) · `.deb` (Debian/Ubuntu) · `.rpm` (Fedora/RHEL) |
 
 > **`git ≥ 2.35` 가 PATH에 있어야 합니다** — 앱이 시스템 git CLI를 사용합니다. git이 없으면 조용히 실패하지 않고 시작 시점에 안내 화면을 띄웁니다.
 >
-> 설치본은 아직 OS 코드 서명이 되어 있지 않아, 첫 실행 시 Windows SmartScreen("추가 정보 → 실행")이나 macOS Gatekeeper(우클릭 → 열기)가 경고할 수 있습니다. 다만 **자동 업데이트는 암호학적으로 서명**(minisign)되며 설치 전에 앱에 고정된 공개키로 검증됩니다.
+> 설치본은 아직 OS 코드 서명이 되어 있지 않아, 첫 실행 시 Windows SmartScreen("추가 정보 → 실행")이 경고할 수 있습니다. 다만 **자동 업데이트는 암호학적으로 서명**(minisign)되며 설치 전에 앱에 고정된 공개키로 검증됩니다.
+>
+> **macOS:** Apple 공증을 받지 않은 앱이라 브라우저로 받은 `.dmg`는 첫 실행이 차단됩니다(macOS 15부터는 우클릭 → 열기로도 안 풀립니다). 터미널로 설치하면 `curl`이 격리 속성을 붙이지 않아 더블클릭으로 바로 열립니다:
+>
+> ```bash
+> curl -fsSL https://gitpervisor.aickyway.com/install.sh | bash
+> ```
+>
+> 이미 `.dmg`로 설치했다면 **시스템 설정 › 개인정보 보호 및 보안**에서 **그래도 열기**를 한 번 누르거나, `xattr -dr com.apple.quarantine /Applications/Gitpervisor.app`을 실행하세요.
 
 ---
 

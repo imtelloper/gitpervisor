@@ -691,3 +691,40 @@ Claude Code는 둘 다 줄바꿈으로 받는다(태스크 32에서 실측). **W
 
 **고치지 말 것.** CSI u(kitty 키보드 프로토콜)로 바꾸지 마라 — xterm.js 6에는 그 프로토콜 코드가 아예
 없어 협상이 불가능하고, 요청하지 않은 클라이언트에는 시퀀스가 프롬프트에 리터럴로 찍힌다.
+
+---
+
+## 14. macOS에서 받은 앱이 더블클릭으로 안 열린다 — 공증 없는 번들 + 격리 속성
+
+### 증상
+
+릴리스 `.dmg`를 브라우저로 받아 `/Applications`에 넣고 더블클릭하면 Gatekeeper 창이 떠서 실행이 막힌다.
+"우클릭 → 열기"는 macOS 15부터 우회로가 아니다. 시스템 설정 › 개인정보 보호 및 보안 › **그래도 열기**를
+눌러야 한 번 열린다(2026-09-16, macOS 26.5에서 실측: 두 번 막힌 뒤 세 번째에 열림).
+
+### 원인
+
+- CI가 만드는 `.app`은 **번들 서명이 없다.** 실행파일에 링커가 붙인 ad-hoc 서명만 있다
+  (`codesign -dv` → `flags=0x20002(adhoc,linker-signed)`, `Info.plist=not bound`, `Sealed Resources=none`).
+  `spctl -a -t exec` → `rejected / source=no usable signature`.
+- Chrome 등 브라우저는 받은 파일에 `com.apple.quarantine`을 붙이고, DMG에서 복사한 앱에도 그대로 이어진다.
+  Gatekeeper는 **격리 속성이 있는 앱만** 첫 실행 때 검사한다.
+
+### 해결
+
+- **배포**: `website/public/install.sh`(`curl -fsSL https://gitpervisor.aickyway.com/install.sh | bash`).
+  `curl`은 격리 속성을 붙이지 않으므로 이 경로로 설치하면 차단 창이 뜨지 않는다. `latest.json`의 `darwin-*`
+  URL(자동 업데이트가 받는 것과 같은 `.app.tar.gz`)을 설치한다. 차단 창 자체를 없애는 근본 해결은
+  Apple Developer ID 서명 + 공증(연 $99)이며, 아직 도입하지 않았다.
+- **이미 설치한 앱**: `xattr -dr com.apple.quarantine /Applications/Gitpervisor.app`.
+- 앱 내 자동 업데이트로 받은 번들은 격리 속성이 붙지 않아 이 문제가 없다.
+
+### 진단할 때의 함정
+
+- **터미널(iTerm/Claude Code 셸)에서 `open`으로 띄우면 차단이 재현되지 않는다.** 격리 속성을 붙인 무서명
+  복사본도 그냥 실행됐다(터미널의 "개발자 도구" 예외로 추정, 미확인). 차단 재현은 Finder 더블클릭으로 한다. 판정은 사용자가 실행을 시도한 시각의
+  `/usr/bin/log show --predicate 'process == "CoreServicesUIAgent"'`에서 `present code-evaluation prompt`로 확인한다.
+- **zsh에 `log` 별칭이 있어 `log show`가 조용히 실패한다**(`too many arguments`). 반드시 `/usr/bin/log`.
+- **Claude Code 샌드박스에서는 `pgrep`이 실행 중인 앱을 못 찾는다.** `ps -Axo pid,comm | grep Gitpervisor`를 쓴다.
+  `pgrep`만 믿고 "안 떠 있다"고 판단해 같은 identifier의 복사본을 띄우면, 실행 중인 설치본과
+  `session.json`을 공유해 세션 기록이 덮인다(이 조사 중 실제로 한 번 그랬다).

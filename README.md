@@ -124,12 +124,20 @@ Grab the latest installer for your OS from the [**Releases**](https://github.com
 | OS | File |
 |----|------|
 | **Windows** | `.exe` (NSIS installer → Program Files + shortcuts) |
-| **macOS** | `.dmg` (universal — Apple Silicon + Intel) |
+| **macOS** | `.dmg` (universal — Apple Silicon + Intel) · or the Terminal one-liner below |
 | **Linux** | `.AppImage` (portable) · `.deb` (Debian/Ubuntu) · `.rpm` (Fedora/RHEL) |
 
 > **Requires `git ≥ 2.35` on your PATH** — the app uses your system git CLI. If git isn't found, Gitpervisor shows a guidance screen on launch instead of failing silently.
 >
-> Installers aren't OS code-signed yet, so on first launch Windows SmartScreen ("More info → Run anyway") or macOS Gatekeeper (right-click → Open) may warn you. **Auto-updates, however, are cryptographically signed** (minisign) and verified against a public key pinned in the app before install.
+> Installers aren't OS code-signed yet, so on first launch Windows SmartScreen may warn you ("More info → Run anyway"). **Auto-updates, however, are cryptographically signed** (minisign) and verified against a public key pinned in the app before install.
+>
+> **macOS:** the app isn't Apple-notarized, so a `.dmg` downloaded in a browser is blocked on first launch (and since macOS 15, right-click → Open no longer gets around it). Install from Terminal instead — `curl` doesn't set the quarantine flag, so the app opens with a plain double-click:
+>
+> ```bash
+> curl -fsSL https://gitpervisor.aickyway.com/install.sh | bash
+> ```
+>
+> Already installed the `.dmg`? Open **System Settings › Privacy & Security** and click **Open Anyway** once, or run `xattr -dr com.apple.quarantine /Applications/Gitpervisor.app`.
 
 ---
 

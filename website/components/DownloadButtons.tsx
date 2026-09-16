@@ -1,11 +1,14 @@
 "use client";
 
+import { useState } from "react";
+import { Check, Copy } from "lucide-react";
 import { GitHubIcon } from "@/components/icons";
 import {
   assetUrl,
   GITHUB_URL,
   hasAsset,
   RELEASES_URL,
+  SITE_URL,
   type Platform,
   type ReleaseInfo,
 } from "@/lib/github";
@@ -105,6 +108,56 @@ function useDownloadTargets(release: ReleaseInfo | null): {
   return { visible, primary };
 }
 
+/* ── macOS terminal install ─────────────────────────────────────────────
+ * Release builds aren't Apple-notarized, so a browser-downloaded .dmg is
+ * quarantined and Gatekeeper blocks the first launch. curl doesn't set the
+ * quarantine flag, so public/install.sh gives a plain double-click install. */
+const MAC_INSTALL_COMMAND = `curl -fsSL ${SITE_URL}/install.sh | bash`;
+
+function MacInstallCommand() {
+  const [copied, setCopied] = useState(false);
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(MAC_INSTALL_COMMAND);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* clipboard blocked — the command text stays selectable */
+    }
+  };
+
+  return (
+    <div className="flex w-full max-w-2xl flex-col items-center gap-2">
+      <div className="flex w-full items-center gap-2 rounded-xl border border-line bg-panel py-1.5 pl-4 pr-1.5 text-left">
+        <code className="w-0 min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-[13px] text-ink">
+          <span className="select-none text-faint">$ </span>
+          {MAC_INSTALL_COMMAND}
+        </code>
+        <button
+          type="button"
+          onClick={copy}
+          aria-label="Copy install command"
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-muted transition hover:bg-card-2 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+        >
+          {copied ? (
+            <Check className="h-3.5 w-3.5 text-green" />
+          ) : (
+            <Copy className="h-3.5 w-3.5" />
+          )}
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </div>
+      <p className="text-balance text-xs leading-relaxed text-muted">
+        Paste into Terminal to install with no Gatekeeper warning. Using the
+        .dmg instead? macOS blocks its first launch — open{" "}
+        <span className="text-ink">System Settings › Privacy &amp; Security</span>{" "}
+        and click <span className="text-ink">Open Anyway</span>.
+      </p>
+    </div>
+  );
+}
+
 /* ── Hero download buttons (one per platform, detected OS highlighted) ── */
 export function DownloadButtons({ release }: { release: ReleaseInfo | null }) {
   const { visible, primary } = useDownloadTargets(release);
@@ -152,6 +205,8 @@ export function DownloadButtons({ release }: { release: ReleaseInfo | null }) {
           View Source
         </a>
       </div>
+
+      {primary.platform === "macos" && <MacInstallCommand />}
 
       <p className="text-xs text-muted">
         Free &amp; open source · Universal macOS · Windows 10+ · Linux x86_64
