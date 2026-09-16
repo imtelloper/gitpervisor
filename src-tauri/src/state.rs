@@ -144,8 +144,37 @@ impl Drop for OpGuard {
 /// 두 번 쓰고, 한쪽 rename이 다른 쪽의 **덜 쓰인** tmp를 집어갈 수 있다.
 static SAVE_LOCK: Mutex<()> = Mutex::new(());
 
+/// 앱 데이터 디렉터리 — 평소엔 `app_data_dir()`(= `identifier` 파생) 그대로다.
+///
+/// **디버그 빌드에 한해** `GPV_DATA_DIR` 로 덮을 수 있다. e2e 샤딩 때문이다: 러너를 N개 병렬로
+/// 돌리려면 앱 인스턴스도 N개여야 하는데, Tauri 는 데이터 경로를 `identifier` **하나에서**
+/// 파생시키므로(`tauri/src/path/desktop.rs`) 인스턴스마다 다른 경로를 주려면 원래는
+/// **identifier 마다 따로 빌드**해야 한다. Windows 에선 `%APPDATA%` 를 바꿔도 소용없다 —
+/// `dirs-sys` 가 `SHGetKnownFolderPath(FOLDERID_RoamingAppData)` 를 쓰므로 환경변수를 아예
+/// 안 본다(크레이트 소스 실측). 이 한 줄이면 **바이너리 하나로** N 인스턴스가 각자
+/// `projects.json`·`settings.json` 을 갖는다.
+///
+/// **릴리스 빌드엔 없다**(`cfg!(debug_assertions)`). 있으면 환경변수 하나로 사용자 데이터 위치를
+/// 바꿔치기할 수 있고, 그건 이 앱이 지키려는 것(사용자 프로젝트 목록·설정) 바로 그것이다.
+pub fn data_root(app: &AppHandle) -> Option<PathBuf> {
+    if cfg!(debug_assertions) {
+        if let Some(raw) = std::env::var_os("GPV_DATA_DIR") {
+            let dir = PathBuf::from(raw);
+            match std::fs::create_dir_all(&dir) {
+                Ok(()) => return Some(dir),
+                // **조용히 기본 경로로 떨어지면 안 된다.** 샤드가 사용자 데이터에 쓰게 되고,
+                // 그 회차는 "왜 남의 프로젝트가 보이지"로만 보인다.
+                Err(e) => log::error!(
+                    "[state] GPV_DATA_DIR 을 만들지 못했습니다({e}) — 기본 경로로 돌아갑니다: {dir:?}"
+                ),
+            }
+        }
+    }
+    app.path().app_data_dir().ok()
+}
+
 fn data_path(app: &AppHandle, file: &str) -> Option<PathBuf> {
-    app.path().app_data_dir().ok().map(|d| d.join(file))
+    data_root(app).map(|d| d.join(file))
 }
 
 /// 파일 1개에서 키 1개를 읽는다(경로를 직접 받는 순수 코어 — 테스트 대상).

@@ -17,7 +17,7 @@ use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 
 use super::diff::{mime_of, stamp_of};
@@ -88,10 +88,11 @@ fn doc_path(
 ) -> Result<PathBuf, IpcError> {
     validate_rel_file(rel_path)?;
     let suffix = kind_suffix(kind)?;
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("데이터 폴더를 찾을 수 없습니다: {e}")))?;
+    // `app_data_dir()` 를 직접 부르지 않는다 — e2e 샤딩의 `GPV_DATA_DIR` 오버라이드를 타야
+    // 샤드마다 사이드카가 갈린다(`state::data_root` 주석).
+    let dir = crate::state::data_root(app).ok_or_else(|| {
+        IpcError::new(ErrorCode::Io, "데이터 폴더를 찾을 수 없습니다".to_string())
+    })?;
     let key = doc_key(project_id, rel_path);
     Ok(dir.join("image-docs").join(format!("{key}.{suffix}")))
 }
