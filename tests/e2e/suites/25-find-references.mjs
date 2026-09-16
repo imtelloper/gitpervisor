@@ -45,7 +45,9 @@ export async function run({ cdp, report: r, fix }) {
     await cdp.eval(`window.__gpv.terminals.getState().setActiveTab(${J(fix.projectId)}, 'viewer')`);
     await cdp.eval(`window.__gpv.ui.getState().selectDiff({ mode:'file', path:'refuse.ts' }, ${J(fix.projectId)})`);
     let ready = false;
-    for (let i = 0; i < 40; i++) {
+    // 뷰어(DiffViewer)는 lazy 청크다. 이 스위트가 그 앱의 **첫 뷰어 마운트**면(샤딩에서 흔하다)
+    // 차가운 vite 에서 Monaco 청크를 받아야 해 12s 를 넘겼다 — 준비되면 바로 빠지므로 한도만 넉넉히.
+    for (let i = 0; i < 200; i++) {
       ready = await cdp.eval(`(()=>{ const m=window.__monaco; if(!m) return false; return m.editor.getEditors().some(e=>e.getModel()?.getValue().includes('gpvRefTarget')); })()`);
       if (ready) break;
       await sleep(300);
@@ -53,7 +55,14 @@ export async function run({ cdp, report: r, fix }) {
     const peek = await cdp.eval(`(async ()=>{
       const m=window.__monaco;
       const ed=m.editor.getEditors().find(e=>e.getModel()?.getValue().includes('gpvRefTarget'));
-      if(!ed) return { err:'no editor' };
+      if(!ed) {
+        // 왜 안 열렸는지가 없으면 다음 사람이 처음부터 다시 판다 — 뷰어가 기대는 상태를 같이 싣는다.
+        const u=window.__gpv.ui.getState(), tm=window.__gpv.terminals.getState();
+        return { err:'no editor', pid:u.selectedProjectId, diff:u.selectedDiff, agg:u.aggregateOpen,
+          tab: tm.activeTab ? tm.activeTab[u.selectedProjectId] : '?',
+          editors: m.editor.getEditors().map(e=>(e.getModel()?.uri.path||'')+':'+(e.getModel()?.getValue().slice(0,20)||'')),
+          viewerTabs: (u.viewerTabs||[]).map(t=>t.key).slice(0,5) };
+      }
       const model=ed.getModel();
       const hit=model.findNextMatch('gpvRefTarget(', {lineNumber:2,column:1}, false, true, null, false);
       ed.setPosition({ lineNumber: hit.range.startLineNumber, column: hit.range.startColumn+2 });

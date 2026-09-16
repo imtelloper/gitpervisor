@@ -201,15 +201,25 @@ export async function run({ cdp, report: r, fix }) {
       return;
 
     // ── ① Monaco 본문 우클릭 → 앱 메뉴 ──────────────────────────────────────
+    // `.view-lines` 가 한 번 보였다고 준비된 게 아니다 — 첫 마운트 직후 에디터가 한 번 다시 마운트된다.
+    // 샤딩(그 앱의 첫 뷰어 마운트 + 병렬 부하)에서 그 틈이 길어져, 옵션 확인은 통과하고 바로 다음
+    // 우클릭은 대상=pane·선택="no-editor" 로 떨어졌다. **같은 에디터 id 를 연속 두 번** 봐야 준비로 친다
+    // (아래 Git 모달의 'stable' 과 같은 규칙).
     const monReady = await poll(
       () =>
-        cdp.eval(
-          `!!document.querySelector('[data-viewer-pane] .monaco-editor .view-lines')`,
-        ),
-      (v) => v === true,
-      40,
+        cdp.eval(`(()=>{
+          const host = document.querySelector('[data-viewer-pane]');
+          const ed = host && window.__monaco && window.__monaco.editor.getEditors()
+            .find(e => host.contains(e.getContainerDomNode()) && e.getModel());
+          if (!ed || !host.querySelector('.monaco-editor .view-lines')) { window.__gpv51ed = null; return false; }
+          const prev = window.__gpv51ed; window.__gpv51ed = ed.getId();
+          return prev === ed.getId() ? 'stable' : 'mounted';
+        })()`),
+      (v) => v === "stable",
+      60,
       250,
     );
+    await cdp.eval(`(()=>{ delete window.__gpv51ed; return true; })()`).catch(() => {});
     const rawOpt = await cdp.eval(`(()=>{
       if (!window.__monaco) return 'no-monaco';
       const host = document.querySelector('[data-viewer-pane]');
