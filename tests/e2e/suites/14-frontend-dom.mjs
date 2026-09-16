@@ -7,6 +7,8 @@
 import { unlinkSync } from "node:fs";
 import { join } from "node:path";
 
+import { createFixture } from "../lib/git-fixture.mjs";
+
 export const name =
   "프론트 DOM 기능 (사이드바 이동 / 이미지뷰어 / 그리드분할 / Ctrl+W / 모아보기·단축키·새터미널 / Log 리사이즈)";
 
@@ -106,21 +108,67 @@ export async function run({ cdp, report: r, fix }) {
     }
 
     // ── #1 사이드바 Ctrl+Shift+↑/↓ 이동 ──
-    const sel0 = await uGet("selectedProjectId");
-    await cdp.eval(
-      `window.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',ctrlKey:true,shiftKey:true,bubbles:true}))`,
-    );
-    const selDown = await poll(() => uGet("selectedProjectId"), (v) => v !== sel0, 10, 250);
-    r.check(
-      "Ctrl+Shift+↓: 선택 프로젝트 이동",
-      selDown !== sel0,
-      `${String(sel0).slice(0, 8)}→${String(selDown).slice(0, 8)}`,
-    );
-    await cdp.eval(
-      `window.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowUp',ctrlKey:true,shiftKey:true,bubbles:true}))`,
-    );
-    const selUp = await poll(() => uGet("selectedProjectId"), (v) => v === sel0, 10, 250);
-    r.check("Ctrl+Shift+↑: 원위치 복귀", selUp === sel0);
+    //
+    // **이 두 단언은 프로젝트가 2개 이상일 때만 의미가 있다.** 사용자 앱엔 20여 개가 있어서
+    // 우연히 통과해 왔는데, 두 가지가 겹쳐 있었다:
+    //  · 목록이 픽스처 하나뿐인 앱에서는 ↓ 가 **항상 빨갛다**(워크트리 앱에서 실제로 그랬다).
+    //    e2e 샤딩은 인스턴스마다 빈 데이터 디렉터리를 쓰므로(`GPV_DATA_DIR`) 이게 상시 실패가 된다.
+    //  · 짝 단언 `↑ 원위치 복귀` 는 **아무것도 안 움직여도** `selUp === sel0` 이라 공허하게 통과한다.
+    //    즉 한쪽은 환경 탓에 빨갛고 다른 쪽은 거짓 초록이었다 — 둘 다 환경을 재고 있었다.
+    // 그래서 조건을 **스스로 만든다**: 이 블록 동안만 두 번째 프로젝트를 등록하고 끝나면 지운다.
+    const second = createFixture();
+    let secondId = null;
+    try {
+      const added = await cdp.try("add_project", { path: second.repo });
+      secondId = added.ok ? added.r?.id : null;
+      // **원시 invoke 로 추가한 프로젝트는 UI 캐시에 없다** — 사이드바는 react-query 의
+      // `useProjects()` 를 그리므로, 무효화하지 않으면 백엔드엔 2개인데 화면엔 1개라
+      // Ctrl+Shift+↓ 가 갈 곳이 없다(스위트 52 셋업이 같은 함정을 기록해 뒀다).
+      if (secondId) {
+        await cdp
+          .eval(`window.__gpv.queryClient.invalidateQueries({ queryKey: ["projects"] })`)
+          .catch(() => {});
+      }
+      // 화면이 실제로 2개를 들고 있을 때까지 기다린다 — 여기서 재는 것이 곧 이동의 전제다.
+      const uiCount = await poll(
+        () => cdp.eval(`(window.__gpv.queryClient.getQueryData(["projects"]) || []).length`),
+        (v) => typeof v === "number" && v >= 2,
+        16,
+        250,
+      );
+      const sel0 = await uGet("selectedProjectId");
+      if (
+        r.check(
+          "이동 단언의 전제: **화면의** 프로젝트가 2개 이상이다",
+          !!secondId && uiCount >= 2,
+          `두 번째=${secondId ? String(secondId).slice(0, 8) : `실패(${added.code || added.message})`} UI목록=${uiCount}`,
+        )
+      ) {
+        await cdp.eval(
+          `window.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',ctrlKey:true,shiftKey:true,bubbles:true}))`,
+        );
+        const selDown = await poll(() => uGet("selectedProjectId"), (v) => v !== sel0, 10, 250);
+        r.check(
+          "Ctrl+Shift+↓: 선택 프로젝트 이동",
+          selDown !== sel0,
+          `${String(sel0).slice(0, 8)}→${String(selDown).slice(0, 8)}`,
+        );
+        await cdp.eval(
+          `window.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowUp',ctrlKey:true,shiftKey:true,bubbles:true}))`,
+        );
+        const selUp = await poll(() => uGet("selectedProjectId"), (v) => v === sel0, 10, 250);
+        // **움직였다가 돌아온 것**만 통과다 — selDown 을 함께 보지 않으면 제자리도 초록이다.
+        r.check(
+          "Ctrl+Shift+↑: 원위치 복귀",
+          selUp === sel0 && selDown !== sel0,
+          `${String(selDown).slice(0, 8)}→${String(selUp).slice(0, 8)}`,
+        );
+      }
+    } finally {
+      // 남기면 teardown 의 "프로젝트: 원래 목록 보존" 이 빨개진다 — 그건 이 스위트의 잘못이다.
+      if (secondId) await cdp.try("remove_project", { id: secondId });
+      second.cleanup();
+    }
     await ensureFixture();
 
     // ── #9 이미지 뷰어 (터미널 조작 전 — IPC 게이트 깨끗할 때) ──

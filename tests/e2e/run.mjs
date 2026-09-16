@@ -77,6 +77,62 @@ const SUITES = [
   "./suites/31-capture.mjs",
 ];
 
+/** 스위트별 소요 시간표(초) — `GPV_E2E_WRITE_TIMES=1` 로 전체 회차를 돌리면 갱신된다.
+ *  샤드 분배의 **유일한 목적**은 균형이다. 표가 낡아도 회차는 정상이고 분배만 나빠진다. */
+const TIMES_FILE = new URL("./suite-times.json", import.meta.url);
+/** 표에 없는 스위트의 가정값(초). 새로 추가된 스위트가 한 샤드에 몰리지 않을 정도면 된다. */
+const DEFAULT_SUITE_SEC = 20;
+
+function readTimes() {
+  try {
+    return JSON.parse(readFileSync(TIMES_FILE, "utf8"));
+  } catch {
+    return {}; // 표가 없으면 전부 기본값 — 분배만 거칠어진다
+  }
+}
+
+/**
+ * `GPV_E2E_SHARD=i/N` → 이 프로세스가 맡을 스위트 목록.
+ *
+ * **라운드로빈으로 나누면 안 된다.** 편차가 커서(가장 긴 스위트 112s, 가장 짧은 것 0.3s)
+ * 무거운 것 둘이 한 샤드에 몰리면 그 샤드가 전체 시간을 정한다 — 샤딩의 이득이 그만큼 사라진다.
+ * 측정 시간표를 긴 것부터 **가장 한가한 샤드**에 넣는다(LPT 그리디). 실측 915s 기준 4샤드에서
+ * 최장 229s, 샤드 간 편차 0s 였다.
+ *
+ * 바닥은 **가장 긴 스위트 하나**(112s)다 — 스위트는 쪼갤 수 없으므로 6샤드(153s)를 넘기면
+ * 이득이 급격히 준다.
+ */
+function pickShard(all) {
+  const raw = (process.env.GPV_E2E_SHARD || "").trim();
+  if (!raw) return null;
+  const m = /^(\d+)\s*\/\s*(\d+)$/.exec(raw);
+  if (!m) throw new Error(`GPV_E2E_SHARD 형식은 "i/N" 입니다 (받은 값: ${raw})`);
+  const index = Number(m[1]);
+  const total = Number(m[2]);
+  if (total < 1 || index < 1 || index > total)
+    throw new Error(`GPV_E2E_SHARD 범위 오류: ${raw}`);
+
+  const times = readTimes();
+  const weighted = all
+    .map((p) => ({ p, sec: times[p] ?? DEFAULT_SUITE_SEC }))
+    .sort((a, b) => b.sec - a.sec || a.p.localeCompare(b.p)); // 동점은 이름으로 — 회차마다 같아야 한다
+  const bins = Array.from({ length: total }, () => ({ sec: 0, suites: [] }));
+  for (const w of weighted) {
+    const bin = bins.reduce((lo, b) => (b.sec < lo.sec ? b : lo), bins[0]);
+    bin.sec += w.sec;
+    bin.suites.push(w.p);
+  }
+  const mine = bins[index - 1];
+  // **원래 순서를 되돌린다.** SUITES 배열 순서에는 이유가 있다(31-capture 는 전체화면을
+  // 가져가므로 마지막, 48-report 는 앞선 커밋이 쌓인 뒤 등 — 그 파일 주석 참조).
+  return {
+    index,
+    total,
+    estimate: mine.sec,
+    suites: all.filter((p) => mine.suites.includes(p)),
+  };
+}
+
 const report = createReport();
 
 let cdp;
@@ -326,8 +382,15 @@ async function main() {
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
-  const suites = only.length ? SUITES.filter((p) => only.some((o) => p.includes(`/${o}-`))) : SUITES;
+  let suites = only.length ? SUITES.filter((p) => only.some((o) => p.includes(`/${o}-`))) : SUITES;
   if (only.length) console.log(`  부분 실행: ${suites.length}개 스위트 (GPV_E2E_ONLY=${only.join(",")})\n`);
+  const shard = pickShard(suites);
+  if (shard) {
+    suites = shard.suites;
+    console.log(
+      `  샤드 ${shard.index}/${shard.total}: ${suites.length}개 스위트 · 예상 ${shard.estimate.toFixed(0)}s\n`,
+    );
+  }
   for (const path of suites) {
     const mod = await import(path);
     report.suite(mod.name || path);
