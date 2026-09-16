@@ -346,13 +346,13 @@ const watchStats = { samples: 0, maxMs: 0, minAvail: 100, hung: 0, watched: new 
 
 function startWatch(onAbort) {
   if (process.platform !== "win32") return;
-  const ps1 = join(tmpdir(), `gpv-shard-watch-${process.pid}.ps1`);
+  // 이름을 고정해 매번 덮어쓴다 — PID 를 붙이면 드라이버가 강제 종료될 때마다(exit 훅이 못 돈다) 쌓인다.
+  const ps1 = join(tmpdir(), "gpv-shard-watch.ps1");
   writeFileSync(ps1, WATCH_PS1);
   watcher = spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps1, APP_EXE], {
     stdio: ["ignore", "pipe", "ignore"],
     windowsHide: true,
   });
-  process.once("exit", () => rmSync(ps1, { force: true }));
   let buf = "";
   let hungStreak = 0;
   let lowStreak = 0;
