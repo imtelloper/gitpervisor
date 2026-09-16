@@ -4,42 +4,24 @@
 //            node tests/e2e/shard.mjs 6         (6샤드)
 //            GPV_E2E_KEEP=1 node tests/e2e/shard.mjs   (끝나고 앱·데이터를 남긴다 — 디버깅용)
 //
-// ## ⚠ 지금은 샤드 1개까지만 뜬다 — 앱 쪽에 벽이 하나 남았다
+// ## 갈라야 하는 것 넷 (셋이 아니다 — 네 번째에서 한 번 막혔다)
 //
-// 2개째부터 웹뷰 생성이 실패한다:
+// 1. **데이터 디렉터리** — `GPV_DATA_DIR`(`state::data_root`). Tauri 는 데이터 경로를
+//    `identifier` 하나에서 파생시키므로 원래는 identifier 마다 따로 빌드해야 했다.
+//    Windows 에선 `%APPDATA%` 로도 못 가른다(`dirs-sys` 가 `SHGetKnownFolderPath`).
+// 2. **CDP 포트** — `GPV_E2E_CDP_PORT`(`lib.rs::browser_args`). 러너는 `GPV_E2E_PORT` 로 본다.
+// 3. **픽스처** — 러너가 각자 `mkdtemp` 로 만들고 **소유자 PID** 를 남긴다. 그게 없으면
+//    나중에 시작한 샤드의 `purgeStaleFixtures` 가 앞 샤드의 살아 있는 픽스처를 지운다.
+// 4. **WebView2 유저데이터 폴더** — `GPV_WEBVIEW_DIR`(`lib.rs::webview_data_dir`).
+//    이걸 빼먹어 2샤드에서 `HRESULT(0x8007139F)`(ERROR_INVALID_STATE)로 막혔다 — 이 폴더도
+//    identifier 파생이라(`tauri/src/manager/webview.rs:534`), 인스턴스마다 포트가 다르면
+//    WebView2 가 "같은 폴더에 다른 환경 옵션"을 거부한다. CLAUDE.md 가 적어 둔 바로 그 함정이고,
+//    **다른 워크트리의 `.dev` 앱이 떠 있어도 같은 이유로 막힌다.**
 //
-//     failed to create webview: WebView2 error: HRESULT(0x8007139F)
-//     "그룹 또는 리소스가 요청된 작업을 실행할 올바른 상태에 있지 않습니다"   ← ERROR_INVALID_STATE
+// 셀 다 **디버 빌드 전용**이다. 릴리스에 남기면 환경변수 하나로 사용자의 프로젝트 목록·
+// 설정·쿼키·로그인 세션을 빈 폴더로 갈아치울 수 있다.
 //
-// 원인은 **WebView2 유저데이터 폴더도 `identifier` 에서 파생된다**는 것이다
-// (`tauri-2.11.2/src/manager/webview.rs:534`). 인스턴스마다 `--remote-debugging-port` 가 다른데
-// 폴더는 하나라, WebView2 가 "같은 폴더에 다른 환경 옵션"을 거부한다. CLAUDE.md 가
-// "같은 user-data 폴더를 공유하는 웹뷰는 환경 인자가 일치하지 않으면 초기화에 실패한다"고
-// 적어 둔 그 함정이다. **다른 `.dev` 앱(다른 워크트리의 dev 앱 포함)이 떠 있어도 같은 이유로 막힌다.**
-//
-// 풀 방법은 있다. 같은 파일 바로 위가 이렇게 말한다:
-//
-//     // in `windows`, we need to force a data_directory
-//     // but we do respect user-specification
-//     if pending.webview_attributes.data_directory.is_none() { … }
-//
-// 즉 **앱이 `data_directory` 를 지정하면 Tauri 는 건드리지 않는다.** 메인 창은
-// `tauri.conf.json` 이 만들므로 `lib.rs` 에서 창 생성 경로에 dev 전용 오버라이드를 넣어야 한다
-// (`GPV_DATA_DIR` 과 같은 패턴). 그건 **제품 코드 변경**이라 사용자 승인 후에 한다.
-// 덤으로 전역 단축키도 프로세스 간 공유라 `HotKey already registered` 가 뜬다(치명적이진 않다).
-//
-// 그때까지 이 드라이버는 **1샤드로는 정상 동작**하고(기동·대기·실행·요약·정리 전부), 분배 자체는
-// `GPV_E2E_SHARD` 로 이미 검증돼 있다(러너 쪽, 4샤드 55개 중복·누락 0).
-//
-// ## 왜 이게 가능한가 (전제 셋, 전부 앞선 커밋에서 깔았다)
-//
-// 1. **데이터 디렉터리** — `GPV_DATA_DIR`(디버그 전용, `state::data_root`). Tauri 는 데이터 경로를
-//    `identifier` 하나에서 파생시키므로 원래는 identifier 마다 따로 빌드해야 했다. Windows 에선
-//    `%APPDATA%` 로도 못 가른다(`dirs-sys` 가 `SHGetKnownFolderPath` 를 쓴다).
-// 2. **CDP 포트** — `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=<n>` 이
-//    Tauri 가 넣는 29222 를 덮는다. 러너는 `GPV_E2E_PORT` 로 그 포트만 본다.
-// 3. **픽스처** — 러너가 각자 `mkdtemp` 로 만들고 **소유자 PID** 를 남긴다. 그게 없으면 나중에
-//    시작한 샤드의 `purgeStaleFixtures` 가 앞 샤드의 살아 있는 픽스처를 지운다(run.mjs 주석).
+// 전역 단축키는 프로세스 간 공유라 `HotKey already registered` 가 뜨지만 치명적이진 않다.
 //
 // ## 공유하는 것 / 가르는 것
 //
@@ -81,6 +63,23 @@ async function alive(url) {
   try {
     await fetch(url, { signal: c.signal });
     return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/** 앱이 **정말 준비됐는가.** CDP 포트(`/json/version`)는 웹뷰가 뜨자마자 열리는데, 그때 페이지는
+ *  아직 `about:blank` 다 — 그 상태로 러너를 붙이면 "디버그 창을 찾지 못했습니다"로 즉사한다
+ *  (실측: 러너 4개가 1초 만에 전부 exit 1). 프론트가 실제로 로드됐는지까지 본다. */
+async function appReady(port) {
+  const c = new AbortController();
+  const t = setTimeout(() => c.abort(), 1500);
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: c.signal });
+    const list = await res.json();
+    return list.some((x) => x.type === "page" && x.title && x.title !== "about:blank");
   } catch {
     return false;
   } finally {
@@ -198,7 +197,11 @@ async function main() {
     launch(
       APP_EXE,
       [],
-      { GPV_DATA_DIR: dataDir, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}` },
+      {
+        GPV_DATA_DIR: dataDir,
+        GPV_WEBVIEW_DIR: join(dataDir, "webview"),
+        GPV_E2E_CDP_PORT: String(port),
+      },
       `app${i}`,
     );
     inst.push({ i, port, dataDir });
@@ -206,9 +209,9 @@ async function main() {
 
   for (const s of inst) {
     const ok = await waitFor(
-      `샤드 ${s.i} 앱(CDP ${s.port})`,
-      () => alive(`http://127.0.0.1:${s.port}/json/version`),
-      90,
+      `샤드 ${s.i} 앱(CDP ${s.port}) 프론트 로드`,
+      () => appReady(s.port),
+      120,
       1000,
     );
     if (!ok) {

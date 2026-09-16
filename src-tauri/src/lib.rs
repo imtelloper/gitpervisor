@@ -164,8 +164,68 @@ const BASE_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartS
 pub(crate) fn browser_args() -> String {
     let mut s = String::from(BASE_BROWSER_ARGS);
     #[cfg(debug_assertions)]
-    s.push_str(" --remote-debugging-port=29222");
+    {
+        // 샤딩(`GPV_E2E_CDP_PORT`)이 아니면 기존 그대로 29222 — e2e 러너 기본값이다.
+        let port = std::env::var("GPV_E2E_CDP_PORT")
+            .ok()
+            .filter(|p| p.chars().all(|c| c.is_ascii_digit()) && !p.is_empty())
+            .unwrap_or_else(|| "29222".into());
+        s.push_str(&format!(" --remote-debugging-port={port}"));
+    }
     s
+}
+
+/// **디버그 빌드 전용** WebView2 유저데이터 폴더 오버라이드(`GPV_WEBVIEW_DIR`).
+///
+/// e2e 샤딩의 **네 번째** 전제다. 앞의 셋(데이터 디렉터리·CDP 포트·픽스처)을 갈라도 여기서 막힌다:
+/// Tauri 는 이 폴더도 `identifier` 에서 파생시키는데(`tauri/src/manager/webview.rs:534`),
+/// 인스턴스마다 `--remote-debugging-port` 가 다르면 WebView2 가 **"같은 폴더에 다른 환경 옵션"**
+/// 이라며 두 번째부터 환경 생성을 거부한다 — `HRESULT(0x8007139F)` ERROR_INVALID_STATE.
+/// (CLAUDE.md 가 "같은 user-data 폴더를 공유하는 웹뷰는 환경 인자가 일치하지 않으면 초기화에
+/// 실패한다"고 적어 둔 그 함정이다. 다른 워크트리의 `.dev` 앱이 떠 있어도 같은 이유로 막힌다.)
+///
+/// 같은 파일이 해법도 알려 준다 — `// but we do respect user-specification`: 앱이
+/// `data_directory` 를 지정하면 Tauri 는 건드리지 않는다.
+///
+/// **릴리스엔 없다**(`cfg!(debug_assertions)`). 있으면 환경변수 하나로 사용자의 쿠키·localStorage·
+/// 로그인 세션이 통째로 빈 폴더로 갈아치워진다 — 값을 지우는 것과 다름없다.
+///
+/// `None` 이면 **아무것도 지정하지 않는다.** 기본값을 여기서 계산해 넣지 않는 게 중요하다:
+/// Tauri 의 계산과 1바이트라도 어긋나면 릴리스에서 사용자 웹뷰 상태가 조용히 초기화된다.
+pub(crate) fn webview_data_dir() -> Option<std::path::PathBuf> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    let raw = std::env::var_os("GPV_WEBVIEW_DIR")?;
+    let dir = std::path::PathBuf::from(raw);
+    match std::fs::create_dir_all(&dir) {
+        Ok(()) => Some(dir),
+        // 조용히 기본값으로 떨어지면 샤드 둘이 같은 폴더를 쓰게 되고, 증상은 "두 번째 앱이
+        // 안 뜬다"로만 보인다 — 원인이 로그 어디에도 없다.
+        Err(e) => {
+            log::error!("[webview] GPV_WEBVIEW_DIR 을 만들지 못했습니다({e}): {dir:?}");
+            None
+        }
+    }
+}
+
+/// 모든 `WebviewWindowBuilder` 가 지나는 단일 훅 — 브라우저 인자와 유저데이터 폴더를 **한 곳에서**
+/// 맞춘다. 한 창이라도 빠뜨리면 그 창만 다른 폴더/인자를 써서 초기화에 실패한다(같은 프로세스
+/// 안에서도 그렇다). 그래서 `.additional_browser_args()` 를 직접 부르지 말고 이걸 쓴다.
+pub(crate) trait WebviewEnv: Sized {
+    fn gpv_webview_env(self) -> Self;
+}
+
+impl<'a, R: tauri::Runtime, M: tauri::Manager<R>> WebviewEnv
+    for WebviewWindowBuilder<'a, R, M>
+{
+    fn gpv_webview_env(self) -> Self {
+        let b = self.additional_browser_args(&browser_args());
+        match webview_data_dir() {
+            Some(d) => b.data_directory(d),
+            None => b,
+        }
+    }
 }
 
 /// 터미널 패널을 별도 OS 창으로 띄운다(플로팅). JS의 new WebviewWindow는 기본 인자로 생성돼
@@ -229,7 +289,7 @@ async fn open_float_window(
             // OS 기본 타이틀바 제거 — 프론트의 커스텀 FloatTitleBar로 대체 (리사이즈 유지)
             .decorations(false)
             .background_color(tauri::window::Color(30, 31, 34, 255))
-            .additional_browser_args(&browser_args())
+            .gpv_webview_env()
             .build();
         if let Err(e) = r {
             log::error!("플로팅 창 생성 실패: {e}");
@@ -300,7 +360,7 @@ fn spawn_float_pool_window(app: &tauri::AppHandle, url: tauri::Url) {
             .visible(false)
             .decorations(false)
             .background_color(tauri::window::Color(30, 31, 34, 255))
-            .additional_browser_args(&browser_args())
+            .gpv_webview_env()
             .build();
         if let Err(e) = r {
             log::error!("플로팅 풀 창 생성 실패: {e}");
@@ -445,7 +505,7 @@ async fn open_sysmon_window(app: tauri::AppHandle, origin: String) -> Result<(),
             // OS 기본 타이틀바 제거 — 프론트의 커스텀 FloatTitleBar로 대체 (리사이즈 유지)
             .decorations(false)
             .background_color(tauri::window::Color(30, 31, 34, 255))
-            .additional_browser_args(&browser_args())
+            .gpv_webview_env()
             .build();
         if let Err(e) = r {
             log::error!("리소스 모니터 창 생성 실패: {e}");
@@ -478,7 +538,7 @@ async fn open_aggregate_window(app: tauri::AppHandle, origin: String) -> Result<
             // OS 기본 타이틀바 제거 — 프론트의 FloatTitleBar로 대체 (리사이즈 유지)
             .decorations(false)
             .background_color(tauri::window::Color(30, 31, 34, 255))
-            .additional_browser_args(&browser_args())
+            .gpv_webview_env()
             .build();
         if let Err(e) = r {
             log::error!("모아보기 창 생성 실패: {e}");
@@ -539,7 +599,7 @@ async fn open_doc_window(
             // 드롭이 여기서 죽는다. 이 창도 OS 파일 드롭을 쓰지 않는다.
             .disable_drag_drop_handler()
             .background_color(tauri::window::Color(30, 31, 34, 255))
-            .additional_browser_args(&browser_args())
+            .gpv_webview_env()
             .build();
         if let Err(e) = r {
             log::error!("문서 창 생성 실패: {e}");
@@ -607,7 +667,7 @@ pub(crate) fn ensure_capture_overlay(
         // 선택 중 화면이 바뀐다(설계 §4.4).
         .background_color(tauri::window::Color(0, 0, 0, 255))
         .disable_drag_drop_handler()
-        .additional_browser_args(&browser_args())
+        .gpv_webview_env()
         .build()
         .map_err(|e| e.to_string())
 }
@@ -901,7 +961,7 @@ pub fn run() {
                 // 앱은 OS 파일 드롭을 쓰지 않으므로(전부 다이얼로그/클릭) 꺼도 잃는 기능이 없다.
                 .disable_drag_drop_handler()
                 .background_color(tauri::window::Color(30, 31, 34, 255))
-                .additional_browser_args(&browser_args())
+                .gpv_webview_env()
                 // main webview의 window.open(localhost 프리뷰 iframe 포함) — wry 기본은 침묵
                 // 차단이라 아무 반응이 없다 → 명시적 OS 위임으로 개선. 플로팅 승격은 금지:
                 // 오프너 environment가 특권 프로필이라 팝업이 임의 사이트로 가면 특권 쿠키를
