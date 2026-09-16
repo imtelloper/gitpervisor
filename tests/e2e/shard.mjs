@@ -1,7 +1,7 @@
 // e2e 병렬 실행 드라이버 — 앱 인스턴스 N개를 띄우고 스위트를 N등분해 동시에 돌린다.
 //
-//   사용법:  node tests/e2e/shard.mjs           (기본 4샤드)
-//            node tests/e2e/shard.mjs 6         (6샤드)
+//   사용법:  node tests/e2e/shard.mjs           (기본 3샤드)
+//            node tests/e2e/shard.mjs 4         (4샤드)
 //            GPV_E2E_KEEP=1 node tests/e2e/shard.mjs   (끝나고 앱·데이터를 남긴다 — 디버깅용)
 //
 // ## 갈라야 하는 것 넷 (셋이 아니다 — 네 번째에서 한 번 막혔다)
@@ -81,7 +81,10 @@ const OWNER_FILE = ".gpv-shard-owner.json";
 const WATCH_STRIKES = 2;
 const MIN_AVAIL_PCT = Number(process.env.GPV_E2E_MIN_AVAIL_PCT || 8);
 
-const shards = Number(process.argv[2] || 4);
+// 기본 3 — 벽시계의 바닥은 1번 샤드에 묶인 전역 자원 스위트 묶음(클립보드·캡처, 실측 ≈229s)이라
+// 4샤드로 늘려도 안 빨라지고 앱만 하나 더 떠 설치본을 누른다(2026-09-17 suite-times 기준 예상:
+// 3샤드 229/135/135s · 4샤드 229/90/90/90s). 더 줄이려면 그 묶음을 쪼개야 한다(클립보드 구간 교차 잠금).
+const shards = Number(process.argv[2] || 3);
 const keep = process.env.GPV_E2E_KEEP === "1";
 if (!Number.isInteger(shards) || shards < 1 || shards > 12) {
   console.error(`샤드 수가 이상합니다: ${process.argv[2]} (1~12)`);
