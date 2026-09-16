@@ -188,7 +188,11 @@ export async function run({ cdp, report: r, fix, port }) {
             hasCollapse: !!m.querySelector('button[title="패널 접기"]'),
           };
         })()`),
-      (v) => !!v && v.paths.length > 0,
+      // **`length > 0` 으로 끝내면 안 된다.** 로딩("…")·오류·"비어 있음" 자리표시자도
+      // `data-tree-path=""` 를 달고 나오므로(FileTreePanel.tsx), 그 하나만으로 폴이 즉시
+      // 충족돼 **트리가 아직 안 뜬 상태에서 다음 단언들이 돌아간다.** 2026-09-16 회차에서
+      // `paths=[""]` 로 4건이 연쇄로 죽은 게 그 모양이었다 — 진짜 경로가 하나라도 있어야 한다.
+      (v) => !!v && v.paths.some((p) => p !== ""),
       24,
       250,
     );

@@ -99,12 +99,19 @@ async function takeSnapshot() {
 /** 이 픽스처를 **지금 쓰고 있는 러너가 살아 있는가.** 소유자 PID 파일(`OWNER_FILE`)로 본다.
  *  마커가 없으면(옛 러너가 만든 픽스처) 잔여물로 본다 — 그 시절엔 마커 자체가 없었다. */
 function ownedByLiveRunner(dir) {
-  let pid;
+  let raw;
   try {
-    pid = Number(readFileSync(join(dir, OWNER_FILE), "utf8").trim());
-  } catch {
-    return false; // 마커 없음 = 옛 픽스처 = 잔여물
+    raw = readFileSync(join(dir, OWNER_FILE), "utf8");
+  } catch (e) {
+    // **마커가 없는 것만** 잔여물로 본다. 여기서 모든 오류를 삼켜 false 를 돌려주면(처음엔
+    // 그렇게 썼다) 권한·IO 오류는 물론 이 함수 안의 코드 버그(예: import 누락 ReferenceError)
+    // 까지 "잔여물"로 읽혀 **살아 있는 픽스처를 지운다.** 파괴적인 쪽으로 기우는 실패라
+    // 방향을 반대로 잡는다 — 모르겠으면 보존한다.
+    if (e.code === "ENOENT") return false;
+    console.log(`  소유자 확인 실패 — 안전하게 보존: ${dir} (${e.code || e.message})`);
+    return true;
   }
+  const pid = Number(raw.trim());
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0); // 신호 0 = 존재 확인만
@@ -123,7 +130,13 @@ function ownedByLiveRunner(dir) {
  * 두 개 돌면 거짓이다 — 뒤에 시작한 쪽이 앞 러너의 **살아 있는 픽스처를 통째로 지운다.**
  * 그러면 파일만 사라지고 디렉터리는 열린 핸들 때문에 남아, 앞 러너는 `ENOENT: ...\repo\src\app.txt`
  * 나 빈 파일 트리로 뒤늦게 죽는다. 원인이 자기 로그 어디에도 없어서 추적이 거의 불가능하다.
- * 2026-09-16 회차의 실패 8건이 이 모양이었다(넷 다 격리 실행하면 통과).
+ *
+ * **2026-09-16 실패 8건의 원인으로 이것을 단정하지는 마라.** 조사에서 반증이 나왔다:
+ * 45 의 ENOENT 는 `writeFileSync` 가 낸 것이라 **파일이 아니라 상위 디렉터리(`repo\src`) 부재**를
+ * 뜻하고, 그 뒤 45 의 finally 가 `git checkout -- src/app.txt` 로 복원에 성공했으므로 `.git` 은
+ * 살아 있었다 — 루트 통삭제였다면 `.git` 도 함께 갔어야 한다. 부분 삭제였을 가능성은 남지만
+ * 증거가 없다. **확정된 것은 "이 함수의 가정이 동시 실행에서 거짓"이라는 것뿐이고**, 그것만으로도
+ * 고칠 이유는 충분하다(아래).
  *
  * 그래서 **소유자 PID 가 살아 있는 픽스처는 건너뛴다.** 이건 위생 문제만이 아니라
  * **샤딩(여러 러너 동시 실행)의 전제 조건**이다 — 이게 없으면 샤드끼리 서로를 지운다.
