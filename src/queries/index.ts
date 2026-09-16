@@ -537,12 +537,21 @@ export function useReopenWithEncoding() {
   };
 }
 
-export function useDiff(projectId: string | null, target: DiffTarget | null) {
+/**
+ * diff 쿼리 옵션 — **같은 diff 키를 구독하는 곳은 전부 이걸 펼쳐 써라**(뷰어·상태바 인코딩 선택기).
+ *
+ * TanStack v5 는 구독자가 렌더할 때마다 그 옵션을 쿼리에 덮어쓴다(query-core queryObserver setOptions).
+ * 한 곳이라도 `queryFn: skipToken` 으로 같은 키를 구독하면, 그 구독자가 마지막으로 렌더한 순간의
+ * 무효화(워처·저장·스테이지)가 쿼리를 skipToken 으로 다시 가져오려다 `Missing queryFn` 으로 실패해
+ * 뷰어가 "파일 diff를 불러오지 못했습니다"로 깨진다 — 렌더 순서에 따라 나타났다 사라지는 결함이었다
+ * (2026-09-17 샤드 e2e 25 에서 발견, 가드는 63). 캐시만 읽고 싶으면 `enabled: false` 를 덧붙인다.
+ */
+export function diffQueryOptions(projectId: string | null, target: DiffTarget | null) {
   // 이미지·동영상·오디오·Office·PDF는 뷰어가 diff보다 먼저 분기해 결과를 쓰지 않는다 — 부르면
   // 순수 낭비고, 동영상은 파일이 GB 단위일 수 있어 git spawn 비용이 더 크다. 아예 끈다.
   const media = !!target && opensInOwnViewer(target.path);
-  return useQuery({
-    queryKey: target ? keys.diff(projectId ?? "none", target) : ["diff", "none"],
+  return {
+    queryKey: target ? keys.diff(projectId ?? "none", target) : (["diff", "none"] as const),
     queryFn: () =>
       ipc.getDiff(
         projectId!,
@@ -552,6 +561,12 @@ export function useDiff(projectId: string | null, target: DiffTarget | null) {
     enabled: !!projectId && !!target && !media,
     // 신선도는 watcher·변경 액션의 invalidate가 책임진다 — 캐시 히트 시 재스폰 없음
     staleTime: Infinity,
+  };
+}
+
+export function useDiff(projectId: string | null, target: DiffTarget | null) {
+  return useQuery({
+    ...diffQueryOptions(projectId, target),
     // 파일 전환 시 이전 diff를 유지해 "불러오는 중" 깜빡임을 없앤다
     placeholderData: keepPreviousData,
   });

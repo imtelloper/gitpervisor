@@ -178,6 +178,15 @@ export async function run({ cdp, report: r, fix }) {
     if (!hasStore) {
       r.skip("뷰어 저장 확인창", "window.__gpv/__monaco 미노출(dev 빌드 아님) — 스킵");
     } else {
+      // 픽스처는 백엔드로 등록돼 화면 목록엔 아직 없을 수 있다 — 앞 스위트가 목록을 새로 고쳐 두지 않은
+      // 새 앱(샤드·단독 실행)에선 selectProject 가 헛돌아 뷰어 패널이 통째로 비었다(실측).
+      await cdp.eval(`window.__gpv.queryClient.invalidateQueries({ queryKey: ["projects"] })`).catch(() => {});
+      await poll(
+        () => cdp.eval(`(window.__gpv.queryClient.getQueryData(["projects"]) || []).some(p => p.id === ${J(fix.projectId)})`),
+        (v) => v === true,
+        20,
+        250,
+      );
       // 앞 스위트가 남긴 화면 상태(분할 패널·최대화·모달·모아보기)를 먼저 걷어낸다 — 전체 회차에서
       // 그대로 열면 에디터가 다른 패널에 뜨거나 모달에 가려, 12초를 기다리다 헛되이 빨개진다(실측).
       await cdp.eval(`(()=>{ const u = window.__gpv.ui.getState();
@@ -205,8 +214,33 @@ export async function run({ cdp, report: r, fix }) {
         300,
       );
       if (ready !== true) {
-        r.check("뷰어에 CP949 파일이 열린다", false, "에디터 내용 대기 시간 초과");
+        const pane = await cdp
+          .eval(`(document.querySelector('[data-viewer-pane]')?.innerText || '').slice(0, 160)`)
+          .catch(() => null);
+        r.check("뷰어에 CP949 파일이 열린다", false, `에디터 내용 대기 시간 초과 · 패널=${J(pane)}`);
       } else {
+        // 같은 diff 키를 구독하는 곳(뷰어·상태바 인코딩 선택기)이 **모두 실제 queryFn** 을 가져야 한다.
+        // TanStack v5 는 구독자가 렌더할 때마다 그 옵션을 쿼리에 덮어쓴다(queryObserver setOptions) —
+        // 상태바가 skipToken 이던 때는 그게 마지막이면 워처 무효화 한 번에 뷰어가 "파일 diff를 불러오지
+        // 못했습니다 Missing queryFn" 으로 깨졌다(2026-09-17 샤드 e2e 25 에서 발견, 설치본 v0.8.0 에도 있음).
+        // 렌더 순서에 따라 드러났다 말았다 하므로 결과가 아니라 **구독자 옵션을 직접** 본다.
+        // 반증: 구독자가 둘 이상이어야 한다 — 상태바 선택기가 안 떠 있으면 이 검사는 공허하다.
+        const obs = await poll(
+          () =>
+            cdp.eval(`(()=>{
+              const qs = window.__gpv.queryClient.getQueryCache()
+                .findAll({ queryKey: ["diff", ${J(fix.projectId)}] }).filter(q => q.observers.length);
+              return qs.flatMap(q => q.observers.map(o => typeof o.options.queryFn));
+            })()`),
+          (v) => Array.isArray(v) && v.length >= 2,
+          20,
+          250,
+        );
+        r.check(
+          "diff 쿼리 구독자(뷰어·상태바 인코딩)가 모두 실제 queryFn 을 가진다 — skipToken 이면 무효화에 뷰어가 깨진다",
+          Array.isArray(obs) && obs.length >= 2 && obs.every((t) => t === "function"),
+          `구독자 queryFn 타입=${J(obs)}`,
+        );
         const uiBefore = fix.readBytes("enc/cp949.h");
         // 이모지를 넣고 뷰어의 저장 액션(Ctrl+S 와 같은 것)을 실행한다.
         const ran = await cdp.eval(`(()=>{

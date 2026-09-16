@@ -1,11 +1,11 @@
-import { skipToken, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { GitBranch, Gauge } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import type { FileDiff, Project, UsageWindow } from "../lib/ipc";
 import { encodingLabel } from "../lib/ipc";
 import { relativeTime } from "../lib/format";
-import { keys, useClaudeUsage, useProjects, useReopenWithEncoding, useStatus } from "../queries";
+import { diffQueryOptions, useClaudeUsage, useProjects, useReopenWithEncoding, useStatus } from "../queries";
 import { useAgentActivity } from "../stores/agentActivity";
 import { useUi } from "../stores/ui";
 
@@ -68,8 +68,9 @@ const ENCODING_CHOICES = [
  * 되고, 더 나쁘게는 오탐된 인코딩으로 **저장**된다. 여기서 고른 값은 그 파일에 붙어
  * 저장 경로까지 따라간다.
  *
- * diff 를 **조회하지 않는다**(`skipToken`) — 뷰어가 이미 채워 둔 캐시만 읽는다. 여기서
+ * diff 를 **조회하지 않는다**(`enabled: false`) — 뷰어가 이미 채워 둔 캐시만 읽는다. 여기서
  * 진짜 쿼리를 걸면 워처가 diff 를 무효화할 때마다 상태바가 git show 를 한 번씩 더 태운다.
+ * (꺼진 구독자는 쿼리를 active 로 만들지 않아 무효화 재조회에 가담하지 않는다.)
  */
 function EncodingPicker({ projectId }: { projectId: string }) {
   const target = useUi((s) => s.selectedDiff);
@@ -77,10 +78,8 @@ function EncodingPicker({ projectId }: { projectId: string }) {
   const reopen = useReopenWithEncoding();
   const [open, setOpen] = useState(false);
   const id = repoId ?? projectId;
-  const { data: diff } = useQuery<FileDiff>({
-    queryKey: target ? keys.diff(id, target) : ["diff", "none"],
-    queryFn: skipToken,
-  });
+  // 뷰어와 **같은 옵션**에 enabled:false 만 얹는다 — skipToken 으로 구독하면 뷰어가 깨진다(diffQueryOptions 주석).
+  const { data: diff } = useQuery<FileDiff>({ ...diffQueryOptions(id, target), enabled: false });
 
   if (!target || !diff || diff.isBinary || diff.tooLarge) return null;
   const label = `${encodingLabel(diff.encoding)}${diff.bom ? " (BOM)" : ""}`;
