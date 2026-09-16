@@ -87,6 +87,23 @@ export async function run({ cdp, report: r, fix }) {
     cdp.try("term_paste").then((x) => (x.ok ? String(x.r ?? "") : "")).catch(() => "");
   const setFail = (stages) =>
     cdp.eval(`window.__gpvClipboard.fail(${J(stages)})`);
+  /** 클립보드를 알려진 값으로 만들고 **완료를 기다린다** — 뒤따르는 "클립보드가 MARK로 바뀌었다"를
+   *  공허하지 않게 하는 기준선이다.
+   *
+   *  왜 필요한가(2026-09-16에 ⑤가 이걸로 간헐 실패했다): 메뉴 [복사]는 `copyTerminalText` →
+   *  `void copyText(...)` 라 **fire-and-forget** 이다. 그래서 각 단계는 `poll(clipboard, …MARK…)`
+   *  로 완료를 기다리는데, **직전 단계가 이미 MARK 를 넣어 뒀으면 그 폴은 첫 회차에 즉시 참이 되어
+   *  아무것도 기다리지 않는다.** 그 상태로 다음 단계가 시작되면 앞 단계의 복사가 **뒤늦게 착지해
+   *  다음 단계가 깔아 둔 기준선을 덮는다** — 실측 로그: ④의 쓰기가 ⑤의 센티널보다 5ms 늦게 끝났다.
+   *  단계마다 다른 값으로 기준선을 깔면 폴이 진짜로 그 단계의 복사를 기다리게 되고 경합이 사라진다.
+   *
+   *  `__gpvClipboard.copy` 는 계층 쓰기를 UI 없이 구동하고 **결과를 await 한다** — 메뉴 경로와 달리
+   *  끝난 시점이 확정된다. 강제 실패 주입은 반드시 이 뒤에 건다(이 호출도 같은 `forced` 를 읽는다). */
+  const primeClipboard = async (text) => {
+    await setFail([]);
+    const r = await cdp.eval(`window.__gpvClipboard.copy(${J(text)})`);
+    return !!(r && r.ok);
+  };
   // **라벨 span 만 읽는다.** 버튼의 textContent 는 라벨과 단축키 힌트가 붙어 나온다
   // ("복사Ctrl+Shift+C") — MenuItem 의 라벨 span 은 `min-w-0`(줄바꿈 금지 주석 참조).
   const menuLabels = () =>
@@ -260,7 +277,9 @@ export async function run({ cdp, report: r, fix }) {
     );
 
     // ── ③ 워크스페이스 pane 우클릭 → 복사 ──
-    await setFail([]);
+    // 기준선을 먼저 깐다 — 사용자의(혹은 직전 회차가 남긴) 클립보드에 이미 MARK 가 들어 있으면
+    // 아래 `poll(…MARK…)` 이 복사와 무관하게 통과한다(`primeClipboard` 주석).
+    const primed1 = await primeClipboard(SENTINEL);
     const sel1 = await writeAndSelect(paneId);
     const selText = sel1?.sel ?? "";
     r.check(
@@ -283,37 +302,33 @@ export async function run({ cdp, report: r, fix }) {
     const cleared = await poll(() => hasSelection(paneId), (v) => v === false, 10, 150);
     r.check(
       "메뉴 [복사] → 클립보드에 선택 텍스트(한글 포함) · 선택 해제로 피드백",
-      clicked1 === true && clip1.includes(MARK) && cleared === false,
-      `클릭=${clicked1} 클립=${J(clip1).slice(0, 60)} 선택유지=${cleared}`,
+      clicked1 === true && primed1 === true && clip1.includes(MARK) && cleared === false,
+      `클릭=${clicked1} 기준선=${primed1} 클립=${J(clip1).slice(0, 60)} 선택유지=${cleared}`,
     );
 
     // ── ④ 계층 폴백: 네이티브 플러그인이 죽어도 복사된다 ──
     // Linux에서 플러그인은 앱 시작 시 arboard를 1회만 만들고 실패하면 영구 Err다 — 그 환경을
     // 그대로 흉내 낸다. 브라우저 경로가 받아 내야 한다.
-    await cdp.invoke("term_paste").catch(() => {});
+    //
+    // **기준선을 다시 깐다.** ③이 이미 MARK 를 넣어 뒀으므로 그냥 두면 아래 폴이 첫 회차에 참이 되어
+    // (ㄱ) 폴백이 통째로 죽어 있어도 초록이고 (ㄴ) 이 단계의 복사가 ⑤가 시작된 뒤에 착지해 ⑤의
+    // 센티널 기준선을 덮는다. 둘 다 실측으로 일어났다 — `primeClipboard` 주석 참조.
+    const primed2 = await primeClipboard(SENTINEL);
     await setFail(["plugin"]);
     await writeAndSelect(paneId);
     const clickedFallback = await openAndClick(paneId, "복사");
     const clip2 = str(await poll(clipboard, (v) => str(v).includes(MARK), 14, 250));
     r.check(
       "네이티브 플러그인 강제 실패 → 브라우저 경로 폴백으로 복사 성공",
-      clickedFallback === true && clip2.includes(MARK),
-      `클릭=${clickedFallback} 클립=${J(clip2).slice(0, 60)}`,
+      clickedFallback === true && primed2 === true && clip2.includes(MARK),
+      `클릭=${clickedFallback} 기준선=${primed2} 클립=${J(clip2).slice(0, 60)}`,
     );
 
     // ── ⑤ 전 단계 실패: 클립보드 불변 · 사유 토스트 · 선택 유지 ──
-    await setFail([]);
     await cdp.eval(`window.__gpv.ui.getState().toasts.slice().forEach(t => window.__gpv.ui.getState().dismissToast(t.id))`);
-    // 센티널을 먼저 클립보드에 박아 "안 바뀌었다"의 기준을 만든다.
-    await cdp.eval(
-      `(async () => { const t = window.__gpv.term.get(${J(paneId)}).term;
-        await new Promise((res) => t.write('\\r\\n' + ${J(SENTINEL)} + '\\r\\n', res));
-        const b = t.buffer.active; t.selectLines(b.baseY + b.cursorY - 1, b.baseY + b.cursorY - 1); })()`,
-    );
-    const clickedSentinel = await openAndClick(paneId, "복사");
-    const sentinelSet = str(
-      await poll(clipboard, (v) => str(v).includes(SENTINEL), 12, 200),
-    );
+    // 센티널을 박아 "안 바뀌었다"의 기준을 만든다. **메뉴로 박지 않는다** — 메뉴 복사는
+    // fire-and-forget 이라 그 쓰기가 이 단계 도중에 뒤늦게 착지할 수 있다(`primeClipboard` 주석).
+    const sentinelSet = await primeClipboard(SENTINEL);
 
     await setFail(["plugin", "navigator", "exec"]);
     const sel3 = await writeAndSelect(paneId);
@@ -332,12 +347,13 @@ export async function run({ cdp, report: r, fix }) {
     r.check(
       "모든 경로 실패 → 클립보드 불변 · 사유가 담긴 토스트 · 선택 유지(재시도 가능)",
       clicked === true &&
+        sentinelSet === true &&
         clip3.includes(SENTINEL) &&
         !clip3.includes(MARK) &&
         /복사에 실패했습니다 — .+/.test(toast) &&
         keptSel === true &&
         (sel3?.sel ?? "").includes(MARK),
-      `클릭=${clicked} 센티널클릭=${clickedSentinel} 클립=${J(clip3).slice(0, 40)} 센티널선행=${sentinelSet.includes(SENTINEL)} 토스트=${J(toast)} 선택유지=${keptSel}`,
+      `클릭=${clicked} 센티널선행=${sentinelSet} 클립=${J(clip3).slice(0, 40)} 토스트=${J(toast)} 선택유지=${keptSel}`,
     );
     await setFail([]);
     await closeMenu();
@@ -427,15 +443,9 @@ export async function run({ cdp, report: r, fix }) {
         return true;
       })()`);
     try {
-      // 센티널을 먼저 클립보드에 박는다(마우스 모드 **끄고** — 아직 평소 경로다).
-      await cdp.eval(
-        `(async () => { const t = window.__gpv.term.get(${J(paneId)}).term;
-          await new Promise((res) => t.write('\\r\\n' + ${J(SENTINEL)} + '\\r\\n', res));
-          const b = t.buffer.active; t.selectLines(b.baseY + b.cursorY - 1, b.baseY + b.cursorY - 1); })()`,
-      );
-      await openAndClick(paneId, "복사");
-      await poll(clipboard, (v) => str(v).includes(SENTINEL), 12, 200);
-      await closeMenu();
+      // 센티널 기준선(마우스 모드 **끄고** — 아직 평소 경로다). 메뉴가 아니라 직접 쓴다:
+      // 메뉴 복사는 fire-and-forget 이라 뒤늦게 착지해 아래 판정을 덮는다(`primeClipboard` 주석).
+      const primed8 = await primeClipboard(SENTINEL);
 
       await writeRaw("\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h");
       const anyOn = await poll(mouseMode, (v) => v === "any", 12, 100);
@@ -455,8 +465,11 @@ export async function run({ cdp, report: r, fix }) {
       const clip8 = str(await poll(clipboard, (v) => str(v).includes(MARK), 16, 200));
       r.check(
         "마우스 추적 중에도 우클릭 [복사]가 뜨고 **드래그했던 그 텍스트**를 복사한다",
-        clicked8 === true && clip8.includes(MARK) && !clip8.includes(SENTINEL),
-        `클릭=${clicked8} 클립=${J(clip8.slice(0, 40))}`,
+        clicked8 === true &&
+          primed8 === true &&
+          clip8.includes(MARK) &&
+          !clip8.includes(SENTINEL),
+        `클릭=${clicked8} 기준선=${primed8} 클립=${J(clip8.slice(0, 40))}`,
       );
     } finally {
       await closeMenu().catch(() => {});
