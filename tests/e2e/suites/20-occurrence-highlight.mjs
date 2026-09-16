@@ -5,9 +5,9 @@
 export const name = "같은 심볼 하이라이트 (occurrence highlight)";
 
 export async function run({ cdp, report: r }) {
-  const has = await cdp.eval(`!!window.__monaco`);
+  const has = await cdp.eval(`!!window.__monaco && !!window.__gpvEnsureMonacoTheme`);
   if (!has) {
-    r.skip("occurrence highlight", "window.__monaco 미노출(dev 빌드 아님) — 스킵");
+    r.skip("occurrence highlight", "window.__monaco/__gpvEnsureMonacoTheme 미노출(dev 빌드 아님) — 스킵");
     return;
   }
 
@@ -21,7 +21,11 @@ export async function run({ cdp, report: r }) {
       host.style.cssText = 'position:absolute;left:-9999px;top:0;width:800px;height:400px';
       document.body.appendChild(host);
       const model = m.editor.createModel(src, 'python');
-      const ed = m.editor.create(host, { model, readOnly: ${readOnly} });
+      // Monaco 테마는 전역이고 **뷰어가 마운트될 때** 적용된다(DiffViewer 의 setTheme). 앞 스위트가
+      // 파일을 안 열었으면 기본 vs 라 회색이 나온다(샤딩에서 드러남) — 뷰어와 같은 경로로 앱의 현재
+      // 테마 이름을 얻어 건다. 같은 값이라 앱 상태는 안 바뀐다. id→이름은 1:1 이 아니다(darcula→dark).
+      const theme = window.__gpvEnsureMonacoTheme(document.documentElement.dataset.theme);
+      const ed = m.editor.create(host, { model, readOnly: ${readOnly}, theme });
       ed.focus();
       ed.setPosition({ lineNumber: 1, column: 6 }); // 'foo'의 f 근처
       let ranges = [];

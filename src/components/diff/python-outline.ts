@@ -188,6 +188,10 @@ export function registerPythonOutline(): void {
 }
 
 // dev 전용 노출(E2E) — monaco-setup.ts __monaco 패턴 미러. release 미포함.
-if (import.meta.env.DEV)
+if (import.meta.env.DEV) {
   (window as unknown as { __gpvPyOutline?: typeof parsePythonSymbols }).__gpvPyOutline =
     parsePythonSymbols;
+  // provider 는 뷰어 마운트 때 등록된다 — e2e 가 뷰어 없이 같은 등록을 부르는 통로(21 스위트).
+  (window as unknown as { __gpvRegisterPyOutline?: typeof registerPythonOutline }).__gpvRegisterPyOutline =
+    registerPythonOutline;
+}

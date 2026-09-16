@@ -613,6 +613,9 @@ monaco.languages.setMonarchTokensProvider("zig", {
 // 에디터/모델/액션을 직접 구동). release에는 포함되지 않는다(main.tsx __gpv 패턴).
 if (import.meta.env.DEV) {
   (window as unknown as { __monaco?: typeof monaco }).__monaco = monaco;
+  // 테마는 뷰어 마운트 때 적용된다 — e2e 가 뷰어 없이 같은 이름을 얻는 통로(20 스위트).
+  (window as unknown as { __gpvEnsureMonacoTheme?: typeof ensureMonacoTheme }).__gpvEnsureMonacoTheme =
+    ensureMonacoTheme;
 }
 
 export { monaco };

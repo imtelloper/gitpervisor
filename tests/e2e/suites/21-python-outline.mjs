@@ -5,7 +5,7 @@ export const name = "파이썬 아웃라인 (구조 팝업 / DocumentSymbol)";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export async function run({ cdp, report: r }) {
-  const has = await cdp.eval(`!!window.__gpvPyOutline && !!window.__monaco`);
+  const has = await cdp.eval(`!!window.__gpvPyOutline && !!window.__gpvRegisterPyOutline && !!window.__monaco`);
   if (!has) {
     r.skip("파이썬 아웃라인", "window.__gpvPyOutline/__monaco 미노출(dev 아님) — 스킵");
     return;
@@ -38,6 +38,10 @@ export async function run({ cdp, report: r }) {
   // ── 구조 팝업(quickOutline) 통합 — 파이썬 모델 오프스크린 에디터로 격리 검증 ──
   const popup = await cdp.eval(`(async ()=>{
     const m = window.__monaco;
+    // provider 는 **뷰어가 마운트될 때** 등록된다(DiffViewer → registerPythonOutline, 멱등). 앞 스위트가
+    // 파일을 안 열었으면 precondition(editorHasDocumentSymbolProvider)이 거짓이라 액션이 조용히
+    // 아무것도 안 한다(샤딩에서 rows=[] 로 드러남) — 뷰어와 같은 등록을 먼저 부른다.
+    window.__gpvRegisterPyOutline();
     const src = ['class Alpha:','    def method_one(self):','        return 1','','def beta_func():','    return 2',''].join('\\n');
     const host = document.createElement('div');
     host.style.cssText='position:absolute;left:0;top:0;width:700px;height:400px;z-index:99999';
@@ -50,10 +54,15 @@ export async function run({ cdp, report: r }) {
     let visible = false, rows = [];
     if (act) {
       await act.run();
-      await new Promise(r=>setTimeout(r,600));
-      const w = document.querySelector('.quick-input-widget');
-      visible = !!(w && w.getBoundingClientRect().width > 0 && getComputedStyle(w).display !== 'none');
-      rows = w ? [...w.querySelectorAll('.monaco-list-row')].map(x=>x.textContent.trim()).slice(0,10) : [];
+      // 위젯은 **이 에디터의 오버레이**다 — host 안에서 찾는다(document 전역이면 다른 에디터의 위젯을
+      // 잡을 수 있다). 고정 600ms 대신 폴링 — 병렬 부하에서 심볼 행이 늦게 그려진다.
+      for (let i = 0; i < 50; i++) {
+        await new Promise(r=>setTimeout(r,100));
+        const w = host.querySelector('.quick-input-widget');
+        visible = !!(w && w.getBoundingClientRect().width > 0 && getComputedStyle(w).display !== 'none');
+        rows = w ? [...w.querySelectorAll('.monaco-list-row')].map(x=>x.textContent.trim()).slice(0,10) : [];
+        if (visible && rows.some(t => /beta_func/.test(t))) break;
+      }
       // 닫기
       ed.focus();
       const ta = host.querySelector('textarea');
