@@ -297,6 +297,43 @@ export async function run({ cdp, report: r }) {
       `클립=${J(String(clip).slice(0, 70))}`,
     );
 
+    // ── ⑥-b `fav_delete`: 허용 루트 밖은 거부 · 안은 **휴지통으로** 간다 ──
+    //
+    // 이 커맨드는 **사용자 파일을 지운다.** 크기와 무관하게 덮어야 하는 종류이고(CLAUDE.md
+    // "파일을 쓰거나 지우는 경로"), 특히 두 가지가 회귀하면 조용히 위험해진다:
+    //  · 허용 루트 게이트가 느슨해지면 즐겨찾기 밖 아무 파일이나 지울 수 있다.
+    //  · 휴지통이 아니라 영구 삭제로 바뀌면 오발 한 번이 되돌릴 수 없게 된다(미리보기 패널의
+    //    삭제는 **확인창이 없다** — 되돌릴 수 있다는 전제로 그렇게 설계했다).
+    // 휴지통 안까지는 여기서 못 본다(OS 셸 API가 필요하다). **디스크에서 사라졌고 커맨드가
+    // 성공했다**까지만 재고, 영구/휴지통 구분은 수동 검증에 맡긴다 — 못 재는 것을 잰 척하지 않는다.
+    {
+      const victim = join(root, "지울파일.txt");
+      writeFileSync(victim, "delete me");
+      const outside = join(tmpdir(), `gpv-fav-outside-${Date.now()}.txt`);
+      writeFileSync(outside, "must survive");
+
+      const denied = await cdp.try("fav_delete", { path: outside });
+      r.check(
+        "⑥-b fav_delete: 허용 루트 **밖** 파일은 거부한다",
+        !denied.ok && existsSync(outside),
+        denied.ok ? "허용됨 — 게이트가 없다" : `code=${denied.code} 파일생존=${existsSync(outside)}`,
+      );
+      rmSync(outside, { force: true });
+
+      const del = await cdp.try("fav_delete", { path: victim });
+      r.check(
+        "⑥-b fav_delete: 허용 루트 **안** 파일은 지워진다",
+        del.ok && !existsSync(victim),
+        `ok=${del.ok} 남음=${existsSync(victim)} ${del.message || ""}`,
+      );
+      const after = await cdp.try("fav_list", { path: root });
+      r.check(
+        "⑥-b 삭제 후 목록에서도 사라진다",
+        after.ok && !(after.r ?? []).some((e) => e.name === "지울파일.txt"),
+        `항목=${(after.r ?? []).map((e) => e.name).join(",")}`,
+      );
+    }
+
     // ── ⑦~⑪ 갱신 뒤에도 같은 파일을 가리키는가 ──
     // 그리드 칸 = `button.flex-col[title]`(타이틀바 버튼은 flex-col 이 아니다), 강조 칸 = border-accent.
     const grid = () =>
