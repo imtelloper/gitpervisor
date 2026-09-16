@@ -718,6 +718,54 @@ export async function run({ cdp, report: r, fix }) {
       Array.isArray(menuGone) && menuGone.length === 0,
       J(menuGone),
     );
+
+    // ── ⑧ Monaco 등록 누수 — 파일을 갈아탈 때마다 전역 등록이 쌓이면 안 된다 ───────────────
+    // <Editor key={editorKey}> 라 파일 전환은 에디터 리마운트다. `editor.addCommand` 는 반환이
+    // 커맨드 id 문자열뿐이라 해제할 길이 없어, 마운트마다 **모듈 전역** StandaloneKeybindingService.
+    // _dynamicKeybindings 와 CommandsRegistry 에 1건씩 남고 그 핸들러가 dispose 된 에디터(와 분리된
+    // DOM 서브트리)를 붙잡는다. addAction(IDisposable) + onDidDispose 로 바꾼 뒤의 회귀 가드다.
+    // GC 를 기다리지 않는 결정적 계수라 힙 스냅샷보다 싸고 흔들리지 않는다.
+    fix.writeFile("src/app2.txt", "alpha\nbeta\ngamma\n");
+    // 한 칸으로 되돌린다 — 패널이 둘이면 openFile 은 **활성** 패널에 열려, 아래 edId 가 보는
+    // 첫 패널의 에디터는 그대로다(= 리마운트 전제가 거짓이 되고 계수도 두 에디터분이 섞인다).
+    await cdp.eval(`window.__gpv.ui.setState({
+      viewerLayout: { kind: 'leaf', paneId: ${J(PANE_A)} },
+      viewerActivePaneId: ${J(PANE_A)}, viewerByPane: {}, viewerMaximizedPaneId: null,
+    })`);
+    const kbCount = () => cdp.eval(`(()=>{
+      const eds = window.__monaco ? window.__monaco.editor.getEditors() : [];
+      const svc = eds.length ? eds[0]._standaloneKeybindingService : null;
+      return svc && Array.isArray(svc._dynamicKeybindings) ? svc._dynamicKeybindings.length : -1;
+    })()`);
+    const edId = () => cdp.eval(`(()=>{
+      const host = document.querySelector('[data-viewer-pane=' + JSON.stringify(${J(PANE_A)}) + ']');
+      const eds = window.__monaco ? window.__monaco.editor.getEditors() : [];
+      const ed = host ? eds.find(e => host.contains(e.getContainerDomNode())) : null;
+      return ed ? ed.getId() : null;
+    })()`);
+    await openFile("src/app.txt");
+    await poll(edId, (v) => typeof v === "string", 20, 250);
+    const kb0 = await kbCount();
+    const ids = [await edId()];
+    for (let i = 0; i < 4; i++) {
+      await openFile(i % 2 ? "src/app.txt" : "src/app2.txt");
+      const id = await poll(
+        edId,
+        (v) => typeof v === "string" && v !== ids[ids.length - 1],
+        20,
+        250,
+      );
+      ids.push(id);
+    }
+    const kb1 = await kbCount();
+    // 전제(반증): 전환마다 에디터가 **실제로** 새로 마운트됐다. 이게 없으면 "안 쌓였다"가 공허하다.
+    const remounted =
+      ids.every((v) => typeof v === "string") && new Set(ids).size === ids.length;
+    r.check(
+      "파일 전환 4회 — 에디터는 매번 새로 마운트되는데(id 5개가 모두 다름) Monaco 전역 동적 키바인딩 수는 그대로(등록 누수 0)",
+      kb0 > 0 && remounted && kb1 === kb0,
+      `키바인딩 ${kb0} → ${kb1} · 에디터 id ${J(ids)}`,
+    );
   } finally {
     // ── 원상복구 — 사용자가 보던 레이아웃·파일·프로젝트로 되돌린다 ────────────
     await closeMenu().catch(() => {});

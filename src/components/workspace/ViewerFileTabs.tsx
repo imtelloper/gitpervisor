@@ -158,7 +158,10 @@ export function ViewerFileTabs({ projectId }: { projectId: string }) {
               className={menuItemCls}
               onClick={() => {
                 // doc 창은 파일 보기 전용이다 — diff 모드 탭도 그 파일로 연다.
-                openDocWindow(projectId, menu.tab.target.path);
+                // 라우팅은 **그 탭의 저장소** 기준이다 — 임베디드(중첩) 저장소 파일이면 합성 id
+                // (`<outer>::<rel>`)여야 한다. outer id 로 열면 바깥 레포의 같은 경로 파일을
+                // 조용히 보여 주거나(더 나쁨) 읽기 실패한다. 탭 클릭(:81)·뷰어(:152)와 같은 계약.
+                openDocWindow(menu.tab.repoId ?? projectId, menu.tab.target.path);
                 setMenu(null);
               }}
             >

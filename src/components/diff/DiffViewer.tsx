@@ -226,7 +226,7 @@ export default function DiffViewer({
   /** 끈 자리를 메울 메뉴가 선택 텍스트를 읽는 통로. 마운트된 에디터의 선택을 준다. */
   selectionRef?: SelectionRef;
 }) {
-  const { data: diff, isLoading, error } = useDiff(projectId, target);
+  const { data: diff, isLoading, error, isPlaceholderData } = useDiff(projectId, target);
   const { data: settings } = useSettings();
   const monacoTheme = ensureMonacoTheme(settings?.theme);
   const collapseUnchanged = useUi((s) => s.diffCollapseUnchanged);
@@ -361,12 +361,16 @@ export default function DiffViewer({
   // 자기 뷰어로 여는 파일(이미지·미디어·Office·PDF)은 useDiff 가 꺼져 있어 diff 가 **직전 파일의 placeholder**
   // (keepPreviousData)다 — 그 import 로 이 파일 확장자(pdf 등, pathspec 없는 레포 전체 git grep)를 데우지 않는다.
   const ownViewer = opensInOwnViewer(path);
+  // **placeholder 로는 데우지 않는다**(텍스트→텍스트 전환도 같은 함정이다). 새 파일의 쿼리가 아직
+  // pending 인 첫 렌더에서 diff 는 직전 파일 내용이다. 그대로 돌면 warmedKeyRef 에 **새 키**를 찍어
+  // 버려서, 진짜 내용이 도착한 렌더는 키가 같다는 이유로 건너뛴다 → 새 파일 import 는 첫 방문에
+  // 영영 예열되지 않고, 직전 파일 심볼만 새 확장자 키(:ext 포함)로 헛조회된다.
   useEffect(() => {
     const content = diff?.newContent;
-    if (!content || ownViewer || warmedKeyRef.current === editorKey) return;
+    if (!content || ownViewer || isPlaceholderData || warmedKeyRef.current === editorKey) return;
     warmedKeyRef.current = editorKey;
     warmDefinitionCache(content);
-  }, [diff, editorKey, ownViewer]);
+  }, [diff, editorKey, ownViewer, isPlaceholderData]);
 
   // ── 편집/저장 상태 ──
   const writeFile = useWriteFile(projectId);
@@ -532,9 +536,20 @@ export default function DiffViewer({
       lspChangeRef.current(); // LSP didChange(full sync, 250ms 디바운스)
     });
     // Ctrl+S / Cmd+S 저장 (Monaco 내부에서 가로채 브라우저 저장 다이얼로그 방지).
-    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () =>
-      saveRef.current(),
-    );
+    // **addCommand 를 쓰지 마라** — 반환이 커맨드 id 문자열뿐이라 해제할 길이 없는데
+    // (standaloneCodeEditor.js: 내부 IDisposable 을 버린다) 등록은 **모듈 전역** CommandsRegistry·
+    // StandaloneKeybindingService._dynamicKeybindings 에 쌓인다. 핸들러가 saveRef→editorRef 를 통해
+    // 에디터를 붙잡아, 패널을 접어도 dispose 된 에디터와 분리된 DOM 서브트리가 힙에 남았다.
+    // addAction 은 IDisposable 을 돌려주고 when 이 그 에디터로 한정돼(editorId) 다른 Monaco 에서
+    // 누른 Ctrl+S 가 남의 에디터를 저장하는 경로도 같이 막힌다.
+    const regs = [
+      editor.addAction({
+        id: "gp.save",
+        label: "저장",
+        keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS],
+        run: () => saveRef.current(),
+      }),
+    ];
     // 우클릭 → "선택 영역 번역"(태스크 61). Monaco 컨텍스트 메뉴는 네이티브 DOM이라 항목 클릭
     // 시점엔 마우스 좌표가 없다 — 메뉴를 연 그 이벤트에서 미리 잡아 카드 위치로 쓴다.
     let ctxPos = { x: 0, y: 0 };
@@ -542,7 +557,7 @@ export default function DiffViewer({
       ctxPos = { x: e.event.posx, y: e.event.posy };
     });
     // precondition이 선택 없을 때 항목을 **비활성**으로 보인다(Monaco 관례 — 앱 메뉴와 다르다).
-    editor.addAction({
+    regs.push(editor.addAction({
       id: "gp.translate",
       label: "선택 영역 번역",
       contextMenuGroupId: "9_cutcopypaste",
@@ -552,6 +567,13 @@ export default function DiffViewer({
         const text = selectedText(ed);
         if (text) useUi.getState().openTranslate(translateRequest(text, ctxPos.x, ctxPos.y));
       },
+    }));
+    // 에디터 자신이 죽을 때 거둔다 — 파일 전환(<Editor key={editorKey}> 리마운트)과 뷰어 언마운트
+    // 두 경로를 한 줄로 덮고, React 의 mount/unmount 순서 가정이 필요 없다.
+    editor.onDidDispose(() => {
+      for (const d of regs) d.dispose();
+      regs.length = 0;
+      if (editorRef.current === editor) editorRef.current = null; // dispose 된 에디터를 붙잡지 않는다
     });
     // go-to-def로 줄 지정해 열렸으면 해당 심볼로 스크롤 + 선택(마운트 시점 1회).
     revealTarget(editor);

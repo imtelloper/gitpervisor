@@ -187,7 +187,9 @@ function FileDocWindow({ docId }: { docId: string }) {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void listen<{ projectId: string }>("repo://changed", (e) => {
-      if (e.payload.projectId !== projectId) return;
+      // 워처는 **최상위 프로젝트** 단위로만 emit 한다(watcher.rs) — 중첩 저장소 파일로 뜬 창은
+      // 합성 id(`<outer>::<rel>`)를 쓰므로 엄격 비교하면 외부 변경을 영영 못 받는다.
+      if (e.payload.projectId !== projectId.split("::")[0]) return;
       void qc.invalidateQueries({ queryKey: ["file-image", projectId] });
       void qc.invalidateQueries({ queryKey: ["diff", projectId] });
     }).then((un) => {

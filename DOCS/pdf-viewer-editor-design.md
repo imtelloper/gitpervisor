@@ -892,11 +892,16 @@ M1 리뷰(보안·수명·렌더·접근성 렌즈, 확정 14건·반박 0)가 �
 - DEV 훅 누출 0: `dist/assets/*.js`에 `pdfOpts`·`byPath` 0건(같은 grep이 `getDocument`는 찾는다), prod 문서 창 `typeof window.__gpv === 'undefined'`.
 - 워커 컨텍스트의 CSP 위반은 판정하지 않았다(수집 수단 없음) — JPX 픽셀과 nowasm 서빙으로 대체했다.
 
-### B.3 범위 밖으로 둔 기존 결함 (M1 이전 코드, 별도 과제)
+### B.3 범위 밖으로 뒀던 기존 결함 (M1 이전 코드) — **2026-09-16 전부 수정**
 
-1. **정의 예열이 placeholder로 먼저 돈다** — `DiffViewer.tsx` 예열 effect가 새 파일 첫 렌더에서 `keepPreviousData` placeholder(직전 파일 내용)로 돌아 `warmedKeyRef`를 소진한다. 새 파일의 import는 첫 방문에 예열되지 않고, 직전 파일 import를 새 확장자로 헛조회한다. main에도 같은 모양. `isPlaceholderData`면 건너뛰는 한 줄이 유력하다. (M1은 PDF에서만 건너뛰게 막았다.)
-2. **Monaco `editor.addCommand` 핸들러 누수** — `DiffViewer.tsx`의 `addCommand`가 해제되지 않아, 분할 패널을 접으면 StandaloneEditor와 분리된 DOM 서브트리가 남는다(옆 패널 PdfView도 그 안에 딸려 남는다). PdfView 자체 정리는 완료(pages 0 · 버스 리스너 0).
-3. (추정) `ViewerFileTabs.tsx`가 탭의 repoId를 무시한다.
+셋 다 "조용히 실패"라 e2e 가 못 잡고 있었다. 수정마다 **되돌리면 빨개지는** 단언을 함께 넣었고, 실제로 세 곳을 되돌려 정확히 그 셋만 빨개지는 것을 확인했다.
+
+1. **정의 예열이 placeholder로 먼저 돌았다** — `DiffViewer.tsx` 예열 effect가 새 파일 첫 렌더에서 `keepPreviousData` placeholder(직전 파일 내용)로 돌아 `warmedKeyRef`를 소진했다. 새 파일의 import는 첫 방문에 **영영** 예열되지 않고(기능이 꺼져 있던 셈), 직전 파일 import를 새 확장자 키로 헛조회했다 — `def_query` 미지원 확장자면 심볼당 pathspec 없는 레포 전체 `git grep`이 최대 20개.
+   → `isPlaceholderData`를 게이트에 추가. 캐시 히트는 placeholder가 아니라 그대로 돌고, 신규 fetch는 건너뛰는 게 아니라 **미뤄진다**. 가드: 61 `placeholderBlock` 첫 방문 단언.
+2. **Monaco `editor.addCommand` 등록 누수** — 반환이 커맨드 id 문자열뿐이라 해제할 길이 없는데 등록은 모듈 전역(CommandsRegistry·`_dynamicKeybindings`)에 쌓이고, 핸들러가 에디터를 붙잡아 dispose된 에디터와 분리된 DOM 서브트리가 남았다(옆 패널 PdfView도 그 안에 딸려 남았다).
+   → keybindings를 가진 `addAction`(IDisposable) + `onDidDispose`로 교체(`DiffViewer.tsx`·`MonacoBox.tsx`·`DbWorkspace.tsx`). 덤으로 `when`이 그 에디터로 한정돼 다른 Monaco에서 누른 Ctrl+S가 남의 에디터를 저장하던 경로도 막혔다. 가드: 51 ⑧ 전역 동적 키바인딩 계수(리마운트 전제 동반).
+3. **뷰어 탭 메뉴가 탭의 저장소를 버렸다**(추정이 아니라 확인됨) — `ViewerFileTabs.tsx`의 '새 창으로 열기'만 outer id로 열어, 바깥 레포에 같은 상대경로 파일이 있으면 **조용히 그 파일**이 떴다.
+   → 탭 클릭·뷰어와 같은 `repoId ?? outerId`. 함께 `DocWindow.tsx`의 `repo://changed` 비교를 outer 기준으로 넓혔다(워처는 최상위 프로젝트 단위로만 emit해서 합성 id 창이 외부 변경을 못 받고 있었다). 가드: 34 — 창 개수가 아니라 **그 창이 읽은 본문**으로 판정.
 
 ### B.4 확인하지 못한 것
 

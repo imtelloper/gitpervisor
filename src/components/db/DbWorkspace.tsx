@@ -85,10 +85,14 @@ function QueryEditor() {
             padding: { top: 8 },
           }}
           onMount={(editor) => {
-            editor.addCommand(
-              monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter,
-              () => void useDb.getState().runQuery(),
-            );
+            // addCommand 는 해제 수단이 없어 모듈 전역 레지스트리에 마운트마다 쌓인다(DiffViewer 와 같은 누수).
+            const reg = editor.addAction({
+              id: "gp.runQuery",
+              label: "쿼리 실행",
+              keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter],
+              run: () => void useDb.getState().runQuery(),
+            });
+            editor.onDidDispose(() => reg.dispose());
           }}
           loading={<span className="text-xs text-fg-dim">에디터 로딩 중…</span>}
         />

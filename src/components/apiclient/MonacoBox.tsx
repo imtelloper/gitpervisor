@@ -49,10 +49,18 @@ export function MonacoBox({
       onMount={(ed) => {
         editorRef.current = ed;
         onMountEditor?.(ed);
-        ed.addCommand(
-          monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyF,
-          () => void ed.getAction("editor.action.formatDocument")?.run(),
-        );
+        // addCommand 가 아니라 addAction — 전자는 해제 수단이 없어 모듈 전역 레지스트리에 쌓이고
+        // 핸들러가 이 에디터를 붙잡는다(DiffViewer 와 같은 누수). 후자는 dispose 가능하다.
+        const reg = ed.addAction({
+          id: "gp.format",
+          label: "문서 서식",
+          keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyF],
+          run: (e) => void e.getAction("editor.action.formatDocument")?.run(),
+        });
+        ed.onDidDispose(() => {
+          reg.dispose();
+          if (editorRef.current === ed) editorRef.current = null;
+        });
       }}
       loading={<span className="text-xs text-fg-dim">에디터 로딩 중…</span>}
     />

@@ -1417,14 +1417,24 @@ async function placeholderBlock({ cdp, r, pid, put, open, CONTROL }) {
     })()`);
 
   // 대조: 텍스트를 열면 예열이 ext 'ts' 로 findDefinition 을 부른다 — 스파이가 예열 경로를 실제로 본다는 증거.
-  // **캐시된 재방문**으로 잡는다. 첫 방문은 예열 effect 가 keepPreviousData placeholder(직전 파일 = CONTROL 'control\n')로
-  // 먼저 돌아 warmedKeyRef 를 소진하고, 진짜 내용이 와도 키가 같아 건너뛴다(main 에도 있는 DiffViewer 결함 · 별도 과제).
-  // 사이의 CONTROL 은 텍스트여야 한다 — PDF 는 예열 effect 가 ownViewer 로 빠져 warmedKeyRef 가 warm 키에 남는다.
   await open(P.warm);
   const firstVisit = await poll(() => q(P.warm), (v) => v?.observers >= 1 && typeof v.content === "string" && v.content.includes(sym), 40, 250);
+  // **첫 방문**에 진짜 내용으로 데웠나. 예열 effect 가 keepPreviousData placeholder(직전 파일 내용)로 먼저 돌면
+  // warmedKeyRef 가 이 파일 키로 선점돼 진짜 내용 도착 렌더가 건너뛴다 → 이 심볼은 영영 안 나온다(= 빨강).
+  // 불변식은 "직전 파일이 무엇인가"가 아니라 (a) placeholder 내용에 sym 이 없고 (b) sym 이 회차마다 유니크(:1406).
+  // 직전은 PDF 지만 그 쿼리는 enabled:false 라 data 가 undefined → placeholder 원천은 그 앞 텍스트(CONTROL)다.
+  const firstWarm = await poll(defs, (v) => Array.isArray(v) && v.some((d) => d.symbol === sym && d.ext === "ts"), 40, 250);
+  r.check(
+    "(부가) 첫 방문 예열이 **진짜 내용**으로 돈다 — ext 'ts' 로 findDefinition · placeholder(직전 파일)로 돌면 이 심볼이 안 나온다",
+    !!firstVisit?.content?.includes?.(sym) &&
+      Array.isArray(firstWarm) && firstWarm.some((d) => d.symbol === sym && d.ext === "ts"),
+    `첫방문 내용=${!!firstVisit?.content?.includes?.(sym)} · 예열=${J(Array.isArray(firstWarm) ? firstWarm.filter((d) => d.symbol === sym) : firstWarm)}`,
+  );
+  // 사이의 CONTROL 은 텍스트여야 한다 — PDF 는 예열 effect 가 ownViewer 로 빠져 warmedKeyRef 가 warm 키에 남는다.
   await open(CONTROL);
   const ctlVisit = await poll(() => q(CONTROL), (v) => v?.observers >= 1, 40, 250);
   await open(P.warm);
+  // 재방문은 심볼 캐시(goto-definition.ts)가 히트해 새 IPC 가 안 나간다 — defs 는 누적이라 some() 으로만 본다.
   const warmed = await poll(defs, (v) => Array.isArray(v) && v.some((d) => d.symbol === sym && d.ext === "ts"), 40, 250);
   const d0 = Array.isArray(warmed) ? warmed.length : 0;
   await open(P.p12, "worktree");

@@ -12,7 +12,7 @@
 // 창 접속은 `connectLabel` 로 한다 — 러너의 `cdp` 는 라벨 `main` 페이지 하나이고, doc 창은
 // 타이틀이 파일명이라 `connect()` 의 타이틀 필터에 아예 걸리지 않는다.
 import { execFileSync } from "node:child_process";
-import { existsSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { connectLabel } from "../lib/cdp.mjs";
@@ -224,7 +224,7 @@ export async function run({ cdp, report: r, fix, port }) {
   // 이미지 블록보다 **먼저** 돈다: 저쪽은 중간 실패에서 run() 자체를 return 하므로
   // 뒤에 두면 그때마다 이 검사들이 통째로 사라진다.
   await videoDocBlock({ cdp, r, fix, cdpPort, arr, labels, closeLabel, poll });
-  await tabMenuBlock({ cdp, r, fix, arr, labels, closeLabel, poll });
+  await tabMenuBlock({ cdp, r, fix, cdpPort, arr, labels, closeLabel, poll });
 
   // 메인 창이 들고 있는 그 이미지의 캐시 — ③ 의 관측 지점(useFileImage 와 같은 키).
   const MAIN_KEY = ["file-image", fix.projectId, SRC];
@@ -690,7 +690,7 @@ async function videoDocBlock({ cdp, r, fix, cdpPort, arr, labels, closeLabel, po
  * 태스크 35 §2.4 — 뷰어 파일 탭 우클릭 메뉴(닫기 · 다른 탭 닫기 · 새 창으로 열기).
  * 메뉴는 로컬 state라 스토어로는 못 본다 — 실제 `contextmenu` 를 쏘고 DOM 으로 단언한다.
  */
-async function tabMenuBlock({ cdp, r, fix, arr, labels, closeLabel, poll }) {
+async function tabMenuBlock({ cdp, r, fix, cdpPort, arr, labels, closeLabel, poll }) {
   const A = "a.txt"; // 픽스처가 이미 만들어 두는 파일들
   const B = "README.md";
   const tabsOf = () =>
@@ -725,6 +725,8 @@ async function tabMenuBlock({ cdp, r, fix, arr, labels, closeLabel, poll }) {
     })()`);
 
   let newDoc = null;
+  let nestedDoc = null;
+  let embDirPath = null; // 중첩 저장소 픽스처 — 창을 닫은 **뒤**에 지운다(정리 단계에서)
   const origSel = await cdp.eval(`window.__gpv.ui.getState().selectedProjectId`);
   try {
     // 픽스처는 원시 invoke로 추가돼 UI 캐시에 없다 — projects 갱신 후에야 선택이 박힌다.
@@ -795,6 +797,65 @@ async function tabMenuBlock({ cdp, r, fix, arr, labels, closeLabel, poll }) {
     await clickItem("닫기");
     const zero = await poll(tabsOf, (n) => n === 0, 20, 250);
     r.check("메뉴 '닫기' → 그 탭이 닫힌다", zero === 0, `탭 ${zero}개`);
+
+    // ── 중첩(임베디드) 저장소 탭 — 메뉴 라우팅은 **그 탭의 저장소**(합성 id) 기준이어야 한다 ──
+    // 바깥 레포에도 같은 상대경로 파일이 있으므로, outer id 로 열면 **조용히 엉뚱한 파일**이 뜬다.
+    // 그래서 단언은 "창이 떴다"가 아니라 **그 창이 읽은 내용**이다(창 개수만 세면 결함이 있어도 초록이다).
+    const EMB = "embedded-d1";
+    const MARK = `NESTED-D1-${Date.now()}`;
+    const embDir = join(fix.repo, EMB);
+    embDirPath = embDir;
+    mkdirSync(embDir, { recursive: true });
+    writeFileSync(join(embDir, "README.md"), `${MARK}\n`); // 바깥 README.md 는 "# gitpervisor e2e fixture"
+    execFileSync("git", ["init", "-b", "main"], { cwd: embDir, stdio: "ignore" });
+    const embId = `${fix.projectId}::${EMB}`;
+    await cdp.eval(
+      `window.__gpv.ui.getState().selectDiff({ mode: "file", path: "README.md" }, ${J(embId)})`,
+    );
+    const embTab = await poll(
+      () =>
+        cdp.eval(
+          `(()=>{ const t = window.__gpv.ui.getState().viewerTabs.find(x => x.repoId === ${J(embId)}); return t ? t.repoId : null; })()`,
+        ),
+      (v) => v === embId,
+      20,
+      250,
+    );
+    if (r.check("중첩 저장소 파일이 탭에 열린다(repoId = 합성 id)", embTab === embId, `repoId=${embTab}`)) {
+      const beforeEmb = arr(await labels());
+      await openMenu("README.md");
+      await poll(menuItems, (v) => Array.isArray(v) && v.length >= 3, 20, 200);
+      await clickItem("새 창으로 열기");
+      nestedDoc = await poll(
+        async () =>
+          arr(await labels()).find((l) => l.startsWith("doc-") && !beforeEmb.includes(l)) ?? null,
+        (v) => !!v,
+        20,
+        500,
+      );
+      let text = null;
+      let recorded = null;
+      if (nestedDoc) {
+        recorded = await cdp.eval(
+          `(()=>{ const v = JSON.parse(localStorage.getItem("gp:doc-windows") || "{}"); const e = v[${J(nestedDoc.slice(4))}]; return e ? e.projectId : null; })()`,
+        );
+        const ncdp = await connectLabel(nestedDoc, { port: cdpPort }).catch(() => null);
+        if (ncdp) {
+          text = await poll(
+            () => ncdp.eval(`document.body.innerText`),
+            (v) => typeof v === "string" && (v.includes(MARK) || v.includes("fixture")),
+            30,
+            300,
+          );
+          ncdp.close();
+        }
+      }
+      r.check(
+        "중첩 저장소 탭 메뉴 '새 창으로 열기' → 그 창이 **중첩 저장소의** 파일을 읽는다(합성 id 라우팅) · 반증: 바깥 레포 동명 파일 내용이면 빨강",
+        typeof text === "string" && text.includes(MARK) && !text.includes("gitpervisor e2e fixture"),
+        `창=${nestedDoc} 기록된 projectId=${recorded} 본문=${J(String(text).slice(0, 80))}`,
+      );
+    }
   } finally {
     // 메뉴가 열린 채 남으면 다음 스위트의 클릭을 백드롭이 삼킨다 — Escape 로 확실히 닫는다.
     await cdp
@@ -802,9 +863,20 @@ async function tabMenuBlock({ cdp, r, fix, arr, labels, closeLabel, poll }) {
         `window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`,
       )
       .catch(() => {});
-    if (newDoc) {
-      await closeLabel(newDoc);
-      await forgetDoc(cdp, newDoc);
+    for (const l of [newDoc, nestedDoc]) {
+      if (!l) continue;
+      await closeLabel(l);
+      await forgetDoc(cdp, l);
+    }
+    // 중첩 저장소는 **이 블록이 만든 것**이라 여기서 지운다 — 남기면 러너 teardown 의
+    // "픽스처 디렉토리 삭제됨"이 그 .git 때문에 빨개진다(정리 실패가 다음 회차까지 번진다).
+    if (embDirPath) {
+      await sleep(300); // 창이 닫히며 그 파일 핸들이 풀릴 시간
+      try {
+        rmSync(embDirPath, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+      } catch {
+        /* 다음 줄의 teardown 단언이 사실대로 빨개지게 둔다 */
+      }
     }
     await cdp
       .eval(`window.__gpv.ui.getState().closeProjectViewerTabs(${J(fix.projectId)})`)
