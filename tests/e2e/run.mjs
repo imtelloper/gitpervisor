@@ -372,12 +372,41 @@ async function teardown() {
   report.check("메모: 픽스처 메모 흔적 없음", !notesKeys.includes(fix?.projectId), `keys=${notesKeys.length}`);
 }
 
+/**
+ * 샤드 앱의 메인 웹뷰 포커스를 되돌린다 — 앞 스위트가 연 보조 창(doc-*·git 로그 창)이 닫히면 OS 가 메인
+ * 창을 다시 활성화해 주는데, **화면 잠금 중이거나 사용자가 다른 창을 쓰는 중이면 안 해 준다.** 그 상태의
+ * 웹뷰는 `document.hasFocus()` 가 false 라 Monaco 가 안 떠 51 이 통째로 깨졌다(2026-09-17 잠금 상태 실측:
+ * 34·45·53 뒤의 51). 창 활성화(set_focus → tao 의 Alt 주입)가 아니라 WebView2 MoveFocus 라 전경을 안 뺏는다.
+ *
+ * 한 번 부르고 끝내면 안 된다 — 보조 창 파괴가 비동기라 직후에 포커스를 다시 가져간다(같은 러너에서 34 바로
+ * 뒤에 한 번만 부르면 여전히 깨졌다). **두 번 연속 참**일 때까지 다시 건다. CDP 포커스 에뮬레이션은 쓰지 마라:
+ * 페이지만 속여 hasFocus 를 늘 참으로 만들고 WebView2 포커스는 못 메운다(A/B 로 확인).
+ */
+async function restoreMainWebviewFocus() {
+  const focused = () => cdp.eval("document.hasFocus()").catch(() => false);
+  // 이미 포커스가 있으면 건드리지 않는다 — 평소(잠금 아님·창 활성) 동작을 바꾸지 않는다.
+  if (await focused()) return;
+  for (let i = 0; i < 15; i++) {
+    await cdp.try("plugin:webview|set_webview_focus", { label: "main" });
+    await new Promise((r) => setTimeout(r, 200));
+    if (!(await focused())) continue;
+    await new Promise((r) => setTimeout(r, 300));
+    if (await focused()) return;
+  }
+}
+
 async function main() {
   console.log(`\x1b[1m\x1b[36mgitpervisor E2E\x1b[0m  — gitpervisor 디버그 창 탐색 중...\n`);
 
   // 연결 + 스냅샷 + 픽스처 셋업
   cdp = await connect();
   console.log(`  연결됨: ${cdp.pageUrl}  (CDP ${cdp.cdpPort})`);
+  // 막 뜬 앱은 아직 Monaco 가 없다 — DiffViewer 청크는 idle 프리로드(main.tsx)라 몇 초 뒤에 온다.
+  // 그 전에 스위트가 돌면 20·21·25·26·27·63 이 "`__monaco` 미노출(dev 아님)"으로 **skip 하고 초록**이
+  // 된다(샤드 앱은 준비되자마자 러너가 붙어 실제로 그랬다). 릴리스 빌드면 끝내 없으니 시한만 둔다.
+  for (let i = 0; i < 60 && !(await cdp.eval("!!window.__gpv && !!window.__monaco").catch(() => false)); i++) {
+    await new Promise((r) => setTimeout(r, 500));
+  }
   snapshot = await takeSnapshot();
   console.log(`  스냅샷: 프로젝트 ${snapshot.projectIds.length} · DB연결 ${snapshot.dbConnIds.length} · 메모키 ${snapshot.notesKeys.length} · 테마 ${snapshot.settings.theme}`);
 
@@ -455,6 +484,7 @@ async function main() {
   for (const path of suites) {
     const mod = await import(path);
     report.suite(mod.name || path);
+    if (shard) await restoreMainWebviewFocus();
     try {
       await mod.run({ cdp, report, fix, snapshot, port: cdp.cdpPort, devPort: cdp.devPort });
     } catch (e) {

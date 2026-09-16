@@ -61,7 +61,9 @@ export async function run({ cdp, report: r, fix }) {
         return { err:'no editor', pid:u.selectedProjectId, diff:u.selectedDiff, agg:u.aggregateOpen,
           tab: tm.activeTab ? tm.activeTab[u.selectedProjectId] : '?',
           editors: m.editor.getEditors().map(e=>(e.getModel()?.uri.path||'')+':'+(e.getModel()?.getValue().slice(0,20)||'')),
-          viewerTabs: (u.viewerTabs||[]).map(t=>t.key).slice(0,5) };
+          viewerTabs: (u.viewerTabs||[]).map(t=>t.key).slice(0,5),
+          panes: [...document.querySelectorAll('[data-viewer-pane]')].map(p=>{ const b=p.getBoundingClientRect(); return Math.round(b.width)+'x'+Math.round(b.height)+':'+(p.innerText||'').replace(/\\s+/g,' ').slice(0,80); }),
+          focus: document.hasFocus(), vis: document.visibilityState };
       }
       const model=ed.getModel();
       const hit=model.findNextMatch('gpvRefTarget(', {lineNumber:2,column:1}, false, true, null, false);
