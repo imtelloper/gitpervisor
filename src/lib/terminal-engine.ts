@@ -8,6 +8,8 @@ import "@xterm/xterm/css/xterm.css";
 
 import { collectPanes, useTerminals } from "../stores/terminals";
 import { useTermThemes } from "../stores/termThemes";
+import { useUi } from "../stores/ui";
+import { copyFailMessage, copyText } from "./clipboard";
 import { errorMessage } from "./ipc";
 import { isMod, isWindows } from "./platform";
 import { capturePtyInput } from "./prompt-capture";
@@ -249,6 +251,11 @@ if (import.meta.env.DEV) {
   };
 }
 
+/** 마우스 추적 DECSET — 1000(클릭) · 1002(버튼 드래그) · 1003(모든 이동).
+ *  Claude Code는 셋을 **다 켠다**(`?1000h ?1002h ?1003h ?1006h`). 이 중 하나라도 켜지거나
+ *  꺼지면 선택 스태시를 버린다. 1006(SGR)은 인코딩이라 추적 자체를 켜지 않으므로 뺀다. */
+const MOUSE_TRACKING_MODES = [1000, 1002, 1003];
+
 /** xterm 인스턴스를 만들고 PTY를 띄운다. 이미 있으면 기존 것을 반환(멱등).
  *  attach=true면 새 PTY를 spawn하지 않고 살아있는 세션에 출력만 재연결(term_attach) —
  *  플로팅(별도 OS 창)에서 메인 창이 만든 세션을 이어받을 때 쓴다. */
@@ -309,18 +316,74 @@ export function createTerminalImpl(opts: {
     host,
     status: "live",
     win32Input: false,
+    lastSelection: "",
   };
 
   // win32-input-mode(DECSET 9001) 감지 — ConPTY가 시작 시 `\x1b[?9001h`를 보낸다(portable-pty가
   // PSEUDOCONSOLE_WIN32_INPUT_MODE로 무조건 연다). xterm 6은 이 모드를 조용히 무시하므로
   // 여기서만 관측한다. `return false`로 기본 경로도 계속 타게 둔다(무시라서 무해).
+  // 같은 핸들러에서 마우스 추적 DECSET도 본다 — 켜고 끄는 **양쪽 모두**에서 선택 스태시를 비워
+  // 한 TUI 에피소드 밖으로 새지 않게 한다(아래 `onSelectionChange` 주석).
   term.parser.registerCsiHandler({ prefix: "?", final: "h" }, (params) => {
     if (params.includes(9001)) inst.win32Input = true;
+    if (MOUSE_TRACKING_MODES.some((m) => params.includes(m)))
+      inst.lastSelection = "";
     return false;
   });
   term.parser.registerCsiHandler({ prefix: "?", final: "l" }, (params) => {
     if (params.includes(9001)) inst.win32Input = false;
+    if (MOUSE_TRACKING_MODES.some((m) => params.includes(m)))
+      inst.lastSelection = "";
     return false;
+  });
+
+  // **마우스 추적 TUI 안에서는 xterm 선택이 마우스 리포트 한 번에 지워진다.** SGR 인코딩
+  // (DECSET 1006)이 켜져 있으면 리포트가 `triggerDataEvent(report, true)`로 나가고
+  // (xterm 6 CoreMouseService.ts:328-331), 그 `wasUserInput`이 CoreService의 onUserInput을
+  // 때리며(CoreService.ts:74-76 — 주석부터가 "eg. clear selection"), SelectionService가 거기
+  // 걸려 선택을 지운다(SelectionService.ts:139-143).
+  //
+  // 그래서 **우클릭 메뉴가 열릴 때 선택은 언제나 비어 있다.** SelectionService는 `button === 2
+  // && hasSelection`이면 "컨텍스트 메뉴를 위해" 보존하려 하지만(:451-455), 같은 element에 걸린
+  // 두 번째 mousedown 리스너가 버튼을 안 가리고 리포트를 쏴 그 앞에서 터뜨린다
+  // (CoreBrowserTerminal.ts:779-790). `stopPropagation()`은 같은 element의 다른 리스너를 못 막는다.
+  // ?1003(ANY)을 켠 앱(Claude Code 기본값 — `?1000h ?1002h ?1003h ?1006h`)에서는 그 전에
+  // **버튼 없이 마우스를 움직이기만 해도** 이미 지워진다(CoreBrowserTerminal.ts:720-724).
+  //
+  // 결과: Shift+드래그로 선택을 만들어도 우클릭 메뉴에 [복사]가 뜨는 일이 원리적으로 없었고,
+  // 메뉴는 "Shift+드래그로 선택하세요" — 그대로 해도 도달하지 못하는 안내만 그렸다.
+  // 마지막으로 사용자가 만든 선택을 여기 남겨 메뉴가 그것을 복사 대상으로 쓴다(`snapshotSelection`).
+  term.onSelectionChange(() => {
+    const sel = term.getSelection();
+    if (sel) inst.lastSelection = sel;
+  });
+
+  // OSC 52 — TUI가 "이걸 클립보드에 넣어라"로 보내는 표준 통로(vim `"+y`, tmux, helix, SSH 너머의
+  // Claude Code). xterm 6은 52를 **등록조차 하지 않아**(InputHandler는 0·1·2·4·8·10~12·104·110~112만)
+  // 지금까지 통째로 증발했다 — 원격에서는 복사가 무음으로 실패했다.
+  // 읽기 요청("?")에는 **응답하지 않는다**: 터미널에 뜬 아무 프로그램이나 사용자 클립보드를 훔쳐
+  // 가는 통로가 된다. 쓰기만 받는다.
+  term.parser.registerOscHandler(52, (data) => {
+    // 페이로드는 `<selection>;<base64>` — selection(c/p/s…)이 무엇이든 클립보드로 본다.
+    const semi = data.indexOf(";");
+    if (semi < 0) return true;
+    const b64 = data.slice(semi + 1);
+    if (!b64 || b64 === "?") return true;
+    try {
+      // atob은 latin1 바이트를 준다 — 한글은 UTF-8로 되돌려야 안 깨진다.
+      const text = new TextDecoder().decode(
+        Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)),
+      );
+      // 실패는 **말한다**. TUI는 자기가 복사했다고 믿고 넘어가므로, 무음이면 사용자는
+      // 한참 뒤 엉뚱한 옛 내용을 붙여넣고서야 안다(태스크 65의 그 규약).
+      if (text)
+        void copyText(text).then((ok) => {
+          if (!ok) useUi.getState().pushToast("error", copyFailMessage());
+        });
+    } catch {
+      /* 잘렸거나 base64가 아닌 페이로드 — 무시 */
+    }
+    return true;
   });
 
   // 마우스 프로토콜을 켠 TUI(Claude Code 등) 위에서는 휠이 PTY로 전달되고 뷰포트 스크롤이

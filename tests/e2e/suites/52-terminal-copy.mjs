@@ -18,6 +18,12 @@
 //      말한다 — Windows/Linux는 Shift+드래그, mac은 Option+드래그(mac의 Shift+드래그는 앱으로 간다).
 //      기대값은 앱의 isMac이 아니라 xterm이 수식키를 고르는 기준(`navigator.platform`)으로 따로 정한다.
 //      Windows/Linux 러너에서는 답이 예전과 같은 Shift라, OS 분기 자체의 회귀는 mac 러너에서만 갈린다.
+//   ⑧ **마우스 추적 중에도 우클릭 [복사]가 뜨고 드래그했던 텍스트를 복사한다.** 그 모드에선
+//      우클릭의 mousedown이 곧 마우스 리포트라 xterm이 선택을 먼저 지워버려, [복사]가 **원리적으로**
+//      뜰 수 없었다(Shift+드래그를 해도). 선택 스태시(`snapshotSelection`)가 그걸 메운다.
+//      ①~⑦처럼 합성 `contextmenu` 하나만 쏘면 이 경로가 빠져 결함이 있어도 초록이므로, 여기서만
+//      **진짜 mousedown(button 2)** 을 쏴 지워짐을 재현한 뒤 메뉴를 연다. 스태시가 마우스 모드
+//      밖으로 새지 않는 것(모드 전환 시 비움)도 함께 본다.
 //
 // 클립보드는 사용자 것이다 — 시작할 때 텍스트를 저장하고 끝에 되돌린다(best-effort).
 // [붙여넣기]는 **누르지 않는다.** 누르면 사용자의 셸에 실제로 글자가 들어간다 — 존재만 확인한다.
@@ -391,6 +397,87 @@ export async function run({ cdp, report: r, fix }) {
       "마우스 추적 모드 해제(DECRST 1000) — 뒤 단계로 새지 않는다",
       modeOff === "none",
       `모드=${modeOff}`,
+    );
+
+    // ── ⑧ 마우스 추적 중 우클릭: 선택이 리포트에 지워져도 [복사]가 살아남는다 ──
+    // Claude Code가 실제로 켜는 시퀀스 그대로다(`?1000h ?1002h ?1003h ?1006h` — `EXe("full")`).
+    // 이 조합에서 xterm의 마우스 리포트는 SGR 인코딩이라 `triggerDataEvent(report, true)`로
+    // 나가고(CoreMouseService.ts:328-331), 그 `wasUserInput`이 CoreService의 onUserInput을
+    // 때리며(CoreService.ts:74-76), SelectionService가 거기 걸려 선택을 지운다(:139-143).
+    // **우클릭의 mousedown 자체가 그 리포트다** — SelectionService는 `button === 2 &&
+    // hasSelection`이면 보존하려 하지만(:451-455) 같은 element의 두 번째 mousedown 리스너가
+    // 버튼을 안 가리고 쏜다(CoreBrowserTerminal.ts:779-790). 그래서 메뉴가 열릴 땐 선택이
+    // **언제나** 비어 있었고, Shift+드래그를 해도 [복사]는 뜨지 않았다.
+    //
+    // 합성 `contextmenu` 하나만 쏘는 ①~⑦ 방식으로는 이 경로가 통째로 빠져 **결함이 있어도
+    // 초록이다.** 그래서 여기서만 **진짜 mousedown(button 2)** 을 쏴 지워짐까지 재현한 뒤 메뉴를
+    // 연다. 리포트 바이트는 픽스처 셸로 들어가지만 이 터미널은 이 스위트가 만들고 끝에 닫는다.
+    const mouseDownRight = () =>
+      cdp.eval(`(()=>{
+        const inst = window.__gpv.term.get(${J(paneId)});
+        const scr = inst && inst.host && inst.host.querySelector('.xterm-screen');
+        if (!scr) return false;
+        const rc = scr.getBoundingClientRect();
+        if (rc.width < 8 || rc.height < 8) return false;
+        scr.dispatchEvent(new MouseEvent('mousedown', {
+          bubbles: true, button: 2, buttons: 2,
+          clientX: Math.round(rc.left + rc.width / 2),
+          clientY: Math.round(rc.top + rc.height / 2),
+        }));
+        return true;
+      })()`);
+    try {
+      // 센티널을 먼저 클립보드에 박는다(마우스 모드 **끄고** — 아직 평소 경로다).
+      await cdp.eval(
+        `(async () => { const t = window.__gpv.term.get(${J(paneId)}).term;
+          await new Promise((res) => t.write('\\r\\n' + ${J(SENTINEL)} + '\\r\\n', res));
+          const b = t.buffer.active; t.selectLines(b.baseY + b.cursorY - 1, b.baseY + b.cursorY - 1); })()`,
+      );
+      await openAndClick(paneId, "복사");
+      await poll(clipboard, (v) => str(v).includes(SENTINEL), 12, 200);
+      await closeMenu();
+
+      await writeRaw("\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h");
+      const anyOn = await poll(mouseMode, (v) => v === "any", 12, 100);
+      const sel8 = await writeAndSelect(paneId);
+      const downSent = await mouseDownRight();
+      const gone = await poll(() => hasSelection(paneId), (v) => v === false, 12, 100);
+      // 전제가 깨지면(xterm이 더는 안 지운다) 스태시도 안내 문구도 근거를 잃는다 — 알아야 한다.
+      r.check(
+        "전제: 마우스 추적(SGR) 중 우클릭의 mousedown이 xterm 선택을 지운다",
+        anyOn === "any" &&
+          downSent === true &&
+          (sel8?.sel ?? "").includes(MARK) &&
+          gone === false,
+        `모드=${anyOn} mousedown=${downSent} 선택=${J((sel8?.sel ?? "").slice(0, 24))} 지워짐=${gone === false}`,
+      );
+      const clicked8 = await openAndClick(paneId, "복사");
+      const clip8 = str(await poll(clipboard, (v) => str(v).includes(MARK), 16, 200));
+      r.check(
+        "마우스 추적 중에도 우클릭 [복사]가 뜨고 **드래그했던 그 텍스트**를 복사한다",
+        clicked8 === true && clip8.includes(MARK) && !clip8.includes(SENTINEL),
+        `클릭=${clicked8} 클립=${J(clip8.slice(0, 40))}`,
+      );
+    } finally {
+      await closeMenu().catch(() => {});
+      await writeRaw("\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l").catch(() => {});
+      await clearSelection(paneId).catch(() => {});
+    }
+    // 스태시는 **모드 전환에서 비운다**(terminal-engine의 CSI ?h/?l 핸들러) — 마우스 모드가
+    // 꺼진 뒤에도 남으면 사용자가 지운 선택이 다음 우클릭에서 되살아난다.
+    const stashGone = await poll(
+      () =>
+        cdp.eval(
+          `(()=>{ const t = window.__gpv.term.get(${J(paneId)}); return t ? t.lastSelection : null; })()`,
+        ),
+      (v) => v === "",
+      12,
+      100,
+    );
+    r.check(
+      "마우스 모드 해제 시 선택 스태시가 비워진다 — 다음 우클릭으로 새지 않는다",
+      stashGone === "",
+      `스태시=${J(String(stashGone).slice(0, 24))}`,
     );
 
     // ── ① 모아보기 셀 우클릭 (핵심 회귀) ──

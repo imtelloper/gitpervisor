@@ -25,6 +25,11 @@ export interface TermInstance {
   /** 이 PTY가 win32-input-mode(DECSET 9001)를 요청했는가 — ConPTY가 시작 시 `\x1b[?9001h`를
    *  보낸다. 엔진이 CSI 핸들러로 갱신하며, Shift/Alt+Enter 인코딩 선택에 쓴다. */
   win32Input: boolean;
+  /** 마우스 추적 모드에서 **마지막으로 사용자가 만든 선택**. 그 모드에선 xterm 선택이 마우스
+   *  리포트 한 번에 지워져 우클릭 메뉴가 열릴 땐 항상 비어 있다(기전은 엔진의 `onSelectionChange`
+   *  등록부 주석). 엔진이 채우고 `snapshotSelection`이 읽는다. 마우스 모드가 켜지거나 꺼질 때
+   *  비운다 — 한 TUI 에피소드 밖으로는 새지 않는다. */
+  lastSelection: string;
   /** 이 인스턴스가 PTY 출력을 받는 채널 — 재연결(reattachAllTerminals)에 다시 쓴다.
    *  PTY의 출력 소비자는 하나뿐이라(term_attach가 sink를 교체) 다른 창이 가져갔다 돌려줄 때
    *  같은 채널로 붙여야 기존 xterm이 그대로 이어진다. 엔진이 생성 직후 채운다. */
@@ -334,6 +339,19 @@ export async function pasteIntoTerminal(id: string) {
   }
 }
 
+/** 우클릭 메뉴가 "복사할 것"을 정하는 **단일 규칙**. PaneMenu·ChipMenu가 열리는 순간 부른다.
+ *
+ *  평소엔 지금 선택 그대로다. **앱이 마우스를 쓰는 중일 때만** 스태시로 내려간다 — 그 모드에선
+ *  우클릭의 mousedown 자체가 마우스 리포트가 되어 xterm이 선택을 이미 지운 뒤라(엔진의
+ *  `onSelectionChange` 등록부 주석), 라이브 값은 **언제나** 빈 문자열이다. 마우스 모드가 아닐
+ *  때까지 스태시를 쓰면 "아까 선택했던 것"이 되살아나 사용자가 지운 선택이 복사된다. */
+export function snapshotSelection(id: string): string {
+  const inst = registry.get(id);
+  if (!inst) return "";
+  if (inst.term.hasSelection()) return inst.term.getSelection();
+  return inst.term.modes.mouseTrackingMode !== "none" ? inst.lastSelection : "";
+}
+
 /** 터미널 복사의 **단일 경로** — Ctrl+C·Ctrl+Shift+C·Cmd+C·전역 폴백·우클릭 메뉴가 모두 여기로
  *  온다. 성공하면 선택을 해제해 "복사됐다"를 눈으로 알리고(무음 성공이면 사용자는 다시 누른다),
  *  실패는 **사유와 함께** 토스트로 알린다(clipboard.ts의 계층 쓰기가 남긴 lastCopyFailure).
@@ -341,7 +359,7 @@ export async function pasteIntoTerminal(id: string) {
  *  **텍스트를 인자로 받는 게 핵심이다.** 메뉴에서 부를 때 여기서 `getSelection()`을 다시 읽으면
  *  안 된다 — macOS는 xterm 기본값이 "우클릭 = 커서 아래 단어 선택"이라(rightClickSelectsWord),
  *  메뉴가 뜨는 사이 선택이 통째로 바뀐 뒤였다. 지금은 그 옵션도 끄고(terminal-engine.ts),
- *  메뉴는 열린 순간의 스냅샷을 넘긴다. */
+ *  메뉴는 열린 순간의 스냅샷을 넘긴다(`snapshotSelection`). */
 export function copyTerminalText(id: string, text: string) {
   if (!text) return;
   void copyText(text).then((ok) => {

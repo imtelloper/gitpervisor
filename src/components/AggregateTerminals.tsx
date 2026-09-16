@@ -30,8 +30,8 @@ import {
   createTerminal,
   detachTerminalKeepPty,
   fitTerminal,
-  getTerminal,
   queueInitialInput,
+  snapshotSelection,
 } from "../lib/terminal";
 import { translateRequest } from "../lib/translate";
 import { useProjects, useSettings } from "../queries";
@@ -900,14 +900,16 @@ export function AggregateTerminals() {
               : undefined
           }
           // 번역(태스크 61)도 같은 판정 + **선택이 있을 때만** — 없으면 항목 자체를 그리지 않는다.
+          // [복사]와 **같은 규칙**으로 읽는다(snapshotSelection) — 마우스 추적 중엔 라이브 선택이
+          // 우클릭에 이미 지워져 있어, 여기만 hasSelection()을 보면 [복사]는 있는데 번역만 없다.
           onTranslate={
             selected.has(chipMenu.cell.id) &&
             chipMenu.cell.kind === "terminal" &&
-            getTerminal(chipMenu.cell.id)?.term.hasSelection()
+            snapshotSelection(chipMenu.cell.id)
               ? () =>
                   openTranslate(
                     translateRequest(
-                      getTerminal(chipMenu.cell.id)?.term.getSelection() ?? "",
+                      snapshotSelection(chipMenu.cell.id),
                       chipMenu.x,
                       chipMenu.y,
                     ),
@@ -990,10 +992,7 @@ function ChipMenu({
 }) {
   // 메뉴가 **열린 순간**의 선택(PaneMenu와 같은 규약, 태스크 65) — 우클릭 뒤에 선택이 바뀌어도
   // 복사 대상은 사용자가 드래그한 그것이다.
-  const [selection] = useState(() => {
-    const term = getTerminal(cell.id)?.term;
-    return term?.hasSelection() ? term.getSelection() : "";
-  });
+  const [selection] = useState(() => snapshotSelection(cell.id));
 
   useEffect(() => {
     const close = () => onClose();

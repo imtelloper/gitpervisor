@@ -23,6 +23,7 @@ import {
   fitTerminal,
   getTerminal,
   pasteIntoTerminal,
+  snapshotSelection,
 } from "../../lib/terminal";
 import { translateRequest } from "../../lib/translate";
 import { useOccludesWebview } from "../../stores/occlusion";
@@ -182,10 +183,8 @@ function PaneMenu({
   const togglePanel = usePromptHistory((s) => s.togglePanel);
   const openTranslate = useUi((s) => s.openTranslate);
   // 메뉴가 **열린 순간**의 선택(태스크 61) — 선택이 없으면 비활성이 아니라 항목 자체가 없다.
-  const [selection] = useState(() => {
-    const term = getTerminal(paneId)?.term;
-    return term?.hasSelection() ? term.getSelection() : "";
-  });
+  // 마우스 추적 중이면 라이브 선택은 우클릭 자체에 지워진 뒤라 스태시로 내려간다(snapshotSelection).
+  const [selection] = useState(() => snapshotSelection(paneId));
 
   useEffect(() => {
     const close = () => onClose();
@@ -336,15 +335,20 @@ export function TermClipboardItems({
   );
 }
 
-/** 마우스 추적 모드(vim·lazygit·htop·tmux)에서는 드래그가 앱으로 가서 **선택이 생기지 않는다**.
- *  정답은 선택을 강제하는 수식키+드래그인데 그 키가 OS별로 다르다 — Windows/Linux는 Shift, mac은
- *  Option이다(mac의 Shift+드래그는 앱으로 그대로 간다 — terminal-engine `XTERM_OVERRIDES`).
- *  안내가 없거나 틀리면 "복사가 안 되는 앱"으로 오해한다. */
+/** 마우스 추적 모드(Claude Code·vim·lazygit·htop·tmux)에서는 드래그가 앱으로 가서 **선택이
+ *  생기지 않는다**. 정답은 선택을 강제하는 수식키+드래그인데 그 키가 OS별로 다르다 —
+ *  Windows/Linux는 Shift, mac은 Option이다(mac의 Shift+드래그는 앱으로 그대로 간다 —
+ *  terminal-engine `XTERM_OVERRIDES`).
+ *
+ *  **복사 키까지 말한다.** 그 모드에선 선택을 만든 뒤 마우스를 움직이거나 우클릭하는 순간
+ *  마우스 리포트가 선택을 지운다(terminal-engine `onSelectionChange` 주석). 스태시 덕에 우클릭
+ *  메뉴도 이제 동작하지만, 손이 이미 키보드에 있으면 키 한 번이 왕복 없이 끝난다. */
 function noSelectionHint(termId: string): string {
   const mouse = getTerminal(termId)?.term.modes.mouseTrackingMode;
-  return mouse && mouse !== "none"
-    ? `앱이 마우스를 쓰는 중 — ${isMac ? "Option+드래그" : "Shift+드래그"}로 선택하세요`
-    : "선택한 텍스트가 없습니다";
+  if (!mouse || mouse === "none") return "선택한 텍스트가 없습니다";
+  return isMac
+    ? "앱이 마우스를 쓰는 중 — Option+드래그로 선택 후 ⌘C"
+    : "앱이 마우스를 쓰는 중 — Shift+드래그로 선택 후 Ctrl+Shift+C";
 }
 
 /** 컨텍스트 메뉴 한 줄 — 모아보기 칩 메뉴(AggregateTerminals)도 같은 모양을 쓴다. */

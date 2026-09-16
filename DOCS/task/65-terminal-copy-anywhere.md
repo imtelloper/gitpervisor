@@ -234,3 +234,63 @@ party` 가 `humanize` 의 Windows 경합 분기에 걸린다.
 **e2e(2026-09-11, `F:\gp-fix` dev 빌드 · 셸을 `powershell.exe` 5.1 로 둔 회차)**: 52 **13/13**(새 ②·⑦ 포함),
 60 18/18, 14 67 pass / 2 skip. 14 는 첫 회차에서 "Claude 항목 → 셸에 `claude` 입력(에코)" 1건이 18초 대기 안에
 에코를 못 봐 실패했고 단독 재실행에서 통과했다 — 이 PC 는 Store pwsh 별칭이 깨져 있어 셸을 5.1 로 바꿔 돌린 회차다.
+
+---
+
+## 후속 (2026-09-16) — 마우스 추적 중에는 [복사]가 **원리적으로** 뜰 수 없었다
+
+Claude Code 세션에서 "드래그해서 선택하고 우클릭했는데 [복사]가 없다"는 신고로 다시 팠다.
+§2 #5 는 원인을 "마우스 추적 모드 앱은 드래그를 삼켜 선택이 안 생긴다"로 적었는데, **절반만
+맞았다.** 선택을 만들어도(Shift+드래그) 메뉴에는 끝내 [복사]가 안 뜬다.
+
+### 사슬
+
+1. **Claude Code 는 마우스 추적을 셋 다 켠다** — `?1000h ?1002h ?1003h ?1006h`.
+   바이너리(2.1.272)에 `_ = iD(MOUSE_NORMAL)+iD(MOUSE_BUTTON)+iD(MOUSE_ANY)+iD(MOUSE_SGR)`,
+   `EXe(E){case"full":return _; case"scroll":return t; case"off":return ""}`, 기본값 `vO() = "full"`.
+   → xterm `modes.mouseTrackingMode === "any"`, 인코딩 SGR.
+2. **SGR 인코딩이면 마우스 리포트가 "사용자 입력"으로 나간다** — `CoreMouseService.ts:328-331`
+   `this._activeEncoding === 'DEFAULT' ? triggerBinaryEvent : triggerDataEvent(report, true)`.
+3. `wasUserInput` 이 `CoreService.ts:74-76` 에서 `_onUserInput.fire()` 를 때리고(주석부터가
+   "eg. clear selection"), `SelectionService.ts:139-143` 이 거기 걸려 **선택을 지운다.**
+4. **우클릭의 mousedown 이 곧 그 리포트다.** SelectionService 는 `button === 2 && hasSelection`
+   이면 컨텍스트 메뉴를 위해 보존하려 하지만(`:451-455`), 같은 element 에 걸린 두 번째 mousedown
+   리스너가 버튼을 안 가리고 쏜다(`CoreBrowserTerminal.ts:779-790`). `stopPropagation()` 은 같은
+   element 의 다른 리스너를 못 막는다 — xterm 6 자체의 자기모순이다.
+5. `?1003`(ANY)이면 그 전에 **버튼 없이 마우스를 움직이기만 해도** 이미 지워진다
+   (`CoreBrowserTerminal.ts:720-724`).
+
+즉 §4의 4 가 심은 안내("Shift+드래그로 선택하세요")는 **그대로 해도 복사에 도달하지 못했다.**
+
+### 수정
+
+- **선택 스태시** — `TermInstance.lastSelection`. 엔진이 `term.onSelectionChange` 에서 비어 있지 않은
+  선택만 남기고, 마우스 추적 DECSET(1000/1002/1003)이 **켜지거나 꺼질 때** 비운다(기존 9001 감지
+  CSI 핸들러에 얹었다 — 한 TUI 에피소드 밖으로 새면 사용자가 지운 선택이 되살아난다).
+- **`snapshotSelection(id)`** (`terminal.ts`) — 메뉴가 "복사할 것"을 정하는 단일 규칙. 평소엔 라이브
+  선택, **마우스 추적 중일 때만** 스태시. PaneMenu·ChipMenu·모아보기 번역 항목이 전부 이걸 쓴다
+  (한 곳만 `hasSelection()` 으로 남으면 [복사]는 있는데 번역만 없는 상태가 된다).
+- **안내 문구**는 실제로 되는 경로를 말한다 — `Shift+드래그로 선택 후 Ctrl+Shift+C`
+  (mac: `Option+드래그로 선택 후 ⌘C`). 키 경로는 마우스 리포트를 안 내므로 선택이 살아 있다.
+- **OSC 52 수신** — `term.parser.registerOscHandler(52, …)`. xterm 6 은 52 를 **등록조차 안 해**
+  (`InputHandler` 는 0·1·2·4·8·10~12·104·110~112) 지금까지 통째로 증발했다: SSH 너머의 TUI·vim `"+y`·
+  tmux·helix 의 복사가 이 앱에서만 무음으로 실패했다. 읽기 요청(`?`)에는 **응답하지 않는다**(터미널에
+  뜬 아무 프로그램이나 클립보드를 훔쳐 가는 통로다). 쓰기 실패는 토스트로 알린다.
+
+### e2e 52 가 이걸 못 잡고 있었다
+
+①~⑦ 은 선택을 `t.selectLines()` 로 만들고 메뉴를 **합성 `contextmenu` 하나**로 연다 — mousedown 이
+없으니 3~4번 사슬이 통째로 빠져 **결함이 있어도 초록이었다.** ⑦ 은 안내 **문자열**만 보고, 기대값을
+`/^Mac/.test(navigator.platform)` 로 계산해 앱과 같은 분기를 양쪽에서 계산·비교한다.
+설계(§5)는 원래 CDP 드래그 선택을 하려 했는데 구현에서 `selectLines` 로 바뀌며 드래그 경로가 빠졌다.
+
+**⑧ 신설**: Claude Code 시퀀스 그대로 켜고 → 선택 → **진짜 `mousedown`(button 2)** → 선택이 지워짐을
+단언(전제) → 그다음 메뉴를 열어 [복사]가 뜨고 **드래그했던 텍스트**가 클립보드에 들어가는지 본다.
+모드 해제 후 스태시가 비워지는지도 함께 본다.
+
+### 우회 (코드 수정 없이)
+
+`CLAUDE_CODE_DISABLE_MOUSE=1` 이면 `EXe("off")` 가 빈 문자열이라 시퀀스가 0바이트 — 드래그 선택이
+평소처럼 된다. `CLAUDE_CODE_DISABLE_MOUSE_CLICKS=1` 은 **소용없다**(`"scroll"` = 여전히 `?1000h ?1006h`,
+내부에서 좌클릭만 폐기). 참고로 Claude Code 는 자체 선택 + copy-on-select(기본 켜짐)로 드래그 직후
+네이티브 클립보드에 이미 넣는다 — 사용자가 본 하이라이트는 xterm 것이 아니라 그쪽이다.
