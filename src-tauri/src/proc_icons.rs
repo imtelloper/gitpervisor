@@ -71,8 +71,10 @@ fn collect_icons(
 
 /// 프로세스 아이콘 배치 조회 — 캐시에 없는 경로만 추출한다. 성공한 것만 맵에 담아 반환
 /// (실패·미지원은 생략 → 프론트가 기본 아이콘으로 폴백). 스냅샷의 exePath를 키로 쓴다.
+// async — 아이콘 추출(ExtractIconExW·GetDIBits)은 경로마다 exe 를 읽는다. 리소스 모니터가 열려 있는
+// 동안 반복되므로 UI 스레드에서 돌리지 않는다. GDI 핸들은 이 스레드 안에서 만들고 지운다.
 #[cfg(windows)]
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_process_icons(
     state: State<'_, AppState>,
     paths: Vec<String>,
@@ -85,7 +87,7 @@ pub fn get_process_icons(
 /// `None` 엔트리를 캐시에 채워 넣어, 아무 쓸모 없는 String 키가 프로세스 수만큼 쌓였다
 /// (락 경합·메모리 둘 다 순손해). 락도 잡지 않고 즉시 반환한다.
 #[cfg(not(windows))]
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_process_icons(
     state: State<'_, AppState>,
     _paths: Vec<String>,

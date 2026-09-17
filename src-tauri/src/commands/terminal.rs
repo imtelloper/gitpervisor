@@ -670,8 +670,11 @@ fn session_tree(root: i32) -> Vec<i32> {
 /// - `Ok(Some(text))` — 붙여넣을 것이 있다
 /// - `Ok(None)` — 클립보드가 비었다(정상. 프론트는 info 토스트)
 /// - `Err(사유)` — 못 읽었다(타임아웃·OS 오류. 프론트는 사유 토스트 + [다시 시도])
+///
+/// **async.** 클립보드는 null HWND 로 열어 스레드 친화가 없다. 동기(= UI 스레드)이면 이미지가 든
+/// 클립보드에서 포맷 변환 + 수 MB BMP 쓰기가 창 메시지 루프를 붙잡는다(2026-09-17 멈춤 조사 후보).
 #[cfg(windows)]
-#[tauri::command]
+#[tauri::command(async)]
 pub fn term_paste() -> Result<Option<String>, String> {
     use clipboard_win::{formats, get_clipboard, raw};
 

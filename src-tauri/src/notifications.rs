@@ -83,7 +83,10 @@ pub async fn notify_external(
 /// AI 작업 완료 OS 토스트 — **Windows 전용**. 앱 AUMID로 직접 토스트를 띄워 앱 이름·아이콘이
 /// 보이게 한다(알림 플러그인은 dev에서 app_id를 안 붙여 "Windows PowerShell"로 떴다 — desktop.rs:201).
 /// 비-Windows에선 프론트가 플러그인 sendNotification을 그대로 쓰므로 이 커맨드를 호출하지 않는다.
-#[tauri::command]
+///
+/// async — 토스트는 WinRT 프로세스 간 COM 호출 + 아이콘 파일 쓰기라 UI 스레드에서 돌리지 않는다
+/// (windows-rs 가 워커 스레드에서 MTA 를 알아서 잡는다).
+#[tauri::command(async)]
 pub fn notify_os(
     app: tauri::AppHandle,
     title: String,
@@ -117,13 +120,19 @@ mod win_toast {
     const ICON_BYTES: &[u8] = include_bytes!("../icons/128x128.png");
 
     /// 아이콘 PNG를 안정 경로(app_local_data_dir)에 기록하고 절대경로를 돌려준다.
-    /// 매번 덮어쓴다 — 로고가 바뀌면(빌드에 박힌 ICON_BYTES) 캐시 파일도 같이 갱신되도록.
+    /// **프로세스당 한 번** 덮어쓴다 — 로고가 바뀌면(빌드에 박힌 ICON_BYTES) 다음 실행에서 갱신되고,
+    /// 토스트 두 개가 겹칠 때 한쪽 쓰기가 다른 쪽이 읽는 파일을 잘라 먹지 않는다(notify_os 가 async 라 겹친다).
     fn icon_path(app: &AppHandle) -> Option<PathBuf> {
-        let dir = app.path().app_local_data_dir().ok()?;
-        let _ = std::fs::create_dir_all(&dir);
-        let p = dir.join("notify-icon.png");
-        std::fs::write(&p, ICON_BYTES).ok()?;
-        Some(p)
+        static WRITTEN: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+        WRITTEN
+            .get_or_init(|| {
+                let dir = app.path().app_local_data_dir().ok()?;
+                let _ = std::fs::create_dir_all(&dir);
+                let p = dir.join("notify-icon.png");
+                std::fs::write(&p, ICON_BYTES).ok()?;
+                Some(p)
+            })
+            .clone()
     }
 
     /// HKCU\Software\Classes\AppUserModelId\<APP_ID> 에 DisplayName + IconUri 등록 —

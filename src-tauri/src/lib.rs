@@ -1506,18 +1506,32 @@ mod tests {
             ("commands/settings.rs", "get_settings"),
             ("commands/projects.rs", "list_projects"),
             ("commands/notes.rs", "get_notes"),
+            // 외부 프로세스·큰 파일·클립보드·COM 에 막힐 수 있는 것 — UI 스레드에서 돌면 창이 멈춘다
+            // (2026-09-17 설치본 멈춤 조사).
+            ("commands/lsp.rs", "lsp_start"),
+            ("claude_usage.rs", "last_agent_message"),
+            ("commands/terminal.rs", "term_paste"),
+            ("proc_icons.rs", "get_process_icons"),
+            ("notifications.rs", "notify_os"),
         ];
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         for (file, name) in HOT {
             let src = std::fs::read_to_string(root.join(file)).expect(file);
-            let idx = src
-                .find(&format!("pub fn {name}("))
-                .unwrap_or_else(|| panic!("{name} 선언을 못 찾았다 — 이름이 바뀌었나?"));
+            // 플랫폼별로 선언이 여럿일 수 있다(term_paste·get_process_icons) — **전부** 본다.
+            // `pub async fn` 은 그 자체로 async 커맨드다(spawn_blocking 으로 감싼 lsp_start).
+            let sync_decls: Vec<usize> = src.match_indices(&format!("pub fn {name}(")).map(|(i, _)| i).collect();
+            let async_decls = src.matches(&format!("pub async fn {name}(")).count();
             assert!(
-                src[..idx].trim_end().ends_with("#[tauri::command(async)]"),
-                "{name}이 동기 커맨드다. 이 안에서 패닉이 나면 프로세스가 abort한다 — \
-                 #[tauri::command(async)]로 되돌려라",
+                !sync_decls.is_empty() || async_decls > 0,
+                "{name} 선언을 못 찾았다 — 이름이 바뀌었나?"
             );
+            for idx in sync_decls {
+                assert!(
+                    src[..idx].trim_end().ends_with("#[tauri::command(async)]"),
+                    "{name}이 동기 커맨드다. 이 안에서 패닉이 나면 프로세스가 abort한다 — \
+                     #[tauri::command(async)]로 되돌려라",
+                );
+            }
         }
     }
 

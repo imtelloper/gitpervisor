@@ -107,7 +107,11 @@ fn snippet(s: &str) -> String {
 /// 프로젝트의 마지막 AI(assistant) 텍스트 메시지 — 작업 완료 알림 본문용. 최신 세션 트랜스크립트
 /// (`~/.claude/projects/<encoded>/<newest>.jsonl`)의 끝에서부터 첫 assistant 텍스트를 뽑아 요약한다.
 /// 트랜스크립트 없음·파싱 실패면 None(알림은 기본 문구로 폴백).
-#[tauri::command]
+///
+/// **async + 끝에서부터 읽기.** 예전엔 동기 커맨드(= UI 스레드)가 트랜스크립트를 통째로 읽었다 —
+/// 파일이 11~32MB 라 에이전트가 끝날 때마다 UI 스레드가 수십 MB 를 할당·파싱했고, 메모리가 빠듯하면
+/// 창 응답이 멈출 수 있었다(2026-09-17 설치본 멈춤 조사에서 후보로 꼽힘). 답은 거의 항상 마지막 몇 줄이다.
+#[tauri::command(async)]
 pub fn last_agent_message(project_path: String) -> Option<String> {
     let dir = home_dir()?
         .join(".claude")
@@ -120,36 +124,161 @@ pub fn last_agent_message(project_path: String) -> Option<String> {
         .filter(|e| e.path().extension().map_or(false, |x| x == "jsonl"))
         .max_by_key(|e| e.metadata().ok().and_then(|m| m.modified().ok()))?
         .path();
-    let content = std::fs::read_to_string(&newest).ok()?;
-    for line in content.lines().rev() {
-        let v: serde_json::Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        if v.get("type").and_then(|t| t.as_str()) != Some("assistant") {
-            continue;
-        }
-        let text = v
-            .get("message")
-            .and_then(|m| m.get("content"))
-            .and_then(|c| c.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|b| {
-                        if b.get("type").and_then(|t| t.as_str()) == Some("text") {
-                            b.get("text").and_then(|t| t.as_str())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            })
-            .unwrap_or_default();
-        let text = text.trim();
-        if !text.is_empty() {
-            return Some(snippet(text));
-        }
+    scan_lines_from_end(&newest, assistant_snippet)
+}
+
+/// 트랜스크립트 한 줄이 텍스트가 있는 assistant 메시지면 그 요약.
+fn assistant_snippet(line: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    if v.get("type").and_then(|t| t.as_str()) != Some("assistant") {
+        return None;
     }
-    None
+    let text = v
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|b| {
+                    if b.get("type").and_then(|t| t.as_str()) == Some("text") {
+                        b.get("text").and_then(|t| t.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    let text = text.trim();
+    (!text.is_empty()).then(|| snippet(text))
+}
+
+/// 파일을 **끝에서부터** 한 줄씩(뒤→앞) `f` 에 넘기고 처음 `Some` 을 돌려준다. 64KB 블록으로 거꾸로
+/// 읽으므로 답이 끝 근처에 있으면 파일 크기와 무관하게 몇 블록만 읽는다. 블록 경계에 걸친 줄은 앞
+/// 블록과 이어 붙인 뒤에야 넘긴다(한 줄이 수 MB 인 tool_result 도 온전히 한 줄로 본다).
+fn scan_lines_from_end<T>(
+    path: &std::path::Path,
+    mut f: impl FnMut(&str) -> Option<T>,
+) -> Option<T> {
+    use std::io::{Read, Seek, SeekFrom};
+    const BLOCK: u64 = 64 * 1024;
+    // 이보다 긴 줄(수십 MB tool_result)은 통째로 건너뛴다 — 블록마다 이어 붙이면 복사가 줄 길이의 제곱으로
+    // 늘고, 프론트 시한(3s)이 지나도 Rust 쪽은 계속 돈다. assistant 텍스트 줄은 이만큼 크지 않다.
+    const MAX_LINE: usize = 8 * 1024 * 1024;
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut pos = file.metadata().ok()?.len();
+    // 아직 줄머리를 못 본 조각(파일의 더 뒤쪽 바이트). 줄바꿈이 없음이 보장된다.
+    let mut carry: Vec<u8> = Vec::new();
+    // 너무 긴 줄의 앞부분을 버리는 중 — 그 줄의 머리(앞 줄바꿈)를 찾을 때까지 바이트를 모으지 않는다.
+    let mut skipping = false;
+    loop {
+        let start = pos.saturating_sub(BLOCK);
+        let mut buf = vec![0u8; (pos - start) as usize];
+        file.seek(SeekFrom::Start(start)).ok()?;
+        file.read_exact(&mut buf).ok()?;
+        // 줄바꿈은 새로 읽은 블록 안에만 있다(carry 에는 없다) — 거기만 훑는다.
+        let mut search_end = buf.len();
+        let mut end = if skipping { buf.len() } else { buf.extend_from_slice(&carry); buf.len() };
+        let mut first = true;
+        while let Some(nl) = buf[..search_end].iter().rposition(|&b| b == b'\n') {
+            if !(skipping && first) {
+                let line = std::str::from_utf8(&buf[nl + 1..end]).unwrap_or("");
+                if let Some(hit) = f(line.trim_end_matches('\r')) {
+                    return Some(hit);
+                }
+            }
+            first = false;
+            skipping = false;
+            end = nl;
+            search_end = nl;
+        }
+        if start == 0 {
+            // 파일 첫 줄 — 앞에 줄바꿈이 없다.
+            if skipping {
+                return None;
+            }
+            let line = std::str::from_utf8(&buf[..end]).unwrap_or("");
+            return f(line.trim_end_matches('\r'));
+        }
+        if skipping || end > MAX_LINE {
+            skipping = true;
+            carry.clear();
+        } else {
+            buf.truncate(end);
+            carry = buf;
+        }
+        pos = start;
+    }
+}
+
+#[cfg(test)]
+mod tail_tests {
+    use super::*;
+
+    #[test]
+    fn scan_lines_from_end_matches_whole_file_reverse_across_blocks() {
+        let dir = std::env::temp_dir().join(format!("gpv-tail-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.jsonl");
+        // 블록(64KB) 경계를 여러 번 넘도록: 긴 줄(200KB) + CRLF 줄 + 한글 + 마지막 줄 개행 없음.
+        let long = "x".repeat(200_000);
+        let lines = vec![
+            "first".to_string(),
+            long.clone(),
+            "가나다\r".to_string(),
+            "mid".to_string(),
+            long,
+            "last-no-newline".to_string(),
+        ];
+        std::fs::write(&path, lines.join("\n")).unwrap();
+
+        let mut seen = Vec::new();
+        let none: Option<()> = scan_lines_from_end(&path, |l| {
+            seen.push(l.to_string());
+            None
+        });
+        assert!(none.is_none());
+        let want: Vec<String> = lines.iter().rev().map(|l| l.trim_end_matches('\r').to_string()).collect();
+        assert_eq!(seen, want, "전체를 뒤에서부터 한 줄씩, 경계 조각 없이");
+
+        // 처음 Some 에서 멈춘다 — 더 앞 줄은 읽지 않는다.
+        let mut visited = 0;
+        let hit = scan_lines_from_end(&path, |l| {
+            visited += 1;
+            (l == "mid").then(|| l.to_string())
+        });
+        assert_eq!(hit.as_deref(), Some("mid"));
+        assert_eq!(visited, 3);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn scan_lines_from_end_skips_lines_longer_than_cap() {
+        let dir = std::env::temp_dir().join(format!("gpv-tail-big-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.jsonl");
+        let huge = "y".repeat(9 * 1024 * 1024); // MAX_LINE(8MB) 초과
+        std::fs::write(&path, format!("before\n{huge}\nafter")).unwrap();
+        let mut seen = Vec::new();
+        let none: Option<()> = scan_lines_from_end(&path, |l| {
+            seen.push(if l.len() > 16 { format!("<{}B>", l.len()) } else { l.to_string() });
+            None
+        });
+        assert!(none.is_none());
+        // 초대형 줄은 건너뛰고 그 앞뒤 줄은 온전히 본다.
+        assert_eq!(seen, vec!["after".to_string(), "before".to_string()]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn assistant_snippet_picks_text_blocks_only() {
+        let a = r#"{"type":"assistant","message":{"content":[{"type":"tool_use"},{"type":"text","text":"완료했습니다"}]}}"#;
+        let u = r#"{"type":"user","message":{"content":[{"type":"text","text":"x"}]}}"#;
+        let t = r#"{"type":"assistant","message":{"content":[{"type":"tool_use"}]}}"#;
+        assert_eq!(assistant_snippet(a).as_deref(), Some("완료했습니다"));
+        assert_eq!(assistant_snippet(u), None);
+        assert_eq!(assistant_snippet(t), None);
+        assert_eq!(assistant_snippet("not json"), None);
+    }
 }

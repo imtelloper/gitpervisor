@@ -88,14 +88,39 @@ struct ExitPayload {
 
 /// 서버 스폰 + stdio 연결. initialize 핸드셰이크는 프론트가 수행한다(여기선 프로세스만).
 /// 이미 세션이 있으면 멱등 — 기존 sink를 새 Channel로 교체(리로드 대응).
+///
+/// **UI 스레드 밖에서, 그리고 tokio 워커가 아니라 blocking 풀에서 돈다.** 예전엔 동기(= UI 스레드)였는데
+/// 안에서 `where.exe node.exe`·`python.exe` 를 시한 없이 `.output()` 한다 — 콘솔 자식이 뜨는 데 수백 ms,
+/// 시작 실패 팝업(0xc0000142)이면 닫을 때까지 창 전체가 멈춘다(2026-09-17 설치본 멈춤 조사의 후보).
+/// `#[tauri::command(async)]` 로만 바꾸면 본문이 tokio 워커에서 돌아, 막힌 where.exe 가 START_LOCK 을 쥔 채
+/// 뒤따르는 시작마다 워커를 하나씩 묶는다(모든 async 커맨드가 그 워커를 나눠 쓴다) — 그래서 spawn_blocking.
 #[tauri::command]
-pub fn lsp_start(
+pub async fn lsp_start(
     app: AppHandle,
-    state: State<'_, AppState>,
     project_id: String,
     lang: String,
     on_msg: Channel<String>,
 ) -> Result<LspServerInfo, IpcError> {
+    tauri::async_runtime::spawn_blocking(move || start_blocking(app, project_id, lang, on_msg))
+        .await
+        .map_err(|e| IpcError::new(ErrorCode::Io, format!("언어 서버 시작 작업 실패: {e}")))?
+}
+
+/// 앱 종료(`lsp_kill_all`)가 시작됐다 — 그 뒤에 끝난 시작은 등록하지 않는다(고아 서버 방지).
+static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
+
+/// **시작은 한 번에 하나다**: 동기일 때 자연히 직렬이던 것을 START_LOCK 이 잇는다 — 같은 키로 둘이 겹치면
+/// 늦게 끝난 쪽이 먼저 띄운 서버를 축출하고, 그 서버의 exit 이벤트가 같은 키로 나가 프론트가 방금 뜬
+/// 세션을 죽은 줄 안다.
+fn start_blocking(
+    app: AppHandle,
+    project_id: String,
+    lang: String,
+    on_msg: Channel<String>,
+) -> Result<LspServerInfo, IpcError> {
+    static START_LOCK: Mutex<()> = Mutex::new(());
+    let _serial = START_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let state = app.state::<AppState>();
     let key = format!("{project_id}:{lang}");
 
     // 멱등 재부착 — 이미 떠 있으면 sink만 교체.
@@ -104,6 +129,9 @@ pub fn lsp_start(
         if let Some(s) = sessions.get(&key) {
             *s.sink.lock().unwrap_or_else(|e| e.into_inner()) = on_msg;
             *s.last_activity.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
+            // 전역 레지스트리 락을 놓고 나서 where.exe(detect_python)를 돈다 — 쥔 채 돌면 그동안
+            // lsp_stop·remove_project(UI 스레드)·lsp_send 가 전부 그 락에서 기다린다.
+            drop(sessions);
             let repo = project_path(&state, &project_id).ok();
             return Ok(LspServerInfo {
                 binary: "(running)".to_string(),
@@ -196,6 +224,17 @@ pub fn lsp_start(
     // 최대 GRACEFUL_TIMEOUT이 걸리므로 전역 레지스트리를 쥔 채 돌리면 다른 세션까지 멈춘다.
     let evicted: Vec<LspSession> = {
         let mut sessions = state.lsp.lock().unwrap_or_else(|e| e.into_inner());
+        // 띄우는 사이 프로젝트가 제거됐거나 앱이 종료 중이면 등록하지 않는다 — 등록하면 레포를 CWD 로
+        // 문 서버가 리퍼(10분)까지 남는다. 제거·종료는 둘 다 이 락을 잡기 **전에** 프로젝트를 빼고
+        // 플래그를 올리므로, 이 락 아래에서 보면 창이 닫힌다(동기 UI 스레드일 땐 생길 수 없던 경합).
+        if SHUTTING_DOWN.load(Ordering::SeqCst) || project_path(&state, &project_id).is_err() {
+            drop(sessions);
+            spawn_terminate(session);
+            return Err(IpcError::new(
+                ErrorCode::NotFound,
+                format!("언어 서버를 띄우는 사이 프로젝트가 닫혔습니다: {project_id}"),
+            ));
+        }
         // 같은 키에 이미 세션이 있었다면(재부착 검사와 spawn 사이의 레이스) 그 놈도 정리 대상이다.
         // 락 안에서 그냥 떨구면 Drop(kill+wait)이 전역 락 아래서 도니 밖으로 들고 나간다.
         let mut out: Vec<LspSession> = sessions.insert(key.clone(), session).into_iter().collect();
@@ -315,6 +354,7 @@ pub(crate) fn stop_project_sessions(state: &AppState, project_id: &str) {
 /// 앱 종료 시 전 세션 정리(lib.rs Destroyed 훅 / health 시그널 핸들러 — terminal kill_all 미러).
 /// **시그니처 고정** — lib.rs·health/mod.rs가 이 형태로 부른다.
 pub fn lsp_kill_all(state: &AppState) {
+    SHUTTING_DOWN.store(true, Ordering::SeqCst);
     let sessions: Vec<LspSession> = {
         let mut map = state.lsp.lock().unwrap_or_else(|e| e.into_inner());
         map.drain().map(|(_, s)| s).collect()
