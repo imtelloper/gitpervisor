@@ -482,7 +482,16 @@ async function main() {
     );
   }
   for (const path of suites) {
-    const mod = await import(path);
+    // import 가 던지면(구문 오류 등) 그 스위트를 **실패로 세고** 다음으로 간다. 예전엔 main 이 통째로
+    // 죽어 "치명적 오류" 한 줄만 남고, 이미 돈 teardown 검사만으로 ALL GREEN 이 찍혔다(2026-09-17 실측).
+    let mod;
+    try {
+      mod = await import(path);
+    } catch (e) {
+      report.suite(path);
+      report.check("(스위트 로드 실패)", false, e.message);
+      continue;
+    }
     report.suite(mod.name || path);
     if (shard) await restoreMainWebviewFocus();
     try {
@@ -499,6 +508,8 @@ try {
   await main();
 } catch (e) {
   console.error(`\n\x1b[31m치명적 오류:\x1b[0m ${e.message}\n`);
+  // 요약에 실패로 남긴다 — 콘솔 한 줄로만 두면 뒤따르는 teardown 검사가 전부 통과해 초록으로 보인다.
+  report.check("(러너 치명적 오류)", false, e.message);
 } finally {
   // 셋업이 일부라도 됐으면 항상 정리/복원 시도
   if (cdp && snapshot) {

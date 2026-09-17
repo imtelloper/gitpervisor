@@ -233,7 +233,16 @@ function cleanup() {
   }
   for (const r of runners) killTree(r.pid);
   for (const { p } of spawned) killTree(p.pid);
-  for (const d of dataDirs) rmSync(d, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+  // taskkill /F 는 종료를 요청만 하고 돌아온다 — WebView2 자식이 파일을 늦게 놓아 5초 재시도로도 EPERM 이
+  // 났고, 그 예외가 드라이버를 exit 2 로 죽였다(간헐, 2026-09-17). 정리 실패는 회차 결과가 아니다:
+  // 경고만 남기고, 남은 폴더는 소유자 표식(죽은 드라이버)으로 다음 실행의 sweepStale 이 거둔다.
+  for (const d of dataDirs) {
+    try {
+      rmSync(d, { recursive: true, force: true, maxRetries: 40, retryDelay: 250 });
+    } catch (e) {
+      console.error(`  ⚠ 데이터 디렉터리를 아직 못 지웠습니다(다음 실행이 정리): ${d} — ${e.code || e.message}`);
+    }
+  }
 }
 
 // Ctrl+C·콘솔 닫힘(설치본 터미널이 죽을 때가 이것이다)에도 정리한다. Windows 의 콘솔 닫힘은
@@ -316,17 +325,24 @@ function ensureDevBinary() {
  *  설치본이 멈추면 이 회차를 돌리던 세션까지 같이 죽는다(2026-09-17 00:02 실제로 그랬다). 막힌 호출은
  *  끝내 특정하지 못했으므로(덤프 없음) **증상으로 막는다**: 메인 창에 WM_NULL 을
  *  SendMessageTimeout(1.5s, SMTO_ABORTIFHUNG)으로 보내 응답 시간을 재고, 연속으로 응답이 없거나 여유
- *  메모리가 바닥이면 샤드 앱을 전부 거두고 멈춘다. 측정은 PowerShell 한 프로세스가 계속 돈다. */
+ *  메모리가 바닥이면 샤드 앱을 전부 거두고 멈춘다. 측정은 PowerShell 한 프로세스가 계속 돈다.
+ *
+ *  **첫 무응답 순간 그 프로세스의 미니덤프를 뜬다**(`%TEMP%\gpv-hang-<pid>-<시각>.dmp`, 스레드 스택 포함).
+ *  2026-09-17 사고는 덤프가 없어 막힌 호출을 끝내 못 찾았다 — WER LocalDumps 는 크래시만 뜨고 멈춤은
+ *  안 뜬다. 두 번째 인자(프로세스 이름)는 검증용이다: 일부러 멈춘 창으로 이 경로를 실측할 때 쓴다. */
 const WATCH_PS1 = String.raw`
 $ErrorActionPreference = 'SilentlyContinue'
 Add-Type -AssemblyName Microsoft.VisualBasic
 Add-Type -Namespace Gpv -Name W -MemberDefinition '[DllImport("user32.dll")] public static extern IntPtr SendMessageTimeout(IntPtr h, uint m, UIntPtr w, IntPtr l, uint f, uint t, out UIntPtr r);'
+Add-Type -Namespace Gpv -Name D -MemberDefinition '[DllImport("dbghelp.dll", SetLastError=true)] public static extern bool MiniDumpWriteDump(IntPtr hProcess, uint pid, Microsoft.Win32.SafeHandles.SafeFileHandle hFile, uint type, IntPtr e, IntPtr u, IntPtr c);'
 $ci = New-Object Microsoft.VisualBasic.Devices.ComputerInfo
 $exclude = $args[0]
+$name = if ($args[1]) { $args[1] } else { 'gitpervisor' }
+$dumped = @{}
 while ($true) {
   $avail = [math]::Round(100.0 * $ci.AvailablePhysicalMemory / $ci.TotalPhysicalMemory, 1)
   $apps = @()
-  foreach ($p in (Get-Process -Name gitpervisor -ErrorAction SilentlyContinue)) {
+  foreach ($p in (Get-Process -Name $name -ErrorAction SilentlyContinue)) {
     if ($p.Path -eq $exclude) { continue }
     $h = $p.MainWindowHandle
     if ($h -eq [IntPtr]::Zero) { continue }
@@ -335,6 +351,21 @@ while ($true) {
     $ok = [Gpv.W]::SendMessageTimeout($h, 0, [UIntPtr]::Zero, [IntPtr]::Zero, 2, 1500, [ref]$r)
     $ms = if ($ok -eq [IntPtr]::Zero) { -1 } else { $sw.ElapsedMilliseconds }
     $apps += "$($p.Id):$ms"
+    if ($ms -eq -1 -and -not $dumped.ContainsKey($p.Id)) {
+      $dumped[$p.Id] = $true
+      $dmp = Join-Path $env:TEMP ('gpv-hang-{0}-{1}.dmp' -f $p.Id, (Get-Date -Format 'yyyyMMdd-HHmmss'))
+      # 변수를 매번 초기화하고 try 로 감싼다 — SilentlyContinue 에서 .NET 예외는 그 문장만 건너뛰어 앞 반복의
+      # 값($wrote=True)이 남는다(실측). 그러면 없는 덤프를 성공으로 보고한다.
+      $fs = $null; $wrote = $false; $why = ''
+      try {
+        $fs = [IO.File]::Create($dmp)
+        # ThreadInfo | ProcessThreadData | UnloadedModules | HandleData — 스택은 기본 포함, 힙은 뺀다(수 MB)
+        $wrote = [Gpv.D]::MiniDumpWriteDump($p.Handle, [uint32]$p.Id, $fs.SafeFileHandle, 0x1124, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero)
+        if (-not $wrote) { $why = 'win32=' + [Runtime.InteropServices.Marshal]::GetLastWin32Error() }
+      } catch { $why = $_.Exception.Message -replace '[\r\n|]', ' ' } finally { if ($fs) { $fs.Close() } }
+      if (-not $wrote) { Remove-Item -LiteralPath $dmp -ErrorAction SilentlyContinue }
+      [Console]::Out.WriteLine("dump=$($p.Id)|$wrote|$dmp|$why")
+    }
   }
   [Console]::Out.WriteLine("avail=$avail apps=" + ($apps -join ','))
   [Console]::Out.Flush()
@@ -342,7 +373,7 @@ while ($true) {
 }
 `;
 
-const watchStats = { samples: 0, maxMs: 0, minAvail: 100, hung: 0, watched: new Set() };
+const watchStats = { samples: 0, maxMs: 0, minAvail: 100, hung: 0, watched: new Set(), dumps: [] };
 
 function startWatch(onAbort) {
   if (process.platform !== "win32") return;
@@ -362,6 +393,16 @@ function startWatch(onAbort) {
     while ((nl = buf.indexOf("\n")) >= 0) {
       const line = buf.slice(0, nl).trim();
       buf = buf.slice(nl + 1);
+      const dump = /^dump=(\d+)\|(\w*)\|([^|]+)\|?(.*)$/.exec(line);
+      if (dump) {
+        if (dump[2] === "True") {
+          watchStats.dumps.push(dump[3]);
+          console.error(`  🧾 무응답 순간 덤프(pid ${dump[1]}): ${dump[3]}`);
+        } else {
+          console.error(`  ⚠ 무응답 순간 덤프 실패(pid ${dump[1]}): ${dump[4] || "사유 없음"}`);
+        }
+        continue;
+      }
       const m = /^avail=([\d.]+) apps=(.*)$/.exec(line);
       if (!m) continue;
       const avail = Number(m[1]);
@@ -389,6 +430,7 @@ async function main() {
   ensureDevBinary();
   startWatch((reason) => {
     console.error(`\n⛔ 회차 중단 — ${reason}. 샤드 앱·러너를 거둡니다.`);
+    if (watchStats.dumps.length) console.error(`   덤프: ${watchStats.dumps.join(" ")}`);
     cleanup();
     process.exit(3);
   });
@@ -477,6 +519,11 @@ async function main() {
       fail += Number(m[2]);
       skip += Number(m[3]);
       console.log(`  샤드 ${r.i}/${shards}  ${m[1]} pass / ${m[2]} fail / ${m[3]} skip   → ${r.log}`);
+      // 요약은 0 fail 인데 러너가 실패로 끝났다 — 요약 밖에서 무언가 죽었다. 초록으로 세지 않는다.
+      if (r.code !== 0 && Number(m[2]) === 0) {
+        fail += 1;
+        console.log(`      ✗ 요약은 0 fail 인데 러너 exit ${r.code} — 로그를 보라`);
+      }
     } else {
       // **요약이 없으면 러너가 시작도 못 한 것이다.** 0으로 세면 "전부 통과"로 보인다.
       fail += 1;
@@ -494,7 +541,9 @@ async function main() {
   console.log(
     watchStats.samples
       ? `  설치본 감시: 표본 ${watchStats.samples} · 감시 대상 ${watchStats.watched.size}개 · 최대 응답 ${watchStats.maxMs}ms` +
-          ` · 무응답 ${watchStats.hung}회 · 최소 여유 메모리 ${watchStats.minAvail}%\n`
+          ` · 무응답 ${watchStats.hung}회 · 최소 여유 메모리 ${watchStats.minAvail}%` +
+          (watchStats.dumps.length ? `\n  무응답 덤프: ${watchStats.dumps.join(" ")}` : "") +
+          "\n"
       : "  설치본 감시: 표본 없음(PowerShell 감시가 돌지 않았다)\n",
   );
 
