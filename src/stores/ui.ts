@@ -160,9 +160,17 @@ export interface UiState {
   /** 모아보기 자동배치 모드 — grid(2×2·3×3 …) / columns(좌우 한 줄, 최대 4열). localStorage 영속 */
   aggregateLayout: AggregateLayout;
   setAggregateLayout: (mode: AggregateLayout) => void;
-  /** 작업 리포트(잔디 + 기간 요약) 전체 뷰 — 모아보기와 같은 층. 세션 상태, 영속 없음(태스크 60) */
+  /** 작업 리포트(잔디 + 기간 요약) 전체 뷰 — 모아보기와 같은 층. 세션 상태, 영속 없음(태스크 60).
+   *  모아보기가 열려 있으면 뜻이 바뀐다: 모아보기 헤더에 **리포트 탭이 있다**. */
   reportOpen: boolean;
+  /** 모아보기 안에서 리포트 탭이 **앞에** 있다(그리드 위를 덮어 리포트 한 페이지를 보인다).
+   *  reportOpen 이 참일 때만 뜻이 있다. 모아보기를 닫으면 풀린다. */
+  aggregateReportActive: boolean;
+  /** 리포트 버튼. 모아보기 밖: 열기/닫기. 모아보기 안: 탭을 만들어 앞으로, 이미 앞이면 터미널로. */
   toggleReport: () => void;
+  setAggregateReportActive: (active: boolean) => void;
+  /** 리포트 탭 닫기(모아보기 헤더의 X). */
+  closeReport: () => void;
   /** Log 패널에서 선택된 커밋 (상세 패널 구동) */
   selectedCommitSha: string | null;
   /** 설정 모달 열림 여부 */
@@ -475,6 +483,17 @@ function dropViewerPane(s: UiState, paneId: string): Partial<UiState> | null {
   };
 }
 
+/** 모아보기 **별도 창**인가 — 그 창엔 aggregateOpen 이 없어도 화면이 곧 모아보기다(toggleReport).
+ *  stores/terminals 의 IS_AGGREGATE_WINDOW 와 같은 판정인데, 거기를 정적으로 import 하면
+ *  ui → terminals → lib/terminal → ui 순환이라 여기서 라벨을 직접 본다(SKIP_VIEWER_PERSIST 와 같은 방식). */
+const IN_AGGREGATE_WINDOW = (() => {
+  try {
+    return getCurrentWebviewWindow().label === "aggregate";
+  } catch {
+    return false;
+  }
+})();
+
 export const useUi = create<UiState>((set) => ({
   // 마지막 선택 프로젝트를 복원한다 — 재시작 시 그 프로젝트(+복구된 터미널 탭)로 바로 진입
   selectedProjectId: initialProjectId,
@@ -512,6 +531,7 @@ export const useUi = create<UiState>((set) => ({
   aggregateLayout:
     localStorage.getItem("gp:aggregate-layout") === "columns" ? "columns" : "grid",
   reportOpen: false,
+  aggregateReportActive: false,
   selectedCommitSha: null,
   settingsOpen: false,
   settingsCategory: null,
@@ -589,7 +609,7 @@ export const useUi = create<UiState>((set) => ({
         return {
           ...writeActivePane(s, target, repoId ?? null),
           ...(closeAggregate && { aggregateOpen: false }),
-          ...(closeReport && { reportOpen: false }),
+          ...(closeReport && { reportOpen: false, aggregateReportActive: false }),
         };
       const key = viewerTabKey(target, repoId ?? null, outerId);
       const paneId = s.viewerActivePaneId;
@@ -597,7 +617,7 @@ export const useUi = create<UiState>((set) => ({
       const idx = s.viewerTabs.findIndex((t) => t.key === key && t.paneId === paneId);
       return {
         ...(closeAggregate && { aggregateOpen: false }),
-        ...(closeReport && { reportOpen: false }),
+        ...(closeReport && { reportOpen: false, aggregateReportActive: false }),
         ...writeActivePane(s, target, repoId ?? null),
         // 프로젝트별 "마지막 활성 파일" 갱신 — 전환 후 복귀 시 이 파일로 돌아온다.
         activeDiffByProject: {
@@ -811,10 +831,28 @@ export const useUi = create<UiState>((set) => ({
     localStorage.setItem("gp:log-height", String(v));
     set({ logHeight: v });
   },
-  setAggregateOpen: (open) => set({ aggregateOpen: open }),
+  // 모아보기를 닫으면 "리포트 탭이 앞"도 풀린다 — 다시 열었을 때 터미널부터 보이게.
+  // (reportOpen 은 남긴다: 리포트를 보다 모아보기를 닫으면 메인에 리포트가 그대로 보인다.)
+  setAggregateOpen: (open) =>
+    set({ aggregateOpen: open, ...(!open && { aggregateReportActive: false }) }),
   setAggregateWindowOpen: (open) => set({ aggregateWindowOpen: open }),
-  toggleAggregate: () => set((s) => ({ aggregateOpen: !s.aggregateOpen })),
-  toggleReport: () => set((s) => ({ reportOpen: !s.reportOpen })),
+  toggleAggregate: () =>
+    set((s) => ({
+      aggregateOpen: !s.aggregateOpen,
+      ...(s.aggregateOpen && { aggregateReportActive: false }),
+    })),
+  toggleReport: () =>
+    set((s) => {
+      // 모아보기 안에서는 리포트가 헤더의 탭이다. 예전엔 여기서도 reportOpen 만 뒤집어, App 이
+      // 모아보기를 우선 그리는 탓에 눌러도 화면이 안 바뀌었다(2026-09-17 사용자 지적).
+      if (s.aggregateOpen || IN_AGGREGATE_WINDOW) {
+        if (s.reportOpen && s.aggregateReportActive) return { aggregateReportActive: false };
+        return { reportOpen: true, aggregateReportActive: true };
+      }
+      return { reportOpen: !s.reportOpen, aggregateReportActive: false };
+    }),
+  setAggregateReportActive: (active) => set({ aggregateReportActive: active }),
+  closeReport: () => set({ reportOpen: false, aggregateReportActive: false }),
   setAggregateTracks: (shape, tracks) =>
     set((s) => {
       const next = { ...s.aggregateTracks, [shape]: tracks };

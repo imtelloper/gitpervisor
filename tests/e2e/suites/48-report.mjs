@@ -4,7 +4,7 @@
 // 오늘 날짜로 만든 커밋이 여럿 쌓여 있어 "오늘 = 1건" 같은 단언이 성립하지 않는다. 그래서 이
 // 스위트만 쓰는 레포를 따로 만들고(커밋 4개: 오늘·3일 전·40일 전 + 다른 이메일 1개) 끝나면 지운다.
 //
-// 지키는 계약 열하나(⑦~⑪ 은 태스크 67 — 다중 프로젝트 종합 · AI 채팅 · 별도 창):
+// 지키는 계약 열둘(⑦~⑪ 은 태스크 67 — 다중 프로젝트 종합 · AI 채팅 · 별도 창):
 //   ① `git_activity` 가 **작성자 날짜**로 버킷하고, `mine=true` 는 다른 이메일 커밋을 뺀다.
 //   ② `claude_prompts` 가 전사에서 사용자 프롬프트만 뽑는다(`tool_result` 줄 제외) + 날짜별 개수.
 //   ③ 리포트 뷰의 잔디가 365칸이고 오늘 칸이 값·툴팁을 갖는다.
@@ -17,6 +17,7 @@
 //      저장하면 **카드 본문이 그 답변으로 바뀐다**(스트리밍 잔여가 가리지 않는다).
 //   ⑩ [리포트] 우클릭 → "새 창으로 열기" → `doc-report` 싱글턴, 메인 뷰는 닫힌다.
 //   ⑪ 원시 `report_set`/`report_delete` → `report://changed` 로 메인 창 캐시가 따라 움직인다.
+//   ⑫ 모아보기 중 [리포트] → 헤더에 리포트 탭 + 리포트가 그리드를 덮는다. 탭 클릭·버튼은 앞/뒤 전환, X 는 닫기.
 //
 // **가짜 전사는 finally 에서 그 파일만 지운다** — 사용자의 실제 전사 디렉토리는 건드리지 않는다.
 import { existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
@@ -704,6 +705,64 @@ export async function run({ cdp, report: r }) {
     const gone = await until(async () => ((await has()) === false ? true : null), 5000, 250);
     r.check("⑪ report_delete → 메인 캐시에서 사라짐", gone === true);
     if (gone === true) syncKey = null;
+
+    // ── ⑫ 모아보기 안의 리포트 = 헤더 탭(2026-09-17 사용자 지적) ──
+    // 예전엔 모아보기 중 [리포트]를 눌러도 reportOpen 만 뒤집혀 화면이 그대로였다(App 이 모아보기를
+    // 먼저 그린다). 실제 타이틀바 버튼과 헤더 탭을 DOM 클릭으로 누른다 — 스토어 직접 호출로는
+    // 버튼 배선이 빠져도 초록이다.
+    const ui = (expr) => cdp.eval(`(()=>{ const s=window.__gpv.ui.getState(); return ${expr}; })()`);
+    const clickReportButton = () =>
+      cdp.eval(`(()=>{ const b=[...document.querySelectorAll('button')].find(x=>/^작업 리포트/.test(x.title||'')); if(!b) return 'no-report-button'; b.click(); return true; })()`);
+    const tabState = () =>
+      cdp.eval(`(()=>{
+        const tab=document.querySelector('[data-aggregate-report-tab]');
+        const ov=document.querySelector('[data-aggregate-report]');
+        const h=ov ? Math.round(ov.getBoundingClientRect().height) : 0;
+        return { tab: !!tab, overlay: !!ov, overlayH: h };
+      })()`);
+    await ui(`(s.closeReport(), s.setAggregateOpen(true), true)`);
+    const aggReady = await until(async () => ((await ui(`s.aggregateOpen`)) === true ? true : null), 5000);
+    const before = await tabState();
+    r.check(
+      "⑫ 사전 조건 — 모아보기 열림 · 리포트 탭 없음",
+      aggReady === true && before.tab === false && before.overlay === false,
+      J(before),
+    );
+    const clicked1 = await clickReportButton();
+    const shown = await until(async () => {
+      const st = await tabState();
+      return st.tab && st.overlay && st.overlayH > 100 ? st : null;
+    }, 5000);
+    r.check(
+      "⑫ 모아보기 중 [리포트] → 헤더에 리포트 탭 + 리포트 한 페이지가 그리드를 덮는다(모아보기는 열린 채)",
+      clicked1 === true && !!shown && (await ui(`s.aggregateOpen && s.reportOpen && s.aggregateReportActive`)) === true,
+      J({ clicked1, shown }),
+    );
+    await cdp.eval(`document.querySelector('[data-aggregate-report-tab] button').click()`);
+    const toGrid = await until(async () => {
+      const st = await tabState();
+      return st.tab && !st.overlay ? st : null;
+    }, 5000);
+    r.check("⑫ 리포트 탭 클릭 → 터미널로 돌아간다(탭은 남는다)", !!toGrid, J(toGrid ?? (await tabState())));
+    await clickReportButton();
+    const again = await until(async () => ((await tabState()).overlay ? true : null), 5000);
+    await clickReportButton();
+    const againGrid = await until(async () => {
+      const st = await tabState();
+      return st.tab && !st.overlay ? true : null;
+    }, 5000);
+    r.check(
+      "⑫ [리포트] 버튼: 탭이 뒤에 있으면 앞으로, 이미 앞이면 터미널로(탭은 유지)",
+      again === true && againGrid === true,
+      J({ again, againGrid }),
+    );
+    await cdp.eval(`document.querySelector('[data-aggregate-report-tab] button[aria-label="리포트 탭 닫기"]').click()`);
+    const closed = await until(async () => {
+      const st = await tabState();
+      return !st.tab && !st.overlay && (await ui(`s.reportOpen`)) === false ? true : null;
+    }, 5000);
+    r.check("⑫ 탭의 X → 리포트 탭이 사라지고 reportOpen=false", closed === true, J(await tabState()));
+    await ui(`(s.setAggregateOpen(false), true)`);
   } finally {
     // 가짜 전사 **파일만** 지운다(디렉토리는 남긴다 — 사용자 전사 보호).
     try {
@@ -738,8 +797,9 @@ export async function run({ cdp, report: r }) {
         `(()=>{ try{ ${restore("gp:report-scope", prevScope)}; ${restore("gp:report-chat-open", prevChat)}; }catch(_){} return true; })()`,
       )
       .catch(() => {});
+    // ⑫ 가 중간에 던졌으면 모아보기가 열린 채다 — 다음 스위트가 그리드에 가려진 화면을 본다.
     await cdp
-      .eval(`(()=>{ const s=window.__gpv.ui.getState(); if(s.reportOpen) s.toggleReport(); return true; })()`)
+      .eval(`(()=>{ const s=window.__gpv.ui.getState(); s.closeReport(); s.setAggregateOpen(false); return true; })()`)
       .catch(() => {});
     try {
       rmSync(root, { recursive: true, force: true, maxRetries: 5 });

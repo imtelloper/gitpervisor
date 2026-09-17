@@ -1,4 +1,5 @@
 import {
+  CalendarDays,
   CircleCheck,
   Columns3,
   ExternalLink,
@@ -52,6 +53,7 @@ import {
 import { useOccludesWebview } from "../stores/occlusion";
 import { type AggregateLayout, useUi } from "../stores/ui";
 import { EmptyState } from "./common/EmptyState";
+import { ReportView } from "./report/ReportView";
 import { ProjectLogo } from "./common/ProjectLogo";
 import { BrowserPane } from "./workspace/BrowserPane";
 import {
@@ -188,6 +190,13 @@ export function AggregateTerminals() {
   // 자동배치 모드(그리드 / 세로 컬럼) — localStorage 영속이라 재시작·별도 창에도 따라온다.
   const layout = useUi((s) => s.aggregateLayout);
   const setAggregateLayout = useUi((s) => s.setAggregateLayout);
+  // 리포트 탭 — 헤더의 리포트 버튼이 만든다(toggleReport). 앞에 있으면 그리드 위를 리포트 한 페이지가 덮는다.
+  const reportTab = useUi((s) => s.reportOpen);
+  const reportActive = useUi((s) => s.reportOpen && s.aggregateReportActive);
+  const setReportActive = useUi((s) => s.setAggregateReportActive);
+  const closeReport = useUi((s) => s.closeReport);
+  // 브라우저 셀의 네이티브 webview 는 DOM 위에 그려져 리포트를 가린다 — 리포트가 앞인 동안 숨긴다.
+  useOccludesWebview(reportActive);
 
   // 모든 셀 메타 (스토어 기준 — 반응형): 탭별 터미널·브라우저 pane + 독립 브라우저 탭.
   const all = useMemo<CellMeta[]>(() => {
@@ -289,22 +298,34 @@ export function AggregateTerminals() {
     });
   }, [all]);
 
-  const toggle = (id: string) =>
+  /** 리포트가 앞일 때 칩을 누르면 **터미널로 돌아가기만** 한다 — 보이지 않는 그리드의 선택을
+   *  바꾸면, 돌아왔을 때 방금 누른 프로젝트가 사라져 있어 고장으로 보인다. */
+  const backToGridIfReport = () => {
+    if (!reportActive) return false;
+    setReportActive(false);
+    return true;
+  };
+
+  const toggle = (id: string) => {
+    if (backToGridIfReport()) return;
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       return next;
     });
+  };
 
   /** 묶음 칩 클릭 — 전부 선택돼 있으면 전부 해제, 하나라도 빠져 있으면 전부 선택. */
-  const toggleAll = (cells: CellMeta[]) =>
+  const toggleAll = (cells: CellMeta[]) => {
+    if (backToGridIfReport()) return;
     setSelected((prev) => {
       const next = new Set(prev);
       const allOn = cells.every((c) => next.has(c.id));
       cells.forEach((c) => (allOn ? next.delete(c.id) : next.add(c.id)));
       return next;
     });
+  };
 
   // 새 터미널 생성 + 즉시 그리드 편입. initedRef 선행 — 터미널 0개에서 첫 생성 시
   // 초기 자동선택 효과가 뒤늦게 selected를 덮어쓰는 경합 차단. 스토어 갱신은 동기라
@@ -486,7 +507,7 @@ export function AggregateTerminals() {
   };
 
   return (
-    <div className="flex h-full min-w-0 flex-col bg-base">
+    <div className="relative flex h-full min-w-0 flex-col bg-base">
       {/* 헤더: 제목 + 선택 칩 + 닫기 */}
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-edge px-3">
         <LayoutGrid size={15} className="shrink-0 text-accent" />
@@ -498,6 +519,33 @@ export function AggregateTerminals() {
           {n}/{all.length} 선택
         </span>
         <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto pl-2">
+          {/* 리포트 탭 — 칩 줄 맨 앞(칩이 많아 가로로 밀려도 보이게). 누르면 리포트↔터미널, X 는 탭 닫기. */}
+          {reportTab && (
+            <div
+              data-aggregate-report-tab
+              className={`flex shrink-0 items-center rounded text-[11px] ${
+                reportActive
+                  ? "bg-raised text-accent ring-1 ring-accent"
+                  : "text-fg-muted hover:bg-raised hover:text-fg"
+              }`}
+            >
+              <button
+                onClick={() => setReportActive(!reportActive)}
+                title={reportActive ? "터미널로 돌아가기" : "리포트 보기"}
+                className="flex items-center gap-1 py-1 pl-2 pr-1"
+              >
+                <CalendarDays size={12} /> 리포트
+              </button>
+              <button
+                onClick={closeReport}
+                title="리포트 탭 닫기"
+                aria-label="리포트 탭 닫기"
+                className="rounded p-1 hover:text-fg"
+              >
+                <X size={11} />
+              </button>
+            </div>
+          )}
           {groupTabs
             ? groupByProject(all).map((cells) => {
                 const name = cells[0].projName;
@@ -771,6 +819,18 @@ export function AggregateTerminals() {
               });
             });
           })()}
+        </div>
+      )}
+
+      {/* 리포트 — 그리드를 **언마운트하지 않고 크기도 그대로 둔 채** 위를 덮는다. 언마운트하면 터미널
+          재부착·브라우저 리로드가 일어나고, 숨겨 크기가 0 이 되면 xterm 리핏이 PTY 크기를 바꿔 TUI 가
+          다시 그려진다(확대 셀을 invisible 로 숨기는 것과 같은 이유). 헤더(h-10) 아래 전체. */}
+      {reportActive && (
+        <div
+          data-aggregate-report
+          className="absolute inset-x-0 bottom-0 top-10 z-40 flex min-h-0 flex-col bg-base"
+        >
+          <ReportView />
         </div>
       )}
 
