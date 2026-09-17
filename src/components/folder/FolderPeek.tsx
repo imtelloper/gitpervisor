@@ -8,10 +8,12 @@ import {
   Trash2,
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { copyText } from "../../lib/clipboard";
 import { ipc, type FavEntry } from "../../lib/ipc";
 import { useUi } from "../../stores/ui";
+import { Lightbox } from "./Lightbox";
 
 /** 미리보기에 그릴 최대 개수 — **최신 순으로** 자른다. 패널이 스크롤되므로 한 화면에 들어갈
  *  필요는 없지만, 무제한이면 폴더가 수백 장일 때(실제 스크린샷 폴더가 225장) 썸네일 요청이
@@ -37,8 +39,13 @@ const CONCURRENCY = 4;
  *
  * 복사 문구는 FolderWindow 의 `copyPath` 와 **같은 것을 쓴다** — 같은 일이 두 곳에서 다르게
  * 보이면 사용자는 다른 일로 읽는다. 우클릭 메뉴 구성도 그 창의 메뉴를 따른다(삭제만 더 있다).
+ *
+ * 이미지 **더블클릭은 크게 보기**(창과 같은 라이트박스). 더블클릭의 첫 클릭은 여전히 경로를 복사한다
+ * — 복사는 되풀이해도 무해하고, 클릭을 더블클릭 판정 시간만큼 미루면 이 패널의 "한 번에 끝내기"가 굼떠진다.
+ *
+ * `onMouseEnter` 는 TitleBar 가 준다 — 포인터가 패널에 닿으면 가는 길에 지나친 항목의 전환 예약을 취소한다.
  */
-export function FolderPeek({ path }: { path: string }) {
+export function FolderPeek({ path, onMouseEnter }: { path: string; onMouseEnter?: () => void }) {
   const sep = path.includes("\\") ? "\\" : "/";
   const join = (name: string) => `${path.replace(/[\\/]+$/, "")}${sep}${name}`;
 
@@ -48,6 +55,8 @@ export function FolderPeek({ path }: { path: string }) {
   const [menu, setMenu] = useState<{ x: number; y: number; name: string } | null>(
     null,
   );
+  /** 라이트박스에 연 이미지의 **이름** — 창과 같은 규칙(인덱스로 들면 지웠을 때 옆 파일로 옮겨 간다). */
+  const [lightbox, setLightbox] = useState<string | null>(null);
 
   /** 왼쪽으로 밀어낸 픽셀 — 패널이 680px 이라 창이 좁으면 `right-full` 만으로는 화면 밖으로
    *  나가 **아무것도 안 보인다**(초판 256px 때는 드물었지만 지금은 폭 ~950px 미만이면 걸린다).
@@ -74,6 +83,7 @@ export function FolderPeek({ path }: { path: string }) {
     setError(null);
     setThumbs({});
     setMenu(null);
+    setLightbox(null);
     ipc
       .favList(path)
       .then((list) => {
@@ -111,6 +121,32 @@ export function FolderPeek({ path }: { path: string }) {
     // join 은 path 파생이라 의존성에 넣으면 매 렌더 재실행된다.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path]);
+
+  // 라이트박스가 넘나드는 순서 = 패널에 보이는 순서의 이미지들(창의 규약과 같다). 열어 둔 파일이
+  // 지워져 목록에서 빠지면 lbIndex 가 -1 이라 그리지 않는다 — 옆 이미지로 슬쩍 바뀌어 보이면 안 된다.
+  const images = (files ?? []).filter((e) => e.kind === "image");
+  const lbIndex = lightbox === null ? -1 : images.findIndex((e) => e.name === lightbox);
+  const stepLightbox = (d: number) =>
+    setLightbox((name) => {
+      const i = images.findIndex((e) => e.name === name);
+      return i < 0 ? name : images[Math.max(0, Math.min(images.length - 1, i + d))].name;
+    });
+
+  // 키는 **캡처 단계에서** 먹는다. 드롭다운(TitleBar)이 window 버블 단계에 Esc=닫기를 걸어 두어서,
+  // 여기서 막지 않으면 Esc 한 번에 라이트박스와 드롭다운이 같이 닫힌다.
+  useEffect(() => {
+    if (lightbox === null) return;
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") setLightbox(null);
+      else if (ev.key === "ArrowRight") stepLightbox(1);
+      else if (ev.key === "ArrowLeft") stepLightbox(-1);
+      else return;
+      ev.preventDefault();
+      ev.stopPropagation();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  });
 
   const toast = (kind: "success" | "error", message: string) =>
     useUi.getState().pushToast(kind, message);
@@ -151,6 +187,7 @@ export function FolderPeek({ path }: { path: string }) {
     // 그대로다(DOM 포함 관계가 기준이라 화면 위치와 무관하다).
     <div
       ref={ref}
+      onMouseEnter={onMouseEnter}
       onContextMenu={(e) => e.preventDefault()}
       style={shift ? { transform: `translateX(${shift}px)` } : undefined}
       className="absolute right-full top-0 z-50 flex max-h-[80vh] w-[600px] flex-col rounded-md border border-edge bg-panel p-2 shadow-xl"
@@ -180,13 +217,15 @@ export function FolderPeek({ path }: { path: string }) {
           {files.map((e) => (
             <div key={e.name} className="group/peek relative">
               <button
-                onClick={() => copy(e.name)}
+                // 더블클릭의 두 번째 클릭(detail=2)은 복사하지 않는다 — 토스트가 두 번 뜬다.
+                onClick={(ev) => ev.detail < 2 && copy(e.name)}
+                onDoubleClick={() => e.kind === "image" && setLightbox(e.name)}
                 onContextMenu={(ev) => {
                   ev.preventDefault();
                   ev.stopPropagation();
                   setMenu({ x: ev.clientX, y: ev.clientY, name: e.name });
                 }}
-                title={`${e.name}\n클릭: 경로 복사 · 우클릭: 메뉴`}
+                title={`${e.name}\n클릭: 경로 복사${e.kind === "image" ? " · 더블클릭: 크게 보기" : ""} · 우클릭: 메뉴`}
                 className="flex w-full min-w-0 flex-col items-stretch gap-1 rounded border border-edge/60 p-1 hover:border-accent hover:bg-raised"
               >
                 <span className="relative flex h-36 w-full items-center justify-center overflow-hidden rounded bg-base">
@@ -227,8 +266,26 @@ export function FolderPeek({ path }: { path: string }) {
 
       {/* 클릭이 무엇을 하는지 한 줄로 말한다 — 안 말하면 "왜 창이 안 열리지"가 된다. */}
       <div className="shrink-0 px-1 pt-2 text-[11px] text-fg-dim">
-        클릭: 경로 복사 · 우클릭: 메뉴 · 폴더 이름 클릭: 창으로 열기
+        클릭: 경로 복사 · 더블클릭: 이미지 크게 보기 · 우클릭: 메뉴 · 폴더 이름 클릭: 창으로 열기
       </div>
+
+      {lbIndex >= 0 &&
+        // body 로 포털한다 — 패널이 화면 밖으로 밀려 `transform` 이 걸리면 그 안의 `fixed` 는 창이 아니라
+        // 패널 기준이 된다. 감싸는 z-[70] 은 드롭다운(z-50) 위에 올리기 위해서다. React 이벤트는 포털도
+        // 컴포넌트 트리를 따라 오르므로 드롭다운의 클릭 차단·mouseleave 판정은 그대로 먹는다.
+        createPortal(
+          <div className="fixed inset-0 z-[70]">
+            <Lightbox
+              path={join(images[lbIndex].name)}
+              name={images[lbIndex].name}
+              index={lbIndex}
+              total={images.length}
+              onClose={() => setLightbox(null)}
+              onStep={stepLightbox}
+            />
+          </div>,
+          document.body,
+        )}
 
       {menu && (
         <PeekMenu

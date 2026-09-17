@@ -124,15 +124,27 @@ export function FavoritesButton({ className }: { className?: string }) {
   /** 지금 미리보기를 펼친 즐겨찾기 경로(없으면 null) — FolderPeek 참조. */
   const [peek, setPeek] = useState<string | null>(null);
   const peekTimer = useRef<number | null>(null);
-  /** 항목 위를 **스쳐 지나갈 때마다** favList/favThumb 가 나가지 않게 한 박자 쉰다.
-   *  닫기는 지연 없이 즉시다 — 늦게 닫히면 남의 폴더 내용이 잠깐 남아 오해를 준다. */
-  const showPeek = (p: string | null) => {
+  const cancelPeek = () => {
     if (peekTimer.current !== null) window.clearTimeout(peekTimer.current);
-    if (p === null) {
-      setPeek(null);
-      return;
-    }
+    peekTimer.current = null;
+  };
+  /** 항목 위를 **스쳐 지나갈 때마다** favList/favThumb 가 나가지 않게 한 박자 쉰다.
+   *  항목 위의 닫기(프리셋·폴더 추가 줄)도 같은 박자다 — 패널로 가는 길에 그 줄을 스치면 닫히면 안 된다.
+   *  드롭다운 **밖으로** 나갈 때만 즉시 닫는다(컨테이너 onMouseLeave). */
+  const showPeek = (p: string | null) => {
+    cancelPeek();
     peekTimer.current = window.setTimeout(() => setPeek(p), 160);
+  };
+  /**
+   * 왼쪽 미리보기 패널로 **가는 길에** 지나친 항목은 패널을 갈아 끼우지 않는다. 스크린샷에서 패널로
+   * 대각선으로 내려가면 다운로드 줄을 스치는데, 그때 건 예약이 포인터가 패널에 들어간 **뒤에** 발화해
+   * 패널이 다운로드로 바뀌었다(2026-09-17 실사례). 그래서 두 겹으로 막는다:
+   *  - 왼쪽으로 움직이는 동안은 예약을 계속 미룬다 — 그 항목 위에서 **멈춰야** 바뀐다.
+   *  - 패널에 닿으면 예약을 취소한다(FolderPeek 의 onMouseEnter).
+   * 패널이 아직 없으면(첫 호버) 미룰 이유가 없다 — 그대로 둔다.
+   */
+  const aimPeek = (p: string | null, e: React.MouseEvent) => {
+    if (peek !== null && peek !== p && e.movementX < 0) showPeek(p);
   };
   useEffect(
     () => () => {
@@ -222,10 +234,13 @@ export function FavoritesButton({ className }: { className?: string }) {
         // 넘어가는 순간 항목의 mouseleave 가 떠서 패널이 닫히기 때문이다. 패널은 이 컨테이너의
         // 자식이라 그 이동이 컨테이너를 벗어나지 않는다.
         <div
-          onMouseLeave={() => showPeek(null)}
+          onMouseLeave={() => {
+            cancelPeek();
+            setPeek(null);
+          }}
           className="absolute right-0 top-6 z-50 min-w-56 rounded-md border border-edge bg-panel py-1 text-[12px] shadow-xl"
         >
-          {peek && <FolderPeek path={peek} />}
+          {peek && <FolderPeek path={peek} onMouseEnter={cancelPeek} />}
           {favs.length === 0 && unadded.length === 0 && (
             <div className="px-3 py-1.5 text-[11px] text-fg-dim">
               등록된 폴더가 없습니다
@@ -236,6 +251,7 @@ export function FavoritesButton({ className }: { className?: string }) {
             <div
               key={f.path}
               onMouseEnter={() => showPeek(f.path)}
+              onMouseMove={(e) => aimPeek(f.path, e)}
               className="group/fav flex items-center"
             >
               <button
@@ -270,6 +286,7 @@ export function FavoritesButton({ className }: { className?: string }) {
               key={p.path}
               onClick={() => add(p)}
               onMouseEnter={() => showPeek(null)}
+              onMouseMove={(e) => aimPeek(null, e)}
               title={`${p.path}\n클릭하면 즐겨찾기에 추가합니다`}
               className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-fg-dim hover:bg-raised hover:text-fg"
             >
@@ -282,6 +299,7 @@ export function FavoritesButton({ className }: { className?: string }) {
           <button
             onClick={() => void browse()}
             onMouseEnter={() => showPeek(null)}
+            onMouseMove={(e) => aimPeek(null, e)}
             className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-fg-muted hover:bg-raised hover:text-fg"
           >
             <Plus size={13} className="shrink-0" />
