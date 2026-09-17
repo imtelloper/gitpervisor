@@ -669,13 +669,37 @@ mod tests {
     use super::*;
 
     /// 서버에 GET 한 방 — keep-alive 없이 응답 전체를 읽는다(핸들러가 Connection: close다).
+    ///
+    /// **전송 계층 끊김(RST)은 짧게 쉬고 3번까지 다시 건다.** 2026-09-17 v0.8.1 사전 검증에서
+    /// 병렬 `cargo test --lib` 중에만 이 루프백 읽기가 `ConnectionReset`(10054)로 간헐 실패했다
+    /// (5회 중 3회). 단독 10/10·단일 스레드 전체 2/2·계측을 넣은 병렬 15/15 는 통과했고, 서버는 정상
+    /// 경로에서 요청을 빈 줄까지 다 읽고 닫아 RST 를 낼 자리를 찾지 못했다 — **원인 미확정**.
+    /// 재시도는 이 테스트가 보는 계약(라우팅·토큰·MIME·상태 코드)을 약화하지 않는다. 끝까지 끊기면
+    /// 어느 요청이 무엇을 받다 끊겼는지 싣고 실패한다.
     fn get(port: u16, target: &str) -> (String, Vec<u8>) {
-        use std::io::Read as _;
-        let mut st = TcpStream::connect(("127.0.0.1", port)).expect("연결");
-        st.set_read_timeout(Some(Duration::from_secs(20))).ok();
-        write!(st, "GET {target} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").expect("요청");
-        let mut buf = Vec::new();
-        st.read_to_end(&mut buf).expect("응답");
+        use std::io::{ErrorKind, Read as _};
+        let mut last = None;
+        for attempt in 0..3u64 {
+            if attempt > 0 {
+                std::thread::sleep(Duration::from_millis(100 * attempt));
+            }
+            let mut st = TcpStream::connect(("127.0.0.1", port)).expect("연결");
+            st.set_read_timeout(Some(Duration::from_secs(20))).ok();
+            write!(st, "GET {target} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").expect("요청");
+            let mut buf = Vec::new();
+            match st.read_to_end(&mut buf) {
+                Ok(_) => return split_response(buf),
+                Err(e) if matches!(e.kind(), ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted) => {
+                    last = Some((e, buf.len()));
+                }
+                Err(e) => panic!("응답 {target}: {e:?} (받은 {}B)", buf.len()),
+            }
+        }
+        let (e, got) = last.expect("재시도했다면 마지막 오류가 있다");
+        panic!("응답 {target}: 3번 모두 끊김 — 마지막 {e:?} (받은 {got}B)");
+    }
+
+    fn split_response(buf: Vec<u8>) -> (String, Vec<u8>) {
         let split = buf
             .windows(4)
             .position(|w| w == b"\r\n\r\n")
