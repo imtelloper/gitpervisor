@@ -150,7 +150,9 @@ export function KeyboardShortcuts({ projectId }: { projectId: string }) {
         if (!cur) return; // 열린 파일 없음 — 조용히 무시
         e.preventDefault();
         const key = viewerTabKey(cur.target, cur.repoId, pid);
-        if (ui.viewerTabs.some((t) => t.key === key)) ui.closeViewerTab(key);
+        const pane = ui.viewerActivePaneId;
+        if (ui.viewerTabs.some((t) => t.key === key && t.paneId === pane))
+          ui.closeViewerTab(key, pane);
         else ui.selectDiff(null); // 탭 없이 열린 선택(엣지) — 선택만 해제
         return;
       }

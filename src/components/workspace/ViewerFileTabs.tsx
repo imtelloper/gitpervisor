@@ -5,7 +5,7 @@ import { openDocWindow } from "../../lib/floating";
 import type { DiffTarget } from "../../lib/ipc";
 import { useOccludesWebview } from "../../stores/occlusion";
 import type { ViewerFileTab } from "../../stores/ui";
-import { selectActiveDiff, useUi, viewerTabKey } from "../../stores/ui";
+import { useUi, viewerTabKey } from "../../stores/ui";
 
 /** 탭 표기 — 파일명 + 모드 힌트(diff/staged/커밋은 배지로 구분, 파일 보기는 이름만). */
 function tabLabel(target: DiffTarget): { name: string; hint: string | null } {
@@ -26,15 +26,22 @@ function tabLabel(target: DiffTarget): { name: string; hint: string | null } {
  * 뷰어 파일 탭 바(PyCharm식) — selectDiff로 연 대상들이 탭으로 쌓이고,
  * go-to-definition(Ctrl+클릭)으로 점프해도 이전 파일이 탭으로 남는다.
  * 클릭=전환, X·휠클릭=닫기. 탭이 없으면 렌더하지 않는다.
+ *
+ * **패널마다 하나씩** 그 패널 위에 붙는다 — 분할하면 탭 바도 갈라지고, 분할 중에 마지막 탭을
+ * 닫으면 패널도 닫힌다(`closeViewerTab`).
  */
-export function ViewerFileTabs({ projectId }: { projectId: string }) {
+export function ViewerFileTabs({ projectId, paneId }: { projectId: string; paneId: string }) {
   const viewerTabs = useUi((s) => s.viewerTabs);
-  // 탭 바는 **활성 패널**이 무엇을 보는지 표시한다(분할해도 탭 목록은 창 단위로 하나 — §3.3).
-  const activeDiff = useUi(selectActiveDiff);
-  const selectDiff = useUi((s) => s.selectDiff);
+  const activeDiff = useUi((s) => s.viewerByPane[paneId] ?? null);
   const closeViewerTab = useUi((s) => s.closeViewerTab);
 
-  const tabs = viewerTabs.filter((t) => t.outerId === projectId);
+  const tabs = viewerTabs.filter((t) => t.outerId === projectId && t.paneId === paneId);
+  // 탭 클릭은 **이 패널에** 연다 — selectDiff는 활성 패널로 가므로 먼저 이 패널을 활성으로.
+  const open = (t: ViewerFileTab) => {
+    const ui = useUi.getState();
+    ui.setViewerActivePane(paneId);
+    ui.selectDiff(t.target, t.repoId);
+  };
   const activeKey =
     activeDiff && tabs.length > 0
       ? viewerTabKey(activeDiff.target, activeDiff.repoId, projectId)
@@ -78,9 +85,9 @@ export function ViewerFileTabs({ projectId }: { projectId: string }) {
             <div
               key={t.key}
               ref={on ? activeRef : undefined}
-              onClick={() => selectDiff(t.target, t.repoId)}
+              onClick={() => open(t)}
               onAuxClick={(e) => {
-                if (e.button === 1) closeViewerTab(t.key); // 휠클릭 닫기
+                if (e.button === 1) closeViewerTab(t.key, paneId); // 휠클릭 닫기
               }}
               onContextMenu={(e) => {
                 e.preventDefault();
@@ -103,7 +110,7 @@ export function ViewerFileTabs({ projectId }: { projectId: string }) {
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  closeViewerTab(t.key);
+                  closeViewerTab(t.key, paneId);
                 }}
                 title="탭 닫기"
                 className="ml-0.5 shrink-0 rounded p-0.5 text-fg-dim opacity-0 hover:bg-edge hover:text-fg group-hover:opacity-100"
@@ -136,7 +143,7 @@ export function ViewerFileTabs({ projectId }: { projectId: string }) {
             <button
               className={menuItemCls}
               onClick={() => {
-                closeViewerTab(menu.tab.key);
+                closeViewerTab(menu.tab.key, paneId);
                 setMenu(null);
               }}
             >
@@ -146,8 +153,8 @@ export function ViewerFileTabs({ projectId }: { projectId: string }) {
             <button
               className={menuItemCls}
               onClick={() => {
-                // 같은 프로젝트의 나머지만 — 다른 프로젝트 탭은 이 바에 보이지도 않는다.
-                for (const o of tabs) if (o.key !== menu.tab.key) closeViewerTab(o.key);
+                // 이 패널·같은 프로젝트의 나머지만 — 다른 패널·프로젝트 탭은 이 바에 보이지도 않는다.
+                for (const o of tabs) if (o.key !== menu.tab.key) closeViewerTab(o.key, paneId);
                 setMenu(null);
               }}
             >

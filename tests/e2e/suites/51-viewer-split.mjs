@@ -1,6 +1,6 @@
 // 태스크 64 — 뷰어 우클릭 → 패널 분할(코드 나란히 보기).
 //
-// 지키는 계약 여덟:
+// 지키는 계약 아홉:
 //   ① Monaco **본문** 우클릭에서 앱 메뉴가 뜬다 — 뷰어 리프가 주는 `suppressContextMenu`.
 //      켜져 있으면 코드 위에서는 Monaco 자체 메뉴가 떠서 분할 메뉴에 닿을 수 없다(설계 §3.5).
 //      Monaco 메뉴를 끈 대가로 "선택 영역 번역"(태스크 61)이 사라지면 안 되므로 pane 메뉴가
@@ -16,6 +16,9 @@
 //   ⑥ "패널 닫기" → 남은 패널이 전체를 차지하고 활성·표시 파일이 그 패널로 옮겨간다.
 //      마지막 한 칸에는 닫기 항목 자체가 없다. 분할 상한은 4(도달 시 메뉴 항목 비활성).
 //   ⑦ 레이아웃·패널별 파일이 `gp:viewer-tabs`에 영속된다(재시작 복원의 재료).
+//   ⑨ 파일 탭 바는 **패널마다** 그 패널 안에 붙는다(2026-09-17 사용자 요청 — 설계 64 §3.3 끝).
+//      같은 파일을 두 패널에 열면 탭도 둘이고, 한쪽 X는 그쪽만 닫는다. 분할 중에 패널의
+//      마지막 탭을 닫으면 패널도 닫히고, 한 칸뿐이면 빈 패널로 남는다.
 //
 // **앱을 리로드하지 않는다** — 사용자가 쓰고 있는 dev 앱이라 ⑦은 localStorage 기록으로 확인한다.
 // 시작 시 뷰어를 알려진 단일 패널(gpv-e2e-pane)로 만들고, 끝나면 원래 레이아웃을 되돌린다.
@@ -515,6 +518,92 @@ export async function run({ cdp, report: r, fix }) {
     } else {
       r.skip("패널 닫기", `2패널로 복귀 실패(ids=${two?.ids?.length})`);
     }
+
+    // ── ⑨ 패널별 파일 탭 바 · 마지막 탭 닫기 → 패널 닫기 ────────────────────────
+    // DOM 으로 본다 — 탭 바가 패널 **밖**(창 단위 하나)이면 패널 안 질의가 빈 배열이라 빨개진다.
+    // 탭 요소는 스위트 34 와 같은 규칙(title=경로 · border-b-2)으로 가른다.
+    const paneTabs = (paneId) =>
+      cdp.eval(`(()=>{
+        const host = document.querySelector('[data-viewer-pane=' + JSON.stringify(${J(paneId)}) + ']');
+        if (!host) return null;
+        return Array.from(host.querySelectorAll('div[title]'))
+          .filter(e => e.className.includes('border-b-2')).map(e => e.getAttribute('title'));
+      })()`);
+    const closeTabIn = (paneId, path) =>
+      cdp.eval(`(()=>{
+        const host = document.querySelector('[data-viewer-pane=' + JSON.stringify(${J(paneId)}) + ']');
+        const tab = host && Array.from(host.querySelectorAll('div[title]'))
+          .find(e => e.className.includes('border-b-2') && e.getAttribute('title') === ${J(path)});
+        const btn = tab && tab.querySelector('button[title="탭 닫기"]');
+        if (!btn) return 'none';
+        btn.click();
+        return 'ok';
+      })()`);
+    const same = (a, b) => J([...(a || [])].sort()) === J([...b].sort());
+
+    fix.writeFile("src/pane-b.txt", "pane b\n");
+    await cdp.eval(`window.__gpv.ui.getState().closeProjectViewerTabs(${J(fix.projectId)})`);
+    await cdp.eval(`window.__gpv.ui.setState({
+      viewerLayout: { kind: 'leaf', paneId: ${J(PANE_A)} },
+      viewerActivePaneId: ${J(PANE_A)}, viewerByPane: {}, viewerMaximizedPaneId: null,
+    })`);
+    await openFile("src/app.txt");
+    await cdp.eval(`window.__gpv.ui.getState().splitViewerPane(${J(PANE_A)}, 'row', false)`);
+    const pane9 = (await view())?.active;
+    await openFile("src/pane-b.txt");
+    const splitTabs = await poll(
+      async () => ({ a: await paneTabs(PANE_A), b: await paneTabs(pane9) }),
+      (v) => same(v?.a, ["src/app.txt"]) && same(v?.b, ["src/pane-b.txt"]),
+      20,
+      250,
+    );
+    r.check(
+      "⑨ 분할 → 탭 바도 갈라진다: 각 패널 안에 **자기 탭만** 있다",
+      pane9 !== PANE_A && same(splitTabs?.a, ["src/app.txt"]) && same(splitTabs?.b, ["src/pane-b.txt"]),
+      `A=${J(splitTabs?.a)} B(${pane9})=${J(splitTabs?.b)}`,
+    );
+
+    // 같은 파일을 B 에도 열면 탭이 **패널마다** 하나씩 — B 의 X 는 A 의 같은 파일 탭을 건드리지 않는다.
+    await openFile("src/app.txt");
+    await poll(() => paneTabs(pane9), (v) => (v || []).length === 2, 20, 250);
+    const closedDup = await closeTabIn(pane9, "src/app.txt");
+    const afterDup = await poll(
+      async () => ({ a: await paneTabs(PANE_A), b: await paneTabs(pane9), v: await view() }),
+      (v) => same(v?.b, ["src/pane-b.txt"]),
+      20,
+      250,
+    );
+    r.check(
+      "⑨ 같은 파일을 두 패널에 열고 B 쪽 X → B 탭만 닫히고 A 탭·패널 수는 그대로, B 는 이웃 탭을 보인다",
+      closedDup === "ok" &&
+        same(afterDup?.a, ["src/app.txt"]) &&
+        same(afterDup?.b, ["src/pane-b.txt"]) &&
+        afterDup?.v?.ids?.length === 2 &&
+        afterDup?.v?.byPane?.[pane9] === "file:src/pane-b.txt",
+      `click=${closedDup} ${J(afterDup)}`,
+    );
+
+    const closedLast = await closeTabIn(pane9, "src/pane-b.txt");
+    const merged = await poll(view, (v) => v?.ids?.length === 1, 20, 250);
+    r.check(
+      "⑨ 분할 중 패널의 마지막 탭 X → 그 패널이 닫히고 A 가 전체·활성·표시 파일을 이어받는다",
+      closedLast === "ok" &&
+        merged?.ids?.length === 1 &&
+        merged.ids[0] === PANE_A &&
+        merged.active === PANE_A &&
+        merged.byPane[PANE_A] === "file:src/app.txt" &&
+        merged.mirror === "file:src/app.txt",
+      `click=${closedLast} ${J(merged)}`,
+    );
+
+    // 반대쪽 경계 — 한 칸뿐이면 마지막 탭을 닫아도 패널은 남고 빈 상태가 된다(뷰어가 통째로 사라지지 않게).
+    const closedSolo = await closeTabIn(PANE_A, "src/app.txt");
+    const solo = await poll(view, (v) => v?.byPane?.[PANE_A] === null, 20, 250);
+    r.check(
+      "⑨ 한 칸일 때 마지막 탭 X → 패널은 남고 비어 있다",
+      closedSolo === "ok" && solo?.ids?.length === 1 && solo.ids[0] === PANE_A && solo.byPane[PANE_A] === null,
+      `click=${closedSolo} ${J(solo)}`,
+    );
 
     // ── 회귀: Ctrl 단축키 게이트가 Alt 조합을 막는다(AltGr = Ctrl+Alt) ────────
     // 실측 재현된 버그: `Ctrl+Alt+Shift+K`가 push 흐름(업스트림 설정 확인창)을 띄웠다.

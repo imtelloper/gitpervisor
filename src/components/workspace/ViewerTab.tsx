@@ -16,7 +16,7 @@ import { ViewerPaneMenu } from "./ViewerPaneMenu";
 const DiffViewer = lazy(() => import("../diff/DiffViewer"));
 
 /**
- * Viewer 탭 — 열린 파일 탭 바(활성 패널 기준) + 분할 가능한 패널 트리.
+ * Viewer 탭 — 분할 가능한 패널 트리. 열린 파일 탭 바는 패널마다 그 패널 위에 붙는다.
  * 패널 배치·비율은 터미널 탭과 같은 트리를 쓴다(`lib/pane-tree.ts` · `SplitView`).
  */
 export function ViewerTab({ projectId }: { projectId: string }) {
@@ -27,7 +27,6 @@ export function ViewerTab({ projectId }: { projectId: string }) {
 
   return (
     <div className="flex h-full min-w-0 flex-col">
-      <ViewerFileTabs projectId={projectId} />
       <div className="min-h-0 flex-1">
         {/* 최대화된 패널이 있으면 그것만 — 터미널의 PaneTreeRoot와 같은 규칙. */}
         {maximized && panes.includes(maximized) ? (
@@ -91,7 +90,7 @@ function ViewerSplitView({
   );
 }
 
-/** 패널 한 칸 — 그 패널이 보는 파일의 diff/내용, 없으면 빈 상태. 우클릭 → 분할 메뉴. */
+/** 패널 한 칸 — 그 패널의 파일 탭 바 + 보는 파일의 diff/내용(없으면 빈 상태). 우클릭 → 분할 메뉴. */
 function ViewerLeafView({
   paneId,
   projectId,
@@ -127,7 +126,7 @@ function ViewerLeafView({
   return (
     <div
       data-viewer-pane={paneId}
-      className={`relative h-full w-full ${
+      className={`relative flex h-full w-full flex-col ${
         active ? "outline outline-1 -outline-offset-1 outline-accent" : ""
       }`}
       onMouseDown={() => setActivePane(paneId)}
@@ -139,24 +138,27 @@ function ViewerLeafView({
         setMenu({ x: e.clientX, y: e.clientY, selection: selectionRef.current?.() ?? "" });
       }}
     >
-      {!entry ? (
-        <EmptyState
-          icon={MousePointerClick}
-          title="파일을 선택하세요"
-          desc="왼쪽 변경 목록·파일 트리 또는 아래 Log의 커밋에서 파일을 클릭하면 여기에 표시됩니다"
-        />
-      ) : (
-        <Suspense fallback={<EmptyState title="diff 뷰어 로딩 중…" />}>
-          {/* 임베디드 저장소 파일이면 그 저장소의 합성 id로 diff/편집을 라우팅한다(없으면 outer). */}
-          <DiffViewer
-            projectId={entry.repoId ?? projectId}
-            target={entry.target}
-            onOpenFile={openInPane}
-            suppressContextMenu
-            selectionRef={selectionRef}
+      <ViewerFileTabs projectId={projectId} paneId={paneId} />
+      <div className="relative min-h-0 flex-1">
+        {!entry ? (
+          <EmptyState
+            icon={MousePointerClick}
+            title="파일을 선택하세요"
+            desc="왼쪽 변경 목록·파일 트리 또는 아래 Log의 커밋에서 파일을 클릭하면 여기에 표시됩니다"
           />
-        </Suspense>
-      )}
+        ) : (
+          <Suspense fallback={<EmptyState title="diff 뷰어 로딩 중…" />}>
+            {/* 임베디드 저장소 파일이면 그 저장소의 합성 id로 diff/편집을 라우팅한다(없으면 outer). */}
+            <DiffViewer
+              projectId={entry.repoId ?? projectId}
+              target={entry.target}
+              onOpenFile={openInPane}
+              suppressContextMenu
+              selectionRef={selectionRef}
+            />
+          </Suspense>
+        )}
+      </div>
       {menu && (
         <ViewerPaneMenu
           paneId={paneId}

@@ -13,7 +13,7 @@ Viewer 탭에서 코드를 볼 때 **우클릭 → 패널 분할**로 파일을 
   터미널 pane 메뉴(`TerminalPane.tsx:204-302`)와 **같은 항목·같은 단축키 힌트**.
 - 분할 후 각 패널이 **서로 다른 파일**을 보여준다. 경계는 드래그로 비율 조절.
 - 파일 트리·변경 목록·검색·Go to Definition에서 파일을 클릭하면 **활성 패널**에 열린다.
-- 파일 탭 바(`ViewerFileTabs`)는 활성 패널의 탭을 보여준다.
+- 파일 탭 바(`ViewerFileTabs`)는 활성 패널의 탭을 보여준다. **(2026-09-17 변경: 패널마다 자기 탭 바 — §3.3 끝)**
 - 레이아웃은 앱 재시작 후에도 유지된다(뷰어 탭이 이미 영속화된다).
 
 ## 2. 현황(근거)
@@ -99,20 +99,31 @@ selectDiff: (target, repoId) => set((s) => {
 })
 ```
 
-`viewerTabs`는 **패널별로 나누지 않는다**. PyCharm식 열린 파일 목록은 창 단위 개념이고, 탭 바는
-활성 패널이 무엇을 보는지 표시(`ViewerFileTabs`가 `selectActiveDiff`로 활성 탭 강조)하는 역할만
-한다. 패널별 탭 바까지 만들면 요구("나란히 보기")를 넘어선다.
+~~`viewerTabs`는 패널별로 나누지 않는다.~~ **2026-09-17 사용자 요청으로 뒤집었다** — "분할하면 위 탭들도
+같이 분리되고, 분리된 패널의 탭을 닫으면 그 패널도 닫히게". 원안(창 단위 탭 목록 하나)은 분할 화면에서
+어느 탭이 어느 패널 것인지 알 수 없었다. 지금 규칙:
+
+- `ViewerFileTab.paneId` — 탭은 패널 소속이다. 신원은 `(paneId, key)`라 같은 파일을 두 패널에 열 수 있다.
+  `selectDiff`/`replaceDiff`는 **활성 패널의** 탭만 업서트한다(라우팅은 여전히 이 한 곳).
+- `ViewerFileTabs`는 리프마다 그 패널 위에 렌더된다. 탭 클릭은 그 패널을 활성으로 만든 뒤 연다.
+- `closeViewerTab(key, paneId?)` — 분할 중에 **그 패널·현재 프로젝트의 마지막 탭**을 닫으면
+  패널도 닫는다(`dropViewerPane`, 메뉴 "패널 닫기"와 같은 경로). 한 칸뿐이면 빈 패널로 남는다.
+  `paneId` 생략 시 활성 패널 → 그 키의 첫 탭 순(e2e 정리 루프가 키만 넘긴다).
+- 패널을 닫으면 그 패널의 현재 프로젝트 탭은 같이 닫히고, **다른 프로젝트 탭**(안 보이던 것)은 남는
+  활성 패널로 옮긴다.
+- `selectProject`는 패널마다 그 프로젝트의 그 패널 탭으로 복원한다(마지막 활성 파일이 있으면 그것).
+- 영속 마이그레이션: `paneId` 없는 탭·트리에 없는 패널의 탭은 활성 패널로 모은다.
 
 ### 3.4 렌더 (`workspace/ViewerTab.tsx`)
 
 ```
 ViewerTab
-├ ViewerFileTabs (활성 패널 기준 — 지금 그대로)
 └ ViewerPaneTree            ← viewerLayout 순회 (SplitView 재사용)
    └ ViewerLeaf(paneId)
       ├ onMouseDown → setViewerActivePane(paneId)
       ├ onContextMenu → ViewerPaneMenu
       ├ 활성이면 outline (TerminalPane.tsx:92-94와 같은 표시)
+      ├ ViewerFileTabs(projectId, paneId)   ← 2026-09-17: 패널마다 탭 바
       └ viewerByPane[paneId] ? <DiffViewer …/> : <EmptyState "파일을 선택하세요"/>
 ```
 
@@ -185,6 +196,6 @@ ViewerTab
   안전망·비율 클램프까지 다듬어진 코드다(`PaneTree.tsx:189-250`). 추출해 공유한다.
 - **`selectDiff` 호출부 11곳을 고치지 마라.** 라우팅은 `selectDiff` 안 한 곳에서 한다 — 그래야
   나중에 추가되는 호출부도 자동으로 맞는다.
-- **`viewerTabs`를 패널별로 쪼개지 마라**(§3.3).
+- ~~`viewerTabs`를 패널별로 쪼개지 마라~~ — 2026-09-17 사용자 요청으로 패널별로 바꿨다(§3.3 끝).
 - `Pane` 타입을 제네릭으로 열 때 **터미널의 영속 형태를 바꾸지 마라** — 리프의 필드 이름
   (`paneId`·`content`)이 그대로여야 저장된 레이아웃이 로드된다.
