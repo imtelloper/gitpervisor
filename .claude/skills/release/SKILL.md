@@ -188,3 +188,36 @@ curl -s https://gitpervisor.aickyway.com | grep -oE 'https://github.com/[^"]*\.(
   기본 브랜치를 빌드한다. 정식 경로는 태그 push다.
 - **버전을 되돌리는 릴리스는 하지 말 것.** `/releases/latest`는 시맨틱 최신이 아니라
   **가장 최근 게시된** 릴리스를 준다.
+
+## Windows 개발기(`F:\gitpervisor`)에서
+
+옛 `gitpervisor-deploy` 스킬의 내용 중 이 머신에만 해당하는 것을 옮겼다(v0.8.1 실측, 2026-09-17).
+
+- **`cargo`가 PATH에 없다** — 셸마다 `export PATH="$HOME/.cargo/bin:$PATH"`. `tsc`는
+  `./node_modules/.bin/tsc` 그대로 된다.
+- **`git add -A` 금지.** 이 트리는 여러 세션이 같이 쓴다 — 남의 미추적 파일(`designs/…`,
+  `.playwright-mcp/` 등)이 릴리스 커밋에 휩쓸려 들어간다. 버전 파일 5개만 골라 add 한다.
+- **태그 전에 전체 e2e** — `node tests/e2e/shard.mjs`(3샤드 ≈5분, CLAUDE.md「검증」). 같은 트리를 쓰는
+  세션이 있으면 SendMessage 로 `src/`·`tests/` 저장 정지를 합의하고 돌린다(저장 한 번이 vite 리로드로
+  회차를 통째로 오염시킨다). 화면이 잠겨 있으면 클립보드 스위트(52·60)가 환경 탓으로 빨갛다.
+- **태그 생성과 푸시는 각각 한 줄짜리 별도 호출**로 한다(`git tag -a v<NEW> -m … <sha>` /
+  `git push origin v<NEW>`). `&&` 로 묶으면 권한 검사가 통째로 막아 로컬 태그조차 안 생긴 적이 있다.
+  사용자가 릴리스를 명시하지 않았으면 태그 푸시는 사용자에게 그 한 줄을 부탁한다.
+- **CI 가 끝나면 `installers/` 를 CI 산출물로 바꾼다** — 로컬 빌드 exe 를 넣지 마라:
+  ```bash
+  gh release download "v<NEW>" -p '*x64-setup.exe' -D installers/ --clobber
+  rm -f installers/Gitpervisor_<이전버전>_x64-setup.exe
+  ```
+- **Windows setup.exe 는 지금 코드 서명이 안 된다(NotSigned)** — Azure 서명 시크릿이 저장소에 없다
+  (`DOCS/windows-code-signing.md`). 확인은 Git Bash 에서
+  `env -u PSModulePath powershell.exe -NoProfile -Command "(Get-AuthenticodeSignature '<경로>').Status"`.
+  **릴리스 에셋을 사후 서명하지 마라** — 파일이 바뀌어 업데이터 `.sig` 검증이 깨진다.
+- **자동 업데이트 검증은 에셋 개수가 아니라 `latest.json` 의 플랫폼 키로** 한다 — `darwin-aarch64`·
+  `darwin-x86_64`·`linux-x86_64`·`linux-aarch64`·`windows-x86_64` 가 모두 있고 각각 `signature` 가 붙어야 한다.
+  v0.3.2~v0.3.4 는 에셋도 CI 도 멀쩡했는데 macOS 만 업데이트가 죽어 있었다(매트릭스에 `app` 번들 누락).
+- **로컬 릴리스 번들이 꼭 필요하면**(CI 전 설치본 검증 등) 공유 트리가 아니라 태그 커밋의 워크트리에서
+  `npm run tauri build -- --bundles nsis` 로 빌드한다 — 공유 트리엔 남의 미커밋 코드가 섞여 검증한 물건과
+  나가는 물건이 달라진다. 성공 판정은 exit code(서명 단계는 로컬에서 늘 실패)가 아니라 번들 파일 존재로.
+- `cargo test --lib` 의 preview HLS 통합 테스트는 병렬 실행에서 루프백 RST 로 간헐 실패한 적이 있다
+  (원인 미확정, 테스트가 전송 끊김에 3번 재시도하도록 완화함 — 커밋 `cb364aa`). 다시 빨가면 단독
+  실행과 `-- --test-threads=1` 로 먼저 가려라.

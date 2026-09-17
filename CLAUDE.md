@@ -3,7 +3,7 @@
 멀티 레포 Git 대시보드. Tauri v2 (Rust) + React/TypeScript, Windows·macOS·Linux(x86_64/ARM64).
 
 이 문서는 **모르면 시간을 버리거나 사고가 나는 것**만 담는다. 코드 구조는 코드가, 설계 배경은
-`DOCS/*.md`가, 배포 절차는 `.claude/skills/gitpervisor-deploy/`가 설명한다.
+`DOCS/*.md`가, 배포 절차는 `.claude/skills/release/`(`/release`)가 설명한다.
 
 ---
 
@@ -13,8 +13,9 @@
 우선한다 — 개발자가 한 명이고 리뷰 단계가 없어서 브랜치는 병합 왕복만 늘린다. 게다가 브랜치를
 오가는 `git checkout`/`stash`는 **tauri dev를 통째로 재빌드**시킨다(회차당 ~3분).
 
-예외 하나: **릴리스는 태그 워크트리에서 빌드한다**(`.claude/skills/gitpervisor-deploy/`).
-공유 트리에서 빌드하면 검증한 물건과 실제로 나가는 물건이 달라진다.
+예외 하나: 릴리스 번들은 태그 푸시로 **CI가 만든다**(`/release`). 로컬에서 릴리스 번들을 직접
+빌드해 봐야 할 때는 **태그 워크트리에서** 빌드한다 — 공유 트리에서 빌드하면 검증한 물건과 실제로
+나가는 물건이 달라진다.
 
 다른 세션이 같은 트리를 동시에 고치고 있으면 그때만 별도 워크트리로 격리한다 — 두 세션이 같은
 파일을 저장하면 vite HMR이 서로의 e2e 회차를 깬다.
@@ -227,18 +228,19 @@ rm -f installers/Gitpervisor_<이전버전>*
 
 ## 배포
 
-**`/gitpervisor-deploy` 스킬을 쓴다** (`.claude/skills/gitpervisor-deploy/SKILL.md`).
+**`/release` 스킬을 쓴다** (`.claude/skills/release/SKILL.md` — Windows 개발기 전용 주의는 그 끝 절).
 절차·함정이 거기 정리돼 있다. 핵심만:
 
 - 버전은 **5곳**을 함께 올린다: `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`,
   `src-tauri/tauri.conf.json`, `src-tauri/Cargo.lock`. 뒤의 둘은 파생 파일이라 도구로 맞춘다
-  (`npm install --package-lock-only`, `cargo update -p gitpervisor --precise <버전>`).
+  (`npm install --package-lock-only`, `src-tauri`에서 `cargo metadata --format-version 1`).
   **`package-lock.json`이 오래 빠져 있었다** — v0.5.1 시점에 0.5.0에 멈춰 있었고,
   `npm ci`는 lock의 버전을 그대로 쓰므로 CI 산출물 메타데이터가 조용히 어긋난다.
 - 릴리스는 **태그 푸시 → CI** 경로여야 한다. 서명(`.sig`)과 `latest.json`은 CI에서만 생성된다.
   로컬 deb를 릴리스에 수동 업로드하면 자동 업데이트가 깨진다.
 - 사이트(gitpervisor.aickyway.com)는 코드 수정이 필요 없다 — 최신 릴리스를 런타임에 읽는다.
-  다만 ISR 1시간 캐시가 있어 즉시 반영하려면 빈 커밋을 푸시해 재배포를 트리거한다.
+  ISR 1시간 캐시가 있으니 **태그를 먼저 밀고, main은 릴리스가 공개된 뒤에** 푸시한다 — 그 푸시가
+  사이트를 새로 배포시켜 곧바로 새 버전을 가리킨다(v0.8.1 실측: main 푸시 2분 뒤 반영).
 - **릴리스 검증은 에셋 개수가 아니라 `latest.json`의 플랫폼 키로 한다.**
   ```bash
   curl -sL ".../releases/download/v<버전>/latest.json" \
@@ -248,7 +250,7 @@ rm -f installers/Gitpervisor_<이전버전>*
   **macOS만 자동 업데이트가 죽어 있었다** — macOS 매트릭스에 `app` 번들이 빠져 있었기 때문이다
   (업데이터는 `.dmg`가 아니라 `.app.tar.gz`를 쓴다). 겉으로는 아무 문제가 없어 보이는 유형이다.
 - **Windows Authenticode 서명은 CI가 번들링 중에 한다** (Azure 서명 시크릿 6개 존재 시 —
-  `DOCS/windows-code-signing.md`). 무서명 setup.exe는 AhnLab V3 '앱 격리 검사'·SmartScreen에
+  `DOCS/windows-code-signing.md`). **지금은 시크릿이 없어 setup.exe가 무서명(NotSigned)이다.** 무서명 setup.exe는 AhnLab V3 '앱 격리 검사'·SmartScreen에
   걸려 설치가 막힌다(v0.3.5 실사례). **릴리스 에셋을 사후 서명하지 마라** — 파일이 바뀌어
   업데이터 `.sig` 검증이 통째로 깨진다. 이것도 겉으로는 멀쩡해 보이는 유형이다.
 
@@ -301,7 +303,7 @@ rm -f installers/Gitpervisor_<이전버전>*
 
 | 무엇 | 어디 |
 |---|---|
-| 배포 절차·함정 | `.claude/skills/gitpervisor-deploy/SKILL.md` |
+| 배포 절차·함정 | `.claude/skills/release/SKILL.md` |
 | Windows 코드서명(유료·구현완료) | `DOCS/windows-code-signing.md` |
 | Windows 코드서명(무료·미구현 설계) | `DOCS/signpath-free-signing-design.md` |
 | OOM 사건 원인·수정 로드맵 | `DOCS/process-leak-postmortem.md` |
