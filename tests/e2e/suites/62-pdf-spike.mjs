@@ -594,7 +594,7 @@ export async function run({ cdp, report: r }) {
       r.check(
         "(VP-3) 400% 사각형 도구 실제 포인터 드래그 (120,120)→(176,160) — viewport 전략(원점 ≥5pt)과 page 전략이 둘 다 x·y·w·h ±0.5pt · 두 전략 차 ≤0.5pt",
         !!dv.vp && dv.vp.x >= 5 && dv.vp.y >= 5 && dp.vp === null && ok(rv) && ok(rp) && K.every((k) => Math.abs(rv[k] - rp[k]) <= 0.5),
-        `viewport=${J(dv.vp)} → ${J(dv.rects)} · page → ${J(dp.rects)} · 원점을 빠뜨리면 x≈${dv.vp ? (120 - dv.vp.x).toFixed(2) : "-"}`,
+        `viewport=${J(dv.vp)} → ${J(dv.rects)} · page vp=${J(dp.vp)} → ${J(dp.rects)} · 원점을 빠뜨리면 x≈${dv.vp ? (120 - dv.vp.x).toFixed(2) : "-"}`,
       );
     }
 

@@ -319,6 +319,34 @@ function ensureDevBinary() {
   if (!built) console.error("  기존 dev 바이너리로 진행합니다 — 최신 Rust 변경이 반영되지 않았을 수 있습니다.");
 }
 
+/** pdf.js 정적 자산(`public/pdfjs/`)이 있는지 보장한다 — 없으면 `scripts/copy-pdfjs-assets.mjs` 를 돌린다.
+ *
+ *  그 폴더는 gitignore 대상이고 npm 의 `predev`/`prebuild` 훅이 채우는데, **이 드라이버는 vite 를
+ *  `node node_modules/vite/bin/vite.js` 로 직접 띄워 훅을 건너뛴다.** 비어 있으면 vite 가 없는 자산에
+ *  SPA 폴백(index.html, 735B, text/html)을 200 으로 돌려줘 PDF 스위트가 엉뚱한 얼굴로 깨진다
+ *  (2026-09-18 다른 세션이 회차에서 실제로 맞았다 — 서명은 cmap·nowasm·일부러 없는 경로가 **셋 다**
+ *  `{ok:true, type:"text/html", bytes:735}`). 매번 다시 복사하지는 않는다: 스크립트가 25MB 를 지우고
+ *  다시 깔아서, 남의 vite 가 그 파일을 서빙하는 중이면 순간 404 를 만든다. */
+function ensurePdfjsAssets() {
+  const root = join(REPO, "public", "pdfjs");
+  const ok = ["cmaps", "standard_fonts"].every((d) => {
+    try {
+      return readdirSync(join(root, d)).length > 0;
+    } catch {
+      return false;
+    }
+  }) && existsSync(join(root, "wasm", "openjpeg_nowasm_fallback.js"));
+  if (ok) return;
+  console.log("pdf.js 정적 자산이 비어 있습니다 — scripts/copy-pdfjs-assets.mjs 로 채웁니다…");
+  const r = spawnSync(process.execPath, [join(REPO, "scripts", "copy-pdfjs-assets.mjs")], {
+    cwd: REPO,
+    encoding: "utf8",
+  });
+  if (r.status !== 0) {
+    console.error(`  pdf.js 자산 복사 실패(exit ${r.status}) — PDF 스위트가 깨집니다: ${(r.stderr || "").trim()}`);
+  }
+}
+
 /** **설치본(우리 debug exe 가 아닌 모든 Gitpervisor)이 응답하는지 2초마다 본다.**
  *
  *  테스트가 사용자의 설치본을 멈추게 하면 안 된다 — 사용자는 그 터미널 안에서 Claude Code 를 돌려서,
@@ -434,6 +462,8 @@ async function main() {
     cleanup();
     process.exit(3);
   });
+
+  ensurePdfjsAssets();
 
   // ── vite: 이미 떠 있으면 그걸 쓰고, **우리가 안 띄웠으면 끝나도 안 끈다** ──
   if (await alive(VITE_URL)) {
