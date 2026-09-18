@@ -1,4 +1,5 @@
 import {
+  Copy,
   ExternalLink,
   FileWarning,
   Maximize,
@@ -6,10 +7,14 @@ import {
   Pencil,
   Plus,
   Scan,
+  ScanText,
+  X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { errorMessage, ipc } from "../../lib/ipc";
+import { copyWithToast } from "../../lib/clipboard";
+import type { OcrResult } from "../../lib/ipc";
+import { errorMessage, ipc, isIpcError } from "../../lib/ipc";
 import { useDir, useFileImage } from "../../queries";
 import { IS_DOC_WINDOW, openDocWindow } from "../../lib/floating";
 import { isImage } from "../../lib/language-map";
@@ -22,6 +27,13 @@ import { EmptyState } from "../common/EmptyState";
 const BTN_STEP = 1.4; // 버튼·키보드는 한 번에 더 크게 움직여야 답답하지 않다
 // 이 배율을 넘으면 보간을 끄고 픽셀을 그대로 보여준다(아이콘·픽셀아트가 뭉개지지 않게).
 const PIXELATE_FROM = 2;
+
+// 어느 OS 엔진이 읽었는지 — 품질 차이가 큰데(태스크 68 §2.2) 결과만 보면 알 수 없다.
+const OCR_ENGINE_LABEL: Record<OcrResult["engine"], string> = {
+  windows_ocr: "Windows OCR",
+  apple_vision: "Apple Vision",
+  tesseract_cli: "tesseract",
+};
 
 /**
  * 같은 폴더의 형제 이미지 내비게이션(↑↓·←→). 트리와 **같은 목록**(백엔드 dirs-first 자연 정렬)에서
@@ -167,6 +179,12 @@ function ZoomableImage({
   // 리스너에서 최신값을 읽어야 하므로 state가 아니라 ref.
   const atFit = useRef(true);
 
+  // 글자 추출(OCR) 결과는 여기 로컬 state다 — `key={path}`라 파일이 바뀌면 저절로 비워진다.
+  // 캐시는 두지 않는다(재인식 0.1~0.4초). hoverOcrLine 은 강조 상자를 그릴 줄 번호.
+  const [ocr, setOcr] = useState<OcrResult | null>(null);
+  const [ocrBusy, setOcrBusy] = useState(false);
+  const [hoverOcrLine, setHoverOcrLine] = useState<number | null>(null);
+
   // 같은 폴더의 형제 이미지(↑/↓·←/→) — 로딩·실패 화면과 같은 훅을 공유한다(위 NavShell).
   const { idx, siblings, navKey } = useSiblingNav(projectId, path);
 
@@ -270,6 +288,23 @@ function ZoomableImage({
     e.preventDefault();
   };
 
+  const runOcr = async () => {
+    setOcrBusy(true);
+    try {
+      const res = await ipc.ocrImage(projectId, path);
+      setOcr(res);
+      setHoverOcrLine(null);
+    } catch (e) {
+      // 엔진·언어팩이 없다는 오류에는 Rust 가 이미 설치 방법을 담아 보낸다 — 여기서 다시 쓰면
+      // 플랫폼별 문구가 두 벌로 갈린다(format-provider.ts 와 같은 처리).
+      if (isIpcError(e) && e.code === "TOOL_NOT_FOUND")
+        pushToast("error", errorMessage(e));
+      else pushToast("error", `글자 추출 실패: ${errorMessage(e)}`);
+    } finally {
+      setOcrBusy(false);
+    }
+  };
+
   // 드래그 팬 — 포인터 캡처로 컨테이너 밖으로 나가도 이어진다.
   const dragFrom = useRef<{ x: number; y: number } | null>(null);
   const onPointerDown = (e: React.PointerEvent) => {
@@ -293,6 +328,14 @@ function ZoomableImage({
     if (e.currentTarget.hasPointerCapture(e.pointerId))
       e.currentTarget.releasePointerCapture(e.pointerId);
   };
+
+  // 강조 상자는 `<img>`와 **같은 transform 문자열·같은 원점**을 받는 형제 div 안에 들어간다.
+  // 그래서 줌·팬을 좌표 계산 없이 그대로 따라간다(태스크 68 §3.6).
+  const imgTransform = view
+    ? `translate(${view.x}px, ${view.y}px) scale(${view.scale})`
+    : undefined;
+  const hoverOcrBox =
+    hoverOcrLine == null ? null : (ocr?.lines[hoverOcrLine]?.box ?? null);
 
   if (decodeFailed)
     return (
@@ -319,7 +362,13 @@ function ZoomableImage({
 
   return (
     <div className="flex h-full flex-col bg-base">
-      <div className="flex h-8 shrink-0 items-center gap-1 border-b border-edge px-3 text-xs text-fg-dim">
+      {/* e2e 훅 — 46 이 형제 카운터를 여기서 찾는다. 예전엔 "박스 바로 위 형제"로 짚었는데,
+          글자 추출 패널이 박스를 [이미지 | 패널] 행으로 한 겹 감싸면서 그 관계가 끊겼다.
+          위치 대신 이름으로 짚게 둬야 다음 레이아웃 변경에도 안 깨진다. */}
+      <div
+        data-image-toolbar
+        className="flex h-8 shrink-0 items-center gap-1 border-b border-edge px-3 text-xs text-fg-dim"
+      >
         {/* 편집 진입 — projectId 를 함께 넘긴다. 임베디드 저장소면 합성 id 라 이게 정답이다(설계 D1). */}
         <button
           // 메인 창에서는 **크기 조절 가능한 별도 창**으로 연다(파일트리 더블클릭과 같은 경로·
@@ -334,6 +383,16 @@ function ZoomableImage({
           className="flex items-center gap-1 rounded px-1.5 py-1 hover:bg-raised hover:text-fg"
         >
           <Pencil size={13} /> 편집
+        </button>
+        {/* 글자 추출 — 누를 때마다 다시 읽는다(캐시 없음). 진행 중엔 비활성해 두 번 돌지 않게. */}
+        <button
+          data-ocr-run
+          onClick={() => void runOcr()}
+          disabled={ocrBusy}
+          title="이미지에서 글자 추출"
+          className="flex items-center gap-1 rounded px-1.5 py-1 hover:bg-raised hover:text-fg disabled:text-fg-muted disabled:hover:bg-transparent"
+        >
+          <ScanText size={13} /> {ocrBusy ? "추출 중…" : "글자 추출"}
         </button>
         <div className="flex-1" />
         {/* 같은 폴더에서 몇 번째 이미지인가 — ↑/↓로 넘길 게 남았는지 알려 준다(2장 이상일 때만). */}
@@ -361,40 +420,143 @@ function ZoomableImage({
         </TBtn>
       </div>
 
+      {/* 이미지와 결과 패널이 가로로 나뉜다 — 박스가 좁아지면 ResizeObserver 가 "맞춤"을 다시 계산한다. */}
+      <div className="flex min-h-0 flex-1">
+        <div
+          ref={boxRef}
+          tabIndex={0}
+          onKeyDown={onKeyDown}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={endDrag}
+          onPointerCancel={endDrag}
+          // 더블클릭: 맞춤 ↔ 원본 (없어진 토글 버튼의 계승)
+          onDoubleClick={() => (atFit.current ? actualSize() : applyFit())}
+          className={`checkerboard relative min-h-0 min-w-0 flex-1 overflow-hidden outline-none ${
+            dragging ? "cursor-grabbing" : "cursor-grab"
+          }`}
+        >
+          <img
+            ref={imgRef}
+            src={src}
+            alt={path}
+            draggable={false}
+            // naturalWidth는 로드 후에야 안다 — 그 시점에 맞춤을 계산한다.
+            onLoad={applyFit}
+            onError={() => setDecodeFailed(true)}
+            style={{
+              transformOrigin: "0 0",
+              transform: imgTransform,
+              imageRendering:
+                view && view.scale >= PIXELATE_FROM ? "pixelated" : "auto",
+              // 맞춤 계산 전엔 숨긴다 — 원본 크기로 한 프레임 번쩍이는 것을 막는다.
+              visibility: view ? "visible" : "hidden",
+            }}
+            className="absolute left-0 top-0 max-w-none select-none"
+          />
+          {hoverOcrBox && (
+            <div
+              aria-hidden
+              style={{ transformOrigin: "0 0", transform: imgTransform }}
+              className="pointer-events-none absolute left-0 top-0"
+            >
+              <div
+                data-ocr-highlight
+                style={{
+                  left: hoverOcrBox.x,
+                  top: hoverOcrBox.y,
+                  width: hoverOcrBox.w,
+                  height: hoverOcrBox.h,
+                }}
+                className="absolute border border-accent bg-accent/25"
+              />
+            </div>
+          )}
+        </div>
+        {ocr && (
+          <OcrPanel
+            result={ocr}
+            onHoverLine={setHoverOcrLine}
+            onClose={() => {
+              setOcr(null);
+              setHoverOcrLine(null);
+            }}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** 글자 추출 결과 패널 — 이미지 오른쪽 칼럼. 뷰어 분할(태스크 64)엔 최소 폭이 없어
+ *  `max-w-[40%]`로 이미지가 실오라기가 되는 것만 막는다(아래로 쌓는 반응형은 없다). */
+function OcrPanel({
+  result,
+  onHoverLine,
+  onClose,
+}: {
+  result: OcrResult;
+  onHoverLine: (i: number | null) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      data-ocr-panel
+      className="flex w-80 max-w-[40%] shrink-0 flex-col border-l border-edge bg-panel text-xs"
+    >
+      <div className="flex h-8 shrink-0 items-center gap-1 border-b border-edge px-3 text-fg-dim">
+        <span data-ocr-meta className="min-w-0 flex-1 truncate">
+          {OCR_ENGINE_LABEL[result.engine]} · {result.languages.join(", ")} ·{" "}
+          {result.lines.length}줄
+        </span>
+        <TBtn label="닫기" onClick={onClose} data-ocr-close>
+          <X size={13} />
+        </TBtn>
+      </div>
+
+      {/* 줄 사이를 가로질러 드래그 선택할 수 있어야 한다 — 그래서 select-text 이고 버튼이 아니다. */}
       <div
-        ref={boxRef}
-        tabIndex={0}
-        onKeyDown={onKeyDown}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={endDrag}
-        onPointerCancel={endDrag}
-        // 더블클릭: 맞춤 ↔ 원본 (없어진 토글 버튼의 계승)
-        onDoubleClick={() => (atFit.current ? actualSize() : applyFit())}
-        className={`checkerboard relative min-h-0 flex-1 overflow-hidden outline-none ${
-          dragging ? "cursor-grabbing" : "cursor-grab"
-        }`}
+        className="min-h-0 flex-1 select-text overflow-y-auto px-2 py-1.5"
+        onMouseLeave={() => onHoverLine(null)}
       >
-        <img
-          ref={imgRef}
-          src={src}
-          alt={path}
-          draggable={false}
-          // naturalWidth는 로드 후에야 안다 — 그 시점에 맞춤을 계산한다.
-          onLoad={applyFit}
-          onError={() => setDecodeFailed(true)}
-          style={{
-            transformOrigin: "0 0",
-            transform: view
-              ? `translate(${view.x}px, ${view.y}px) scale(${view.scale})`
-              : undefined,
-            imageRendering:
-              view && view.scale >= PIXELATE_FROM ? "pixelated" : "auto",
-            // 맞춤 계산 전엔 숨긴다 — 원본 크기로 한 프레임 번쩍이는 것을 막는다.
-            visibility: view ? "visible" : "hidden",
-          }}
-          className="absolute left-0 top-0 max-w-none select-none"
-        />
+        {result.lines.length === 0 ? (
+          <div data-ocr-empty className="px-1 py-3 text-center text-fg-muted">
+            인식된 글자가 없습니다
+          </div>
+        ) : (
+          result.lines.map((line, i) => (
+            <div
+              key={i}
+              data-ocr-line={i}
+              onMouseEnter={() => onHoverLine(i)}
+              className="whitespace-pre-wrap break-all rounded px-1 py-0.5 leading-5 text-fg hover:bg-raised"
+            >
+              {line.text}
+            </div>
+          ))
+        )}
+      </div>
+
+      {/* 품질에 영향을 준 사실은 숨기지 않는다 — 안 보이면 사용자는 "OCR이 고장"으로 읽는다(§5 R1). */}
+      {result.warnings.length > 0 && (
+        <div className="shrink-0 border-t border-edge px-3 py-1.5 text-warn">
+          {result.warnings.map((w, i) => (
+            <div key={i} data-ocr-warning className="leading-5">
+              {w}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="shrink-0 border-t border-edge px-3 py-2">
+        <button
+          data-ocr-copy
+          onClick={() => copyWithToast(result.text)}
+          disabled={result.text === ""}
+          className="flex w-full items-center justify-center gap-1.5 rounded border border-edge px-2 py-1.5 text-fg-muted hover:bg-raised hover:text-fg disabled:hover:bg-transparent disabled:hover:text-fg-muted"
+        >
+          <Copy size={13} /> 전체 복사
+        </button>
       </div>
     </div>
   );

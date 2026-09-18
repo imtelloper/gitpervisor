@@ -1112,6 +1112,7 @@ pub fn run() {
             commands::read_file_raw,
             commands::write_file_raw,
             commands::open_external_url,
+            commands::ocr_image,
             commands::image_doc_read,
             commands::image_doc_write,
             commands::image_doc_move,
@@ -1513,6 +1514,7 @@ mod tests {
             ("commands/terminal.rs", "term_paste"),
             ("proc_icons.rs", "get_process_icons"),
             ("notifications.rs", "notify_os"),
+            ("commands/ocr.rs", "ocr_image"),
         ];
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         for (file, name) in HOT {

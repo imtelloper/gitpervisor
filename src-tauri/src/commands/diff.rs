@@ -271,7 +271,7 @@ fn looks_binary(bytes: &[u8]) -> bool {
 }
 
 /// 이미지 뷰어용 파일 한도 — base64로 IPC 전송하므로 과대 파일을 막는다.
-const MAX_IMAGE_BYTES: usize = 25 * 1024 * 1024; // 25MB
+pub(crate) const MAX_IMAGE_BYTES: usize = 25 * 1024 * 1024; // 25MB
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

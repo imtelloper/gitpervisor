@@ -80,14 +80,15 @@ export async function run({ cdp, report: r, fix }) {
     })()`);
 
   /**
-   * 툴바의 형제 카운터 텍스트(`n / N`). 박스 바로 위 형제가 툴바다. 툴바 전체 textContent 는
-   * 요소 사이 공백이 없어 `2 / 3` 과 `100%` 가 "2 / 3100%" 로 붙는다 — 그래서 **그 형태인 span**을
-   * 골라 읽는다. 카운터가 없으면 빈 문자열(형제 1장 이하 → 미표시).
+   * 툴바의 형제 카운터 텍스트(`n / N`). 툴바는 `[data-image-toolbar]` 로 짚는다 — 예전엔
+   * "박스 바로 위 형제"로 짚었는데, 68(글자 추출)이 박스를 [이미지 | 패널] 행으로 감싸면서
+   * 그 관계가 끊겨 카운터를 못 찾았다(위치로 짚으면 레이아웃이 바뀔 때마다 깨진다).
+   * 툴바 전체 textContent 는 요소 사이 공백이 없어 `2 / 3` 과 `100%` 가 "2 / 3100%" 로 붙는다
+   * — 그래서 **그 형태인 span**을 골라 읽는다. 카운터가 없으면 빈 문자열(형제 1장 이하 → 미표시).
    */
   const counter = () =>
     cdp.eval(`(()=>{
-      const box = document.querySelector('.checkerboard[tabindex="0"]');
-      const bar = box && box.previousElementSibling;
+      const bar = document.querySelector('[data-image-toolbar]');
       if (!bar) return null;
       const el = Array.from(bar.querySelectorAll('span'))
         .find(s => /^\\d+ \\/ \\d+$/.test(s.textContent.replace(/\\s+/g, ' ').trim()));

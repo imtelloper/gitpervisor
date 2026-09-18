@@ -59,6 +59,7 @@ const SUITES = [
   "./suites/53-image-pen-node.mjs",
   "./suites/42-image-doc-schema.mjs",
   "./suites/46-image-arrow-nav.mjs",
+  "./suites/54-image-ocr.mjs",
   // E2E_NET=1 일 때만 실제로 돈다(런타임 다운로드에 네트워크 필요) — 아니면 전부 skip.
   "./suites/47-llm-runtime.mjs",
   "./suites/44-project-logo.mjs",
@@ -123,6 +124,7 @@ const GLOBAL_RESOURCE = [
   "/40-", // 이미지 편집기 셸: PNG 복사
   "/46-", // 이미지 화살표 이동: 전역 키
   "/52-", // 터미널 복사: 클립보드 단언 덩어리
+  "/54-", // 이미지 글자 추출: [전체 복사] 클립보드 단언
   "/60-", // 즐겨찾기 폴더: 경로 복사
   "/61-", // PDF: 텍스트 복사
 ];

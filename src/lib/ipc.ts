@@ -114,6 +114,24 @@ export interface AssetBytes {
   base64: string;
 }
 
+/** 인식된 글줄의 자리 — **원본 이미지 px**, 좌상단 원점(태스크 68 §3.2).
+ *  뷰어가 `<img>`와 같은 transform 을 준 형제 div 안에 그대로 얹으므로 좌표 변환이 없다. */
+export type OcrBox = { x: number; y: number; w: number; h: number };
+
+/** 인식된 글줄 하나. 단어 상자·신뢰도는 Rust 안에서만 쓰고 IPC로 넘어오지 않는다. */
+export type OcrLine = { text: string; box: OcrBox };
+
+/** ocr_image 결과. `engine`은 OS가 정하고 프론트는 표기만 한다(설정 UI 없음). */
+export type OcrResult = {
+  engine: "windows_ocr" | "apple_vision" | "tesseract_cli";
+  languages: string[];
+  lines: OcrLine[];
+  /** lines.text 를 '\n' 으로 이은 것 — 클립보드는 이것만 쓴다. */
+  text: string;
+  /** "글자가 작아 2배 확대해 다시 읽음" 등 품질에 영향을 준 사실. 숨기지 않고 패널 꼬리에 띄운다. */
+  warnings: string[];
+};
+
 /** 중앙 diff 뷰어가 표시할 대상 (설계 §6). */
 export type DiffTarget =
   | { mode: "worktree"; path: string } // 인덱스(없으면 HEAD) ↔ 워크트리
@@ -1288,6 +1306,15 @@ export const ipc = {
       "write_file_bytes",
       { projectId, relPath, base64, overwrite, expectedStamp },
       60_000,
+    ),
+  // 이미지 글자 추출(OCR, 태스크 68) — OS 엔진이 읽는다. 조회라 `call`이지만 8초 기본 타임아웃으로는
+  // 모자라고(디코드 + 2배 재인식), 재시도는 같은 무거운 작업을 두 번 돌릴 뿐이라 끈다.
+  // 같은 인자의 진행 중 호출은 합쳐지므로 버튼 연타 방지가 공짜로 따라온다.
+  ocrImage: (projectId: string, relPath: string) =>
+    call<OcrResult>(
+      "ocr_image",
+      { projectId, relPath },
+      { timeoutMs: 60_000, attempts: 1 },
     ),
 
   // ---- 이미지 편집기 벡터 문서 사이드카 (commands/image_doc.rs, 태스크 41) ----

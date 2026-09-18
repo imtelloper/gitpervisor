@@ -542,3 +542,23 @@ e2e 실측(부분 실행 05·14·29·44·45·46·48·49, RAM 44%): **처음 22 f
 | 67 | 종합 카드를 "모두 생성" 배치에 포함 | 제외(개별 뒤 종합 1회 수동) |
 | 67 | 채팅 대화 영속 | 메모리 — 남길 가치는 [요약으로 저장]이 담는다 |
 | 67 | 별도 창이 메인의 기간·기준일을 승계 | 일간·오늘(스코프만 `gp:report-scope`로 공유) |
+
+## 13. 이미지 뷰어 글자 추출(OCR) — Windows·macOS·Linux (68) — 2026-09-17
+
+> 근거: 코드 실측 2026-09-17(97cbe6c) + **엔진 실측**(tesseract.js 7.0 vs Windows.Media.Ocr, 픽스처 4장 CER; 확대·반전 변형 13장).
+> **문서 상태: 구현·검증 완료(2026-09-18, 미커밋)** — 상세 §8. Rust 커맨드 1개 + `#[cfg]` 백엔드 3개, npm 0 · CSP 0 · 번들 +0.
+> 검증: 전체 e2e **ALL GREEN 1472/0/18**(219s, 스위트 54 신설 13검사) · `cargo test --lib` 301 passed · `tsc --noEmit` 0.
+> **macOS Vision 런타임만 미검증**(mac 부재 — 컴파일은 스크래치 크레이트 교차검사로 확인, 실제 API 오류 3건을 그 과정에서 잡았다).
+
+| # | 태스크 | 문서 | 규모 | 핵심 판단 | 주요 위험 |
+|---|--------|------|------|-----------|-----------|
+| 68 | 이미지 뷰어 `글자 추출` 버튼 → 글줄 패널(드래그 선택·전체 복사·hover 강조) | [68-image-ocr.md](68-image-ocr.md) | **M** | **엔진은 OS 것**: Windows `Windows.Media.Ocr`(`windows` 0.61 — tao가 이미 빌드 중, windows-core 한 벌) · macOS Vision(`objc2-vision` 0.3.2 — 13 미만은 `NSProcessInfo` 버전 검사로 Vision 심볼 접근 **전에** `ToolNotFound`) · Linux 시스템 `tesseract` CLI(`find_on_path`+`run_tool_stdin`, 미설치면 `ToolNotFound`에 패키지명). tesseract.js는 실측 CER 0.09~0.23으로 기각. **커맨드 하나** `ocr_image(project_id, rel_path) → OcrResult{engine,languages,lines[{text,box}],text,warnings}`(단어 상자·신뢰도는 Rust 내부), 프롤로그는 `read_file_base64` 순서 + `resolve_in_repo`. **1차 인식 후 글자 높이 중앙값 ≤14px면 ×2 재인식**(13px: 0.27→0.10, 16px에 ×2는 0.05→0.11로 악화 — 실측). 반전·×3은 이득 0. UI는 `ImageView.tsx`만 — 편집 창·Lightbox 비범위 | 13px 다크 스크린샷 상한 ≈0.10(탭→법·`14:32`→`1432`), macOS 경로 미실측(실기 필수), 임계값 14~15px 미실측 구간 |
+
+### 13.1 사용자 결정이 필요한 열린 질문
+
+| 태스크 | 질문 | 설계 기본값(미응답 시) |
+|--------|------|------------------------|
+| 68 | Linux **무설치**가 필요한가 (지금은 `apt install tesseract-ocr tesseract-ocr-kor` 1회) | 설치 안내. 무설치면 Linux에만 tesseract.js(+8.5MB, CSP `'wasm-unsafe-eval'`) |
+| 68 | 주 용도가 **13px 다크 스크린샷**인가 | OS 엔진 상한 0.10을 warnings로 보이게. 그게 주 용도면 ONNX(RapidOCR) 스파이크가 다음 |
+| 68 | 한국어·영어 외 언어 | 고정. 필요 시 설정 1줄 |
+| 68 | 코드 스크린샷 **들여쓰기 복원**(단어 상자 X로 가능 확인) | 안 함 — "코드로 취급" 신호 UI가 필요 |
