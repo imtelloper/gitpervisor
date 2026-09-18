@@ -10,6 +10,7 @@ import {
   useReorderMemos,
   useUpdateMemo,
 } from "../../queries";
+import { MarkdownBody } from "../diff/MarkdownView";
 
 function memoTitle(text: string): string {
   const first = text.split("\n").find((l) => l.trim());
@@ -72,6 +73,32 @@ export function MemoPanel({
   //  입력 — 붙여넣기처럼 input 이벤트 한 번으로 끝나는 편집 — 이 통째로 저장을 건너뛰었다.)
   const textOwner = useRef<string | null>(null);
 
+  // MD 모드는 전역 설정(스코프 공통) — 전역 메모와 프로젝트 메모를 오갈 때 모드가 바뀌면
+  // 같은 패널이 껍데기에 따라 달리 보인다.
+  const [mdMode, setMdMode] = useState(
+    () => localStorage.getItem("gp:memo-md") === "1",
+  );
+  // 반대로 "지금 이 메모를 고쳐 쓰는 중"은 과도 상태라 영속하지 않는다 — 다시 열면
+  // 렌더된 본문부터 보는 게 MD 모드를 켠 이유다.
+  const [editing, setEditing] = useState(false);
+  function toggleMdMode() {
+    const next = !mdMode;
+    if (next) localStorage.setItem("gp:memo-md", "1");
+    else localStorage.removeItem("gp:memo-md");
+    setMdMode(next);
+    setEditing(false);
+  }
+  function startEditing() {
+    setEditing(true);
+    // textarea는 이 setState 이후에야 마운트된다 — 다음 태스크에서 잡아 캐럿을 끝에 둔다.
+    setTimeout(() => {
+      const ta = taRef.current;
+      if (!ta) return;
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+    }, 0);
+  }
+
   // 스코프가 바뀌면 그 스코프가 마지막에 보던 메모로 갈아끼운다 — 이전 스코프의 memoId가 남으면
   // 첫 렌더에서 엉뚱한 메모를 가리킨다.
   useEffect(() => {
@@ -130,6 +157,7 @@ export function MemoPanel({
   function selectMemo(id: string) {
     flush();
     setActiveId(id);
+    setEditing(false);
   }
   function handleAdd() {
     flush();
@@ -140,6 +168,7 @@ export function MemoPanel({
     // 아직 직전 메모라, 이게 없으면 빈 본문이 직전 메모에 저장된다(위 textOwner 주석).
     textOwner.current = id;
     setText("");
+    setEditing(true);
     setTimeout(() => taRef.current?.focus(), 0);
   }
   // ── 드래그 순서 정렬 (포인터 기반, ProjectList와 같은 방식) ──
@@ -278,6 +307,17 @@ export function MemoPanel({
           <span className="min-w-0 flex-1 truncate text-[12px] text-fg-dim">
             {active ? memoTitle(active.text) : "메모"}
           </span>
+          <button
+            onClick={toggleMdMode}
+            title="Markdown 모드 — 본문을 렌더해서 보여줍니다. 렌더된 본문을 클릭하면 편집, 포커스가 빠지면 다시 렌더"
+            className={`rounded p-1 text-[11px] font-semibold ${
+              mdMode
+                ? "bg-selection text-accent"
+                : "text-fg-dim hover:bg-raised hover:text-fg"
+            }`}
+          >
+            MD
+          </button>
           {active && (
             <button
               onClick={handleDelete}
@@ -296,19 +336,34 @@ export function MemoPanel({
           </button>
         </div>
 
-        {active ? (
+        {/* 빈 본문은 MD 모드에서도 입력칸을 보인다 — 렌더할 것이 없고, 새 메모는 바로 써야 한다.
+            textarea가 사라져도 본문은 text state에 남아 디바운스 저장·flush는 그대로 돈다. */}
+        {!active ? (
+          <div className="flex flex-1 items-center justify-center text-[13px] text-fg-dim">
+            왼쪽에서 메모를 선택하거나 새로 만드세요
+          </div>
+        ) : !mdMode || editing || text.trim() === "" ? (
           <textarea
             ref={taRef}
             value={text}
-            onChange={(e) => setText(e.target.value)}
+            onChange={(e) => {
+              setText(e.target.value);
+              // 빈 메모는 editing 없이도 입력칸이 보인다(위 주석) — 첫 글자가 들어가는 순간
+              // 본문이 비지 않게 되어 렌더 뷰로 튕기지 않도록, 타이핑 자체를 편집 중으로 친다.
+              if (mdMode && !editing) setEditing(true);
+            }}
+            onBlur={() => mdMode && setEditing(false)}
             placeholder="메모 작성…"
             spellCheck={false}
             autoFocus
             className="min-h-0 flex-1 resize-none bg-transparent px-4 py-3 text-[14px] leading-7 text-fg outline-none placeholder:text-fg-dim"
           />
         ) : (
-          <div className="flex flex-1 items-center justify-center text-[13px] text-fg-dim">
-            왼쪽에서 메모를 선택하거나 새로 만드세요
+          <div
+            onClick={startEditing}
+            className="min-h-0 flex-1 cursor-text overflow-y-auto"
+          >
+            <MarkdownBody content={text} className="memo-md" />
           </div>
         )}
       </div>

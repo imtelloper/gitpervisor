@@ -13,24 +13,38 @@ export default function MarkdownView({ content }: { content: string }) {
       {/* 렌더된 문서는 드래그로 통째 선택하기 번거로워 원문을 한 번에 집어가는 버튼을 둔다.
           스크롤되는 본문과 달리 컨테이너 기준 absolute라 긴 문서에서도 우측 상단에 남는다. */}
       <CopyAllButton content={content} />
-      <div className="md-body">
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          components={{
-            // 웹뷰가 문서 밖으로 이동하면 앱이 깨지므로 링크 기본 동작을 막는다.
-            a(props) {
-              const { href, children } = props;
-              return (
-                <a href={href} onClick={(e) => e.preventDefault()}>
-                  {children}
-                </a>
-              );
-            },
-          }}
-        >
-          {content}
-        </ReactMarkdown>
-      </div>
+      <MarkdownBody content={content} />
+    </div>
+  );
+}
+
+/** 렌더 본문만 — 파일 뷰어(위)와 메모장 MD 모드가 같은 `.md-body` 스타일을 공유한다.
+ *  className으로 껍데기별 여백 보정을 얹는다(메모장은 `.memo-md`). */
+export function MarkdownBody({
+  content,
+  className,
+}: {
+  content: string;
+  className?: string;
+}) {
+  return (
+    <div className={"md-body" + (className ? " " + className : "")}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          // 웹뷰가 문서 밖으로 이동하면 앱이 깨지므로 링크 기본 동작을 막는다.
+          a(props) {
+            const { href, children } = props;
+            return (
+              <a href={href} onClick={(e) => e.preventDefault()}>
+                {children}
+              </a>
+            );
+          },
+        }}
+      >
+        {content}
+      </ReactMarkdown>
     </div>
   );
 }

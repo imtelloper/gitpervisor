@@ -374,6 +374,12 @@ textarea {
 .md-body img {
   max-width: 100%;
 }
+/* 메모장 MD 모드 — 팝오버 본문이 720x420이라 880px 중앙 정렬 + 40px 좌우 패딩은
+ * 읽을 폭을 거의 남기지 않는다. 껍데기 폭을 그대로 쓰고 여백만 줄인다. */
+.md-body.memo-md {
+  max-width: none;
+  padding: 12px 16px 48px;
+}
 
 /* ── AI(Claude Code) 작업 상태 — PROJECTS 바 행 배경 ──────────────────────
  * 작업 중: 은은하게 흐르는 무지개 그라데이션(배경 이미지라 텍스트는 그대로 위에).
