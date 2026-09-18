@@ -530,8 +530,9 @@ async function main() {
       });
       const log = join(tmpdir(), `gpv-shard${s.i}-run.log`);
       writeFileSync(log, strip(r.text));
-      console.log(`  샤드 ${s.i}/${shards} 종료 (exit ${r.code}) — ${((Date.now() - t0) / 1000).toFixed(0)}s`);
-      return { ...s, ...r, log };
+      const secs = (Date.now() - t0) / 1000;
+      console.log(`  샤드 ${s.i}/${shards} 종료 (exit ${r.code}) — ${secs.toFixed(0)}s`);
+      return { ...s, ...r, log, secs };
     }),
   );
   const wall = (Date.now() - t0) / 1000;
@@ -540,6 +541,7 @@ async function main() {
   let pass = 0;
   let fail = 0;
   let skip = 0;
+  let slowest = 0;
   console.log(`\n${"━".repeat(46)}`);
   for (const r of results.sort((a, b) => a.i - b.i)) {
     const t = strip(r.text);
@@ -548,7 +550,15 @@ async function main() {
       pass += Number(m[1]);
       fail += Number(m[2]);
       skip += Number(m[3]);
-      console.log(`  샤드 ${r.i}/${shards}  ${m[1]} pass / ${m[2]} fail / ${m[3]} skip   → ${r.log}`);
+      // 계획(suite-times 합)과 실제를 나란히 둔다 — 이 배수가 그 회차의 빨강을 읽는 첫 숫자다.
+      const est = Number(/예상 (\d+)s/.exec(t)?.[1] || 0);
+      const ratio = est && r.secs ? r.secs / est : 0;
+      if (ratio > slowest) slowest = ratio;
+      console.log(
+        `  샤드 ${r.i}/${shards}  ${m[1]} pass / ${m[2]} fail / ${m[3]} skip` +
+          (ratio ? `   계획 ${est}s → ${r.secs.toFixed(0)}s (${ratio.toFixed(1)}배)` : "") +
+          `   → ${r.log}`,
+      );
       // 요약은 0 fail 인데 러너가 실패로 끝났다 — 요약 밖에서 무언가 죽었다. 초록으로 세지 않는다.
       if (r.code !== 0 && Number(m[2]) === 0) {
         fail += 1;
@@ -567,6 +577,14 @@ async function main() {
     `  ${fail === 0 ? "ALL GREEN" : `${fail} FAILED`}   ${pass} pass / ${fail} fail / ${skip} skip` +
       `   벽시계 ${wall.toFixed(0)}s (${(wall / 60).toFixed(1)}분)`,
   );
+  // 계획보다 크게 느린 회차의 빨강은 대개 **폴 예산이 짧아 생긴 가짜**다. 2026-09-18 회차가 그랬다:
+  // 프로세스 생성이 유휴의 12배(cmd /c exit 166ms → 2071ms)로 느려져 git·LSP·프로세스를 띄우는
+  // 스위트만 4~7배 늘어졌고 8개가 빨갛게 났는데, 같은 스위트를 혼자 돌리니 전부 초록이었다.
+  if (fail > 0 && slowest >= 2)
+    console.log(
+      `  ⚠ 계획 대비 최대 ${slowest.toFixed(1)}배 느린 회차 — 실패는 먼저 ` +
+        `\`GPV_E2E_ONLY=<번호> node tests/e2e/shard.mjs 1\` 로 혼자 돌려 진짜인지 가려라`,
+    );
   // 이 회차가 사용자의 설치본을 얼마나 눌렀는지 — "통과했다"만큼 중요한 숫자다.
   console.log(
     watchStats.samples

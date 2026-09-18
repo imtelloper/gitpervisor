@@ -345,14 +345,17 @@ async function teardown() {
   if (fix) {
     const t0 = Date.now();
     let left = true;
-    for (let i = 0; i < 24 && left; i++) {
+    // 상한 15s: 6s 였을 때 느린 회차(프로세스 생성이 유휴의 12배)에서 5.9s 에 걸려 빨개졌다
+    // (2026-09-18). 빨리 끝나면 즉시 빠져나오므로 정상 회차 비용은 0이고, 영영 안 놓는 핸들은
+    // 그대로 잡힌다.
+    for (let i = 0; i < 60 && left; i++) {
       if (i) await new Promise((r) => setTimeout(r, 250));
       fix.cleanup(); // 실패를 삼킨다(경고만) — 판정은 아래 existsSync 로 한다
       left = existsSync(fix.root);
     }
     const ms = Date.now() - t0;
     report.check(
-      "teardown: 픽스처 디렉토리 삭제됨(종료는 비동기라 최대 6초 대기)",
+      "teardown: 픽스처 디렉토리 삭제됨(종료는 비동기라 최대 15초 대기)",
       !left,
       left ? `${fix.root} — ${ms}ms 후에도 남음, 남은 항목: ${listLeftover(fix.root)}` : `${ms}ms`,
     );
@@ -372,6 +375,17 @@ async function teardown() {
 
   const notesKeys = Object.keys((await cdp.invoke("get_notes")) || {});
   report.check("메모: 픽스처 메모 흔적 없음", !notesKeys.includes(fix?.projectId), `keys=${notesKeys.length}`);
+
+  // **가짜 초록의 마지막 문**: 스위트들은 dev 훅이 없으면 `... 미노출` 사유로 통째로 skip 한다.
+  // CDP 포트 자체가 debug 빌드 전용이라(lib.rs browser_args) 여기서 훅이 없는 것은 "릴리스 빌드라
+  // 어쩔 수 없다"가 아니라 **앱이 덜 떴거나 훅이 사라진 것**이다. 스킵은 요약에서 숫자 하나로만
+  // 보이므로 사람 눈으로는 지나간다 — 그래서 러너가 대신 본다.
+  const hookSkips = report.skips().filter((s) => /미노출/.test(s.reason));
+  report.check(
+    "(러너) 훅 미노출로 통째로 건너뛴 스위트 없음 — 있으면 그 스위트는 한 줄도 안 돌고 초록이 된다",
+    hookSkips.length === 0,
+    hookSkips.map((s) => `${s.name}: ${s.reason}`).join(" · "),
+  );
 }
 
 /**
@@ -409,17 +423,16 @@ async function main() {
   for (let i = 0; i < 60 && !(await cdp.eval("!!window.__gpv && !!window.__monaco").catch(() => false)); i++) {
     await new Promise((r) => setTimeout(r, 500));
   }
-  // 기다린 뒤에도 없으면 **회차를 빨갛게 만든다.** 훅이 없으면 그것에 기대는 스위트가 통째로 skip 하고
-  // 요약은 초록이다 — 2026-09-18 에 62 가 그렇게 "8 pass / 0 fail / 1 skip" 으로 끝났다(그 8 건은
-  // 정리 스위트의 것이었고 PDF 게이트는 한 줄도 안 돌았다. 앱이 Rust 재빌드 직후라 느렸다).
-  // CDP 포트 자체가 debug 빌드 전용이라(lib.rs browser_args) 여기서 훅이 없는 것은 "릴리스 빌드"가
-  // 아니라 **준비가 덜 된 것**이다.
+  // 기다린 뒤에도 없으면 **여기서 빨갛게 하지 않고 적어만 둔다.** 훅이 없으면 그것에 기대는 스위트가
+  // 통째로 skip 하고 요약은 초록이 되는데(2026-09-18 에 62 가 그렇게 "8 pass / 0 fail / 1 skip" 으로
+  // 끝났다 — 그 8 건은 정리 스위트의 것이었고 PDF 게이트는 한 줄도 안 돌았다), 그 **손해는 실제로
+  // skip 이 생겼을 때만** 발생한다. 시작 시점에 단정하면 `GPV_E2E_ONLY` 로 좁힌 회차가 Monaco 를
+  // 한 번도 안 쓰면서 빨개진다(Monaco 청크는 main.tsx 의 idle 프리로드라 느린 머신에선 30초를 넘긴다).
+  // 판정은 teardown 의 `훅 미노출로 통째로 건너뛴 스위트 없음` 이 한다 — 그쪽이 정확하다.
   const hooks = await cdp
     .eval("({ gpv: !!window.__gpv, monaco: !!window.__monaco, spike: typeof window.__gpv?.pdfSpike?.open })")
     .catch((e) => ({ err: e.message }));
-  if (!hooks?.gpv || !hooks?.monaco) {
-    report.check("(러너) 앱의 dev 훅 노출 — 없으면 스위트가 조용히 skip 한다", false, JSON.stringify(hooks));
-  }
+  if (!hooks?.gpv || !hooks?.monaco) report.info(`앱 dev 훅이 덜 떴다 — ${JSON.stringify(hooks)}`);
   snapshot = await takeSnapshot();
   console.log(`  스냅샷: 프로젝트 ${snapshot.projectIds.length} · DB연결 ${snapshot.dbConnIds.length} · 메모키 ${snapshot.notesKeys.length} · 테마 ${snapshot.settings.theme}`);
 

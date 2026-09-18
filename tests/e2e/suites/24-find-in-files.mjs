@@ -64,15 +64,29 @@ export async function run({ cdp, report: r, fix }) {
       const setter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;
       setter.call(inp,'gpvNeedle'); inp.dispatchEvent(new Event('input',{bubbles:true}));
       inp.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));
-      await new Promise(r=>setTimeout(r,1500));
-      return [...document.querySelectorAll('mark')].map(m=>m.textContent).slice(0,3);
+      // 검색은 IPC 왕복(git grep)이다 — 고정 1.5초는 느린 회차에서 모자라 빈 배열로 빨개졌다
+      // (2026-09-18 3샤드). 나타날 때까지 기다리되 상한을 둬 진짜 고장은 그대로 잡는다.
+      for (let i=0;i<60;i++){
+        const m=[...document.querySelectorAll('mark')];
+        if (m.length) return m.map(x=>x.textContent).slice(0,3);
+        await new Promise(r=>setTimeout(r,200));
+      }
+      return [];
     })()`);
     r.check("검색 결과 하이라이트(<mark>)", Array.isArray(searched) && searched.some((m) => /gpvNeedle/i.test(m || "")), J(searched));
 
     const nav = await cdp.eval(`(async ()=>{
-      const rows=[...document.querySelectorAll('button')].filter(b=>b.className.includes('font-mono') && b.className.includes('pl-6'));
+      const find=()=>[...document.querySelectorAll('button')].filter(b=>b.className.includes('font-mono') && b.className.includes('pl-6'));
+      let rows=find();
+      for(let i=0;i<40 && !rows.length;i++){ await new Promise(r=>setTimeout(r,200)); rows=find(); }
       if(!rows.length) return null;
-      rows[0].click(); await new Promise(r=>setTimeout(r,500));
+      rows[0].click();
+      // 뷰어 마운트도 청크 로드를 탄다 — 고정 대기 대신 selectedDiff 가 채워질 때까지.
+      for(let i=0;i<40;i++){
+        const d=window.__gpv.ui.getState().selectedDiff;
+        if (d && d.mode === 'file' && d.line >= 1) return d;
+        await new Promise(r=>setTimeout(r,200));
+      }
       return window.__gpv.ui.getState().selectedDiff;
     })()`);
     r.check("결과 클릭 → 뷰어 점프(line)", !!nav && nav.mode === "file" && nav.line >= 1, J(nav));

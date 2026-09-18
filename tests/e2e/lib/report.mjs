@@ -38,6 +38,16 @@ export function createReport() {
     console.log(`  ${C.d}ℹ ${msg}${C.x}`);
   }
 
+  /**
+   * 스킵 사유 전체. 러너가 "dev 훅이 없어 스위트가 통째로 건너뛴" 가짜 초록을 판정하는 데 쓴다 —
+   * 스킵은 요약에서 초록 옆 숫자일 뿐이라 사람 눈으로는 지나간다.
+   */
+  function skips() {
+    return suites.flatMap((s) =>
+      s.checks.filter((c) => c.status === "skip").map((c) => ({ suite: s.title, name: c.name, reason: c.detail || "" })),
+    );
+  }
+
   function counts() {
     let pass = 0,
       fail = 0,
@@ -94,5 +104,5 @@ export function createReport() {
     return { pass, fail, skip };
   }
 
-  return { suite, check, skip, info, summary, counts };
+  return { suite, check, skip, info, summary, counts, skips };
 }

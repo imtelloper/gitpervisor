@@ -407,8 +407,11 @@ export async function run({ cdp, report: r, fix }) {
       const primed = hasClipHook ? await primeClipboard(SENTINEL) : false;
       const wantCopy = lf((p1 ? p1.lines : []).join("\n"));
       await clickPanelBtn("[data-ocr-copy]");
+      // 빈 문자열은 "바뀌었다"가 아니라 **아직/읽기 실패**다 — `clipboard()` 가 실패를 "" 로 접기
+      // 때문에, 클립보드가 잠깐 다른 프로세스에 잠긴 것만으로 폴이 즉시 멈춰 빨개진다
+      // (2026-09-18 3샤드 회차 실사례: 패널엔 글자가 있는데 클립="" 로 FAIL).
       const clip = lf(
-        await poll(clipboard, (v) => typeof v === "string" && lf(v) !== SENTINEL, 20, 250),
+        await poll(clipboard, (v) => typeof v === "string" && v !== "" && lf(v) !== SENTINEL, 20, 250),
       );
       r.check(
         "(68 ⑥) [전체 복사] 가 인식한 줄 전체를 클립보드에 넣는다 — 센티널이 패널 텍스트로 바뀌고, 그 텍스트에 실제 글자가 들어 있다(둘 다 비면 '같다'가 공허하다)",

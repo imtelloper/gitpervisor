@@ -226,11 +226,13 @@ export async function run({ cdp, report: r, fix, port }) {
           return 'ok';
         })()`),
       (v) => v === "ok",
-      20,
+      // 40회(10s): 로그 탭은 git log IPC 를 기다린다 — 5초로는 느린 회차에서 `no-commit` 으로
+      // 빨개졌다(2026-09-18 3샤드). 아래 diff 폴(40)과 같은 예산으로 맞춘다.
+      40,
       250,
     );
     r.check("커밋 목록에서 첫 커밋 클릭", commitClicked === "ok", `res=${commitClicked}`);
-    const filePath = await poll(clickFirstFileRow, rowOk, 20, 250);
+    const filePath = await poll(clickFirstFileRow, rowOk, 40, 250);
     r.check("커밋 상세의 첫 파일 행 클릭", rowOk(filePath), `res=${filePath}`);
     const d2 = await poll(modalDiff, (v) => v === "monaco", 40, 250);
     r.check("모달 안에 커밋 diff가 그려진다(로그 탭)", d2 === "monaco", `state=${d2}`);
