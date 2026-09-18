@@ -96,7 +96,9 @@ export async function run({ cdp, report: r, fix, port }) {
       const m = ${MODAL};
       if (!m) return 'no-modal';
       if (m.querySelector('.monaco-editor')) return 'monaco';
-      return (m.textContent || '').includes('파일을 선택하세요') ? 'empty' : 'other';
+      if ((m.textContent || '').includes('파일을 선택하세요')) return 'empty';
+      // 'other' 는 로딩 중일 수도, 오류 화면일 수도 있다 — 무엇이었는지 실패 detail 에 싣는다.
+      return 'other:' + (m.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 80);
     })()`);
 
   const clickTab = (label) =>
@@ -214,27 +216,36 @@ export async function run({ cdp, report: r, fix, port }) {
 
     // ── ② 로그 탭: 커밋 → 파일 → 모달 안 diff, 전역 불변 ────────────────────
     r.check("'로그' 탭 전환", (await clickTab("로그")) === true);
-    const commitClicked = await poll(
-      () =>
-        cdp.eval(`(()=>{
-          const m = ${MODAL};
-          if (!m) return 'no-modal';
-          const row = Array.from(m.querySelectorAll('div'))
-            .find(x => x.className.includes('cursor-pointer') && x.className.includes('border-b'));
-          if (!row) return 'no-commit';
-          row.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-          return 'ok';
-        })()`),
-      (v) => v === "ok",
-      // 40회(10s): 로그 탭은 git log IPC 를 기다린다 — 5초로는 느린 회차에서 `no-commit` 으로
-      // 빨개졌다(2026-09-18 3샤드). 아래 diff 폴(40)과 같은 예산으로 맞춘다.
+    const clickFirstCommit = () =>
+      cdp.eval(`(()=>{
+        const m = ${MODAL};
+        if (!m) return 'no-modal';
+        const row = Array.from(m.querySelectorAll('div'))
+          .find(x => x.className.includes('cursor-pointer') && x.className.includes('border-b'));
+        if (!row) return 'no-commit';
+        row.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        return 'ok';
+      })()`);
+    // 40회(10s): 로그 탭은 git log IPC 를 기다린다 — 5초로는 느린 회차에서 `no-commit` 으로
+    // 빨개졌다(2026-09-18 3샤드). 아래 diff 폴(40)과 같은 예산으로 맞춘다.
+    const commitClicked = await poll(clickFirstCommit, (v) => v === "ok", 40, 250);
+    r.check("커밋 목록에서 첫 커밋 클릭", commitClicked === "ok", `res=${commitClicked}`);
+    // 행이 있어서 'ok' 였더라도 **그 클릭이 먹었다는 보장은 없다** — 느린 회차에서는 React 가
+    // 핸들러를 붙이기 전에 떨어져 상세가 영영 안 온다(그때 파일 행은 계속 `no-row` 다).
+    // 그래서 파일 행이 안 보이는 동안 커밋을 다시 누른다. 선택은 멱등이라 여러 번 눌러도 같다.
+    const filePath = await poll(
+      async () => {
+        const v = await clickFirstFileRow();
+        if (v === "no-row") await clickFirstCommit();
+        return v;
+      },
+      rowOk,
       40,
       250,
     );
-    r.check("커밋 목록에서 첫 커밋 클릭", commitClicked === "ok", `res=${commitClicked}`);
-    const filePath = await poll(clickFirstFileRow, rowOk, 40, 250);
     r.check("커밋 상세의 첫 파일 행 클릭", rowOk(filePath), `res=${filePath}`);
-    const d2 = await poll(modalDiff, (v) => v === "monaco", 40, 250);
+    // 60회(15s): 모달 안 Monaco 는 파일 diff IPC + lazy 청크 마운트라 느린 회차에서 10초를 넘긴다.
+    const d2 = await poll(modalDiff, (v) => v === "monaco", 60, 250);
     r.check("모달 안에 커밋 diff가 그려진다(로그 탭)", d2 === "monaco", `state=${d2}`);
     const g2 = await globals();
     r.check(
