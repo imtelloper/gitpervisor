@@ -409,6 +409,17 @@ async function main() {
   for (let i = 0; i < 60 && !(await cdp.eval("!!window.__gpv && !!window.__monaco").catch(() => false)); i++) {
     await new Promise((r) => setTimeout(r, 500));
   }
+  // 기다린 뒤에도 없으면 **회차를 빨갛게 만든다.** 훅이 없으면 그것에 기대는 스위트가 통째로 skip 하고
+  // 요약은 초록이다 — 2026-09-18 에 62 가 그렇게 "8 pass / 0 fail / 1 skip" 으로 끝났다(그 8 건은
+  // 정리 스위트의 것이었고 PDF 게이트는 한 줄도 안 돌았다. 앱이 Rust 재빌드 직후라 느렸다).
+  // CDP 포트 자체가 debug 빌드 전용이라(lib.rs browser_args) 여기서 훅이 없는 것은 "릴리스 빌드"가
+  // 아니라 **준비가 덜 된 것**이다.
+  const hooks = await cdp
+    .eval("({ gpv: !!window.__gpv, monaco: !!window.__monaco, spike: typeof window.__gpv?.pdfSpike?.open })")
+    .catch((e) => ({ err: e.message }));
+  if (!hooks?.gpv || !hooks?.monaco) {
+    report.check("(러너) 앱의 dev 훅 노출 — 없으면 스위트가 조용히 skip 한다", false, JSON.stringify(hooks));
+  }
   snapshot = await takeSnapshot();
   console.log(`  스냅샷: 프로젝트 ${snapshot.projectIds.length} · DB연결 ${snapshot.dbConnIds.length} · 메모키 ${snapshot.notesKeys.length} · 테마 ${snapshot.settings.theme}`);
 

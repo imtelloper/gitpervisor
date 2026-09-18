@@ -19,7 +19,7 @@
 //        잉크 행 수·위치도 함께 본다 — 빈 캡처는 연속 0 으로 "통과"해 버린다.
 //   1c → 쌍선형 흐림(image + auto)·반 디바이스 px 원점(page + translate)이 둘 다 **실패해야** 한다.
 //   VP-1 → 스크롤 직전 비트맵(옛 원점)으로 같은 판정을 하면 **실패해야** 한다.
-//   VP-3·V2c → viewport 원점 ≥5pt 를 전제로 둔다 — 원점을 빠뜨리면 허용오차(0.5pt)를 크게 벗어난다.
+//   VP-3·V2c → viewport 원점 ≥5pt 를 전제로 둔다 — 원점을 빠뜨리면 허용오차(VP-3 는 0.05pt)를 크게 벗어난다.
 //   LC-3 → ① 확정을 건너뛴 raw 전환에서는 텍스트가 **사라져야** 한다(blur 가 대신 확정하지 않는다).
 //   4  → 분리된 캔버스 3장을 일부러 만들어 계측이 +3 을 보는지 먼저 확인한다(DOM 개수로는 0 이다).
 //        요소로 붙잡은 3장과 **컨텍스트로만** 붙잡은 3장(레이어 풀·스크래치의 모양) 둘 다.
@@ -567,14 +567,22 @@ export async function run({ cdp, report: r }) {
       `viewport=${J(vpNow)} on=${J(curOn)} off=${J(curOff)}`,
     );
 
-    // VP-3: 사각형 도구 실제 드래그. 끝점 (176,160) 은 16 의 배수·정수라 격자·픽셀 스냅이 no-op 이고
+    // VP-3: 사각형 도구 실제 드래그. 끝점은 16 의 배수·정수라 격자·픽셀 스냅이 no-op 이고
     // 시작점은 스냅되지 않는다. 드래그마다 노드를 되돌려 사각형이 하나만 남게 한다.
+    //
+    // **끝점 y 는 픽스처 선에서 떨어뜨린다(2026-09-18).** 예전 끝점 (176,160) 은 LINE(y2=160,
+    // strokeWidth 1)의 **오브젝트 스냅 경계**(`objectAABB` 가 굵기 절반만큼 부풀린 160.5) 에서 0.5pt
+    // 거리라 임계(화면 4css px = 400% 에서 0.75pt) 안에 들어가 **항상 스냅됐다** — h 가 40 이 아니라
+    // 40.5 로 나왔고, 옛 허용치 ±0.5 는 그 둘을 구분하지 못해 부동소수 끝자리로 통과/실패가 갈렸다
+    // (전체 회차는 40.49999 로 초록, 단독 실행은 40.50000011 로 빨강). 170 은 경계에서 10.5pt 라 스냅이
+    // 없고 실측 오차 0.0000 이다 — 그래서 아래 허용치를 ±0.05 로 좁힌다(이 값을 다시 넓히지 마라:
+    // 넓히는 순간 "정상"과 "0.5pt 어긋남"이 같은 판정에 들어간다).
     const dragRect = async (strategy) => {
       await cdp.eval(`${S}.setStrategy(${J(strategy)})`);
       await cdp.eval(`${S}.setNodes(0, ${J([LINE, TEXT])})`);
       await cdp.eval(`${S}.setTool('rect')`);
       const st = await cdp.eval(`${S}.stats()`);
-      await drag(await at(0, 120, 120), await at(0, 176, 160));
+      await drag(await at(0, 120, 120), await at(0, 176, 170));
       await frames();
       const rects = await cdp.eval(
         `${S}.getNodes(0).filter((n) => n.kind === 'rect').map((n) => ({ x: n.x, y: n.y, w: n.w, h: n.h }))`,
@@ -586,14 +594,15 @@ export async function run({ cdp, report: r }) {
     await cdp.eval(`${S}.setNodes(0, ${J([LINE, TEXT])})`);
     await cdp.eval(`${S}.setTool('select')`);
     {
-      const R = { x: 120, y: 120, w: 56, h: 40 };
+      const R = { x: 120, y: 120, w: 56, h: 50 };
+      const TOL = 0.05; // 스냅이 없는 끝점이라 실측 0 — 0.5pt 어긋남을 확실히 잡는 폭(위 주석)
       const K = ["x", "y", "w", "h"];
       const rv = dv.rects.length === 1 ? dv.rects[0] : null;
       const rp = dp.rects.length === 1 ? dp.rects[0] : null;
-      const ok = (q) => !!q && K.every((k) => Math.abs(q[k] - R[k]) <= 0.5);
+      const ok = (q) => !!q && K.every((k) => Math.abs(q[k] - R[k]) <= TOL);
       r.check(
-        "(VP-3) 400% 사각형 도구 실제 포인터 드래그 (120,120)→(176,160) — viewport 전략(원점 ≥5pt)과 page 전략이 둘 다 x·y·w·h ±0.5pt · 두 전략 차 ≤0.5pt",
-        !!dv.vp && dv.vp.x >= 5 && dv.vp.y >= 5 && dp.vp === null && ok(rv) && ok(rp) && K.every((k) => Math.abs(rv[k] - rp[k]) <= 0.5),
+        "(VP-3) 400% 사각형 도구 실제 포인터 드래그 (120,120)→(176,170) — viewport 전략(원점 ≥5pt)과 page 전략이 둘 다 x·y·w·h ±0.05pt · 두 전략 차 ≤0.05pt",
+        !!dv.vp && dv.vp.x >= 5 && dv.vp.y >= 5 && dp.vp === null && ok(rv) && ok(rp) && K.every((k) => Math.abs(rv[k] - rp[k]) <= TOL),
         `viewport=${J(dv.vp)} → ${J(dv.rects)} · page vp=${J(dp.vp)} → ${J(dp.rects)} · 원점을 빠뜨리면 x≈${dv.vp ? (120 - dv.vp.x).toFixed(2) : "-"}`,
       );
     }
