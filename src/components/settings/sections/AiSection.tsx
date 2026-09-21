@@ -333,6 +333,23 @@ export function AiSection({
               </Field>
             </Hl>
           </div>
+          <Hl id="reportAutoWeekly" hl={hl}>
+            <label className="flex items-start gap-2">
+              <input
+                type="checkbox"
+                checked={form.reportAutoWeekly}
+                onChange={(e) => update("reportAutoWeekly", e.target.checked)}
+                className="mt-0.5 accent-accent"
+              />
+              <span>
+                주간 리포트 자동 생성
+                <span className="ml-1 block text-[11px] text-fg-dim">
+                  월요일 이후 앱이 켜져 있을 때 <b>지난주</b> 요약이 없으면 프로젝트별로 한 번
+                  만듭니다. 이미 있으면 건너뜁니다 — 앱이 한 주 꺼져 있었어도 켜면 한 번 만듭니다.
+                </span>
+              </span>
+            </label>
+          </Hl>
           <Hl id="llmReportModel" hl={hl}>
             <Field
               label="작업 리포트 전용 모델"

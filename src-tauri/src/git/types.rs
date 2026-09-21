@@ -263,6 +263,10 @@ pub struct Settings {
     pub llm_provider: String,
     /// 카탈로그 id(llm/acquire.rs MODELS) 또는 "custom".
     pub llm_model: String,
+    /// 주간 리포트 예약 생성(태스크 70 §10). 켜면 메인 창이 10분마다 "지난주 요약이 저장돼
+    /// 있나"를 보고 없으면 만든다. **별도 상태를 두지 않는다** — 저장본 존재가 곧 중복 방지라
+    /// 앱이 한 주 꺼져 있었어도 켜는 순간 한 번 만들고 끝난다. 기본 꺼짐.
+    pub report_auto_weekly: bool,
     /// 작업 리포트 요약·채팅(60·67)에만 쓸 모델. null/빈값 = `llm_model` 을 쓴다.
     ///
     /// **왜 갈랐나**: 요약은 예약·배치로 돌려 기다려도 되고 정확도가 돈이 되지만(태스크 70 §8 —
@@ -320,6 +324,7 @@ impl Default for Settings {
             video_ffmpeg_path: None,
             llm_provider: "managed".to_string(),
             llm_model: "qwen3-4b-q4".to_string(),
+            report_auto_weekly: false,
             llm_report_model: None,
             llm_custom_model_path: None,
             llm_external_url: None,

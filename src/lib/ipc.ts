@@ -278,6 +278,7 @@ export interface Settings {
   // 로컬 LLM (태스크 59 §3.6 — llm/*.rs)
   llmProvider: "managed" | "external"; // managed=앱이 llama-server 관리, external=Ollama 등
   llmModel: string; // 카탈로그 id 또는 "custom"
+  reportAutoWeekly: boolean; // 주간 리포트 예약 생성(태스크 70 §10) — 메인 창이 지난주 것을 1회 만든다
   llmReportModel: string | null; // 리포트(60·67) 전용 모델 — null/빈값이면 llmModel
   llmCustomModelPath: string | null;
   llmExternalUrl: string | null; // 예: http://localhost:11434/v1

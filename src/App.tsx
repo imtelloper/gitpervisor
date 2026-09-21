@@ -34,6 +34,7 @@ import { FileTreeDialog } from "./components/tree/FileTreeDialog";
 import { FileTreePanel } from "./components/tree/FileTreePanel";
 import { WorkspaceTabs } from "./components/workspace/WorkspaceTabs";
 import { useAgentNotifications } from "./lib/agent-notify";
+import { useReportSchedule } from "./lib/report-schedule";
 import { getTerminal, listTerminals, refreshTerminalThemes } from "./lib/terminal";
 import {
   useProjectRootsPrefetch,
@@ -72,6 +73,7 @@ export default function App() {
   // events.ts의 focusManager 연결부에서 함께 배선된다(태스크 04).
   useProjectRootsPrefetch(); // 전 프로젝트 루트 병렬 프리페치 → 트리 즉시 표시
   useAgentNotifications(); // AI 작업 완료 OS 알림 (메인 창 1회 — 설정 모드별)
+  useReportSchedule(); // 주간 리포트 예약 생성 (메인 창 1회 — 태스크 70 §10)
 
   // 선택 테마를 <html data-theme>로 적용 — CSS 변수 오버라이드가 전체 팔레트를 바꾼다
   useEffect(() => {
