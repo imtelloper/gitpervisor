@@ -91,7 +91,7 @@ export const SETTINGS_INDEX: SettingIndexEntry[] = [
   { category: "notify", key: null, id: "healthAlert", label: "시스템 메모리 경보 표시", keywords: ["health", "메모리", "memory", "경보", "alert", "배너", "banner", "oom", "다시 보지 않기"] },
   // AI (로컬 LLM — 태스크 59). 다운로드·테스트는 즉시 액션(key null).
   { category: "ai", key: null, id: "llmRuntimeDownload", label: "AI 런타임 다운로드", keywords: ["llama", "llama.cpp", "런타임", "runtime", "다운로드", "download", "설치", "ai"] },
-  { category: "ai", key: "llmModel", label: "AI 모델", keywords: ["model", "모델", "qwen", "gguf", "ai", "llm"] },
+  { category: "ai", key: "llmModel", label: "AI 모델", keywords: ["model", "모델", "qwen", "gemma", "gguf", "ai", "llm"] },
   { category: "ai", key: null, id: "llmModelDownload", label: "AI 모델 다운로드", keywords: ["model", "모델", "다운로드", "download", "gguf", "qwen"] },
   { category: "ai", key: null, id: "llmTest", label: "AI 테스트", keywords: ["test", "테스트", "ai", "응답", "확인"] },
   { category: "ai", key: null, id: "llmDeleteModels", label: "AI 모델 삭제", keywords: ["delete", "삭제", "모델", "model", "용량", "정리"] },

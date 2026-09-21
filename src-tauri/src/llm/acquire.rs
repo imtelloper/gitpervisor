@@ -144,8 +144,32 @@ fn artifact_progress_name(art: &Artifact) -> &'static str {
 
 // ══════════════════════════ 모델 카탈로그 (§3.5) ══════════════════════════
 //
-// 항목 추가 = 배열 한 줄. sha256·size는 tree API가 준 값 그대로다(2026-09-07 실측).
-// 제외: Gemma 3(HF 토큰 게이트), EXAONE(비상업), Llama(고지 의무).
+// 항목 추가 = 배열 한 줄. sha256·size는 tree API가 준 값 그대로다(2026-09-07·2026-09-21 실측).
+//
+// 넣을 수 있는 조건은 넷이다: **무게이트**(`gated:false` — 앱이 토큰 없이 받는다) · **단일 .gguf**
+// (`file`이 하나다) · **의무 없는 라이선스**(Apache-2.0/MIT — 고지·약관 전달·사용제한 전달이 없다) ·
+// **b10809이 아는 아키텍처**.
+//
+// 제외: EXAONE(비상업 — 2026-09-21 재확인, LICENSE 1행 "NC"), Llama(고지 의무 "Built with Llama"),
+// **Gemma 3**(커스텀 Gemma ToU — 약관 사본 전달 + AUP를 하위 계약에 집행가능 조항으로 삽입 + NOTICE
+// 동봉. 흔히 "HF 토큰 게이트"로 잘못 기억하는데 게이트는 커뮤니티 미러로 우회되고 **라이선스가**
+// 진짜 사유였다), Kanana 2("Powered by Kanana" UI 표기 의무), HyperCLOVA X SEED(`gated:"auto"`),
+// 구세대 Hunyuan(라이선스가 대한민국을 명시 제외).
+//
+// **Gemma 4는 그 사유가 전부 사라져서 들어왔다** — Apache-2.0(이용약관 페이지가 스스로 Gemma 4를
+// 적용범위에서 뺀다)이고 `gated:false`다. 공식 GGUF가 QAT(양자화 인식 학습)라 q4_0에서 양자화 손실이
+// 학습에 흡수돼 있다. 파일명 어순이 사이즈마다 다르니(`gemma-4-E4B_q4_0-it` vs
+// `gemma-4-12b-it-qat-q4_0`) 손으로 고치지 말고 tree API가 준 이름을 그대로 써라 — 틀리면 404다.
+// `mmproj-*.gguf`는 비전 프로젝터라 받지 않는다(용도에 비전이 없다).
+//
+// **벤치마크로 뽑았다가 실측에서 떨어진 둘**(태스크 70 §6 — 다시 넣지 마라):
+// - **Mi:dm 2.0 Mini**(KT, MIT). 한국어 벤치(HAERAE 70.8 vs Qwen3-4B 50.6)로는 최상위였는데,
+//   챗 템플릿이 "어시스턴트는 기본적으로 '한국어'를 사용한다"는 KT 페르소나를 시스템 메시지 앞에
+//   무조건 끼워 넣는다. 그래서 61(번역)의 한→영 요청에 **원문을 그대로 돌려준다**(실측). 60(요약)도
+//   형식 지시문("/" 구분자·"(3개 이하)")을 머리글에 베끼고 커밋 해시를 **0개** 인용했다.
+// - **Gemma 4 12B QAT**(6.98GB). 품질은 좋지만 12GB VRAM에서 생성이 13 t/s라 주간 요약에 73초가
+//   걸렸다(8B는 14초). 블라인드 채점도 8B보다 낮았다. 큰 VRAM에서 쓰고 싶으면 설정의
+//   **사용자 지정 GGUF** 경로로 쓰면 된다 — 카탈로그에 두면 뱃지가 "GPU 전체"라 거짓말이 된다.
 
 pub struct ModelSpec {
     pub id: &'static str,
@@ -173,6 +197,18 @@ pub const MODELS: &[ModelSpec] = &[
         note: "기본 — 한국어·코드 양호, Apache-2.0",
     },
     ModelSpec {
+        id: "qwen3-4b-2507-q4",
+        label: "Qwen3 4B Instruct 2507 (Q4_K_M)",
+        // 공식 `Qwen/*-GGUF`가 이 갱신판에는 없다(404). bartowski는 2025-08-06 업로드 뒤
+        // 13개월 무변경이라 sha 고정 대상으로는 오히려 공식 레포보다 안정적이다.
+        repo: "bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF",
+        file: "Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+        sha256: "2fde00ce69dd4899c70d020845e2638353015bba0fdf161b3eb965f2bca4464e",
+        size: 2_497_280_736,
+        min_ram: 8 * GB,
+        note: "기본 상위 — 사고 모드 없음, Apache-2.0",
+    },
+    ModelSpec {
         id: "qwen3-1.7b-q8",
         label: "Qwen3 1.7B (Q8_0)",
         repo: "Qwen/Qwen3-1.7B-GGUF",
@@ -191,6 +227,16 @@ pub const MODELS: &[ModelSpec] = &[
         size: 5_027_783_488,
         min_ram: 12 * GB,
         note: "품질 우선",
+    },
+    ModelSpec {
+        id: "gemma4-e4b-qat-q4",
+        label: "Gemma 4 E4B (QAT q4_0)",
+        repo: "google/gemma-4-E4B-it-qat-q4_0-gguf",
+        file: "gemma-4-E4B_q4_0-it.gguf",
+        sha256: "676c35070db6dbe52f93e9c864ee0fba4eddea94b9c875d9cb10daff453fbaee",
+        size: 5_154_941_280,
+        min_ram: 12 * GB,
+        note: "품질 — 번역 강세, Apache-2.0",
     },
 ];
 
@@ -336,10 +382,16 @@ fn check_free_space(root: &Path, need: u64) -> Result<(), IpcError> {
 ///
 /// 취소·검증 실패·에러 어느 경로로 끝나도 `.part`는 남기지 않는다 — 남으면 다음 시도가
 /// 이어받는 것처럼 보이는데 실제로는 처음부터 다시 받으므로 사용자에게 거짓말이 된다.
+///
+/// `expect_size`는 **본문을 받기 전에** Content-Length와 대조한다. 카탈로그 해시가 낡는 흔한 경로가
+/// 변조가 아니라 **업스트림 재업로드**이기 때문이다(실측: `google/gemma-4-E4B-…`가 2026-07-09→07-17,
+/// `ibm-granite/granite-4.2-3b-GGUF`가 같은 파일명을 12일 만에 교체 — 공식 레포도 불변이 아니다).
+/// 크기부터 보면 6.5GB를 다 받고 나서 실패하는 대신 첫 응답에서 끝난다.
 async fn download_verified(
     client: &reqwest::Client,
     url: &str,
     sha256: &str,
+    expect_size: u64,
     dest: &Path,
     name: &str,
     ch: &Channel<String>,
@@ -356,6 +408,14 @@ async fn download_verified(
             .error_for_status()
             .map_err(|e| io(format!("다운로드 상태 오류: {e}")))?;
         let total = resp.content_length();
+        if let Some(t) = total.filter(|t| *t != expect_size) {
+            return Err(io(format!(
+                "원본 파일이 교체됐습니다 — {url} 크기가 {} 인데 앱은 {} 을 기대합니다. \
+                 앱을 업데이트하면 새 해시로 받습니다.",
+                human(t),
+                human(expect_size)
+            )));
+        }
         let mut file = std::fs::File::create(&part).map_err(|e| io(format!("임시 파일 생성 실패: {e}")))?;
         let mut hasher = Sha256::new();
         let mut got: u64 = 0;
@@ -386,7 +446,10 @@ async fn download_verified(
         send_progress(ch, name, "verify", None, None);
         let hex: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
         if hex != sha256 {
-            return Err(io("무결성 검증 실패 — 다운로드 변조 의심".into()));
+            return Err(io(format!(
+                "무결성 검증 실패 — {url} 의 sha256이 {hex} 인데 앱에 고정된 값은 {sha256} 입니다. \
+                 원본이 같은 이름으로 재업로드됐거나 전송이 변조됐습니다."
+            )));
         }
         std::fs::remove_file(dest).ok();
         std::fs::rename(&part, dest).map_err(|e| io(format!("설치 이동 실패: {e}")))?;
@@ -500,7 +563,7 @@ pub async fn ensure_runtime(
 
     send_progress(ch, name, "download", Some(0), None);
     let archive = temp.join("archive");
-    download_verified(&client, art.url, art.sha256, &archive, name, ch, &cancel).await?;
+    download_verified(&client, art.url, art.sha256, art.size, &archive, name, ch, &cancel).await?;
     send_progress(ch, name, "extract", None, None);
     extract_archive(art.kind, &archive, &temp)?;
     std::fs::remove_file(&archive).ok();
@@ -669,6 +732,7 @@ pub async fn llm_model_download(
             &client,
             &model_url(spec),
             spec.sha256,
+            spec.size,
             &dest,
             spec.id,
             &on_progress,

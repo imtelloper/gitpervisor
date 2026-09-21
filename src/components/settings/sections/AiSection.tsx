@@ -131,7 +131,7 @@ export function AiSection({
       </Hl>
 
       {/* ③ 모델 표 */}
-      <div className={`border-t border-edge pt-3 ${subHeading}`}>모델 (huggingface.co/Qwen)</div>
+      <div className={`border-t border-edge pt-3 ${subHeading}`}>모델 (huggingface.co)</div>
       <Hl id="llmModel" hl={hl}>
         <div className="flex flex-col gap-1">
           {(st?.models ?? []).map((m) => {
@@ -151,9 +151,12 @@ export function AiSection({
                   onChange={() => update("llmModel", m.id)}
                   className="accent-accent"
                 />
-                <span className="min-w-0 flex-1 truncate">
+                <span className="min-w-0 flex-1 truncate" title={`huggingface.co/${m.repo}`}>
                   {m.label}
                   <span className="ml-1 text-[11px] text-fg-dim">{m.note}</span>
+                  {/* 다운로드 버튼이 곧 동의라 **출처를 누구인지** 보여야 한다(§3.6). 모델마다
+                      제공자가 다르다 — 공식 벤더(Qwen·google)와 커뮤니티 변환본(bartowski·mykor)이 섞인다. */}
+                  <span className="ml-1 text-[11px] text-fg-dim/70">{m.repo.split("/")[0]}</span>
                 </span>
                 <span className="shrink-0 text-[11px] text-fg-muted">{mb(m.size)}</span>
                 {rec && <span className={`shrink-0 text-[11px] ${rec.tone}`}>{rec.label}</span>}

@@ -268,6 +268,12 @@ fn spawn_server(
         gpu_layers.to_string(),
         "-t".into(),
         threads.to_string(),
+        // 슬롯 1개. **안 주면 llama-server가 4개를 잡는다**(`arg.cpp`가 SERVER 예제에만
+        // `n_parallel = -1`(auto)을 준다) — `chat.rs`는 한 번에 한 요청만 보내므로 나머지 3개는
+        // KV 캐시만 먹는다. 실측(2026-09-21, Gemma 4 12B / RTX 5070 Ti 12GB): VRAM 10,705→9,328MB,
+        // 주간 요약 85→73초. 작은 모델은 속도 차가 없고(4B 12.8→12.4초) VRAM만 준다.
+        "-np".into(),
+        "1".into(),
         "--api-key".into(),
         api_key.to_string(),
         "--no-webui".into(),

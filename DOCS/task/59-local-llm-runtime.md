@@ -173,8 +173,11 @@ export function llmReadyReason(status, settings): string | null   // null=사용
 | `qwen3-8b-q4` | `Qwen/Qwen3-8B-GGUF` · `Qwen3-8B-Q4_K_M.gguf` | ≈5.0GB | RAM ≥ 12GB 또는 VRAM ≥ 6GB | 품질 우선. (검증 필요) |
 | `custom` | 설정의 절대경로 `.gguf` | — | — | 어떤 GGUF든. 존재·확장자만 검사 |
 
-- 제외: Gemma 3(게이트 — HF 토큰 필요), EXAONE(비상업 라이선스), Llama(라이선스 고지 의무). 카탈로그는 `MODELS` 배열 하나 —
-  항목 추가 = 한 줄.
+- **2026-09-21(태스크 70)에 2종이 늘어 5종이다** — `qwen3-4b-2507-q4`(bartowski, 2.33GB)·
+  `gemma4-e4b-qat-q4`(google, 4.80GB). 근거·실측·탈락한 후보는 `70-llm-model-catalog-2026-09.md`.
+- 제외: EXAONE(비상업 라이선스), Llama(라이선스 고지 의무), **Gemma 3**(게이트가 아니라 **라이선스**가
+  사유다 — 커뮤니티 미러는 무게이트다. 70 §3). **Gemma 4는 Apache-2.0·무게이트라 들어왔다.**
+  카탈로그는 `MODELS` 배열 하나 — 항목 추가 = 한 줄.
 - 권장 판정(프론트, `sys_info_static`): `vram ≥ size*1.15` → "GPU 전체 오프로드 가능", 아니면 `ram ≥ size*1.3 + 1GB` → "CPU/부분",
   둘 다 미달 → "권장하지 않음"(다운로드 버튼은 살려 둔다 — 사용자가 안다).
 
