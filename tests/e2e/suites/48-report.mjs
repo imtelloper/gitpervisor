@@ -10,6 +10,10 @@
 //   ③ 리포트 뷰의 잔디가 365칸이고 오늘 칸이 값·툴팁을 갖는다.
 //   ④ 오늘 칸 클릭 → 그 날 카드가 같은 카운트를 보여준다. LLM 준비 시 요약이 스트리밍되고 저장된다.
 //   ⑤ 커밋을 추가하면 `repo://changed` → `["activity"]` 무효화로 칸이 갱신된다.
+//   ⑤b 같은 신호의 `diff` 무효화는 **바뀐 프로젝트로 한정**되고 히스토리 계열은 전역으로 남는다
+//      (태스크 69 §4) — `queryKeyTouchesProject` 진리표를 직접 잰다. 빗나가는 쪽(합성 id `outer::rel`
+//      을 놓침 · 접두만 같은 id 를 같은 것으로 봄 · 히스토리를 한정해 워크트리가 낡음)은 화면에
+//      안 드러나 ⑤ 만으로는 초록이다.
 //   ⑥ 파일을 열면(`selectDiff`) 리포트가 닫힌다(모아보기와 같은 규칙).
 //   ⑦ 스코프를 2개 체크하면 종합 카드 1 + 개별 2 = 3장, 종합 카운트는 **합**, 키는 `multi:<해시>`.
 //   ⑧ `buildMessages` 가 날짜 섹션(`### YYYY-MM-DD (요일)`)으로 조립하고 예산 바닥(1,500자)을 지킨다.
@@ -300,6 +304,46 @@ export async function run({ cdp, report: r }) {
       r.check("⑤ 입력 해시 불일치 뱃지", badge === true);
     } else {
       r.skip("⑤ 입력이 바뀜 뱃지", "요약을 생성하지 않아 비교할 저장본이 없다");
+    }
+
+    // ── ⑤b 워처 한정 무효화 진리표(태스크 69 §4) ──
+    const scoped = await cdp.eval(`(()=>{
+      const f = window.__gpvRepoEvents && window.__gpvRepoEvents.queryKeyTouchesProject;
+      if (!f) return null;
+      return {
+        same:       f(["diff", "abc", "w:a.txt"], ["abc"]),
+        other:      f(["diff", "zzz", "w:a.txt"], ["abc"]),
+        prefixOnly: f(["diff", "abcd", "w:a.txt"], ["abc"]),
+        nested:     f(["diff", "abc::sub", "w:a.txt"], ["abc"]),
+        outer:      f(["diff", "abc", "w:a.txt"], ["abc::sub"]),
+        // 히스토리 계열은 **남의 프로젝트여도 전역**이다 — .git 을 공유하는 linked worktree 의
+        // 커밋은 본 저장소 id 로만 신호가 온다(events.ts WATCHER_SCOPED_KINDS 주석).
+        // (이 주석은 템플릿 리터럴 안이다 — 백틱을 쓰면 문자열이 거기서 끊긴다.)
+        logOther:      f(["log", "zzz"], ["abc"]),
+        branchesOther: f(["branches", "zzz"], ["abc"]),
+        activityOther: f(["activity", "zzz", "2026-01-01", true], ["abc"]),
+        betweenOther:  f(["commits-between", "zzz", "2026-01-01", "2026-01-02", false], ["abc"]),
+        filesHit:   f(["repo-files", "zzz", "abc::sub"], ["abc"]),
+        filesMiss:  f(["repo-files", "zzz"], ["abc"]),
+        unknownKind: f(["statuses", ["abc"]], ["abc"]),
+      };
+    })()`);
+    if (!scoped) {
+      r.skip("⑤b 한정 무효화 진리표", "window.__gpvRepoEvents 미노출(dev 빌드 아님)");
+    } else {
+      // `prefixOnly`(맨 startsWith 함정)·`*Other`(히스토리는 전역)·`unknownKind`(모르는 모양은 전역)
+      // 가 이 표의 핵심이다.
+      const want = {
+        same: true, other: false, prefixOnly: false, nested: true, outer: true,
+        logOther: true, branchesOther: true, activityOther: true, betweenOther: true,
+        filesHit: true, filesMiss: false, unknownKind: true,
+      };
+      const wrong = Object.keys(want).filter((k) => scoped[k] !== want[k]);
+      r.check(
+        "⑤b queryKeyTouchesProject 진리표(diff 만 한정 · 합성 id 양방향 · 접두 함정 · 히스토리/모르는 키는 전역)",
+        wrong.length === 0,
+        J({ wrong, got: scoped }),
+      );
     }
 
     // ── ⑥ 파일을 열면 리포트가 닫힌다 ──

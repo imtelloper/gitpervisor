@@ -369,7 +369,7 @@ struct FloatClaim {
 /// (실측 273MB)이 되돌아온다 — 게다가 `on_health_level`은 **레벨 전이 시점에만** 불리므로
 /// 압박이 Warn에 머무는 동안은 아무도 그것을 다시 회수하지 않는다.
 fn spawn_float_pool_window(app: &tauri::AppHandle, url: tauri::Url) {
-    if health::level() >= health::Level::Warn {
+    if health::memory_level() >= health::Level::Warn {
         log::debug!("[float-pool] 메모리 경보 중 — 프리워밍 생략");
         return;
     }
@@ -470,7 +470,7 @@ fn float_pool_ready(app: tauri::AppHandle, window: tauri::Window) {
     }
     // 미claim 창인데 그새 경보가 올라갔다면(drain 시점에 pending이던 창) 바로 회수한다.
     // 여기서 안 막으면 Warn이 유지되는 동안 재drain이 없어 렌더러 1벌이 그대로 남는다.
-    if health::level() >= health::Level::Warn {
+    if health::memory_level() >= health::Level::Warn {
         float_pool_drain(&app);
     }
 }

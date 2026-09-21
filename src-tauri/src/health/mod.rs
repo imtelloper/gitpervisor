@@ -30,8 +30,12 @@ fn gb(bytes: u64) -> f32 {
     bytes as f32 / 1_073_741_824.0
 }
 
-/// 현재 레벨(다른 모듈이 잠금 없이 읽을 수 있게 원자값으로 둔다).
-static LEVEL: AtomicU8 = AtomicU8::new(0);
+/// 메모리 신호만 본 레벨(다른 모듈이 잠금 없이 읽을 수 있게 원자값으로 둔다).
+///
+/// 전체 레벨은 여기 두지 않는다. 읽는 쪽이 전부 "메모리가 모자랄 때만 해야 하는 조치"라
+/// 같은 모양의 접근자를 나란히 두면 다음 사람이 반드시 틀린 쪽을 집는다 — 이번 태스크가
+/// 고치는 버그가 정확히 그것이었다. 전체 레벨은 `Snapshot`·`health://level`로만 나간다.
+static MEM_LEVEL: AtomicU8 = AtomicU8::new(0);
 /// 최신 스냅샷 — `health_snapshot` 커맨드가 읽는다.
 static LATEST: Mutex<Option<Snapshot>> = Mutex::new(None);
 
@@ -48,7 +52,7 @@ pub enum Level {
 }
 
 impl Level {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Level::Ok => "ok",
             Level::Notice => "notice",
@@ -58,10 +62,14 @@ impl Level {
     }
 }
 
-/// 지금 레벨 — 다른 모듈이 잠금 없이 읽는다(webview_guard의 메모리 목표, 플로팅 프리워밍
-/// 게이트, PTY 출력 예산). 원자값 하나라 뜨거운 경로(PTY 리더 루프)에서 불러도 부담이 없다.
-pub fn level() -> Level {
-    match LEVEL.load(Ordering::Relaxed) {
+/// 시스템 메모리가 실제로 모자란 정도만 본 레벨.
+///
+/// **출력을 조이고 웹뷰 메모리를 회수하는 조치는 이쪽만 읽는다**(PTY 예산, 웹뷰 메모리 목표,
+/// 플로팅 프리워밍 게이트). 전체 레벨을 쓰면 Claude 세션 몇 개로 프로세스 수가 늘었을 뿐인데
+/// 모든 터미널의 출력이 128KB/s로 조여져 앱이 통째로 버벅인다(태스크 69 §1).
+/// 원자값 하나라 뜨거운 경로(PTY 펌프 루프)에서 불러도 부담이 없다.
+pub fn memory_level() -> Level {
+    match MEM_LEVEL.load(Ordering::Relaxed) {
         1 => Level::Notice,
         2 => Level::Warn,
         3 => Level::Danger,
@@ -95,7 +103,15 @@ pub struct Transition {
 const T_FULL: [f32; 3] = [8.0, 20.0, 35.0];
 const T_SOME: [f32; 3] = [15.0, 30.0, 45.0];
 const T_MEM_PCT: [f32; 3] = [15.0, 30.0, 45.0]; // 회수 불가 상주분(anon) 기준
-const T_PROCS: [u32; 3] = [60, 120, 200];
+/// 프로세스 수 — **플랫폼마다 평상시 수준이 다르다**(`T_SWAP_PCT`와 같은 이유로 갈랐다).
+/// Windows에서는 Claude 세션 하나가 자손 15~35개를 달고 있어(conhost·pwsh·node·ripgrep…)
+/// 세션 8개만 열어도 164~253개다. 리눅스 값을 그대로 쓰면 평상시 작업이 곧 Danger가 된다
+/// — v0.5.0 이후 설치본 표본의 28.5%가 Danger였고 그 96%가 procs 단독이었다(태스크 69 §1).
+const T_PROCS: [u32; 3] = if cfg!(windows) {
+    [300, 600, 1000]
+} else {
+    [60, 120, 200]
+};
 const T_AVAIL_PCT: [f32; 3] = [15.0, 8.0, 4.0];
 
 /// 커밋/스왑 임계 — **플랫폼마다 평상시 수준이 완전히 다르다.**
@@ -127,29 +143,46 @@ const DWELL: [u32; 3] = [3, 5, 3];
 /// 강등은 60초 연속 안정 후에만(플래핑 방지).
 const COOL_DOWN: Duration = Duration::from_secs(60);
 
-struct Machine {
-    probe: Probe,
+/// dwell·히스테리시스 상태 한 벌. 전체 레벨과 메모리 레벨이 **같은 규칙**을 타므로
+/// 상태만 두 벌 두고 판정 코드는 하나만 둔다.
+struct Settle {
     level: Level,
     streak: u32,
     candidate: Level,
     calm_since: Option<Instant>,
 }
 
-impl Machine {
+impl Settle {
     fn new() -> Self {
         Self {
-            probe: Probe::new(),
             level: Level::Ok,
             streak: 0,
             candidate: Level::Ok,
             calm_since: None,
         }
     }
+}
 
-    fn evaluate(&mut self) -> (Sample, Level, Vec<String>) {
+struct Machine {
+    probe: Probe,
+    overall: Settle,
+    /// 메모리 신호만 본 레벨 — PTY 예산·웹뷰 메모리 목표·플로팅 풀이 이쪽을 읽는다.
+    memory: Settle,
+}
+
+impl Machine {
+    fn new() -> Self {
+        Self {
+            probe: Probe::new(),
+            overall: Settle::new(),
+            memory: Settle::new(),
+        }
+    }
+
+    fn evaluate(&mut self) -> (Sample, Level, Level, Vec<String>) {
         let s = self.probe.sample();
-        let (level, reasons) = assess(&s);
-        (s, level, reasons)
+        let (level, mem_level, reasons) = assess(&s);
+        (s, level, mem_level, reasons)
     }
 }
 
@@ -173,18 +206,27 @@ fn rate(value: f32, t: [f32; 3], higher_is_worse: bool) -> Level {
     }
 }
 
-/// 스냅샷 하나를 레벨로 환산한다(순수 함수 — 테스트 대상).
-fn assess(s: &Sample) -> (Level, Vec<String>) {
+/// 스냅샷 하나를 (전체 레벨, 메모리 레벨, 사유)로 환산한다(순수 함수 — 테스트 대상).
+///
+/// 두 레벨을 따로 내는 이유: 출력을 조이고 웹뷰 메모리를 회수하는 조치는 "시스템 메모리가
+/// 모자란다"는 신호에만 반응해야 한다. 프로세스 수·앱 메모리 비율은 *앱 발자국* 신호라
+/// 배너로 알릴 일이지 터미널을 조일 일이 아니다(태스크 69 §2). 신호 판정을 두 번 쓰지 않도록
+/// `consider`에 "메모리 신호인가"를 함께 넘긴다.
+fn assess(s: &Sample) -> (Level, Level, Vec<String>) {
     if !s.available {
-        return (Level::Ok, Vec::new());
+        return (Level::Ok, Level::Ok, Vec::new());
     }
 
     let mut worst = Level::Ok;
+    let mut worst_mem = Level::Ok;
     let mut reasons: Vec<String> = Vec::new();
-    let consider = |lv: Level, why: String, worst: &mut Level, reasons: &mut Vec<String>| {
+    let mut consider = |lv: Level, memory: bool, why: String| {
         if lv > Level::Ok {
-            if lv > *worst {
-                *worst = lv;
+            if lv > worst {
+                worst = lv;
+            }
+            if memory && lv > worst_mem {
+                worst_mem = lv;
             }
             reasons.push(why);
         }
@@ -193,20 +235,18 @@ fn assess(s: &Sample) -> (Level, Vec<String>) {
     let lv = rate(s.anchor_full_avg10, T_FULL, true);
     consider(
         lv,
+        true,
         format!(
             "메모리 압박 {:.0}% (OS 종료 기준 {:.0}%)",
             s.anchor_full_avg10, s.kill_threshold
         ),
-        &mut worst,
-        &mut reasons,
     );
 
     let lv = rate(s.anchor_some_avg10, T_SOME, true);
     consider(
         lv,
+        true,
         format!("메모리 지연 {:.0}%", s.anchor_some_avg10),
-        &mut worst,
-        &mut reasons,
     );
 
     let lv = rate(s.scope_mem_pct, T_MEM_PCT, true);
@@ -215,6 +255,7 @@ fn assess(s: &Sample) -> (Level, Vec<String>) {
     // (Windows 전용. 다른 플랫폼은 scope_core_bytes가 0이라 예전 문구 그대로 나간다).
     consider(
         lv,
+        false,
         if s.scope_core_bytes > 0 {
             format!(
                 "앱 메모리 {:.1}GB (시스템의 {:.0}%; 앱 자체 {:.1}GB, 터미널 프로그램 {:.1}GB)",
@@ -230,8 +271,6 @@ fn assess(s: &Sample) -> (Level, Vec<String>) {
                 s.scope_mem_pct
             )
         },
-        &mut worst,
-        &mut reasons,
     );
 
     let lv = rate(
@@ -239,19 +278,22 @@ fn assess(s: &Sample) -> (Level, Vec<String>) {
         [T_PROCS[0] as f32, T_PROCS[1] as f32, T_PROCS[2] as f32],
         true,
     );
+    // 기준 개수는 임계에서 파생한다 — 플랫폼마다 T_PROCS가 다른데 "(정상 5~40개)"를 박아 두면
+    // Windows에서 300개가 정상인데도 사용자에게 40개가 정상이라고 알리게 된다.
     consider(
         lv,
-        format!("앱에 딸린 프로세스 {}개 (정상 5~40개)", s.scope_procs),
-        &mut worst,
-        &mut reasons,
+        false,
+        format!(
+            "앱에 딸린 프로세스 {}개 (주의 기준 {}개)",
+            s.scope_procs, T_PROCS[0]
+        ),
     );
 
     let lv = rate(s.mem_available_pct, T_AVAIL_PCT, false);
     consider(
         lv,
+        true,
         format!("시스템 여유 메모리 {:.0}%", s.mem_available_pct),
-        &mut worst,
-        &mut reasons,
     );
 
     // 스왑은 **단독으로는 위험 신호가 되지 못한다.** oomd의 스왑 경로는 "메모리 사용률과
@@ -264,12 +306,11 @@ fn assess(s: &Sample) -> (Level, Vec<String>) {
         let lv = rate(s.swap_used_pct, T_SWAP_PCT, true);
         consider(
             lv,
+            true,
             format!(
                 "{SWAP_LABEL} {:.0}% (여유 메모리 {:.0}%)",
                 s.swap_used_pct, s.mem_available_pct
             ),
-            &mut worst,
-            &mut reasons,
         );
     }
 
@@ -282,19 +323,18 @@ fn assess(s: &Sample) -> (Level, Vec<String>) {
         };
         consider(
             lv,
+            true,
             format!(
                 "메모리 회수 부담의 {:.0}%가 이 앱 — 종료 대상 1순위입니다",
                 s.victim_share * 100.0
             ),
-            &mut worst,
-            &mut reasons,
         );
     }
 
-    (worst, reasons)
+    (worst, worst_mem, reasons)
 }
 
-impl Machine {
+impl Settle {
     /// dwell·히스테리시스를 적용해 실제 레벨 전이를 결정한다.
     fn settle(&mut self, target: Level) -> Option<Level> {
         if target > self.level {
@@ -392,13 +432,15 @@ fn watchdog_tick(
     version: &str,
     started_at: &str,
 ) {
-    let prev_level = m.level;
-    let (sample, target, reasons) = m.evaluate();
-    let transition = m.settle(target);
+    let prev_level = m.overall.level;
+    let prev_mem = m.memory.level;
+    let (sample, target, mem_target, reasons) = m.evaluate();
+    let transition = m.overall.settle(target);
+    let mem_transition = m.memory.settle(mem_target);
 
-    LEVEL.store(m.level as u8, Ordering::Relaxed);
+    MEM_LEVEL.store(m.memory.level as u8, Ordering::Relaxed);
     *LATEST.lock().unwrap_or_else(|e| e.into_inner()) = Some(Snapshot {
-        level: m.level,
+        level: m.overall.level,
         sample: sample.clone(),
         reasons: reasons.clone(),
     });
@@ -423,20 +465,35 @@ fn watchdog_tick(
                 reasons: reasons.clone(),
             },
         );
-        crate::webview_guard::on_health_level(app, level);
         // 경고 이상이면 미저장 초안을 즉시 flush하라고 프론트에 알린다.
         if level >= Level::Warn {
             let _ = app.emit("health://flush-drafts", ());
         }
     }
 
+    // 웹뷰 메모리 목표·플로팅 풀 회수는 **메모리 레벨** 전이에만 반응한다(태스크 69 §2).
+    // 전이 시점에만 부르는 것은 예전 그대로다 — webview_guard의 LOW_TARGET 중복 방지가
+    // 그 전제 위에 서 있다.
+    if let Some(mem) = mem_transition {
+        log::info!(
+            "[health] 메모리 레벨 {} → {}",
+            prev_mem.as_str(),
+            mem.as_str()
+        );
+        crate::webview_guard::on_health_level(app, mem);
+    }
+
     // 평시 30초. 경보 중에는 5초로 줄인다 — oomd가 SIGKILL을 날리면 마지막 하트비트가
     // 그대로 사후 진단의 전부가 되는데, 30초 낡은 스냅샷이면 압박이 한창일 때 죽어도
     // "한가했다"로 기록돼 원인이 `unknown`으로 떨어진다.
-    let beat_every = if m.level >= Level::Notice { 5 } else { 30 };
+    let beat_every = if m.overall.level >= Level::Notice {
+        5
+    } else {
+        30
+    };
     if last_beat.elapsed() >= Duration::from_secs(beat_every) {
         *last_beat = Instant::now();
-        session::heartbeat(m.level.as_str(), &sample, version, started_at);
+        session::heartbeat(m.overall.level.as_str(), &sample, version, started_at);
     }
     // 5분마다 한 줄. 평시에도 남는 유일한 정기 기록 — 프로세스 수가 23→100→250으로
     // 가는 궤적이 로그에 그대로 보이게 하는 것이 목적이다(이번 사건의 재발 방지 핵심).
@@ -444,9 +501,10 @@ fn watchdog_tick(
         *last_diag = Instant::now();
         if sample.available {
             log::info!(
-                "[health] lv={} procs={} mem={:.1}GB({:.0}%) press_full10={:.1}% \
+                "[health] lv={} mem_lv={} procs={} mem={:.1}GB({:.0}%) press_full10={:.1}% \
                  press_some10={:.1}% victim={:.2} avail={:.0}% swap={:.0}%",
-                m.level.as_str(),
+                m.overall.level.as_str(),
+                m.memory.level.as_str(),
                 sample.scope_procs,
                 sample.scope_mem_bytes as f32 / 1_073_741_824.0,
                 sample.scope_mem_pct,
@@ -457,7 +515,7 @@ fn watchdog_tick(
                 sample.swap_used_pct,
             );
             // 주의 이상일 때만 내역까지 — 평시에 매 5분 찍으면 로그 예산만 먹는다.
-            if m.level >= Level::Notice {
+            if m.overall.level >= Level::Notice {
                 if let Some(line) = top_line(&sample, 6) {
                     log::info!("{line}");
                 }
@@ -495,7 +553,11 @@ pub fn spawn_watchdog(app: AppHandle, version: String, started_at: String) {
             loop {
                 // 위험할수록 자주 본다 — 평시 2초, 경고 이상 500ms.
                 // 종료 신호에 빠르게 반응하도록 잘게 쪼개 자며 플래그를 확인한다.
-                let tick = if m.level >= Level::Warn { 500 } else { 2000 };
+                let tick = if m.overall.level >= Level::Warn {
+                    500
+                } else {
+                    2000
+                };
                 let mut slept = 0u64;
                 while slept < tick {
                     if TERM_REQUESTED.load(Ordering::Relaxed) {
@@ -583,8 +645,9 @@ mod tests {
     ///  oomd의 스왑 경로도 "메모리와 스왑이 둘 다" 높을 때만 발동한다.)
     #[test]
     fn full_swap_alone_is_not_an_alarm() {
-        let (level, reasons) = assess(&idle_sample());
+        let (level, mem, reasons) = assess(&idle_sample());
         assert_eq!(level, Level::Ok, "평상시 오경보: {reasons:?}");
+        assert_eq!(mem, Level::Ok, "평상시 오경보: {reasons:?}");
     }
 
     /// 메모리까지 빠듯해지면 그때는 스왑이 가중 신호로 동작해야 한다.
@@ -592,7 +655,7 @@ mod tests {
     fn swap_counts_once_memory_is_tight() {
         let mut s = idle_sample();
         s.mem_available_pct = 6.0; // 여유 메모리 6% — 이미 경고 영역
-        let (level, _) = assess(&s);
+        let (level, _, _) = assess(&s);
         assert!(level >= Level::Warn);
     }
 
@@ -601,17 +664,60 @@ mod tests {
     fn real_pressure_escalates() {
         let mut s = idle_sample();
         s.anchor_full_avg10 = 36.0; // oomd 사망선 50%의 72% 지점
-        let (level, reasons) = assess(&s);
+        let (level, mem, reasons) = assess(&s);
         assert_eq!(level, Level::Danger, "{reasons:?}");
+        assert_eq!(mem, Level::Danger, "압박이 메모리 레벨에 안 들어갔다: {reasons:?}");
     }
 
     /// 프로세스 폭주(이번 사건의 387개)도 잡아야 한다.
     #[test]
     fn process_explosion_escalates() {
         let mut s = idle_sample();
-        s.scope_procs = 387;
-        let (level, _) = assess(&s);
+        s.scope_procs = T_PROCS[2] + 187;
+        let (level, _, _) = assess(&s);
         assert_eq!(level, Level::Danger);
+    }
+
+    /// **앱 발자국은 출력을 조이지 않는다**(태스크 69 §2).
+    ///
+    /// Windows에서 Claude 세션 하나가 자손 15~35개를 달고 있어 세션 몇 개만 열어도 프로세스
+    /// 수가 임계를 넘는데, 그때마다 모든 터미널의 PTY 예산이 128KB/s로 내려가 큰 출력이
+    /// 0.2초에서 120초로 늘었다(실측). 배너는 띄우되 메모리 레벨은 건드리면 안 된다.
+    #[test]
+    fn app_footprint_is_not_a_memory_signal() {
+        let mut s = idle_sample();
+        s.scope_procs = T_PROCS[2] + 100;
+        s.scope_mem_pct = 50.0; // T_MEM_PCT[2]=45 초과
+        let (level, mem, reasons) = assess(&s);
+        assert_eq!(level, Level::Danger, "{reasons:?}");
+        assert_eq!(mem, Level::Ok, "앱 발자국이 메모리 레벨을 올렸다: {reasons:?}");
+        // 기준 개수는 임계에서 파생해야 한다 — 플랫폼마다 다르다.
+        let r = reasons
+            .iter()
+            .find(|r| r.contains("앱에 딸린 프로세스"))
+            .expect("사유 없음");
+        assert!(r.contains(&format!("주의 기준 {}개", T_PROCS[0])), "{r}");
+    }
+
+    /// 반대로 **시스템** 메모리가 마르면 두 레벨이 함께 올라가야 한다 — 그래야 출력이 조여진다.
+    #[test]
+    fn system_memory_shortage_raises_both_levels() {
+        let mut s = idle_sample();
+        s.mem_available_pct = 3.0; // T_AVAIL_PCT[2]=4 아래
+        let (level, mem, reasons) = assess(&s);
+        assert_eq!(level, Level::Danger, "{reasons:?}");
+        assert_eq!(mem, Level::Danger, "{reasons:?}");
+    }
+
+    /// Windows 임계 분기 — Claude 세션 8개(실측 253개)로는 아무 경보도 뜨면 안 된다.
+    #[cfg(windows)]
+    #[test]
+    fn windows_process_threshold_tolerates_agent_sessions() {
+        let mut s = idle_sample();
+        s.scope_procs = 253;
+        let (level, mem, reasons) = assess(&s);
+        assert_eq!(level, Level::Ok, "{reasons:?}");
+        assert_eq!(mem, Level::Ok, "{reasons:?}");
     }
 
     /// 신호를 못 읽는 환경(비 cgroup v2)에서는 조용히 비활성.
@@ -619,6 +725,7 @@ mod tests {
     fn unavailable_never_alarms() {
         let s = Sample::default();
         assert_eq!(assess(&s).0, Level::Ok);
+        assert_eq!(assess(&s).1, Level::Ok);
     }
 
     /// **Windows 오탐 회귀 방지.**
@@ -633,7 +740,7 @@ mod tests {
         let mut s = idle_sample();
         s.mem_available_pct = 14.0; // 경고 구간 진입
         s.swap_used_pct = 86.0; // 이 머신의 평상시 커밋
-        let (level, reasons) = assess(&s);
+        let (level, _, reasons) = assess(&s);
         assert_eq!(
             level,
             Level::Notice,
@@ -648,8 +755,9 @@ mod tests {
         let mut s = idle_sample();
         s.mem_available_pct = 6.0;
         s.swap_used_pct = 99.0;
-        let (level, reasons) = assess(&s);
+        let (level, mem, reasons) = assess(&s);
         assert!(level >= Level::Warn, "{reasons:?}");
+        assert!(mem >= Level::Warn, "{reasons:?}");
     }
 
     /// Windows에서 프로브가 채우는 신호만으로도 프로세스 폭주를 잡아야 한다
@@ -661,20 +769,14 @@ mod tests {
             mem_available_pct: 40.0,
             ..Sample::default()
         };
-        s.scope_procs = 250;
+        s.scope_procs = T_PROCS[2] + 50;
         assert_eq!(assess(&s).0, Level::Danger);
     }
 
     /// 두 경보 레벨 사이에서 흔들려도 승격이 막히면 안 된다(streak 리셋 버그 회귀 방지).
     #[test]
     fn oscillating_targets_still_promote() {
-        let mut m = Machine {
-            probe: Probe::new(),
-            level: Level::Ok,
-            streak: 0,
-            candidate: Level::Ok,
-            calm_since: None,
-        };
+        let mut m = Settle::new();
         // Warn/Danger를 번갈아 5틱 — DWELL[Warn]=5 이므로 Warn으로 승격돼야 한다.
         let seq = [Level::Warn, Level::Danger, Level::Warn, Level::Danger, Level::Warn];
         let mut promoted = None;
@@ -694,7 +796,7 @@ mod tests {
         s.scope_mem_bytes = 2_147_483_648; // 2.0GB
         s.scope_mem_pct = 26.0;
         s.scope_core_bytes = 1_610_612_736; // 1.5GB
-        let (_, reasons) = assess(&s);
+        let (_, _, reasons) = assess(&s);
         let r = reasons.iter().find(|r| r.contains("앱 메모리")).expect("사유 없음");
         assert!(r.contains("앱 자체 1.5GB"), "{r}");
         assert!(r.contains("터미널 프로그램 0.5GB"), "{r}");
@@ -706,7 +808,7 @@ mod tests {
     fn app_memory_reason_stays_plain_without_breakdown() {
         let mut s = idle_sample();
         s.scope_mem_pct = 26.0;
-        let (_, reasons) = assess(&s);
+        let (_, _, reasons) = assess(&s);
         let r = reasons.iter().find(|r| r.contains("앱 메모리")).expect("사유 없음");
         assert!(!r.contains("앱 자체"), "{r}");
     }

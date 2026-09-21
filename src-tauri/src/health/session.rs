@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use super::probe::{Sample, TopProc};
 use super::winlog::OsEvent;
+use super::T_PROCS;
 
 pub const CURRENT: &str = "session.json";
 pub const PREVIOUS: &str = "session.prev.json";
@@ -250,7 +251,10 @@ fn classify(
     let pressured = rec.level == "warn"
         || rec.level == "danger"
         || rec.last.anchor_full_avg10 >= 15.0
-        || rec.last.scope_procs >= 120
+        // 임계는 살아있는 판정과 **같은 상수**에서 가져온다. 여기에 리눅스 값(120)을 박아 두면
+        // Windows 평상치(Claude 세션 8개 = 164~253개)가 사후 진단에서만 계속 "프로세스 폭주"로
+        // 읽힌다 — 태스크 69가 T_PROCS를 플랫폼별로 가른 뒤 이 자리만 남아 있었다.
+        || rec.last.scope_procs >= T_PROCS[1]
         // 여유 메모리가 경고선(8%) 아래였거나, 빠듯한 채로 커밋/스왑이 위험선을 넘고 있었다.
         || (mem_measured && mem <= 8.0)
         || (mem_measured && mem <= 15.0 && rec.last.swap_used_pct >= 85.0);
@@ -492,10 +496,19 @@ mod tests {
     }
 
     /// 프로세스 폭주만으로도(레벨이 ok로 기록됐어도) OOM으로 본다.
+    /// 기준은 `T_PROCS`에서 가져온다 — 플랫폼 평상치가 다르므로 숫자를 박으면 한쪽에서 오진한다.
     #[test]
     fn process_explosion_alone_implies_oom() {
-        let v = classify(Some(&rec(false, "ok", 200, 0.0)), false);
+        let v = classify(Some(&rec(false, "ok", T_PROCS[1], 0.0)), false);
         assert_eq!(v.verdict, "oom");
+    }
+
+    /// 그 플랫폼의 평상치(경고 기준 바로 아래)는 폭주가 아니다 — Windows에서 Claude 세션 몇
+    /// 개가 곧 "메모리 부족으로 종료됨" 배너가 되던 자리다.
+    #[test]
+    fn ordinary_process_count_is_not_an_explosion() {
+        let v = classify(Some(&rec(false, "ok", T_PROCS[1] - 1, 0.0)), false);
+        assert_eq!(v.verdict, "unknown", "{}", v.message);
     }
 
     /// Windows 신호(여유 물리 메모리)만으로도 원인을 짚어야 한다.

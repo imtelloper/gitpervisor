@@ -11,6 +11,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use super::projects::project_path;
 use crate::error::{ErrorCode, IpcError};
+use crate::health::Level;
 use crate::state::AppState;
 
 mod shell;
@@ -50,8 +51,12 @@ const PUMP_QUEUE: usize = 32;
 ///
 /// Warn 1MB/s는 화면 500장/초라 사람이 읽는 용도로는 여전히 과하고, Danger 128KB/s는
 /// 살아있음이 보이는 최소치다(그 시점엔 수십 초 내 강제 종료가 목표라 체감 지연은 부차적).
+///
+/// **전체 레벨이 아니라 메모리 레벨을 읽는다**(태스크 69 §2). 전체 레벨에는 프로세스 수가
+/// 섞여 있어, Claude 세션 몇 개만 열어도 모든 터미널이 128KB/s로 조여졌다(실측: 큰 출력
+/// 0.2초 → 120초+). 여기서 조여야 할 상황은 "시스템 메모리가 모자라다" 하나뿐이다.
 fn pty_budget() -> usize {
-    match crate::health::level() {
+    match crate::health::memory_level() {
         crate::health::Level::Warn => 1024 * 1024,
         crate::health::Level::Danger => 128 * 1024,
         _ => PTY_BYTES_PER_SEC,
@@ -67,10 +72,23 @@ fn pty_budget() -> usize {
 ///
 /// 상한이 없으면 무한 출력이 전부 Tauri의 `ChannelDataIpcQueue`에 쌓여 앱이 메모리로 죽는다.
 /// 잠자는 대신 "얼마나 자야 하는지"를 돌려주어 시간 없이 테스트할 수 있게 했다.
+///
+/// **빚 기반이다.** 예전에는 1초 창에서 예산을 넘기는 순간 창의 남은 시간(최대 1초)을 통째로
+/// 잤다 — 출력이 1Hz 톱니로 끊겨 보였다. 지금은 보낸 바이트가 곧 "갚아야 할 시간"이고
+/// (`bytes / budget`초) 그게 이미 흐른 시간 + `PACER_BURST`를 넘은 만큼만 잔다. 평균 속도는
+/// 예산 그대로인데 정지 단위가 ~100ms로 줄어든다.
 struct Pacer {
+    /// 크레딧 기준점. 재운 뒤에는 **미래 시각**이 들어간다(그만큼은 이미 갚은 것이다).
     window_start: Instant,
     bytes: usize,
 }
+
+/// 이만큼의 빚은 자지 않고 넘긴다. 대화형 출력이 잘게 끊기지 않게 하는 여유이자
+/// 정지 단위의 하한이다(100ms = 사람이 "끊겼다"고 느끼기 직전).
+const PACER_BURST: Duration = Duration::from_millis(100);
+
+/// 쌓을 수 있는 크레딧 상한 = 1초치. 유휴 뒤 한꺼번에 몰아 보내는 것을 이만큼으로 막는다.
+const PACER_WINDOW: Duration = Duration::from_secs(1);
 
 impl Pacer {
     fn new(now: Instant) -> Self {
@@ -80,25 +98,99 @@ impl Pacer {
         }
     }
 
-    /// n바이트를 보냈다고 기록한다. 1초 창의 예산을 넘겼으면 창이 끝날 때까지 잘 시간을 돌려준다.
+    /// n바이트를 보냈다고 기록하고, 갚아야 할 시간이 남았으면 잘 시간을 돌려준다.
     /// `budget`은 호출자가 매번 넘긴다(`pty_budget()`) — 메모리 상태에 따라 바뀌기 때문이고,
     /// 덕분에 테스트는 고정값을 주입해 전역 상태 없이 돈다.
     fn take(&mut self, n: usize, now: Instant, budget: usize) -> Option<Duration> {
-        self.bytes = self.bytes.saturating_add(n);
-        let elapsed = now.duration_since(self.window_start);
-        if elapsed >= Duration::from_secs(1) {
-            // 창이 지났다 — 예산 리셋(상한 미만이었으면 그냥 넘어간다).
+        // window_start가 미래일 수 있어 saturating — 그 경우 흐른 시간은 0이다.
+        let mut elapsed = now.saturating_duration_since(self.window_start);
+        if elapsed >= PACER_WINDOW {
             self.window_start = now;
             self.bytes = 0;
+            elapsed = Duration::ZERO;
+        }
+        self.bytes = self.bytes.saturating_add(n);
+        // budget 0은 호출 경로상 없지만(pty_budget의 최솟값이 128KB) 나눗셈이 inf가 되면
+        // Duration::from_secs_f64가 패닉하고 그 패닉이 펌프 스레드를 통째로 죽인다.
+        let owed = Duration::from_secs_f64(self.bytes as f64 / budget.max(1) as f64);
+        if owed <= elapsed + PACER_BURST {
             return None;
         }
-        if self.bytes < budget {
-            return None;
-        }
-        // 예산 초과 — 남은 창 시간만큼 쉬고 다음 창을 연다.
-        self.window_start = now + (Duration::from_secs(1) - elapsed);
+        let sleep = (owed - elapsed).min(PACER_WINDOW);
+        self.window_start = now + sleep;
         self.bytes = 0;
-        Some(Duration::from_secs(1) - elapsed)
+        Some(sleep)
+    }
+}
+
+/// 펌프가 Pacer 때문에 잔 것을 60초 단위로 모은다 — "터미널이 느리다"의 원인이 우리가 건
+/// 브레이크인지 아닌지를 로그만 보고 가르기 위한 기록이다(태스크 69 §2).
+struct ThrottleTally {
+    since: Instant,
+    sleeps: u32,
+    slept: Duration,
+    out_bytes: u64,
+    /// 잔 **그 시점**의 가장 조인 예산과 그때의 메모리 레벨.
+    ///
+    /// 줄을 낼 때 `memory_level()`을 다시 읽으면 안 된다: 조임이 끝나고 레벨이 내려간 뒤에
+    /// 줄이 나가면 `mem_lv=ok budget_kb=8192`로 찍혀 판별표(§5 "throttle 줄이 있고 mem_lv≥warn")가
+    /// 정반대로 읽힌다. 예산은 레벨이 나쁠수록 작으므로 최솟값 하나면 최악 레벨도 함께 남는다.
+    tightest: Option<(usize, Level)>,
+}
+
+/// 집계 창 길이. 줄에 `span_s=`로 함께 찍는다 — 세션이 닫히거나 조용해져 60초가 덜 찬 창도
+/// 내보내므로, 길이를 모르면 sleeps·out_kb를 속도로 읽을 수 없다.
+const TALLY_SPAN: Duration = Duration::from_secs(60);
+
+impl ThrottleTally {
+    fn new(now: Instant) -> Self {
+        Self {
+            since: now,
+            sleeps: 0,
+            slept: Duration::ZERO,
+            out_bytes: 0,
+            tightest: None,
+        }
+    }
+
+    /// Pacer 때문에 잔 것을 기록한다(예산·레벨은 **그 순간의 값**으로 박아 둔다).
+    fn slept_for(&mut self, d: Duration, budget: usize, mem_lv: Level) {
+        self.sleeps += 1;
+        self.slept += d;
+        if self.tightest.is_none_or(|(b, _)| budget < b) {
+            self.tightest = Some((budget, mem_lv));
+        }
+    }
+
+    /// 지금까지 모인 것을 한 줄로. **잔 적이 없으면 줄을 만들지 않는다** — 평시 로그를 터미널
+    /// 개수만큼 채우면 정작 신호가 묻힌다.
+    fn line(&self, now: Instant, term: &str) -> Option<String> {
+        let (budget, mem_lv) = self.tightest?;
+        Some(format!(
+            "[term-perf] pty-throttle term={term} span_s={} mem_lv={} budget_kb={} \
+             sleeps={} slept_ms={} out_kb={}",
+            now.saturating_duration_since(self.since).as_secs(),
+            mem_lv.as_str(),
+            budget / 1024,
+            self.sleeps,
+            self.slept.as_millis(),
+            self.out_bytes / 1024,
+        ))
+    }
+
+    /// 창 하나가 찼으면 줄을 내고 스스로 리셋한다.
+    fn due(&mut self, now: Instant, term: &str) -> Option<String> {
+        if now.saturating_duration_since(self.since) < TALLY_SPAN {
+            return None;
+        }
+        let line = self.line(now, term);
+        *self = Self::new(now);
+        line
+    }
+
+    /// 다음 창 경계. 출력이 멎어도 이 시각엔 깨어나 줄을 내야 한다(아래 펌프 루프).
+    fn window_end(&self) -> Instant {
+        self.since + TALLY_SPAN
     }
 }
 
@@ -218,12 +310,16 @@ pub fn term_open(
     let (tx, rx) = sync_channel::<Vec<u8>>(PUMP_QUEUE);
     {
         let sink = Arc::clone(&sink);
+        // 로그 한 줄에 전체 id를 싣지 않는다 — 터미널 여러 개를 한눈에 훑을 때만 쓰는 꼬리표다.
+        let log_term: String = term_id.chars().take(8).collect();
         std::thread::spawn(move || {
             let mut pacer = Pacer::new(Instant::now());
+            let mut tally = ThrottleTally::new(Instant::now());
             let mut buf: Vec<u8> = Vec::with_capacity(MAX_CHUNK);
             let mut deadline = Instant::now();
             // 모아 둔 것을 한 번에 보낸다. sink가 None(의도적 종료)이면 조용히 버린다 — 기존과 같다.
-            let mut flush = |buf: &mut Vec<u8>| {
+            // tally를 클로저가 가두면 루프(유휴 경계·EOF)에서 못 쓰므로 인자로 받는다.
+            let mut flush = |buf: &mut Vec<u8>, tally: &mut ThrottleTally| {
                 if buf.is_empty() {
                     return;
                 }
@@ -237,19 +333,41 @@ pub fn term_open(
                 // 속도 제한(Pacer 주석 참고) — 넘치면 여기서 잠깐 잔다. 그동안 리더는 큐가
                 // 차면 막히고, PTY 버퍼가 차고, 셸의 write가 막힌다(역압 경로는 예전 그대로).
                 // 예산은 매번 읽는다(원자값 1회 로드) — 경보가 뜨면 즉시 조여진다.
-                if let Some(d) = pacer.take(n, Instant::now(), pty_budget()) {
+                let budget = pty_budget();
+                if let Some(d) = pacer.take(n, Instant::now(), budget) {
                     std::thread::sleep(d);
+                    tally.slept_for(d, budget, crate::health::memory_level());
+                }
+                tally.out_bytes += n as u64;
+                if let Some(line) = tally.due(Instant::now(), &log_term) {
+                    log::info!("{line}");
                 }
             };
             loop {
                 // 모은 게 없으면 무한 대기(빈 채로 깨어날 이유가 없다), 있으면 남은 창 시간만.
+                // 예외: 이미 조여진 세션은 **창 경계에서도** 깨운다 — 조임이 끝나고 조용해지면
+                // 그 집계가 다음 출력(몇 분 뒤일 수 있다)까지 미뤄져 엉뚱한 시각에 찍힌다.
                 let got = if buf.is_empty() {
-                    rx.recv().ok()
+                    if tally.sleeps == 0 {
+                        rx.recv().ok()
+                    } else {
+                        let until = tally.window_end().saturating_duration_since(Instant::now());
+                        match rx.recv_timeout(until) {
+                            Ok(v) => Some(v),
+                            Err(RecvTimeoutError::Timeout) => {
+                                if let Some(line) = tally.due(Instant::now(), &log_term) {
+                                    log::info!("{line}");
+                                }
+                                continue;
+                            }
+                            Err(RecvTimeoutError::Disconnected) => None,
+                        }
+                    }
                 } else {
                     match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
                         Ok(v) => Some(v),
                         Err(RecvTimeoutError::Timeout) => {
-                            flush(&mut buf);
+                            flush(&mut buf, &mut tally);
                             continue;
                         }
                         Err(RecvTimeoutError::Disconnected) => None,
@@ -257,7 +375,12 @@ pub fn term_open(
                 };
                 let Some(v) = got else {
                     // 리더가 EOF로 끝났다 — **남은 버퍼를 마저 보내고** 끝낸다(마지막 출력 유실 금지).
-                    flush(&mut buf);
+                    flush(&mut buf, &mut tally);
+                    // 60초가 덜 찬 창도 여기서 내보낸다 — 조여지던 터미널을 바로 닫으면
+                    // 그 조임 기록이 통째로 사라진다.
+                    if let Some(line) = tally.line(Instant::now(), &log_term) {
+                        log::info!("{line}");
+                    }
                     break;
                 };
                 if buf.is_empty() {
@@ -265,7 +388,7 @@ pub fn term_open(
                 }
                 buf.extend_from_slice(&v);
                 if buf.len() >= MAX_CHUNK {
-                    flush(&mut buf);
+                    flush(&mut buf, &mut tally);
                 }
             }
         });
@@ -961,7 +1084,7 @@ mod terminate_tests {
     }
 }
 
-/// Pacer는 플랫폼 무관 순수 로직이라 위 unix 전용 모듈과 분리한다 —
+/// Pacer·ThrottleTally는 플랫폼 무관 순수 로직이라 위 unix 전용 모듈과 분리한다 —
 /// 안에 넣으면 정작 이 코드를 매일 쓰는 Windows에서 한 번도 검증되지 않는다.
 #[cfg(test)]
 mod pacer_tests {
@@ -984,37 +1107,62 @@ mod pacer_tests {
         }
     }
 
-    /// 무한 출력(`yes` 등)은 반드시 잡아야 한다 — 안 잡으면 Tauri Channel 큐가 무한히 커진다.
+    /// 무한 출력(`yes` 등)의 **평균 속도**가 예산을 넘으면 안 된다 — 넘기면 Tauri Channel
+    /// 큐가 무한히 커진다. 지시받은 만큼 실제로 잤다고 치고 가상 시계를 돌린다.
     #[test]
-    fn pacer_throttles_runaway_output() {
+    fn pacer_average_rate_stays_within_budget() {
+        let budget = 1024 * 1024; // 1MB/s
         let t0 = Instant::now();
         let mut p = Pacer::new(t0);
-        // 같은 순간에 상한을 넘겨 쏟아붓는다.
-        let mut slept = None;
-        for i in 0..200 {
-            if let Some(d) = p.take(64 * 1024, t0 + Duration::from_millis(i), PTY_BYTES_PER_SEC) {
-                slept = Some(d);
-                break;
+        let mut now = t0;
+        let mut sent = 0usize;
+        for _ in 0..500 {
+            sent += 64 * 1024;
+            if let Some(d) = p.take(64 * 1024, now, budget) {
+                now += d; // 펌프가 실제로 자는 만큼 시간이 흐른다
             }
         }
-        let d = slept.expect("상한을 넘겼는데 브레이크가 안 걸렸다");
-        assert!(d > Duration::ZERO && d <= Duration::from_secs(1), "{d:?}");
+        let secs = now.duration_since(t0).as_secs_f64();
+        let allowed = budget as f64 * (secs + PACER_BURST.as_secs_f64());
+        assert!(
+            sent as f64 <= allowed,
+            "평균 {:.0}B/s로 예산 {budget}B/s를 넘겼다 ({sent}B / {secs:.2}s)",
+            sent as f64 / secs
+        );
     }
 
-    /// 창이 지나면 예산이 회복돼야 한다 — 한 번 걸린 뒤 영구히 느려지면 안 된다.
+    /// 버스트 100ms치까지는 재우지 않는다 — 대화형 출력이 잘게 끊기면 그게 곧 "버벅임"이다.
+    /// 그 위(200ms치)는 재워야 평균 속도가 지켜진다.
     #[test]
-    fn pacer_budget_recovers_next_window() {
+    fn pacer_lets_a_100ms_burst_through() {
+        let budget = 1024 * 1024;
+        let t0 = Instant::now();
+        assert!(
+            Pacer::new(t0).take(budget / 10, t0, budget).is_none(),
+            "버스트 여유 안쪽인데 브레이크가 걸렸다"
+        );
+        let d = Pacer::new(t0)
+            .take(budget / 5, t0, budget)
+            .expect("버스트 2배인데 브레이크가 안 걸렸다");
+        // 갚을 빚은 200ms - 버스트 100ms가 아니라 200ms 전부다(버스트는 문턱일 뿐).
+        assert!(
+            d >= Duration::from_millis(150) && d <= Duration::from_millis(250),
+            "정지 단위가 ~200ms여야 하는데 {d:?}"
+        );
+    }
+
+    /// 유휴 뒤에 몰아 보내도 크레딧은 **1초치까지만** 쌓인다 — 예전 창 기반 구현은 창이
+    /// 지나기만 하면 그 호출을 통째로 통과시켜 유휴 직후 한 방에 예산 몇 배를 내보냈다.
+    #[test]
+    fn pacer_idle_credit_caps_at_one_second() {
+        let budget = 1024 * 1024;
         let t0 = Instant::now();
         let mut p = Pacer::new(t0);
-        assert!(p
-            .take(PTY_BYTES_PER_SEC, t0 + Duration::from_millis(10), PTY_BYTES_PER_SEC)
-            .is_some());
-        // 다음 창에서는 같은 양을 다시 보낼 수 있어야 한다.
-        let later = t0 + Duration::from_secs(3);
-        assert!(
-            p.take(1024, later, PTY_BYTES_PER_SEC).is_none(),
-            "예산이 회복되지 않았다"
-        );
+        let after_idle = t0 + Duration::from_secs(30);
+        let d = p
+            .take(3 * budget, after_idle, budget) // 3초치를 한 번에
+            .expect("유휴 뒤 무제한 통과 — 크레딧 상한이 없다");
+        assert_eq!(d, Duration::from_secs(1), "크레딧 상한이 1초치가 아니다");
     }
 
     /// 메모리 경보 예산(1MB/s)에서는 평시라면 그냥 통과할 양에도 브레이크가 걸려야 한다 —
@@ -1022,17 +1170,81 @@ mod pacer_tests {
     #[test]
     fn pacer_honors_tightened_budget() {
         let t0 = Instant::now();
-        let now = t0 + Duration::from_millis(10);
-        // 2MB: 평시 예산(8MB)에서는 통과.
-        let mut relaxed = Pacer::new(t0);
-        assert!(relaxed
-            .take(2 * 1024 * 1024, now, PTY_BYTES_PER_SEC)
+        // 512KB: 평시 예산(8MB/s)이면 64ms치라 버스트 안쪽 — 통과.
+        assert!(Pacer::new(t0)
+            .take(512 * 1024, t0, PTY_BYTES_PER_SEC)
             .is_none());
-        // 같은 양, Warn 예산(1MB)에서는 잡혀야 한다.
-        let mut tight = Pacer::new(t0);
+        // 같은 양, Warn 예산(1MB/s)이면 512ms치 — 잡혀야 한다.
+        let d = Pacer::new(t0)
+            .take(512 * 1024, t0, 1024 * 1024)
+            .expect("조인 예산이 무시됐다");
+        assert!(d >= Duration::from_millis(450), "{d:?}");
+    }
+
+    /// 잔 적이 없으면 줄을 만들지 않는다 — 터미널마다 60초에 한 줄씩 평시 로그를 채우면
+    /// 정작 신호가 묻힌다.
+    #[test]
+    fn throttle_tally_stays_quiet_without_sleeps() {
+        let t0 = Instant::now();
+        let mut t = ThrottleTally::new(t0);
+        t.out_bytes = 10 * 1024 * 1024;
         assert!(
-            tight.take(2 * 1024 * 1024, now, 1024 * 1024).is_some(),
-            "조인 예산이 무시됐다"
+            t.due(t0 + Duration::from_secs(30), "ab12cd34").is_none(),
+            "60초 전에 줄이 나왔다"
         );
+        assert!(
+            t.due(t0 + Duration::from_secs(61), "ab12cd34").is_none(),
+            "잔 적 없는데 줄이 나왔다"
+        );
+    }
+
+    /// 잔 적이 있으면 그 60초치를 한 줄로 내고 창을 리셋한다.
+    ///
+    /// `mem_lv`·`budget_kb`는 **잔 시점**의 값이어야 한다 — 테스트에서 전역 `memory_level()`은
+    /// ok(0)이므로, 줄을 낼 때 그걸 다시 읽는 구현이면 여기서 빨개진다.
+    #[test]
+    fn throttle_tally_reports_the_level_it_slept_under() {
+        let t0 = Instant::now();
+        let mut t = ThrottleTally::new(t0);
+        for _ in 0..12 {
+            t.slept_for(Duration::from_millis(450), 1024 * 1024, Level::Warn);
+        }
+        t.out_bytes = 61_234 * 1024;
+        let line = t
+            .due(t0 + Duration::from_secs(61), "ab12cd34")
+            .expect("줄이 없다");
+        assert!(line.contains("term=ab12cd34"), "{line}");
+        assert!(line.contains("span_s=61"), "{line}");
+        assert!(line.contains("mem_lv=warn budget_kb=1024"), "{line}");
+        assert!(
+            line.contains("sleeps=12 slept_ms=5400 out_kb=61234"),
+            "{line}"
+        );
+        // 같은 정지가 다음 창에 또 보고되면 안 된다.
+        assert!(
+            t.due(t0 + Duration::from_secs(122), "ab12cd34").is_none(),
+            "리셋되지 않았다"
+        );
+    }
+
+    /// 창이 덜 찼어도(세션 종료) 조임 기록은 남아야 한다 — 조여지던 터미널을 60초 안에 닫으면
+    /// 예전에는 한 줄도 남지 않았다. 창 길이는 `span_s`로 구분한다.
+    #[test]
+    fn throttle_tally_line_reports_an_unfinished_window() {
+        let t0 = Instant::now();
+        let mut t = ThrottleTally::new(t0);
+        assert!(
+            t.line(t0 + Duration::from_secs(5), "ab12cd34").is_none(),
+            "잔 적 없는데 줄이 나왔다"
+        );
+        t.slept_for(Duration::from_millis(900), 1024 * 1024, Level::Warn);
+        // 나중에 더 조여졌다면 그쪽(최악)이 남아야 한다.
+        t.slept_for(Duration::from_millis(900), 128 * 1024, Level::Danger);
+        let line = t
+            .line(t0 + Duration::from_secs(5), "ab12cd34")
+            .expect("줄이 없다");
+        assert!(line.contains("span_s=5"), "{line}");
+        assert!(line.contains("mem_lv=danger budget_kb=128"), "{line}");
+        assert!(line.contains("sleeps=2 slept_ms=1800"), "{line}");
     }
 }

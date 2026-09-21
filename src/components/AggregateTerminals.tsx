@@ -33,6 +33,7 @@ import {
   fitTerminal,
   queueInitialInput,
   snapshotSelection,
+  unmountTerminalView,
 } from "../lib/terminal";
 import { translateRequest } from "../lib/translate";
 import {
@@ -1459,6 +1460,9 @@ function AggregateCell({
     return () => {
       cancelled = true;
       ro.disconnect();
+      // 셀이 사라진다(모아보기 닫기·칩으로 숨김) — WebGL 컨텍스트만 놓아준다. 바로 뒤에
+      // TerminalPane이 같은 host를 가져가면 그쪽 attach가 예약을 취소한다(terminal.ts).
+      if (el) unmountTerminalView(meta.id, el);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meta.id]);

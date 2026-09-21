@@ -25,11 +25,13 @@ use webview2_com::Microsoft::Web::WebView2::Win32::*;
 /// 레벨 전이는 Warn→Danger처럼 LOW 구간 **안에서도** 일어난다.
 static LOW_TARGET: AtomicBool = AtomicBool::new(false);
 
-/// health 감시가 레벨 전이를 알릴 때마다 호출된다(`health::watchdog_tick`).
+/// health 감시가 **메모리 레벨** 전이를 알릴 때마다 호출된다(`health::watchdog_tick`).
 ///
 /// Warn 이상에서 하는 일은 둘. (1) 웹뷰에 메모리 목표 LOW를 지시해 캐시를 놓게 하고,
 /// (2) 플로팅 프리워밍 풀을 비운다. 둘 다 "지금 안 써도 되는 메모리"만 겨냥한다 —
-/// 사용자가 실제로 쓰고 있는 창은 건드리지 않는다.
+/// 사용자가 실제로 쓰고 있는 창은 건드리지 않는다. 전체 레벨(프로세스 수·앱 메모리 비율
+/// 포함)이 아니라 메모리 레벨을 받는 이유는 태스크 69 §2에 있다 — 보이는 메인 창의 캐시를
+/// 버리는 조치가 "Claude 세션이 많다"에 반응하면 안 된다.
 pub fn on_health_level(app: &tauri::AppHandle, level: crate::health::Level) {
     use crate::health::Level;
     if level >= Level::Warn {

@@ -23,6 +23,11 @@ import {
   takeInitialInput,
   type TermInstance,
 } from "./terminal";
+import {
+  noteTypedInput,
+  noteWriteRoundtrip,
+  startTerminalPerfLog,
+} from "./terminal-perf-log";
 import { themeOf } from "./themes";
 
 // 이 모듈은 **무거운 xterm 엔진**이다(@xterm/xterm + addon-fit + addon-webgl + addon-unicode11 + css).
@@ -54,12 +59,15 @@ const PENDING_MAX = 1024 * 1024;
 /** 실제 전송. `after`가 있으면 그 뒤에 잇는다(순서 보장). 완료 시 그동안 모인 입력을 한 번에 보낸다. */
 function sendWrite(termId: string, data: string, after?: Promise<void>) {
   const next = (after ?? Promise.resolve())
-    .then(() =>
-      invoke("term_write", { termId, data }).then(
-        () => {},
+    .then(() => {
+      // 이 왕복이 `[term-perf]`의 write_* 다 — 여기가 높으면 원인은 앱 전송로(IPC 펌프·PTY
+      // stdin)이고, 낮은데 에코가 높으면 터미널 안 프로그램 쪽이다(태스크 69 §5의 판별표).
+      const startedAt = performance.now();
+      return invoke("term_write", { termId, data }).then(
+        () => noteWriteRoundtrip(startedAt),
         () => {}, // 실패해도 체인을 끊지 않는다 — 한 번 실패가 이후 입력을 전부 막으면 안 된다
-      ),
-    )
+      );
+    })
     .then(() => {
       // 내가 마지막 전송일 때만 대기분을 넘겨받는다(그 사이 다른 전송이 걸렸으면 그쪽이 맡는다).
       if (writeChains.get(termId) === next) flushPending(termId);
@@ -124,6 +132,8 @@ function ptyWrite(termId: string, data: string) {
   // (자동응답 걸러내기는 prompt-capture가 담당). 이 줄이 던지면 아래 term_write가 통째로
   // 건너뛰어져 그 키가 PTY로 안 나가므로, capturePtyInput 안에서 전부 삼킨다.
   capturePtyInput(termId, data);
+  // 키 에코 측정의 t0 — 같은 이유로 여기 한 곳이다. 안에서 전부 삼키므로 던지지 않는다.
+  noteTypedInput(termId, data);
   const inflight = writeChains.get(termId);
   // 나가 있는 전송이 없으면 즉시 보낸다 — 조용할 때 지연 증가는 0이다.
   if (!inflight) {
@@ -241,6 +251,181 @@ export const XTERM_OVERRIDES = {
   macOptionClickForcesSelection: true,
 } as const;
 
+// ── WebGL 렌더러는 **보이는 터미널만** 쥔다 (태스크 69 §3) ──
+//
+// Chromium(WebView2)은 WebGL 컨텍스트를 **정확히 16개**까지만 살려 두고, 17개째를 만들면 가장
+// 오래된 것을 강제로 잃게 한다. xterm 인스턴스는 탭이 닫히기 전까지 레지스트리에 남으므로
+// (host만 DOM에서 떨어진다) 예전엔 "한 번이라도 본 터미널" 수만큼 컨텍스트가 쌓였다 — 세션
+// 24개를 열면 생존 16에 생성 292·손실 276의 핑퐁이 계속 돌았다(2026-09-18 실측).
+// 그래서 획득/반납을 attach/뷰 언마운트에 묶고 상한을 16 미만으로 둔다(여유 4 — 이미지 뷰어 등
+// 터미널 밖 캔버스 몫).
+const WEBGL_LIVE_MAX = 12;
+// 이 창(렌더러 프로세스)이 지금 쥔 컨텍스트 수. 창마다 JS 컨텍스트가 별개라 모듈 전역이면 된다.
+// **증감은 아래 load/drop 한 쌍에만 둔다** — 여기서 새면 상한 기아로 이후 모든 터미널이 영구
+// DOM 렌더러가 된다.
+let liveWebglCount = 0;
+// 지금 보이는데 DOM 렌더러로 떨어진 터미널 수(상한·생성 실패·손실 과다).
+let domFallbackVisible = 0;
+// 컨텍스트 손실 시각 — **모듈 전역** 60초 창이다. 예전엔 터미널별 클로저라, 서로 밀어내는
+// 캐스케이드를 "각자 1~2회"로 세어 감지가 통째로 무력화됐다.
+let webglLostAt: number[] = [];
+// 여기 담기는 것은 손실 **사건**이지 손실 개수가 아니다. GPU 리셋·절전 복귀는 열려 있는
+// 컨텍스트 전부를 같은 틱에 잃게 하므로(12개면 12), 개수로 세면 단 한 번의 리셋이 아래 8회
+// 가드를 통째로 태워 9번째부터는 재시도 없이 DOM 렌더러로 굳는다. 반대로 진짜 캐스케이드
+// (생성이 다른 컨텍스트를 밀어내는 핑퐁)는 300ms 재시도를 사이에 두고 시간차로 이어진다.
+const WEBGL_LOSS_BURST_MS = 1000;
+// 캐스케이드 가드에 걸린 터미널의 단 한 번뿐인 재시도 간격 = 손실 창 길이. 재마운트가 없는
+// 뷰(종일 켜 두는 모아보기 별도 창)에서 "다음 attach가 재시도"는 영영 오지 않는다.
+const WEBGL_LOSS_WINDOW_MS = 60_000;
+
+/** 상한에 걸려 DOM 렌더러로 떨어진, **지금 보이는** 터미널들의 재시도 대기열.
+ *  슬롯이 반납되는 순간 하나를 깨운다 — 반납 유예(1.5초) 때문에 상한을 먼저 채운 경우
+ *  그 유예가 끝나도 아무도 승격되지 않던 자리다(모아보기를 닫았다 열기 전까지 DOM 렌더러). */
+const webglWaiting = new Set<() => void>();
+
+function wakeWebglWaiter(): void {
+  const first = webglWaiting.values().next();
+  if (first.done) return;
+  webglWaiting.delete(first.value);
+  // 반납 하나당 하나만 깨운다. load 자체가 상한·wanted 가드를 갖고 있어 그 사이 슬롯이 다시
+  // 찼으면 그냥 되돌아가고(다시 대기열에 든다), 그래서 중복 호출도 안전하다.
+  setTimeout(first.value, 0);
+}
+
+/** 측정 로그(`[term-perf]`)와 e2e가 읽는 WebGL 상태. `contextLost`는 **최근 60초** 손실
+ *  사건 수다(1초 안의 동시 손실은 한 건 — 위 `WEBGL_LOSS_BURST_MS`).
+ *  60초 요약 한 줄과 창을 맞춘다 — 누적값이면 줄마다 델타를 다시 계산해야 한다. */
+export function terminalWebglStats(): {
+  live: number;
+  contextLost: number;
+  domFallbackVisible: number;
+} {
+  const now = Date.now();
+  return {
+    live: liveWebglCount,
+    contextLost: webglLostAt.filter((t) => now - t < WEBGL_LOSS_WINDOW_MS).length,
+    domFallbackVisible,
+  };
+}
+
+/** host 안에서 WebGL2 컨텍스트를 쥐고 있는 캔버스의 gl. xterm의 2D 캔버스(커서·링크 레이어)는
+ *  같은 인자에 null을 준다. **dispose 전에** 집어야 한다 — dispose가 캔버스를 떼어 버린다. */
+function webglContextOf(host: HTMLElement): WebGL2RenderingContext | null {
+  for (const canvas of host.querySelectorAll("canvas")) {
+    const gl = canvas.getContext("webgl2");
+    if (gl) return gl;
+  }
+  return null;
+}
+
+/**
+ * 이 터미널의 WebGL 렌더러 획득/반납 — 인스턴스에 실려 코어가 부른다(`attachTerminal` ·
+ * `unmountTerminalView`). 상한에 걸리거나 생성이 실패하면 **그 터미널만** xterm 기본 DOM
+ * 렌더러로 돌고, 영구가 아니다(다음 acquire가 곧 재시도다).
+ *
+ * WebKitGTK(Linux)에서는 아예 만들지 않는다: 그 조합(특히 NVIDIA 프로프라이어터리 드라이버·
+ * 소프트웨어 GL)에서 WebGL 컨텍스트가 웹뷰 렌더러 프로세스를 크래시시켜 화면 전체가 까맣게
+ * 먹통이 된다(분할로 여럿 띄우면 더 잘 터진다).
+ */
+function webglRendererControl(term: Terminal, host: HTMLDivElement) {
+  let addon: WebglAddon | null = null;
+  // acquire~release 사이 = 이 터미널이 지금 보인다. 손실 재시도의 게이트이기도 하다.
+  let wanted = false;
+  let domFallback = false;
+  let retryTimer = 0;
+
+  const setDomFallback = (on: boolean) => {
+    if (domFallback === on) return;
+    domFallback = on;
+    domFallbackVisible += on ? 1 : -1;
+  };
+
+  /** `reclaim`=true면 컨텍스트를 강제로 잃게 해 슬롯을 즉시 반납한다(손실로 들어온 경우엔 이미
+   *  잃은 뒤라 부르지 않는다). 두 번 불러도 안전하다 — addon을 먼저 비운다. */
+  const drop = (reclaim: boolean) => {
+    const current = addon;
+    if (!current) return;
+    addon = null;
+    liveWebglCount--;
+    // 슬롯이 하나 비었다 — 상한 때문에 DOM 렌더러로 떨어져 기다리던 터미널을 깨운다.
+    wakeWebglWaiter();
+    const gl = reclaim ? webglContextOf(host) : null;
+    try {
+      current.dispose();
+    } catch (e) {
+      // 카운터는 위에서 이미 내렸다 — 여기서 멈추면 안 된다. 사유는 남긴다.
+      console.warn("WebGL 애드온 dispose 실패:", e);
+    }
+    // dispose **뒤에** 잃게 한다. 순서가 뒤집히면 xterm의 손실 핸들러가 아직 살아 있어
+    // 우리 재생성 로직(onLoss)을 건드린다. GC를 기다리지 않고 슬롯이 바로 비는 게 요점이다.
+    gl?.getExtension("WEBGL_lose_context")?.loseContext();
+  };
+
+  // 서로를 부르므로(load → onLoss → load) 호이스팅되는 function 선언으로 둔다.
+  function load(): void {
+    if (addon || !wanted) return;
+    if (liveWebglCount >= WEBGL_LIVE_MAX) {
+      setDomFallback(true);
+      webglWaiting.add(load); // 슬롯이 반납되면 그때 승격된다(Set이라 중복 등록도 안전)
+      return;
+    }
+    try {
+      const next = new WebglAddon();
+      next.onContextLoss(() => onLoss(next));
+      term.loadAddon(next); // 컨텍스트 생성은 여기서 — 던지면 카운터를 올리지 않는다
+      addon = next;
+      liveWebglCount++;
+      webglWaiting.delete(load);
+      setDomFallback(false);
+      term.refresh(0, term.rows - 1);
+    } catch (e) {
+      // GPU 비활성·드라이버 문제 — 이 터미널만 DOM 렌더러로 돈다(치명적이지 않다).
+      setDomFallback(true);
+      console.warn("WebGL 렌더러 생성 실패 — DOM 렌더러로 동작:", e);
+    }
+  }
+
+  /** 컨텍스트 손실(절전 복귀·GPU 리셋·다른 컨텍스트가 밀어냄). */
+  function onLoss(lost: WebglAddon): void {
+    if (addon !== lost) return; // release가 이미 거둔 것 — 같은 애드온을 두 번 dispose 하지 않는다
+    drop(false);
+    const now = Date.now();
+    webglLostAt = webglLostAt.filter((t) => now - t < WEBGL_LOSS_WINDOW_MS);
+    // 1초 안에 이어진 손실은 **한 사건**으로 묶는다(위 WEBGL_LOSS_BURST_MS 주석).
+    const last = webglLostAt[webglLostAt.length - 1];
+    if (last === undefined || now - last > WEBGL_LOSS_BURST_MS) webglLostAt.push(now);
+    term.refresh(0, term.rows - 1); // DOM 렌더러로 잔상 지우기
+    // 창 전체가 60초에 8번 넘게 잃으면 자동 재시도를 멈춘다 — 그건 개별 사고가 아니라
+    // 캐스케이드고, 재시도가 연료가 된다.
+    if (!wanted || !host.isConnected) {
+      setDomFallback(true);
+    } else if (webglLostAt.length <= 8) {
+      retryTimer = window.setTimeout(load, 300);
+    } else {
+      setDomFallback(true);
+      // 손실 창이 빌 때쯤 **한 번만** 다시 시도한다. 여기서 멈춰 두면 재마운트가 없는 뷰에서
+      // 사실상 영구 DOM 렌더러가 된다. 슬롯 반납 대기열(webglWaiting)에 넣지 않는 이유:
+      // 캐스케이드 중에는 남의 손실이 곧 반납이라 그게 그대로 연료가 된다.
+      retryTimer = window.setTimeout(load, WEBGL_LOSS_WINDOW_MS);
+    }
+  }
+
+  return {
+    acquire: () => {
+      wanted = true;
+      load();
+    },
+    release: () => {
+      wanted = false;
+      clearTimeout(retryTimer);
+      retryTimer = 0;
+      webglWaiting.delete(load); // 안 보이는 터미널이 슬롯을 받아 가면 안 된다
+      setDomFallback(false);
+      drop(true);
+    },
+  };
+}
+
 if (import.meta.env.DEV) {
   // e2e 52가 **선언**을 잰다 — 실효값(`term.options`)만 보면 rightClickSelectsWord는 mac이 아닌
   // 곳에서 기본값이 이미 false라 위 줄을 지워도 초록이다. main.tsx의 `__gpv`를 건드리지 않는
@@ -248,6 +433,9 @@ if (import.meta.env.DEV) {
   // 터미널에서 동적 import되므로 그 전엔 없다.
   (window as unknown as { __gpvXterm?: unknown }).__gpvXterm = {
     overrides: XTERM_OVERRIDES,
+    // e2e 14가 "보이는 터미널만 WebGL"을 잰다 — 탭을 바꾸고 유예가 지나면 이전 터미널의
+    // 컨텍스트가 반납돼 live가 늘지 않아야 한다.
+    webglStats: terminalWebglStats,
   };
 }
 
@@ -266,6 +454,13 @@ export function createTerminalImpl(opts: {
   attach?: boolean;
 }): TermInstance {
   ensureExitListener();
+  // 측정 로그는 **첫 터미널에서** 설치한다(이 모듈 자체가 그때 동적 import 된다) — 터미널을
+  // 한 번도 안 연 창에는 타이머도 옵저버도 두지 않는다. 상태 출처를 여기서 넘기는 이유는
+  // 거꾸로 import 하면 xterm 청크가 경량 코어를 타고 콜드 스타트 번들에 딸려 들어가서다.
+  startTerminalPerfLog({
+    webglStats: terminalWebglStats,
+    terminalCount: () => registry.size,
+  });
   const existing = registry.get(opts.id);
   if (existing) return existing;
 
@@ -306,6 +501,11 @@ export function createTerminalImpl(opts: {
   term.loadAddon(new Unicode11Addon());
   term.unicode.activeVersion = "11";
 
+  // WebGL 렌더러는 **보이는 동안만** 쥔다(위 webglRendererControl 주석). 여기서는 컨트롤만
+  // 만들고, 실제 획득은 코어의 attachTerminal이 host를 붙인 뒤에 한다 — loadAddon은 반드시
+  // term.open() 이후라야 하는데 그 조건도 그때는 이미 만족돼 있다.
+  const webglControl = isWebKitGtk ? null : webglRendererControl(term, host);
+
   // 인스턴스는 여기서 만든다(레지스트리 등록은 아래 open 직전) — 아래 CSI/키 핸들러가
   // `win32Input`을 읽고 쓰려면 클로저에 인스턴스가 이미 있어야 한다.
   const inst: TermInstance = {
@@ -322,6 +522,8 @@ export function createTerminalImpl(opts: {
     // 감지는 보조로 남긴다 — 9001 을 끄는 판이 오면 아래 `?l` 핸들러가 false 로 내린다.
     win32Input: isWindows,
     lastSelection: "",
+    acquireWebglRenderer: () => webglControl?.acquire(),
+    releaseWebglRenderer: () => webglControl?.release(),
   };
 
   // win32-input-mode(DECSET 9001) 감지 — ConPTY가 시작 시 `\x1b[?9001h`를 보낸다(portable-pty가
@@ -586,38 +788,6 @@ export function createTerminalImpl(opts: {
     return true;
   });
   term.open(host); // 분리된 host에 먼저 연다 — 실제 fit은 attach 시점에 (DOM 렌더러는 0크기 허용)
-
-  // GPU 가속 렌더러(WebGL) — 대량 출력에서 DOM 렌더러 대비 CPU·잔상을 줄인다(VS Code 내장
-  // 터미널과 동일 엔진). 단 WebKitGTK(Linux)에서는 GPU/드라이버 조합(특히 NVIDIA 프로프라이어터리
-  // 드라이버·소프트웨어 GL)에 따라 WebGL 컨텍스트가 웹뷰 렌더러 프로세스를 크래시시켜 화면 전체가
-  // 까맣게 먹통된다(분할로 터미널을 여럿 띄우면 더 잘 터짐 — 컨텍스트 다수). 그래서 WebGL이
-  // 안정적인 WebView2(Windows)/WKWebView(macOS)에서만 켜고, WebKitGTK에서는 안정적인 기본 DOM
-  // 렌더러를 쓴다. loadAddon은 반드시 open() 이후라야 한다.
-  // 컨텍스트 손실 복구: 장시간 방치·절전 복귀·GPU 드라이버 리셋 시 WebView2가 WebGL 컨텍스트를
-  // 회수하면 글리프 아틀라스 잔해(색 블록·흩어진 글자)만 화면에 남는다. dispose만 하고 끝내면
-  // 복구가 없으므로 애드온을 재생성해 새 컨텍스트로 살리고, 60초 내 반복 손실이면(살아있는
-  // 터미널 누적으로 Chromium 컨텍스트 상한 ~16개 초과 → 서로 밀어내는 캐스케이드) DOM 렌더러로
-  // 확정한다 — VS Code 내장 터미널과 동일 전략.
-  if (!isWebKitGtk) {
-    let lostAt: number[] = [];
-    const loadWebgl = () => {
-      try {
-        const webgl = new WebglAddon();
-        webgl.onContextLoss(() => {
-          webgl.dispose();
-          const now = Date.now();
-          lostAt = [...lostAt.filter((t) => now - t < 60_000), now];
-          if (lostAt.length <= 3) setTimeout(loadWebgl, 300);
-          else term.refresh(0, term.rows - 1); // DOM 렌더러로 잔상 지우기
-        });
-        term.loadAddon(webgl);
-        term.refresh(0, term.rows - 1);
-      } catch {
-        /* WebGL 불가 — xterm 기본 DOM 렌더러로 동작 */
-      }
-    };
-    loadWebgl();
-  }
 
   // WebKit 계열(Linux WebKitGTK / macOS WKWebView) 한글(IME 조합) 입력 우회.
   // 두 플랫폼이 같은 WebKit이지만 IME 이벤트 모델이 다르다(진단: DOCS/TROUBLESHOOTING.md §3).

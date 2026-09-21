@@ -1,4 +1,4 @@
-import type { QueryClient } from "@tanstack/react-query";
+import type { Query, QueryClient } from "@tanstack/react-query";
 import { focusManager } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 
@@ -135,6 +135,60 @@ async function refreshChangedStatuses(qc: QueryClient, pids: string[]) {
   });
 }
 
+/**
+ * 워처 한정 무효화가 다루는 쿼리 종류 — `[종류, projectId, …]` 모양이다(queries/index.ts).
+ *
+ * **`diff`뿐이다.** 히스토리 계열(`log`·`branches`·`activity`·`commits-between`)은 일부러 뺐다 —
+ * 그것들은 작업 트리가 아니라 `.git`(refs)에 달려 있고, `.git`은 등록된 프로젝트끼리 **공유될 수
+ * 있다**: linked worktree의 커밋은 본 저장소의 `.git/refs`만 건드리므로 바뀐 id에 본 저장소만
+ * 담긴다. 한정하면 워크트리 프로젝트의 히스토리·잔디가 포커스 복귀까지 조용히 낡는다(태스크 69
+ * 리뷰가 잡은 회귀). 그쪽은 로그 패널·리포트가 열려 있을 때만 재조회되므로 전역으로 둬도 싸다.
+ * `diff`는 뷰어가 늘 마운트돼 있어 남의 프로젝트 저장마다 git을 띄우던 자리이고, 작업 트리
+ * 기준이라 이미 프로젝트 한정인 status(`refreshChangedStatuses`)와 같은 수준의 신선도다.
+ * 히스토리까지 한정하려면 Rust가 `git rev-parse --git-common-dir`이 같은 프로젝트를 묶어 함께
+ * emit해야 한다.
+ *
+ * 여기 없는 종류는 `queryKeyTouchesProject`가 **전역 무효화**(true)로 떨어뜨린다. 목록을 명시로
+ * 두는 이유: `["prompts", projectPath, …]`처럼 key[1]이 id가 **아닌** 키가 같은 파일에 있어서,
+ * "key[1]은 늘 projectId"로 가정하면 새 종류를 얹는 순간 조용히 영영 무효화되지 않는다.
+ */
+const WATCHER_SCOPED_KINDS = new Set(["diff"]);
+
+/** 중첩 저장소 합성 id(`<outer>::<rel>`, projects.rs `project_path`) 때문에 **양방향 접두**를 본다 —
+ *  바깥이 바뀌면 그 안의 중첩 쿼리도, 중첩이 바뀌면 바깥 쿼리도 낡는다. 구분자 `::`까지 붙여
+ *  비교하는 이유는 맨 `startsWith`가 `"abc"`와 `"abcd"`를 한 프로젝트로 보기 때문이다. */
+function sameOrNestedProject(keyProjectId: string, changedId: string): boolean {
+  return (
+    keyProjectId === changedId ||
+    keyProjectId.startsWith(`${changedId}::`) ||
+    changedId.startsWith(`${keyProjectId}::`)
+  );
+}
+
+/**
+ * `repo://changed` 무효화 대상 판별 — 이 쿼리 키가 바뀐 프로젝트에 걸리는가(태스크 69 §4).
+ *
+ * 모양을 모르는 키는 **true**(전역 무효화)로 답한다 — 잘못 무효화해서 한 번 더 읽는 것보다
+ * 낡은 화면이 조용히 남는 쪽이 나쁘다.
+ */
+export function queryKeyTouchesProject(
+  key: readonly unknown[],
+  changedIds: readonly string[],
+): boolean {
+  const kind = key[0];
+  // Quick Open 목록만 키가 `["repo-files", ...정렬된 id 목록]`이다(QuickOpenHost.tsx) —
+  // 중첩 저장소 id가 그 목록에 함께 들어가므로 하나라도 걸리면 목록을 통째로 다시 읽는다.
+  if (kind === "repo-files") {
+    return key
+      .slice(1)
+      .some((v) => typeof v === "string" && changedIds.some((id) => sameOrNestedProject(v, id)));
+  }
+  if (typeof kind !== "string" || !WATCHER_SCOPED_KINDS.has(kind)) return true;
+  const keyProjectId = key[1];
+  if (typeof keyProjectId !== "string") return true;
+  return changedIds.some((id) => sameOrNestedProject(keyProjectId, id));
+}
+
 /** 백엔드 이벤트 구독 — 앱 시작 시 1회. 이벤트는 신호일 뿐, 진실은 상태 재조회 (§10). */
 export function attachRepoEvents(qc: QueryClient) {
   attachVideoEvents(qc);
@@ -173,16 +227,22 @@ export function attachRepoEvents(qc: QueryClient) {
       // **바뀐 프로젝트만 다시 잰다.** 전체 무효화는 `get_statuses(전체)` 를 부르는데, 그건
       // 레포마다 git 프로세스를 띄우는 배치다(프로젝트 21개 실측 22.5초 — status.rs 주석).
       // 파일 하나 저장할 때마다 그게 도는 구조였다. 실패하면 예전처럼 전체 무효화로 떨어진다.
-      void refreshChangedStatuses(qc, [...changedProjects]);
-      void qc.invalidateQueries({ queryKey: ["diff"] });
-      void qc.invalidateQueries({ queryKey: ["log"] });
+      const touched = [...changedProjects];
+      void refreshChangedStatuses(qc, touched);
+      // `diff`도 **바뀐 프로젝트로 한정**한다(태스크 69 §4) — 뷰어는 늘 마운트돼 있어, 전역으로
+      // 지우면 남의 프로젝트가 저장될 때마다 지금 열린 파일의 git diff가 다시 돈다. 히스토리
+      // 계열은 predicate가 전역으로 통과시킨다(이유는 `WATCHER_SCOPED_KINDS` 주석).
+      const onlyTouched = (q: Query) => queryKeyTouchesProject(q.queryKey, touched);
+      void qc.invalidateQueries({ queryKey: ["diff"], predicate: onlyTouched });
+      void qc.invalidateQueries({ queryKey: ["log"], predicate: onlyTouched });
       // 리포트 히트맵도 커밋을 세므로 로그와 같은 신호에 딸려 간다(태스크 60 §3.5).
       // 카드의 커밋 목록도 **함께** — 잔디만 갱신하면 카드 개수와 입력 해시가 낡은 채로 남아
       // "입력이 바뀜 — 다시 생성" 제안이 영영 안 뜬다(§1 수용 조건 3, e2e 48 ⑤가 잡았다).
-      void qc.invalidateQueries({ queryKey: ["activity"] });
-      void qc.invalidateQueries({ queryKey: ["commits-between"] });
-      void qc.invalidateQueries({ queryKey: ["branches"] });
-      void qc.invalidateQueries({ queryKey: ["repo-files"] }); // Quick Open 파일 목록
+      void qc.invalidateQueries({ queryKey: ["activity"], predicate: onlyTouched });
+      void qc.invalidateQueries({ queryKey: ["commits-between"], predicate: onlyTouched });
+      void qc.invalidateQueries({ queryKey: ["branches"], predicate: onlyTouched });
+      // Quick Open 파일 목록 — 키가 `["repo-files", ...id 목록]`이라 판정이 다르다(위 함수).
+      void qc.invalidateQueries({ queryKey: ["repo-files"], predicate: onlyTouched });
       // 파일트리 즉각 반영 — react-query는 마운트된(=펼쳐진) 폴더만 refetch한다.
       // file-image도 같은 이유로 **프로젝트 한정**이다: staleTime Infinity라 무효화하지 않으면
       // 별도 창(doc-*)이나 외부 도구가 저장한 새 그림이 이 창에 영영 반영되지 않는다.
@@ -233,4 +293,13 @@ export function attachRepoEvents(qc: QueryClient) {
     void qc.invalidateQueries({ queryKey: ["commits-between"] }); // 카드 입력(위 주석과 같은 이유)
     void qc.invalidateQueries({ queryKey: ["branches"] });
   });
+}
+
+if (import.meta.env.DEV) {
+  // e2e 48 ⑤b 가 진리표를 잰다 — 한정 무효화가 빗나가면(접두만 같은 id·합성 id 놓침) 화면에는
+  // "가끔 갱신이 안 된다"로만 보여 DOM 단언으로는 잡히지 않는다. main.tsx 의 `__gpv` 대신
+  // 이 모듈에 두는 이유는 `__gpvXterm`·`__gpvClipboard` 와 같다(그 파일은 저장 시 풀 리로드).
+  (window as unknown as { __gpvRepoEvents?: unknown }).__gpvRepoEvents = {
+    queryKeyTouchesProject,
+  };
 }

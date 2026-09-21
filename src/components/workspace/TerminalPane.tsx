@@ -24,6 +24,7 @@ import {
   getTerminal,
   pasteIntoTerminal,
   snapshotSelection,
+  unmountTerminalView,
 } from "../../lib/terminal";
 import { translateRequest } from "../../lib/translate";
 import { useOccludesWebview } from "../../stores/occlusion";
@@ -85,6 +86,9 @@ export function TerminalPane({
     return () => {
       cancelled = true;
       ro.disconnect();
+      // 이 pane이 사라진다(탭 전환·모아보기 진입·프로젝트 이동) — xterm과 PTY는 그대로 두고
+      // WebGL 컨텍스트만 놓아준다. host를 이미 다른 뷰가 가져갔으면 알아서 no-op이다.
+      if (el) unmountTerminalView(paneId, el);
     };
     // fontSize는 생성 시점에만 쓰인다
     // eslint-disable-next-line react-hooks/exhaustive-deps

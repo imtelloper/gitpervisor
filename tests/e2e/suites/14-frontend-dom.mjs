@@ -55,6 +55,7 @@ export async function run({ cdp, report: r, fix }) {
   let tabClosed = false;
   let newTabId = null; // #11c 새 터미널 버튼이 만든 탭 — 정리 대상
   let newTabClosed = false;
+  let webglTabId = null; // #2w가 탭 전환용으로 만든 두 번째 탭 — 그 자리에서 닫고 null로 되돌린다
   // #13이 만든 Claude 세션 탭(워크스페이스 '+' · 모아보기 '+') — 성공 시 그 자리에서 닫고 null로
   // 되돌린다. 중간에 죽으면 finally가 거둔다(claude가 실제로 떴다면 closeTab이 PTY 트리를 끝낸다).
   let claudeTabId = null;
@@ -259,6 +260,173 @@ export async function run({ cdp, report: r, fix }) {
       paneReady === "ok" && rendered >= 1,
       `pane=${paneReady} xterm=${rendered}`,
     );
+
+    // ── #2w WebGL 컨텍스트는 **보이는 터미널만** 쥔다 (태스크 69 §3) ──
+    //
+    // 회귀 대상: xterm 인스턴스는 탭이 닫히기 전까지 레지스트리에 남으므로(host 만 DOM 에서
+    // 떨어진다) 예전엔 "한 번이라도 본 터미널" 수만큼 컨텍스트가 쌓였다. Chromium 은 16개에서
+    // 막고 17개째부터 가장 오래된 것을 뺏어 생성↔손실 핑퐁이 돈다(24개에서 생존 16, 생성
+    // 292·손실 276 실측). 지금은 attachTerminal 이 acquire, 뷰 언마운트가 1.5초 뒤 release 한다.
+    //
+    // 훅은 **엔진 모듈**(terminal-engine.ts)이 노출하는 `__gpvXterm.webglStats` 다 — 첫 터미널에서
+    // 엔진 청크가 동적 import 된 뒤에 생기므로 #2(렌더 완료) 다음에 둔다. 여기까지 왔다는 건
+    // dev 빌드라는 뜻이라(맨 앞 `window.__gpv` 게이트), 훅이 없으면 스킵이 아니라 **빨갛다**.
+    const webglHook = await cdp.eval(
+      `typeof (window.__gpvXterm || {}).webglStats === 'function'`,
+    );
+    // WebKitGTK(Linux)는 WebGL 을 아예 안 쓴다(웹뷰 렌더러가 크래시한다 — 엔진 주석) → 항상 0.
+    // 거기서 `live >= 1` 을 요구하면 환경을 재는 상시 빨강이 된다.
+    const webglPlatform = await cdp.eval(`!/Linux/.test(navigator.userAgent)`);
+    // 훅이 없으면 아래 단언은 전부 공허하므로 그 한 줄만 빨갛게 남기고 건너뛴다.
+    const webglReady =
+      webglPlatform &&
+      r.check(
+        "엔진 DEV 훅 __gpvXterm.webglStats 노출",
+        webglHook === true,
+        `hook=${webglHook}`,
+      );
+    if (!webglPlatform) {
+      r.skip("WebGL 컨텍스트 회수", "WebKitGTK — WebGL 미사용(acquire/release가 no-op)");
+    } else if (webglReady) {
+      const webglStats = () => cdp.eval(`window.__gpvXterm.webglStats()`);
+      // attach 직후 acquire 라 보통 즉시 잡히지만, #2 의 attach 가 막 끝난 참이라 한 박자 준다.
+      const st0 = await poll(webglStats, (v) => v && v.live >= 1, 20, 300);
+      r.check(
+        "보이는 터미널이 WebGL 컨텍스트를 쥔다",
+        !!st0 && st0.live >= 1,
+        `stats=${J(st0)}`,
+      );
+      // 탭을 바꾸면 이전 탭의 PaneTreeRoot 가 언마운트된다(WorkspaceTabs 의 `active === t.id &&`)
+      // → 1.5초 유예 뒤 반납. 새 탭이 하나 얻고 옛 탭이 하나 놓으므로 **총량은 늘지 않아야** 한다.
+      // 회수가 통째로 고장 나면 정확히 +1 이 되어 이 줄이 빨개진다.
+      const opened2 = await cdp.eval(
+        `window.__gpv.terminals.getState().openTerminal(${J(fix.projectId)})`,
+      );
+      webglTabId = opened2.tabId;
+      await cdp.eval(
+        `window.__gpv.terminals.getState().setActiveTab(${J(fix.projectId)}, ${J(webglTabId)})`,
+      );
+      const pane2Ready = await poll(
+        () => cdp.eval(hostWhy(opened2.paneId)),
+        (v) => v === "ok",
+        40,
+        300,
+      );
+      await sleep(2200); // 유예 1.5초 + 여유
+      const st1 = await webglStats();
+      r.check(
+        "탭 전환 2초 뒤: 숨은 터미널이 컨텍스트를 반납(live 증가 없음)",
+        pane2Ready === "ok" && !!st1 && st1.live <= st0.live,
+        `pane2=${pane2Ready} live ${st0 && st0.live}→${st1 && st1.live} dom=${st1 && st1.domFallbackVisible} ctxlost=${st1 && st1.contextLost}`,
+      );
+      // 원복 — 두 번째 탭을 닫고 #2 의 pane 으로 돌아온다(뒤 블록들이 그 pane 을 본다).
+      await cdp
+        .eval(`window.__gpv.terminals.getState().closeTab(${J(webglTabId)})`)
+        .catch(() => {});
+      webglTabId = null;
+      await cdp.eval(
+        `window.__gpv.terminals.getState().setActiveTab(${J(fix.projectId)}, ${J(tabId)})`,
+      );
+      const back = await poll(() => cdp.eval(hostWhy(paneId)), (v) => v === "ok", 40, 300);
+      r.check("원복: 원래 터미널 탭으로 복귀·재부착", back === "ok", `pane=${back}`);
+    }
+
+    // ── #2p 측정 로그 `[term-perf]` 가 실제로 표본을 잡는가 (태스크 69 §5) ──
+    //
+    // 회귀 대상: 다음에 또 "터미널이 버벅인다"를 들었을 때 추측 대신 로그로 가르려고 남기는
+    // 계측이다. 그런데 계측점은 입력 경로(ptyWrite)와 출력 경로(채널 onmessage)에 붙어 있어
+    // **조용히 빠져도 앱은 멀쩡히 돈다** — 사고가 난 뒤 로그를 열었을 때 비어 있는 것이 이
+    // 기능의 유일한 실패 모드다. 그래서 키를 실제로 흘려보내고 표본 수가 **늘어나는지**를 본다
+    // (고정 개수로 재면 앞 블록들이 남긴 표본에 기대 공허하게 통과한다).
+    const perfHook = await cdp.eval(`(()=>{ const h = window.__gpvTermPerf;
+      return !!h && typeof h.snapshot === 'function' && typeof h.formatSummaryNow === 'function'
+        && typeof h.isTypingInput === 'function'; })()`);
+    // 여기까지 왔다는 건 dev 빌드라는 뜻이라(맨 앞 `window.__gpv` 게이트) 훅이 없으면 빨갛다.
+    const perfReady = r.check(
+      "측정 DEV 훅 __gpvTermPerf 노출(snapshot·formatSummaryNow·isTypingInput)",
+      perfHook === true,
+      `hook=${perfHook}`,
+    );
+    if (perfReady && paneReady === "ok") {
+      // xterm 자동응답(마우스 리포트·포커스·CPR)을 키로 세면 keys= 가 사람이 친 수와 무관해진다 —
+      // TUI 는 초당 수십 번 질의하므로 그 구분이 무너지면 지표 전체가 못 쓰게 된다.
+      const typing = await cdp.eval(`(()=>{ const f = window.__gpvTermPerf.isTypingInput;
+        return { mouse: f("\\x1b[<35;10;5M"), focus: f("\\x1b[I"), cpr: f("\\x1b[12;40R"),
+                 han: f("가"), ascii: f("a"), enter: f("\\r"), del: f("\\x7f") }; })()`);
+      r.check(
+        "isTypingInput: 마우스 리포트·포커스·CPR 자동응답은 타이핑이 아니다",
+        typing.mouse === false && typing.focus === false && typing.cpr === false,
+        J(typing),
+      );
+      r.check(
+        "isTypingInput: 한글(IME 확정)·ASCII·Enter·Backspace 는 타이핑",
+        typing.han === true && typing.ascii === true && typing.enter === true && typing.del === true,
+        J(typing),
+      );
+
+      // 에코는 셸이 살아 있어야 돌아온다 — term_open 은 spawn 이 끝나야 세션을 등록한다(#2a 주석).
+      const ptyUp = await poll(
+        () =>
+          cdp.try("term_project", { termId: paneId }).then((v) => (v.ok ? (v.r ?? null) : null)),
+        (v) => v !== null,
+        40,
+        500,
+      );
+      const snap = () => cdp.eval(`(()=>{ const s = window.__gpvTermPerf.snapshot();
+        return { keys: s.keys, echo: s.echoMs.length, arrive: s.arriveMs.length,
+                 write: s.writeMs.length, noecho: s.noecho, pending: s.pending, broken: s.broken,
+                 echoMin: s.echoMs.length ? Math.min(...s.echoMs) : 0,
+                 echoMax: s.echoMs.length ? Math.max(...s.echoMs) : 0 }; })()`);
+      const before = await snap();
+      if (!ptyUp) {
+        r.check("타이핑 → 키·에코 표본 증가", false, "term_project 가 계속 null — 셸이 안 떴다");
+      } else {
+        // 실제 입력 경로로 흘린다: term.input → onData → ptyWrite(계측점). 마지막 \x03(Ctrl+C)는
+        // 셸 입력 줄을 취소해 뒤 블록(#2b의 맨 \r, #2c·#2d 프롬프트 기록)에 흔적을 남기지 않는다.
+        // Ctrl+U가 아닌 이유: PSReadLine(Windows 모드)에는 그 바인딩이 없어 `^U`가 그대로 자기
+        // 삽입되고 남은 줄이 다음 \r에 실행된다. 글자도 셸 별칭이 아닌 것으로 고른다.
+        for (const key of ["z", "q", "x", "\\x03"]) {
+          await cdp.eval(
+            `(()=>{ window.__gpv.term.get(${J(paneId)}).term.input("${key}"); return true; })()`,
+          );
+          await sleep(250);
+        }
+        const after = await poll(snap, (v) => v.echo > before.echo, 16, 250);
+        r.check(
+          "타이핑 → 키 표본 증가(keys)",
+          after.keys > before.keys && after.broken === false,
+          `keys ${before.keys}→${after.keys} broken=${after.broken}`,
+        );
+        r.check(
+          "셸 에코 → 에코 표본 증가(echoMs·arriveMs)",
+          after.echo > before.echo && after.arrive > before.arrive,
+          `echo ${before.echo}→${after.echo} arrive ${before.arrive}→${after.arrive} noecho=${after.noecho} pending=${after.pending}`,
+        );
+        r.check(
+          "에코 값이 0 < ms < 3000(타임아웃은 표본이 아니라 noecho)",
+          after.echo > before.echo && after.echoMin > 0 && after.echoMax < 3000,
+          `min=${after.echoMin && after.echoMin.toFixed(1)} max=${after.echoMax && after.echoMax.toFixed(1)}`,
+        );
+      }
+
+      // 60초 요약 한 줄 — 필드가 빠지면 사고 때 그 축을 못 가른다(설계 §5 판별표가 이 이름들을 쓴다).
+      const line = String(await cdp.eval(`window.__gpvTermPerf.formatSummaryNow()`));
+      const FIELDS = [
+        "[term-perf] win=", "terms=", "webgl=", "dom=", "ctxlost=", "keys=", "noecho=",
+        "echo_p50=", "echo_p90=", "echo_max=", "arrive_p90=", "write_p50=", "write_max=",
+        "lag_p99=", "lag_max=", "long=", "out_kb_s=", "out_max_kb_s=", "health=", "hidden_pct=",
+      ];
+      const missing = FIELDS.filter((f) => !line.includes(f));
+      r.check(
+        "formatSummaryNow(): 설계 필드를 담은 한 줄",
+        missing.length === 0 && !line.includes("\n"),
+        missing.length ? `빠짐=${missing.join(" ")}` : line.slice(0, 240),
+      );
+    } else if (!perfReady) {
+      r.info("측정 훅이 없어 [term-perf] 표본 단언은 건너뛴다(위 한 줄이 빨갛다)");
+    } else {
+      r.skip("[term-perf] 표본 수집", "터미널 렌더 선행 실패 — 스킵");
+    }
 
     // ── #2a 세션 컨트롤 오버레이 병합 hit-test (태스크 23) ──
     // 회귀 대상: TerminalPane 우상단 세션 클러스터(z-10)가 같은 앵커의 PaneControls 오버레이(z-30)에 완전히 덮여
@@ -1349,6 +1517,9 @@ export async function run({ cdp, report: r, fix }) {
       await cdp.eval(`window.__gpv.terminals.getState().closeTab(${J(tabId)})`).catch(() => {});
     if (newTabId && !newTabClosed)
       await cdp.eval(`window.__gpv.terminals.getState().closeTab(${J(newTabId)})`).catch(() => {});
+    // #2w가 중간에 죽었을 때만 남는다(성공하면 그 자리에서 닫고 null로 되돌린다).
+    if (webglTabId)
+      await cdp.eval(`window.__gpv.terminals.getState().closeTab(${J(webglTabId)})`).catch(() => {});
     for (const id of [claudeTabId, aggClaudeTabId])
       if (id)
         await cdp.eval(`window.__gpv.terminals.getState().closeTab(${J(id)})`).catch(() => {});

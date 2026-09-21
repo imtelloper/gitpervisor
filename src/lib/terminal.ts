@@ -1,5 +1,6 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { warn as logWarn } from "@tauri-apps/plugin-log";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { Terminal } from "@xterm/xterm";
 
@@ -8,6 +9,7 @@ import { copyFailMessage, copyText, readClipboardText } from "./clipboard";
 import { errorMessage } from "./ipc";
 import { isMac } from "./platform";
 import { forgetPtyInput } from "./prompt-capture";
+import { noteTerminalOutput } from "./terminal-perf-log";
 
 // PTY 세션은 Rust가 수명의 단일 진실 — xterm 인스턴스/스크롤백은 dispose 전까지 살려둔다.
 // 탭/프로젝트 전환은 host(div)를 컨테이너에 붙였다 떼는 것뿐 (설계 §16.5).
@@ -35,6 +37,11 @@ export interface TermInstance {
    *  PTY의 출력 소비자는 하나뿐이라(term_attach가 sink를 교체) 다른 창이 가져갔다 돌려줄 때
    *  같은 채널로 붙여야 기존 xterm이 그대로 이어진다. 엔진이 생성 직후 채운다. */
   channel?: Channel<ArrayBuffer>;
+  /** WebGL 렌더러 획득/반납 — **보이는 터미널만** 컨텍스트를 쥐게 한다(태스크 69 §3).
+   *  `attachTerminal`이 acquire, `unmountTerminalView`가 1.5초 뒤 release 한다. 둘 다 멱등이고,
+   *  WebKitGTK(Linux)에서는 no-op이다(그쪽은 WebGL을 아예 쓰지 않는다 — 엔진 주석). */
+  acquireWebglRenderer: () => void;
+  releaseWebglRenderer: () => void;
 }
 
 /** 살아 있는 터미널 인스턴스 레지스트리 — 엔진이 등록하고, 코어/스캐너가 조회한다. */
@@ -64,13 +71,41 @@ export function attachOutputChannel(inst: TermInstance): Channel<ArrayBuffer> {
   const ch = new Channel<ArrayBuffer>();
   ch.onmessage = (bytes) => {
     try {
-      inst.term.write(new Uint8Array(bytes));
-    } catch {
-      /* dispose/detach 직후의 짧은 공백 — 무시 */
+      // 파싱 완료 콜백은 **에코 측정이 대기 중일 때만** 돌아온다 — 평소엔 콜백 없는 기존
+      // 호출 그대로다(메시지마다 클로저를 만들면 여기가 출력 경로에서 가장 뜨겁다).
+      const onParsed = noteTerminalOutput(inst.id, bytes.byteLength);
+      const data = new Uint8Array(bytes);
+      if (onParsed) inst.term.write(data, onParsed);
+      else inst.term.write(data);
+    } catch (e) {
+      warnOutputWriteFailure(inst, e);
     }
   };
   inst.channel = ch;
   return ch;
+}
+
+/** 이미 알린 터미널 — 50MB 초과는 청크마다 다시 던지므로 그대로 두면 로그가 그 한 줄로 찬다. */
+const writeFailureWarned = new Set<string>();
+
+/**
+ * 출력 쓰기 실패를 **말한다**. 예전엔 빈 catch 하나라 xterm이 50MB 워터마크에서 던지는
+ * `write data discarded, use flow control to avoid losing data`(WriteBuffer.ts)까지 삼켜져,
+ * 출력이 조용히 사라지는데 로그에 아무 흔적도 없었다(태스크 69 §5).
+ *
+ * dispose/detach 직후의 짧은 공백은 정상이라 그대로 무시한다 — 그 두 경로는 `term.dispose()`
+ * **전에** 레지스트리에서 인스턴스를 빼므로, 레지스트리에 없으면 "이미 거둔 터미널"이다.
+ */
+function warnOutputWriteFailure(inst: TermInstance, e: unknown): void {
+  if (registry.get(inst.id) !== inst) return;
+  if (writeFailureWarned.has(inst.id)) return;
+  writeFailureWarned.add(inst.id);
+  void logWarn(
+    `[term-perf] 출력 쓰기 실패 term=${inst.id.slice(0, 8)}: ${errorMessage(e)}`,
+  ).catch(() => {
+    // 로그 전송까지 실패하면 남길 곳이 콘솔뿐이다(여기서 또 던지면 출력 경로가 막힌다).
+    console.warn("[term-perf] 출력 쓰기 실패(로그 전송도 실패):", e);
+  });
 }
 
 type ExitListener = (id: string, code: number) => void;
@@ -240,11 +275,53 @@ export function reattachAllTerminals(): void {
   });
 }
 
+/** WebGL 반납 예약(termId → 타이머) — `unmountTerminalView`가 잡고 `attachTerminal`·종료 경로가
+ *  취소한다. 예약이 남은 채 인스턴스가 사라지면 나중에 엉뚱한 재생성분을 반납하므로 반드시 짝을 맞춘다. */
+const pendingWebglRelease = new Map<string, number>();
+/** 탭 왕복·모아보기 이동처럼 곧 되돌아오는 경우에 컨텍스트를 재생성하지 않기 위한 유예. */
+const WEBGL_RELEASE_DELAY_MS = 1500;
+
+function cancelWebglRelease(id: string): void {
+  const timer = pendingWebglRelease.get(id);
+  if (timer === undefined) return;
+  clearTimeout(timer);
+  pendingWebglRelease.delete(id);
+}
+
+/**
+ * 뷰(터미널 탭 pane · 모아보기 셀)가 사라질 때 — xterm과 PTY는 그대로 두고 **WebGL 컨텍스트만**
+ * 1.5초 뒤 반납한다.
+ *
+ * Chromium(WebView2)은 WebGL 컨텍스트를 16개까지만 살려 두는데, xterm 인스턴스는 탭이 닫히기
+ * 전까지 레지스트리에 남는다(host만 DOM에서 떨어진다) — 그래서 예전엔 "한 번이라도 본 터미널"
+ * 수만큼 컨텍스트가 쌓여 17개째부터 서로 밀어내는 생성↔손실 핑퐁이 돌았다(태스크 69 §1·§3).
+ *
+ * **host가 아직 그 container에 붙어 있을 때만** 예약한다 — 다른 뷰가 이미 가져갔으면 그쪽이
+ * 보이는 중이라 건드리면 안 된다.
+ */
+export function unmountTerminalView(id: string, container: HTMLElement): void {
+  const inst = registry.get(id);
+  if (!inst || inst.host.parentElement !== container) return;
+  cancelWebglRelease(id);
+  pendingWebglRelease.set(
+    id,
+    window.setTimeout(() => {
+      pendingWebglRelease.delete(id);
+      // 그 사이 dispose됐으면 레지스트리에 없다 — 그쪽이 이미 반납했다.
+      registry.get(id)?.releaseWebglRenderer();
+    }, WEBGL_RELEASE_DELAY_MS),
+  );
+}
+
 /** host를 컨테이너에 붙이고 맞춘다. 탭 활성화 시 호출. */
 export function attachTerminal(id: string, container: HTMLElement) {
   const inst = registry.get(id);
   if (!inst) return;
   if (inst.host.parentElement !== container) container.appendChild(inst.host);
+  // 이제 보인다 — 반납 예약을 취소하고 컨텍스트를 확보한다(상한이면 DOM 렌더러로 돌고,
+  // 영구가 아니다: 다음 attach가 곧 재시도다).
+  cancelWebglRelease(id);
+  inst.acquireWebglRenderer();
   // 레이아웃 반영 후 fit + 포커스 (숨겨졌다 보이는 탭은 크기 측정이 늦다)
   requestAnimationFrame(() => {
     try {
@@ -396,6 +473,11 @@ export function detachTerminalKeepPty(id: string) {
   registry.delete(id);
   // 입력 복원 상태만 버린다 — 세션은 살아 있고 이어받는 창이 새로 쌓는다(기록 자체는 보존).
   forgetPtyInput(id);
+  // `term.dispose()`는 애드온을 **조용히** 거둔다 — 그 전에 반납해야 엔진의 살아있는 컨텍스트
+  // 카운터가 정확히 내려간다. 새면 상한 기아로 이후 모든 터미널이 DOM 렌더러가 된다.
+  // (예약 중이던 반납도 함께 지운다 — 인스턴스가 없어진 뒤 타이머가 깨어나면 할 일이 없다.)
+  cancelWebglRelease(id);
+  inst.releaseWebglRenderer();
   try {
     inst.term.dispose();
   } catch {
@@ -420,6 +502,8 @@ export function disposeTerminal(id: string): Promise<void> {
   // 기록까지 날리면 방금 뭘 시켰는지 잃는다. 패널 자체가 사라질 때(stores/terminals의 닫기
   // 경로)만 기록을 지운다.
   forgetPtyInput(id);
+  cancelWebglRelease(id); // 이유는 detachTerminalKeepPty 쪽 주석
+  inst.releaseWebglRenderer();
   try {
     inst.term.dispose();
   } catch {

@@ -796,7 +796,9 @@ export interface HealthSample {
   victimShare: number; // 0~1, 1에 가까울수록 종료 대상 1순위
   scopeMemBytes: number;
   scopeMemPct: number;
-  scopeProcs: number; // 앱에 딸린 살아있는 프로세스 수(정상 5~40)
+  // 앱에 딸린 살아있는 프로세스 수. 평상시 수준은 플랫폼마다 다르다 — Windows는 Claude 세션
+  // 하나가 자손 15~35개를 달고 있어 세션 8개면 200을 넘는다(임계는 Rust `health::T_PROCS`).
+  scopeProcs: number;
   memAvailablePct: number;
   swapUsedPct: number;
   available: boolean; // false면 이 플랫폼에서 신호를 못 읽음 → 경보 비활성
