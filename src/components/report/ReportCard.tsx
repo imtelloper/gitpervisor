@@ -67,7 +67,9 @@ export function ReportCard({
   const scope = scopeKey(projects);
   const key = reportKey(scope, period, since);
   const saved = reports?.[key];
-  const reason = llmReadyReason(status, settings);
+  // 리포트는 전용 모델을 쓸 수 있다(설정 `llmReportModel`) — 준비 판정도 **그 모델**을 봐야 한다.
+  const reportModel = settings?.llmReportModel ?? null;
+  const reason = llmReadyReason(status, settings, reportModel);
   const combined = projects.length > 1;
 
   const [text, setText] = useState("");
@@ -165,6 +167,7 @@ export function ReportCard({
           // 날짜마다 3줄이라 응답이 기간에 비례한다(일간 768 … 월간 2048 — §3.1).
           maxTokens: maxTokensFor(period),
           temperature: 0.3,
+          modelId: reportModel ?? undefined,
           signal: ac.signal,
           onProgress: (_phase, message) => setNote(message ?? "모델 로드 중…"),
         },

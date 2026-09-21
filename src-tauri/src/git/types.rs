@@ -263,6 +263,13 @@ pub struct Settings {
     pub llm_provider: String,
     /// 카탈로그 id(llm/acquire.rs MODELS) 또는 "custom".
     pub llm_model: String,
+    /// 작업 리포트 요약·채팅(60·67)에만 쓸 모델. null/빈값 = `llm_model` 을 쓴다.
+    ///
+    /// **왜 갈랐나**: 요약은 예약·배치로 돌려 기다려도 되고 정확도가 돈이 되지만(태스크 70 §8 —
+    /// Gemma 4 12B 가 블라인드 14.11 vs 8B 9.22), 번역·대화는 즉답이라 같은 모델이면 답답하다.
+    /// 다만 **서버는 한 번에 한 모델만** 물고 있으므로(`ensure_server`) 두 기능을 번갈아 쓰면
+    /// 매번 죽였다 다시 띄운다(12B 로드 ~7~25초). 그래서 기본은 null(=하나만 쓰기)이다.
+    pub llm_report_model: Option<String>,
     /// llm_model == "custom"일 때 쓸 절대경로 .gguf.
     pub llm_custom_model_path: Option<String>,
     /// 외부 OpenAI 호환 base URL — 예: http://localhost:11434/v1
@@ -313,6 +320,7 @@ impl Default for Settings {
             video_ffmpeg_path: None,
             llm_provider: "managed".to_string(),
             llm_model: "qwen3-4b-q4".to_string(),
+            llm_report_model: None,
             llm_custom_model_path: None,
             llm_external_url: None,
             llm_external_model: None,

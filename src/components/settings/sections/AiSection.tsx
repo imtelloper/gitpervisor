@@ -333,6 +333,26 @@ export function AiSection({
               </Field>
             </Hl>
           </div>
+          <Hl id="llmReportModel" hl={hl}>
+            <Field
+              label="작업 리포트 전용 모델"
+              hint="요약은 기다려도 되니 더 정확한(=느린) 모델을 쓸 수 있습니다. 번역·채팅은 위에서 고른 모델 그대로입니다. 둘을 번갈아 쓰면 그때마다 서버를 다시 띄웁니다(수 초~수십 초)"
+            >
+              <select
+                value={form.llmReportModel ?? ""}
+                onChange={(e) => update("llmReportModel", e.target.value || null)}
+                className={inputCls}
+              >
+                <option value="">위에서 고른 모델 사용</option>
+                {(st?.models ?? []).map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.label}
+                    {m.present ? "" : " (미설치)"}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </Hl>
           <Hl id="llmLanguage" hl={hl}>
             <Field label="출력 언어" hint="작업 요약·번역의 기본 언어">
               <select

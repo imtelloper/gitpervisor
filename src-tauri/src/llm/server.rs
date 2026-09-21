@@ -177,10 +177,21 @@ fn normalize_base(url: &str) -> String {
 }
 
 /// 설정이 가리키는 모델 → (id, 경로, 바이트 크기).
-fn resolve_model(app: &AppHandle, state: &AppState) -> Result<(String, PathBuf, u64), IpcError> {
+/// `want` 은 호출자(리포트)가 지정한 모델 id — 없으면 설정의 `llm_model` 을 쓴다.
+/// 빈 문자열도 "지정 없음"으로 본다(설정 UI 가 빈 값을 저장할 수 있다).
+fn resolve_model(
+    app: &AppHandle,
+    state: &AppState,
+    want: Option<&str>,
+) -> Result<(String, PathBuf, u64), IpcError> {
     let (model_id, custom) = {
         let s = state.settings.read().unwrap_or_else(|e| e.into_inner());
-        (s.llm_model.clone(), s.llm_custom_model_path.clone())
+        let id = want
+            .map(str::trim)
+            .filter(|w| !w.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| s.llm_model.clone());
+        (id, s.llm_custom_model_path.clone())
     };
     let path = if model_id == "custom" {
         let p = custom
@@ -370,10 +381,12 @@ async fn wait_ready(
 
 /// 대화 상대를 보장한다. 외부 URL 모드면 프로세스 없이 주소만 돌려주고, 관리형이면 필요할 때만
 /// 기동한다(이미 같은 모델로 떠 있으면 재사용 — 첫 요청 20~60초를 두 번 물지 않는다).
+/// `want_model` 은 호출자가 고른 모델 id(리포트용 override). None = 설정의 `llm_model`.
 pub async fn ensure_server(
     app: &AppHandle,
     state: &AppState,
     on_progress: &Channel<String>,
+    want_model: Option<&str>,
 ) -> Result<Endpoint, IpcError> {
     let (provider, ext_url, ext_model, ext_key, gpu_layers, ctx, backend) = {
         let s = state.settings.read().unwrap_or_else(|e| e.into_inner());
@@ -409,7 +422,7 @@ pub async fn ensure_server(
         });
     }
 
-    let (model_id, model_path, model_size) = resolve_model(app, state)?;
+    let (model_id, model_path, model_size) = resolve_model(app, state, want_model)?;
 
     // 재사용 — 같은 모델로 살아 있으면 그대로. 락은 판정 동안만 짧게 잡는다.
     {

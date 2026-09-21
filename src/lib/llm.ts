@@ -14,6 +14,8 @@ export type ChatMsg = { role: "system" | "user" | "assistant"; content: string }
 export interface ChatOpts {
   maxTokens?: number;
   temperature?: number;
+  /** 이 요청에만 쓸 모델 id(설정 `llmReportModel`). 비면 설정의 기본 모델. */
+  modelId?: string;
   /** abort → llm_cancel(requestId). 응답이 유실돼도 우리가 만든 id로 끊을 수 있다. */
   signal?: AbortSignal;
   /**
@@ -67,6 +69,7 @@ export async function chat(
         maxTokens: opts?.maxTokens,
         temperature: opts?.temperature,
         requestId,
+        modelId: opts?.modelId,
       },
       onToken,
       (p) => opts?.onProgress?.(p.phase, progressMessage(p)),
@@ -92,6 +95,12 @@ export function useLlmStatus() {
 export function llmReadyReason(
   status: LlmStatus | undefined,
   settings: Settings | undefined,
+  /**
+   * 이 호출이 쓸 모델 id — 리포트는 `settings.llmReportModel`을 넘긴다.
+   * **넘기지 않으면 `llmModel`을 본다.** 리포트가 12B를 쓰는데 준비 판정이 기본 모델을 보면
+   * "준비됨"이라 떠 있는 버튼이 요청 순간 "모델이 없습니다"로 죽는다.
+   */
+  modelId?: string | null,
 ): string | null {
   if (!settings) return "설정을 불러오는 중입니다";
   if (settings.llmProvider === "external") {
@@ -102,10 +111,11 @@ export function llmReadyReason(
     return "이 플랫폼용 llama.cpp 공식 빌드가 없습니다 — 설정 › AI › 고급에서 외부 서버 URL을 쓰세요";
   }
   if (!status.runtime) return "설정 › AI에서 런타임을 다운로드하세요";
-  if (settings.llmModel === "custom") {
+  const want = modelId?.trim() || settings.llmModel;
+  if (want === "custom") {
     return status.customModelOk ? null : "설정 › AI › 고급의 GGUF 경로를 확인하세요";
   }
-  const model = status.models.find((m) => m.id === settings.llmModel);
+  const model = status.models.find((m) => m.id === want);
   if (!model) return "설정 › AI에서 모델을 고르세요";
   return model.present ? null : `설정 › AI에서 ${model.label} 모델을 다운로드하세요`;
 }

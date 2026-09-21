@@ -36,6 +36,10 @@ pub struct ChatReq {
     pub temperature: Option<f32>,
     /// 프론트가 만든 UUID — `llm_cancel`의 유일한 열쇠.
     pub request_id: String,
+    /// 이 요청에만 쓸 모델 id(설정 `llm_report_model`). 없으면 설정의 `llm_model`.
+    /// 60·67(리포트)만 채운다 — 61(번역)·설정 테스트는 항상 기본 모델을 쓴다.
+    #[serde(default)]
+    pub model_id: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -159,7 +163,7 @@ async fn run_chat(
     on_token: &Channel<String>,
     on_progress: &Channel<String>,
 ) -> Result<ChatDone, IpcError> {
-    let ep = server::ensure_server(app, state, on_progress).await?;
+    let ep = server::ensure_server(app, state, on_progress, req.model_id.as_deref()).await?;
     server::touch_activity(state);
 
     let mut body = serde_json::json!({

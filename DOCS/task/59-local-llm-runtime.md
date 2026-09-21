@@ -187,6 +187,7 @@ export function llmReadyReason(status, settings): string | null   // null=사용
 ```rust
 llm_provider: String,          // "managed" | "external"   기본 "managed"
 llm_model: String,             // 카탈로그 id 또는 "custom"  기본 "qwen3-4b-q4"
+llm_report_model: Option<String>, // 리포트(60·67) 전용 모델 — null=llm_model (태스크 70 §9)
 llm_custom_model_path: Option<String>,
 llm_external_url: Option<String>,   // 예: http://localhost:11434/v1
 llm_external_model: Option<String>, // 외부 서버의 모델 이름(예: qwen3:4b)

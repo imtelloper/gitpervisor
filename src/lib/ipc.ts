@@ -278,6 +278,7 @@ export interface Settings {
   // 로컬 LLM (태스크 59 §3.6 — llm/*.rs)
   llmProvider: "managed" | "external"; // managed=앱이 llama-server 관리, external=Ollama 등
   llmModel: string; // 카탈로그 id 또는 "custom"
+  llmReportModel: string | null; // 리포트(60·67) 전용 모델 — null/빈값이면 llmModel
   llmCustomModelPath: string | null;
   llmExternalUrl: string | null; // 예: http://localhost:11434/v1
   llmExternalModel: string | null; // 외부 서버의 모델 이름(예: qwen3:4b)
@@ -1933,6 +1934,8 @@ export interface LlmChatReq {
   maxTokens?: number;
   temperature?: number;
   requestId: string;
+  /** 이 요청에만 쓸 모델 id — 리포트가 `llmReportModel` 을 넘긴다(비면 기본 모델). */
+  modelId?: string;
 }
 
 export interface ChatDone {

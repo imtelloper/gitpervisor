@@ -43,7 +43,9 @@ export function ReportChat({
   const { data: reports } = useReports();
   const setReport = useSetReport();
   const openSettings = useUi((s) => s.openSettings);
-  const reason = llmReadyReason(status, settings);
+  // 리포트는 전용 모델을 쓸 수 있다(설정 `llmReportModel`) — 준비 판정도 **그 모델**을 봐야 한다.
+  const reportModel = settings?.llmReportModel ?? null;
+  const reason = llmReadyReason(status, settings, reportModel);
 
   // `ctx.body`는 [AI에게 묻기]를 누른 **그 순간의 스냅샷**이다. [요약으로 저장] 뒤에도 그대로
   // 두면 다음 요청의 "### 현재 요약"이 저장 전 본문이라, 이어서 "존댓말로 바꿔 줘"를 시키면
@@ -114,6 +116,7 @@ export function ReportChat({
         {
           maxTokens: maxTokensFor(ctx?.period ?? "day"),
           temperature: 0.3,
+          modelId: reportModel ?? undefined,
           signal: ac.signal,
           onProgress: (_phase, message) => setNote(message ?? "모델 로드 중…"),
         },
