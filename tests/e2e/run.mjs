@@ -84,6 +84,8 @@ const SUITES = [
   "./suites/49-translate.mjs",
   // UI 언어 — 소스 가드(한국어 문구 재유입·조립 키·도메인 등록) + 런타임 전환(설정 저장 → 창 즉시 반영).
   "./suites/66-i18n.mjs",
+  // 영어 화면 순회 — 보이는 텍스트·title·placeholder 에 한글이 남았는지(설정을 영어로 바꿨다 되돌린다).
+  "./suites/67-i18n-english-sweep.mjs",
   // 오버레이가 전체화면·포커스를 가져가므로 마지막에 둔다(31-capture.mjs 상단 주석).
   "./suites/31-capture.mjs",
 ];

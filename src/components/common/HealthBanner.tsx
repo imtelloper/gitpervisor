@@ -2,7 +2,8 @@ import { listen } from "@tauri-apps/api/event";
 import { Activity, BellOff, FolderOpen, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import { useMessages } from "../../i18n/ui-language";
+import { fmtDateTime } from "../../i18n/format-locale";
+import { useMessages, useUiLanguage } from "../../i18n/ui-language";
 import { flushAllDrafts } from "../../lib/drafts";
 import { formatBytes } from "../../lib/format";
 import {
@@ -56,6 +57,16 @@ export function HealthBanner() {
       })
       .catch(() => {});
   }, []);
+
+  // 진단 문구는 Rust 가 조회 시점의 UI 언어로 만든다 — 언어를 바꾸면 떠 있는 카드만 다시 읽는다.
+  const locale = useUiLanguage((s) => s.locale);
+  useEffect(() => {
+    void ipc
+      .healthPrevSession()
+      .then((p) => setPrev((cur) => (cur && p.crashed ? p : cur)))
+      // 다시 읽기 실패는 카드를 옛 언어로 남길 뿐이다 — 알릴 만한 일이 아니다.
+      .catch(() => {});
+  }, [locale]);
 
   // 레벨 전이 구독 — 백엔드는 전이 시에만 발행한다(주기 IPC가 압박을 키우지 않도록).
   // 별도 토스트는 띄우지 않는다 — 카드 자체가 같은 자리(우측 하단)에 나타나므로 토스트를
@@ -265,7 +276,7 @@ function PrevSessionCard({ prev, onClose }: { prev: PrevSession; onClose: () => 
       {r && (
         <div className="mt-1.5 pl-6 font-mono text-[11px] text-fg-dim">
           {msg.shell.healthBanner.prevSessionStats(
-            new Date(r.updatedAt).toLocaleString(),
+            fmtDateTime(new Date(r.updatedAt)),
             r.last.scopeProcs,
             (r.last.scopeMemBytes / 1_073_741_824).toFixed(1),
           )}

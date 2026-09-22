@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { fmtTime } from "../../i18n/format-locale";
 import { useMessages } from "../../i18n/ui-language";
 import { copyText } from "../../lib/clipboard";
 import { relativeTime } from "../../lib/format";
@@ -397,7 +398,7 @@ function PromptHoverCard({ entry, rect }: { entry: PromptEntry; rect: DOMRect })
     >
       <div className="flex shrink-0 items-center gap-2 border-b border-edge px-2.5 py-1 text-[10px] text-fg-muted">
         <History size={11} className="shrink-0 text-accent" />
-        <span>{new Date(entry.at).toLocaleTimeString()}</span>
+        <span>{fmtTime(new Date(entry.at))}</span>
         <span>{msg.git.termSession.cardStats(lines.length, entry.text.length)}</span>
       </div>
       <pre className="min-h-0 flex-1 overflow-hidden whitespace-pre-wrap break-words px-2.5 py-2 font-mono text-[12px] leading-5 text-fg">

@@ -23,7 +23,15 @@ pub const ALLOC_FAIL: &str = "alloc-fail.txt";
 pub const ALLOC_FAIL_PREV: &str = "alloc-fail.prev.txt";
 
 static SESSION_PATH: OnceLock<PathBuf> = OnceLock::new();
-static PREV: OnceLock<PrevSession> = OnceLock::new();
+/// 지난 세션 판정의 **입력**. 문구는 [`previous`]가 부를 때마다 지금 UI 언어로 다시 만든다 — 판정
+/// 결과(문장)를 저장하면 시작할 때의 언어로 굳어, 언어를 바꿔도 배너가 옛 언어로 남는다(e2e 67 이 잡았다).
+struct PrevInputs {
+    record: Option<SessionRecord>,
+    panicked: bool,
+    alloc_fail: Option<u64>,
+    events: Vec<super::winlog::OsEvent>,
+}
+static PREV: OnceLock<PrevInputs> = OnceLock::new();
 /// 정상 종료가 기록된 뒤로는 하트비트가 파일을 다시 건드리지 못하게 막는 빗장.
 ///
 /// 이게 없으면 종료 훅이 `clean_exit: true`를 쓴 직후 감시 스레드의 30초 하트비트가
@@ -90,12 +98,8 @@ pub fn begin(log_dir: &Path, version: &str) {
         Vec::new()
     };
 
-    let verdict = classify(
-        prev.as_ref(),
-        panic_log_near(log_dir, prev.as_ref()),
-        alloc_fail,
-        &events,
-    );
+    let panicked = panic_log_near(log_dir, prev.as_ref());
+    let verdict = classify(prev.as_ref(), panicked, alloc_fail, &events);
     if verdict.crashed {
         // 사후 분석용으로 보관 — prune_logs가 지우지 않도록 보존 목록에 있다.
         let _ = std::fs::rename(&current, log_dir.join(PREVIOUS));
@@ -108,7 +112,12 @@ pub fn begin(log_dir: &Path, version: &str) {
             log::warn!("[health] OS 이벤트: {line}");
         }
     }
-    let _ = PREV.set(verdict);
+    let _ = PREV.set(PrevInputs {
+        record: prev,
+        panicked,
+        alloc_fail,
+        events,
+    });
 
     write(&SessionRecord {
         pid: std::process::id(),
@@ -362,13 +371,16 @@ pub fn mark_clean() {
 }
 
 pub fn previous() -> PrevSession {
-    PREV.get().cloned().unwrap_or(PrevSession {
-        crashed: false,
-        verdict: "clean".into(),
-        message: String::new(),
-        record: None,
-        os_events: Vec::new(),
-    })
+    match PREV.get() {
+        Some(i) => classify(i.record.as_ref(), i.panicked, i.alloc_fail, &i.events),
+        None => PrevSession {
+            crashed: false,
+            verdict: "clean".into(),
+            message: String::new(),
+            record: None,
+            os_events: Vec::new(),
+        },
+    }
 }
 
 fn write(rec: &SessionRecord) {

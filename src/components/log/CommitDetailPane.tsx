@@ -1,5 +1,6 @@
 import { Copy } from "lucide-react";
 
+import { fmtDateTime } from "../../i18n/format-locale";
 import { useMessages } from "../../i18n/ui-language";
 import { KIND_BADGE } from "../../lib/change-kind";
 import { copyWithToast } from "../../lib/clipboard";
@@ -106,7 +107,7 @@ export function CommitDetailPane({
             <span>{commit.sha.slice(0, 12)}</span>
             <Copy size={11} className="opacity-60" />
           </button>
-          <div>{new Date(commit.authoredAt).toLocaleString()}</div>
+          <div>{fmtDateTime(new Date(commit.authoredAt))}</div>
         </div>
       </div>
 

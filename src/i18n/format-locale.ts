@@ -18,6 +18,15 @@ export function fmtNumber(n: number, fractionDigits: number): string {
   });
 }
 
+/** 날짜+시각 — `toLocaleString()`을 인자 없이 쓰면 OS 로캘을 따라가 UI 언어와 어긋난다. */
+export function fmtDateTime(d: Date): string {
+  return d.toLocaleString(INTL_TAG[currentLocale()]);
+}
+
+export function fmtTime(d: Date): string {
+  return d.toLocaleTimeString(INTL_TAG[currentLocale()]);
+}
+
 /** 영어 복수형 — `plural(n, "file", "files")`. 한국어 쪽은 복수가 없으니 쓰지 않는다. */
 export function plural(n: number, one: string, other: string): string {
   return n === 1 ? one : other;

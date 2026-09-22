@@ -1,6 +1,7 @@
 import { Loader2, MessageSquare, Sparkles, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { fmtDateTime } from "../../i18n/format-locale";
 import { useMessages } from "../../i18n/ui-language";
 import { IS_DOC_WINDOW } from "../../lib/floating";
 import { errorMessage } from "../../lib/ipc";
@@ -252,7 +253,7 @@ export function ReportCard({
           <div className="ml-auto flex items-center gap-2">
             {saved && !busy && (
               <span className="text-[10px] text-fg-dim">
-                {new Date(saved.generatedAt).toLocaleString()} · {saved.model}
+                {fmtDateTime(new Date(saved.generatedAt))} · {saved.model}
               </span>
             )}
             {onAsk && (
