@@ -216,6 +216,8 @@ pub struct FavoriteFolder {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
+    /// UI 언어: "system"(OS 표시 언어를 따름) | "ko" | "en". 해석은 `i18n.rs` 한 곳에서만 한다.
+    pub ui_language: String,
     /// null/빈 문자열 = PATH 자동 탐색
     pub git_path: Option<String>,
     /// 원격 새로고침(배경 fetch) 주기 — 0 = 끔, 기본 5분. 구 auto_fetch_minutes를 대체하며
@@ -308,6 +310,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            ui_language: "system".to_string(),
             git_path: None,
             remote_refresh_minutes: 5,
             diff_font_size: 13,

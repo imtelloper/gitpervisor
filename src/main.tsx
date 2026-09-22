@@ -10,6 +10,7 @@ import { DocWindow } from "./DocWindow";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { SysMonitorWindow } from "./components/sysmon/SysMonitorWindow";
 import { FloatingTerminal } from "./FloatingTerminal";
+import { initUiLanguage } from "./i18n/ui-language";
 import { installMacCopyInterceptor } from "./lib/clipboard";
 import { attachLogoEvents, attachRepoEvents } from "./lib/events";
 import { setupErrorLogging } from "./lib/logging";
@@ -86,6 +87,12 @@ import { useCaptionDoc } from "./stores/captionDoc";
 import "./styles.css";
 
 const root = ReactDOM.createRoot(document.getElementById("root")!);
+// 첫 화면 전에 이 창의 UI 언어를 정한다 — 안 그러면 영어 사용자가 창을 열 때마다 한국어 화면을 한 프레임
+// 본다. 모든 창 갈래가 이 한 곳을 지난다(initUiLanguage 는 던지지 않고 1.5초 넘게 붙잡지 않는다).
+const uiLanguageReady = initUiLanguage();
+function renderAfterUiLanguage(node: React.ReactNode): void {
+  void uiLanguageReady.then(() => root.render(node));
+}
 
 // 사용자 정의 테마(태스크 29)의 CSS 블록을 **선적용보다 먼저** 심는다 — 캐시된 id가
 // custom-…이면 블록이 있어야 첫 페인트부터 제 색이 나온다. 모든 창 공통 경로.
@@ -213,7 +220,7 @@ if (label === "aggregate") {
   const aggQc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   // 셀 헤더의 로고는 메인 창에서 지정한다 — 이 창의 캐시는 그 무효화를 못 듣는다(태스크 54 §1).
   attachLogoEvents(aggQc);
-  root.render(
+  renderAfterUiLanguage(
     <React.StrictMode>
       <QueryClientProvider client={aggQc}>
         <ErrorBoundary>
@@ -247,7 +254,7 @@ if (label === "aggregate") {
       });
     }
   }
-  root.render(
+  renderAfterUiLanguage(
     <React.StrictMode>
       <QueryClientProvider client={docQc}>
         <ErrorBoundary>
@@ -260,7 +267,7 @@ if (label === "aggregate") {
   // 화면 캡쳐 오버레이 — 프리즈 프레임 위에서 영역만 고른다. 쿼리·이벤트 부트스트랩을 태우지
   // 않는다: 이 창은 상시 살아 있으면서 숨었다 나타나므로, 여기서 구독을 열면 캡쳐를 안 쓰는
   // 내내 메인 창과 같은 부하를 두 벌 돌리게 된다.
-  root.render(
+  renderAfterUiLanguage(
     <React.StrictMode>
       <ErrorBoundary>
         <CaptureOverlay />
@@ -270,7 +277,7 @@ if (label === "aggregate") {
 } else if (label === "sysmon") {
   // 리소스 모니터 팝업 창(태스크 05) — 플로팅 터미널 분기와 대칭, 자체 QueryClient.
   const sysmonQc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  root.render(
+  renderAfterUiLanguage(
     <React.StrictMode>
       <QueryClientProvider client={sysmonQc}>
         <ErrorBoundary>
@@ -283,7 +290,7 @@ if (label === "aggregate") {
   // 플로팅 창도 QueryClientProvider로 감싼다 — 분할 패널 컴포넌트가 쿼리를 쓰더라도 안전하게.
   // 풀 창(paneId=null)은 FloatingTerminal이 claim 이벤트를 기다렸다가 배정받아 attach한다.
   const floatQc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  root.render(
+  renderAfterUiLanguage(
     <React.StrictMode>
       <QueryClientProvider client={floatQc}>
         <ErrorBoundary>
@@ -347,7 +354,7 @@ if (label === "aggregate") {
   // 메인 부트와 경합하지 않게 넉넉히 뒤로 미룬다.
   setTimeout(() => warmFloatingWindowPool(), 3000);
 
-  root.render(
+  renderAfterUiLanguage(
     <React.StrictMode>
       <QueryClientProvider client={queryClient}>
         <ErrorBoundary>

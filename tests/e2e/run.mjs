@@ -82,6 +82,8 @@ const SUITES = [
   "./suites/48-report.mjs",
   // 번역 본문 단언은 LLM(런타임+모델)이 준비된 경우에만 — 아니면 그 부분만 skip 한다.
   "./suites/49-translate.mjs",
+  // UI 언어 — 소스 가드(한국어 문구 재유입·조립 키·도메인 등록) + 런타임 전환(설정 저장 → 창 즉시 반영).
+  "./suites/66-i18n.mjs",
   // 오버레이가 전체화면·포커스를 가져가므로 마지막에 둔다(31-capture.mjs 상단 주석).
   "./suites/31-capture.mjs",
 ];

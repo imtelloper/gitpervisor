@@ -6,6 +6,8 @@ mod error;
 mod fetch_scheduler;
 mod git;
 mod health;
+// UI 언어 — 설정 해석·OS 표시 언어 판정·사용자 노출 문구의 언어(DOCS/i18n-design.md).
+mod i18n;
 mod llm;
 mod lsp;
 mod monitor;
@@ -1036,6 +1038,9 @@ pub fn run() {
 
             let projects = state::load_projects(app.handle());
             let settings = state::load_settings(app.handle());
+            // setup 안에서 건다 — 프런트는 첫 화면을 그리기 전에 `ui_language_resolved`를 묻는데, IPC는
+            // setup이 끝난 뒤에야 처리되므로 창이 먼저 떴어도 그 첫 질문은 이 값을 본다.
+            i18n::apply_setting(&settings.ui_language);
             let notes = state::load_notes(app.handle());
             let reports = state::load_reports(app.handle());
             // 저장된 git 경로를 부팅 시 적용 (이후 set_settings로 갱신)
@@ -1095,6 +1100,7 @@ pub fn run() {
             fetch_scheduler::refresh_remotes,
             commands::get_settings,
             commands::set_settings,
+            commands::ui_language_resolved,
             commands::open_in,
             commands::run_executable,
             commands::preview_local_url,

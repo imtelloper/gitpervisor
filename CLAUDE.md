@@ -111,6 +111,11 @@ New-Item -ItemType Junction -Path "$env:LOCALAPPDATA\com.greathoon.gitpervisor.d
   `cargo test --lib <이름>`. TS는 단위 테스트 러너가 없으니 `tsc --noEmit` + 관련 e2e 스위트.
 - 구조 규칙은 린트 도구를 새로 들이지 말고, 테스트에서 소스를 읽어 단언한다(위 두 테스트가 본보기).
 
+**UI 문구(다국어)**
+- 사용자에게 보이는 문구는 `src/i18n/text-<도메인>.ts` 카탈로그에 한국어·영어를 나란히 두고 `useMessages()`
+  (컴포넌트 밖은 `currentMessages()`)로 부른다 — `msg.<도메인>.<키>`. 새 파일이나 이행 끝난 파일에 한글
+  리터럴을 쓰면 e2e 66이 빨갛다. 설계 `DOCS/i18n-design.md`, 용어 `DOCS/i18n-glossary.md`.
+
 **주석·파일**
 - 주석은 **왜**만 쓴다 — 사고 이력, 플랫폼 제약, 일부러 한 이상한 선택. 코드를 되풀이하는 주석·
   시그니처 설명 JSDoc은 쓰지 않는다. 함수 하나에만 걸린 함정은 이 문서가 아니라 그 함수 위 주석에 둔다.

@@ -483,6 +483,9 @@ async function main() {
     const port = PORT_BASE + i;
     const dataDir = mkdtempSync(join(tmpdir(), `gpv-shard${i}-`));
     dataDirs.push(dataDir);
+    // UI 언어를 한국어로 못 박는다 — 한국어 문구를 기대하는 단언 249줄이 머신의 OS 언어와 무관해야 한다
+    // (DOCS/i18n-design.md §5.4). 빠진 필드는 기본값으로 채워진다(Settings 는 serde(default)).
+    writeFileSync(join(dataDir, "settings.json"), JSON.stringify({ settings: { uiLanguage: "ko" } }));
     console.log(`샤드 ${i}/${shards}: CDP ${port} · 데이터 ${dataDir}`);
     const app = launch(
       APP_EXE,

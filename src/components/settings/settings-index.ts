@@ -52,6 +52,7 @@ export interface SettingIndexEntry {
 // Settings에 필드를 더하면 여기도 한 줄 더해야 스위트가 통과한다.
 export const SETTINGS_INDEX: SettingIndexEntry[] = [
   // 일반
+  { category: "general", key: "uiLanguage", label: "언어", keywords: ["language", "언어", "english", "영어", "korean", "한국어", "locale", "i18n", "다국어"] },
   { category: "general", key: "remoteRefreshMinutes", label: "원격 새로고침 주기", keywords: ["remote", "fetch", "새로고침", "주기", "pull"] },
   { category: "general", key: "confirmDiscard", label: "되돌리기·삭제 확인", keywords: ["confirm", "확인", "삭제", "되돌리기", "discard"] },
   { category: "general", key: "gitPath", label: "git 실행 파일 경로", keywords: ["git", "path", "경로", "실행"] },

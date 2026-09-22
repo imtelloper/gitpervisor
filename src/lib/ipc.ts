@@ -246,7 +246,11 @@ export type { ThemeId, ThemeName };
  *  terminal=터미널 단위 매번, always=항상. */
 export type NotifyMode = "off" | "project-inactive" | "terminal" | "always";
 
+/** UI 언어(판정 결과). 설정값은 여기에 "system"이 더해진다 — 해석은 Rust `i18n.rs` 한 곳에서만 한다. */
+export type UiLocale = "ko" | "en";
+
 export interface Settings {
+  uiLanguage: "system" | UiLocale; // UI 언어 — "system"이면 OS 표시 언어(DOCS/i18n-design.md §4.1)
   gitPath: string | null; // null/빈값 = PATH 자동 탐색
   remoteRefreshMinutes: number; // 원격 새로고침(배경 fetch) 주기 — 0 = 끔, 기본 5분
   diffFontSize: number;
@@ -1288,6 +1292,8 @@ export const ipc = {
 
   // ---- M4: 설정 / 열기 ----
   getSettings: () => call<Settings>("get_settings"),
+  /** 지금 UI 언어 — 설정이 "system"이면 Rust가 판정한 OS 표시 언어. 프런트는 이 값만 쓴다. */
+  uiLanguageResolved: () => call<UiLocale>("ui_language_resolved"),
   setSettings: (settings: Settings) =>
     callMutating<void>("set_settings", { settings }),
   openIn: (projectId: string, target: OpenTarget) =>

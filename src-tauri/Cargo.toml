@@ -114,7 +114,8 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # 두 크레이트 모두 tauri(macOS) 의존으로 이미 트리에 있어 추가 컴파일 비용은 없다.
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard", "NSPasteboardItem"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSURL", "NSDictionary", "NSValue", "NSData", "NSError", "NSProcessInfo"] }
+# NSLocale: UI 언어의 OS 판정(i18n.rs — "선호하는 언어" 첫 항목).
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSURL", "NSDictionary", "NSValue", "NSData", "NSError", "NSProcessInfo", "NSLocale"] }
 # 이미지 글자 추출(commands/ocr.rs, 태스크 68)의 macOS 엔진 — Live Text와 같은 Vision 엔진이라
 # 자산·CSP 비용이 0이다. 한국어는 Vision Revision3(macOS 13+)부터라 **심볼을 건드리기 전에**
 # NSProcessInfo로 버전을 본다(그 아래에선 클래스 조회 패닉/ObjC 예외 abort — objc2에 catch-all이 없다).

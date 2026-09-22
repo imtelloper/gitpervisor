@@ -1,11 +1,31 @@
 // 일반 설정 (태스크 18) — 원격 새로고침·확인 다이얼로그·git 경로. gitCheck 상태는 자체 쿼리.
+import { useMessages } from "../../../i18n/ui-language";
 import { useGitCheck } from "../../../queries";
 import { Field, Hl, inputCls, type SectionProps } from "./shared";
 
 export function GeneralSection({ form, update, hl }: SectionProps) {
   const { data: gitCheck } = useGitCheck();
+  const msg = useMessages();
   return (
     <>
+      <Hl id="uiLanguage" hl={hl}>
+        <Field label={msg.language.fieldLabel} hint={msg.language.fieldHint}>
+          <select
+            data-gpv="settings-ui-language"
+            value={form.uiLanguage}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v === "system" || v === "ko" || v === "en") update("uiLanguage", v);
+            }}
+            className={inputCls}
+          >
+            <option value="system">{msg.language.optionSystem}</option>
+            <option value="ko">{msg.language.optionKorean}</option>
+            <option value="en">{msg.language.optionEnglish}</option>
+          </select>
+        </Field>
+      </Hl>
+
       <Hl id="remoteRefreshMinutes" hl={hl}>
         <Field
           label="원격 새로고침 주기 (분)"
