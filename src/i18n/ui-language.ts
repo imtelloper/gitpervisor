@@ -8,6 +8,7 @@ import { create } from "zustand";
 
 import { errorMessage, ipc } from "../lib/ipc";
 import type { Locale } from "./define-text";
+import { setCurrentLocale } from "./locale-state";
 import { messagesFor, type Messages } from "./messages";
 
 /** 첫 화면을 이보다 오래 붙잡지 않는다 — 답이 늦으면 지금 언어(한국어)로 그리고 나중에 바꾼다. */
@@ -34,12 +35,9 @@ export function currentMessages(): Messages {
   return useUiLanguage.getState().messages;
 }
 
-export function currentLocale(): Locale {
-  return useUiLanguage.getState().locale;
-}
-
 function applyLocale(locale: Locale): void {
   document.documentElement.lang = locale;
+  setCurrentLocale(locale);
   if (useUiLanguage.getState().locale === locale) return;
   useUiLanguage.setState({ locale, messages: messagesFor(locale) });
 }
