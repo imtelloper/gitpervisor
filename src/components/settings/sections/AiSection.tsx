@@ -8,9 +8,9 @@ import { ipc } from "../../../lib/ipc";
 import { useLlmStatus } from "../../../lib/llm";
 import { Field, Hl, inputCls, type SectionProps } from "./shared";
 
-const subHeading = "text-[11px] font-semibold tracking-widest text-fg-dim";
+export const subHeading = "text-[11px] font-semibold tracking-widest text-fg-dim";
 
-function mb(bytes: number): string {
+export function mb(bytes: number): string {
   const gb = bytes / 1024 ** 3;
   return gb >= 1 ? `${gb.toFixed(1)}GB` : `${Math.round(bytes / 1024 ** 2)}MB`;
 }
@@ -20,7 +20,7 @@ function mb(bytes: number): string {
  * ram ≥ size*1.3 + 1GB면 CPU/부분, 둘 다 미달이면 권장하지 않음.
  * **다운로드 버튼은 어느 쪽이든 살려 둔다** — 사용자가 자기 머신을 더 잘 안다.
  */
-function recommend(size: number, ram: number, vram: number): { label: string; tone: string } {
+export function recommend(size: number, ram: number, vram: number): { label: string; tone: string } {
   if (vram >= size * 1.15) return { label: "GPU 전체", tone: "text-ok" };
   if (ram >= size * 1.3 + 1024 ** 3) return { label: "CPU/부분", tone: "text-fg-muted" };
   return { label: "권장 안 함", tone: "text-warn" };

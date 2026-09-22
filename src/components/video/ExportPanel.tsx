@@ -13,7 +13,11 @@ import type { ReactNode } from "react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
+import { captionCutAllowed } from "../../lib/captionEdit";
+import { CAPTION_STYLE_LABELS, captionStylePresetOf } from "../../lib/captionStyle";
+import { captionLangLabel, captionTranslationCounts, captionTranslationLangs } from "../../lib/captionTranslate";
 import { markLocalVideoJob } from "../../lib/events";
+import { sttAudioTrackLabel } from "../../lib/stt";
 import type {
   VideoExportFinished,
   VideoExportProgress,
@@ -22,6 +26,7 @@ import type {
   VideoToolStatus,
 } from "../../lib/ipc";
 import { errorMessage, ipc, isIpcError } from "../../lib/ipc";
+import { captionKey, useCaptionDoc } from "../../stores/captionDoc";
 import { useUi } from "../../stores/ui";
 import { planSegments, useVideoSplit } from "../../stores/videoSplit";
 import type { CropRect } from "./CropOverlay";
@@ -31,6 +36,10 @@ import { fmtTime } from "./VideoPlayer";
 type Format = "mp4" | "gif" | "audio";
 type Quality = "copy" | "18" | "23" | "28";
 type Tab = "export" | "trim" | "audio" | "mask";
+/** 자막 넣기(태스크 72 P3) — 번인(영상에 그려 넣기) / 소프트(자막 트랙). */
+type SubsChoice = "none" | "burn" | "soft";
+/** 넣을 글(P4) — 원문 · 번역만 · 원문 아래 번역 2단. */
+type SubsText = "caption" | "translation" | "both";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "export", label: "내보내기" },
@@ -116,6 +125,7 @@ export const ExportPanel = memo(function ExportPanel({
   onSetMaskKind,
   getTime,
   isHls,
+  sttBusy,
 }: {
   projectId: string;
   path: string;
@@ -142,6 +152,8 @@ export const ExportPanel = memo(function ExportPanel({
   getTime: () => number;
   /** 코덱 폴백(HLS) 재생 중인가 — 프레임 저장의 시각 기준이 달라진다(frameCapture). */
   isHls: () => boolean;
+  /** 이 영상의 자막을 만드는 중(태스크 72) — 동시 ffmpeg·CPU 경합을 피해 내보내기·분할을 막는다. */
+  sttBusy: boolean;
 }) {
   const pushToast = useUi((s) => s.pushToast);
   const askConfirm = useUi((s) => s.askConfirm);
@@ -157,6 +169,8 @@ export const ExportPanel = memo(function ExportPanel({
   const [name, setName] = useState("");
   const nameEditedRef = useRef(false);
   const [jobId, setJobId] = useState<string | null>(null);
+  /** 내보내기 직전 대본 저장(flush)을 기다리는 중 — 잡은 아직 없다. */
+  const [flushing, setFlushing] = useState(false);
   const [progress, setProgress] = useState<{ pct: number; speed: string | null } | null>(null);
   // 분할 폴더명 — key={path} 리마운트로 파일마다 기본값으로 돌아온다(파일명 필드와 같은 수명).
   const [folder, setFolder] = useState(() => `${cleanStem(path)}.split`);
@@ -173,12 +187,65 @@ export const ExportPanel = memo(function ExportPanel({
     [inPt, outPt],
   );
 
+  // 대본 편집 반영(태스크 72 P2) — 켜면 Rust가 **저장된** 자막 문서로 남길 구간을 계산해 이어 붙인다(keep은 넘기지
+  // 않는다 — 계획 구현은 Rust 하나). 여기 plan은 길이 표시에만 쓴다.
+  const [captionCut, setCaptionCut] = useState(false);
+  const capKey = captionKey(projectId, path);
+  const capDoc = useCaptionDoc((s) => s.entries[capKey]?.doc ?? null);
+  const capPlan = useCaptionDoc((s) => s.entries[capKey]?.plan ?? null);
+  const capStale = useCaptionDoc((s) => !!s.entries[capKey]?.stale);
+  /** 편집본을 못 만드는 이유(null = 가능) — 백엔드(`cut_keep_at`·`validate_spec`)도 같은 이유로 거절한다. */
+  const cutBlock = !capDoc
+    ? null
+    : !captionCutAllowed(capDoc)
+      ? "단어 시각이 근사값인 자막이라(인식 엔진이 단어 시각을 주지 않았다) 편집본을 만들 수 없습니다"
+      : capStale
+        ? "자막을 만든 뒤 원본 영상이 바뀌어 컷 위치가 어긋날 수 있습니다 — 대본에서 다시 인식한 뒤 내보내세요"
+        : capPlan && capPlan.keep.length === 0
+          ? "남는 구간이 없습니다 — 대본이 전부 잘렸습니다"
+          : format !== "mp4"
+            ? "편집본은 mp4로만 만듭니다 — 형식을 mp4로 바꾸세요"
+            : null;
+  const cutOn = captionCut && !!capDoc && cutBlock === null;
+
+  // 자막 넣기(P3) — Rust가 **저장된** 문서의 자막을 번인하거나 자막 트랙으로 싣는다. 시간축은 대본 편집 반영과 짝이라
+  // 고르지 않는다(편집본이면 편집본 시각, 아니면 원본 시각 — 백엔드가 어긋난 조합을 거절한다).
+  const [subsChoice, setSubsChoice] = useState<SubsChoice>("none");
+  const libass = !!tool?.hasSubtitlesFilter;
+  // 넣을 글(P4) — 번역이 있는 언어가 없으면 원문뿐이다. 고른 언어가 사라지면(다른 창이 번역을 지움) 첫 언어.
+  const [subsText, setSubsText] = useState<SubsText>("caption");
+  const [subsLangPick, setSubsLangPick] = useState<string | null>(null);
+  const trLangs = useMemo(() => captionTranslationLangs(capDoc), [capDoc]);
+  const subsLang = subsLangPick && trLangs.includes(subsLangPick) ? subsLangPick : (trLangs[0] ?? null);
+  const subsTextEff: SubsText = subsLang ? subsText : "caption";
+  // 넣을 줄 중 번역이 빠진 수 — 백엔드(`select_sub_text`)도 원문으로 채우지 않고 거절한다. 편집본이면 plan의 줄만.
+  const subsGap = useMemo(() => {
+    if (!capDoc || subsTextEff === "caption" || !subsLang) return null;
+    const ids = cutOn ? new Set((capPlan?.outCues ?? []).map((c) => c.cueId)) : undefined;
+    return captionTranslationCounts(capDoc, subsLang, ids);
+  }, [capDoc, capPlan, cutOn, subsTextEff, subsLang]);
+  /** 자막을 못 넣는 이유(null = 가능) — 백엔드 `validate_spec`·필터 확인과 같은 이유. */
+  const subsBlock =
+    subsChoice === "none"
+      ? null
+      : format !== "mp4"
+        ? "자막은 mp4에만 넣습니다 — 형식을 mp4로 바꾸세요"
+        : subsChoice === "burn" && !libass
+          ? "이 ffmpeg엔 libass가 없어 영상에 입힐 수 없습니다 — 자막 트랙으로 넣으세요"
+          : subsGap && subsGap.missing > 0
+            ? `${captionLangLabel(subsLang ?? "")} 번역이 ${subsGap.missing}줄 빠졌습니다 — 원문으로 채우지 않으니 대본 › 번역에서 이어서 번역하세요`
+            : null;
+  const subsOn = subsChoice !== "none" && !!capDoc && subsBlock === null;
+  const burnOn = subsOn && subsChoice === "burn";
+
   // 재인코딩이 강제되는 조건 — copy 선택과 겹치면 안내 후 자동 encode.
   const forcesEncode =
     format === "gif" ||
     speed !== 1 ||
     !!crop ||
     masks.length > 0 ||
+    cutOn ||
+    burnOn ||
     (format === "mp4" && maxHeight !== "");
   const aud = audioPlan(probe?.acodec ?? null, speed !== 1);
   const mode: "copy" | "encode" =
@@ -190,7 +257,10 @@ export const ExportPanel = memo(function ExportPanel({
     if (format === "gif") return `${stem}${range ? ".clip" : ""}.gif`;
     if (format === "audio") return `${stem}.${aud.ext}`;
     const parts: string[] = [];
-    if (range) parts.push("clip");
+    // 편집본은 구간을 무시한다(백엔드가 range와 함께 거절) — clip이 아니라 cut.
+    if (cutOn) parts.push("cut");
+    else if (range) parts.push("clip");
+    if (subsOn) parts.push("sub");
     if (crop) parts.push("crop");
     if (masks.length > 0) parts.push(maskKind === "blur" ? "blur" : "mosaic");
     if (speed !== 1) parts.push(`x${speed}`);
@@ -198,7 +268,7 @@ export const ExportPanel = memo(function ExportPanel({
     if (removeAudio) parts.push("mute");
     if (parts.length === 0 && mode === "encode") parts.push("edit");
     return `${stem}.${parts.join(".") || "copy"}.mp4`;
-  }, [path, format, range, crop, masks.length, maskKind, speed, maxHeight, removeAudio, mode, aud.ext]);
+  }, [path, format, range, cutOn, subsOn, crop, masks.length, maskKind, speed, maxHeight, removeAudio, mode, aud.ext]);
 
   useEffect(() => {
     if (!nameEditedRef.current) setName(suggested);
@@ -270,14 +340,14 @@ export const ExportPanel = memo(function ExportPanel({
     return <div className="h-full px-3 py-3 text-xs text-fg-dim">미디어 정보 읽는 중…</div>;
 
   const { dir } = splitPath(path);
-  const nothingToDo = format === "mp4" && mode === "copy" && !range && !removeAudio;
+  const nothingToDo = format === "mp4" && mode === "copy" && !range && !removeAudio && !subsOn;
   const nameInvalid = !name.trim() || /[\\/]|\.\./.test(name);
 
   const buildSpec = (overwrite: boolean): VideoExportSpec => ({
     srcRel: path,
     outRel: dir + name.trim(),
     overwrite,
-    range,
+    range: cutOn ? null : range,
     mode,
     speed: mode === "encode" && speed !== 1 ? speed : null,
     // 크롭은 영상 프레임이 있는 출력(mp4·gif)에만 — 오디오 추출엔 무의미.
@@ -290,9 +360,35 @@ export const ExportPanel = memo(function ExportPanel({
     removeAudio: format === "mp4" && removeAudio,
     durationMs: probe.durationMs,
     hasAudio: probe.hasAudio,
+    captionCut: cutOn,
+    captionSubs:
+      subsOn
+        ? {
+            mode: subsChoice,
+            timeline: cutOn ? "edited" : "source",
+            text: subsTextEff,
+            lang: subsTextEff === "caption" ? null : subsLang,
+            preset: captionStylePresetOf(capDoc),
+          }
+        : null,
   });
 
-  const doExport = (overwrite: boolean) => {
+  const doExport = async (overwrite: boolean) => {
+    // 편집본·자막은 Rust가 **저장본**을 읽는다 — 대기 중인 대본 편집을 먼저 디스크에 보낸다(자막 파일 내보내기와 같은 이유).
+    // 기다리는 동안 버튼을 막는다 — 그 사이 한 번 더 누르면 ffmpeg 두 개가 같은 출력으로 돈다.
+    if (cutOn || subsOn) {
+      setFlushing(true);
+      let saved: boolean;
+      try {
+        saved = await useCaptionDoc.getState().flush(capKey);
+      } finally {
+        setFlushing(false);
+      }
+      if (!saved) {
+        pushToast("error", "대본 편집이 저장되지 않아 내보내지 않았습니다 — 대본 패널 위 안내를 먼저 해결하세요");
+        return;
+      }
+    }
     const id = crypto.randomUUID();
     setJobId(id);
     setProgress({ pct: 0, speed: null });
@@ -313,7 +409,7 @@ export const ExportPanel = memo(function ExportPanel({
           message: `${name.trim()} 파일이 이미 있습니다. 덮어쓸까요?`,
           confirmLabel: "덮어쓰기",
           danger: true,
-          onConfirm: () => doExport(true),
+          onConfirm: () => void doExport(true),
         });
       }
     });
@@ -336,7 +432,8 @@ export const ExportPanel = memo(function ExportPanel({
   // ── 예상치 ────────────────────────────────────────────────────────────
   // 출력 길이만 정확하다(구간 ÷ 배속 — 백엔드 expected_out_us와 같은 식, video.rs:667).
   // 용량은 근사, 소요는 실행 전에는 알 수 없다. 근거가 없으면 숫자 대신 "—"를 쓴다.
-  const rangeMs = range ? range.endMs - range.startMs : probe.durationMs;
+  const rangeMs =
+    cutOn && capPlan ? capPlan.outDurationMs : range ? range.endMs - range.startMs : probe.durationMs;
   const outMs = rangeMs / (speed > 0 ? speed : 1);
 
   // 크롭·해상도 축소로 줄어드는 픽셀 수 비(확대는 하지 않으므로 1로 클램프).
@@ -377,7 +474,7 @@ export const ExportPanel = memo(function ExportPanel({
       : null;
 
   const splitScopeWarn =
-    "분할 저장은 구간·배속·해상도·영역·가림·오디오 제거를 적용하지 않습니다. 영상 전체를 분할 지점 경계로만 자릅니다.";
+    "분할 저장은 구간·배속·해상도·영역·가림·오디오 제거·대본 편집·자막을 적용하지 않습니다. 영상 전체를 분할 지점 경계로만 자릅니다.";
   const rangeBtnCls = (on: boolean) =>
     `flex-1 rounded border px-1 py-1 text-[11px] ${
       on ? "border-accent bg-accent/20 text-accent" : "border-edge hover:bg-raised"
@@ -480,7 +577,7 @@ export const ExportPanel = memo(function ExportPanel({
               )}
               {quality === "copy" && forcesEncode && format !== "audio" && (
                 <div className="text-[11px] text-warn">
-                  배속·영역·가림·해상도·GIF는 무손실 복사와 함께 쓸 수 없어 재인코딩(표준 화질)됩니다.
+                  배속·영역·가림·해상도·GIF·대본 편집·자막 번인은 무손실 복사와 함께 쓸 수 없어 재인코딩(표준 화질)됩니다.
                 </div>
               )}
               {format === "gif" && !range && (
@@ -489,6 +586,146 @@ export const ExportPanel = memo(function ExportPanel({
                 </div>
               )}
             </Section>
+
+            {/* 대본 편집(태스크 72) — 자막 문서가 있는 영상에만. 켜면 구간(I/O)·무손실 복사와 배타다. */}
+            {capDoc && (
+              <Section title="대본 편집">
+                <label className="flex items-center gap-1.5" data-gpv="caption-cut-toggle">
+                  <input
+                    type="checkbox"
+                    checked={captionCut}
+                    onChange={(e) => setCaptionCut(e.target.checked)}
+                    // 켜 둔 뒤 막혔으면(형식을 GIF로 바꾸는 등) 끌 수는 있어야 한다.
+                    disabled={busy || (!captionCut && cutBlock !== null)}
+                    className="accent-accent"
+                  />
+                  대본 편집 반영 — 자른 말·줄인 쉼을 뺀 편집본
+                </label>
+                {cutBlock ? (
+                  <div className="text-[11px] text-warn">{cutBlock}</div>
+                ) : capPlan && capPlan.outDurationMs < capDoc.source.durationMs ? (
+                  <div className="text-[11px] text-fg-dim">
+                    남는 길이 {fmtTime(capPlan.outDurationMs / 1000)} / 원본 {fmtTime(capDoc.source.durationMs / 1000)} ·{" "}
+                    {capPlan.keep.length}구간
+                  </div>
+                ) : (
+                  <div className="text-[11px] text-fg-dim">
+                    아직 자른 곳이 없습니다 — 대본에서 단어를 골라 Delete로 자르거나 무음을 줄이세요.
+                  </div>
+                )}
+                {cutOn && range && (
+                  <div className="text-[11px] text-warn">
+                    대본 편집 반영은 구간(I/O)과 함께 쓸 수 없어 구간을 무시합니다 — 영상 전체에서 잘린 부분만 뺍니다.
+                  </div>
+                )}
+              </Section>
+            )}
+
+            {/* 자막 넣기(태스크 72 P3) — 자막 문서가 있는 영상에만. 번인 스타일은 미리보기(CC)와 같은 문서 값이다. */}
+            {capDoc && (
+              <Section title="자막 넣기">
+                <Field label="방식">
+                  <select
+                    data-gpv="caption-subs"
+                    value={subsChoice}
+                    onChange={(e) => setSubsChoice(e.target.value as SubsChoice)}
+                    disabled={busy}
+                    className={selCls}
+                  >
+                    <option value="none">넣지 않음</option>
+                    <option value="burn" disabled={!libass}>
+                      영상에 입히기 (번인){libass ? "" : " · libass 없음"}
+                    </option>
+                    <option value="soft">자막 트랙 (플레이어에서 켜고 끔)</option>
+                  </select>
+                </Field>
+                {!libass && subsChoice !== "burn" && (
+                  <div className="text-[11px] text-fg-dim">
+                    이 ffmpeg엔 libass가 없어 영상에 입힐 수 없습니다 — 자막 트랙으로 넣습니다.
+                  </div>
+                )}
+                {/* 번역 자막(P4) — 대본에서 번역한 언어가 있을 때만. */}
+                {subsChoice !== "none" && subsLang && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <Field label="글">
+                      <select
+                        data-gpv="caption-subs-text"
+                        value={subsTextEff}
+                        onChange={(e) => setSubsText(e.target.value as SubsText)}
+                        disabled={busy}
+                        className={selCls}
+                      >
+                        <option value="caption">원문</option>
+                        <option value="translation">번역</option>
+                        <option value="both">원문 + 번역 (2단)</option>
+                      </select>
+                    </Field>
+                    <Field label="번역 언어">
+                      <select
+                        value={subsLang}
+                        onChange={(e) => setSubsLangPick(e.target.value)}
+                        disabled={busy || subsTextEff === "caption"}
+                        className={selCls}
+                      >
+                        {trLangs.map((l) => (
+                          <option key={l} value={l}>
+                            {captionLangLabel(l)}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
+                  </div>
+                )}
+                {subsOn && subsGap && subsGap.stale > 0 && (
+                  <div className="text-[11px] text-warn">
+                    원문을 고친 뒤 다시 번역하지 않은 줄 {subsGap.stale}개가 옛 번역 그대로 들어갑니다.
+                  </div>
+                )}
+                {subsBlock ? (
+                  <div className="text-[11px] text-warn">{subsBlock}</div>
+                ) : subsChoice === "burn" ? (
+                  <div className="text-[11px] text-fg-dim">
+                    스타일 {CAPTION_STYLE_LABELS[captionStylePresetOf(capDoc)]} — 자막 미리보기와 같습니다(상단 CC 옆에서
+                    바꿉니다). 영상에 그려 넣으므로 무손실 복사 없이 재인코딩합니다.
+                  </div>
+                ) : subsChoice === "soft" ? (
+                  <div className="text-[11px] text-fg-dim">
+                    {mode === "copy"
+                      ? "무손실 복사로 자막 트랙만 더합니다."
+                      : "자막 트랙은 무손실 복사와도 되지만, 다른 옵션 때문에 재인코딩합니다."}{" "}
+                    보는 플레이어에서 자막을 켜야 보이고, 모양은 플레이어가 정합니다.
+                  </div>
+                ) : null}
+                {subsOn && cutOn && (
+                  <div className="text-[11px] text-fg-dim">대본 편집 반영과 함께라 편집본 시각으로 넣습니다.</div>
+                )}
+                {subsOn && !cutOn && capStale && (
+                  <div className="text-[11px] text-warn">
+                    자막을 만든 뒤 원본 영상이 바뀌어 자막 시각이 어긋날 수 있습니다.
+                  </div>
+                )}
+                {/* 문서를 쓰는 내보내기는 자막을 만든 트랙만 매핑한다(video.rs — OBS 다중 트랙의 나머지는 빠진다). 그 트랙이
+                    파일에 없으면(원본 교체) 백엔드가 거절한다 — 그대로 두면 소리 없는 영상이 나갔다. */}
+                {(cutOn || subsOn) &&
+                  !removeAudio &&
+                  probe.hasAudio &&
+                  (() => {
+                    const s = probe.audioStreams.find((a) => a.index === capDoc.source.audioStream);
+                    if (!s)
+                      return (
+                        <div data-gpv="caption-audio-missing" className="text-[11px] text-warn">
+                          자막을 만든 오디오 트랙 {capDoc.source.audioStream + 1}번이 이 파일에 없어 내보낼 수 없습니다 —
+                          대본에서 다시 인식하거나 소리 빼기를 켜세요.
+                        </div>
+                      );
+                    return probe.audioStreams.length > 1 ? (
+                      <div className="text-[11px] text-fg-dim">
+                        소리는 자막을 만든 트랙 하나만 들어갑니다 — {sttAudioTrackLabel(s)}
+                      </div>
+                    ) : null;
+                  })()}
+              </Section>
+            )}
 
             <Section
               title="구간"
@@ -658,7 +895,7 @@ export const ExportPanel = memo(function ExportPanel({
               {/* 분할은 위 설정을 하나도 쓰지 않는다(videoSplit.ts:227-240이 전부 하드코딩).
                   컨트롤이 활성인 채로 무시하면 사용자는 적용된 줄 안다 — 그래서 명시한다. */}
               {ticks.length > 0 &&
-                (range || speed !== 1 || maxHeight !== "" || crop || removeAudio || masks.length > 0) && (
+                (range || speed !== 1 || maxHeight !== "" || crop || removeAudio || masks.length > 0 || cutOn || subsOn) && (
                   <div className="text-[11px] text-warn">{splitScopeWarn}</div>
                 )}
               <button
@@ -811,6 +1048,9 @@ export const ExportPanel = memo(function ExportPanel({
         )}
 
         {/* 비활성 이유는 title에 두면 안 된다 — disabled 버튼은 포인터 이벤트도 포커스도 못 받는다. */}
+        {!busy && sttBusy && (
+          <div className="text-[11px] text-warn">이 영상의 자막을 만드는 중이라 내보내기·분할이 잠겼습니다.</div>
+        )}
         {!busy && batch == null && (nothingToDo || nameInvalid) && (
           <div className="text-[11px] text-fg-dim">
             {nameInvalid
@@ -821,13 +1061,15 @@ export const ExportPanel = memo(function ExportPanel({
 
         {!busy ? (
           <button
-            onClick={() => doExport(false)}
-            // 분할 배치와 상호 배타 — 동시 ffmpeg를 띄우지 않는다(프로세스 위생).
-            disabled={nothingToDo || nameInvalid || batch != null}
+            onClick={() => void doExport(false)}
+            // 분할 배치·자막 만들기와 상호 배타 — 동시 ffmpeg를 띄우지 않는다(프로세스 위생).
+            disabled={nothingToDo || nameInvalid || batch != null || sttBusy || flushing}
             title={
               batch != null
                 ? "분할 저장이 진행 중입니다"
-                : nothingToDo
+                : sttBusy
+                  ? "이 영상의 자막을 만드는 중입니다 — 끝난 뒤에 내보내세요"
+                  : nothingToDo
                   ? "구간·배속·화질 등 변경할 항목을 선택하세요"
                   : nameInvalid
                     ? "파일명이 비었거나 경로 문자를 포함합니다"
@@ -858,11 +1100,13 @@ export const ExportPanel = memo(function ExportPanel({
                   hasAudio: probe.hasAudio,
                 })
               }
-              disabled={busy || batch != null || folderInvalid || segs.length === 0}
+              disabled={busy || batch != null || folderInvalid || segs.length === 0 || sttBusy}
               title={
                 busy
                   ? "내보내기가 끝난 뒤에 실행하세요"
-                  : batch != null
+                  : sttBusy
+                    ? "이 영상의 자막을 만드는 중입니다 — 끝난 뒤에 분할하세요"
+                    : batch != null
                     ? "다른 분할이 진행 중입니다"
                     : folderInvalid
                       ? "폴더명이 비었거나 경로 문자를 포함합니다"

@@ -10,6 +10,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import {
+  Captions,
   ExternalLink,
   FileVideo2,
   FileWarning,
@@ -26,6 +27,7 @@ import {
   RotateCcw,
   RotateCw,
   Scissors,
+  ScrollText,
   SkipBack,
   SkipForward,
   SlidersHorizontal,
@@ -37,10 +39,29 @@ import {
 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import {
+  captionIndexAt,
+  captionPlaySkipTo,
+  captionRemovedRanges,
+  captionSourceCues,
+} from "../../lib/captionEdit";
+import {
+  CAPTION_STYLE_LABELS,
+  CAPTION_STYLE_PRESET_IDS,
+  captionStylePresetOf,
+  setCaptionStylePreset,
+} from "../../lib/captionStyle";
+import { captionLangLabel, captionTranslationLangs } from "../../lib/captionTranslate";
 import { hasUserEngaged } from "../../lib/engagement";
 import { markLocalVideoJob } from "../../lib/events";
 import { openDocWindow } from "../../lib/floating";
-import type { VideoExportFinished, VideoExportSpec, VideoFilmstrip } from "../../lib/ipc";
+import type {
+  CaptionStylePreset,
+  RangeMs,
+  VideoExportFinished,
+  VideoExportSpec,
+  VideoFilmstrip,
+} from "../../lib/ipc";
 import { errorMessage, ipc, isIpcError } from "../../lib/ipc";
 import {
   useDir,
@@ -51,11 +72,16 @@ import {
 } from "../../queries";
 import { isVideo } from "../../lib/language-map";
 import { isMac, modLabel } from "../../lib/platform";
+import { usePanelWidth } from "../../lib/use-panel-width";
+import { captionKey, captionReadOnly, useCaptionDoc } from "../../stores/captionDoc";
 import { useDb } from "../../stores/db";
 import { planSegments, type SplitSegment } from "../../stores/videoSplit";
 import { useOcclusion, useOccludesWebview } from "../../stores/occlusion";
 import { selectBlockingOverlay, useUi } from "../../stores/ui";
 import { EmptyState } from "../common/EmptyState";
+import { CaptionOverlay } from "./captions/CaptionOverlay";
+import { CaptionTrackBlocks, type CaptionTrackData } from "./captions/CaptionTrack";
+import { TranscriptPanel } from "./captions/TranscriptPanel";
 import { CropOverlay, type CropRect } from "./CropOverlay";
 import { captureFrame } from "./frameCapture";
 import { LibraryRail, type RailClip, type RailMedia } from "./LibraryRail";
@@ -188,6 +214,12 @@ export default function VideoPlayer({
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [railQuery, setRailQuery] = useState("");
   const [zoomPct, setZoomPct] = useState(100);
+  // 대본(태스크 72) — 모드 스위치의 세 번째 칸이 아니라 따로 켜는 칼럼이다(재생 모드에서도 검색·이동에 쓴다).
+  const [transcriptOpen, setTranscriptOpen] = useState(false);
+  const [ccOn, setCcOn] = useState(true);
+  // 자막 미리보기 2단(P4) — 원문 아래에 보일 번역 언어. null = 원문만. 기억하지 않는다(보기 옵션).
+  const [ccLang, setCcLang] = useState<string | null>(null);
+  const transcriptW = usePanelWidth("gp:video-transcript-w", 400, 360, 720, "left");
   // 클립 미리보기 — ▷를 누른 클립의 **끝에서 자동 정지**한다.
   // 경계 검사는 rAF 안에서 하므로 끝 시각은 ref로 든다: state로 잡으면 그 effect가 playing에만
   // 의존해서 클립을 바꿔도 루프가 옛 값을 계속 본다(닫힌 클로저).
@@ -293,6 +325,57 @@ export default function VideoPlayer({
   const waveform = useVideoWaveform(projectId, path, 900, editOpen && !!probe.data?.hasAudio);
   const fps = probe.data && probe.data.fps > 0 ? probe.data.fps : 30;
 
+  // ── 자막 문서(태스크 72) — 오버레이는 대본 패널이 닫혀 있어도 문서를 읽는다(스토어는 창마다 하나) ──
+  const capKey = captionKey(projectId, path);
+  const capDoc = useCaptionDoc((s) => s.entries[capKey]?.doc ?? null);
+  // 전사는 CPU를 절반 쓰고 곧 이 영상 문서를 갈아엎는다 — 그동안 같은 플레이어의 내보내기·분할을 막는다(§3.4).
+  const sttBusy = useCaptionDoc((s) => !!s.entries[capKey]?.job);
+  useEffect(() => {
+    useCaptionDoc.getState().ensureLoaded(projectId, path);
+  }, [projectId, path]);
+  // 편집 반영 재생(P2) — 컷·무음 줄이기가 있으면 기본으로 켠다. 재생 rAF가 잘린 구간을 건너뛴다. 남길 구간은
+  // 저장 응답의 plan.keep만 본다(계획 구현은 Rust 하나 — 자동 저장 500ms만큼 늦게 따라온다).
+  const capPlan = useCaptionDoc((s) => s.entries[capKey]?.plan ?? null);
+  const [cutPlayOn, setCutPlayOn] = useState(true);
+  const hasCuts = !!capDoc && !!capPlan && capPlan.outDurationMs < capDoc.source.durationMs;
+  const cutPlay = cutPlayOn && hasCuts;
+  const cutKeepRef = useRef<RangeMs[] | null>(null);
+  cutKeepRef.current = cutPlay && capPlan ? capPlan.keep : null;
+  // 편집 반영 재생 중이면 오버레이도 잘린 어절을 뺀 글을 보인다(들리지 않는 말을 띄우지 않게).
+  const capCues = useMemo(() => (capDoc ? captionSourceCues(capDoc, !cutPlay) : null), [capDoc, cutPlay]);
+  // 자막 스타일(P3) — 문서에 영상마다 기억하고 번인 기본값도 같다(ExportPanel). 되돌리기 한 단계.
+  const capStyle = captionStylePresetOf(capDoc);
+  // 2단 미리보기에 고를 수 있는 번역 언어 — 고른 언어가 이 문서에 없으면(파일 전환) 원문만.
+  const capTrLangs = useMemo(() => captionTranslationLangs(capDoc), [capDoc]);
+  const ccLangOn = ccLang && capTrLangs.includes(ccLang) ? ccLang : null;
+  // 자막 문서 시각(ms, start_time 상대) → 플레이어 시각(초)의 **유일한** 변환 자리(§3.5). 직접 재생의
+  // currentTime은 컨테이너 절대 pts, HLS는 파일 시작 기준이다(video.rs frame_seek_secs와 같은 사정).
+  // 콜백들이 참조를 고정한 채 최신 값을 읽도록 ref에 둔다(대본 패널은 memo).
+  const startSecRef = useRef(0);
+  startSecRef.current = usingHls ? 0 : (probe.data?.startTimeMs ?? capDoc?.source.startTimeMs ?? 0) / 1000;
+  const docToPlayer = useCallback((ms: number) => ms / 1000 + startSecRef.current, []);
+  const playerToDoc = useCallback((sec: number) => (sec - startSecRef.current) * 1000, []);
+  // 타임라인 S1 트랙 — 원본 시각 cue 블록 + 편집본에서 빠지는 구간(플레이어 초로 변환해 넘긴다).
+  // startSec: docToPlayer는 ref를 읽으므로 기준이 바뀌면(HLS 전환·probe 도착) 다시 계산하도록 deps에 둔다.
+  const startSec = startSecRef.current;
+  const capTrack: CaptionTrackData | null = useMemo(() => {
+    if (!capDoc) return null;
+    const cues = captionSourceCues(capDoc).map((c) => ({
+      id: c.cueId,
+      s: docToPlayer(c.startMs),
+      e: docToPlayer(c.endMs),
+      text: c.text,
+    }));
+    const cuts =
+      hasCuts && capPlan
+        ? captionRemovedRanges(capPlan.keep, capDoc.source.durationMs).map((r) => ({
+            s: docToPlayer(r.startMs),
+            e: docToPlayer(r.endMs),
+          }))
+        : [];
+    return { cues, cuts };
+  }, [capDoc, capPlan, hasCuts, startSec, docToPlayer]);
+
   /** 루프백 URL 발급 — 서버가 살아 있으면 같은 URL이 돌아와 멱등(MediaView와 동일). */
   const mint = useCallback(async () => {
     try {
@@ -332,6 +415,7 @@ export default function VideoPlayer({
     clipEndRef.current = null;
     setClipPlaying(null);
     setRangeActive(false);
+    setCutPlayOn(true);
     void mint();
   }, [mint]);
 
@@ -412,6 +496,18 @@ export default function VideoPlayer({
           el.currentTime = end;
           setTime(end);
           setClipPlaying(null);
+        }
+        // 편집 반영 재생 — 잘린 구간에 들어오면 다음 남는 구간의 시작으로. 마지막 구간 뒤면 영상 끝으로 보내
+        // ended로 멈춘다(그 자리에서 pause하면 다시 ▶를 눌러도 곧바로 또 멈춘다 — ended면 브라우저가 처음부터 튼다).
+        const keep = cutKeepRef.current;
+        if (keep && !el.seeking) {
+          const to = captionPlaySkipTo(keep, playerToDoc(el.currentTime));
+          if (to !== null) {
+            if (to >= 0) el.currentTime = docToPlayer(to);
+            else if (Number.isFinite(el.duration)) el.currentTime = el.duration;
+            else el.pause();
+            setTime(el.currentTime);
+          }
         }
       }
       raf = requestAnimationFrame(tick);
@@ -648,12 +744,13 @@ export default function VideoPlayer({
     [clipPlaying, duration],
   );
   const seekBy = (d: number) => seekTo((videoRef.current?.currentTime ?? 0) + d);
-  const togglePlay = () => {
+  // useCallback: 대본 패널(memo)의 Space가 부른다 — videoRef만 읽어 deps가 없다.
+  const togglePlay = useCallback(() => {
     const el = videoRef.current;
     if (!el) return;
     if (el.paused) void el.play().catch(() => {});
     else el.pause();
-  };
+  }, []);
   /** 프레임 스텝 — HTML5엔 프레임 정확 API가 없어 1/fps 근사(probe 없으면 30fps 가정). */
   const frameStep = (dir: 1 | -1) => {
     videoRef.current?.pause();
@@ -780,6 +877,25 @@ export default function VideoPlayer({
   );
   const getTime = useCallback(() => videoRef.current?.currentTime ?? 0, []);
   const isHls = useCallback(() => hlsRef.current, []);
+
+  // 대본 패널(memo)에 주는 함수 props — 참조를 고정하고 시각은 위의 변환 한 쌍만 쓴다.
+  const seekToRef = useRef(seekTo);
+  seekToRef.current = seekTo;
+  const getDocMs = useCallback(() => playerToDoc(videoRef.current?.currentTime ?? 0), [playerToDoc]);
+  const seekDocMs = useCallback((ms: number) => seekToRef.current(docToPlayer(ms)), [docToPlayer]);
+  /** 선택한 cue → 기존 단일 구간(In/Out) — 내보내기는 편집 인스펙터가 그대로 한다(§3.6). */
+  const setRangeDocMs = useCallback(
+    (startMs: number, endMs: number) => {
+      setInPt(docToPlayer(startMs));
+      setOutPt(docToPlayer(endMs));
+      setEditOpen(true);
+    },
+    [docToPlayer],
+  );
+  const capIdx = ccOn && capCues ? captionIndexAt(capCues, playerToDoc(time)) : -1;
+  const capCue = capIdx >= 0 && capCues ? capCues[capIdx] : null;
+  const capTr = capCue && ccLangOn ? capDoc?.translations?.[ccLangOn]?.[capCue.cueId]?.trim() : undefined;
+  const capText = capCue ? (capTr ? `${capCue.text}\n${capTr}` : capCue.text) : null;
 
   // ── 단축키(포커스된 컨테이너 한정) ──
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -965,6 +1081,80 @@ export default function VideoPlayer({
           </span>
         )}
         <div className="flex-1" />
+        {capCues && capCues.length > 0 && (
+          <button
+            data-gpv="cc-toggle"
+            onClick={() => setCcOn((v) => !v)}
+            aria-pressed={ccOn}
+            title={ccOn ? "자막 미리보기 끄기" : "자막 미리보기 켜기"}
+            className={`flex items-center gap-1 rounded px-2 py-0.5 hover:bg-raised ${ccOn ? "text-accent" : "hover:text-fg"}`}
+          >
+            <Captions size={12} /> CC
+          </button>
+        )}
+        {capCues && capCues.length > 0 && (
+          <select
+            data-gpv="caption-style"
+            value={capStyle}
+            onChange={(e) =>
+              useCaptionDoc
+                .getState()
+                .edit(capKey, (d) => setCaptionStylePreset(d, e.target.value as CaptionStylePreset))
+            }
+            disabled={sttBusy || captionReadOnly(capDoc)}
+            title="자막 스타일 — 미리보기(CC)와 자막 번인(편집 › 내보내기)에 같이 쓰입니다"
+            className="rounded border border-edge bg-panel px-1 py-0.5 text-xs text-fg disabled:text-fg-dim"
+          >
+            {CAPTION_STYLE_PRESET_IDS.map((p) => (
+              <option key={p} value={p}>
+                {CAPTION_STYLE_LABELS[p]}
+              </option>
+            ))}
+          </select>
+        )}
+        {capCues && capCues.length > 0 && capTrLangs.length > 0 && (
+          <select
+            data-gpv="caption-trans"
+            value={ccLangOn ?? ""}
+            onChange={(e) => setCcLang(e.target.value || null)}
+            title="자막 미리보기 2단 — 원문 아래에 번역을 함께 보입니다"
+            className="rounded border border-edge bg-panel px-1 py-0.5 text-xs text-fg"
+          >
+            <option value="">원문만</option>
+            {capTrLangs.map((l) => (
+              <option key={l} value={l}>
+                원문 + {captionLangLabel(l)}
+              </option>
+            ))}
+          </select>
+        )}
+        {hasCuts && (
+          <button
+            data-gpv="cut-play-toggle"
+            onClick={() => setCutPlayOn((v) => !v)}
+            aria-pressed={cutPlayOn}
+            title={
+              cutPlayOn
+                ? "편집 반영 재생 중 — 대본에서 자른 말·줄인 쉼을 건너뜁니다. 끄면 원본 그대로 재생합니다"
+                : "편집 반영 재생 켜기 — 대본에서 자른 말·줄인 쉼을 건너뛰며 재생합니다"
+            }
+            className={`flex items-center gap-1 rounded px-2 py-0.5 hover:bg-raised ${cutPlayOn ? "text-accent" : "hover:text-fg"}`}
+          >
+            <Scissors size={12} /> 편집 반영
+          </button>
+        )}
+        {/* 대본 — 모드 스위치의 세 번째 칸이 아니다(아래 "두 상태뿐" 결정 유지). 켜면 가운데와 인스펙터 사이 칼럼. */}
+        <button
+          data-gpv="transcript-toggle"
+          onClick={() => setTranscriptOpen((v) => !v)}
+          aria-pressed={transcriptOpen}
+          title="대본 — 자동 자막 만들기·검색·자막 고치기"
+          className={`flex items-center gap-1 rounded px-2 py-0.5 hover:bg-raised ${
+            transcriptOpen ? "bg-raised text-accent" : "hover:text-fg"
+          }`}
+        >
+          <ScrollText size={12} /> 대본
+        </button>
         {/* 모드 스위치 — 두 상태(재생/편집)뿐이다. 디자인의 "내보내기" 모드는 편집 인스펙터가
             이미 가리키는 것과 같아서, 세 번째 칸을 두면 눌러도 아무것도 안 바뀐다. */}
         <div
@@ -1158,6 +1348,7 @@ export default function VideoPlayer({
               ))}
             </div>
           )}
+          {ccOn && capCues && <CaptionOverlay text={capText} preset={capStyle} />}
           {cropActive && probe.data && (
             <CropOverlay
               videoW={probe.data.width}
@@ -1191,6 +1382,7 @@ export default function VideoPlayer({
           onRangeCommit={() => setRangeActive(false)}
           filmstrip={filmstrip.data ?? null}
           waveform={waveform.data ?? []}
+          captionTrack={capTrack}
           segments={segments}
           vcodec={probe.data?.vcodec ?? null}
           acodec={probe.data?.acodec ?? null}
@@ -1377,6 +1569,32 @@ export default function VideoPlayer({
 
         </div>
 
+        {/* 대본 칼럼 — key=path: 선택·찾기·입력 같은 패널 상태는 파일마다 새로. 문서·저장·전사는 스토어가 든다. */}
+        {transcriptOpen && (
+          <div
+            className="relative flex shrink-0 flex-col border-l border-edge bg-panel"
+            style={{ width: transcriptW.width }}
+          >
+            <div
+              onMouseDown={transcriptW.startResize}
+              title="드래그해 폭 조절"
+              className="absolute inset-y-0 -left-1 z-20 w-2 cursor-col-resize"
+            />
+            <TranscriptPanel
+              key={path}
+              projectId={projectId}
+              path={path}
+              tool={tool.data}
+              hasAudio={probe.data?.hasAudio}
+              audioStreams={probe.data?.audioStreams}
+              getDocMs={getDocMs}
+              onSeekDocMs={seekDocMs}
+              onTogglePlay={togglePlay}
+              onSetRangeDocMs={setRangeDocMs}
+            />
+          </div>
+        )}
+
         {/* 편집·내보내기 인스펙터 — key=path: 파일이 바뀌면 상태(파일명·형식·수정 플래그) 전부
             리셋. 안 하면 이전 파일용으로 고친 파일명이 남아 새 영상을 엉뚱한 이름으로 내보낸다. */}
         {editOpen && (
@@ -1405,6 +1623,7 @@ export default function VideoPlayer({
               onSetMaskKind={setMaskKind}
               getTime={getTime}
               isHls={isHls}
+              sttBusy={sttBusy}
             />
           </div>
         )}
@@ -1499,6 +1718,7 @@ function Timeline({
   onInteract,
   filmstrip,
   waveform,
+  captionTrack,
   segments,
   vcodec,
   acodec,
@@ -1516,6 +1736,8 @@ function Timeline({
   filmstrip: VideoFilmstrip | null;
   /** A1 트랙 — 전체 길이를 buckets개로 압축한 피크(0..1). 오디오가 없으면 빈 배열. */
   waveform: number[];
+  /** S1 자막 트랙(플레이어 초, 태스크 72) — 자막 문서가 없으면 null(행을 그리지 않는다). */
+  captionTrack: CaptionTrackData | null;
   /** 분할 경계로 잘린 구간들 — 틱이 없으면 전체 1개. planSegments 결과 그대로. */
   segments: SplitSegment[];
   vcodec: string | null;
@@ -1590,6 +1812,7 @@ function Timeline({
       ...(inPt != null ? [inPt] : []),
       ...(outPt != null ? [outPt] : []),
       ...segments.map((sg) => sg.startMs / 1000),
+      ...(captionTrack ? captionTrack.cues.flatMap((c) => [c.s, c.e]) : []),
     ];
     const pxPerSec = barW / vlen;
     let best = t;
@@ -1845,7 +2068,7 @@ function Timeline({
             {pendingIn != null && `(시작 ${fmtClock(pendingIn, 1)} · 끝을 클릭)`} · Esc 취소
           </span>
         )}
-        <label className="flex items-center gap-1" title="마커·플레이헤드·클립 경계에 붙입니다">
+        <label className="flex items-center gap-1" title="마커·플레이헤드·클립 경계·자막 경계에 붙입니다">
           <input
             type="checkbox"
             checked={snap}
@@ -1997,6 +2220,30 @@ function Timeline({
                   </svg>
                 </div>
               )}
+              <div className="absolute inset-y-0 w-px bg-fg" style={{ left: `${pct(time)}%` }} />
+            </div>
+          </div>
+        )}
+
+        {/* S1 — 자막 cue 블록 + 편집본에서 빠지는 구간 빗금(태스크 72). 블록 층은 memo(CaptionTrack.tsx) —
+            이 행은 매 프레임 그려지는 플레이헤드만 든다. */}
+        {captionTrack && (
+          <div className="flex items-stretch gap-1.5">
+            <div className="w-16 shrink-0 pt-0.5">
+              <div className="flex items-center gap-1 text-[10px] font-semibold text-fg">
+                <span className="h-2.5 w-0.5 rounded-full bg-mod" />
+                S1
+              </div>
+              <div className="truncate text-[9px] text-fg-dim">자막</div>
+            </div>
+            <div className="relative h-6 flex-1 overflow-hidden rounded-sm border border-edge bg-raised">
+              <CaptionTrackBlocks
+                vs={vs}
+                ve={ve}
+                barW={barW}
+                cues={captionTrack.cues}
+                cuts={captionTrack.cuts}
+              />
               <div className="absolute inset-y-0 w-px bg-fg" style={{ left: `${pct(time)}%` }} />
             </div>
           </div>

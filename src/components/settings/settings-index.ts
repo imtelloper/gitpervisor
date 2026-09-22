@@ -107,6 +107,10 @@ export const SETTINGS_INDEX: SettingIndexEntry[] = [
   { category: "ai", key: "llmContext", label: "컨텍스트 길이", keywords: ["context", "컨텍스트", "ctx", "토큰", "길이"] },
   { category: "ai", key: "llmLanguage", label: "AI 출력 언어", keywords: ["language", "언어", "한국어", "english", "번역", "요약"] },
   { category: "ai", key: "llmBackend", label: "AI 백엔드", keywords: ["backend", "백엔드", "vulkan", "cpu", "gpu", "폴백"] },
+  // 음성 인식(자막) — 태스크 72. AI 섹션의 소제목(새 카테고리 없음).
+  { category: "ai", key: "sttModel", label: "음성 인식 모델", keywords: ["whisper", "음성", "인식", "자막", "stt", "subtitle", "caption", "모델", "turbo"] },
+  { category: "ai", key: "sttLanguage", label: "음성 인식 언어", keywords: ["whisper", "음성", "자막", "언어", "language", "한국어", "auto", "자동"] },
+  { category: "ai", key: null, id: "sttRuntimeDownload", label: "음성 인식 엔진 다운로드", keywords: ["whisper", "whisper.cpp", "음성", "자막", "엔진", "vad", "다운로드", "download", "설치", "brew"] },
   // 업데이트 (즉시 액션 — key null)
   { category: "update", key: null, id: "appUpdate", label: "앱 업데이트", keywords: ["update", "업데이트", "버전", "version", "새 버전", "설치", "upgrade"] },
   { category: "update", key: null, id: "autoUpdateCheck", label: "시작 시 자동 확인", keywords: ["auto", "자동", "확인", "check", "업데이트"] },

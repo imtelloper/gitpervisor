@@ -289,6 +289,9 @@ export interface Settings {
   llmContext: number; // -c, 저장 시 2048..32768 클램프
   llmLanguage: string; // "ko" | "en" — 요약·번역 기본 언어
   llmBackend: "auto" | "cpu"; // Windows Vulkan 폴백이 "cpu"를 기록
+  // 영상 자동 자막 (태스크 72 — stt/*.rs)
+  sttModel: string; // STT_MODELS id — 기본 "turbo-q5"
+  sttLanguage: string; // whisper -l: "auto" | "ko" | "en" … (저장 시 소문자)
   /** 즐겨찾기 폴더 (태스크 66). **이 목록이 곧 백엔드의 허용 루트다** — `fav_*` 커맨드는 여기
    *  등록된 폴더 아래가 아니면 거부한다. 비어 있으면 폴더 창을 열 수 있는 경로가 없다. */
   favoriteFolders: FavoriteFolder[];
@@ -364,6 +367,8 @@ export interface VideoToolStatus {
   probeFound: boolean; // ffprobe 동반 여부 — 없으면 프로브·편집 불가
   version: string | null;
   managedSupported: boolean; // 이 플랫폼에 앱 내 다운로드가 있는가
+  /** 자막 번인(libass `subtitles` 필터)이 되는 빌드인가 — false면 소프트 자막으로 안내(태스크 72 §3.6-5). */
+  hasSubtitlesFilter: boolean;
 }
 
 export interface VideoEnsureProgress {
@@ -385,6 +390,21 @@ export interface VideoMeta {
   rotation: number;
   hasAudio: boolean;
   hasVideo: boolean;
+  /** ffprobe format.start_time(ms, 음수 가능). 직접 재생의 currentTime은 컨테이너 절대 pts, 자막 문서·HLS는
+   *  start_time 상대 — 플레이어 경계 한 곳에서 `docT/1000 + (usingHls ? 0 : startTimeMs/1000)`(태스크 72 §3.5). */
+  startTimeMs: number;
+  /** 오디오 트랙 목록(파일 순) — 자막을 만들 트랙 고르기(OBS 다중 트랙 녹화). */
+  audioStreams: VideoAudioStream[];
+}
+
+export interface VideoAudioStream {
+  /** 오디오 스트림 안 순번(ffmpeg `0:a:<index>`) — `TranscribeReq.audioStream`에 이 값을 넘긴다. 전체 스트림 번호가 아니다. */
+  index: number;
+  codec: string | null;
+  channels: number | null;
+  /** 컨테이너 태그 그대로(`kor`·`und` 등). */
+  language: string | null;
+  title: string | null;
 }
 
 /** 내보내기 스펙 — copy(무손실, 키프레임 스냅)는 배속·크롭·화질과 양립 불가. */
@@ -405,6 +425,26 @@ export interface VideoExportSpec {
   removeAudio: boolean;
   durationMs: number; // 진행률 분모 (probe 값)
   hasAudio: boolean;
+  /** 대본 편집본(태스크 72 §3.6) — Rust가 **저장된** 자막 문서로 남길 구간을 계산해 이어 붙인다(keep은 넘기지 않는다).
+   *  encode·mp4/mov 전용, `range`와 함께 쓸 수 없다. 단어 시각이 근사(`approx`)거나 원본이 바뀐(stale) 문서는 거절된다. */
+  captionCut?: boolean;
+  /** 자막 입힌 영상(태스크 72 §3.6) — **저장된** 자막 문서의 자막을 번인하거나 자막 스트림으로 싣는다. mp4/mov 전용.
+   *  소리는 문서가 전사한 오디오 트랙(`source.audioStream`)이다. */
+  captionSubs?: CaptionSubsSpec | null;
+}
+
+export type CaptionStylePreset = "basic" | "box" | "large";
+
+export interface CaptionSubsSpec {
+  /** burn: 화면에 그려 넣음(encode·`hasSubtitlesFilter` 필요, 없으면 백엔드가 TOOL_NOT_FOUND). soft: mov_text 자막 스트림(copy와도 됨). */
+  mode: "burn" | "soft";
+  /** "edited"는 captionCut과 짝이다 — 편집본에는 편집본 시각, 아니면 원본 시각(백엔드가 어긋나면 거절). */
+  timeline: "source" | "edited";
+  /** "translation"·"both"는 lang 필수, 내보낼 줄마다 번역이 있어야 한다. both = 원문 아래 번역 2단. */
+  text: "caption" | "translation" | "both";
+  lang: string | null;
+  /** 번인 스타일(src/lib/captionStyle.ts 값 표). soft에서는 쓰이지 않는다. */
+  preset: CaptionStylePreset;
 }
 
 /** 타임라인 V1 트랙용 필름스트립 — 프레임 N장을 가로로 이어 붙인 스프라이트 1장.
@@ -910,7 +950,9 @@ export type ErrorCode =
   | "BUSY"
   // 원본 인코딩으로 표현 못 하는 문자가 있어 저장을 **막았다**(설계 B-K4). 파일은 불변이다.
   // 실패 토스트가 아니라 "UTF-8 로 저장 / 취소" 확인창을 띄우는 것이 이 코드의 계약이다.
-  | "UNMAPPABLE";
+  | "UNMAPPABLE"
+  // 대본 편집본의 구간이 너무 많은데 ffmpeg가 7 미만이라 그래프 파일을 못 읽는다(태스크 72 §3.6-3).
+  | "TOO_MANY_RANGES";
 
 // ---- API 클라이언트 전송 계약 (commands/http.rs §4.9 / §5.1) ----
 // 백엔드 HttpRequest의 camelCase serde와 1:1 정합. lib/apiclient.ts에서 조립한
@@ -1141,6 +1183,22 @@ async function callMutating<T>(
     }
     throw e;
   }
+}
+
+/** 다운로드 진행 Channel — **호출마다 새로** 만든다. 같은 Channel을 두 번 넘기면 인덱스 카운터가 어긋나
+ *  메시지가 조용히 영구 정지한다(CLAUDE.md). */
+function progressChannel<T>(onProgress?: (p: T) => void): Channel<string> {
+  const ch = new Channel<string>();
+  if (onProgress) {
+    ch.onmessage = (raw) => {
+      try {
+        onProgress(JSON.parse(raw) as T);
+      } catch {
+        /* 형식 오류 무시 — 진행 표시일 뿐, 결과는 invoke 응답이 진실이다 */
+      }
+    };
+  }
+  return ch;
 }
 
 export const ipc = {
@@ -1856,6 +1914,39 @@ export const ipc = {
   // 진행 중 요청 취소 — id가 다르면 no-op(늦은 취소가 다음 요청을 죽이지 않는다).
   llmCancel: (requestId: string) => invoke<void>("llm_cancel", { requestId }),
 
+  // ---- 영상 자동 자막 (stt/*.rs, 태스크 72) ----
+  // 다운로드 취소는 llmDownloadCancel("stt-runtime" | "stt-model-<id>")을 그대로 쓴다(같은 레지스트리).
+  sttStatus: () =>
+    call<SttStatus>("stt_status", {}, { lane: "background", attempts: 1, timeoutMs: 8_000 }),
+  // 엔진(8~10MB) + VAD — 설정 버튼 클릭으로만("클릭이 곧 동의"). 스모크 통과 시에만 설치됨.
+  sttRuntimeEnsure: (onProgress?: (p: LlmProgress) => void) =>
+    callMutating<SttStatus>("stt_runtime_ensure", { onProgress: progressChannel(onProgress) }, 30 * 60_000),
+  // 모델(57~547MiB) — 재시도 절대 금지(중복 실행은 수백 MB 낭비).
+  sttModelDownload: (modelId: string, onProgress?: (p: LlmProgress) => void) =>
+    callMutating<SttStatus>(
+      "stt_model_download",
+      { modelId, onProgress: progressChannel(onProgress) },
+      60 * 60_000,
+    ),
+  // 그 모델로 전사 중이면 BUSY.
+  sttModelDelete: (modelId: string) => callMutating<SttStatus>("stt_model_delete", { modelId }),
+  // 장시간 잡 — 진행·종결은 stt://progress·stt://finished 이벤트가 진실이고 이 프라미스는 보조다
+  // (Windows 응답 유실 대비: 먼저 온 쪽을 한 번만 처리). jobId는 crypto.randomUUID(). 재시도 절대 금지.
+  sttTranscribe: (req: TranscribeReq) =>
+    callMutating<CaptionLoaded>("stt_transcribe", { req }, 6 * 60 * 60_000),
+  // 멱등 취소 — 모르는 jobId는 no-op.
+  sttTranscribeCancel: (jobId: string) =>
+    callMutating<void>("stt_transcribe_cancel", { jobId }, 10_000),
+  // 자막 문서 — 없으면 null. stale이면 "원본이 바뀜" 배너(편집은 막지 않는다).
+  captionDocLoad: (projectId: string, relPath: string) =>
+    call<CaptionLoaded | null>("caption_doc_load", { projectId, relPath }, { attempts: 1, timeoutMs: 20_000 }),
+  // baseRev = 마지막으로 읽거나 저장한 rev(새 문서는 0). 어긋나면 CONFLICT. 성공하면 caption://changed.
+  captionDocSave: (projectId: string, relPath: string, doc: CaptionDoc, baseRev: number) =>
+    callMutating<CaptionSaved>("caption_doc_save", { projectId, relPath, doc, baseRev }, 30_000),
+  // 레포에 SRT/VTT/TXT — 이미 있으면 ALREADY_EXISTS(overwrite=true로 재시도). 반환 = 쓴 상대 경로.
+  captionExportSubs: (projectId: string, relPath: string, spec: SubExportSpec) =>
+    callMutating<string>("caption_export_subs", { projectId, relPath, spec }, 60_000),
+
   // ---- 작업 리포트 (report.rs, 태스크 60) ----
   // 히트맵은 1년치를 **프로젝트마다** 부른다 — background 레인·재시도 없음(다음 무효화가 재조회).
   gitActivity: (projectId: string, since: string, until: string, mine: boolean) =>
@@ -1946,6 +2037,165 @@ export interface ChatDone {
   completionTokens: number;
   /** finish_reason === "length" — max_tokens에서 잘렸다. */
   truncated: boolean;
+}
+
+// ---- 영상 자동 자막 타입 (stt/*.rs, 태스크 72) — Rust serde 구조체가 원본, 같은 작업에서 맞춘다 ----
+
+export type SttSource = "managed" | "path" | "wellknown";
+
+export type SttRuntime =
+  | { state: "found"; path: string; source: SttSource }
+  /** 관리형 스펙이 있는데 아직 안 받았다. */
+  | { state: "missing" }
+  /** 관리형이 없는 플랫폼(macOS 등)이고 발견된 것도 없다 — `brew install whisper-cpp` 안내. */
+  | { state: "unsupported" };
+
+export interface SttModelStatus {
+  id: string;
+  label: string;
+  size: number;
+  note: string;
+  installed: boolean;
+}
+
+export interface SttStatus {
+  runtime: SttRuntime;
+  /** 아직 안 받았을 때 버튼에 적을 크기(바이트, VAD 포함). 관리형이 없으면 0. */
+  runtimeSize: number;
+  models: SttModelStatus[];
+  vadInstalled: boolean;
+}
+
+export interface TranscribeReq {
+  jobId: string;
+  projectId: string;
+  relPath: string;
+  modelId: string;
+  language: string;
+  /** 용어 힌트(≤500자). Windows는 ASCII만 — 엔진이 명령줄 한글을 깨뜨린다. */
+  prompt: string | null;
+  /** 전사할 오디오 트랙(`VideoMeta.audioStreams[].index`, 기본 0). 문서 `source.audioStream`에 남는다. */
+  audioStream?: number;
+}
+
+export type SttPhase = "extract" | "transcribe" | "parse";
+
+/** `stt://progress` — percent는 전체 진행(0~100, 추출 0~10 · 인식 10~95 · 정리 95~100). */
+export interface SttProgressEvent {
+  jobId: string;
+  phase: SttPhase;
+  percent: number;
+}
+
+/** `stt://finished` — 모든 결과에 한 번. 성공이면 captionDocLoad로 다시 읽는다(결과는 이미 디스크에 있다). */
+export interface SttFinishedEvent {
+  jobId: string;
+  ok: boolean;
+  cancelled: boolean;
+  error: string | null;
+}
+
+/** 시각은 전부 정수 ms, start_time 상대(ffmpeg 디코드 기준). gap은 text·p가 없다. */
+export type CaptionToken =
+  | { id: string; kind: "word"; startMs: number; endMs: number; text: string; p?: number; cut: boolean }
+  | { id: string; kind: "gap"; startMs: number; endMs: number; cut: boolean };
+
+export type CaptionSuspect = "repeat" | "invalid-utf8";
+
+export interface CaptionCue {
+  id: string;
+  firstTokenId: string;
+  lastTokenId: string;
+  /** 자막 줄 override(Correct). 없으면 남은 word를 이어 붙인다. */
+  caption?: string;
+  suspect?: CaptionSuspect;
+}
+
+export interface CaptionDoc {
+  /** 이 앱이 아는 것은 1. 더 크면 새 앱의 문서 — 읽기 전용으로 보여 주고 저장하지 않는다(백엔드도 거절). */
+  version: number;
+  rev: number;
+  source: {
+    rel: string;
+    sizeBytes: number;
+    mtimeMs: number;
+    durationMs: number;
+    startTimeMs: number;
+    audioStream: number;
+  };
+  engine: {
+    name: "whisper.cpp";
+    build: string;
+    modelId: string;
+    language: string;
+    detectedLanguage?: string;
+    vad: boolean;
+    prompt?: string;
+    /** "approx"면 단어 시각이 부정확하다(대응표·DTW 없음) — 컷 편집(P2)은 막는다. */
+    wordTiming: "dtw" | "approx";
+  };
+  tokens: CaptionToken[];
+  cues: CaptionCue[];
+  /** 무음 줄이기 목표(ms) — 조건보다 긴 쉼을 이 길이로 줄인다. 필드 삭제 = 복구. */
+  silenceKeepMs?: number;
+  /** 무음 줄이기 조건(ms, "X초 초과"). 없으면 목표 길이가 곧 조건. */
+  silenceMinMs?: number;
+  /** 번역 자막(P4): lang → cueId → 번역문. 번역의 원문은 원본 시각 cue 글(잘린 어절 포함, Rust `source_cues`). */
+  translations?: Record<string, Record<string, string>>;
+  /** lang → cueId → 번역할 때 원문의 해시(`captionTranslationSrc`). 지금 원문의 해시와 다르면 "원문이 바뀐 번역"으로
+   *  표시하고 이어서 번역할 때 다시 번역한다. 백엔드는 읽지 않는다. */
+  translationSrc?: Record<string, Record<string, string>>;
+  /** 자막 스타일 — 미리보기 오버레이와 번인 기본값(없으면 basic). 재전사해도 남는다. 백엔드는 번인 때 이 값이 아니라
+   *  `CaptionSubsSpec.preset`을 쓴다. */
+  stylePreset?: CaptionStylePreset;
+}
+
+export interface RangeMs {
+  startMs: number;
+  endMs: number;
+}
+
+export interface CaptionOutCue {
+  cueId: string;
+  startMs: number;
+  endMs: number;
+  text: string;
+}
+
+/** Rust `caption_plan`의 결과 — 미리보기·타임라인 음영은 이것만 쓴다(계획 구현은 Rust 하나). */
+export interface CaptionPlan {
+  keep: RangeMs[];
+  outCues: CaptionOutCue[];
+  outDurationMs: number;
+}
+
+export interface CaptionLoaded {
+  doc: CaptionDoc;
+  /** 원본 크기·수정 시각이 문서와 다르다(또는 원본이 없다). */
+  stale: boolean;
+  plan: CaptionPlan;
+}
+
+export interface CaptionSaved {
+  rev: number;
+  plan: CaptionPlan;
+}
+
+/** `caption://changed` — 다른 창의 저장. 미저장 편집이 없으면 다시 읽고, 있으면 충돌 배너. */
+export interface CaptionChangedEvent {
+  projectId: string;
+  relPath: string;
+  rev: number;
+}
+
+export interface SubExportSpec {
+  format: "srt" | "vtt" | "txt";
+  timeline: "source" | "edited";
+  /** "translation"·"both"는 lang 필수, 내보낼 줄마다 `doc.translations[lang]`이 있어야 한다(없으면 거절). */
+  text: "caption" | "translation" | "both";
+  lang: string | null;
+  outRel: string;
+  overwrite: boolean;
 }
 
 // ---- 작업 리포트 타입 (report.rs, 태스크 60) ----

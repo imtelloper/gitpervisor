@@ -18,6 +18,7 @@ import type {
   VideoExportSpec,
 } from "../lib/ipc";
 import { errorMessage, ipc, isIpcError } from "../lib/ipc";
+import { invalidateVideoMedia } from "../queries";
 import { useUi } from "./ui";
 
 export interface SplitSegment {
@@ -274,6 +275,7 @@ export const useVideoSplit = create<VideoSplitState>((set, get) => ({
       void queryClient?.invalidateQueries({ queryKey: ["dir"] });
       void queryClient?.invalidateQueries({ queryKey: ["statuses"] });
       void queryClient?.invalidateQueries({ queryKey: ["video-probe"] });
+      if (queryClient && b) invalidateVideoMedia(queryClient, b.projectId, (rel) => rel.startsWith(`${b.folderRel}/`));
       if (b) {
         const ids = [...b.jobIds];
         ids.forEach((id) => recentlyOwned.add(id));

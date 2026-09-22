@@ -25,6 +25,8 @@ use tokio::process::Command;
 use super::projects::project_path;
 use crate::error::{ErrorCode, IpcError};
 use crate::state::AppState;
+use crate::stt::subs::{SubText, SubTimeline};
+use crate::stt::video_subs::{CaptionSubs, SubsFile, SubsMode, BURN_FILTER};
 
 // ══════════════════════════ 잡 레지스트리 (취소·종료 회수) ══════════════════════════
 
@@ -41,9 +43,10 @@ pub struct VideoJob {
 }
 
 /// RAII: drop 시점에 레지스트리에서 job을 제거 (성공/실패/취소/패닉 모두 — http.rs InflightGuard).
-struct JobGuard {
-    jobs: Arc<Mutex<HashMap<String, VideoJob>>>,
-    job_id: String,
+/// 전사 잡(stt/transcribe.rs)도 같은 레지스트리에 올라가 `video_kill_all`이 앱 종료 때 함께 거둔다.
+pub(crate) struct JobGuard {
+    pub(crate) jobs: Arc<Mutex<HashMap<String, VideoJob>>>,
+    pub(crate) job_id: String,
 }
 
 impl Drop for JobGuard {
@@ -78,7 +81,7 @@ pub fn video_kill_all(state: &AppState) {
 
 /// ffmpeg는 자식을 만들지 않지만, unix는 spawn 시 process_group(0)을 줬으므로 그룹째 거둔다.
 #[allow(unused_variables)]
-fn kill_pid(pid: u32) {
+pub(crate) fn kill_pid(pid: u32) {
     #[cfg(unix)]
     if pid > 1 {
         unsafe {
@@ -249,6 +252,42 @@ pub struct VideoToolStatus {
     pub version: Option<String>,
     /// 이 플랫폼에 앱 내 다운로드 스펙이 있는가 (없으면 UI가 패키지 관리자 안내).
     pub managed_supported: bool,
+    /// 자막 번인(libass `subtitles` 필터)이 되는 빌드인가 — 없으면 UI가 소프트 자막으로 안내(태스크 72 §3.6-5).
+    pub has_subtitles_filter: bool,
+}
+
+/// `ffmpeg -filters` 목록에 `name` 필터가 있는가. 줄 모양: ` ..C subtitles         V->V       Render text …`.
+fn filters_list_has(listing: &str, name: &str) -> bool {
+    listing.lines().any(|l| {
+        let mut it = l.split_whitespace().skip(1);
+        it.next() == Some(name) && it.next().is_some_and(|io| io.contains("->"))
+    })
+}
+
+/// 경로별 `subtitles` 필터 유무 — 빌드마다 다르므로(gyan essentials·johnvansickle에는 있고, 시스템 ffmpeg는 모른다)
+/// 경로마다 한 번만 묻는다. 실패(실행·시간 초과)는 캐시하지 않는다.
+static SUBTITLES_FILTER: Mutex<Option<HashMap<PathBuf, bool>>> = Mutex::new(None);
+
+pub(crate) async fn has_subtitles_filter(ffmpeg: &Path) -> Result<bool, IpcError> {
+    let cached = SUBTITLES_FILTER.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|m| m.get(ffmpeg).copied());
+    if let Some(v) = cached {
+        return Ok(v);
+    }
+    let (code, out, err) = run_capture(ffmpeg, &["-hide_banner", "-filters"], 10).await?;
+    if code != 0 {
+        return Err(IpcError {
+            code: ErrorCode::Io,
+            message: format!("ffmpeg 필터 목록을 읽지 못했습니다({}, 종료 코드 {code})", ffmpeg.display()),
+            stderr: Some(err),
+        });
+    }
+    let has = filters_list_has(&out, "subtitles");
+    SUBTITLES_FILTER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(HashMap::new)
+        .insert(ffmpeg.to_path_buf(), has);
+    Ok(has)
 }
 
 /// "ffmpeg version 9.0.1-essentials_build-www.gyan.dev ..." → "9.0.1-essentials_build-…" 첫 토큰.
@@ -272,6 +311,11 @@ pub async fn video_tool_status(
                 .await
                 .ok()
                 .and_then(|(_, out, _)| parse_version(out.lines().next().unwrap_or("")));
+            // 상태 조회는 실패해도 "번인 불가"로 보인다 — 내보내기가 같은 검사를 다시 하고 그때 진짜 오류를 알린다.
+            let has_subtitles_filter = has_subtitles_filter(&bin.ffmpeg).await.unwrap_or_else(|e| {
+                log::warn!("[video] 자막 번인 필터 확인 실패 {}: {}", bin.ffmpeg.display(), e.message);
+                false
+            });
             Ok(VideoToolStatus {
                 found: true,
                 source: Some(bin.source.to_string()),
@@ -279,6 +323,7 @@ pub async fn video_tool_status(
                 probe_found: bin.ffprobe.is_some(),
                 version,
                 managed_supported,
+                has_subtitles_filter,
             })
         }
         Err(_) => Ok(VideoToolStatus {
@@ -288,6 +333,7 @@ pub async fn video_tool_status(
             probe_found: false,
             version: None,
             managed_supported,
+            has_subtitles_filter: false,
         }),
     }
 }
@@ -309,6 +355,24 @@ pub struct VideoMeta {
     pub rotation: i64,
     pub has_audio: bool,
     pub has_video: bool,
+    /// ffprobe `format.start_time`(ms, 음수 가능 — Opus webm −7ms). 직접 재생의 currentTime은 컨테이너
+    /// 절대 pts, ffmpeg `-ss`·HLS·자막 문서 시각은 start_time 상대라 그 사이를 이 값으로 옮긴다
+    /// (frame_seek_secs의 "시각의 기준", 태스크 72 §3.5).
+    pub start_time_ms: i64,
+    /// 오디오 트랙 목록(파일 순) — 자막을 만들 트랙 고르기(OBS 다중 트랙 녹화, 태스크 72 P3).
+    pub audio_streams: Vec<AudioStreamInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioStreamInfo {
+    /// 오디오 스트림 안 순번 — ffmpeg `-map 0:a:<index>`, 전사 요청 `audioStream`이 이 값이다(전체 스트림 번호가 아니다).
+    pub index: u32,
+    pub codec: Option<String>,
+    pub channels: Option<u32>,
+    /// 컨테이너 태그 그대로(`kor`·`und` 등).
+    pub language: Option<String>,
+    pub title: Option<String>,
 }
 
 /// "30000/1001" → 29.97. "0/0"(미상)은 None.
@@ -356,6 +420,26 @@ fn parse_probe(json: &str) -> Result<VideoMeta, IpcError> {
         .as_str()
         .and_then(|b| b.parse::<u64>().ok())
         .map(|b| b / 1000);
+    // 없거나 "N/A"면 0 — parse_start_time과 같은 규칙.
+    let start_time_ms = v["format"]["start_time"]
+        .as_str()
+        .and_then(|s| s.parse::<f64>().ok())
+        .filter(|s| s.is_finite())
+        .map_or(0, |s| (s * 1000.0).round() as i64);
+
+    let text = |v: &serde_json::Value| v.as_str().map(str::to_string);
+    let audio_streams = streams
+        .iter()
+        .filter(|s| s["codec_type"] == "audio")
+        .enumerate()
+        .map(|(i, s)| AudioStreamInfo {
+            index: i as u32,
+            codec: text(&s["codec_name"]),
+            channels: s["channels"].as_u64().map(|c| c as u32),
+            language: text(&s["tags"]["language"]),
+            title: text(&s["tags"]["title"]),
+        })
+        .collect();
 
     Ok(VideoMeta {
         duration_ms,
@@ -368,10 +452,12 @@ fn parse_probe(json: &str) -> Result<VideoMeta, IpcError> {
         rotation,
         has_audio: audio.is_some(),
         has_video: vs.is_some(),
+        start_time_ms,
+        audio_streams,
     })
 }
 
-fn need_probe(bin: &FfmpegBin) -> Result<PathBuf, IpcError> {
+pub(crate) fn need_probe(bin: &FfmpegBin) -> Result<PathBuf, IpcError> {
     bin.ffprobe.clone().ok_or_else(|| {
         IpcError::new(
             ErrorCode::ToolNotFound,
@@ -428,7 +514,8 @@ pub async fn video_probe(
 
 // ══════════════════════════ 내보내기 스펙 → ffmpeg 인자 ══════════════════════════
 
-#[derive(Debug, Clone, Deserialize)]
+/// 자막 편집 계획(stt/plan.rs `CaptionPlan.keep`)이 같은 모양으로 IPC에 내보낸다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RangeMs {
     pub start_ms: u64,
@@ -468,6 +555,14 @@ pub struct ExportSpec {
     /// 진행률 분모 — 프론트가 probe에서 넘긴다(백엔드 재프로브 생략).
     pub duration_ms: u64,
     pub has_audio: bool,
+    /// 대본 편집본(태스크 72 §3.6-1) — 저장된 자막 문서로 `caption_plan`을 계산해 남는 구간만 이어 붙인다.
+    /// 남길 구간은 IPC로 받지 않는다(계획 구현이 하나여야 한다). 재인코딩·영상 컨테이너 전용, `range`와 배타.
+    #[serde(default)]
+    pub caption_cut: bool,
+    /// 자막 입힌 영상(태스크 72 §3.6 4~6) — 저장된 자막 문서의 자막을 번인(libass)하거나 자막 스트림(mov_text)으로
+    /// 싣는다. 영상 컨테이너 전용, 번인은 재인코딩 전용, 편집본 시각은 `caption_cut`과 짝.
+    #[serde(default)]
+    pub caption_subs: Option<CaptionSubs>,
 }
 
 fn ext_of(path: &str) -> String {
@@ -495,6 +590,42 @@ fn fmt_secs(ms: u64) -> String {
     format!("{}.{:03}", ms / 1000, ms % 1000)
 }
 
+/// ms → 필터 그래프 안 초 표기 — 소수 6자리 숫자만("12.345000", §3.6-1). 정수 연산이라 부동소수 표기(1e-5 등)가 없다.
+fn fmt_secs6(ms: u64) -> String {
+    format!("{}.{:03}000", ms / 1000, ms % 1000)
+}
+
+/// 인라인 `-filter_complex`가 이보다 길면 파일로 넘긴다. 부록 B.2: 구간당 ≈192자, 150구간(29.0K자)도 Windows
+/// 명령줄 한도(32,767자) 안에서 됐다 — 24KB는 입·출력 경로 몫까지 남긴 경계.
+const INLINE_GRAPH_MAX: usize = 24 * 1024;
+
+/// 대본 편집본 그래프 — 남길 구간마다 trim/atrim 후 concat. 출력 라벨 `[vc]`(+ 오디오면 `[ac]`).
+/// 입력 탐색(-ss)은 쓰지 않는다: 구간이 여럿이라 전부 한 디코드 타임라인(start_time 상대 = 자막 문서 시각)에서 자른다.
+/// 이음매의 딸깍 소리를 막으려 구간마다 10ms 페이드 인·아웃. `audio`는 오디오 입력 스트림(`0:a`·`0:a:<n>`), 없으면 영상만.
+fn build_cut_graph(keep: &[RangeMs], audio: Option<&str>) -> String {
+    let mut parts: Vec<String> = Vec::with_capacity(keep.len() * 2 + 1);
+    let mut inputs = String::new();
+    for (i, r) in keep.iter().enumerate() {
+        let (a, b) = (fmt_secs6(r.start_ms), fmt_secs6(r.end_ms));
+        parts.push(format!("[0:v]trim=start={a}:end={b},setpts=PTS-STARTPTS[v{i}]"));
+        inputs.push_str(&format!("[v{i}]"));
+        if let Some(ain) = audio {
+            let fade_out = fmt_secs6((r.end_ms - r.start_ms).saturating_sub(10));
+            parts.push(format!(
+                "[{ain}]atrim=start={a}:end={b},asetpts=PTS-STARTPTS,afade=t=in:d=0.01,afade=t=out:st={fade_out}:d=0.01[a{i}]"
+            ));
+            inputs.push_str(&format!("[a{i}]"));
+        }
+    }
+    let n = keep.len();
+    if audio.is_some() {
+        parts.push(format!("{inputs}concat=n={n}:v=1:a=1[vc][ac]"));
+    } else {
+        parts.push(format!("{inputs}concat=n={n}:v=1:a=0[vc]"));
+    }
+    parts.join(";")
+}
+
 /// yuv420p+libx264는 홀수 크기에서 실패한다 — x/y/w/h 전부 짝수로 내림(크로마 정렬).
 fn evenize(c: &CropRect) -> (u32, u32, u32, u32) {
     let e = |v: u32| v & !1;
@@ -508,8 +639,9 @@ fn evenize(c: &CropRect) -> (u32, u32, u32, u32) {
 /// 일반 mp4 경로도 `-vf` 대신 filter_complex + 명시적 `-map`으로 넘어간다.
 ///
 /// 좌표는 원본 프레임 기준이라 **crop/scale보다 먼저** 걸려야 한다 — 순서가 뒤집히면
-/// crop된 프레임에 원본 좌표를 적용해 엉뚱한 데를 가린다.
-fn build_mask_graph(spec: &ExportSpec) -> Option<(String, String)> {
+/// crop된 프레임에 원본 좌표를 적용해 엉뚱한 데를 가린다. `input`은 원본(`[0:v]`) 또는 대본 컷 출력(`[vc]`) —
+/// 컷은 시간만 바꾸므로 좌표계가 같다.
+fn build_mask_graph(spec: &ExportSpec, input: &str) -> Option<(String, String)> {
     let masks = spec.masks.as_ref()?;
     if masks.is_empty() {
         return None;
@@ -519,7 +651,7 @@ fn build_mask_graph(spec: &ExportSpec) -> Option<(String, String)> {
     let mut parts: Vec<String> = Vec::new();
     // split은 원본 1갈래(배경) + 마스크당 1갈래.
     let srcs: String = (0..n).map(|i| format!("[s{i}]")).collect();
-    parts.push(format!("[0:v]split={}[bg]{srcs}", n + 1));
+    parts.push(format!("{input}split={}[bg]{srcs}", n + 1));
 
     let mut base = "[bg]".to_string();
     for (i, m) in masks.iter().enumerate() {
@@ -578,6 +710,35 @@ fn validate_spec(spec: &ExportSpec) -> Result<(), IpcError> {
             return bad("CRF 범위(0~51) 초과");
         }
     }
+    if spec.caption_cut {
+        // 구간 여럿을 이어 붙이려면 디코드가 필요하고, 남길 구간은 이미 원본 전체 타임라인 기준이다.
+        if spec.mode != "encode" {
+            return bad("대본 편집본은 재인코딩으로만 만들 수 있습니다 (무손실 복사 불가)");
+        }
+        if spec.range.is_some() {
+            return bad("대본 편집본은 구간(In/Out)과 함께 쓸 수 없습니다");
+        }
+        if !matches!(ext.as_str(), "mp4" | "m4v" | "mov") {
+            return bad(&format!("대본 편집본은 mp4·mov로만 내보냅니다 (.{ext})"));
+        }
+    }
+    if let Some(cs) = &spec.caption_subs {
+        // mov_text 자막 스트림을 담을 수 있는 컨테이너만(gif·오디오 전용은 자막을 실을 곳이 없다).
+        if !matches!(ext.as_str(), "mp4" | "m4v" | "mov") {
+            return bad(&format!("자막 입힌 영상은 mp4·mov로만 내보냅니다 (.{ext})"));
+        }
+        if cs.mode == SubsMode::Burn && spec.mode != "encode" {
+            return bad("자막 번인은 재인코딩으로만 만들 수 있습니다 (무손실 복사 불가)");
+        }
+        match (cs.timeline, spec.caption_cut) {
+            (SubTimeline::Edited, false) => return bad("편집본 시각 자막은 대본 편집본과 함께만 넣을 수 있습니다"),
+            (SubTimeline::Source, true) => return bad("대본 편집본에는 편집본 시각 자막만 넣을 수 있습니다"),
+            _ => {}
+        }
+        if cs.text != SubText::Caption && cs.lang.as_deref().is_none_or(|l| l.trim().is_empty()) {
+            return bad("번역 자막의 언어가 지정되지 않았습니다");
+        }
+    }
     match spec.mode.as_str() {
         "copy" => {
             // 스트림 카피와 양립 불가한 옵션 — 프론트가 자동 전환하지만 백엔드도 방어한다.
@@ -599,20 +760,46 @@ fn validate_spec(spec: &ExportSpec) -> Result<(), IpcError> {
     Ok(())
 }
 
+/// 자막 문서에서 온 내보내기 입력 — video_export_inner가 저장본으로 채운다. 문서가 없는 내보내기는 기본값.
+#[derive(Default, Clone, Copy)]
+struct DocInputs<'a> {
+    /// `caption_cut`의 남길 구간(stt/store.rs `load_export_doc` → plan.keep).
+    keep: Option<&'a [RangeMs]>,
+    /// 문서가 전사한 오디오 트랙(`0:a:<n>`) — 편집본·자막 입힌 영상의 소리도 이 트랙이다. None = ffmpeg 자동 선택.
+    audio_stream: Option<u32>,
+    subs: Option<&'a SubsFile>,
+}
+
 /// 순수 인자 생성기 — 유닛테스트 대상. src/tmp_out은 절대경로 문자열.
-fn build_export_args(src: &str, tmp_out: &str, spec: &ExportSpec) -> Vec<String> {
+fn build_export_args(src: &str, tmp_out: &str, spec: &ExportSpec, doc: &DocInputs) -> Vec<String> {
     let ext = ext_of(&spec.out_rel);
     let muxer = muxer_for_ext(&ext).unwrap_or("mp4");
     let mut a: Vec<String> = ["-hide_banner", "-nostdin", "-y", "-nostats", "-progress", "pipe:1"]
         .map(String::from)
         .to_vec();
+    let cut = doc.keep;
 
     // -ss는 -i **앞**(입력 시킹 — 키프레임 고속 점프), 길이는 -t(지속시간).
     // ⚠ -to를 쓰면 안 된다: 입력 시킹 후 -to는 출력 타임스탬프 기준이라 구간이 어긋난다.
-    if let Some(r) = &spec.range {
+    // 대본 컷은 구간을 그래프가 자르므로 입력 탐색이 없다(validate_spec이 range와 함께 쓰는 것도 막는다).
+    if let (Some(r), None) = (&spec.range, cut) {
         a.extend(["-ss".into(), fmt_secs(r.start_ms), "-t".into(), fmt_secs(r.end_ms - r.start_ms)]);
     }
     a.extend(["-i".into(), src.to_string()]);
+    // 소프트 자막 = 입력 1번(위 -ss/-t는 입력 0에만 걸린다 — 자막 시각은 video_subs::shift_cues가 이미 옮겼다).
+    let soft = match doc.subs {
+        Some(SubsFile::Soft { srt }) => {
+            a.extend(["-i".into(), srt.display().to_string()]);
+            true
+        }
+        _ => false,
+    };
+    let burn = matches!(doc.subs, Some(SubsFile::Burn { .. }));
+    // 문서가 있으면 자동 선택 대신 명시 매핑 — 자동 선택은 문서가 전사한 오디오 트랙(다중 트랙의 "가장 좋은" 트랙이
+    // 아닐 수 있다)도, 자막 입력도 모른다.
+    let a_stream = doc.audio_stream.map_or_else(|| "0:a".to_string(), |n| format!("0:a:{n}"));
+    let explicit = doc.audio_stream.is_some() || soft;
+    let audio_in = spec.has_audio && !spec.remove_audio;
 
     let audio_only = matches!(ext.as_str(), "m4a" | "mp3");
     let speed = spec.speed.unwrap_or(1.0);
@@ -621,6 +808,17 @@ fn build_export_args(src: &str, tmp_out: &str, spec: &ExportSpec) -> Vec<String>
     if spec.mode == "copy" {
         if audio_only {
             a.extend(["-vn".into(), "-c:a".into(), "copy".into()]);
+        } else if explicit {
+            a.extend(["-map".into(), "0:v:0".into()]);
+            if audio_in {
+                a.extend(["-map".into(), format!("{a_stream}?")]);
+            }
+            if soft {
+                // -c copy 뒤의 더 구체적인 -c:s가 자막 스트림에만 이긴다(SRT는 mp4에 복사로 못 담는다).
+                a.extend(["-map".into(), "1".into(), "-c".into(), "copy".into(), "-c:s".into(), "mov_text".into()]);
+            } else {
+                a.extend(["-c".into(), "copy".into()]);
+            }
         } else {
             a.extend(["-c".into(), "copy".into()]);
             if spec.remove_audio {
@@ -629,12 +827,16 @@ fn build_export_args(src: &str, tmp_out: &str, spec: &ExportSpec) -> Vec<String>
         }
         a.extend(["-avoid_negative_ts".into(), "make_zero".into()]);
     } else {
-        // 마스크(있으면)가 맨 앞 — 원본 좌표계라 crop보다 먼저 걸려야 한다.
-        let mask = build_mask_graph(spec);
-        let vin = mask.as_ref().map(|(_, l)| l.as_str()).unwrap_or("[0:v]");
-        let mprefix = mask.as_ref().map(|(g, _)| format!("{g};")).unwrap_or_default();
+        // 체인 순서: 대본 컷 → 마스크 → crop → scale → 자막 번인 → setpts(§3.6-2). 마스크는 원본 좌표계라 crop보다
+        // 먼저, 자막은 scale 뒤(글자 크기가 출력 해상도 기준)·setpts 앞(자막 시각이 배속 전 타임라인)이다.
+        let cut_graph = cut.map(|k| build_cut_graph(k, audio_in.then_some(a_stream.as_str())));
+        let v0 = if cut_graph.is_some() { "[vc]" } else { "[0:v]" };
+        let mask = build_mask_graph(spec, v0);
+        let vin = mask.as_ref().map_or(v0, |(_, l)| l.as_str());
+        let mprefix: String =
+            cut_graph.iter().chain(mask.as_ref().map(|(g, _)| g)).map(|g| format!("{g};")).collect();
 
-        // 비디오 필터 체인: crop → scale → setpts (→ gif면 fps/scale/palette).
+        // 비디오 필터 체인: crop → scale → subtitles → setpts (→ gif면 fps/scale/palette).
         let mut vf: Vec<String> = Vec::new();
         if let Some(c) = &spec.crop {
             let (x, y, w, h) = evenize(c);
@@ -643,6 +845,10 @@ fn build_export_args(src: &str, tmp_out: &str, spec: &ExportSpec) -> Vec<String>
         if let Some(mh) = spec.max_height {
             // min(mh, ih) — 업스케일 방지. 필터 인자 안 콤마는 이스케이프.
             vf.push(format!("scale=-2:min({mh}\\,ih)"));
+        }
+        if burn {
+            // 상수 — ASS 경로·자막 텍스트는 필터 문자열에 들어오지 않는다(ffmpeg cwd = ASS 폴더, stt/video_subs.rs).
+            vf.push(BURN_FILTER.into());
         }
         if speeding {
             vf.push(format!("setpts=PTS/{speed}"));
@@ -669,20 +875,37 @@ fn build_export_args(src: &str, tmp_out: &str, spec: &ExportSpec) -> Vec<String>
                 a.extend(["-af".into(), atempo_chain(speed)]);
             }
         } else {
-            if mask.is_some() {
+            if mask.is_some() || cut_graph.is_some() {
                 // filter_complex를 쓰면 자동 스트림 선택이 꺼진다 — 오디오도 명시로 매핑한다.
                 let chain = if vf.is_empty() { "null".to_string() } else { vf.join(",") };
-                a.extend([
-                    "-filter_complex".into(),
-                    format!("{mprefix}{vin}{chain}[v]"),
-                    "-map".into(),
-                    "[v]".into(),
-                ]);
-                if spec.has_audio && !spec.remove_audio {
-                    a.extend(["-map".into(), "0:a?".into()]);
+                let mut graph = format!("{mprefix}{vin}{chain}[v]");
+                // 컷 오디오는 그래프 출력([ac])이라 -af를 함께 걸 수 없다 — 배속도 그래프 안에서.
+                let amap = match (audio_in, cut_graph.is_some()) {
+                    (false, _) => None,
+                    (true, false) => Some(format!("{a_stream}?")),
+                    (true, true) if speeding => {
+                        graph.push_str(&format!(";[ac]{}[a]", atempo_chain(speed)));
+                        Some("[a]".to_string())
+                    }
+                    (true, true) => Some("[ac]".to_string()),
+                };
+                a.extend(["-filter_complex".into(), graph, "-map".into(), "[v]".into()]);
+                if let Some(m) = amap {
+                    a.extend(["-map".into(), m]);
                 }
-            } else if !vf.is_empty() {
-                a.extend(["-vf".into(), vf.join(",")]);
+            } else {
+                if !vf.is_empty() {
+                    a.extend(["-vf".into(), vf.join(",")]);
+                }
+                if explicit {
+                    a.extend(["-map".into(), "0:v:0".into()]);
+                    if audio_in {
+                        a.extend(["-map".into(), format!("{a_stream}?")]);
+                    }
+                }
+            }
+            if soft {
+                a.extend(["-map".into(), "1".into()]);
             }
             a.extend([
                 "-c:v".into(), "libx264".into(),
@@ -690,13 +913,16 @@ fn build_export_args(src: &str, tmp_out: &str, spec: &ExportSpec) -> Vec<String>
                 "-preset".into(), "veryfast".into(),
                 "-pix_fmt".into(), "yuv420p".into(),
             ]);
-            if spec.has_audio && !spec.remove_audio {
+            if audio_in {
                 a.extend(["-c:a".into(), "aac".into(), "-b:a".into(), "192k".into()]);
-                if speeding {
+                if speeding && cut_graph.is_none() {
                     a.extend(["-af".into(), atempo_chain(speed)]);
                 }
             } else {
                 a.push("-an".into());
+            }
+            if soft {
+                a.extend(["-c:s".into(), "mov_text".into()]);
             }
         }
     }
@@ -709,20 +935,123 @@ fn build_export_args(src: &str, tmp_out: &str, spec: &ExportSpec) -> Vec<String>
     a
 }
 
-/// 예상 출력 길이(µs) — 진행률 분모. 배속 재인코딩은 출력이 D/speed로 줄어든다.
-fn expected_out_us(spec: &ExportSpec) -> u64 {
-    let base_ms = spec
-        .range
-        .as_ref()
-        .map(|r| r.end_ms.saturating_sub(r.start_ms))
-        .unwrap_or(spec.duration_ms);
+/// 출력 프레임 크기(번인 ASS의 PlayResX/Y) — 인자 빌더와 같은 규칙: crop(짝수 내림) → `scale=-2:min(mh,ih)`
+/// (-2 = 비율 유지 짝수 폭, ffmpeg는 `round(h·iw/ih/2)·2`). `src_w/h`는 probe의 표시 기준 크기(회전 반영).
+fn export_out_size(src_w: u32, src_h: u32, spec: &ExportSpec) -> (u32, u32) {
+    let (w, h) = spec.crop.as_ref().map_or((src_w, src_h), |c| {
+        let (_, _, w, h) = evenize(c);
+        (w, h)
+    });
+    match spec.max_height {
+        Some(mh) if h > 0 => {
+            let oh = h.min(mh);
+            let ow = ((f64::from(oh) * f64::from(w) / f64::from(h) / 2.0).round() as u32 * 2).max(2);
+            (ow, oh)
+        }
+        _ => (w.max(1), h.max(1)),
+    }
+}
+
+/// 자막 입힌 영상(§3.6 4~6)의 자막 파일 — 번인은 libass 확인·출력 크기 계산 뒤 ASS 폴더, 소프트는 SRT.
+async fn caption_subs_file(
+    app: &AppHandle,
+    bin: &FfmpegBin,
+    src: &str,
+    spec: &ExportSpec,
+    subs: &CaptionSubs,
+    loaded: &crate::stt::store::CaptionLoaded,
+) -> Result<(SubsFile, crate::stt::transcribe::TempFiles), IpcError> {
+    use crate::stt::video_subs::{export_cues, write_burn_ass, write_soft_srt};
+    let cues = export_cues(loaded, subs, spec.range, spec.speed.unwrap_or(1.0))?;
+    match subs.mode {
+        SubsMode::Soft => write_soft_srt(app, &cues),
+        SubsMode::Burn => {
+            if !has_subtitles_filter(&bin.ffmpeg).await? {
+                return Err(IpcError::new(
+                    ErrorCode::ToolNotFound,
+                    format!(
+                        "이 ffmpeg({})에는 자막 번인 필터(libass `subtitles`)가 없습니다 — 소프트 자막으로 내보내거나 libass가 든 ffmpeg를 쓰세요",
+                        bin.ffmpeg.display()
+                    ),
+                ));
+            }
+            let meta = probe_meta(&need_probe(bin)?, src).await?;
+            if !meta.has_video {
+                return Err(IpcError::new(ErrorCode::Io, "영상 트랙이 없는 파일에는 자막을 입힐 수 없습니다"));
+            }
+            let (w, h) = export_out_size(meta.width, meta.height, spec);
+            write_burn_ass(app, &cues, subs.preset, w, h)
+        }
+    }
+}
+
+/// 예상 출력 길이(µs) — 진행률 분모. 배속 재인코딩은 출력이 D/speed로 줄어든다. 대본 컷이면 D = Σkeep.
+fn expected_out_us(spec: &ExportSpec, cut: Option<&[RangeMs]>) -> u64 {
+    let base_ms = match (cut, &spec.range) {
+        (Some(k), _) => k.iter().map(|r| r.end_ms.saturating_sub(r.start_ms)).sum(),
+        (None, Some(r)) => r.end_ms.saturating_sub(r.start_ms),
+        (None, None) => spec.duration_ms,
+    };
     let speed = if spec.mode == "encode" { spec.speed.unwrap_or(1.0) } else { 1.0 };
     ((base_ms as f64) * 1000.0 / speed.max(0.01)) as u64
 }
 
+/// 인라인 한도를 넘는 `-filter_complex` 그래프 값의 인자 위치.
+fn long_graph_at(args: &[String]) -> Option<usize> {
+    let i = args.iter().position(|a| a == "-filter_complex")? + 1;
+    (args.get(i)?.len() > INLINE_GRAPH_MAX).then_some(i)
+}
+
+/// `-filter_complex <그래프>` → `-/filter_complex <파일>`(옵션 값을 파일에서 읽는 ffmpeg 7.0+ 문법, 부록 B.2 —
+/// `-filter_complex_script`는 gyan 9.0.1에서 사라져 쓰지 않는다). 파일에 쓸 그래프를 돌려준다.
+fn externalize_graph(args: &mut [String], at: usize, file: &Path) -> String {
+    args[at - 1] = "-/filter_complex".into();
+    std::mem::replace(&mut args[at], file.display().to_string())
+}
+
+/// `parse_version` 결과가 `-/` 문법(7.0+)을 아는 ffmpeg인가. Arch식 "n7.1"도 읽는다. 못 읽는 버전(git 빌드 "N")은
+/// 최근 빌드라 시도한다 — 틀렸다면 ffmpeg가 "Unrecognized option"으로 스스로 말한다.
+fn graph_file_supported(version: Option<&str>) -> bool {
+    version
+        .map(|v| v.trim_start_matches('n'))
+        .and_then(|v| v.split('.').next()?.parse::<u32>().ok())
+        .map_or(true, |major| major >= 7)
+}
+
+/// 긴 그래프를 앱 로컬 데이터 `stt/` 임시 파일로 넘긴다(전사 임시 파일과 같은 고아 청소를 탄다).
+/// 돌려준 가드가 잡이 어떻게 끝나든 파일을 지운다.
+async fn graph_to_file(
+    app: &AppHandle,
+    ffmpeg: &Path,
+    args: &mut [String],
+    at: usize,
+) -> Result<crate::stt::transcribe::TempFiles, IpcError> {
+    use crate::stt::transcribe::{temp_dir, TempFiles, TEMP_PREFIX};
+    let io = |m: String| IpcError::new(ErrorCode::Io, m);
+    // -version 실행 실패는 삼키고 시도한다 — 여기서 막으면 뒤따를 ffmpeg의 진짜 오류를 가린다.
+    let version = run_capture(ffmpeg, &["-version"], 5)
+        .await
+        .ok()
+        .and_then(|(_, out, _)| parse_version(out.lines().next().unwrap_or("")));
+    if !graph_file_supported(version.as_deref()) {
+        return Err(IpcError::new(
+            ErrorCode::TooManyRanges,
+            format!(
+                "남길 구간이 너무 많아 명령줄에 다 들어가지 않고, ffmpeg {}는 그래프 파일을 읽지 못합니다(7.0 이상 필요) — 무음 줄이기 목표를 늘려 구간을 줄이거나 ffmpeg 7 이상을 쓰세요",
+                version.as_deref().unwrap_or("?")
+            ),
+        ));
+    }
+    let file = temp_dir(app)?.join(format!("{TEMP_PREFIX}graph-{}.txt", uuid::Uuid::new_v4().simple()));
+    let graph = externalize_graph(args, at, &file);
+    let guard = TempFiles(vec![file.clone()]);
+    std::fs::write(&file, graph).map_err(|e| io(format!("필터 그래프 파일 쓰기 실패({}): {e}", file.display())))?;
+    Ok(guard)
+}
+
 /// `-progress pipe:1` 라인 파싱. ffmpeg의 out_time_ms는 이름과 달리 **µs**다(알려진 버그,
 /// out_time_us와 항상 같은 값) — 둘 다 µs로 읽는다.
-fn parse_out_time_us(line: &str) -> Option<u64> {
+pub(crate) fn parse_out_time_us(line: &str) -> Option<u64> {
     line.strip_prefix("out_time_us=")
         .or_else(|| line.strip_prefix("out_time_ms="))?
         .trim()
@@ -786,8 +1115,25 @@ fn cfa_hint(_line: &str, _out: &Path) -> String {
     String::new()
 }
 
+/// libass가 어떤 글꼴에서도 찾지 못한 글자 — 번인 영상에 네모 칸으로 그려지는데 ffmpeg는 그래도 0으로 끝난다
+/// (2026-09-22 실측: CJK 글꼴이 없는 Ubuntu(WSL) + 관리형 johnvansickle 7.0.2에서 `Noto Sans CJK KR` → DejaVu Sans,
+/// 한글 전부 네모 칸). libass 경고 `fontselect: failed to find any fallback with glyph 0xC790 for font: (…)`에서 뽑는다.
+fn burn_missing_glyphs(stderr: &str) -> Vec<char> {
+    let mut out: Vec<char> = stderr
+        .lines()
+        .filter_map(|l| l.split_once("failed to find any fallback with glyph 0x"))
+        .filter_map(|(_, rest)| {
+            let hex: String = rest.chars().take_while(char::is_ascii_hexdigit).collect();
+            char::from_u32(u32::from_str_radix(&hex, 16).ok()?)
+        })
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
 /// stderr에서 사람이 읽을 마지막 오류 줄을 뽑는다.
-fn last_error_line(stderr: &str) -> String {
+pub(crate) fn last_error_line(stderr: &str) -> String {
     stderr
         .lines()
         .rev()
@@ -845,7 +1191,7 @@ async fn video_export_inner(
     let out = super::tree::resolve_in_repo(&repo, &spec.out_rel)?;
     // 자기 자신 덮어쓰기 방지 — 바이트 비교만으로는 부족하다: NTFS/APFS는 대소문자
     // 무시라 "Clip.mp4"→"clip.mp4"가 다른 PathBuf지만 같은 파일이고, 통과시키면
-    // 아래 성공 경로의 remove_file(&out)이 **원본을 지운다**. 존재하는 out은 정규화 비교.
+    // 아래 성공 경로의 rename(tmp → out)이 **원본을 덮는다**. 존재하는 out은 정규화 비교.
     if out == src
         || (out.exists()
             && dunce::canonicalize(&out).ok().is_some_and(|o| Some(o) == dunce::canonicalize(&src).ok()))
@@ -859,11 +1205,9 @@ async fn video_export_inner(
         ));
     }
 
-    // 산출물은 임시 이름으로 쓰고 성공 시 rename — 실패·취소가 기존 파일을 파괴하지 않게.
-    let tmp = out.with_file_name(format!(".gpv-export-{job_id}.tmp"));
-    let args = build_export_args(&src.display().to_string(), &tmp.display().to_string(), spec);
-
-    // 취소 등록은 spawn **전** — invoke 응답이 유실돼도 이미 등록된 id로 취소 가능(http.rs 정책).
+    // 취소 등록은 spawn **전**, 느린 준비 단계(번인 ffprobe·필터 확인, 그래프 파일의 -version)보다도 앞 — invoke 응답이
+    // 유실돼도 이미 등록된 id로 취소 가능하고(http.rs 정책), 준비 중에 누른 취소도 버려지지 않는다(아래 select!가
+    // 이미 와 있는 신호를 spawn 직후 받는다, 태스크 72 9절 56과 같은 이유).
     let jobs = {
         let reg = state.video.lock().unwrap_or_else(|e| e.into_inner());
         Arc::clone(&reg.jobs)
@@ -875,12 +1219,59 @@ async fn video_export_inner(
     }
     let _guard = JobGuard { jobs: Arc::clone(&jobs), job_id: job_id.to_string() };
 
+    // 대본 편집본·자막 입힌 영상 — 남길 구간·자막은 저장된 자막 문서로 여기서 계산한다(§3.4: IPC로 받지 않는다).
+    let caption = if spec.caption_cut || spec.caption_subs.is_some() {
+        Some(crate::stt::store::load_export_doc(app, project_id, &spec.src_rel, &src, spec.caption_cut)?)
+    } else {
+        None
+    };
+    let cut = caption.as_ref().filter(|_| spec.caption_cut).map(|l| l.plan.keep.as_slice());
+    let src_s = src.display().to_string();
+    // 문서가 전사한 오디오 트랙이 지금 파일에 없으면 거절한다 — `-map 0:a:<n>?`의 `?`가 없는 트랙을 말없이 건너뛰어
+    // 소리 없는 영상이 "성공"한다. 원본을 바꿔 끼운 stale 문서(원본 시각 자막은 stale도 받는다, 9절 72)에서만
+    // 생긴다 — 같은 파일이면 전사할 때 트랙 범위를 확인했다(stt/transcribe.rs).
+    if let Some(l) = caption.as_ref().filter(|l| l.stale && spec.has_audio && !spec.remove_audio) {
+        let tracks = probe_meta(&need_probe(&bin)?, &src_s).await?.audio_streams.len();
+        let n = l.doc.source.audio_stream;
+        if n as usize >= tracks {
+            return Err(IpcError::new(
+                ErrorCode::Io,
+                format!(
+                    "자막을 만든 오디오 트랙 {}번이 이 파일에 없습니다(오디오 트랙 {tracks}개) — 원본이 바뀌었습니다. 대본에서 다시 인식하거나 소리 빼기로 내보내세요",
+                    n + 1
+                ),
+            ));
+        }
+    }
+    // 가드(`_`로 버리지 않는다)가 잡이 끝날 때 자막 임시 파일을 지운다.
+    let subs_file = match (&spec.caption_subs, &caption) {
+        (Some(cs), Some(loaded)) => Some(caption_subs_file(app, &bin, &src_s, spec, cs, loaded).await?),
+        _ => None,
+    };
+    let doc_in = DocInputs {
+        keep: cut,
+        audio_stream: caption.as_ref().map(|l| l.doc.source.audio_stream),
+        subs: subs_file.as_ref().map(|(f, _)| f),
+    };
+
+    // 산출물은 임시 이름으로 쓰고 성공 시 rename — 실패·취소가 기존 파일을 파괴하지 않게.
+    let tmp = out.with_file_name(format!(".gpv-export-{job_id}.tmp"));
+    let mut args = build_export_args(&src_s, &tmp.display().to_string(), spec, &doc_in);
+    let _graph_file = match long_graph_at(&args) {
+        Some(at) => Some(graph_to_file(app, &bin.ffmpeg, &mut args, at).await?),
+        None => None,
+    };
+
     let mut cmd = Command::new(&bin.ffmpeg);
     cmd.args(&args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
+    if let Some((SubsFile::Burn { dir }, _)) = &subs_file {
+        // 번인 필터가 상대 이름(subs.ass)으로 읽는다 — 입·출력은 절대 경로라 cwd와 무관하다.
+        cmd.current_dir(dir);
+    }
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000);
     #[cfg(unix)]
@@ -898,7 +1289,7 @@ async fn video_export_inner(
 
     // 진행률 리더(stdout `-progress pipe:1`) — % 정수 변화 시에만 emit(초당 수 회 수준).
     let stdout = child.stdout.take();
-    let expected_us = expected_out_us(spec);
+    let expected_us = expected_out_us(spec, cut);
     let (p_app, p_job, p_proj) = (app.clone(), job_id.to_string(), project_id.to_string());
     let progress_task = tauri::async_runtime::spawn(async move {
         let Some(stdout) = stdout else { return };
@@ -932,15 +1323,16 @@ async fn video_export_inner(
         }
     });
 
-    // stderr 수집(오류 진단용) — 마지막 8KB만 유지.
+    // stderr 수집(오류 진단용) — 마지막 8KB만 유지. 번인이 못 그린 글자는 앞쪽에 찍히므로 잘라 내기 전에 전체에서 찾는다.
     let stderr = child.stderr.take();
     let stderr_task = tauri::async_runtime::spawn(async move {
-        let Some(stderr) = stderr else { return String::new() };
+        let Some(stderr) = stderr else { return (String::new(), Vec::new()) };
         use tokio::io::AsyncReadExt;
         let mut buf = Vec::new();
         let _ = tokio::io::BufReader::new(stderr).read_to_end(&mut buf).await;
+        let missing = burn_missing_glyphs(&String::from_utf8_lossy(&buf));
         let start = buf.len().saturating_sub(8 * 1024);
-        String::from_utf8_lossy(&buf[start..]).into_owned()
+        (String::from_utf8_lossy(&buf[start..]).into_owned(), missing)
     });
 
     let mut cancelled = false;
@@ -956,7 +1348,7 @@ async fn video_export_inner(
                 .map_err(|e| IpcError::new(ErrorCode::Io, format!("ffmpeg 종료 대기 실패: {e}")))
         }
     };
-    let stderr_tail = stderr_task.await.unwrap_or_default();
+    let (stderr_tail, missing_glyphs) = stderr_task.await.unwrap_or_default();
     let _ = progress_task.await;
     let status = match status_res {
         Ok(s) => s,
@@ -965,25 +1357,26 @@ async fn video_export_inner(
             return Err(e);
         }
     };
+    let burned = matches!(subs_file, Some((SubsFile::Burn { .. }, _)));
 
     if cancelled {
         std::fs::remove_file(&tmp).ok();
         Err(IpcError::new(ErrorCode::Cancelled, "내보내기가 취소되었습니다"))
+    } else if status.success() && burned && !missing_glyphs.is_empty() {
+        // ffmpeg는 성공으로 끝나지만 그 글자들은 네모 칸으로 그려졌다 — 그런 영상을 결과로 남기지 않는다.
+        std::fs::remove_file(&tmp).ok();
+        let shown = missing_glyphs.iter().take(12).map(|c| format!("'{c}'")).collect::<Vec<_>>().join(" ");
+        Err(IpcError {
+            code: ErrorCode::ToolNotFound,
+            message: format!(
+                "자막 글꼴에 없는 글자 {}개가 네모 칸으로 그려져 내보내지 않았습니다({shown}) — '{}' 글꼴(Linux: fonts-noto-cjk 패키지)을 설치하거나 소프트 자막으로 내보내세요",
+                missing_glyphs.len(),
+                crate::stt::video_subs::caption_font()
+            ),
+            stderr: Some(stderr_tail),
+        })
     } else if status.success() {
-        // Windows rename은 기존 파일을 덮지 못한다 — overwrite 확정 상태이므로 먼저 지운다.
-        let replace = || -> Result<(), IpcError> {
-            if out.exists() {
-                std::fs::remove_file(&out)
-                    .map_err(|e| IpcError::new(ErrorCode::Io, format!("기존 파일 교체 실패: {e}")))?;
-            }
-            std::fs::rename(&tmp, &out)
-                .map_err(|e| IpcError::new(ErrorCode::Io, format!("산출물 이동 실패: {e}")))
-        };
-        let r = replace();
-        if r.is_err() {
-            std::fs::remove_file(&tmp).ok();
-        }
-        r
+        commit_tmp_output(&tmp, &out)
     } else {
         std::fs::remove_file(&tmp).ok();
         // 실패한 명령을 남긴다 — 토스트는 stderr 마지막 한 줄뿐이라(예: "Error opening output
@@ -1179,12 +1572,18 @@ pub async fn video_capture_frame(
             stderr: Some(stderr),
         });
     }
-    if out.exists() {
-        std::fs::remove_file(&out)
-            .map_err(|e| IpcError::new(ErrorCode::Io, format!("기존 파일 교체 실패: {e}")))?;
-    }
-    std::fs::rename(&tmp, &out)
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("산출물 이동 실패: {e}")))
+    commit_tmp_output(&tmp, &out)
+}
+
+/// 임시 산출물 → 최종 이름(내보내기·프레임 캡처·자막 파일). rename 한 번이 세 OS 모두 기존 파일을 바꾼다 — Windows도
+/// std가 MoveFileExW(REPLACE_EXISTING)/POSIX 교체로 덮는다(state.rs `save_bytes_at`이 같은 전제). **먼저 지우지 않는다**:
+/// 지운 뒤 rename이 실패하면(백신·인덱서가 새 임시 파일을 공유 삭제 없이 잡음) 옛 파일과 새 파일을 둘 다 잃는다.
+/// 실패하면 임시 파일만 지운다.
+pub(crate) fn commit_tmp_output(tmp: &Path, out: &Path) -> Result<(), IpcError> {
+    std::fs::rename(tmp, out).map_err(|e| {
+        std::fs::remove_file(tmp).ok(); // 정리 실패는 원래 오류를 가리지 않는다
+        IpcError::new(ErrorCode::Io, format!("산출물 이동 실패({}): {e}", out.display()))
+    })
 }
 
 // ══════════════════════════ 타임라인 필름스트립·파형 ══════════════════════════
@@ -1670,6 +2069,645 @@ mod tests {
             mask_kind: None,
             duration_ms: 60_000,
             has_audio: true,
+            caption_cut: false,
+            caption_subs: None,
+        }
+    }
+
+    fn cut_spec() -> ExportSpec {
+        ExportSpec { mode: "encode".into(), out_rel: "a.cut.mp4".into(), caption_cut: true, ..base_spec() }
+    }
+
+    fn cut_in(k: &[RangeMs]) -> DocInputs<'_> {
+        DocInputs { keep: Some(k), ..Default::default() }
+    }
+
+    fn subs_spec(mode: SubsMode, timeline: SubTimeline) -> CaptionSubs {
+        CaptionSubs {
+            mode,
+            timeline,
+            text: SubText::Caption,
+            lang: None,
+            preset: crate::stt::video_subs::CaptionStylePreset::Basic,
+        }
+    }
+
+    /// 번인·자막 없는 재인코딩 스펙(원본 시각).
+    fn burn_spec() -> ExportSpec {
+        ExportSpec {
+            mode: "encode".into(),
+            out_rel: "a.sub.mp4".into(),
+            caption_subs: Some(subs_spec(SubsMode::Burn, SubTimeline::Source)),
+            ..base_spec()
+        }
+    }
+
+    fn vfilter(a: &[String]) -> String {
+        a.iter()
+            .position(|x| x == "-vf" || x == "-filter_complex")
+            .map(|i| a[i + 1].clone())
+            .unwrap_or_else(|| panic!("필터 없음: {a:?}"))
+    }
+
+    /// 번인 체인: (컷 →) 마스크 → crop → scale → subtitles → setpts. 자막은 scale 뒤(출력 해상도 기준 글자 크기)·
+    /// setpts 앞(배속 전 시각). 마스크·컷이 없으면 -vf + 문서 오디오 트랙 명시 매핑.
+    #[test]
+    fn caption_subs_burn_chain_order() {
+        let burn = SubsFile::Burn { dir: PathBuf::from("/data/stt/gpv-stt-burn-x") };
+        let mut s = burn_spec();
+        s.crop = Some(CropRect { x: 0, y: 0, w: 640, h: 480 });
+        s.max_height = Some(360);
+        s.speed = Some(2.0);
+        let doc = DocInputs { audio_stream: Some(1), subs: Some(&burn), ..Default::default() };
+        let a = build_export_args("/r/a.mp4", "/r/.t.tmp", &s, &doc);
+        assert_eq!(value_after(&a, "-vf"), "crop=640:480:0:0,scale=-2:min(360\\,ih),subtitles=f=subs.ass,setpts=PTS/2");
+        assert_eq!(maps(&a), vec!["0:v:0", "0:a:1?"], "문서가 전사한 오디오 트랙");
+        assert_eq!(value_after(&a, "-af"), "atempo=2");
+        assert!(!a.iter().any(|x| x == "-c:s"), "번인은 자막 스트림이 없다");
+
+        // 마스크 + 컷: concat → mask → crop → scale → subtitles → setpts, 컷 오디오도 문서 트랙.
+        let mut c = ExportSpec { caption_cut: true, ..s.clone() };
+        c.caption_subs = Some(subs_spec(SubsMode::Burn, SubTimeline::Edited));
+        c.masks = Some(vec![CropRect { x: 10, y: 10, w: 64, h: 64 }]);
+        let k = keep(&[(0, 1000), (2000, 3000)]);
+        let doc = DocInputs { keep: Some(&k), audio_stream: Some(1), subs: Some(&burn) };
+        let a = build_export_args("/r/a.mp4", "/r/.t.tmp", &c, &doc);
+        let fc = value_after(&a, "-filter_complex");
+        let at = |needle: &str| fc.find(needle).unwrap_or_else(|| panic!("{needle} 없음: {fc}"));
+        assert!(at("concat=n=2") < at("[vc]split=2"), "fc={fc}");
+        assert!(at("[vc]split") < at("crop=640:480"), "fc={fc}");
+        assert!(at("crop=640:480") < at("scale=-2") && at("scale=-2") < at(BURN_FILTER), "fc={fc}");
+        assert!(at(BURN_FILTER) < at("setpts=PTS/2[v]"), "fc={fc}");
+        assert!(fc.contains("[0:a:1]atrim=start=0.000000"), "fc={fc}");
+        assert!(!fc.contains("[0:a]"), "fc={fc}");
+    }
+
+    /// **반증**: 번인·소프트 자막 어디에서도 필터 문자열에 경로·사용자 텍스트가 들어가지 않는다. 입력·출력·자막 파일
+    /// 경로는 argv 원소 하나 그대로이고, 필터에 있는 자막 항목은 상수 하나뿐이다. 경로를 필터에 넣도록 바꾸면
+    /// (예: `subtitles=f='C\:/…/subs.ass'`) 여기서 빨개진다.
+    #[test]
+    fn caption_subs_filter_carries_no_path_or_text() {
+        let src = r"C:\Users\홍길동\영상's clip, [1];a.mp4";
+        let tmp = r"C:\Users\홍길동\.gpv-export-x.tmp";
+        let dir = PathBuf::from(r"C:\Users\홍길동\AppData\Local\app\stt\gpv-stt-burn-0123");
+        let evil = "'; [0:v]drawtext=text=pwn,subtitles=f=C\\:/x.ass {\\an8}";
+        let ass = crate::stt::video_subs::build_ass(
+            &[crate::stt::plan::OutCue { cue_id: "c1".into(), start_ms: 0, end_ms: 900, text: evil.into() }],
+            crate::stt::video_subs::CaptionStylePreset::Box,
+            640,
+            360,
+        );
+        assert!(!ass.contains("{\\an8}"), "ASS 본문의 태그가 살아 있다: {ass}");
+
+        let burn = SubsFile::Burn { dir: dir.clone() };
+        let srt = PathBuf::from(r"C:\Users\홍길동\AppData\Local\app\stt\gpv-stt-subs-0123.srt");
+        let soft = SubsFile::Soft { srt: srt.clone() };
+        let k = keep(&[(0, 1000), (2000, 3000)]);
+        let masked = ExportSpec { masks: Some(vec![CropRect { x: 0, y: 0, w: 32, h: 32 }]), ..burn_spec() };
+        let cut_burn = ExportSpec {
+            caption_cut: true,
+            caption_subs: Some(subs_spec(SubsMode::Burn, SubTimeline::Edited)),
+            ..burn_spec()
+        };
+        let soft_copy = ExportSpec {
+            mode: "copy".into(),
+            range: Some(RangeMs { start_ms: 1000, end_ms: 4000 }),
+            caption_subs: Some(subs_spec(SubsMode::Soft, SubTimeline::Source)),
+            ..burn_spec()
+        };
+        let cases: [(&ExportSpec, DocInputs); 4] = [
+            (&burn_spec(), DocInputs { audio_stream: Some(0), subs: Some(&burn), ..Default::default() }),
+            (&masked, DocInputs { audio_stream: Some(0), subs: Some(&burn), ..Default::default() }),
+            (&cut_burn, DocInputs { keep: Some(&k), audio_stream: Some(0), subs: Some(&burn) }),
+            (&soft_copy, DocInputs { audio_stream: Some(0), subs: Some(&soft), ..Default::default() }),
+        ];
+        let srt_s = srt.display().to_string();
+        for (spec, doc) in cases {
+            let a = build_export_args(src, tmp, spec, &doc);
+            let joined = a.join("\u{1}");
+            assert!(!joined.contains(evil) && !joined.contains("drawtext"), "사용자 텍스트가 인자에 있다: {a:?}");
+            for p in [src, tmp, srt_s.as_str()] {
+                let whole = a.iter().filter(|x| x.as_str() == p).count();
+                let partial = a.iter().filter(|x| x.contains(p)).count();
+                assert_eq!(whole, partial, "{p} 가 다른 인자 안에 섞였다: {a:?}");
+            }
+            assert_eq!(a.iter().filter(|x| x.as_str() == src).count(), 1);
+            for flag in ["-vf", "-filter_complex"] {
+                if let Some(i) = a.iter().position(|x| x == flag) {
+                    let f = &a[i + 1];
+                    assert!(f.is_ascii(), "필터에 비ASCII(경로·텍스트) {f}");
+                    assert!(!f.contains("홍길동") && !f.contains(":/") && !f.contains(":\\") && !f.contains('\''), "{f}");
+                    // "subtitles"·".ass"는 전부 상수 안에서만 나온다.
+                    let consts = f.matches(BURN_FILTER).count();
+                    assert_eq!(f.matches("subtitles").count(), consts, "번인 항목이 상수가 아니다: {f}");
+                    assert_eq!(f.matches(".ass").count(), consts, "{f}");
+                }
+            }
+            if matches!(doc.subs, Some(SubsFile::Burn { .. })) {
+                assert_eq!(vfilter(&a).matches(BURN_FILTER).count(), 1, "{a:?}");
+                assert!(!joined.contains(&dir.display().to_string()), "번인 폴더는 argv가 아니라 cwd로 간다: {a:?}");
+            }
+        }
+    }
+
+    /// 소프트 자막: 입력 1번 SRT(구간 -ss/-t는 입력 0에만) · 명시 매핑 0:v:0 · 문서 오디오 · 1 · `-c:s mov_text`.
+    /// 무손실 복사와 함께 되고(`-c copy` 뒤 `-c:s`), 컷 그래프와도 된다.
+    #[test]
+    fn caption_subs_soft_maps_subtitle_input() {
+        let soft = SubsFile::Soft { srt: PathBuf::from("/data/stt/gpv-stt-subs-x.srt") };
+        let copy = ExportSpec {
+            mode: "copy".into(),
+            range: Some(RangeMs { start_ms: 1000, end_ms: 4000 }),
+            caption_subs: Some(subs_spec(SubsMode::Soft, SubTimeline::Source)),
+            ..burn_spec()
+        };
+        let a = build_export_args("/r/a.mp4", "/r/.t.tmp", &copy, &DocInputs { audio_stream: Some(2), subs: Some(&soft), ..Default::default() });
+        let inputs: Vec<usize> = a.iter().enumerate().filter(|(_, x)| *x == "-i").map(|(i, _)| i).collect();
+        assert_eq!(inputs.len(), 2);
+        assert_eq!((a[inputs[0] + 1].as_str(), a[inputs[1] + 1].as_str()), ("/r/a.mp4", "/data/stt/gpv-stt-subs-x.srt"));
+        let ss = a.iter().position(|x| x == "-ss").unwrap();
+        assert!(ss < inputs[0], "구간 탐색은 입력 0 앞");
+        assert_eq!(maps(&a), vec!["0:v:0", "0:a:2?", "1"]);
+        let (c, cs) = (a.iter().position(|x| x == "-c").unwrap(), a.iter().position(|x| x == "-c:s").unwrap());
+        assert!(c < cs && a[c + 1] == "copy" && a[cs + 1] == "mov_text", "{a:?}");
+        assert!(validate_spec(&copy).is_ok(), "소프트 자막은 무손실 복사와 된다");
+
+        // 재인코딩 + 소리 빼기: 오디오 매핑 없이 -an, 자막은 그대로.
+        let enc = ExportSpec { mode: "encode".into(), remove_audio: true, range: None, ..copy.clone() };
+        let a = build_export_args("/r/a.mp4", "/r/.t.tmp", &enc, &DocInputs { audio_stream: Some(0), subs: Some(&soft), ..Default::default() });
+        assert_eq!(maps(&a), vec!["0:v:0", "1"]);
+        assert!(a.iter().any(|x| x == "-an") && value_after(&a, "-c:s") == "mov_text");
+        assert!(!a.iter().any(|x| x == "-vf"), "자막 스트림은 필터가 아니다: {a:?}");
+
+        // 컷 그래프 + 소프트: [v]·[ac]·1.
+        let k = keep(&[(0, 1000), (2000, 3000)]);
+        let cut = ExportSpec {
+            caption_cut: true,
+            caption_subs: Some(subs_spec(SubsMode::Soft, SubTimeline::Edited)),
+            ..cut_spec()
+        };
+        let a = build_export_args("/r/a.mp4", "/r/.t.tmp", &cut, &DocInputs { keep: Some(&k), audio_stream: Some(0), subs: Some(&soft) });
+        assert_eq!(maps(&a), vec!["[v]", "[ac]", "1"]);
+        assert!(value_after(&a, "-filter_complex").contains("[0:a:0]atrim"));
+    }
+
+    /// 자막 입힌 영상의 스펙 규칙: 영상 컨테이너만 · 번인은 재인코딩만 · 편집본 시각 ⇔ caption_cut · 번역은 언어 필수.
+    #[test]
+    fn caption_subs_validate_rules() {
+        assert!(validate_spec(&burn_spec()).is_ok());
+        let burn_copy = ExportSpec { mode: "copy".into(), ..burn_spec() };
+        assert!(validate_spec(&burn_copy).unwrap_err().message.contains("재인코딩"));
+        for out in ["a.gif", "a.m4a", "a.mp3"] {
+            assert!(validate_spec(&ExportSpec { out_rel: out.into(), ..burn_spec() }).is_err(), "{out}");
+        }
+        assert!(validate_spec(&ExportSpec { out_rel: "a.sub.mov".into(), ..burn_spec() }).is_ok());
+        let edited_no_cut = ExportSpec { caption_subs: Some(subs_spec(SubsMode::Burn, SubTimeline::Edited)), ..burn_spec() };
+        assert!(validate_spec(&edited_no_cut).unwrap_err().message.contains("편집본"));
+        let source_with_cut = ExportSpec { caption_subs: Some(subs_spec(SubsMode::Soft, SubTimeline::Source)), ..cut_spec() };
+        assert!(validate_spec(&source_with_cut).is_err());
+        let edited_cut = ExportSpec { caption_subs: Some(subs_spec(SubsMode::Burn, SubTimeline::Edited)), ..cut_spec() };
+        assert!(validate_spec(&edited_cut).is_ok());
+        let mut tr = subs_spec(SubsMode::Soft, SubTimeline::Source);
+        tr.text = SubText::Both;
+        assert!(validate_spec(&ExportSpec { caption_subs: Some(tr.clone()), ..burn_spec() }).is_err());
+        tr.lang = Some("en".into());
+        assert!(validate_spec(&ExportSpec { caption_subs: Some(tr), ..burn_spec() }).is_ok());
+    }
+
+    /// 번인 PlayRes = 출력 크기 — crop(짝수) → scale(-2:min(mh,ih)), 업스케일 없음.
+    #[test]
+    fn export_out_size_follows_crop_and_scale() {
+        let s = burn_spec();
+        assert_eq!(export_out_size(1920, 1080, &s), (1920, 1080));
+        assert_eq!(export_out_size(1920, 1080, &ExportSpec { max_height: Some(720), ..s.clone() }), (1280, 720));
+        assert_eq!(export_out_size(1920, 1080, &ExportSpec { max_height: Some(2160), ..s.clone() }), (1920, 1080));
+        let crop = ExportSpec { crop: Some(CropRect { x: 1, y: 1, w: 1001, h: 501 }), max_height: Some(360), ..s.clone() };
+        assert_eq!(export_out_size(1920, 1080, &crop), (720, 360));
+        assert_eq!(export_out_size(1080, 1920, &ExportSpec { max_height: Some(1280), ..s }), (720, 1280), "세로 영상");
+    }
+
+    /// 번인이 못 그린 글자 = libass fallback 실패 경고(실측 stderr 그대로). 다른 줄·중복은 무시.
+    #[test]
+    fn burn_missing_glyphs_parses_libass_fallback_failures() {
+        let stderr = "[Parsed_subtitles_0 @ 0x730fc4003100] Using font provider fontconfig\n\
+            [Parsed_subtitles_0 @ 0x730fc4003100] fontselect: (Noto Sans CJK KR, 400, 0) -> /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf, 0, DejaVuSans\n\
+            [Parsed_subtitles_0 @ 0x730fc4003100] Glyph 0xC790 not found, selecting one more font for (Noto Sans CJK KR, 400, 0)\n\
+            [Parsed_subtitles_0 @ 0x730fc4003100] fontselect: failed to find any fallback with glyph 0xC790 for font: (Noto Sans CJK KR, 400, 0)\n\
+            [Parsed_subtitles_0 @ 0x730fc4003100] fontselect: failed to find any fallback with glyph 0xB9C9 for font: (Noto Sans CJK KR, 400, 0)\n\
+            [Parsed_subtitles_0 @ 0x730fc4003100] fontselect: failed to find any fallback with glyph 0xC790 for font: (Noto Sans CJK KR, 700, 0)\n";
+        assert_eq!(burn_missing_glyphs(stderr), vec!['막', '자']);
+        assert!(burn_missing_glyphs("[Parsed_subtitles_0 @ 0x1] Using font provider directwrite\n").is_empty());
+    }
+
+    /// `-filters` 목록에서 이름 칸만 본다(설명 속 단어·`ass`와 헷갈리지 않게).
+    #[test]
+    fn filters_listing_detects_subtitles() {
+        let with = "Filters:\n  T.. = Timeline support\n ... ass               V->V       Render ASS subtitles onto input video using the libass library.\n ..C subtitles         V->V       Render text subtitles onto input video using the libass library.\n";
+        assert!(filters_list_has(with, "subtitles"));
+        let without = "Filters:\n ... ass               V->V       Render ASS subtitles onto input video.\n ... scale             V->V       Scale the input video size and/or convert the image format.\n";
+        assert!(!filters_list_has(without, "subtitles"), "설명 속 'subtitles'는 필터가 아니다");
+        assert!(!filters_list_has("", "subtitles"));
+    }
+
+    /// probe의 오디오 트랙 목록 — 오디오 스트림 안 순번(`0:a:<n>`), 코덱·채널·언어·제목. 영상·자막 스트림은 세지 않는다.
+    #[test]
+    fn probe_lists_audio_streams_in_order() {
+        let json = r#"{"streams":[
+            {"codec_type":"video","codec_name":"h264","width":1920,"height":1080,"avg_frame_rate":"30/1"},
+            {"codec_type":"audio","codec_name":"aac","channels":2,"tags":{"language":"kor","title":"데스크톱"}},
+            {"codec_type":"subtitle","codec_name":"mov_text"},
+            {"codec_type":"audio","codec_name":"opus","channels":1}
+          ],"format":{"duration":"3.0"}}"#;
+        let m = parse_probe(json).unwrap();
+        assert_eq!(
+            m.audio_streams,
+            vec![
+                AudioStreamInfo {
+                    index: 0,
+                    codec: Some("aac".into()),
+                    channels: Some(2),
+                    language: Some("kor".into()),
+                    title: Some("데스크톱".into()),
+                },
+                AudioStreamInfo { index: 1, codec: Some("opus".into()), channels: Some(1), language: None, title: None },
+            ]
+        );
+        assert_eq!(m.acodec.as_deref(), Some("aac"), "acodec은 첫 트랙 그대로");
+        let v = serde_json::to_value(&m).unwrap();
+        assert_eq!(v["audioStreams"][1]["index"], 1, "TS 계약 camelCase");
+    }
+
+    /// rename 한 번이 기존 파일을 바꾼다(먼저 지우지 않아도 된다는 전제) · 실패하면 임시 파일만 지운다.
+    #[test]
+    fn commit_tmp_output_replaces_existing_and_cleans_tmp_on_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tmp, out) = (dir.path().join(".t.tmp"), dir.path().join("a.srt"));
+        std::fs::write(&out, "old").unwrap();
+        std::fs::write(&tmp, "new").unwrap();
+        commit_tmp_output(&tmp, &out).unwrap();
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "new");
+        assert!(!tmp.exists());
+
+        let target_dir = dir.path().join("d.srt");
+        std::fs::create_dir(&target_dir).unwrap();
+        std::fs::write(&tmp, "new").unwrap();
+        assert!(commit_tmp_output(&tmp, &target_dir).is_err());
+        assert!(!tmp.exists(), "실패하면 임시 파일을 지운다");
+        assert!(target_dir.is_dir());
+    }
+
+    /// 백신·인덱서가 새 임시 파일을 공유 삭제 없이 잡은 사이 교체가 실패해도 **기존 파일은 남는다**. 먼저 지우던
+    /// 옛 순서는 여기서 옛 파일과 새 파일을 둘 다 잃었다(리뷰 후 수정).
+    #[cfg(windows)]
+    #[test]
+    fn commit_tmp_output_keeps_existing_when_rename_is_blocked() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let (tmp, out) = (dir.path().join(".t.tmp"), dir.path().join("a.srt"));
+        std::fs::write(&out, "old").unwrap();
+        std::fs::write(&tmp, "new").unwrap();
+        // FILE_SHARE_READ만 — 다른 쪽의 삭제·이름 바꾸기를 막는다.
+        let hold = std::fs::OpenOptions::new().read(true).share_mode(0x1).open(&tmp).unwrap();
+        assert!(commit_tmp_output(&tmp, &out).is_err());
+        drop(hold);
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "old", "기존 파일을 잃었다");
+    }
+
+    fn keep(v: &[(u64, u64)]) -> Vec<RangeMs> {
+        v.iter().map(|&(start_ms, end_ms)| RangeMs { start_ms, end_ms }).collect()
+    }
+
+    fn value_after(a: &[String], flag: &str) -> String {
+        a.iter().position(|x| x == flag).map(|i| a[i + 1].clone()).unwrap_or_else(|| panic!("{flag} 없음: {a:?}"))
+    }
+
+    fn maps(a: &[String]) -> Vec<&str> {
+        a.windows(2).filter(|w| w[0] == "-map").map(|w| w[1].as_str()).collect()
+    }
+
+    /// 대본 컷: 입력 탐색(-ss/-t) 없이 구간마다 trim/atrim(+10ms 페이드) → concat=n=N. 초 값은 소수 6자리 숫자만.
+    #[test]
+    fn caption_cut_concats_keep_ranges_without_input_seek() {
+        let s = cut_spec();
+        let k = keep(&[(500, 1500), (2000, 2600), (4000, 5200)]);
+        let a = build_export_args("/r/a.mp4", "/r/.t.tmp", &s, &cut_in(&k));
+        assert!(!a.iter().any(|x| x == "-ss" || x == "-t"), "입력 탐색 금지: {a:?}");
+        let fc = value_after(&a, "-filter_complex");
+        assert!(fc.starts_with("[0:v]trim=start=0.500000:end=1.500000,setpts=PTS-STARTPTS[v0];"), "fc={fc}");
+        assert!(
+            fc.contains("[0:a]atrim=start=2.000000:end=2.600000,asetpts=PTS-STARTPTS,afade=t=in:d=0.01,afade=t=out:st=0.590000:d=0.01[a1]"),
+            "fc={fc}"
+        );
+        assert!(fc.contains("[v0][a0][v1][a1][v2][a2]concat=n=3:v=1:a=1[vc][ac];[vc]null[v]"), "fc={fc}");
+        assert_eq!(maps(&a), vec!["[v]", "[ac]"]);
+        assert!(!a.iter().any(|x| x == "-af" || x == "-vf"), "그래프 출력에 -af/-vf를 함께 걸 수 없다: {a:?}");
+        assert!(a.windows(2).any(|w| w[0] == "-c:a" && w[1] == "aac"));
+        // 필터 문자열의 초 값 = 숫자.6자리 — 경로·사용자 텍스트가 섞일 자리가 없다.
+        for key in ["start=", "end=", "st="] {
+            for part in fc.split(key).skip(1) {
+                let v: String = part.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+                let (int, frac) = v.split_once('.').unwrap_or_else(|| panic!("{key}{part}"));
+                assert!(!int.is_empty() && frac.len() == 6, "{key}{v}");
+            }
+        }
+        assert_eq!(fmt_secs6(0), "0.000000");
+        assert_eq!(fmt_secs6(3_600_042), "3600.042000");
+    }
+
+    /// 오디오가 없거나 소리 빼기면 concat a=0 — atrim도 [ac]도 없고 -an.
+    #[test]
+    fn caption_cut_without_audio_concats_video_only() {
+        let mut s = cut_spec();
+        s.remove_audio = true;
+        let a = build_export_args("/r/a.mp4", "/r/.t.tmp", &s, &cut_in(&keep(&[(0, 1000), (2000, 3000)])));
+        let fc = value_after(&a, "-filter_complex");
+        assert!(fc.contains("[v0][v1]concat=n=2:v=1:a=0[vc];[vc]null[v]"), "fc={fc}");
+        assert!(!fc.contains("[0:a]") && !fc.contains("[ac]"), "fc={fc}");
+        assert_eq!(maps(&a), vec!["[v]"]);
+        assert!(a.iter().any(|x| x == "-an"));
+    }
+
+    /// 체인 순서 concat → mask → crop → scale → setpts, 마스크 입력 라벨은 [vc]. 배속 오디오는 그래프 안 atempo.
+    #[test]
+    fn caption_cut_chain_order_and_mask_input_label() {
+        let mut s = cut_spec();
+        s.masks = Some(vec![CropRect { x: 10, y: 10, w: 64, h: 64 }]);
+        s.crop = Some(CropRect { x: 0, y: 0, w: 640, h: 480 });
+        s.max_height = Some(360);
+        s.speed = Some(2.0);
+        let a = build_export_args("/r/a.mp4", "/r/.t.tmp", &s, &cut_in(&keep(&[(0, 1000), (2000, 3000)])));
+        let fc = value_after(&a, "-filter_complex");
+        let at = |needle: &str| fc.find(needle).unwrap_or_else(|| panic!("{needle} 없음: {fc}"));
+        assert!(at("concat=n=2") < at("[vc]split=2[bg][s0]"), "fc={fc}");
+        assert!(at("[vc]split") < at("[o0]crop=640:480:0:0"), "fc={fc}");
+        assert!(at("crop=640:480") < at("scale=-2:min(360\\,ih)"), "fc={fc}");
+        assert!(at("scale=-2") < at("setpts=PTS/2[v]"), "fc={fc}");
+        assert!(!fc.contains("[0:v]split"), "마스크가 컷 전 원본을 받으면 잘린 부분이 되살아난다: {fc}");
+        assert!(fc.ends_with(";[ac]atempo=2[a]"), "fc={fc}");
+        assert_eq!(maps(&a), vec!["[v]", "[a]"]);
+        assert!(!a.iter().any(|x| x == "-af"), "{a:?}");
+        // 마스크만(컷 없음)은 예전처럼 원본 [0:v]에서 시작한다.
+        let mut m = s.clone();
+        m.caption_cut = false;
+        let fc = value_after(&build_export_args("/r/a.mp4", "/r/.t.tmp", &m, &DocInputs::default()), "-filter_complex");
+        assert!(fc.starts_with("[0:v]split=2[bg][s0];"), "fc={fc}");
+    }
+
+    /// 편집본은 재인코딩·영상 컨테이너 전용이고 range와 배타.
+    #[test]
+    fn caption_cut_validate_rejects_copy_range_and_non_video() {
+        assert!(validate_spec(&cut_spec()).is_ok());
+        assert!(validate_spec(&ExportSpec { out_rel: "a.cut.mov".into(), ..cut_spec() }).is_ok());
+        let copy = ExportSpec { mode: "copy".into(), ..cut_spec() };
+        assert!(validate_spec(&copy).unwrap_err().message.contains("재인코딩"));
+        let ranged = ExportSpec { range: Some(RangeMs { start_ms: 0, end_ms: 1000 }), ..cut_spec() };
+        assert!(validate_spec(&ranged).unwrap_err().message.contains("구간"));
+        for out in ["a.gif", "a.m4a", "a.mp3"] {
+            assert!(validate_spec(&ExportSpec { out_rel: out.into(), ..cut_spec() }).is_err(), "{out}");
+        }
+    }
+
+    /// 진행률 분모 = Σkeep ÷ 배속.
+    #[test]
+    fn caption_cut_expected_output_is_sum_of_keep_over_speed() {
+        let k = keep(&[(500, 1500), (2000, 2600), (4000, 5200)]);
+        let mut s = cut_spec();
+        assert_eq!(expected_out_us(&s, Some(&k)), 2_800_000);
+        s.speed = Some(2.0);
+        assert_eq!(expected_out_us(&s, Some(&k)), 1_400_000);
+    }
+
+    /// 인라인 24KB를 넘는 그래프는 `-/filter_complex <파일>`로(ffmpeg 7+), 짧으면 그대로. 7 미만은 TooManyRanges 대상.
+    #[test]
+    fn caption_cut_long_graph_falls_back_to_file() {
+        let many: Vec<(u64, u64)> = (0..200).map(|i| (i * 180, i * 180 + 100)).collect();
+        let mut a = build_export_args("/r/a.mp4", "/r/.t.tmp", &cut_spec(), &cut_in(&keep(&many)));
+        let inline = value_after(&a, "-filter_complex");
+        assert!(inline.len() > INLINE_GRAPH_MAX, "200구간 ≈ {}자", inline.len());
+        let at = long_graph_at(&a).expect("긴 그래프");
+        let file = Path::new("/data/stt/gpv-stt-graph-x.txt");
+        let graph = externalize_graph(&mut a, at, file);
+        assert_eq!(graph, inline, "파일에는 인라인이었을 그래프가 그대로 간다");
+        assert!(!a.iter().any(|x| x == "-filter_complex"), "{a:?}");
+        assert_eq!(value_after(&a, "-/filter_complex"), file.display().to_string());
+        assert!(long_graph_at(&a).is_none());
+        // 3구간·마스크만은 인라인.
+        let short = build_export_args("/r/a.mp4", "/r/.t.tmp", &cut_spec(), &cut_in(&keep(&[(0, 1000)])));
+        assert!(long_graph_at(&short).is_none());
+
+        for (v, ok) in [
+            (Some("6.1.1"), false),
+            (Some("n6.0"), false),
+            (Some("7.0.2"), true),
+            (Some("9.0.1"), true),
+            (Some("n7.1"), true),
+            (Some("N"), true), // git 빌드 — 시도한다
+            (None, true),
+        ] {
+            assert_eq!(graph_file_supported(v), ok, "{v:?}");
+        }
+    }
+
+    /// 실제 ffmpeg(PATH)로 대본 컷을 끝까지 돌려 출력 길이 ≈ Σkeep(±1프레임)을 본다 — 3구간(인라인)과
+    /// 200구간(그래프 파일 `-/filter_complex`). 관리형 빌드로 재려면 그 bin 폴더를 PATH 앞에 둔다.
+    /// `cargo test --lib caption_cut_real_ffmpeg -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore = "PATH의 ffmpeg·ffprobe 필요"]
+    async fn caption_cut_real_ffmpeg_output_matches_keep() {
+        let ffmpeg = crate::tools::runner::find_on_path("ffmpeg").expect("ffmpeg");
+        let probe = crate::tools::runner::find_on_path("ffprobe").expect("ffprobe");
+        let dir = std::env::temp_dir().join(format!("gpv-cut-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("src.mp4").display().to_string();
+        let gen = [
+            "-v", "error", "-y",
+            "-f", "lavfi", "-i", "testsrc=size=320x240:rate=30:duration=40",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=40",
+            "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", &src,
+        ];
+        let (code, _, err) = run_capture(&ffmpeg, &gen, 120).await.unwrap();
+        assert_eq!(code, 0, "{err}");
+        let version = run_capture(&ffmpeg, &["-version"], 5).await.unwrap().1;
+        println!("ffmpeg: {}", version.lines().next().unwrap_or(""));
+
+        let spec = ExportSpec { duration_ms: 40_000, ..cut_spec() };
+        let many: Vec<(u64, u64)> = (0..200).map(|i| (i * 180, i * 180 + 100)).collect();
+        for (name, ranges) in [("three", vec![(500, 1500), (2000, 2600), (4000, 5200)]), ("many", many)] {
+            let k = keep(&ranges);
+            let want: u64 = k.iter().map(|r| r.end_ms - r.start_ms).sum();
+            let out = dir.join(format!("{name}.mp4"));
+            let mut args = build_export_args(&src, &out.display().to_string(), &spec, &cut_in(&k));
+            if let Some(at) = long_graph_at(&args) {
+                let file = dir.join(format!("{name}.graph.txt"));
+                let graph = externalize_graph(&mut args, at, &file);
+                std::fs::write(&file, graph).unwrap();
+                println!("{name}: 그래프 파일 {}", file.display());
+            }
+            let (code, _, err) = run_capture_bytes(&ffmpeg, &args, 300).await.unwrap();
+            assert_eq!(code, 0, "{name}: {}", last_error_line(&err));
+            let (_, dur, _) = run_capture(
+                &probe,
+                &["-v", "error", "-show_entries", "format=duration:stream=codec_type,duration", "-of", "json",
+                  &out.display().to_string()],
+                30,
+            )
+            .await
+            .unwrap();
+            let v: serde_json::Value = serde_json::from_str(&dur).unwrap();
+            let got = v["format"]["duration"].as_str().unwrap().parse::<f64>().unwrap();
+            println!("{name}: Σkeep {want}ms → 출력 {got:.3}s, streams {}", v["streams"]);
+            assert!((got * 1000.0 - want as f64).abs() <= 34.0, "{name}: Σkeep {want}ms인데 {got}s");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 실제 ffmpeg(PATH, libass)로 한국어 cue를 번인하고 프레임을 OS OCR(이미지 뷰어 OCR과 같은 엔진 — Windows.Media.Ocr·
+    /// Vision·tesseract)로 읽는다: 한글이 네모 칸(글꼴 없음)이 아니라 글자로 그려지는지(§3.6-6, §8 Q6). 프리셋 셋 × 구간
+    /// 시프트(자막이 나올 때만 한글) + 소프트 자막(무손실 복사 + 키프레임 스냅 구간)의 글·시각.
+    /// `cargo test --lib caption_burn_real_ffmpeg -- --ignored --nocapture` — Windows는 한국어 OCR 팩 필요.
+    /// `GPV_BURN_TEST_KEEP=1`이면 산출물 폴더(프레임 PNG·ASS)를 지우지 않는다.
+    #[tokio::test]
+    #[ignore = "PATH의 ffmpeg(libass)·ffprobe + OS OCR 필요"]
+    async fn caption_burn_real_ffmpeg_renders_hangul() {
+        use crate::stt::plan::OutCue;
+        use crate::stt::video_subs::{build_ass, shift_cues, CaptionStylePreset};
+        let ffmpeg = crate::tools::runner::find_on_path("ffmpeg").expect("ffmpeg");
+        let probe = crate::tools::runner::find_on_path("ffprobe").expect("ffprobe");
+        println!("ffmpeg: {}", run_capture(&ffmpeg, &["-version"], 5).await.unwrap().1.lines().next().unwrap_or(""));
+        assert!(has_subtitles_filter(&ffmpeg).await.unwrap(), "이 ffmpeg에는 libass(subtitles)가 없다");
+        let dir = std::env::temp_dir().join(format!("gpv-burn-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let run_err = |args: &[String], cwd: &Path| {
+            let o = std::process::Command::new(&ffmpeg).args(args).current_dir(cwd).output().unwrap();
+            let err = String::from_utf8_lossy(&o.stderr).into_owned();
+            assert!(o.status.success(), "{}", last_error_line(&err));
+            (o.stdout, err)
+        };
+        let run = |args: &[String], cwd: &Path| run_err(args, cwd).0;
+        let owned = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let src = dir.join("src.mp4").display().to_string();
+        run(
+            &owned(&[
+                "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=1280x720:rate=30:duration=6",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=6", "-c:v", "libx264", "-preset", "ultrafast",
+                "-g", "30", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", &src,
+            ]),
+            &dir,
+        );
+        let hangul = |s: &str| s.chars().filter(|c| ('가'..='힣').contains(c)).collect::<std::collections::BTreeSet<char>>();
+        let text = "자막 번인 시험\n한글 글자 확인";
+        let want = hangul(text);
+        let cues = vec![OutCue { cue_id: "c1".into(), start_ms: 1500, end_ms: 4500, text: text.into() }];
+        let range = RangeMs { start_ms: 1000, end_ms: 5000 };
+        // 출력 0.5~3.5초에 자막.
+        let shifted = shift_cues(cues.clone(), Some(range), 1.0);
+        let ocr_at = |out: &Path, secs: &str, name: &str| {
+            let png = run(
+                &owned(&[
+                    "-v", "error", "-ss", secs, "-i", &out.display().to_string(), "-frames:v", "1",
+                    "-vf", "crop=iw:ih*0.45:0:ih*0.55", "-f", "image2pipe", "-c:v", "png", "-",
+                ]),
+                &dir,
+            );
+            std::fs::write(dir.join(format!("{name}-{secs}.png")), &png).unwrap();
+            image::load_from_memory(&png).unwrap().to_rgba8()
+        };
+
+        for preset in [CaptionStylePreset::Basic, CaptionStylePreset::Box, CaptionStylePreset::Large] {
+            let name = format!("{preset:?}").to_lowercase();
+            let spec = ExportSpec {
+                mode: "encode".into(),
+                out_rel: "a.sub.mp4".into(),
+                range: Some(range),
+                caption_subs: Some(CaptionSubs { preset, ..subs_spec(SubsMode::Burn, SubTimeline::Source) }),
+                duration_ms: 6000,
+                ..base_spec()
+            };
+            validate_spec(&spec).unwrap();
+            let (w, h) = export_out_size(1280, 720, &spec);
+            let burn_dir = dir.join(format!("burn-{name}"));
+            std::fs::create_dir_all(&burn_dir).unwrap();
+            std::fs::write(burn_dir.join(crate::stt::video_subs::BURN_ASS_NAME), build_ass(&shifted, preset, w, h)).unwrap();
+            let out = dir.join(format!("{name}.mp4"));
+            let sf = SubsFile::Burn { dir: burn_dir.clone() };
+            let doc = DocInputs { audio_stream: Some(0), subs: Some(&sf), ..Default::default() };
+            let (_, err) = run_err(&build_export_args(&src, &out.display().to_string(), &spec, &doc), &burn_dir);
+            let missing = burn_missing_glyphs(&err);
+            assert!(missing.is_empty(), "{name}: libass가 못 그린 글자 {missing:?}");
+
+            let got = crate::commands::recognize_two_pass(ocr_at(&out, "2.0", &name)).await.expect("OCR");
+            let hits = want.iter().filter(|c| hangul(&got.text).contains(c)).count();
+            println!("{name}: OCR {:?} → 한글 {hits}/{}", got.text, want.len());
+            assert!(hits * 10 >= want.len() * 6, "{name}: 한글이 글자로 읽히지 않는다(네모 칸?) — OCR {:?}", got.text);
+            // 출력은 4.0초(구간 길이) — 자막 전(0.2)과 자막이 끝난 뒤(3.8).
+            for secs in ["0.2", "3.8"] {
+                let off = crate::commands::recognize_two_pass(ocr_at(&out, secs, &name)).await.expect("OCR");
+                assert!(hangul(&off.text).is_empty(), "{name} {secs}초: 자막이 나올 때가 아니다 — {:?}", off.text);
+            }
+        }
+
+        // 어떤 글꼴에도 없는 글자(U+0378 미할당) — ffmpeg는 0으로 끝나지만 네모 칸이다. video_export는 이 경고로 거절한다
+        // (Windows gyan은 DirectWrite, johnvansickle은 fontconfig — 경고 문구는 같다).
+        let tofu_dir = dir.join("burn-tofu");
+        std::fs::create_dir_all(&tofu_dir).unwrap();
+        let tofu = [OutCue { cue_id: "c1".into(), start_ms: 0, end_ms: 2000, text: "한글 \u{378}".into() }];
+        let ass = build_ass(&tofu, CaptionStylePreset::Basic, 1280, 720);
+        std::fs::write(tofu_dir.join(crate::stt::video_subs::BURN_ASS_NAME), ass).unwrap();
+        let sf = SubsFile::Burn { dir: tofu_dir.clone() };
+        let doc = DocInputs { subs: Some(&sf), ..Default::default() };
+        let out = dir.join("tofu.mp4").display().to_string();
+        let (_, err) = run_err(&build_export_args(&src, &out, &burn_spec(), &doc), &tofu_dir);
+        assert_eq!(burn_missing_glyphs(&err), vec!['\u{378}'], "libass 경고를 못 읽었다");
+
+        // 소프트 자막 + 무손실 복사 + 구간: 키프레임(1초 간격)으로 스냅되어 영상이 1.0초부터 시작해도 자막은 같은 만큼
+        // 밀려(-avoid_negative_ts make_zero는 모든 스트림에 같은 이동) 원본 1.5초 = 출력 0.5초에 맞는다.
+        let range = RangeMs { start_ms: 1400, end_ms: 5000 };
+        let spec = ExportSpec {
+            mode: "copy".into(),
+            out_rel: "a.sub.mp4".into(),
+            range: Some(range),
+            caption_subs: Some(subs_spec(SubsMode::Soft, SubTimeline::Source)),
+            duration_ms: 6000,
+            ..base_spec()
+        };
+        validate_spec(&spec).unwrap();
+        let srt = dir.join("soft.srt");
+        std::fs::write(&srt, crate::stt::subs::build_srt(&shift_cues(cues, Some(range), 1.0))).unwrap();
+        let out = dir.join("soft.mp4");
+        let sf = SubsFile::Soft { srt };
+        let doc = DocInputs { audio_stream: Some(0), subs: Some(&sf), ..Default::default() };
+        run(&build_export_args(&src, &out.display().to_string(), &spec, &doc), &dir);
+        let streams = run_capture(
+            &probe,
+            &["-v", "error", "-show_entries", "stream=codec_type,codec_name,start_time", "-of", "json", &out.display().to_string()],
+            30,
+        )
+        .await
+        .unwrap()
+        .1;
+        println!("soft streams: {streams}");
+        assert!(streams.contains("\"mov_text\""), "자막 스트림 없음: {streams}");
+        let back = String::from_utf8(run(
+            &owned(&["-v", "error", "-i", &out.display().to_string(), "-map", "0:s:0", "-f", "srt", "-"]),
+            &dir,
+        ))
+        .unwrap();
+        println!("soft srt:\n{back}");
+        assert!(back.contains("자막 번인 시험"), "{back}");
+        // 실측(gyan 8.0): 영상 첫 프레임(원본 1.0초 키프레임)이 출력 0.000977초, 자막 0.502초 — 1프레임(33ms) 안이면 맞다.
+        let ms = |t: &str| -> i64 {
+            let (hms, f) = t.trim().split_once(',').unwrap();
+            let p: Vec<i64> = hms.split(':').map(|x| x.parse().unwrap()).collect();
+            ((p[0] * 60 + p[1]) * 60 + p[2]) * 1000 + f.parse::<i64>().unwrap()
+        };
+        let line = back.lines().find(|l| l.contains("-->")).expect("시각 줄");
+        let (a, b) = line.split_once("-->").unwrap();
+        assert!((ms(a) - 500).abs() <= 33 && (ms(b) - 3500).abs() <= 33, "원본 1.5~4.5초 = 출력 0.5~3.5초여야 한다: {line}");
+
+        if std::env::var_os("GPV_BURN_TEST_KEEP").is_some() {
+            println!("산출물: {}", dir.display());
+        } else {
+            std::fs::remove_dir_all(&dir).ok();
         }
     }
 
@@ -1773,7 +2811,7 @@ mod tests {
     fn copy_trim_uses_input_seek_and_duration_not_to() {
         let mut s = base_spec();
         s.range = Some(RangeMs { start_ms: 12_300, end_ms: 47_800 });
-        let a = build_export_args("/r/a.mp4", "/r/.t.tmp", &s);
+        let a = build_export_args("/r/a.mp4", "/r/.t.tmp", &s, &DocInputs::default());
         let i_pos = a.iter().position(|x| x == "-i").unwrap();
         let ss_pos = a.iter().position(|x| x == "-ss").unwrap();
         assert!(ss_pos < i_pos, "-ss가 -i 앞(입력 시킹)이어야 한다");
@@ -1792,7 +2830,7 @@ mod tests {
         let mut s = base_spec();
         s.mode = "encode".into();
         s.crop = Some(CropRect { x: 101, y: 51, w: 333, h: 201 });
-        let a = build_export_args("/r/a.mp4", "/r/.t.tmp", &s);
+        let a = build_export_args("/r/a.mp4", "/r/.t.tmp", &s, &DocInputs::default());
         let vf = a.iter().position(|x| x == "-vf").map(|i| a[i + 1].clone()).unwrap();
         assert!(vf.contains("crop=332:200:100:50"), "vf={vf}");
     }
@@ -1810,7 +2848,7 @@ mod tests {
         ]);
         spec.mask_kind = Some("mosaic".into());
         spec.crop = Some(CropRect { x: 0, y: 0, w: 640, h: 480 });
-        let a = build_export_args("/r/in.mp4", "/r/.t.tmp", &spec);
+        let a = build_export_args("/r/in.mp4", "/r/.t.tmp", &spec, &DocInputs::default());
 
         assert!(!a.iter().any(|x| x == "-vf"), "마스크가 있으면 -vf가 아니라 filter_complex다: {a:?}");
         let fc = a.iter().position(|x| x == "-filter_complex").map(|i| a[i + 1].clone()).unwrap();
@@ -1837,7 +2875,7 @@ mod tests {
         spec.mode = "encode".into();
         spec.masks = Some(vec![CropRect { x: 8, y: 8, w: 64, h: 32 }]);
         spec.mask_kind = Some("blur".into());
-        let a = build_export_args("/r/in.mp4", "/r/.t.tmp", &spec);
+        let a = build_export_args("/r/in.mp4", "/r/.t.tmp", &spec, &DocInputs::default());
         let fc = a.iter().position(|x| x == "-filter_complex").map(|i| a[i + 1].clone()).unwrap();
         assert!(fc.contains("[s0]crop=64:32:8:8,boxblur=4:2[e0]"), "fc={fc}");
         // 다른 필터가 없으면 null로 이어 붙여 라벨을 만든다.
@@ -1868,7 +2906,7 @@ mod tests {
         let mut s = base_spec();
         s.mode = "encode".into();
         s.speed = Some(2.0);
-        let a = build_export_args("/r/a.mp4", "/r/.t.tmp", &s);
+        let a = build_export_args("/r/a.mp4", "/r/.t.tmp", &s, &DocInputs::default());
         let vf = a.iter().position(|x| x == "-vf").map(|i| a[i + 1].clone()).unwrap();
         assert!(vf.contains("setpts=PTS/2"));
         let af = a.iter().position(|x| x == "-af").map(|i| a[i + 1].clone()).unwrap();
@@ -1900,7 +2938,7 @@ mod tests {
         s.mode = "encode".into();
         s.out_rel = "a.gif".into();
         s.range = Some(RangeMs { start_ms: 0, end_ms: 3000 });
-        let a = build_export_args("/r/a.mp4", "/r/.t.tmp", &s);
+        let a = build_export_args("/r/a.mp4", "/r/.t.tmp", &s, &DocInputs::default());
         let fc = a.iter().position(|x| x == "-filter_complex").map(|i| a[i + 1].clone()).unwrap();
         assert!(fc.contains("palettegen") && fc.contains("paletteuse") && fc.contains("fps=12"));
         assert!(a.iter().any(|x| x == "-an"));
@@ -1913,7 +2951,7 @@ mod tests {
     fn audio_extract_copy() {
         let mut s = base_spec();
         s.out_rel = "a.m4a".into();
-        let a = build_export_args("/r/a.mp4", "/r/.t.tmp", &s);
+        let a = build_export_args("/r/a.mp4", "/r/.t.tmp", &s, &DocInputs::default());
         assert!(a.iter().any(|x| x == "-vn"));
         assert!(a.windows(2).any(|w| w[0] == "-c:a" && w[1] == "copy"));
         assert!(a.windows(2).any(|w| w[0] == "-f" && w[1] == "ipod"));
@@ -1925,11 +2963,11 @@ mod tests {
         let mut s = base_spec();
         s.mode = "encode".into();
         s.out_rel = "a.mp3".into();
-        let a = build_export_args("/r/a.mp4", "/r/.t.tmp", &s);
+        let a = build_export_args("/r/a.mp4", "/r/.t.tmp", &s, &DocInputs::default());
         assert!(a.windows(2).any(|w| w[0] == "-c:a" && w[1] == "libmp3lame"), "{a:?}");
         assert!(a.windows(2).any(|w| w[0] == "-f" && w[1] == "mp3"));
         s.out_rel = "a.m4a".into();
-        let a = build_export_args("/r/a.mp4", "/r/.t.tmp", &s);
+        let a = build_export_args("/r/a.mp4", "/r/.t.tmp", &s, &DocInputs::default());
         assert!(a.windows(2).any(|w| w[0] == "-c:a" && w[1] == "aac"));
     }
 
@@ -1948,10 +2986,10 @@ mod tests {
         s.mode = "encode".into();
         s.speed = Some(2.0);
         s.range = Some(RangeMs { start_ms: 0, end_ms: 10_000 });
-        assert_eq!(expected_out_us(&s), 5_000_000);
+        assert_eq!(expected_out_us(&s, None), 5_000_000);
         s.mode = "copy".into(); // copy는 speed 무시
         s.speed = None;
-        assert_eq!(expected_out_us(&s), 10_000_000);
+        assert_eq!(expected_out_us(&s, None), 10_000_000);
     }
 
     #[test]
@@ -1973,7 +3011,7 @@ mod tests {
              "side_data_list":[{"side_data_type":"Display Matrix","rotation":-90}]},
             {"codec_type":"audio","codec_name":"aac"}
           ],
-          "format": {"duration":"12.5","bit_rate":"4000000"}
+          "format": {"duration":"12.5","bit_rate":"4000000","start_time":"-0.007000"}
         }"#;
         let m = parse_probe(json).unwrap();
         assert_eq!((m.width, m.height), (1080, 1920));
@@ -1982,6 +3020,7 @@ mod tests {
         assert_eq!(m.bitrate_kbps, Some(4000));
         assert!(m.has_audio);
         assert_eq!(m.acodec.as_deref(), Some("aac"));
+        assert_eq!(m.start_time_ms, -7, "start_time은 음수도 그대로(Opus webm)");
     }
 
     /// avg_frame_rate가 "0/0"(미상)이면 r_frame_rate로 폴백한다.
@@ -1990,6 +3029,7 @@ mod tests {
         let json = r#"{"streams":[{"codec_type":"video","width":10,"height":10,
           "avg_frame_rate":"0/0","r_frame_rate":"25/1"}],"format":{}}"#;
         assert_eq!(parse_probe(json).unwrap().fps, 25.0);
+        assert_eq!(parse_probe(json).unwrap().start_time_ms, 0, "start_time 없음 = 0");
     }
 
     /// 필름스트립은 ffmpeg **1회·이미지 1장**이다 — fps는 cols/길이(초)로 구간을 등분하고,

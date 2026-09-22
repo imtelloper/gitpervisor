@@ -45,6 +45,44 @@ import { usePromptHistory } from "./stores/promptHistory";
 import { useTerminals } from "./stores/terminals";
 import { selectBlockingOverlay, useUi } from "./stores/ui";
 import { planSegments, useVideoSplit } from "./stores/videoSplit";
+import {
+  captionCueSpans,
+  captionCueText,
+  captionCutAllowed,
+  captionFillerIds,
+  captionGapKeptMs,
+  captionIndexAt,
+  captionMatchCutIds,
+  captionPlaySkipTo,
+  captionRemovedRanges,
+  captionSelectionTimeRange,
+  captionSilenceCandidates,
+  captionSourceCues,
+  cutCaptionTokens,
+  findCaptionMatches,
+  mergeCaptionCues,
+  replaceCaptionMatches,
+  setCaptionCueCaption,
+  setCaptionSilence,
+  setCaptionWordText,
+  splitCaptionCue,
+  toggleCaptionCut,
+} from "./lib/captionEdit";
+import { captionOverlayLayout, setCaptionStylePreset } from "./lib/captionStyle";
+import {
+  batchCaptionItems,
+  captionTranslateBudget,
+  captionTranslateItems,
+  captionTranslateMessages,
+  captionTranslatePending,
+  captionTranslationCounts,
+  parseCaptionTranslation,
+  setCaptionTranslation,
+  setCaptionTranslations,
+  translateCaptionItems,
+} from "./lib/captionTranslate";
+import { sttAudioTrackLabel } from "./lib/stt";
+import { useCaptionDoc } from "./stores/captionDoc";
 import "./styles.css";
 
 const root = ReactDOM.createRoot(document.getElementById("root")!);
@@ -79,6 +117,48 @@ if (import.meta.env.DEV) {
     terminals: useTerminals,
     videoSplit: useVideoSplit,
     planSegments,
+    // 대본 편집(태스크 72) — 나누기·합치기·찾아 바꾸기 순수 함수와 창별 자막 문서 스토어. TS 단위 테스트 러너가 없어
+    // e2e가 이것으로 불변식을 잰다(planSegments와 같은 이유).
+    caption: {
+      captionCueSpans,
+      captionCueText,
+      captionIndexAt,
+      captionSelectionTimeRange,
+      captionSourceCues,
+      findCaptionMatches,
+      mergeCaptionCues,
+      replaceCaptionMatches,
+      setCaptionCueCaption,
+      setCaptionWordText,
+      splitCaptionCue,
+      // P2 — 컷·일괄 컷·무음 줄이기 미리보기·편집 반영 재생 위치.
+      captionCutAllowed,
+      toggleCaptionCut,
+      cutCaptionTokens,
+      captionMatchCutIds,
+      captionFillerIds,
+      captionGapKeptMs,
+      captionSilenceCandidates,
+      setCaptionSilence,
+      captionPlaySkipTo,
+      captionRemovedRanges,
+      // P3 — 자막 스타일(오버레이 배치·문서 기억)·오디오 트랙 이름.
+      captionOverlayLayout,
+      setCaptionStylePreset,
+      sttAudioTrackLabel,
+      // P4 — 번역 배치·프롬프트·응답 검증·쪼개기(가짜 chat을 넣어 결정적으로)·문서 쓰기.
+      captionTranslateItems,
+      captionTranslatePending,
+      captionTranslationCounts,
+      captionTranslateBudget,
+      batchCaptionItems,
+      captionTranslateMessages,
+      parseCaptionTranslation,
+      translateCaptionItems,
+      setCaptionTranslations,
+      setCaptionTranslation,
+    },
+    captionDoc: useCaptionDoc,
     promptHistory: usePromptHistory, // 호버 카드 e2e — 기록 생성·컬럼 열기·교체 시뮬레이션
     term: { get: getTerminal }, // 터미널 e2e — xterm 인스턴스·win32Input 플래그 관측
     customThemes: useCustomThemes, // 커스텀 테마 e2e — 정의 upsert/remove

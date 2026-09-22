@@ -2,11 +2,12 @@ import type { Query, QueryClient } from "@tanstack/react-query";
 import { focusManager } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 
+import { invalidateVideoMedia } from "../queries";
 import { useOps } from "../stores/ops";
 import { useUi } from "../stores/ui";
 import { setSplitQueryClient, useVideoSplit } from "../stores/videoSplit";
 import type { SyncOp } from "../stores/ops";
-import type { RepoStatus, VideoExportFinished } from "./ipc";
+import type { RepoStatus, SttFinishedEvent, VideoExportFinished } from "./ipc";
 import { ipc } from "./ipc";
 
 interface RepoChanged {
@@ -43,6 +44,14 @@ export function markLocalVideoJob(id: string) {
   localVideoJobs.add(id);
 }
 
+/** 이 창이 시작한 자막 만들기(전사) 잡 id → 파일 이름. `stt://finished`도 모든 창에 오므로 위와 같은 이유로 거른다. */
+const localSttJobs = new Map<string, string>();
+
+/** 전사 invoke 직전에 부른다 — 완료 토스트는 이 창에서만. */
+export function markLocalSttJob(id: string, fileName: string) {
+  localSttJobs.set(id, fileName);
+}
+
 /**
  * 동영상 내보내기 이벤트 구독 — 메인(attachRepoEvents)과 doc 창(DocWindow) 양쪽이 부른다.
  * 무효화는 어느 창이든(멱등), 토스트·배치 진행은 그 잡을 시작한 창만 한다.
@@ -62,7 +71,7 @@ export function attachVideoEvents(qc: QueryClient) {
     }
     // 남의 창이 시작한 잡 — 산출물 반영(무효화)만 하고 토스트는 그 창에 맡긴다.
     if (!localVideoJobs.delete(e.payload.jobId)) {
-      invalidateVideoOutputs(qc);
+      invalidateVideoOutputs(qc, e.payload);
       return;
     }
     const { ok, cancelled, error, outRel } = e.payload;
@@ -70,17 +79,29 @@ export function attachVideoEvents(qc: QueryClient) {
     if (cancelled) useUi.getState().pushToast("info", "내보내기를 취소했습니다");
     else if (ok) useUi.getState().pushToast("success", `내보내기 완료 — ${name}`);
     else useUi.getState().pushToast("error", error ?? "내보내기 실패");
-    invalidateVideoOutputs(qc);
+    invalidateVideoOutputs(qc, e.payload);
+  });
+
+  // 자막 만들기 종결 — 결과 반영은 captionDoc 스토어가 자기 잡으로 한다. 여기는 시작한 창의 토스트만.
+  void listen<SttFinishedEvent>("stt://finished", (e) => {
+    const name = localSttJobs.get(e.payload.jobId);
+    if (name === undefined) return;
+    localSttJobs.delete(e.payload.jobId);
+    const { ok, cancelled, error } = e.payload;
+    if (cancelled) useUi.getState().pushToast("info", "자막 만들기를 취소했습니다");
+    else if (ok) useUi.getState().pushToast("success", `자막을 만들었습니다 — ${name}`);
+    else useUi.getState().pushToast("error", error ?? "자막 만들기 실패");
   });
 }
 
 /** 산출물이 워크트리에 생겼다 — 파일트리·git 상태 갱신. 덮어쓰기 내보내기로 기존
  *  미디어가 교체됐을 수 있어 staleTime Infinity인 프로브·이미지 캐시도 함께 무효화. */
-function invalidateVideoOutputs(qc: QueryClient) {
+function invalidateVideoOutputs(qc: QueryClient, done: VideoExportFinished) {
   void qc.invalidateQueries({ queryKey: ["dir"] });
   void qc.invalidateQueries({ queryKey: ["statuses"] });
   void qc.invalidateQueries({ queryKey: ["video-probe"] });
   void qc.invalidateQueries({ queryKey: ["file-image"] });
+  invalidateVideoMedia(qc, done.projectId, (rel) => rel === done.outRel);
 }
 
 /**

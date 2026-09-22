@@ -5,7 +5,7 @@
 import { useQuery } from "@tanstack/react-query";
 
 import type { ChatDone, LlmChatProgress, LlmStatus, Settings } from "./ipc";
-import { ipc } from "./ipc";
+import { ipc, isIpcError } from "./ipc";
 
 export type { ChatDone };
 
@@ -79,6 +79,47 @@ export async function chat(
   }
 }
 
+/** Busy 재시도 간격·상한(61 §3.1) — abort 되면 그 전에 끊긴다. */
+const BUSY_RETRY_MS = 3000;
+const BUSY_RETRY_LIMIT_MS = 10 * 60_000;
+
+/** abort 되면 즉시 깨는 sleep — 창·카드를 닫았는데 3초를 더 기다리지 않게. */
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      window.clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = window.setTimeout(done, ms);
+    signal.addEventListener("abort", done, { once: true });
+  });
+}
+
+/**
+ * `chat()` + 서버가 다른 AI 요청을 물고 있으면(`BUSY`) 3초 간격으로 최대 10분 재시도. 소비자는 61(선택 번역)·
+ * 72(자막 번역) — 72는 배치마다 부르므로 그 사이에 60·61 요청이 끼어드는 것이 의도다.
+ * ponytail: 3초 폴링 — 대기가 길어지는 게 일상이 되면 59에 큐를 넣는다.
+ */
+export async function chatWithBusyRetry(
+  messages: ChatMsg[],
+  onToken: (delta: string) => void,
+  opts: ChatOpts & { signal: AbortSignal; onBusy?: () => void },
+): Promise<ChatDone> {
+  const deadline = Date.now() + BUSY_RETRY_LIMIT_MS;
+  for (;;) {
+    try {
+      return await chat(messages, onToken, opts);
+    } catch (e) {
+      const busy = isIpcError(e) && e.code === "BUSY";
+      if (!busy || opts.signal.aborted || Date.now() > deadline) throw e;
+      opts.onBusy?.();
+      await sleep(BUSY_RETRY_MS, opts.signal);
+      if (opts.signal.aborted) throw e;
+    }
+  }
+}
+
 /** 런타임·모델·서버 상태. 설정 AI 페이지와 60·61의 "준비 안 됨" 안내가 공유한다. */
 export function useLlmStatus() {
   return useQuery({
@@ -120,7 +161,18 @@ export function llmReadyReason(
   return model.present ? null : `설정 › AI에서 ${model.label} 모델을 다운로드하세요`;
 }
 
-/** 설정 `llmLanguage` → 프롬프트에 넣을 언어 이름. 60·61의 시스템 프롬프트가 쓴다. */
+/** 언어 코드 → 프롬프트에 넣을 언어 이름. 60·61의 시스템 프롬프트(설정 `llmLanguage`)와 72 자막 번역이 쓴다. */
 export function langName(code: string): string {
-  return { ko: "Korean", en: "English" }[code] ?? code;
+  return (
+    {
+      ko: "Korean",
+      en: "English",
+      ja: "Japanese",
+      zh: "Chinese",
+      es: "Spanish",
+      fr: "French",
+      de: "German",
+      vi: "Vietnamese",
+    }[code] ?? code
+  );
 }

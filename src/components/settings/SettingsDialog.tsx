@@ -17,6 +17,7 @@ import { GeneralSection } from "./sections/GeneralSection";
 import { MaintenanceSection } from "./sections/MaintenanceSection";
 import { UpdateSection } from "./sections/UpdateSection";
 import { NotifySection } from "./sections/NotifySection";
+import { SttSection } from "./sections/SttSection";
 import { TerminalSection } from "./sections/TerminalSection";
 import {
   CATEGORIES,
@@ -47,6 +48,9 @@ function buildCleaned(f: Settings): Settings {
     llmExternalUrl: f.llmExternalUrl?.trim() || null,
     llmExternalModel: f.llmExternalModel?.trim() || null,
     llmExternalKey: f.llmExternalKey?.trim() || null,
+    // 음성 인식(태스크 72) — 언어 코드는 whisper -l 값이라 소문자로.
+    sttModel: f.sttModel.trim() || "turbo-q5",
+    sttLanguage: f.sttLanguage.trim().toLowerCase() || "auto",
   };
 }
 
@@ -92,6 +96,11 @@ export function SettingsDialog() {
   const [llmModelStatus, setLlmModelStatus] = useState("");
   const [llmTestBusy, setLlmTestBusy] = useState(false);
   const [llmTestOutput, setLlmTestOutput] = useState("");
+  // 음성 인식(태스크 72) — 위 AI 다운로드와 같은 이유로 셸이 소유한다.
+  const [sttRuntimeBusy, setSttRuntimeBusy] = useState(false);
+  const [sttRuntimeStatus, setSttRuntimeStatus] = useState("");
+  const [sttModelBusy, setSttModelBusy] = useState<string | null>(null);
+  const [sttModelStatus, setSttModelStatus] = useState("");
   const [slackSecret, setSlackSecret] = useState("");
   const [smtpSecret, setSmtpSecret] = useState("");
   const [slackHas, setSlackHas] = useState(false);
@@ -340,6 +349,51 @@ export function SettingsDialog() {
     });
   }
 
+  // ---- 음성 인식(태스크 72) ----
+  const refreshStt = () => void qc.invalidateQueries({ queryKey: ["stt-status"] });
+
+  async function downloadSttRuntime() {
+    setSttRuntimeBusy(true);
+    setSttRuntimeStatus("다운로드 준비…");
+    try {
+      await ipc.sttRuntimeEnsure((p) => setSttRuntimeStatus(llmPhase(p)));
+      setSttRuntimeStatus("설치 완료 ✓");
+    } catch (e) {
+      setSttRuntimeStatus(`⚠ ${errorMessage(e)}`);
+    }
+    setSttRuntimeBusy(false);
+    refreshStt();
+  }
+
+  async function downloadSttModel(id: string) {
+    setSttModelBusy(id);
+    setSttModelStatus("다운로드 준비…");
+    try {
+      await ipc.sttModelDownload(id, (p) => setSttModelStatus(llmPhase(p)));
+      setSttModelStatus("설치 완료 ✓");
+    } catch (e) {
+      setSttModelStatus(`⚠ ${errorMessage(e)}`);
+    }
+    setSttModelBusy(null);
+    refreshStt();
+  }
+
+  function deleteSttModel(id: string, label: string) {
+    useUi.getState().askConfirm({
+      title: "음성 인식 모델 삭제",
+      message: `${label}을(를) 지웁니다. 다시 쓰려면 처음부터 내려받아야 합니다.`,
+      confirmLabel: "삭제",
+      danger: true,
+      onConfirm: () => {
+        void ipc
+          .sttModelDelete(id)
+          .then(() => setSttModelStatus("삭제했습니다"))
+          .catch((e) => useUi.getState().pushToast("error", errorMessage(e)))
+          .finally(refreshStt);
+      },
+    });
+  }
+
   // 테스트 — 저장 전 폼 값이 아니라 **저장된 설정**으로 돈다(백엔드가 settings를 읽는다).
   // 그래서 먼저 persist한 뒤 보낸다(알림 테스트 I4와 같은 이유).
   function testLlm() {
@@ -473,22 +527,37 @@ export function SettingsDialog() {
               </div>
             )}
             {category === "ai" && (
-              <AiSection
-                form={form}
-                update={update}
-                hl={hl}
-                runtimeBusy={llmRuntimeBusy}
-                runtimeStatus={llmRuntimeStatus}
-                onRuntimeDownload={() => void downloadLlmRuntime()}
-                modelBusy={llmModelBusy}
-                modelStatus={llmModelStatus}
-                onModelDownload={(id) => void downloadLlmModel(id)}
-                onModelDelete={deleteLlmModel}
-                onCancel={(name) => void ipc.llmDownloadCancel(name)}
-                testBusy={llmTestBusy}
-                testOutput={llmTestOutput}
-                onTest={testLlm}
-              />
+              <>
+                <AiSection
+                  form={form}
+                  update={update}
+                  hl={hl}
+                  runtimeBusy={llmRuntimeBusy}
+                  runtimeStatus={llmRuntimeStatus}
+                  onRuntimeDownload={() => void downloadLlmRuntime()}
+                  modelBusy={llmModelBusy}
+                  modelStatus={llmModelStatus}
+                  onModelDownload={(id) => void downloadLlmModel(id)}
+                  onModelDelete={deleteLlmModel}
+                  onCancel={(name) => void ipc.llmDownloadCancel(name)}
+                  testBusy={llmTestBusy}
+                  testOutput={llmTestOutput}
+                  onTest={testLlm}
+                />
+                <SttSection
+                  form={form}
+                  update={update}
+                  hl={hl}
+                  runtimeBusy={sttRuntimeBusy}
+                  runtimeStatus={sttRuntimeStatus}
+                  onRuntimeDownload={() => void downloadSttRuntime()}
+                  modelBusy={sttModelBusy}
+                  modelStatus={sttModelStatus}
+                  onModelDownload={(id) => void downloadSttModel(id)}
+                  onModelDelete={deleteSttModel}
+                  onCancel={(name) => void ipc.llmDownloadCancel(name)}
+                />
+              </>
             )}
             {category === "update" && <UpdateSection hl={hl} />}
           </div>

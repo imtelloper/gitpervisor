@@ -1,4 +1,4 @@
-import type { QueryClient } from "@tanstack/react-query";
+import type { Query, QueryClient } from "@tanstack/react-query";
 import {
   keepPreviousData,
   replaceEqualDeep,
@@ -619,6 +619,15 @@ export function useVideoFilmstrip(
     staleTime: Infinity,
     retry: false,
   });
+}
+
+/** 내보내기로 덮어쓴 영상의 필름스트립·파형 무효화 — 둘 다 경로만 키이고 staleTime Infinity라 파일이 바뀌어도
+ *  스스로 다시 뽑지 않는다(태스크 72 §2.1). 쓴 경로로만 좁힌다: 넓게 지우면 열린 영상의 필름스트립(파일 전체
+ *  디코드)을 내보낼 때마다 다시 뽑는다. */
+export function invalidateVideoMedia(qc: QueryClient, projectId: string, written: (relPath: string) => boolean) {
+  const predicate = (q: Query) => written(String(q.queryKey[2]));
+  void qc.invalidateQueries({ queryKey: ["video-filmstrip", projectId], predicate });
+  void qc.invalidateQueries({ queryKey: ["video-waveform", projectId], predicate });
 }
 
 /** 오디오 파형 피크 — 오디오 트랙이 없으면 빈 배열이 온다(에러 아님). */

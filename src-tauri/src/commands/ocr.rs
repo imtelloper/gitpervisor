@@ -267,7 +267,8 @@ fn encode_png(img: &image::RgbaImage) -> Result<Vec<u8>, IpcError> {
 }
 
 /// 1차 인식 → 글자가 작으면 ×2로 재인식(§3.3·§3.4). 상자는 항상 **원본 px**로 되돌린다.
-async fn recognize_two_pass(img: image::RgbaImage) -> Result<OcrResult, IpcError> {
+/// 자막 번인 실측 테스트(commands/video.rs `caption_burn_real_ffmpeg_renders_hangul`)도 이 엔진으로 한글을 읽는다.
+pub(crate) async fn recognize_two_pass(img: image::RgbaImage) -> Result<OcrResult, IpcError> {
     let (w, h) = (img.width(), img.height());
     let src = std::sync::Arc::new(img);
     let first = engine_pass(src.clone()).await?;

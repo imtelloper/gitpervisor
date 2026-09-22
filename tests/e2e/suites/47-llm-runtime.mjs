@@ -230,7 +230,9 @@ export async function run({ cdp, report: r }) {
     const missing = llmKeys.filter((k) => !indexed.has(k));
     r.check(
       "⑤ SETTINGS_INDEX가 llm* 키 전부 커버(29 ⑤ 부분집합)",
-      llmKeys.length === 10 && missing.length === 0,
+      // 11 = provider·model·reportModel·customModelPath·externalUrl·externalModel·externalKey·gpuLayers·context·
+      // language·backend. llmReportModel(태스크 70)이 들어올 때 10에서 안 올려 E2E_NET 회차에서만 빨갰다(태스크 72 §2.1).
+      llmKeys.length === 11 && missing.length === 0,
       missing.length ? `누락: ${missing.join(",")}` : `${llmKeys.length}키`,
     );
 

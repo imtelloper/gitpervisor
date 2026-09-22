@@ -62,6 +62,8 @@ const SUITES = [
   "./suites/54-image-ocr.mjs",
   // E2E_NET=1 일 때만 실제로 돈다(런타임 다운로드에 네트워크 필요) — 아니면 전부 skip.
   "./suites/47-llm-runtime.mjs",
+  // 음성 인식 자막 — 47과 같은 E2E_NET 게이트(엔진 다운로드). 모델은 E2E_STT_MODEL(ggml-tiny) 주입.
+  "./suites/65-stt-captions.mjs",
   "./suites/44-project-logo.mjs",
   "./suites/45-git-dialog.mjs",
   "./suites/50-file-tree-dialog.mjs",
@@ -72,6 +74,10 @@ const SUITES = [
   "./suites/62-pdf-spike.mjs",
   // 비-UTF8 파일을 만들었다가 지운다 — 루트 목록·status 개수를 재는 스위트 뒤에 둔다.
   "./suites/63-encoding.mjs",
+  // 대본 편집·편집본 내보내기(태스크 72) — 엔진 없이 합성 자막 문서로. 영상 doc 창을 연다.
+  "./suites/64-caption-edit-export.mjs",
+  // 자막 오디오 트랙·번인 불가 안내(태스크 72 P3) — 두 트랙 영상을 doc 창으로. 엔진 없이.
+  "./suites/68-caption-audio-tracks.mjs",
   // 잔디·요약. 자기 전용 레포를 따로 만들어 쓴다(공유 픽스처엔 앞선 스위트의 오늘 커밋이 쌓인다).
   "./suites/48-report.mjs",
   // 번역 본문 단언은 LLM(런타임+모델)이 준비된 경우에만 — 아니면 그 부분만 skip 한다.

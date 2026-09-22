@@ -16,6 +16,7 @@ mod proc_icons;
 mod process_priority;
 mod report;
 mod state;
+mod stt;
 mod sysinfo_static;
 mod text;
 mod tools;
@@ -1239,6 +1240,16 @@ pub fn run() {
             llm::chat::llm_chat,
             llm::chat::llm_cancel,
             llm::server::llm_stop,
+            // 영상 자동 자막(태스크 72) — llm과 같이 모듈 경로로 등록. 다운로드 취소는 llm_download_cancel 재사용.
+            stt::acquire::stt_status,
+            stt::acquire::stt_runtime_ensure,
+            stt::acquire::stt_model_download,
+            stt::acquire::stt_model_delete,
+            stt::transcribe::stt_transcribe,
+            stt::transcribe::stt_transcribe_cancel,
+            stt::store::caption_doc_load,
+            stt::store::caption_doc_save,
+            stt::subs::caption_export_subs,
             // 작업 리포트(태스크 60) — 히트맵·요약 입력·요약 저장.
             report::git_activity,
             report::commits_between,
@@ -1522,6 +1533,12 @@ mod tests {
             ("proc_icons.rs", "get_process_icons"),
             ("notifications.rs", "notify_os"),
             ("commands/ocr.rs", "ocr_image"),
+            // 태스크 72 — 외부 프로세스(whisper-cli·ffmpeg)·다운로드·디스크 스캔·레포 쓰기.
+            ("stt/acquire.rs", "stt_status"),
+            ("stt/acquire.rs", "stt_runtime_ensure"),
+            ("stt/acquire.rs", "stt_model_download"),
+            ("stt/transcribe.rs", "stt_transcribe"),
+            ("stt/subs.rs", "caption_export_subs"),
         ];
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         for (file, name) in HOT {

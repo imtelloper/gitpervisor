@@ -16,7 +16,7 @@ import { errorMessage, ipc, isIpcError } from "../../lib/ipc";
 /** 이 기능들이 스스로 만든 접미사 — 산출물을 다시 열었을 때 무한히 쌓이는 것을 막는다
  *  (`cam03.part-03.copy.mp4` -> 다시 열면 `cam03.part-03.copy.clip.mp4` 였다). */
 export const GEN_SUFFIX =
-  /(\.(clip|crop|mute|edit|copy|mosaic|blur|x[\d.]+|\d{3,4}p|part-\d+|frame-[\dms]+))+$/i;
+  /(\.(clip|crop|mute|edit|copy|cut|sub|mosaic|blur|x[\d.]+|\d{3,4}p|part-\d+|frame-[\dms]+))+$/i;
 
 export function splitPath(path: string): { dir: string; stem: string } {
   const slash = path.lastIndexOf("/");
@@ -43,6 +43,22 @@ export function frameOutRel(path: string, atMs: number): string {
   const ss = String(s).padStart(2, "0");
   const fff = String(frac).padStart(3, "0");
   return `${dir}${cleanStem(path)}.frame-${mm}m${ss}s${fff}.png`;
+}
+
+/** 자막 파일 기본 이름(태스크 72 §3.6) — 원본 시각 `name.srt`, 편집본 시각 `name.cut.srt`, 번역 `name.<lang>.srt`,
+ *  원문+번역 2단 `name.<lang>.dual.srt`(플레이어가 `name.<lang>`을 언어 태그로 읽는다). 영상 옆 같은 폴더.
+ *  `name`은 **열린 영상의 stem 그대로**다(cleanStem 아님) — 플레이어는 이름이 같은 자막 파일을 붙이므로, `talk.cut.mp4`의
+ *  자막이 `talk.srt`가 되면 제 영상엔 안 붙고 시간축이 다른 원본 `talk.mp4`에 붙는다. */
+export function subsOutRel(
+  path: string,
+  format: "srt" | "vtt" | "txt",
+  timeline: "source" | "edited",
+  lang: string | null = null,
+  dual = false,
+): string {
+  const { dir, stem } = splitPath(path);
+  const tr = lang ? `.${lang}${dual ? ".dual" : ""}` : "";
+  return `${dir}${stem}${timeline === "edited" ? ".cut" : ""}${tr}.${format}`;
 }
 
 export interface CaptureDeps {
