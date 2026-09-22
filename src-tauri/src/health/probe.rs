@@ -265,6 +265,9 @@ mod imp {
 /// 메모리를 "없는 것"으로 세지 않도록 `ullAvailPhys`(대기 목록 포함)를 쓰고, 커밋은
 /// `assess()`에서 물리 메모리가 이미 빠듯할 때만 가중 신호로 쓰인다.
 #[cfg(windows)]
+pub(crate) use imp::process_entries;
+
+#[cfg(windows)]
 mod imp {
     use super::{Probe, Sample, TopProc, TreeScan};
     use std::time::{Duration, Instant};
@@ -357,29 +360,13 @@ mod imp {
     /// 죽은 동일 PID의 부모를 가진 프로세스"뿐이다 — 드물고, 임계가 60부터라 몇 개 오차는
     /// 판정을 바꾸지 않는다.
     fn own_tree() -> TreeScan {
-        let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
-        if snap.is_null() || snap as isize == -1 {
+        let entries = process_entries();
+        if entries.is_empty() {
             return TreeScan::default();
         }
-        let mut entries: Vec<(u32, u32, String)> = Vec::new(); // (pid, ppid, exe명)
-        let mut e: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
-        e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-        // SAFETY: 유효한 스냅샷 핸들 + dwSize를 채운 엔트리. 실패 시 즉시 순회를 멈춘다.
-        if unsafe { Process32FirstW(snap, &mut e) } != FALSE {
-            loop {
-                entries.push((
-                    e.th32ProcessID,
-                    e.th32ParentProcessID,
-                    exe_name(&e.szExeFile),
-                ));
-                if unsafe { Process32NextW(snap, &mut e) } == FALSE {
-                    break;
-                }
-            }
-        }
-        unsafe { CloseHandle(snap) };
-
         let me = unsafe { GetCurrentProcessId() };
+        // 같은 스냅샷으로 타이핑 경로 프로세스의 우선순위도 챙긴다 — 스냅샷이 25ms라 따로 뜨지 않는다.
+        crate::process_priority::raise(&crate::process_priority::interactive_pids(me, &entries));
         let names: std::collections::HashMap<u32, &str> =
             entries.iter().map(|(pid, _, name)| (*pid, name.as_str())).collect();
         let tree = tree_pids(me, &entries);
@@ -409,6 +396,32 @@ mod imp {
             core,
             breakdown,
         }
+    }
+
+    /// 시스템 전체 프로세스 스냅샷 — (pid, ppid, exe명). 실패하면 빈 목록.
+    pub(crate) fn process_entries() -> Vec<(u32, u32, String)> {
+        let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+        if snap.is_null() || snap as isize == -1 {
+            return Vec::new();
+        }
+        let mut entries: Vec<(u32, u32, String)> = Vec::new(); // (pid, ppid, exe명)
+        let mut e: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+        e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        // SAFETY: 유효한 스냅샷 핸들 + dwSize를 채운 엔트리. 실패 시 즉시 순회를 멈춘다.
+        if unsafe { Process32FirstW(snap, &mut e) } != FALSE {
+            loop {
+                entries.push((
+                    e.th32ProcessID,
+                    e.th32ParentProcessID,
+                    exe_name(&e.szExeFile),
+                ));
+                if unsafe { Process32NextW(snap, &mut e) } == FALSE {
+                    break;
+                }
+            }
+        }
+        unsafe { CloseHandle(snap) };
+        entries
     }
 
     /// `PROCESSENTRY32W.szExeFile`(널 종료 UTF-16 배열) → 문자열.

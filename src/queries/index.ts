@@ -659,14 +659,16 @@ export function usePrefetchDiffs(projectId: string) {
     if (!status || status.error) return;
     // worktree 모드로 보는 파일만 프리페치한다 — staged 파일은 클릭 시 index 모드로
     // 조회하고(HEAD↔인덱스), 순수 staged 파일의 worktree diff는 비어 있어 무의미하다.
-    const paths = [
-      ...status.conflicted,
-      ...status.unstaged,
-      ...status.untracked,
-    ]
-      .map((c) => c.path)
-      // 자기 뷰어로 여는 파일(PDF·이미지 등)은 diff를 쓰지 않는다 — git spawn 낭비·30개 슬롯 잠식
-      .filter((p) => !opensInOwnViewer(p));
+    // 앞 30개만 본다(아래 적재 상한과 같다). 파일이 쏟아진 레포는 untracked가 수만 개라,
+    // 전부 훑어 캐시를 조회하면 상태 갱신마다 메인 스레드를 먹는다(DOCS/task/71).
+    const paths: string[] = [];
+    for (const group of [status.conflicted, status.unstaged, status.untracked]) {
+      for (const c of group) {
+        if (paths.length >= 30) break;
+        // 자기 뷰어로 여는 파일(PDF·이미지 등)은 diff를 쓰지 않는다 — git spawn 낭비·30개 슬롯 잠식
+        if (!opensInOwnViewer(c.path)) paths.push(c.path);
+      }
+    }
 
     // 한 번도 읽지 않은 파일만 적재한다 — 캐시에 있는 파일은 무효화돼도
     // 클릭 시 기존 내용이 즉시 표시되고 백그라운드로 갱신되므로 프리페치가 불필요.

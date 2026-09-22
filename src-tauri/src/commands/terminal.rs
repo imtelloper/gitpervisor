@@ -296,6 +296,9 @@ pub fn term_open(
         .map_err(|e| IpcError::new(ErrorCode::Io, format!("PTY 라이터 생성 실패: {e}")))?;
 
     let pid = i32::try_from(child.process_id().unwrap_or(0)).unwrap_or(0);
+    // 새 셸·ConPTY 호스트를 30초 주기 스윕까지 Normal로 두지 않는다(process_priority 머리 주석).
+    #[cfg(windows)]
+    crate::process_priority::sweep_now();
     let child = Arc::new(Mutex::new(child));
     let closed = Arc::new(AtomicBool::new(false));
     // 출력 sink를 Arc<Mutex>로 — 플로팅 분리 시 term_attach가 이 sink를 새 창 Channel로 바꾼다.

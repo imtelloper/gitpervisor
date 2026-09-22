@@ -11,6 +11,9 @@ mod lsp;
 mod monitor;
 mod notifications;
 mod proc_icons;
+// 타이핑 경로 우선순위 — 비특권 우선순위 상향이 Windows에만 있다(모듈 머리 주석).
+#[cfg(windows)]
+mod process_priority;
 mod report;
 mod state;
 mod sysinfo_static;
@@ -1245,6 +1248,10 @@ pub fn run() {
             report::report_delete,
         ])
         .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Focused(focused) = event {
+                webview_guard::on_window_focus(window, *focused);
+                return;
+            }
             // 메인 창을 실수로 닫는 경로가 두 개 있다: 최대화 버튼 옆 X 오클릭, 그리고 Alt+F4.
             // 둘 다 지금까지는 **확인 없이** 빌드·dev 서버·AI 에이전트가 도는 터미널을 통째로
             // 종료시켰다. 잃을 게 실제로 있을 때(살아있는 PTY 세션)만 한 번 물어본다.

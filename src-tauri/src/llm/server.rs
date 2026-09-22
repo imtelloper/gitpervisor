@@ -330,6 +330,13 @@ fn spawn_server(
     let mut child = cmd
         .spawn()
         .map_err(|e| io(format!("llama-server 실행 실패: {e}")))?;
+    // GPU·메모리를 크게 쓰는 프로세스라 "그 시각에 무엇이 돌았나"를 로그로 가를 수 있게 남긴다
+    // (2026-09-21 조사 때 유휴 종료 줄만 있고 기동 줄이 없어 시각을 못 맞췄다 — DOCS/task/71).
+    log::info!(
+        "[llm] llama-server 기동 pid={} model={} ngl={gpu_layers} ctx={ctx} threads={threads}",
+        child.id(),
+        model.file_name().map_or_else(|| model.to_string_lossy(), |n| n.to_string_lossy()),
+    );
     let tail = Arc::new(Mutex::new(VecDeque::with_capacity(LOG_TAIL)));
     if let Some(out) = child.stdout.take() {
         drain(out, tail.clone());

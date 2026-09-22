@@ -127,6 +127,8 @@ id일 때 그 바깥 프로젝트 키도 맞아야 한다(양방향 접두). 각
 | `arrive_p90` 낮은데 `echo_p90` 높음 | xterm 쓰기 버퍼 적체(파싱 대기) |
 | `dom`>0 이 오래 유지 | WebGL 상한/손실 — `ctxlost` 추이를 본다 |
 
+`paint_*`·`SLOW kind=paint`·`sys_*` 필드는 태스크 71에서 더했다 — 읽는 법은 `71-terminal-typing-under-load.md` §6.
+
 ## 7. 결과 (2026-09-18 실측, dev 앱)
 
 | 항목 | 수정 전 | 수정 후 |

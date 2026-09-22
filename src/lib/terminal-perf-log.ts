@@ -2,7 +2,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { info as logInfo, warn as logWarn } from "@tauri-apps/plugin-log";
 
-import { ipc, type HealthLevel, type HealthTransition } from "./ipc";
+import { errorMessage, ipc, type HealthLevel, type HealthTransition } from "./ipc";
 
 /**
  * 터미널 체감 지연 측정 로그 `[term-perf]` (태스크 69 §5).
@@ -28,8 +28,12 @@ const SAMPLE_MAX = 2000;
 /** 이 시간 안에 출력이 없으면 표본이 아니라 `noecho`로 센다. */
 const ECHO_TIMEOUT_MS = 3000;
 const SLOW_ECHO_MS = 300;
+/** 파싱이 끝난 뒤 화면에 나갈 프레임까지(= paint − echo). 렌더·합성·GPU 쪽 정체만 따로 잡는다. */
+const SLOW_PAINT_MS = 200;
 const SLOW_LONGTASK_MS = 300;
 const SLOW_LAG_MS = 500;
+/** 로그 줄에 붙일 시스템 지표를 기다리는 한도 — 시스템이 멈춘 순간일수록 늦게 오므로 끊는다. */
+const SYS_WAIT_MS = 1500;
 /**
  * 이보다 큰 드리프트는 메인 스레드 점유가 아니라 **시계가 건너뛴 것**으로 본다(절전/최대 절전
  * 복귀 — `performance.now()`는 그 시간을 포함한다). 표본에 넣으면 `lag_max=3600000` 한 줄이
@@ -51,6 +55,11 @@ export interface TerminalPerfWindow {
   echoMs: number[];
   /** 입력 → 그 뒤 첫 출력의 **도착**까지(ms). echo와의 차이가 xterm 쓰기 버퍼 적체다. */
   arriveMs: number[];
+  /**
+   * 입력 → 에코가 그려진 프레임 **다음** 프레임 시작까지(ms) = 사람이 화면에서 보는 지연.
+   * echo는 파싱까지만이라 렌더·합성·GPU 정체를 못 본다(2026-09-21 조사에서 드러난 빈틈).
+   */
+  paintMs: number[];
   /** `term_write` invoke 왕복(ms). */
   writeMs: number[];
   /** 250ms 타이머 드리프트(ms) = 메인 스레드 점유. */
@@ -97,6 +106,7 @@ function newWindow(now: number): TerminalPerfWindow {
     noecho: 0,
     echoMs: [],
     arriveMs: [],
+    paintMs: [],
     writeMs: [],
     lagMs: [],
     longCount: 0,
@@ -173,6 +183,7 @@ export function formatTerminalPerfSummary(
     ` ctxlost=${st.ctxlost} keys=${w.keys} noecho=${w.noecho}` +
     ` echo_p50=${percentileMs(w.echoMs, 50)} echo_p90=${percentileMs(w.echoMs, 90)} echo_max=${maxMs(w.echoMs)}` +
     ` arrive_p90=${percentileMs(w.arriveMs, 90)}` +
+    ` paint_p90=${percentileMs(w.paintMs, 90)} paint_max=${maxMs(w.paintMs)}` +
     ` write_p50=${percentileMs(w.writeMs, 50)} write_max=${maxMs(w.writeMs)}` +
     ` lag_p99=${percentileMs(w.lagMs, 99)} lag_max=${maxMs(w.lagMs)}` +
     ` long=${w.longCount}/${Math.round(w.longTotalMs)}/${Math.round(w.longMaxMs)}` +
@@ -182,9 +193,11 @@ export function formatTerminalPerfSummary(
   );
 }
 
+type SlowKind = "echo" | "paint" | "longtask" | "lag";
+
 /** 임계를 넘은 순간 남기는 한 줄. 60초 요약과 같은 상태 필드를 달아 그 줄 하나로 판단할 수 있게 한다. */
 export function formatTerminalPerfSlow(
-  kind: "echo" | "longtask" | "lag",
+  kind: SlowKind,
   ms: number,
   termId: string,
   st: TerminalPerfState,
@@ -212,17 +225,39 @@ function currentState(): TerminalPerfState {
   };
 }
 
+/**
+ * 줄 끝에 붙이는 그 순간의 시스템 지표(상태바와 같은 값). "터미널이 느렸다"가 앱 탓인지
+ * 머신 전체가 바빴던 탓인지를 그 줄 하나로 가르려고 싣는다 — 2026-09-21 조사 때 이게 없어
+ * 오전 렉의 원인 축(CPU·GPU·메모리)을 끝내 못 갈랐다.
+ */
+async function sysSuffix(): Promise<string> {
+  try {
+    const m = await Promise.race([
+      ipc.sysMetrics(),
+      new Promise<null>((r) => window.setTimeout(() => r(null), SYS_WAIT_MS)),
+    ]);
+    if (!m) return " sys=timeout";
+    const gpu = m.gpu === null ? "na" : String(Math.round(m.gpu));
+    return ` sys_cpu=${Math.round(m.cpu)} sys_gpu=${gpu} sys_ram=${Math.round(m.ram)}`;
+  } catch (e) {
+    // 지표를 못 읽어도 줄은 남긴다 — 이유만 줄에 표시한다.
+    return ` sys=err(${errorMessage(e)})`;
+  }
+}
+
 /** 로그 전송 실패(플러그인 미초기화·IPC 끊김)는 측정 자체를 멈출 이유가 아니다 — 1회만 알린다. */
 let logFailWarned = false;
 function emitLine(line: string, level: "info" | "warn"): void {
-  void (level === "warn" ? logWarn(line) : logInfo(line)).catch((e: unknown) => {
-    if (logFailWarned) return;
-    logFailWarned = true;
-    console.warn("[term-perf] 로그 전송 실패:", e);
-  });
+  void sysSuffix()
+    .then((sys) => (level === "warn" ? logWarn(line + sys) : logInfo(line + sys)))
+    .catch((e: unknown) => {
+      if (logFailWarned) return;
+      logFailWarned = true;
+      console.warn("[term-perf] 로그 전송 실패:", e);
+    });
 }
 
-function emitSlow(kind: "echo" | "longtask" | "lag", ms: number, termId: string): void {
+function emitSlow(kind: SlowKind, ms: number, termId: string): void {
   const now = performance.now();
   const last = slowLastAt.get(kind);
   if (last !== undefined && now - last < SLOW_COOLDOWN_MS) return;
@@ -264,6 +299,20 @@ export function noteTerminalOutput(termId: string, bytes: number): (() => void) 
         const ms = performance.now() - pending.at;
         push(win.echoMs, ms);
         if (ms >= SLOW_ECHO_MS) emitSlow("echo", ms, termId);
+        // xterm은 파싱 중에 렌더를 rAF로 예약해 두었다 — 첫 rAF가 그 프레임, 두 번째 rAF가 시작되면
+        // 에코가 담긴 프레임은 이미 나갔다. 숨은 창은 rAF가 멈춰 값이 부풀므로 뺀다.
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => {
+            if (perfBroken || document.hidden) return;
+            try {
+              const paint = performance.now() - pending.at;
+              push(win.paintMs, paint);
+              if (paint - ms >= SLOW_PAINT_MS) emitSlow("paint", paint, termId);
+            } catch (e) {
+              breakPerf("에코 표시 콜백", e);
+            }
+          }),
+        );
       } catch (e) {
         breakPerf("에코 파싱 콜백", e);
       }
@@ -395,6 +444,7 @@ export function terminalPerfSnapshot() {
     pending: pendingEcho.size,
     echoMs: [...win.echoMs],
     arriveMs: [...win.arriveMs],
+    paintMs: [...win.paintMs],
     writeMs: [...win.writeMs],
     lagMs: [...win.lagMs],
     long: { count: win.longCount, totalMs: win.longTotalMs, maxMs: win.longMaxMs },

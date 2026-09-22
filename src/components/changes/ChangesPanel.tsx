@@ -48,6 +48,16 @@ function changeCount(s: RepoStatus): number {
   );
 }
 
+/**
+ * 그룹마다 처음 그리는 행 수와 "더 보기" 한 번에 늘리는 수.
+ *
+ * 감시 중인 레포에 파일이 쏟아지면(robocopy·압축 해제·빌드 산출물) untracked가 수만 줄이 되고,
+ * 상태가 갱신될 때마다 그걸 전부 다시 그리느라 메인 스레드가 한 번에 수 초씩 멈췄다 — 그동안
+ * **모든 터미널의 타이핑이 같이 멈춘다**(실측 2026-09-21: longtask 4.6초, DOCS/task/71).
+ */
+const ROW_CAP = 300;
+const ROW_CAP_STEP = 1000;
+
 /** 한 변경 행을 가리키는 안정 키 (스테이지/언스테이지 인스턴스를 구분). */
 function rowKeyOf(c: FileChange): string {
   return `${c.staged ? "s" : "w"}:${c.path}`;
@@ -157,6 +167,8 @@ function ChangeRow({
 function Group({
   title,
   changes,
+  total,
+  onShowMore,
   accent,
   mode,
   selectedDiff,
@@ -168,7 +180,11 @@ function Group({
   onToggleCollapse,
 }: {
   title: string;
+  /** 그릴 행 — `ROW_CAP`으로 잘린 앞부분. */
   changes: FileChange[];
+  /** 그룹의 전체 변경 수(머리 숫자). */
+  total: number;
+  onShowMore: () => void;
   accent?: boolean;
   /** 이 그룹의 파일을 클릭했을 때의 diff 모드: staged는 index(HEAD↔인덱스),
    *  untracked는 file(내용만), 나머지는 worktree */
@@ -182,7 +198,8 @@ function Group({
   collapsed: boolean;
   onToggleCollapse: () => void;
 }) {
-  if (changes.length === 0) return null;
+  if (total === 0) return null;
+  const hidden = total - changes.length;
 
   return (
     <div>
@@ -192,7 +209,7 @@ function Group({
       >
         {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
         <span className={accent ? "text-danger" : ""}>{title}</span>
-        <span className="text-fg-dim">{changes.length}</span>
+        <span className="text-fg-dim">{total}</span>
       </button>
       {!collapsed &&
         changes.map((c) => {
@@ -211,6 +228,14 @@ function Group({
             />
           );
         })}
+      {!collapsed && hidden > 0 && (
+        <button
+          onClick={onShowMore}
+          className="w-full px-3 py-1.5 text-left text-xs text-fg-dim hover:bg-raised hover:text-fg"
+        >
+          {hidden.toLocaleString()}개 더 있음 — {Math.min(hidden, ROW_CAP_STEP).toLocaleString()}개 더 보기
+        </button>
+      )}
     </div>
   );
 }
@@ -248,9 +273,12 @@ function RepoChanges({
   // 멀티선택(Ctrl/Cmd 토글, Shift 범위). 저장소(projectId) 전환 시 비운다.
   const [selKeys, setSelKeys] = useState<Set<string>>(new Set());
   const lastKeyRef = useRef<string | null>(null);
+  // 그룹별로 지금 그리는 행 수(없으면 ROW_CAP). 저장소가 바뀌면 처음으로 돌린다.
+  const [shown, setShown] = useState<Record<string, number>>({});
   useEffect(() => {
     setSelKeys(new Set());
     lastKeyRef.current = null;
+    setShown({});
   }, [projectId]);
 
   // 우클릭 컨텍스트 메뉴 (롤백/스테이지/언스테이지/복사). 바깥 클릭·Esc로 닫는다.
@@ -289,16 +317,18 @@ function RepoChanges({
       return next;
     });
 
-  // 그룹 정의(표시 순서) — diff 모드·강조 포함.
-  const groups = status
-    ? [
-        { title: "Conflicts", changes: status.conflicted, mode: "worktree" as const, accent: true },
-        { title: "Unstaged", changes: status.unstaged, mode: "worktree" as const, accent: false },
-        { title: "Staged", changes: status.staged, mode: "index" as const, accent: false },
-        // Untracked는 이전 버전이 없어 diff가 통째로 all-green이라 무의미 — 파일 내용만 그대로 보여준다.
-        { title: "Untracked", changes: status.untracked, mode: "file" as const, accent: false },
-      ]
-    : [];
+  // 그룹 정의(표시 순서) — diff 모드·강조 포함. `changes`는 그릴 앞부분, `all`은 전체.
+  const groups = (
+    status
+      ? [
+          { title: "Conflicts", all: status.conflicted, mode: "worktree" as const, accent: true },
+          { title: "Unstaged", all: status.unstaged, mode: "worktree" as const, accent: false },
+          { title: "Staged", all: status.staged, mode: "index" as const, accent: false },
+          // Untracked는 이전 버전이 없어 diff가 통째로 all-green이라 무의미 — 파일 내용만 그대로 보여준다.
+          { title: "Untracked", all: status.untracked, mode: "file" as const, accent: false },
+        ]
+      : []
+  ).map((g) => ({ ...g, changes: g.all.slice(0, shown[g.title] ?? ROW_CAP) }));
 
   // 이 저장소가 지금 뷰어에 뜬 diff의 대상 저장소일 때만 행을 선택 표시한다.
   // (diff repo가 지정 안 됐으면 outer로 간주 — 트리/로그에서 연 diff의 하이라이트 유지.)
@@ -311,7 +341,8 @@ function RepoChanges({
       ? activeGlobal.target
       : null;
 
-  // 평탄화 — **펼쳐진** 그룹의 행만(범위 선택이 숨은 행을 휩쓸어 의도치 않게 롤백하는 것 방지).
+  // 평탄화 — **펼쳐진** 그룹의 **그려진** 행만(범위 선택이 숨은 행 — 접힌 그룹·ROW_CAP 뒤 — 을
+  // 휩쓸어 의도치 않게 롤백하는 것 방지).
   const flatRows = groups.flatMap((g) =>
     collapsed.has(g.title)
       ? []
@@ -537,6 +568,13 @@ function RepoChanges({
           key={g.title}
           title={g.title}
           changes={g.changes}
+          total={g.all.length}
+          onShowMore={() =>
+            setShown((prev) => ({
+              ...prev,
+              [g.title]: (prev[g.title] ?? ROW_CAP) + ROW_CAP_STEP,
+            }))
+          }
           accent={g.accent}
           mode={g.mode}
           selectedDiff={activeDiff}
