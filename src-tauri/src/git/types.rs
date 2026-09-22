@@ -274,6 +274,10 @@ pub struct Settings {
     /// 다만 **서버는 한 번에 한 모델만** 물고 있으므로(`ensure_server`) 두 기능을 번갈아 쓰면
     /// 매번 죽였다 다시 띄운다(12B 로드 ~7~25초). 그래서 기본은 null(=하나만 쓰기)이다.
     pub llm_report_model: Option<String>,
+    /// 작업 리포트 요약 생성의 system 프롬프트(사용자 편집). null/빈값 = 앱 기본
+    /// (`lib/report.ts` `DEFAULT_REPORT_PROMPT`). 기본값을 복사해 저장하지 않는 이유: 앱이 기본
+    /// 프롬프트를 고쳐도 손대지 않은 사용자는 따라와야 한다.
+    pub report_prompt: Option<String>,
     /// llm_model == "custom"일 때 쓸 절대경로 .gguf.
     pub llm_custom_model_path: Option<String>,
     /// 외부 OpenAI 호환 base URL — 예: http://localhost:11434/v1
@@ -326,6 +330,7 @@ impl Default for Settings {
             llm_model: "qwen3-4b-q4".to_string(),
             report_auto_weekly: false,
             llm_report_model: None,
+            report_prompt: None,
             llm_custom_model_path: None,
             llm_external_url: None,
             llm_external_model: None,

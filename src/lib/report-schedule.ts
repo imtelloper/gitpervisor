@@ -57,12 +57,27 @@ async function runOne(
   p: Project,
   since: string,
   until: string,
-  opts: { mine: boolean; language: string; ctx?: number; modelId?: string; model: string },
+  opts: {
+    mine: boolean;
+    language: string;
+    ctx?: number;
+    prompt?: string | null;
+    modelId?: string;
+    model: string;
+  },
 ): Promise<boolean> {
   const src = await fetchSource(p, since, until, opts.mine);
   if (src.commits.length === 0 && src.prompts.length === 0) return false;
   const done = await chat(
-    buildMessages({ sources: [src], period: "week", since, until, language: opts.language, ctx: opts.ctx }),
+    buildMessages({
+      sources: [src],
+      period: "week",
+      since,
+      until,
+      language: opts.language,
+      ctx: opts.ctx,
+      prompt: opts.prompt,
+    }),
     () => {}, // 예약 실행은 그릴 화면이 없다 — 델타는 버리고 done.text 만 쓴다
     { maxTokens: maxTokensFor("week"), temperature: 0.3, modelId: opts.modelId },
   );
@@ -85,6 +100,7 @@ export async function checkOnce(args: {
   mine: boolean;
   language: string;
   ctx?: number;
+  prompt?: string | null;
   modelId?: string;
   model: string;
 }): Promise<number> {
@@ -127,6 +143,7 @@ export function useReportSchedule() {
           mine: true,
           language: settings.llmLanguage || "ko",
           ctx: settings.llmContext,
+          prompt: settings.reportPrompt,
           modelId: settings.llmReportModel?.trim() || undefined,
           model:
             settings.llmProvider === "external"

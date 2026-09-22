@@ -280,6 +280,7 @@ export interface Settings {
   llmModel: string; // 카탈로그 id 또는 "custom"
   reportAutoWeekly: boolean; // 주간 리포트 예약 생성(태스크 70 §10) — 메인 창이 지난주 것을 1회 만든다
   llmReportModel: string | null; // 리포트(60·67) 전용 모델 — null/빈값이면 llmModel
+  reportPrompt: string | null; // 리포트 요약 생성 system 프롬프트(사용자 편집) — null/빈값이면 DEFAULT_REPORT_PROMPT
   llmCustomModelPath: string | null;
   llmExternalUrl: string | null; // 예: http://localhost:11434/v1
   llmExternalModel: string | null; // 외부 서버의 모델 이름(예: qwen3:4b)

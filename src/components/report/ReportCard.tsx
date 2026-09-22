@@ -156,6 +156,7 @@ export function ReportCard({
           until,
           language: settings?.llmLanguage ?? "ko",
           ctx: settings?.llmContext,
+          prompt: settings?.reportPrompt,
         }),
         // 취소는 `llm_cancel` IPC 왕복이라 abort 직후에도 델타가 몇 개 더 온다 —
         // 그걸 그리면 기간을 바꾼 카드에 옛 기간 본문이 도로 채워진다.
@@ -164,7 +165,7 @@ export function ReportCard({
           if (!ac.signal.aborted) setText(acc);
         },
         {
-          // 날짜마다 3줄이라 응답이 기간에 비례한다(일간 768 … 월간 2048 — §3.1).
+          // 날짜마다 3줄이라 응답이 기간에 비례한다(값과 근거는 maxTokensFor 주석).
           maxTokens: maxTokensFor(period),
           temperature: 0.3,
           modelId: reportModel ?? undefined,

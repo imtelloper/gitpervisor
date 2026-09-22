@@ -1,4 +1,12 @@
-import { ChevronDown, ChevronLeft, ChevronRight, MessageSquare, Sparkles, X } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  FileText,
+  MessageSquare,
+  Sparkles,
+  X,
+} from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import type { Project } from "../../lib/ipc";
@@ -12,13 +20,14 @@ import {
   shiftPeriod,
   today,
 } from "../../lib/report";
-import { useActivities, useProjects, usePromptDumps } from "../../queries";
+import { useActivities, useProjects, usePromptDumps, useSettings } from "../../queries";
 import { useOccludesWebview } from "../../stores/occlusion";
 import { useUi } from "../../stores/ui";
 import type { DayValue } from "./Heatmap";
 import { Heatmap } from "./Heatmap";
 import { ReportCard } from "./ReportCard";
 import { ReportChat } from "./ReportChat";
+import { ReportPromptEditor } from "./ReportPromptEditor";
 
 const PERIODS: Period[] = ["day", "week", "month"];
 /** 히트맵 기간 — 오늘 포함 365일(설계 §3.5). */
@@ -159,6 +168,9 @@ export function ReportView() {
   );
   const [chatCtx, setChatCtx] = useState<ChatContext | null>(null);
   const [messages, setMessages] = useState<ChatMsg[]>([]);
+  const [promptOpen, setPromptOpen] = useState(false);
+  const { data: settings } = useSettings();
+  const customPrompt = !!settings?.reportPrompt?.trim();
 
   const all = useMemo(() => projects ?? [], [projects]);
   // 등록이 해제된 id는 여기서 걸러진다 — 저장된 선택이 낡아도 빈 카드가 생기지 않는다.
@@ -283,6 +295,16 @@ export function ReportView() {
           </div>
 
           <div className="ml-auto flex items-center gap-2">
+            <button
+              data-gpv="report-prompt-toggle"
+              onClick={() => setPromptOpen((v) => !v)}
+              title="요약 생성 프롬프트를 고칩니다"
+              className={`flex items-center gap-1 rounded px-2 py-0.5 hover:text-fg ${
+                promptOpen ? "bg-accent/20 text-fg" : "bg-raised"
+              }`}
+            >
+              <FileText size={11} /> 프롬프트{customPrompt ? " (사용자 지정)" : ""}
+            </button>
             {scoped.length > 1 &&
               (queue ? (
                 <button
@@ -312,6 +334,12 @@ export function ReportView() {
             )}
           </div>
         </div>
+
+        {promptOpen && (
+          <div className="mt-3">
+            <ReportPromptEditor onClose={() => setPromptOpen(false)} />
+          </div>
+        )}
 
         {/* 중단: 잔디 */}
         <div className="mt-3 rounded border border-edge p-3">

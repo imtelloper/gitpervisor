@@ -370,6 +370,19 @@ export function AiSection({
               </select>
             </Field>
           </Hl>
+          {/* 편집은 리포트 화면의 [프롬프트] 패널에서 한다(별도 리포트 창엔 설정 다이얼로그가 없다).
+              여기 자리를 두는 이유는 favoriteFolders 와 같다 — 설정 검색으로 찾을 수 있어야 하고,
+              SETTINGS_INDEX 완전성 가드(e2e 29 ⑤)가 모든 Settings 키에 항목을 요구한다. */}
+          <Hl id="reportPrompt" hl={hl}>
+            <Field
+              label="작업 리포트 요약 프롬프트"
+              hint="리포트 화면의 [프롬프트] 버튼에서 고칩니다. 카드 생성·주간 자동 생성·AI 채팅이 같은 프롬프트를 씁니다"
+            >
+              <div className="text-fg-muted">
+                {form.reportPrompt?.trim() ? "사용자 지정" : "기본값"}
+              </div>
+            </Field>
+          </Hl>
           <Hl id="llmLanguage" hl={hl}>
             <Field label="출력 언어" hint="작업 요약·번역의 기본 언어">
               <select

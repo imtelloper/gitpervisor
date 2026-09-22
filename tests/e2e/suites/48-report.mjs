@@ -17,6 +17,8 @@
 //   ⑥ 파일을 열면(`selectDiff`) 리포트가 닫힌다(모아보기와 같은 규칙).
 //   ⑦ 스코프를 2개 체크하면 종합 카드 1 + 개별 2 = 3장, 종합 카운트는 **합**, 키는 `multi:<해시>`.
 //   ⑧ `buildMessages` 가 날짜 섹션(`### YYYY-MM-DD (요일)`)으로 조립하고 예산 바닥(1,500자)을 지킨다.
+//   ⑧b 요약 생성 프롬프트(설정 `reportPrompt`) — 자리표시자 치환·비면 기본값·긴 프롬프트면 근거 예산 축소·
+//      채팅도 같은 지침, 그리고 [프롬프트] 편집 패널 왕복(저장 → 설정 반영, 기본값으로 저장 → null).
 //   ⑨ 종합 카드 [AI에게 묻기] → 우측 채팅. [요약으로 저장] 게이트가 `## ` 유무와 일치하고,
 //      저장하면 **카드 본문이 그 답변으로 바뀐다**(스트리밍 잔여가 가리지 않는다).
 //   ⑩ [리포트] 우클릭 → "새 창으로 열기" → `doc-report` 싱글턴, 메인 뷰는 닫힌다.
@@ -104,6 +106,8 @@ export async function run({ cdp, report: r }) {
   /** 사용자가 골라 둔 스코프·채팅 열림 — 이 스위트가 덮기 전 값. finally 에서 **되돌린다**. */
   let prevScope;
   let prevChat;
+  /** ⑧b 가 덮기 전의 설정 `reportPrompt` — undefined 면 아직 안 건드린 것. finally 에서 되돌린다. */
+  let prevReportPrompt;
 
   try {
     // ── 픽스처 레포: 날짜를 조작한 커밋 4개 ──
@@ -511,15 +515,22 @@ export async function run({ cdp, report: r }) {
       );
       r.check(
         "⑧ 여러 프로젝트면 줄머리에 [프로젝트명] · 프롬프트는 HH:MM",
-        asm.user2.includes("- [알파] aaaaaaa 알파 커밋") &&
-          asm.user2.includes("- [베타] bbbbbbb 베타 커밋") &&
+        asm.user2.includes("- [알파] 알파 커밋") &&
+          asm.user2.includes("- [베타] 베타 커밋") &&
           asm.user2.includes("- [알파] [12:00] 알파 프롬프트"),
         J(asm.user2.slice(0, 400)),
       );
       r.check(
         "⑧ 1개면 접두 없음",
-        !asm.user1.includes("[알파]") && asm.user1.includes("- aaaaaaa 알파 커밋"),
+        !asm.user1.includes("[알파]") && asm.user1.includes("- 알파 커밋"),
         J(asm.user1.slice(0, 200)),
+      );
+      // 근거에 해시가 있으면 모델이 불릿 끝에 `, c1f4034`처럼 베껴 붙인다(사용자 요청 2026-09-22로 금지).
+      r.check(
+        "⑧ 근거에 커밋 해시를 싣지 않는다 · system 이 해시 금지와 줄 길이 하한(100자)을 지시",
+        !asm.user2.includes("aaaaaaa") && !asm.user2.includes("bbbbbbb") &&
+          asm.sys2.includes("커밋 해시는 쓰지 마라") && asm.sys2.includes("100자 이상"),
+        J(asm.user2.slice(0, 200)),
       );
       r.check(
         "⑧ system 에 '정확히 3개'(날짜당 3줄 지시)",
@@ -552,6 +563,105 @@ export async function run({ cdp, report: r }) {
         `len=${asm.wide.length} sections=${sections}`,
       );
     }
+
+    // ── ⑧b 요약 생성 프롬프트 편집(설정 `reportPrompt`) ──
+    // 순수 조립 먼저: 자리표시자 치환 · 비었으면 기본값 · 긴 프롬프트면 근거 예산이 준다 · 채팅도 같은 지침.
+    const pe = await cdp.eval(`(()=>{
+      const R = window.__gpv && window.__gpv.report;
+      if (!R || !R.buildMessages || !R.chatMessages) return 'no-hook';
+      const c = (sha, subject) => ({ sha, parents: [], subject, body: "", authorName: "e2e",
+        authorEmail: "e2e@x", authoredAt: ${J(localIso(0))}, refs: [] });
+      const mk = (id, name, commits) => ({ project: { id, name, path: "/"+id }, commits, prompts: [] });
+      const one = [mk("p1", "알파", [c("a1", "알파 커밋")])];
+      const two = [...one, mk("p2", "베타", [c("b1", "베타 커밋")])];
+      const base = { period: "week", since: ${J(today)}, until: ${J(today)}, language: "ko" };
+      const T = "지침 {언어} {기간} {프로젝트접두}끝 {모름}";
+      const bulk = [mk("p1", "알파", Array.from({ length: 60 },
+        (_, i) => c("x" + i, "커밋 제목 " + i + " " + "가".repeat(60))))];
+      const lines = (m) => (m[1].content.match(/^- /gm) || []).length;
+      const ctx = { key: "k", title: "t", sources: one, period: "week", since: ${J(today)},
+        until: ${J(today)}, body: "요약", hash: null };
+      return {
+        multi: R.buildMessages({ ...base, sources: two, prompt: T })[0].content,
+        single: R.buildMessages({ ...base, sources: one, prompt: T })[0].content,
+        blank: R.buildMessages({ ...base, sources: one, prompt: "   " })[0].content,
+        nul: R.buildMessages({ ...base, sources: one, prompt: null })[0].content,
+        keptDefault: lines(R.buildMessages({ ...base, sources: bulk, ctx: 8192 })),
+        keptLong: lines(R.buildMessages({ ...base, sources: bulk, ctx: 8192, prompt: "가".repeat(6000) })),
+        chat: R.chatMessages(ctx, [], "질문", "ko", 8192, "대화 지침 {기간}")[0].content,
+      };
+    })()`);
+    if (pe === "no-hook") {
+      r.check("⑧b __gpv.report.buildMessages·chatMessages 노출(dev 빌드)", false, "훅 없음");
+    } else {
+      r.check(
+        "⑧b 자리표시자 치환 — 여러 프로젝트면 {프로젝트접두}=\"[프로젝트명] \", 모르는 {…}는 그대로",
+        pe.multi === "지침 한국어 주간 [프로젝트명] 끝 {모름}" && pe.single === "지침 한국어 주간 끝 {모름}",
+        J({ multi: pe.multi, single: pe.single }),
+      );
+      r.check(
+        "⑧b 프롬프트가 null·공백뿐이면 기본 프롬프트(자리표시자가 남지 않는다)",
+        pe.blank === pe.nul && pe.nul.includes("정확히 3개") && !pe.nul.includes("{언어}"),
+        J(pe.nul.slice(0, 80)),
+      );
+      // 예산이 system 길이를 안 보면 긴 프롬프트가 컨텍스트를 넘긴다 — 고정값이면 두 수가 같다.
+      r.check(
+        "⑧b 긴 프롬프트면 근거로 싣는 줄이 준다(컨텍스트 예산에 system 길이 반영)",
+        pe.keptLong < pe.keptDefault,
+        `기본=${pe.keptDefault}줄 긴 프롬프트=${pe.keptLong}줄`,
+      );
+      r.check(
+        "⑧b 채팅 system 에 같은 지침이 '### 요약 지침'으로 실린다",
+        pe.chat.includes("### 요약 지침\n대화 지침 주간"),
+        J(pe.chat.slice(0, 160)),
+      );
+    }
+
+    // 편집 패널 왕복: 열기 → 고쳐 저장 → 설정에 반영 → 기본값으로 저장하면 null(기본값을 복사해 두지 않는다).
+    prevReportPrompt = (await cdp.invoke("get_settings")).reportPrompt ?? null;
+    const promptSetting = async () => (await cdp.invoke("get_settings")).reportPrompt ?? null;
+    const editorText = () =>
+      cdp.eval(`(()=>{ const t=document.querySelector('[data-gpv="report-prompt-text"]'); return t? t.value : null; })()`);
+    const clickWhenEnabled = (sel) =>
+      until(
+        () =>
+          cdp.eval(`(()=>{ const b=document.querySelector('${sel}'); if(!b||b.disabled) return null; b.click(); return true; })()`),
+        5000,
+      );
+    await cdp.eval(`(()=>{ const b=document.querySelector('[data-gpv="report-prompt-toggle"]'); if(b) b.click(); return !!b; })()`);
+    const promptOpened = await until(editorText, 5000);
+    r.check(
+      "⑧b [프롬프트] → 편집 패널이 열리고 지금 쓰는 프롬프트가 보인다",
+      typeof promptOpened === "string" &&
+        (prevReportPrompt === null ? promptOpened.startsWith("너는 개발자의 작업 일지") : promptOpened === prevReportPrompt),
+      J((promptOpened || "").slice(0, 40)),
+    );
+    await cdp.eval(`(()=>{ const t=document.querySelector('[data-gpv="report-prompt-text"]'); if(!t) return false;
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set.call(t, "e2e 프롬프트 {기간}");
+      t.dispatchEvent(new Event('input',{bubbles:true})); return true; })()`);
+    const promptSaved = await clickWhenEnabled('[data-gpv="report-prompt-save"]');
+    const promptCustom = await until(async () => ((await promptSetting()) === "e2e 프롬프트 {기간}" ? true : null), 5000);
+    const promptBadge = await until(
+      () =>
+        cdp.eval(`(()=>{ const b=document.querySelector('[data-gpv="report-prompt-toggle"]');
+          return b && b.textContent.includes("사용자 지정") ? true : null; })()`),
+      5000,
+    );
+    r.check(
+      "⑧b 고쳐서 [저장] → 설정 reportPrompt 에 그대로 저장되고 버튼에 '사용자 지정' 표시",
+      promptSaved === true && promptCustom === true && promptBadge === true,
+      J({ promptSaved, promptCustom, promptBadge, now: await promptSetting() }),
+    );
+    const promptResetOk = await clickWhenEnabled('[data-gpv="report-prompt-reset"]');
+    const promptResetText = await editorText();
+    const promptResaved = await clickWhenEnabled('[data-gpv="report-prompt-save"]');
+    const promptCleared = await until(async () => ((await promptSetting()) === null ? true : null), 5000);
+    r.check(
+      "⑧b [기본값으로]+[저장] → 기본 프롬프트가 보이고 설정은 null(기본값을 복사해 저장하지 않는다)",
+      promptResetOk === true && (promptResetText || "").startsWith("너는 개발자의 작업 일지") && promptResaved === true && promptCleared === true,
+      J({ promptResetOk, promptResaved, promptCleared, now: await promptSetting() }),
+    );
+    await cdp.eval(`(()=>{ const b=document.querySelector('[data-gpv="report-prompt-toggle"]'); if(b) b.click(); return true; })()`);
 
     // ── ⑨ 우측 AI 채팅(태스크 67 §3.2) ──
     const asked = await cdp.eval(
@@ -822,6 +932,12 @@ export async function run({ cdp, report: r }) {
       .catch(() => {});
     for (const k of [generatedKey, combinedKey, syncKey]) {
       if (k) await cdp.try("report_delete", { key: k });
+    }
+    // ⑧b 가 중간에 던졌으면 설정 reportPrompt 가 e2e 값으로 남는다 — 원래 값으로 되돌린다.
+    if (prevReportPrompt !== undefined) {
+      const cur = await cdp.try("get_settings", {});
+      if (cur.ok && (cur.r.reportPrompt ?? null) !== prevReportPrompt)
+        await cdp.try("set_settings", { settings: { ...cur.r, reportPrompt: prevReportPrompt } });
     }
     for (const id of [projectId, projectId2]) {
       if (!id) continue;

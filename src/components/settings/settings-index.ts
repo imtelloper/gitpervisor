@@ -94,6 +94,7 @@ export const SETTINGS_INDEX: SettingIndexEntry[] = [
   { category: "ai", key: "llmModel", label: "AI 모델", keywords: ["model", "모델", "qwen", "gemma", "gguf", "ai", "llm"] },
   { category: "ai", key: "reportAutoWeekly", label: "주간 리포트 자동 생성", keywords: ["report", "리포트", "주간", "weekly", "예약", "schedule", "자동", "auto"] },
   { category: "ai", key: "llmReportModel", label: "작업 리포트 전용 모델", keywords: ["report", "리포트", "요약", "summary", "model", "모델", "배치", "예약"] },
+  { category: "ai", key: "reportPrompt", label: "작업 리포트 요약 프롬프트", keywords: ["report", "리포트", "요약", "summary", "prompt", "프롬프트", "지침", "템플릿"] },
   { category: "ai", key: null, id: "llmModelDownload", label: "AI 모델 다운로드", keywords: ["model", "모델", "다운로드", "download", "gguf", "qwen"] },
   { category: "ai", key: null, id: "llmTest", label: "AI 테스트", keywords: ["test", "테스트", "ai", "응답", "확인"] },
   { category: "ai", key: null, id: "llmDeleteModels", label: "AI 모델 삭제", keywords: ["delete", "삭제", "모델", "model", "용량", "정리"] },

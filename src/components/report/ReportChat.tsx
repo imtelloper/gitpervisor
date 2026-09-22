@@ -108,7 +108,14 @@ export function ReportChat({
     let acc = "";
     try {
       const done = await chat(
-        chatMessages(live, sendable, text, settings?.llmLanguage ?? "ko", settings?.llmContext),
+        chatMessages(
+          live,
+          sendable,
+          text,
+          settings?.llmLanguage ?? "ko",
+          settings?.llmContext,
+          settings?.reportPrompt,
+        ),
         (delta) => {
           acc += delta;
           if (!ac.signal.aborted) last(acc);
