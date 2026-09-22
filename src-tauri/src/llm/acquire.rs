@@ -44,6 +44,13 @@ pub struct Artifact {
     /// 평탄(None), mac/linux tar.gz는 `llama-b10809/`로 묶여 있다(설계 문서의 `build/bin/` 추정은 틀렸다).
     pub inner_dir: Option<&'static str>,
     pub exe_rel: &'static str,
+    /// 진행 이벤트 이름 = 취소 레지스트리 키. llama와 stt(태스크 72)가 같은 맵을 쓰므로 겹치면 안 된다.
+    pub progress_name: &'static str,
+    /// `.ok` 마커 내용(빌드 태그).
+    pub build: &'static str,
+    /// 설치 직후·`.ok` 쓰기 **전** 실행 확인. 여기서 실패하면 "설치됨"으로 굳지 않는다 —
+    /// whisper zip은 MSVC 런타임(VCOMP140)을 동봉하지 않아 풀리기만 하고 못 도는 경우가 있다.
+    pub smoke: Option<fn(&Path) -> Result<(), IpcError>>,
 }
 
 macro_rules! asset_url {
@@ -66,6 +73,9 @@ pub fn runtime_spec() -> Option<Artifact> {
             dir: "llama-b10809",
             inner_dir: None,
             exe_rel: "llama-server.exe",
+            progress_name: RUNTIME_NAME,
+            build: LLAMA_BUILD,
+            smoke: None,
         })
     } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         Some(Artifact {
@@ -76,6 +86,9 @@ pub fn runtime_spec() -> Option<Artifact> {
             dir: "llama-b10809",
             inner_dir: Some("llama-b10809"),
             exe_rel: "llama-server",
+            progress_name: RUNTIME_NAME,
+            build: LLAMA_BUILD,
+            smoke: None,
         })
     } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
         Some(Artifact {
@@ -86,6 +99,9 @@ pub fn runtime_spec() -> Option<Artifact> {
             dir: "llama-b10809",
             inner_dir: Some("llama-b10809"),
             exe_rel: "llama-server",
+            progress_name: RUNTIME_NAME,
+            build: LLAMA_BUILD,
+            smoke: None,
         })
     } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         // vulkan 자산은 libvulkan 의존이라 v1 제외(§3.1) — CPU 빌드만.
@@ -97,6 +113,9 @@ pub fn runtime_spec() -> Option<Artifact> {
             dir: "llama-b10809",
             inner_dir: Some("llama-b10809"),
             exe_rel: "llama-server",
+            progress_name: RUNTIME_NAME,
+            build: LLAMA_BUILD,
+            smoke: None,
         })
     } else {
         // win-arm64·linux-arm64 등 — 공식 빌드가 없다. 외부 URL 모드(Ollama)로만.
@@ -115,6 +134,9 @@ pub fn cpu_spec() -> Option<Artifact> {
             dir: "llama-b10809-cpu",
             inner_dir: None,
             exe_rel: "llama-server.exe",
+            progress_name: RUNTIME_CPU_NAME,
+            build: LLAMA_BUILD,
+            smoke: None,
         })
     } else {
         None
@@ -133,14 +155,6 @@ pub fn spec_for_backend(backend: &str) -> Option<Artifact> {
 /// 다운로드 진행 이벤트 이름 — 취소 레지스트리 키와 같다.
 pub const RUNTIME_NAME: &str = "runtime";
 pub const RUNTIME_CPU_NAME: &str = "runtime-cpu";
-
-fn artifact_progress_name(art: &Artifact) -> &'static str {
-    if art.dir.ends_with("-cpu") {
-        RUNTIME_CPU_NAME
-    } else {
-        RUNTIME_NAME
-    }
-}
 
 // ══════════════════════════ 모델 카탈로그 (§3.5) ══════════════════════════
 //
@@ -256,7 +270,7 @@ pub fn model_spec(id: &str) -> Option<&'static ModelSpec> {
     MODELS.iter().find(|m| m.id == id)
 }
 
-fn model_url(m: &ModelSpec) -> String {
+pub(crate) fn model_url(m: &ModelSpec) -> String {
     // 공개 모델은 인증 없음. CDN 리다이렉트는 reqwest 기본 follow가 처리한다.
     format!("https://huggingface.co/{}/resolve/main/{}", m.repo, m.file)
 }
@@ -307,7 +321,7 @@ pub fn custom_model(path: Option<&str>) -> Option<PathBuf> {
 ///
 /// **다운로드가 하나라도 등록돼 있으면 통째로 건너뛴다** — 지금 쓰고 있는 `.part`를 지우면
 /// 그 다운로드가 쓰기 실패로 죽는다. 등록이 비었을 때만 도는 게 가장 짧고 안전한 판정이다.
-fn sweep_stale_downloads(app: &AppHandle, state: &AppState) {
+pub(crate) fn sweep_stale_downloads(app: &AppHandle, state: &AppState) {
     if !state
         .llm_downloads
         .lock()
@@ -342,7 +356,7 @@ fn io(e: String) -> IpcError {
     IpcError::new(ErrorCode::Io, e)
 }
 
-fn send_progress(ch: &Channel<String>, name: &str, phase: &str, percent: Option<u64>, message: Option<&str>) {
+pub(crate) fn send_progress(ch: &Channel<String>, name: &str, phase: &str, percent: Option<u64>, message: Option<&str>) {
     let payload = serde_json::json!({
         "name": name, "phase": phase, "percent": percent, "message": message,
     });
@@ -365,7 +379,7 @@ fn human(bytes: u64) -> String {
 /// `sys_info_static`을 쓰지 않는다. 그 캐시는 **프로세스 수명 내내 무효화되지 않아서**, 앱을 켠
 /// 뒤 공간을 비워도 반영되지 않고 한 번 부족했던 값이 재시작 전까지 모든 다운로드를 거짓으로
 /// 막는다. 디스크 목록 재조회는 ms급이라 매번 새로 읽는 편이 싸다(수집이 수 초인 그 커맨드와 다르다).
-fn check_free_space(root: &Path, need: u64) -> Result<(), IpcError> {
+pub(crate) fn check_free_space(root: &Path, need: u64) -> Result<(), IpcError> {
     let disks = sysinfo::Disks::new_with_refreshed_list();
     let target = root.to_string_lossy().to_lowercase();
     let avail = disks
@@ -399,7 +413,7 @@ fn check_free_space(root: &Path, need: u64) -> Result<(), IpcError> {
 /// 변조가 아니라 **업스트림 재업로드**이기 때문이다(실측: `google/gemma-4-E4B-…`가 2026-07-09→07-17,
 /// `ibm-granite/granite-4.2-3b-GGUF`가 같은 파일명을 12일 만에 교체 — 공식 레포도 불변이 아니다).
 /// 크기부터 보면 6.5GB를 다 받고 나서 실패하는 대신 첫 응답에서 끝난다.
-async fn download_verified(
+pub(crate) async fn download_verified(
     client: &reqwest::Client,
     url: &str,
     sha256: &str,
@@ -474,7 +488,7 @@ async fn download_verified(
     result
 }
 
-fn extract_archive(kind: ArchiveKind, archive: &Path, temp: &Path) -> Result<(), IpcError> {
+pub(crate) fn extract_archive(kind: ArchiveKind, archive: &Path, temp: &Path) -> Result<(), IpcError> {
     match kind {
         ArchiveKind::Zip => {
             let file = std::fs::File::open(archive).map_err(|e| io(format!("아카이브 열기 실패: {e}")))?;
@@ -500,7 +514,7 @@ fn extract_archive(kind: ArchiveKind, archive: &Path, temp: &Path) -> Result<(),
 }
 
 /// 취소 토큰을 이름으로 등록하고 RAII로 지운다(성공·실패·패닉 공통 — http.rs InflightGuard 철학).
-struct DownloadGuard<'a> {
+pub(crate) struct DownloadGuard<'a> {
     state: &'a AppState,
     name: String,
 }
@@ -515,7 +529,7 @@ impl Drop for DownloadGuard<'_> {
     }
 }
 
-fn register_cancel<'a>(
+pub(crate) fn register_cancel<'a>(
     state: &'a AppState,
     name: &str,
 ) -> Result<(CancellationToken, DownloadGuard<'a>), IpcError> {
@@ -536,7 +550,7 @@ fn register_cancel<'a>(
     ))
 }
 
-fn http_client() -> Result<reqwest::Client, IpcError> {
+pub(crate) fn http_client() -> Result<reqwest::Client, IpcError> {
     reqwest::Client::builder()
         .user_agent("gitpervisor-llm")
         // 죽은 연결에 영원히 매달리지 않게. **전체 시한(`timeout`)은 쓰면 안 된다** — GB 단위
@@ -557,7 +571,7 @@ pub async fn ensure_runtime(
     art: &Artifact,
     ch: &Channel<String>,
 ) -> Result<PathBuf, IpcError> {
-    let name = artifact_progress_name(art);
+    let name = art.progress_name;
     if let Some(exe) = installed_server(app, art) {
         send_progress(ch, name, "done", None, None);
         return Ok(exe);
@@ -600,7 +614,16 @@ pub async fn ensure_runtime(
             let _ = std::fs::set_permissions(&bin, perm);
         }
     }
-    std::fs::write(dest.join(".ok"), LLAMA_BUILD).map_err(|e| io(format!("마커 쓰기 실패: {e}")))?;
+    if let Some(smoke) = art.smoke {
+        send_progress(ch, name, "verify", None, None);
+        // 스모크는 자식을 최대 20초 기다린다(갓 푼 실행 파일은 백신 첫 실행 검사에 수 초 잡힌다) — async 워커를
+        // 붙잡지 않게 블로킹 풀에서(transcribe.rs ensure_usable과 같은 이유).
+        let exe = dest.join(art.exe_rel);
+        tauri::async_runtime::spawn_blocking(move || smoke(&exe))
+            .await
+            .map_err(|e| io(format!("설치 확인 작업 실패: {e}")))??;
+    }
+    std::fs::write(dest.join(".ok"), art.build).map_err(|e| io(format!("마커 쓰기 실패: {e}")))?;
     send_progress(ch, name, "done", None, None);
     Ok(dest.join(art.exe_rel))
 }
@@ -712,7 +735,7 @@ pub async fn llm_runtime_ensure(
     })?;
     if let Err(e) = ensure_runtime(&app, state.inner(), &art, &on_progress).await {
         let msg = e.to_string().replace('"', "'");
-        send_progress(&on_progress, artifact_progress_name(&art), "error", None, Some(&msg));
+        send_progress(&on_progress, art.progress_name, "error", None, Some(&msg));
         return Err(e);
     }
     Ok(status(&app, state.inner()))
@@ -728,39 +751,52 @@ pub async fn llm_model_download(
 ) -> Result<LlmStatus, IpcError> {
     let spec = model_spec(&model_id)
         .ok_or_else(|| IpcError::new(ErrorCode::NotFound, format!("모르는 모델: {model_id}")))?;
+    download_model(&app, state.inner(), spec, spec.id, &on_progress).await?;
+    Ok(status(&app, state.inner()))
+}
+
+/// 카탈로그 모델 1개를 `models_dir`에 받는다(있으면 즉시 done). `name`은 진행 이벤트·취소 키 —
+/// llama는 모델 id, stt는 `stt-model-<id>`라 호출자가 정한다. 실패하면 error 진행을 보내고 돌려준다.
+pub(crate) async fn download_model(
+    app: &AppHandle,
+    state: &AppState,
+    spec: &ModelSpec,
+    name: &str,
+    on_progress: &Channel<String>,
+) -> Result<(), IpcError> {
     let run = async {
-        let dir = models_dir(&app).ok_or_else(|| io("앱 데이터 경로 오류".into()))?;
+        let dir = models_dir(app).ok_or_else(|| io("앱 데이터 경로 오류".into()))?;
         std::fs::create_dir_all(&dir).map_err(|e| io(format!("모델 폴더 생성 실패: {e}")))?;
         let dest = dir.join(spec.file);
         if dest.is_file() {
-            send_progress(&on_progress, spec.id, "done", None, None);
+            send_progress(on_progress, name, "done", None, None);
             return Ok(());
         }
         check_free_space(&dir, spec.size)?;
-        let (cancel, _guard) = register_cancel(state.inner(), spec.id)?;
+        let (cancel, _guard) = register_cancel(state, name)?;
         let client = http_client()?;
-        send_progress(&on_progress, spec.id, "download", Some(0), None);
+        send_progress(on_progress, name, "download", Some(0), None);
         download_verified(
             &client,
             &model_url(spec),
             spec.sha256,
             spec.size,
             &dest,
-            spec.id,
-            &on_progress,
+            name,
+            on_progress,
             &cancel,
         )
         .await?;
-        send_progress(&on_progress, spec.id, "done", None, None);
+        send_progress(on_progress, name, "done", None, None);
         Ok::<(), IpcError>(())
     }
     .await;
     if let Err(e) = run {
         let msg = e.to_string().replace('"', "'");
-        send_progress(&on_progress, spec.id, "error", None, Some(&msg));
+        send_progress(on_progress, name, "error", None, Some(&msg));
         return Err(e);
     }
-    Ok(status(&app, state.inner()))
+    Ok(())
 }
 
 /// 진행 중인 다운로드 취소 — 이름은 `"runtime"`·`"runtime-cpu"` 또는 모델 id. 없으면 no-op.
@@ -787,14 +823,20 @@ pub async fn llm_model_delete(
     let spec = model_spec(&model_id)
         .ok_or_else(|| IpcError::new(ErrorCode::NotFound, format!("모르는 모델: {model_id}")))?;
     crate::llm::server::stop_if_model(state.inner(), spec.id);
-    if let Some(dir) = models_dir(&app) {
+    delete_model(&app, spec)?;
+    Ok(status(&app, state.inner()))
+}
+
+/// 모델 파일과 받다 만 `.part`를 지운다. "쓰는 중이면 먼저 내린다/거절한다"는 호출자 몫이다.
+pub(crate) fn delete_model(app: &AppHandle, spec: &ModelSpec) -> Result<(), IpcError> {
+    if let Some(dir) = models_dir(app) {
         let dest = dir.join(spec.file);
         if dest.is_file() {
             std::fs::remove_file(&dest).map_err(|e| io(format!("모델 삭제 실패: {e}")))?;
         }
         std::fs::remove_file(dest.with_extension("part")).ok();
     }
-    Ok(status(&app, state.inner()))
+    Ok(())
 }
 
 /// 런타임·모델·서버 현재 상태. 설정 AI 페이지와 60·61의 "준비 안 됨" 안내가 쓴다.

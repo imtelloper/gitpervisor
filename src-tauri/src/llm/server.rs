@@ -10,8 +10,9 @@
 //!   않고 cgroup만 옮기므로 pid는 여전히 우리 자식이고 `terminate_child`가 그대로 닿는다.
 
 use std::collections::VecDeque;
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -256,6 +257,25 @@ fn drain(reader: impl std::io::Read + Send + 'static, tail: Arc<Mutex<VecDeque<S
     });
 }
 
+/// 무거운 자식(모델 수백 MB~GB)을 띄울 `(program, prefix_args)` — `Command::new(program)
+/// .args(prefix).args(own_args)`로 쓴다. std·tokio `Command` 어느 쪽이든 같은 모양이라 튜플로 돌려준다.
+///
+/// 리눅스: 가능하면 systemd 위임(앱 cgroup 밖). `--scope`여야 한다 — service 유닛은 런처가
+/// 끝나는 순간 cgroup을 통째로 SIGTERM 한다(commands/open.rs의 같은 함정). scope는 대상으로
+/// exec 하므로 pid가 그대로라 killpg가 닿는다. 그 밖의 OS·systemd-run 없음은 `(exe, [])`.
+pub(crate) fn systemd_scope_wrap(exe: &Path) -> (PathBuf, Vec<OsString>) {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    if let Some(runner) = crate::tools::runner::find_on_path("systemd-run") {
+        let mut prefix: Vec<OsString> = ["--user", "--scope", "--quiet", "--collect", "--"]
+            .into_iter()
+            .map(OsString::from)
+            .collect();
+        prefix.push(exe.as_os_str().to_owned());
+        return (runner, prefix);
+    }
+    (exe.to_path_buf(), Vec::new())
+}
+
 /// 프로세스만 띄운다(준비 대기는 호출자). 실패는 spawn 자체의 실패만 뜻한다.
 fn spawn_server(
     exe: &std::path::Path,
@@ -290,30 +310,9 @@ fn spawn_server(
         "--no-webui".into(),
     ];
 
-    // 리눅스: 가능하면 systemd 위임(앱 cgroup 밖). `--scope`여야 한다 — service 유닛은 런처가
-    // 끝나는 순간 cgroup을 통째로 SIGTERM 한다(commands/open.rs의 같은 함정).
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let mut cmd = match crate::tools::runner::find_on_path("systemd-run") {
-        Some(runner) => {
-            let mut c = Command::new(runner);
-            c.args(["--user", "--scope", "--quiet", "--collect", "--"]);
-            c.arg(exe);
-            c.args(&args);
-            c
-        }
-        None => {
-            let mut c = Command::new(exe);
-            c.args(&args);
-            c
-        }
-    };
-    #[cfg(not(all(unix, not(target_os = "macos"))))]
-    let mut cmd = {
-        let mut c = Command::new(exe);
-        c.args(&args);
-        c
-    };
-
+    let (program, prefix) = systemd_scope_wrap(exe);
+    let mut cmd = Command::new(program);
+    cmd.args(prefix).args(&args);
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(windows)]
     {
@@ -689,6 +688,22 @@ mod tests {
         // 경로가 있는 프록시는 마지막 `/v1` 하나만 뗀다 — 앞의 경로는 서버 것이다.
         assert_eq!(normalize_base("https://host/api/v1"), "https://host/api");
         assert_eq!(normalize_base("https://host/v1beta"), "https://host/v1beta");
+    }
+
+    /// 위임은 `--scope`여야 하고 대상 exe가 `--` 바로 뒤에 와야 한다 — `--service-type=exec`로
+    /// 바뀌면 런처 종료와 함께 cgroup이 SIGTERM 되어 방금 띄운 서버가 조용히 죽는다.
+    #[test]
+    fn systemd_scope_wrap_uses_scope_and_keeps_exe() {
+        let exe = Path::new("/opt/gpv/whisper-cli");
+        let (program, prefix) = systemd_scope_wrap(exe);
+        if prefix.is_empty() {
+            assert_eq!(program, exe); // 위임 없음(Windows·macOS·systemd-run 없음)
+        } else {
+            assert!(prefix.iter().any(|a| a == "--scope"));
+            assert!(!prefix.iter().any(|a| a.to_string_lossy().starts_with("--service-type")));
+            assert_eq!(prefix[prefix.len() - 2], "--");
+            assert_eq!(prefix[prefix.len() - 1], exe.as_os_str());
+        }
     }
 
     /// 난수 키는 32바이트(hex 64자)이고 호출마다 달라야 한다 — 고정되면 다른 로컬 프로세스가
