@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::error::{ErrorCode, IpcError};
+use crate::i18n::text_stt;
 use crate::state::AppState;
 use crate::stt::doc::{validate_doc, CaptionDoc, WordTiming, DOC_VERSION};
 use crate::stt::plan::{caption_plan, CaptionPlan};
@@ -84,10 +85,7 @@ pub fn doc_path(root: &Path, project_id: &str, rel: &str) -> PathBuf {
 }
 
 fn newer_version(path: &Path) -> IpcError {
-    io(format!(
-        "새 버전 앱에서 만든 자막 문서라 이 앱은 읽기만 합니다 — 앱을 업데이트하세요({})",
-        path.display()
-    ))
+    io(text_stt::caption_doc_newer_version(&path.display()))
 }
 
 fn peek_version(bytes: &[u8]) -> Option<u64> {
@@ -98,20 +96,20 @@ fn read_doc_at(path: &Path) -> Result<Option<CaptionDoc>, IpcError> {
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(io(format!("자막 문서 읽기 실패({}): {e}", path.display()))),
+        Err(e) => return Err(io(text_stt::caption_doc_read_failed(&path.display(), &e))),
     };
     // 모르는 필드는 serde가 버린다 — 더 높은 version도 모양이 맞으면 읽기 전용으로 보여 준다.
     match serde_json::from_slice::<CaptionDoc>(&bytes) {
         Ok(doc) => Ok(Some(doc)),
         Err(_) if peek_version(&bytes).is_some_and(|v| v > u64::from(DOC_VERSION)) => Err(newer_version(path)),
-        Err(e) => Err(io(format!("자막 문서가 손상됐습니다({}): {e} — 다시 인식하면 새로 만듭니다", path.display()))),
+        Err(e) => Err(io(text_stt::caption_doc_corrupt_retranscribe(&path.display(), &e))),
     }
 }
 
 fn write_doc_at(path: &Path, doc: &CaptionDoc) -> Result<(), IpcError> {
-    let bytes = serde_json::to_vec(doc).map_err(|e| io(format!("자막 문서 직렬화 실패: {e}")))?;
+    let bytes = serde_json::to_vec(doc).map_err(|e| io(text_stt::caption_doc_serialize_failed(&e)))?;
     crate::state::save_bytes_at(path, &bytes)
-        .map_err(|e| io(format!("자막 문서 저장 실패({}): {e}", path.display())))
+        .map_err(|e| io(text_stt::caption_doc_save_failed(&path.display(), &e)))
 }
 
 /// (크기, 수정 시각 ms). 수정 시각을 주지 않는 파일 시스템이면 0 — 그때는 크기만으로 stale을 가른다.
@@ -136,7 +134,7 @@ pub fn load_at(
     let Some(mut doc) = read_doc_at(&path)? else { return Ok(None) };
     if doc.version <= DOC_VERSION {
         validate_doc(&mut doc)
-            .map_err(|e| io(format!("자막 문서가 손상됐습니다({}): {}", path.display(), e.message)))?;
+            .map_err(|e| io(text_stt::caption_doc_corrupt(&path.display(), &e.message)))?;
     }
     let stale = source_stamp != Some((doc.source.size_bytes, doc.source.mtime_ms));
     let plan = caption_plan(&doc)?;
@@ -162,10 +160,7 @@ pub fn save_at(
     }
     let cur_rev = current.map_or(0, |c| c.rev);
     if base_rev != cur_rev {
-        return Err(IpcError::new(
-            ErrorCode::Conflict,
-            format!("다른 창에서 자막 문서가 바뀌었습니다(저장본 {cur_rev}, 편집 기준 {base_rev}) — 다시 불러오세요"),
-        ));
+        return Err(IpcError::new(ErrorCode::Conflict, text_stt::caption_doc_conflict(cur_rev, base_rev)));
     }
     doc.rev = cur_rev + 1;
     let plan = caption_plan(&doc)?;
@@ -193,7 +188,7 @@ pub fn write_transcribed_at(
             }
             let bak = path.with_extension("json.bak");
             std::fs::write(&bak, &bytes)
-                .map_err(|e| io(format!("직전 자막 문서 보관 실패({}): {e}", bak.display())))?;
+                .map_err(|e| io(text_stt::caption_doc_backup_failed(&bak.display(), &e)))?;
             // 손상된 판이면 rev를 알 수 없다 — 0부터 이어 간다(원본은 방금 .bak으로 남겼다).
             let prev = serde_json::from_slice::<serde_json::Value>(&bytes).ok();
             // 자막 스타일은 인식 결과와 무관한 사용자 선택이라 이어 간다(번역·컷은 cue·토큰 id가 바뀌어 못 잇는다).
@@ -203,7 +198,7 @@ pub fn write_transcribed_at(
             prev.and_then(|v| v.get("rev")?.as_u64()).unwrap_or(0)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
-        Err(e) => return Err(io(format!("자막 문서 읽기 실패({}): {e}", path.display()))),
+        Err(e) => return Err(io(text_stt::caption_doc_read_failed(&path.display(), &e))),
     };
     doc.rev = prev_rev + 1;
     let plan = caption_plan(&doc)?;
@@ -212,7 +207,7 @@ pub fn write_transcribed_at(
 }
 
 fn data_root(app: &AppHandle) -> Result<PathBuf, IpcError> {
-    crate::state::data_root(app).ok_or_else(|| io("앱 데이터 폴더를 찾을 수 없습니다".into()))
+    crate::state::data_root(app).ok_or_else(|| io(text_stt::caption_app_data_dir_not_found().into()))
 }
 
 /// 다른 창에 알린다 — 받는 쪽에 미저장 편집이 없으면 다시 읽고, 있으면 충돌 배너(§3.4).
@@ -236,7 +231,7 @@ pub(crate) fn write_transcribed(
 }
 
 fn no_doc() -> IpcError {
-    IpcError::new(ErrorCode::NotFound, "이 영상의 자막 문서가 없습니다 — 먼저 자막을 만드세요")
+    IpcError::new(ErrorCode::NotFound, text_stt::caption_doc_missing())
 }
 
 /// 자막 파일 내보내기(subs.rs)가 쓰는 읽기 — 없으면 NotFound.
@@ -261,17 +256,13 @@ pub fn export_doc_at(
     }
     if loaded.doc.engine.word_timing == WordTiming::Approx {
         // 다시 인식하라고 하지 않는다 — brew 엔진은 다시 돌려도 근사값일 수 있고, macOS엔 관리형 엔진이 없다(9절 42).
-        return Err(io(
-            "단어 시각이 근사값인 자막이라(인식 엔진이 단어 시각을 주지 않았다) 편집본을 만들 수 없습니다".into(),
-        ));
+        return Err(io(text_stt::caption_cut_approx_word_timing().into()));
     }
     if loaded.stale {
-        return Err(io(
-            "자막을 만든 뒤 원본 영상이 바뀌어 컷 위치가 어긋날 수 있습니다 — 다시 인식한 뒤 내보내세요".into(),
-        ));
+        return Err(io(text_stt::caption_cut_source_changed().into()));
     }
     if loaded.plan.keep.is_empty() {
-        return Err(io("남는 구간이 없습니다 — 대본이 전부 잘렸습니다".into()));
+        return Err(io(text_stt::caption_cut_nothing_left().into()));
     }
     Ok(loaded)
 }

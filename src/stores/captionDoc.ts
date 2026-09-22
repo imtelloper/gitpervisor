@@ -12,6 +12,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 
+import { currentMessages } from "../i18n/ui-language";
 import {
   captionTranslatePending,
   setCaptionTranslations,
@@ -368,13 +369,21 @@ export const useCaptionDoc = create<CaptionDocState>((set, get) => {
             void settle(
               ev.payload.ok
                 ? { ok: true, loaded: null }
-                : { ok: false, cancelled: ev.payload.cancelled, error: ev.payload.error ?? "자막 만들기 실패" },
+                : {
+                    ok: false,
+                    cancelled: ev.payload.cancelled,
+                    error: ev.payload.error ?? currentMessages().captions.doc.transcribeFailed,
+                  },
             );
           }),
         ]);
       } catch (err) {
         // 이벤트 없이 시작하면 응답 유실 때 영영 끝나지 않는 잡이 된다 — 시작하지 않는다.
-        await settle({ ok: false, cancelled: false, error: `진행 이벤트를 구독하지 못했습니다 — ${errorMessage(err)}` });
+        await settle({
+          ok: false,
+          cancelled: false,
+          error: currentMessages().captions.doc.progressSubscribeFailed(errorMessage(err)),
+        });
         return;
       }
       markLocalSttJob(id, relPath.split("/").pop() ?? relPath);
@@ -421,7 +430,7 @@ export const useCaptionDoc = create<CaptionDocState>((set, get) => {
           ...o,
           signal: ac.signal,
           onProgress: (_phase, message) => bump({ status: message ?? null }),
-          onBusy: () => bump({ status: "다른 AI 작업이 끝나면 이어서 번역합니다…" }),
+          onBusy: () => bump({ status: currentMessages().captions.doc.translateWaitingBusy }),
         });
       try {
         await translateCaptionItems({
@@ -433,24 +442,25 @@ export const useCaptionDoc = create<CaptionDocState>((set, get) => {
           onChunk: (got, failedIds) => {
             // 번역한 데까지 곧바로 문서에 — 자동 저장·되돌리기 한 단계.
             const d = get().entries[key]?.doc;
-            if (!d) throw new Error("자막 문서가 사라져 번역을 멈췄습니다");
+            if (!d) throw new Error(currentMessages().captions.doc.translateDocGone);
             const next = got.length ? setCaptionTranslations(d, lang, got, base) : null;
             // edit이 거절하면(다른 창이 저장한 읽기 전용 새 판을 다시 읽었다 등) 번역이 문서에 안 들어간다 — 세지 않고 멈춘다.
             if (next && !get().edit(key, () => next))
-              throw new Error("자막 문서를 고칠 수 없는 상태가 돼 번역을 멈췄습니다");
+              throw new Error(currentMessages().captions.doc.translateDocLocked);
             bump((j) => ({ done: j.done + got.length, failed: j.failed + failedIds.length, status: null }));
           },
         });
         const failed = get().entries[key]?.translate?.failed ?? 0;
         patch(key, {
           translate: null,
-          translateError: failed
-            ? `${failed}줄은 모델이 형식에 맞게 답하지 않아 번역하지 못했습니다 — 다시 번역하면 그 줄만 다시 합니다`
-            : null,
+          translateError: failed ? currentMessages().captions.doc.translateLinesFailed(failed) : null,
         });
       } catch (err) {
         const cancelled = ac.signal.aborted || (isIpcError(err) && err.code === "CANCELLED");
-        patch(key, { translate: null, translateError: cancelled ? null : `번역 실패 — ${errorMessage(err)}` });
+        patch(key, {
+          translate: null,
+          translateError: cancelled ? null : currentMessages().captions.doc.translateFailed(errorMessage(err)),
+        });
       } finally {
         translateAborts.delete(key);
       }

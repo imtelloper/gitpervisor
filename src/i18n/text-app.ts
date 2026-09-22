@@ -132,11 +132,10 @@ const ko = {
     newCellTitleWithBrowser: "새 터미널 · 새 브라우저 — 이 화면에 바로 연다",
     newCellTitleTerminalsOnly: "새 터미널 · Claude Code 세션 터미널 — 이 화면에 바로 연다",
     newCellPickProject: (kind: string) => `${kind} — 프로젝트 선택`,
-    // 원문 그대로 옮겼다("브라우저은") — e2e 가 한국어 문구를 글자 그대로 본다.
     hideTerminalTitle:
       "숨기기 — 이 화면에서만 빼고 터미널은 계속 실행됩니다 (상단 칩으로 되돌리기)",
     hideBrowserTitle:
-      "숨기기 — 이 화면에서만 빼고 브라우저은 계속 실행됩니다 (상단 칩으로 되돌리기)",
+      "숨기기 — 이 화면에서만 빼고 브라우저는 계속 실행됩니다 (상단 칩으로 되돌리기)",
     unzoomCellTitle: "원래 크기로 — 그리드로 돌아갑니다",
     zoomCellTitle: "확대 — 이 터미널만 화면 가득 봅니다",
     closeTerminalCellTitle: "터미널 닫기 (프로세스 종료)",

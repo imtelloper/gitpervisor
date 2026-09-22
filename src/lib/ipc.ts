@@ -1,5 +1,8 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 
+// `ui-language`(currentMessages)는 이 파일을 import 하므로 여기서 부르면 순환이다 — 잎 모듈 둘로 직접 만든다.
+import { currentLocale } from "../i18n/locale-state";
+import { messagesFor } from "../i18n/messages";
 import type { ThemeId, ThemeName } from "./themes";
 
 export interface Project {
@@ -1078,7 +1081,7 @@ export function encodingLabel(name: string): string {
 
 class IpcTimeoutError extends Error {
   constructor(cmd: string) {
-    super(`IPC 응답 시간 초과: ${cmd}`);
+    super(messagesFor(currentLocale()).lib.ipcTimeout(cmd));
   }
 }
 
@@ -1180,7 +1183,7 @@ async function callMutating<T>(
     if (e instanceof IpcTimeoutError) {
       const err: IpcError = {
         code: "TIMEOUT",
-        message: `${cmd} 응답을 받지 못했습니다 — 실제 결과는 새로고침된 상태로 확인하세요`,
+        message: messagesFor(currentLocale()).lib.ipcMutatingTimeout(cmd),
         stderr: null,
       };
       throw err;

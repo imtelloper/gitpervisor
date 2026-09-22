@@ -16,6 +16,7 @@ use tauri::ipc::Channel;
 use tauri::{AppHandle, State};
 
 use crate::error::{ErrorCode, IpcError};
+use crate::i18n::text_stt;
 use crate::llm::acquire::{self as llm_acquire, ArchiveKind, Artifact, ModelSpec};
 use crate::state::AppState;
 
@@ -112,7 +113,7 @@ pub const STT_MODELS: &[SttModel] = &[
             sha256: "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
             size: 574_041_195,
             min_ram: 4096 * MIB,
-            note: "기본 — 한국어 정확도 최상, MIT",
+            note: text_stt::stt_model_note_turbo_q5,
         },
         dtw: "large.v3.turbo",
     },
@@ -125,7 +126,7 @@ pub const STT_MODELS: &[SttModel] = &[
             sha256: "422f1ae452ade6f30a004d7e5c6a43195e4433bc370bf23fac9cc591f01a8898",
             size: 59_707_625,
             min_ram: 2048 * MIB,
-            note: "저사양·빠른 초안 — 정확도 낮음, MIT",
+            note: text_stt::stt_model_note_base_q5,
         },
         dtw: "base",
     },
@@ -140,7 +141,7 @@ pub const VAD_MODEL: ModelSpec = ModelSpec {
     sha256: "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987",
     size: 885_098,
     min_ram: 0,
-    note: "",
+    note: || "",
 };
 
 /// e2e 전용 모델(디버그 빌드만) — e2e 65 `stt-captions`가 `E2E_STT_MODEL`의 ggml-tiny.bin(77MB)을 `llm/models/`에
@@ -157,7 +158,7 @@ static E2E_MODEL: SttModel = SttModel {
         sha256: "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
         size: 77_691_713,
         min_ram: 0,
-        note: "",
+        note: || "",
     },
     dtw: "tiny",
 };
@@ -234,7 +235,7 @@ fn run_short(exe: &Path, args: &[&str]) -> Result<(Option<i32>, String, String),
     }
     let child = cmd
         .spawn()
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("실행 실패({}): {e}", exe.display())))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_stt::stt_exec_failed(&exe.display(), &e)))?;
     let pid = child.id();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -248,13 +249,13 @@ fn run_short(exe: &Path, args: &[&str]) -> Result<(Option<i32>, String, String),
         )),
         Ok(Err(e)) => Err(IpcError::new(
             ErrorCode::Io,
-            format!("출력 수집 실패({}): {e}", exe.display()),
+            text_stt::stt_output_collect_failed(&exe.display(), &e),
         )),
         Err(_) => {
             crate::commands::kill_pid(pid);
             Err(IpcError::new(
                 ErrorCode::Timeout,
-                format!("{} 응답 없음(20초)", exe.display()),
+                text_stt::stt_exec_no_response(&exe.display()),
             ))
         }
     }
@@ -268,27 +269,21 @@ const WIN_DLL_NOT_FOUND: i32 = 0xC000_0135_u32 as i32;
 pub(crate) fn classify_smoke(code: Option<i32>, stdout: &str, stderr: &str) -> Result<(), IpcError> {
     if code == Some(WIN_DLL_NOT_FOUND) {
         // whisper-cli.exe가 MSVCP140·VCRUNTIME140을, ggml이 VCOMP140을 가져오는데 zip에 동봉돼 있지 않다(부록 B.4).
-        return Err(IpcError::new(
-            ErrorCode::ToolNotFound,
-            "음성 인식 엔진을 실행하려면 Microsoft Visual C++ 재배포 패키지가 필요합니다 — \
-             https://aka.ms/vs/17/release/vc_redist.x64.exe (ARM64는 vc_redist.arm64.exe)를 설치한 뒤 다시 받으세요",
-        ));
+        return Err(IpcError::new(ErrorCode::ToolNotFound, text_stt::stt_vc_redist_required()));
     }
     if stderr.contains("GLIBC_") || stderr.contains("libgomp") || stderr.contains("error while loading shared libraries") {
         return Err(IpcError {
             code: ErrorCode::ToolNotFound,
-            message: "이 배포판에서는 whisper.cpp 공식 빌드를 실행할 수 없습니다(glibc 2.34 이상·libgomp 필요) — \
-                      시스템에 whisper-cli를 설치해 PATH에 두세요"
-                .into(),
+            message: text_stt::stt_glibc_unsupported().into(),
             stderr: Some(stderr.to_string()),
         });
     }
     if code != Some(0) || !stdout.contains(WHISPER_VERSION) {
         return Err(IpcError {
             code: ErrorCode::Io,
-            message: format!(
-                "음성 인식 엔진 확인 실패(종료 코드 {code:?}): {}",
-                crate::commands::last_error_line(&format!("{stdout}\n{stderr}"))
+            message: text_stt::stt_engine_check_failed(
+                code,
+                &crate::commands::last_error_line(&format!("{stdout}\n{stderr}")),
             ),
             stderr: Some(stderr.to_string()),
         });
@@ -349,11 +344,7 @@ pub(crate) fn ensure_usable(bin: &WhisperBin) -> Result<String, IpcError> {
     if !missing.is_empty() {
         return Err(IpcError::new(
             ErrorCode::ToolNotFound,
-            format!(
-                "whisper.cpp 버전이 낮습니다({}) — 빠진 옵션: {}. `brew upgrade whisper-cpp` 등으로 1.8 이상을 설치하세요",
-                bin.exe.display(),
-                missing.join(" ")
-            ),
+            text_stt::stt_whisper_too_old(&bin.exe.display(), &missing.join(" ")),
         ));
     }
     // 버전 표기가 없는 옛 빌드도 플래그만 맞으면 쓴다 — 문서에는 "unknown"으로 남긴다.
@@ -420,7 +411,7 @@ pub(crate) fn status(app: &AppHandle) -> SttStatus {
                 id: m.spec.id.to_string(),
                 label: m.spec.label.to_string(),
                 size: m.spec.size,
-                note: m.spec.note.to_string(),
+                note: (m.spec.note)().to_string(),
                 installed: llm_acquire::installed_model(app, &m.spec).is_some(),
             })
             .collect(),
@@ -457,11 +448,7 @@ pub async fn stt_runtime_ensure(
                 llm_acquire::send_progress(&on_progress, RUNTIME_NAME, "done", None, None);
                 Ok(())
             }
-            None => Err(IpcError::new(
-                ErrorCode::ToolNotFound,
-                "이 플랫폼용 whisper.cpp 공식 빌드가 없습니다 — 터미널에서 `brew install whisper-cpp`로 설치하세요 \
-                 (Intel Mac은 bottle이 없어 소스 빌드가 됩니다)",
-            )),
+            None => Err(IpcError::new(ErrorCode::ToolNotFound, text_stt::stt_no_official_build())),
         }
     }
     .await;
@@ -482,7 +469,7 @@ pub async fn stt_model_download(
     on_progress: Channel<String>,
 ) -> Result<SttStatus, IpcError> {
     let m = stt_model(&model_id)
-        .ok_or_else(|| IpcError::new(ErrorCode::NotFound, format!("모르는 음성 인식 모델: {model_id}")))?;
+        .ok_or_else(|| IpcError::new(ErrorCode::NotFound, text_stt::stt_unknown_model(&model_id)))?;
     llm_acquire::download_model(&app, state.inner(), &m.spec, &model_progress_name(m.spec.id), &on_progress)
         .await?;
     Ok(status(&app))
@@ -492,12 +479,9 @@ pub async fn stt_model_download(
 #[tauri::command(async)]
 pub fn stt_model_delete(app: AppHandle, model_id: String) -> Result<SttStatus, IpcError> {
     let m = stt_model(&model_id)
-        .ok_or_else(|| IpcError::new(ErrorCode::NotFound, format!("모르는 음성 인식 모델: {model_id}")))?;
+        .ok_or_else(|| IpcError::new(ErrorCode::NotFound, text_stt::stt_unknown_model(&model_id)))?;
     if crate::stt::transcribe::active_model().as_deref() == Some(m.spec.id) {
-        return Err(IpcError::new(
-            ErrorCode::Busy,
-            "이 모델로 자막을 만드는 중입니다 — 끝나거나 취소한 뒤 지우세요",
-        ));
+        return Err(IpcError::new(ErrorCode::Busy, text_stt::stt_model_in_use()));
     }
     llm_acquire::delete_model(&app, &m.spec)?;
     Ok(status(&app))

@@ -9,7 +9,7 @@ const ko = {
   optionSystem: "시스템 설정 따르기",
   // 언어 이름은 그 언어로 쓴다(자기 이름) — 어느 UI 언어에서든 같은 글자다.
   optionKorean: "한국어",
-  optionEnglish: "English (베타 — 일부 화면은 한국어)",
+  optionEnglish: "English",
 };
 
 export const languageText = defineText(ko, {
@@ -19,6 +19,6 @@ export const languageText = defineText(ko, {
       "System follows the OS display language. Changes apply to every open window immediately",
     optionSystem: "Follow system setting",
     optionKorean: "한국어",
-    optionEnglish: "English (beta — some screens are still in Korean)",
+    optionEnglish: "English",
   },
 });

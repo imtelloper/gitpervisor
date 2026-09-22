@@ -1,15 +1,4 @@
 {
   "_": "한국어 UI 문구가 아직 남은 파일(주석·로그 제외 한글 줄 수). e2e 66 이 이 목록을 **줄어들기만** 하게 지킨다 — DOCS/i18n-design.md §5.2. 파일을 카탈로그로 옮기면 여기서 지운다.",
-  "files": {
-    "src/components/settings/SettingsDialog.tsx": 32,
-    "src/components/settings/sections/AiSection.tsx": 56,
-    "src/components/settings/settings-index.ts": 59,
-    "src/components/video/ExportPanel.tsx": 103,
-    "src/components/video/VideoPlayer.tsx": 88,
-    "src/components/video/frameCapture.ts": 4,
-    "src/lib/events.ts": 8,
-    "src/lib/ipc.ts": 2,
-    "src/queries/index.ts": 19,
-    "src/stores/videoSplit.ts": 9
-  }
+  "files": {}
 }

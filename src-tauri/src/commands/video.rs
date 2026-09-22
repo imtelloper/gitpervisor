@@ -24,6 +24,7 @@ use tokio::process::Command;
 
 use super::projects::project_path;
 use crate::error::{ErrorCode, IpcError};
+use crate::i18n::text_video;
 use crate::state::AppState;
 use crate::stt::subs::{SubText, SubTimeline};
 use crate::stt::video_subs::{CaptionSubs, SubsFile, SubsMode, BURN_FILTER};
@@ -149,7 +150,7 @@ pub(crate) fn find_ffmpeg(app: &AppHandle, state: &AppState) -> Result<FfmpegBin
         }
         return Err(IpcError::new(
             ErrorCode::ToolNotFound,
-            "설정한 ffmpeg 경로에 실행 파일이 없습니다 — 설정 › 코드 도구를 확인하세요",
+            text_video::video_ffmpeg_explicit_path_missing(),
         ));
     }
     // ② PATH (60초 미스 캐시, 셸 스폰 없음 — tools/runner.rs).
@@ -184,7 +185,7 @@ pub(crate) fn find_ffmpeg(app: &AppHandle, state: &AppState) -> Result<FfmpegBin
     }
     Err(IpcError::new(
         ErrorCode::ToolNotFound,
-        "ffmpeg를 찾을 수 없습니다 — 설정 › 코드 도구에서 다운로드하거나 PATH에 설치하세요",
+        text_video::video_ffmpeg_not_found(),
     ))
 }
 
@@ -212,7 +213,7 @@ async fn run_capture_bytes<S: AsRef<std::ffi::OsStr>>(
 
     let child = cmd
         .spawn()
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("실행 실패({}): {e}", bin.display())))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_video::video_run_failed(&bin.display(), &e)))?;
     let pid = child.id();
     let out = tokio::time::timeout(Duration::from_secs(timeout_secs), child.wait_with_output())
         .await
@@ -220,9 +221,9 @@ async fn run_capture_bytes<S: AsRef<std::ffi::OsStr>>(
             if let Some(pid) = pid {
                 kill_pid(pid);
             }
-            IpcError::new(ErrorCode::Timeout, format!("실행 시간 초과 ({timeout_secs}초)"))
+            IpcError::new(ErrorCode::Timeout, text_video::video_run_timed_out(timeout_secs))
         })?
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("출력 수집 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_video::video_output_collect_failed(&e)))?;
     Ok((
         out.status.code().unwrap_or(-1),
         out.stdout,
@@ -277,7 +278,7 @@ pub(crate) async fn has_subtitles_filter(ffmpeg: &Path) -> Result<bool, IpcError
     if code != 0 {
         return Err(IpcError {
             code: ErrorCode::Io,
-            message: format!("ffmpeg 필터 목록을 읽지 못했습니다({}, 종료 코드 {code})", ffmpeg.display()),
+            message: text_video::video_filters_list_failed(&ffmpeg.display(), code),
             stderr: Some(err),
         });
     }
@@ -384,7 +385,7 @@ fn parse_rate(s: &str) -> Option<f64> {
 
 fn parse_probe(json: &str) -> Result<VideoMeta, IpcError> {
     let v: serde_json::Value = serde_json::from_str(json)
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("ffprobe 출력 파싱 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_video::video_ffprobe_parse_failed(&e)))?;
     let empty = Vec::new();
     let streams = v["streams"].as_array().unwrap_or(&empty);
     let vs = streams.iter().find(|s| s["codec_type"] == "video");
@@ -461,7 +462,7 @@ pub(crate) fn need_probe(bin: &FfmpegBin) -> Result<PathBuf, IpcError> {
     bin.ffprobe.clone().ok_or_else(|| {
         IpcError::new(
             ErrorCode::ToolNotFound,
-            "ffprobe를 찾을 수 없습니다 — ffmpeg와 같은 폴더에 있어야 합니다",
+            text_video::video_ffprobe_not_found(),
         )
     })
 }
@@ -478,7 +479,7 @@ pub(crate) async fn probe_meta(probe: &Path, src: &str) -> Result<VideoMeta, Ipc
     if code != 0 {
         return Err(IpcError {
             code: ErrorCode::Io,
-            message: "미디어 정보를 읽지 못했습니다 (손상되었거나 지원하지 않는 형식)".into(),
+            message: text_video::video_media_info_unreadable().into(),
             stderr: Some(stderr),
         });
     }
@@ -494,7 +495,7 @@ fn resolve_media(
     let repo = project_path(state, project_id)?;
     let src = super::tree::resolve_in_repo(&repo, rel_path)?;
     if !src.is_file() {
-        return Err(IpcError::new(ErrorCode::NotFound, "파일을 찾을 수 없습니다"));
+        return Err(IpcError::new(ErrorCode::NotFound, text_video::video_file_not_found()));
     }
     Ok(src.display().to_string())
 }
@@ -690,53 +691,53 @@ fn atempo_chain(speed: f64) -> String {
 }
 
 fn validate_spec(spec: &ExportSpec) -> Result<(), IpcError> {
-    let bad = |m: &str| Err(IpcError::new(ErrorCode::Io, format!("내보내기 스펙 오류: {m}")));
+    let bad = |m: &str| Err(IpcError::new(ErrorCode::Io, text_video::video_export_spec_error(m)));
     let ext = ext_of(&spec.out_rel);
     if muxer_for_ext(&ext).is_none() {
-        return bad(&format!("지원하지 않는 출력 형식 .{ext}"));
+        return bad(&text_video::video_spec_unsupported_format(&ext));
     }
     if let Some(r) = &spec.range {
         if r.start_ms >= r.end_ms {
-            return bad("구간 시작이 끝보다 늦습니다");
+            return bad(text_video::video_spec_range_inverted());
         }
     }
     if let Some(s) = spec.speed {
         if !(0.25..=4.0).contains(&s) {
-            return bad("배속은 0.25~4배만 지원합니다");
+            return bad(text_video::video_spec_speed_out_of_range());
         }
     }
     if let Some(c) = spec.crf {
         if c > 51 {
-            return bad("CRF 범위(0~51) 초과");
+            return bad(text_video::video_spec_crf_out_of_range());
         }
     }
     if spec.caption_cut {
         // 구간 여럿을 이어 붙이려면 디코드가 필요하고, 남길 구간은 이미 원본 전체 타임라인 기준이다.
         if spec.mode != "encode" {
-            return bad("대본 편집본은 재인코딩으로만 만들 수 있습니다 (무손실 복사 불가)");
+            return bad(text_video::video_spec_caption_cut_needs_encode());
         }
         if spec.range.is_some() {
-            return bad("대본 편집본은 구간(In/Out)과 함께 쓸 수 없습니다");
+            return bad(text_video::video_spec_caption_cut_with_range());
         }
         if !matches!(ext.as_str(), "mp4" | "m4v" | "mov") {
-            return bad(&format!("대본 편집본은 mp4·mov로만 내보냅니다 (.{ext})"));
+            return bad(&text_video::video_spec_caption_cut_container(&ext));
         }
     }
     if let Some(cs) = &spec.caption_subs {
         // mov_text 자막 스트림을 담을 수 있는 컨테이너만(gif·오디오 전용은 자막을 실을 곳이 없다).
         if !matches!(ext.as_str(), "mp4" | "m4v" | "mov") {
-            return bad(&format!("자막 입힌 영상은 mp4·mov로만 내보냅니다 (.{ext})"));
+            return bad(&text_video::video_spec_captioned_container(&ext));
         }
         if cs.mode == SubsMode::Burn && spec.mode != "encode" {
-            return bad("자막 번인은 재인코딩으로만 만들 수 있습니다 (무손실 복사 불가)");
+            return bad(text_video::video_spec_burn_needs_encode());
         }
         match (cs.timeline, spec.caption_cut) {
-            (SubTimeline::Edited, false) => return bad("편집본 시각 자막은 대본 편집본과 함께만 넣을 수 있습니다"),
-            (SubTimeline::Source, true) => return bad("대본 편집본에는 편집본 시각 자막만 넣을 수 있습니다"),
+            (SubTimeline::Edited, false) => return bad(text_video::video_spec_edited_subs_need_cut()),
+            (SubTimeline::Source, true) => return bad(text_video::video_spec_cut_needs_edited_subs()),
             _ => {}
         }
         if cs.text != SubText::Caption && cs.lang.as_deref().is_none_or(|l| l.trim().is_empty()) {
-            return bad("번역 자막의 언어가 지정되지 않았습니다");
+            return bad(text_video::video_spec_translation_lang_missing());
         }
     }
     match spec.mode.as_str() {
@@ -749,13 +750,11 @@ fn validate_spec(spec: &ExportSpec) -> Result<(), IpcError> {
                 || spec.masks.as_ref().is_some_and(|m| !m.is_empty())
                 || ext == "gif"
             {
-                return bad(
-                    "무손실 복사는 배속·크롭·모자이크·화질·GIF와 함께 쓸 수 없습니다 (재인코딩 필요)",
-                );
+                return bad(text_video::video_spec_copy_incompatible());
             }
         }
         "encode" => {}
-        _ => return bad("mode는 copy|encode"),
+        _ => return bad(text_video::video_spec_mode_invalid()),
     }
     Ok(())
 }
@@ -969,15 +968,12 @@ async fn caption_subs_file(
             if !has_subtitles_filter(&bin.ffmpeg).await? {
                 return Err(IpcError::new(
                     ErrorCode::ToolNotFound,
-                    format!(
-                        "이 ffmpeg({})에는 자막 번인 필터(libass `subtitles`)가 없습니다 — 소프트 자막으로 내보내거나 libass가 든 ffmpeg를 쓰세요",
-                        bin.ffmpeg.display()
-                    ),
+                    text_video::video_burn_filter_missing(&bin.ffmpeg.display()),
                 ));
             }
             let meta = probe_meta(&need_probe(bin)?, src).await?;
             if !meta.has_video {
-                return Err(IpcError::new(ErrorCode::Io, "영상 트랙이 없는 파일에는 자막을 입힐 수 없습니다"));
+                return Err(IpcError::new(ErrorCode::Io, text_video::video_burn_no_video_track()));
             }
             let (w, h) = export_out_size(meta.width, meta.height, spec);
             write_burn_ass(app, &cues, subs.preset, w, h)
@@ -1036,16 +1032,13 @@ async fn graph_to_file(
     if !graph_file_supported(version.as_deref()) {
         return Err(IpcError::new(
             ErrorCode::TooManyRanges,
-            format!(
-                "남길 구간이 너무 많아 명령줄에 다 들어가지 않고, ffmpeg {}는 그래프 파일을 읽지 못합니다(7.0 이상 필요) — 무음 줄이기 목표를 늘려 구간을 줄이거나 ffmpeg 7 이상을 쓰세요",
-                version.as_deref().unwrap_or("?")
-            ),
+            text_video::video_graph_file_unsupported(version.as_deref().unwrap_or("?")),
         ));
     }
     let file = temp_dir(app)?.join(format!("{TEMP_PREFIX}graph-{}.txt", uuid::Uuid::new_v4().simple()));
     let graph = externalize_graph(args, at, &file);
     let guard = TempFiles(vec![file.clone()]);
-    std::fs::write(&file, graph).map_err(|e| io(format!("필터 그래프 파일 쓰기 실패({}): {e}", file.display())))?;
+    std::fs::write(&file, graph).map_err(|e| io(text_video::video_graph_file_write_failed(&file.display(), &e)))?;
     Ok(guard)
 }
 
@@ -1106,8 +1099,7 @@ fn cfa_hint(line: &str, out: &Path) -> String {
     if !in_protected {
         return String::new();
     }
-    " — 저장 폴더가 Windows '제어된 폴더 액세스' 보호 대상입니다. Windows 보안 › 바이러스 및 위협 방지 › 랜섬웨어 방지 › 폴더 액세스 제어에서 ffmpeg.exe와 이 앱을 허용 목록에 추가하거나, 다른 폴더에 저장하세요."
-        .into()
+    text_video::video_cfa_hint().into()
 }
 
 #[cfg(not(windows))]
@@ -1139,7 +1131,7 @@ pub(crate) fn last_error_line(stderr: &str) -> String {
         .rev()
         .map(str::trim)
         .find(|l| !l.is_empty())
-        .unwrap_or("(상세 메시지 없음)")
+        .unwrap_or(text_video::video_no_error_detail())
         .to_string()
 }
 
@@ -1186,7 +1178,7 @@ async fn video_export_inner(
     let bin = find_ffmpeg(app, state.inner())?;
     let src = super::tree::resolve_in_repo(&repo, &spec.src_rel)?;
     if !src.is_file() {
-        return Err(IpcError::new(ErrorCode::NotFound, "원본 파일을 찾을 수 없습니다"));
+        return Err(IpcError::new(ErrorCode::NotFound, text_video::video_source_not_found()));
     }
     let out = super::tree::resolve_in_repo(&repo, &spec.out_rel)?;
     // 자기 자신 덮어쓰기 방지 — 바이트 비교만으로는 부족하다: NTFS/APFS는 대소문자
@@ -1196,12 +1188,12 @@ async fn video_export_inner(
         || (out.exists()
             && dunce::canonicalize(&out).ok().is_some_and(|o| Some(o) == dunce::canonicalize(&src).ok()))
     {
-        return Err(IpcError::new(ErrorCode::Io, "원본과 같은 파일로 내보낼 수 없습니다"));
+        return Err(IpcError::new(ErrorCode::Io, text_video::video_export_onto_source()));
     }
     if out.exists() && !spec.overwrite {
         return Err(IpcError::new(
             ErrorCode::AlreadyExists,
-            format!("{} 파일이 이미 있습니다", spec.out_rel),
+            text_video::video_output_exists(&spec.out_rel),
         ));
     }
 
@@ -1236,10 +1228,7 @@ async fn video_export_inner(
         if n as usize >= tracks {
             return Err(IpcError::new(
                 ErrorCode::Io,
-                format!(
-                    "자막을 만든 오디오 트랙 {}번이 이 파일에 없습니다(오디오 트랙 {tracks}개) — 원본이 바뀌었습니다. 대본에서 다시 인식하거나 소리 빼기로 내보내세요",
-                    n + 1
-                ),
+                text_video::video_caption_audio_track_missing(n + 1, tracks),
             ));
         }
     }
@@ -1279,7 +1268,7 @@ async fn video_export_inner(
 
     let mut child = cmd
         .spawn()
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("ffmpeg 실행 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_video::video_ffmpeg_spawn_failed(&e)))?;
     if let Some(pid) = child.id() {
         let mut map = jobs.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(j) = map.get_mut(job_id) {
@@ -1339,13 +1328,13 @@ async fn video_export_inner(
     // ?를 쓰지 않는다 — wait 실패 경로에서도 임시파일 정리가 돌아야 한다.
     let status_res: Result<std::process::ExitStatus, IpcError> = tokio::select! {
         s = child.wait() => {
-            s.map_err(|e| IpcError::new(ErrorCode::Io, format!("ffmpeg 종료 대기 실패: {e}")))
+            s.map_err(|e| IpcError::new(ErrorCode::Io, text_video::video_ffmpeg_wait_failed(&e)))
         }
         _ = &mut cancel_rx => {
             cancelled = true;
             let _ = child.start_kill();
             child.wait().await
-                .map_err(|e| IpcError::new(ErrorCode::Io, format!("ffmpeg 종료 대기 실패: {e}")))
+                .map_err(|e| IpcError::new(ErrorCode::Io, text_video::video_ffmpeg_wait_failed(&e)))
         }
     };
     let (stderr_tail, missing_glyphs) = stderr_task.await.unwrap_or_default();
@@ -1361,17 +1350,17 @@ async fn video_export_inner(
 
     if cancelled {
         std::fs::remove_file(&tmp).ok();
-        Err(IpcError::new(ErrorCode::Cancelled, "내보내기가 취소되었습니다"))
+        Err(IpcError::new(ErrorCode::Cancelled, text_video::video_export_cancelled()))
     } else if status.success() && burned && !missing_glyphs.is_empty() {
         // ffmpeg는 성공으로 끝나지만 그 글자들은 네모 칸으로 그려졌다 — 그런 영상을 결과로 남기지 않는다.
         std::fs::remove_file(&tmp).ok();
         let shown = missing_glyphs.iter().take(12).map(|c| format!("'{c}'")).collect::<Vec<_>>().join(" ");
         Err(IpcError {
             code: ErrorCode::ToolNotFound,
-            message: format!(
-                "자막 글꼴에 없는 글자 {}개가 네모 칸으로 그려져 내보내지 않았습니다({shown}) — '{}' 글꼴(Linux: fonts-noto-cjk 패키지)을 설치하거나 소프트 자막으로 내보내세요",
+            message: text_video::video_burn_missing_glyphs(
                 missing_glyphs.len(),
-                crate::stt::video_subs::caption_font()
+                &shown,
+                crate::stt::video_subs::caption_font(),
             ),
             stderr: Some(stderr_tail),
         })
@@ -1382,12 +1371,7 @@ async fn video_export_inner(
         // 실패한 명령을 남긴다 — 토스트는 stderr 마지막 한 줄뿐이라(예: "Error opening output
         // files: No such file or directory") 어떤 인자로 죽었는지 사후에 알 길이 없었다.
         // 필터 그래프가 길어질수록(마스크/GIF 팔레트) 이게 유일한 단서다.
-        log::error!(
-            "[video] 내보내기 실패 job={job_id}
-  ffmpeg: {}
-  args: {:?}
-  stderr(tail):
-{}",
+        log::error!("[video] 내보내기 실패 job={job_id}\n  ffmpeg: {}\n  args: {:?}\n  stderr(tail):\n{}",
             bin.ffmpeg.display(),
             args,
             stderr_tail
@@ -1395,7 +1379,7 @@ async fn video_export_inner(
         let line = last_error_line(&stderr_tail);
         Err(IpcError {
             code: ErrorCode::Io,
-            message: format!("ffmpeg 실패: {}{}", line, cfa_hint(&line, &out)),
+            message: text_video::video_ffmpeg_failed(&line, &cfa_hint(&line, &out)),
             stderr: Some(stderr_tail),
         })
     }
@@ -1533,7 +1517,7 @@ pub async fn video_capture_frame(
     if out.exists() && !overwrite {
         return Err(IpcError::new(
             ErrorCode::AlreadyExists,
-            format!("{out_rel} 파일이 이미 있습니다"),
+            text_video::video_output_exists(&out_rel),
         ));
     }
     let tmp = out.with_file_name(format!(".gpv-frame-{}.tmp", uuid::Uuid::new_v4().simple()));
@@ -1559,7 +1543,7 @@ pub async fn video_capture_frame(
         std::fs::remove_file(&tmp).ok();
         return Err(IpcError {
             code: ErrorCode::Io,
-            message: format!("프레임 캡처 실패: {}", last_error_line(&stderr)),
+            message: text_video::video_frame_capture_failed(&last_error_line(&stderr)),
             stderr: Some(stderr),
         });
     }
@@ -1568,7 +1552,7 @@ pub async fn video_capture_frame(
     if !tmp.is_file() {
         return Err(IpcError {
             code: ErrorCode::Io,
-            message: "이 위치에서 저장할 프레임을 찾지 못했습니다 — 한 프레임 앞으로 옮긴 뒤 다시 시도하세요".into(),
+            message: text_video::video_frame_not_found_at_position().into(),
             stderr: Some(stderr),
         });
     }
@@ -1582,7 +1566,7 @@ pub async fn video_capture_frame(
 pub(crate) fn commit_tmp_output(tmp: &Path, out: &Path) -> Result<(), IpcError> {
     std::fs::rename(tmp, out).map_err(|e| {
         std::fs::remove_file(tmp).ok(); // 정리 실패는 원래 오류를 가리지 않는다
-        IpcError::new(ErrorCode::Io, format!("산출물 이동 실패({}): {e}", out.display()))
+        IpcError::new(ErrorCode::Io, text_video::video_output_move_failed(&out.display(), &e))
     })
 }
 
@@ -1659,7 +1643,7 @@ pub async fn video_filmstrip(
     if !(1..=240).contains(&cols) || !(8..=240).contains(&height) {
         return Err(IpcError::new(
             ErrorCode::Io,
-            "필름스트립 인자 범위를 벗어났습니다 (cols 1~240, height 8~240)",
+            text_video::video_filmstrip_args_out_of_range(),
         ));
     }
     let bin = find_ffmpeg(&app, state.inner())?;
@@ -1669,7 +1653,7 @@ pub async fn video_filmstrip(
     if !meta.has_video || meta.duration_ms == 0 {
         return Err(IpcError::new(
             ErrorCode::Io,
-            "영상 스트림이 없거나 길이를 알 수 없어 필름스트립을 만들 수 없습니다",
+            text_video::video_filmstrip_no_video(),
         ));
     }
     let args = build_filmstrip_args(&src, cols, height, meta.duration_ms);
@@ -1677,12 +1661,12 @@ pub async fn video_filmstrip(
     if code != 0 || jpeg.is_empty() {
         return Err(IpcError {
             code: ErrorCode::Io,
-            message: format!("필름스트립 생성 실패: {}", last_error_line(&stderr)),
+            message: text_video::video_filmstrip_failed(&last_error_line(&stderr)),
             stderr: Some(stderr),
         });
     }
     let (w, h) = jpeg_size(&jpeg)
-        .ok_or_else(|| IpcError::new(ErrorCode::Io, "필름스트립 이미지를 해석하지 못했습니다"))?;
+        .ok_or_else(|| IpcError::new(ErrorCode::Io, text_video::video_filmstrip_decode_failed()))?;
     use base64::Engine as _;
     let b64 = base64::engine::general_purpose::STANDARD.encode(&jpeg);
     Ok(VideoFilmstrip {
@@ -1738,7 +1722,7 @@ pub async fn video_waveform(
     buckets: u32,
 ) -> Result<Vec<f32>, IpcError> {
     if !(1..=4096).contains(&buckets) {
-        return Err(IpcError::new(ErrorCode::Io, "파형 버킷 수 범위를 벗어났습니다 (1~4096)"));
+        return Err(IpcError::new(ErrorCode::Io, text_video::video_waveform_buckets_out_of_range()));
     }
     let bin = find_ffmpeg(&app, state.inner())?;
     let src = resolve_media(&state, &project_id, &rel_path)?;
@@ -1898,25 +1882,25 @@ async fn download_verified(
     ch: &Channel<String>,
 ) -> Result<(), IpcError> {
     let io = |e: String| IpcError::new(ErrorCode::Io, e);
-    let mut last_err = io("다운로드 후보 URL 없음".into());
+    let mut last_err = io(text_video::video_download_no_candidate_url().into());
     for url in art.urls {
         let attempt: Result<(), IpcError> = async {
             let mut resp = client
                 .get(*url)
                 .send()
                 .await
-                .map_err(|e| io(format!("다운로드 실패: {e}")))?
+                .map_err(|e| io(text_video::video_download_failed(&e)))?
                 .error_for_status()
-                .map_err(|e| io(format!("다운로드 상태 오류: {e}")))?;
+                .map_err(|e| io(text_video::video_download_status_error(&e)))?;
             let total = resp.content_length();
             let mut file =
-                std::fs::File::create(dest_file).map_err(|e| io(format!("임시 파일 생성 실패: {e}")))?;
+                std::fs::File::create(dest_file).map_err(|e| io(text_video::video_temp_file_create_failed(&e)))?;
             let mut hasher = Sha256::new();
             let mut got: u64 = 0;
             let mut last_pct: u64 = u64::MAX;
-            while let Some(chunk) = resp.chunk().await.map_err(|e| io(format!("본문 수신 실패: {e}")))? {
+            while let Some(chunk) = resp.chunk().await.map_err(|e| io(text_video::video_download_body_failed(&e)))? {
                 hasher.update(&chunk);
-                file.write_all(&chunk).map_err(|e| io(format!("임시 파일 쓰기 실패: {e}")))?;
+                file.write_all(&chunk).map_err(|e| io(text_video::video_temp_file_write_failed(&e)))?;
                 got += chunk.len() as u64;
                 if let Some(t) = total.filter(|t| *t > 0) {
                     let pct = got * 100 / t;
@@ -1929,7 +1913,7 @@ async fn download_verified(
             drop(file);
             let hex: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
             if hex != art.sha256 {
-                return Err(io("무결성 검증 실패 — 다운로드 변조 의심".into()));
+                return Err(io(text_video::video_integrity_check_failed().into()));
             }
             Ok(())
         }
@@ -1946,11 +1930,11 @@ fn extract_archive(kind: FfArchive, archive: &Path, temp: &Path) -> Result<(), I
     let io = |e: String| IpcError::new(ErrorCode::Io, e);
     match kind {
         FfArchive::Zip => {
-            let file = std::fs::File::open(archive).map_err(|e| io(format!("아카이브 열기 실패: {e}")))?;
+            let file = std::fs::File::open(archive).map_err(|e| io(text_video::video_archive_open_failed(&e)))?;
             zip::ZipArchive::new(file)
-                .map_err(|e| io(format!("zip 열기 실패: {e}")))?
+                .map_err(|e| io(text_video::video_zip_open_failed(&e)))?
                 .extract(temp)
-                .map_err(|e| io(format!("zip 해제 실패: {e}")))?;
+                .map_err(|e| io(text_video::video_zip_extract_failed(&e)))?;
             Ok(())
         }
         FfArchive::TarXz => {
@@ -1966,7 +1950,7 @@ fn extract_archive(kind: FfArchive, archive: &Path, temp: &Path) -> Result<(), I
             if ok {
                 Ok(())
             } else {
-                Err(io("tar.xz 해제 실패 — 시스템 tar/xz 필요".into()))
+                Err(io(text_video::video_tar_xz_extract_failed().into()))
             }
         }
     }
@@ -1977,10 +1961,10 @@ async fn ensure_ffmpeg(app: &AppHandle, ch: &Channel<String>) -> Result<(), IpcE
     let spec = ffmpeg_spec().ok_or_else(|| {
         IpcError::new(
             ErrorCode::ToolNotFound,
-            "이 플랫폼은 앱 내 다운로드를 지원하지 않습니다 — 패키지 관리자(brew/apt 등)로 ffmpeg를 설치하세요",
+            text_video::video_managed_download_unsupported(),
         )
     })?;
-    let root = managed_root(app).ok_or_else(|| io("앱 데이터 경로 오류".into()))?;
+    let root = managed_root(app).ok_or_else(|| io(text_video::video_app_data_path_error().into()))?;
     std::fs::create_dir_all(&root).ok();
     let dest = root.join(format!("ffmpeg-{}", spec.version));
     if dest.join(spec.exe_rel).is_file() && dest.join(spec.probe_rel).is_file() {
@@ -1991,11 +1975,11 @@ async fn ensure_ffmpeg(app: &AppHandle, ch: &Channel<String>) -> Result<(), IpcE
     let client = reqwest::Client::builder()
         .user_agent("gitpervisor-video")
         .build()
-        .map_err(|e| io(format!("HTTP 클라이언트 오류: {e}")))?;
+        .map_err(|e| io(text_video::video_http_client_error(&e)))?;
 
     let temp = root.join(format!(".tmp-ffmpeg-{}", spec.version));
     std::fs::remove_dir_all(&temp).ok();
-    std::fs::create_dir_all(&temp).map_err(|e| io(format!("temp 생성 실패: {e}")))?;
+    std::fs::create_dir_all(&temp).map_err(|e| io(text_video::video_temp_dir_create_failed(&e)))?;
 
     for (i, art) in spec.artifacts.iter().enumerate() {
         send_progress(ch, "download", Some(0), None);
@@ -2012,7 +1996,7 @@ async fn ensure_ffmpeg(app: &AppHandle, ch: &Channel<String>) -> Result<(), IpcE
         None => temp.clone(),
     };
     std::fs::remove_dir_all(&dest).ok();
-    std::fs::rename(&src, &dest).map_err(|e| io(format!("설치 이동 실패: {e}")))?;
+    std::fs::rename(&src, &dest).map_err(|e| io(text_video::video_install_move_failed(&e)))?;
     std::fs::remove_dir_all(&temp).ok();
 
     #[cfg(not(windows))]
@@ -2027,7 +2011,7 @@ async fn ensure_ffmpeg(app: &AppHandle, ch: &Channel<String>) -> Result<(), IpcE
             }
         }
     }
-    std::fs::write(dest.join(".ok"), spec.version).map_err(|e| io(format!("마커 쓰기 실패: {e}")))?;
+    std::fs::write(dest.join(".ok"), spec.version).map_err(|e| io(text_video::video_marker_write_failed(&e)))?;
     send_progress(ch, "done", None, None);
     Ok(())
 }

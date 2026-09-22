@@ -2,7 +2,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 
-import type { SttPhase, SttStatus, VideoAudioStream, VideoToolStatus } from "./ipc";
+import { currentMessages } from "../i18n/ui-language";
+import type { SttStatus, VideoAudioStream, VideoToolStatus } from "./ipc";
 import { ipc } from "./ipc";
 
 /** 엔진·모델 설치 상태. 설정의 다운로드·삭제가 `["stt-status"]`를 무효화한다. */
@@ -14,10 +15,11 @@ export function useSttStatus() {
   });
 }
 
-/** whisper `-l` 값. 더 많은 언어를 받지만 드롭다운에는 흔한 것만 둔다(auto가 나머지를 덮는다). */
+/** whisper `-l` 값. 더 많은 언어를 받지만 드롭다운에는 흔한 것만 둔다(auto가 나머지를 덮는다). 언어 이름은 그 언어로
+ *  적는다(UI 언어와 무관) — `auto`의 라벨만 UI 문구라 게터로 **읽는 순간의 UI 언어**를 따른다. */
 export const STT_LANGUAGES: ReadonlyArray<{ code: string; label: string }> = [
-  { code: "auto", label: "자동 감지" },
-  { code: "ko", label: "한국어" },
+  { code: "auto", get label() { return currentMessages().captions.stt.languageAuto; } },
+  { code: "ko", label: "한국어" }, // i18n-ok: 언어 자기 이름(English·日本語와 같은 줄) — UI 언어로 옮기지 않는다
   { code: "en", label: "English" },
   { code: "ja", label: "日本語" },
   { code: "zh", label: "中文" },
@@ -26,12 +28,6 @@ export const STT_LANGUAGES: ReadonlyArray<{ code: string; label: string }> = [
   { code: "de", label: "Deutsch" },
   { code: "vi", label: "Tiếng Việt" },
 ];
-
-export const STT_PHASE_LABEL: Record<SttPhase, string> = {
-  extract: "오디오 추출",
-  transcribe: "음성 인식",
-  parse: "정리",
-};
 
 /**
  * 인식 단계의 남은 시간(ms) 추정 — 인식은 전체 진행의 10~95%(transcribe.rs)라 그 안의 경과 비례로 잰다. whisper는
@@ -46,7 +42,7 @@ export function sttRemainingMs(transcribeElapsedMs: number, percent: number): nu
 /** 자막을 만들 오디오 트랙 이름 — "트랙 2 · kor · 해설 · aac 2ch". 번호는 1부터(`0:a:<index>`의 index+1),
  *  컨테이너 언어 태그 `und`(미지정)는 뺀다. OBS 다중 트랙 녹화는 title로 트랙을 가른다. */
 export function sttAudioTrackLabel(s: VideoAudioStream): string {
-  const parts = [`트랙 ${s.index + 1}`];
+  const parts = [currentMessages().captions.stt.audioTrack(s.index + 1)];
   if (s.language && s.language !== "und") parts.push(s.language);
   if (s.title?.trim()) parts.push(s.title.trim());
   const tech = [s.codec, s.channels ? `${s.channels}ch` : null].filter(Boolean).join(" ");
@@ -80,26 +76,20 @@ export function sttReadyReason(
   stt: SttStatus | undefined,
   modelId: string,
 ): SttNotReady | null {
-  if (!tool) return { text: "ffmpeg 상태를 확인하는 중입니다", fix: null };
+  const t = currentMessages().captions.stt;
+  if (!tool) return { text: t.checkingFfmpeg, fix: null };
   if (!tool.found)
     return tool.managedSupported
-      ? { text: "오디오를 뽑으려면 ffmpeg가 필요합니다 — 설정 › 코드 도구에서 받으세요", fix: "ffmpeg" }
-      : { text: "오디오를 뽑으려면 ffmpeg가 필요합니다 — 패키지 관리자(brew/apt 등)로 설치하세요", fix: null };
-  if (!tool.probeFound)
-    return { text: "ffprobe를 찾을 수 없습니다 — ffmpeg와 같은 폴더에 ffprobe가 있어야 합니다", fix: "ffmpeg" };
-  if (!stt) return { text: "음성 인식 엔진 상태를 확인하는 중입니다", fix: null };
-  if (stt.runtime.state === "unsupported")
-    return {
-      text: "이 플랫폼용 whisper.cpp 공식 빌드가 없습니다 — 터미널에서 `brew install whisper-cpp`로 설치하세요(Intel Mac은 소스 빌드)",
-      fix: "brew",
-    };
-  if (stt.runtime.state === "missing")
-    return { text: "음성 인식 엔진(whisper.cpp)을 받아야 합니다 — 설정 › AI › 음성 인식", fix: "ai" };
-  if (!stt.vadInstalled)
-    return { text: "음성 구간 감지(VAD) 모델을 받아야 합니다 — 설정 › AI › 음성 인식의 엔진 받기", fix: "ai" };
+      ? { text: t.ffmpegNeededManaged, fix: "ffmpeg" }
+      : { text: t.ffmpegNeededSystem, fix: null };
+  if (!tool.probeFound) return { text: t.ffprobeMissing, fix: "ffmpeg" };
+  if (!stt) return { text: t.checkingEngine, fix: null };
+  if (stt.runtime.state === "unsupported") return { text: t.engineUnsupported, fix: "brew" };
+  if (stt.runtime.state === "missing") return { text: t.engineMissing, fix: "ai" };
+  if (!stt.vadInstalled) return { text: t.vadMissing, fix: "ai" };
   const model = stt.models.find((m) => m.id === modelId);
-  if (!model) return { text: "설정 › AI › 음성 인식에서 모델을 고르세요", fix: "ai" };
-  if (!model.installed) return { text: `${model.label} 모델을 받아야 합니다 — 설정 › AI › 음성 인식`, fix: "ai" };
+  if (!model) return { text: t.pickModel, fix: "ai" };
+  if (!model.installed) return { text: t.modelMissing(model.label), fix: "ai" };
   return null;
 }
 

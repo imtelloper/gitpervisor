@@ -113,8 +113,10 @@ New-Item -ItemType Junction -Path "$env:LOCALAPPDATA\com.greathoon.gitpervisor.d
 
 **UI 문구(다국어)**
 - 사용자에게 보이는 문구는 `src/i18n/text-<도메인>.ts` 카탈로그에 한국어·영어를 나란히 두고 `useMessages()`
-  (컴포넌트 밖은 `currentMessages()`)로 부른다 — `msg.<도메인>.<키>`. 새 파일이나 이행 끝난 파일에 한글
-  리터럴을 쓰면 e2e 66이 빨갛다. 설계 `DOCS/i18n-design.md`, 용어 `DOCS/i18n-glossary.md`.
+  (컴포넌트 밖은 `currentMessages()`)로 부른다 — `msg.<도메인>.<키>`. Rust는 `crate::i18n::text_*`에 문구
+  하나 = 함수 하나. 코드에 한글 UI 리터럴을 쓰면 e2e 66(프런트)·`user_facing_korean_lives_in_i18n_modules`
+  (Rust)가 빨갛다 — 로그·주석은 제외, UI가 아닌 한글은 줄 끝 `// i18n-ok: <이유>`. 설계 `DOCS/i18n-design.md`,
+  용어 `DOCS/i18n-glossary.md`.
 
 **주석·파일**
 - 주석은 **왜**만 쓴다 — 사고 이력, 플랫폼 제약, 일부러 한 이상한 선택. 코드를 되풀이하는 주석·

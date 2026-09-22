@@ -13,8 +13,9 @@ import type { ReactNode } from "react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
+import { useMessages } from "../../i18n/ui-language";
 import { captionCutAllowed } from "../../lib/captionEdit";
-import { CAPTION_STYLE_LABELS, captionStylePresetOf } from "../../lib/captionStyle";
+import { captionStylePresetOf } from "../../lib/captionStyle";
 import { captionLangLabel, captionTranslationCounts, captionTranslationLangs } from "../../lib/captionTranslate";
 import { markLocalVideoJob } from "../../lib/events";
 import { sttAudioTrackLabel } from "../../lib/stt";
@@ -41,12 +42,7 @@ type SubsChoice = "none" | "burn" | "soft";
 /** 넣을 글(P4) — 원문 · 번역만 · 원문 아래 번역 2단. */
 type SubsText = "caption" | "translation" | "both";
 
-const TABS: Array<{ id: Tab; label: string }> = [
-  { id: "export", label: "내보내기" },
-  { id: "trim", label: "자르기" },
-  { id: "audio", label: "오디오" },
-  { id: "mask", label: "가리기" },
-];
+const TABS: Tab[] = ["export", "trim", "audio", "mask"];
 
 // 세로 인스펙터라 모든 컨트롤이 칼럼 폭을 꽉 채운다(가로 바 시절의 px-1 축소는 폐기).
 const selCls = "w-full rounded border border-edge bg-panel px-2 py-1.5 text-xs text-fg";
@@ -155,6 +151,8 @@ export const ExportPanel = memo(function ExportPanel({
   /** 이 영상의 자막을 만드는 중(태스크 72) — 동시 ffmpeg·CPU 경합을 피해 내보내기·분할을 막는다. */
   sttBusy: boolean;
 }) {
+  const msg = useMessages();
+  const t = msg.media.exportPanel;
   const pushToast = useUi((s) => s.pushToast);
   const askConfirm = useUi((s) => s.askConfirm);
   const setSettingsOpen = useUi((s) => s.setSettingsOpen);
@@ -198,13 +196,13 @@ export const ExportPanel = memo(function ExportPanel({
   const cutBlock = !capDoc
     ? null
     : !captionCutAllowed(capDoc)
-      ? "단어 시각이 근사값인 자막이라(인식 엔진이 단어 시각을 주지 않았다) 편집본을 만들 수 없습니다"
+      ? t.cutBlockApproxWords
       : capStale
-        ? "자막을 만든 뒤 원본 영상이 바뀌어 컷 위치가 어긋날 수 있습니다 — 대본에서 다시 인식한 뒤 내보내세요"
+        ? t.cutBlockStale
         : capPlan && capPlan.keep.length === 0
-          ? "남는 구간이 없습니다 — 대본이 전부 잘렸습니다"
+          ? t.cutBlockNothingLeft
           : format !== "mp4"
-            ? "편집본은 mp4로만 만듭니다 — 형식을 mp4로 바꾸세요"
+            ? t.cutBlockNotMp4
             : null;
   const cutOn = captionCut && !!capDoc && cutBlock === null;
 
@@ -229,11 +227,11 @@ export const ExportPanel = memo(function ExportPanel({
     subsChoice === "none"
       ? null
       : format !== "mp4"
-        ? "자막은 mp4에만 넣습니다 — 형식을 mp4로 바꾸세요"
+        ? t.subsBlockNotMp4
         : subsChoice === "burn" && !libass
-          ? "이 ffmpeg엔 libass가 없어 영상에 입힐 수 없습니다 — 자막 트랙으로 넣으세요"
+          ? t.subsBlockNoLibass
           : subsGap && subsGap.missing > 0
-            ? `${captionLangLabel(subsLang ?? "")} 번역이 ${subsGap.missing}줄 빠졌습니다 — 원문으로 채우지 않으니 대본 › 번역에서 이어서 번역하세요`
+            ? t.subsBlockMissing(captionLangLabel(subsLang ?? ""), subsGap.missing)
             : null;
   const subsOn = subsChoice !== "none" && !!capDoc && subsBlock === null;
   const burnOn = subsOn && subsChoice === "burn";
@@ -312,20 +310,20 @@ export const ExportPanel = memo(function ExportPanel({
     return (
       <div className="h-full overflow-y-auto px-3 py-3 text-xs text-fg-muted">
         <div className="mb-1 font-semibold text-fg">
-          {tool?.found ? "ffprobe를 찾을 수 없습니다" : "편집·내보내기에는 ffmpeg가 필요합니다"}
+          {tool?.found ? t.ffprobeMissingTitle : t.ffmpegRequiredTitle}
         </div>
         <div className="mb-2 text-fg-dim">
           {tool?.found
-            ? "ffmpeg와 같은 폴더에 ffprobe가 함께 있어야 합니다."
+            ? t.ffprobeMissingDesc
             : tool?.managedSupported
-              ? "설정 › 코드 도구에서 다운로드하거나(약 40~110MB), PATH에 설치된 ffmpeg를 자동 발견합니다."
-              : "이 플랫폼은 앱 내 다운로드가 없습니다 — 패키지 관리자(brew/apt 등)로 ffmpeg를 설치하세요."}
+              ? t.ffmpegManagedDesc
+              : t.ffmpegUnmanagedDesc}
         </div>
         <button
           onClick={() => setSettingsOpen(true)}
           className="rounded border border-edge px-2 py-1 hover:bg-raised hover:text-fg"
         >
-          설정 열기
+          {t.openSettings}
         </button>
       </div>
     );
@@ -333,11 +331,11 @@ export const ExportPanel = memo(function ExportPanel({
   if (probeError)
     return (
       <div className="h-full px-3 py-3 text-xs text-warn">
-        미디어 정보를 읽지 못했습니다 — {probeError}
+        {t.probeFailed(probeError)}
       </div>
     );
   if (!probe)
-    return <div className="h-full px-3 py-3 text-xs text-fg-dim">미디어 정보 읽는 중…</div>;
+    return <div className="h-full px-3 py-3 text-xs text-fg-dim">{t.probing}</div>;
 
   const { dir } = splitPath(path);
   const nothingToDo = format === "mp4" && mode === "copy" && !range && !removeAudio && !subsOn;
@@ -385,7 +383,7 @@ export const ExportPanel = memo(function ExportPanel({
         setFlushing(false);
       }
       if (!saved) {
-        pushToast("error", "대본 편집이 저장되지 않아 내보내지 않았습니다 — 대본 패널 위 안내를 먼저 해결하세요");
+        pushToast("error", t.flushFailed);
         return;
       }
     }
@@ -405,9 +403,9 @@ export const ExportPanel = memo(function ExportPanel({
       // 토스트는 전역 리스너 한 곳이 담당한다(video.rs 계약) — 여기서는 대화형 경로만 처리.
       if (isIpcError(e) && e.code === "ALREADY_EXISTS" && !overwrite) {
         askConfirm({
-          title: "덮어쓰기",
-          message: `${name.trim()} 파일이 이미 있습니다. 덮어쓸까요?`,
-          confirmLabel: "덮어쓰기",
+          title: msg.media.overwriteTitle,
+          message: t.overwriteMessage(name.trim()),
+          confirmLabel: msg.media.overwriteConfirm,
           danger: true,
           onConfirm: () => void doExport(true),
         });
@@ -473,8 +471,7 @@ export const ExportPanel = memo(function ExportPanel({
       ? ((100 - Math.min(100, progress.pct)) / 100) * (outMs / 1000) / liveSpeed
       : null;
 
-  const splitScopeWarn =
-    "분할 저장은 구간·배속·해상도·영역·가림·오디오 제거·대본 편집·자막을 적용하지 않습니다. 영상 전체를 분할 지점 경계로만 자릅니다.";
+  const splitScopeWarn = t.splitScopeWarn;
   const rangeBtnCls = (on: boolean) =>
     `flex-1 rounded border px-1 py-1 text-[11px] ${
       on ? "border-accent bg-accent/20 text-accent" : "border-edge hover:bg-raised"
@@ -485,20 +482,20 @@ export const ExportPanel = memo(function ExportPanel({
      className="gpv-export-panel flex h-full min-h-0 flex-col text-xs text-fg-muted">
       {/* ── 탭 ── */}
       <div role="tablist" className="flex shrink-0 border-b border-edge px-2">
-        {TABS.map((t) => (
+        {TABS.map((id) => (
           <button
-            key={t.id}
+            key={id}
             role="tab"
-            data-tab={t.id}
-            aria-selected={tab === t.id}
-            onClick={() => setTab(t.id)}
+            data-tab={id}
+            aria-selected={tab === id}
+            onClick={() => setTab(id)}
             className={`flex-1 border-b-2 px-1 py-2 ${
-              tab === t.id
+              tab === id
                 ? "border-accent font-semibold text-accent"
                 : "border-transparent hover:text-fg"
             }`}
           >
-            {t.label}
+            {t.tabLabel[id]}
           </button>
         ))}
       </div>
@@ -507,8 +504,8 @@ export const ExportPanel = memo(function ExportPanel({
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-3 py-3">
         {tab === "export" && (
           <>
-            <Section title="출력 형식">
-              <Field label="형식">
+            <Section title={t.outputSection}>
+              <Field label={t.formatLabel}>
                 <select
                   value={format}
                   onChange={(e) => {
@@ -522,14 +519,14 @@ export const ExportPanel = memo(function ExportPanel({
                   disabled={busy}
                   className={selCls}
                 >
-                  <option value="mp4">mp4 동영상</option>
+                  <option value="mp4">{t.formatMp4}</option>
                   <option value="gif">GIF</option>
                   <option value="audio" disabled={!probe.hasAudio}>
-                    오디오만 ({aud.ext}){!probe.hasAudio ? " · 오디오 트랙 없음" : ""}
+                    {t.formatAudioOnly(aud.ext, !probe.hasAudio)}
                   </option>
                 </select>
               </Field>
-              <Field label="배속">
+              <Field label={t.speedLabel}>
                 <select
                   value={speed}
                   onChange={(e) => setSpeed(Number(e.target.value))}
@@ -545,20 +542,20 @@ export const ExportPanel = memo(function ExportPanel({
               </Field>
               {format === "mp4" && (
                 <>
-                  <Field label="화질">
+                  <Field label={t.qualityLabel}>
                     <select
                       value={quality}
                       onChange={(e) => setQuality(e.target.value as Quality)}
                       disabled={busy}
                       className={`${selCls} ${forcesEncode && quality === "copy" ? "text-warn" : ""}`}
                     >
-                      <option value="copy">무손실 복사</option>
-                      <option value="18">원본급 (CRF 18)</option>
-                      <option value="23">표준 (CRF 23)</option>
-                      <option value="28">압축 (CRF 28)</option>
+                      <option value="copy">{t.qualityCopy}</option>
+                      <option value="18">{t.qualityHigh}</option>
+                      <option value="23">{t.qualityStandard}</option>
+                      <option value="28">{t.qualityCompressed}</option>
                     </select>
                   </Field>
-                  <Field label="해상도">
+                  <Field label={t.resolutionLabel}>
                     <select
                       value={maxHeight}
                       onChange={(e) => setMaxHeight(e.target.value as typeof maxHeight)}
@@ -566,7 +563,7 @@ export const ExportPanel = memo(function ExportPanel({
                       className={selCls}
                     >
                       <option value="">
-                        원본 {probe.width}×{probe.height}
+                        {t.resolutionSource(probe.width, probe.height)}
                       </option>
                       <option value="1080">1080p</option>
                       <option value="720">720p</option>
@@ -576,20 +573,16 @@ export const ExportPanel = memo(function ExportPanel({
                 </>
               )}
               {quality === "copy" && forcesEncode && format !== "audio" && (
-                <div className="text-[11px] text-warn">
-                  배속·영역·가림·해상도·GIF·대본 편집·자막 번인은 무손실 복사와 함께 쓸 수 없어 재인코딩(표준 화질)됩니다.
-                </div>
+                <div className="text-[11px] text-warn">{t.forcedEncodeWarn}</div>
               )}
               {format === "gif" && !range && (
-                <div className="text-[11px] text-warn">
-                  구간 없이 전체를 GIF로 만들면 파일이 매우 커질 수 있습니다 — I/O로 구간을 지정하세요.
-                </div>
+                <div className="text-[11px] text-warn">{t.gifNoRangeWarn}</div>
               )}
             </Section>
 
             {/* 대본 편집(태스크 72) — 자막 문서가 있는 영상에만. 켜면 구간(I/O)·무손실 복사와 배타다. */}
             {capDoc && (
-              <Section title="대본 편집">
+              <Section title={t.cutSection}>
                 <label className="flex items-center gap-1.5" data-gpv="caption-cut-toggle">
                   <input
                     type="checkbox"
@@ -599,32 +592,31 @@ export const ExportPanel = memo(function ExportPanel({
                     disabled={busy || (!captionCut && cutBlock !== null)}
                     className="accent-accent"
                   />
-                  대본 편집 반영 — 자른 말·줄인 쉼을 뺀 편집본
+                  {t.cutToggle}
                 </label>
                 {cutBlock ? (
                   <div className="text-[11px] text-warn">{cutBlock}</div>
                 ) : capPlan && capPlan.outDurationMs < capDoc.source.durationMs ? (
                   <div className="text-[11px] text-fg-dim">
-                    남는 길이 {fmtTime(capPlan.outDurationMs / 1000)} / 원본 {fmtTime(capDoc.source.durationMs / 1000)} ·{" "}
-                    {capPlan.keep.length}구간
+                    {t.cutRemaining(
+                      fmtTime(capPlan.outDurationMs / 1000),
+                      fmtTime(capDoc.source.durationMs / 1000),
+                      capPlan.keep.length,
+                    )}
                   </div>
                 ) : (
-                  <div className="text-[11px] text-fg-dim">
-                    아직 자른 곳이 없습니다 — 대본에서 단어를 골라 Delete로 자르거나 무음을 줄이세요.
-                  </div>
+                  <div className="text-[11px] text-fg-dim">{t.cutNothingYet}</div>
                 )}
                 {cutOn && range && (
-                  <div className="text-[11px] text-warn">
-                    대본 편집 반영은 구간(I/O)과 함께 쓸 수 없어 구간을 무시합니다 — 영상 전체에서 잘린 부분만 뺍니다.
-                  </div>
+                  <div className="text-[11px] text-warn">{t.cutIgnoresRange}</div>
                 )}
               </Section>
             )}
 
             {/* 자막 넣기(태스크 72 P3) — 자막 문서가 있는 영상에만. 번인 스타일은 미리보기(CC)와 같은 문서 값이다. */}
             {capDoc && (
-              <Section title="자막 넣기">
-                <Field label="방식">
+              <Section title={t.subsSection}>
+                <Field label={t.subsModeLabel}>
                   <select
                     data-gpv="caption-subs"
                     value={subsChoice}
@@ -632,22 +624,20 @@ export const ExportPanel = memo(function ExportPanel({
                     disabled={busy}
                     className={selCls}
                   >
-                    <option value="none">넣지 않음</option>
+                    <option value="none">{t.subsNone}</option>
                     <option value="burn" disabled={!libass}>
-                      영상에 입히기 (번인){libass ? "" : " · libass 없음"}
+                      {t.subsBurn(!libass)}
                     </option>
-                    <option value="soft">자막 트랙 (플레이어에서 켜고 끔)</option>
+                    <option value="soft">{t.subsSoft}</option>
                   </select>
                 </Field>
                 {!libass && subsChoice !== "burn" && (
-                  <div className="text-[11px] text-fg-dim">
-                    이 ffmpeg엔 libass가 없어 영상에 입힐 수 없습니다 — 자막 트랙으로 넣습니다.
-                  </div>
+                  <div className="text-[11px] text-fg-dim">{t.subsNoLibassNote}</div>
                 )}
                 {/* 번역 자막(P4) — 대본에서 번역한 언어가 있을 때만. */}
                 {subsChoice !== "none" && subsLang && (
                   <div className="grid grid-cols-2 gap-2">
-                    <Field label="글">
+                    <Field label={t.subsTextLabel}>
                       <select
                         data-gpv="caption-subs-text"
                         value={subsTextEff}
@@ -655,12 +645,12 @@ export const ExportPanel = memo(function ExportPanel({
                         disabled={busy}
                         className={selCls}
                       >
-                        <option value="caption">원문</option>
-                        <option value="translation">번역</option>
-                        <option value="both">원문 + 번역 (2단)</option>
+                        <option value="caption">{t.subsTextCaption}</option>
+                        <option value="translation">{t.subsTextTranslation}</option>
+                        <option value="both">{t.subsTextBoth}</option>
                       </select>
                     </Field>
-                    <Field label="번역 언어">
+                    <Field label={t.subsLangLabel}>
                       <select
                         value={subsLang}
                         onChange={(e) => setSubsLangPick(e.target.value)}
@@ -677,32 +667,22 @@ export const ExportPanel = memo(function ExportPanel({
                   </div>
                 )}
                 {subsOn && subsGap && subsGap.stale > 0 && (
-                  <div className="text-[11px] text-warn">
-                    원문을 고친 뒤 다시 번역하지 않은 줄 {subsGap.stale}개가 옛 번역 그대로 들어갑니다.
-                  </div>
+                  <div className="text-[11px] text-warn">{t.subsStaleLines(subsGap.stale)}</div>
                 )}
                 {subsBlock ? (
                   <div className="text-[11px] text-warn">{subsBlock}</div>
                 ) : subsChoice === "burn" ? (
                   <div className="text-[11px] text-fg-dim">
-                    스타일 {CAPTION_STYLE_LABELS[captionStylePresetOf(capDoc)]} — 자막 미리보기와 같습니다(상단 CC 옆에서
-                    바꿉니다). 영상에 그려 넣으므로 무손실 복사 없이 재인코딩합니다.
+                    {t.subsBurnNote(msg.captions.stylePresetLabel[captionStylePresetOf(capDoc)])}
                   </div>
                 ) : subsChoice === "soft" ? (
-                  <div className="text-[11px] text-fg-dim">
-                    {mode === "copy"
-                      ? "무손실 복사로 자막 트랙만 더합니다."
-                      : "자막 트랙은 무손실 복사와도 되지만, 다른 옵션 때문에 재인코딩합니다."}{" "}
-                    보는 플레이어에서 자막을 켜야 보이고, 모양은 플레이어가 정합니다.
-                  </div>
+                  <div className="text-[11px] text-fg-dim">{t.subsSoftNote(mode === "copy")}</div>
                 ) : null}
                 {subsOn && cutOn && (
-                  <div className="text-[11px] text-fg-dim">대본 편집 반영과 함께라 편집본 시각으로 넣습니다.</div>
+                  <div className="text-[11px] text-fg-dim">{t.subsEditedTimeline}</div>
                 )}
                 {subsOn && !cutOn && capStale && (
-                  <div className="text-[11px] text-warn">
-                    자막을 만든 뒤 원본 영상이 바뀌어 자막 시각이 어긋날 수 있습니다.
-                  </div>
+                  <div className="text-[11px] text-warn">{t.subsStaleSource}</div>
                 )}
                 {/* 문서를 쓰는 내보내기는 자막을 만든 트랙만 매핑한다(video.rs — OBS 다중 트랙의 나머지는 빠진다). 그 트랙이
                     파일에 없으면(원본 교체) 백엔드가 거절한다 — 그대로 두면 소리 없는 영상이 나갔다. */}
@@ -714,21 +694,18 @@ export const ExportPanel = memo(function ExportPanel({
                     if (!s)
                       return (
                         <div data-gpv="caption-audio-missing" className="text-[11px] text-warn">
-                          자막을 만든 오디오 트랙 {capDoc.source.audioStream + 1}번이 이 파일에 없어 내보낼 수 없습니다 —
-                          대본에서 다시 인식하거나 소리 빼기를 켜세요.
+                          {t.subsAudioMissing(capDoc.source.audioStream + 1)}
                         </div>
                       );
                     return probe.audioStreams.length > 1 ? (
-                      <div className="text-[11px] text-fg-dim">
-                        소리는 자막을 만든 트랙 하나만 들어갑니다 — {sttAudioTrackLabel(s)}
-                      </div>
+                      <div className="text-[11px] text-fg-dim">{t.subsAudioOneTrack(sttAudioTrackLabel(s))}</div>
                     ) : null;
                   })()}
               </Section>
             )}
 
             <Section
-              title="구간"
+              title={t.rangeSection}
               right={
                 <span className="font-mono tabular-nums text-[11px] text-fg-dim">
                   {fmtTime(rangeMs / 1000)} / {fmtTime(probe.durationMs / 1000)}
@@ -740,59 +717,51 @@ export const ExportPanel = memo(function ExportPanel({
                   onClick={onClearRange}
                   disabled={busy}
                   className={rangeBtnCls(!range)}
-                  title="영상 전체를 내보냅니다"
+                  title={t.rangeAllTitle}
                 >
-                  전체
+                  {t.rangeAll}
                 </button>
                 <button
                   disabled={!range || busy}
                   className={rangeBtnCls(!!range)}
-                  title={range ? "지정한 I~O 구간만 내보냅니다" : "I·O 키로 구간을 먼저 지정하세요"}
+                  title={range ? t.rangeSelectedTitle : t.rangeSelectedNeedsIo}
                 >
-                  선택 구간
+                  {t.rangeSelected}
                 </button>
                 <button
                   onClick={() => setTab("trim")}
                   disabled={ticks.length === 0 || busy}
                   className={rangeBtnCls(false)}
-                  title={
-                    ticks.length === 0
-                      ? "타임라인에 분할 지점(✂ 또는 T)이 있어야 합니다"
-                      : "분할 지점으로 나눠 저장합니다 — 자르기 탭"
-                  }
+                  title={ticks.length === 0 ? t.rangeSplitNeedsTicks : t.rangeSplitTitle}
                 >
-                  분할 클립
+                  {t.rangeSplit}
                 </button>
               </div>
               {/* I/O는 타임라인·키로만 지정한다 — 여기서는 현재 값을 읽기 전용으로 보여준다. */}
               <div className="grid grid-cols-2 gap-2">
-                <Field label="시작 (I)">
+                <Field label={t.rangeStart}>
                   <div className={`${inputCls} tabular-nums`}>{inPt != null ? fmtTime(inPt) : "—"}</div>
                 </Field>
-                <Field label="끝 (O)">
+                <Field label={t.rangeEnd}>
                   <div className={`${inputCls} tabular-nums`}>{outPt != null ? fmtTime(outPt) : "—"}</div>
                 </Field>
               </div>
-              {!range && <div className="text-[11px] text-fg-dim">I·O 키로 구간을 지정합니다.</div>}
+              {!range && <div className="text-[11px] text-fg-dim">{t.rangeHint}</div>}
               {/* 자를 지점이 실제로 있을 때만 — 기본 상태에서 상시 떠 있으면 정작 필요할 때 안 읽힌다.
                   "수 초"는 과장이었다: 설계 문서 실측이 0.02초였다(22-video-timetick-split.md:335). */}
               {quality === "copy" && format === "mp4" && mode === "copy" && !!range && (
-                <div className="text-[11px] text-fg-dim">
-                  무손실 복사는 자를 지점이 가장 가까운 키프레임으로 당겨집니다(보통 0.1초 이내, GOP가
-                  긴 영상은 더 커질 수 있음). 지정한 지점 그대로 자르려면 화질을 표준(CRF 23) 이상으로
-                  바꾸세요.
-                </div>
+                <div className="text-[11px] text-fg-dim">{t.copyKeyframeNote}</div>
               )}
             </Section>
 
-            <Section title="저장 위치">
+            <Section title={t.saveSection}>
               {/* 저장 폴더는 반드시 눈에 보여야 한다 — 툴팁에만 두면 어디 저장되는지 아무도 모른다. */}
-              <Field label="폴더">
+              <Field label={t.folderLabel}>
                 <div className={`${inputCls} truncate text-fg-dim`} title={dir || "./"}>
                   {dir || "./"}
                 </div>
               </Field>
-              <Field label="파일 이름">
+              <Field label={t.fileNameLabel}>
                 <input
                   type="text"
                   value={name}
@@ -811,56 +780,44 @@ export const ExportPanel = memo(function ExportPanel({
 
         {tab === "trim" && (
           <>
-            <Section title="영역">
+            <Section title={t.cropSection}>
               <div className="flex gap-2">
                 <button
                   onClick={onToggleCrop}
                   disabled={busy || format !== "mp4"}
                   className={`${secondaryCls} flex-1 ${cropActive ? "text-accent" : ""}`}
-                  title={
-                    format !== "mp4"
-                      ? "영역 추출은 mp4 출력에서 지정합니다"
-                      : "영상 위를 드래그해 추출 영역 지정"
-                  }
+                  title={format !== "mp4" ? t.cropMp4Only : t.cropDragTitle}
                 >
                   <CropIcon size={12} />
-                  {crop ? `${crop.w}×${crop.h}` : "영역 지정"}
+                  {crop ? `${crop.w}×${crop.h}` : t.cropSet}
                 </button>
                 {crop && (
-                  <button onClick={onClearCrop} title="영역 해제" className={secondaryCls}>
-                    <X size={12} /> 해제
+                  <button onClick={onClearCrop} title={t.cropClearTitle} className={secondaryCls}>
+                    <X size={12} /> {t.cropClear}
                   </button>
                 )}
               </div>
-              {!crop && <div className="text-[11px] text-fg-dim">지정하지 않으면 전체 프레임을 씁니다.</div>}
+              {!crop && <div className="text-[11px] text-fg-dim">{t.cropNoneHint}</div>}
             </Section>
 
             {/* 분할은 틱이 없어도 **항상** 보인다. 숨겨 두면 이 기능의 이름이 화면 어디에도
                 없어서 사용자가 구간(I/O)을 분할 도구로 착각한다. 하위 컨트롤은 segs.length===0 /
                 ticks.length===0 으로 이미 올바르게 비활성된다. */}
-            <Section title="분할">
+            <Section title={t.splitSection}>
               {ticks.length === 0 && !mine ? (
-                <div className="text-[11px] text-fg-dim">
-                  타임라인에 분할 지점(✂ 또는 T)을 찍으면 그 경계로 잘라 폴더에 저장합니다.
-                </div>
+                <div className="text-[11px] text-fg-dim">{t.splitEmptyHint}</div>
               ) : (
                 <div className="space-y-0.5">
-                  <div className="font-mono tabular-nums text-fg">
-                    틱 {ticks.length}개 → {segs.length}개 파일
-                  </div>
+                  <div className="font-mono tabular-nums text-fg">{t.splitPlan(ticks.length, segs.length)}</div>
                   {/* planSegments가 100ms 안쪽 틱을 병합하거나 꼬리를 버리면 N+1이 깨진다.
                       라벨은 정직하지만 이유가 없으면 버그로 읽힌다. */}
                   {segs.length !== ticks.length + 1 && (
-                    <div className="text-warn">
-                      겹친 지점 {ticks.length + 1 - segs.length}개 병합됨
-                    </div>
+                    <div className="text-warn">{t.splitMerged(ticks.length + 1 - segs.length)}</div>
                   )}
-                  <div className="text-[11px] text-fg-dim">
-                    영상 전체 · {splitEncode ? "CRF 23 재인코딩" : "무손실 복사"}
-                  </div>
+                  <div className="text-[11px] text-fg-dim">{t.splitMode(splitEncode)}</div>
                 </div>
               )}
-              <Field label="폴더">
+              <Field label={t.folderLabel}>
                 <input
                   type="text"
                   value={folder}
@@ -868,7 +825,7 @@ export const ExportPanel = memo(function ExportPanel({
                   disabled={batch != null}
                   spellCheck={false}
                   className={inputCls}
-                  title="원본 옆에 이 이름의 하위 폴더를 만들어 저장합니다"
+                  title={t.splitFolderTitle}
                 />
               </Field>
               <div className="truncate font-mono text-[11px] text-fg-dim">
@@ -883,14 +840,10 @@ export const ExportPanel = memo(function ExportPanel({
                   disabled={batch != null}
                   className="accent-accent"
                 />
-                정확한 지점에서 분할(재인코딩)
+                {t.splitEncodeToggle}
               </label>
               {ticks.length > 0 && !splitEncode && (
-                <div className="text-[11px] text-fg-dim">
-                  무손실 복사는 자를 지점이 가장 가까운 키프레임으로 당겨집니다(보통 0.1초 이내, GOP가
-                  긴 영상은 더 커질 수 있음). 지정한 지점 그대로 자르려면 위 “정확한 지점에서
-                  분할(재인코딩)”을 켜세요.
-                </div>
+                <div className="text-[11px] text-fg-dim">{t.splitKeyframeNote}</div>
               )}
               {/* 분할은 위 설정을 하나도 쓰지 않는다(videoSplit.ts:227-240이 전부 하드코딩).
                   컨트롤이 활성인 채로 무시하면 사용자는 적용된 줄 안다 — 그래서 명시한다. */}
@@ -901,17 +854,17 @@ export const ExportPanel = memo(function ExportPanel({
               <button
                 onClick={onClearTicks}
                 disabled={batch != null || ticks.length === 0}
-                title={`분할 지점 ${ticks.length}개를 모두 지웁니다`}
+                title={t.clearTicksTitle(ticks.length)}
                 className={`${secondaryCls} w-full`}
               >
-                틱 지우기
+                {t.clearTicks}
               </button>
             </Section>
           </>
         )}
 
         {tab === "audio" && (
-          <Section title="오디오">
+          <Section title={t.audioSection}>
             <label className="flex items-center gap-1.5">
               <input
                 type="checkbox"
@@ -920,70 +873,59 @@ export const ExportPanel = memo(function ExportPanel({
                 disabled={busy || format !== "mp4" || !probe.hasAudio}
                 className="accent-accent"
               />
-              오디오 제거
+              {t.removeAudio}
             </label>
             {!probe.hasAudio ? (
-              <div className="text-[11px] text-fg-dim">
-                이 영상에는 오디오 트랙이 없습니다 — 제거할 것도, 추출할 것도 없습니다.
-              </div>
+              <div className="text-[11px] text-fg-dim">{t.noAudioTrack}</div>
             ) : (
-              <div className="text-[11px] text-fg-dim">
-                트랙 {probe.acodec ?? "알 수 없음"} · 출력에서 오디오를 뺍니다.
-                {format !== "mp4" && " (오디오 제거는 mp4 출력에만 적용됩니다)"}
-              </div>
+              <div className="text-[11px] text-fg-dim">{t.audioTrackInfo(probe.acodec, format !== "mp4")}</div>
             )}
             {/* 오디오 추출은 재인코딩 경고에서 제외돼 있어, 배속이 스트림 복사를 깨는 것을 아무도 안 알렸다. */}
             {format === "audio" && speed !== 1 && (
-              <div className="text-[11px] text-warn">
-                배속을 바꾸면 오디오를 스트림 복사할 수 없어 재인코딩됩니다(확장자 {aud.ext}).
-              </div>
+              <div className="text-[11px] text-warn">{t.audioSpeedEncodes(aud.ext)}</div>
             )}
           </Section>
         )}
 
         {tab === "mask" && (
-          <Section title="가리기">
+          <Section title={t.maskSection}>
             <button
               onClick={onToggleMask}
               disabled={busy || format !== "mp4"}
               className={`${secondaryCls} w-full ${
                 maskActive ? "text-accent" : masks.length > 0 ? "text-warn" : ""
               }`}
-              title={
-                format !== "mp4"
-                  ? "가릴 영역은 mp4 출력에서 지정합니다"
-                  : "영상 위를 드래그해 모자이크·블러로 가릴 영역을 지정합니다 (여러 곳 가능)"
-              }
+              title={format !== "mp4" ? t.maskMp4Only : t.maskDragTitle}
             >
               <Grid3x3 size={12} />
-              {maskActive ? "가리기 지정 중 — 끄기" : "가리기"}
+              {maskActive ? t.maskActiveOff : t.maskStart}
             </button>
-            <Field label="가림 방식">
+            <Field label={t.maskKindField}>
               <select
                 value={maskKind}
                 onChange={(e) => onSetMaskKind(e.target.value as "mosaic" | "blur")}
                 disabled={busy}
                 className={selCls}
               >
-                <option value="mosaic">모자이크</option>
-                <option value="blur">블러</option>
+                <option value="mosaic">{msg.media.maskKindLabel.mosaic}</option>
+                <option value="blur">{msg.media.maskKindLabel.blur}</option>
               </select>
             </Field>
             <div className="flex items-center justify-between gap-2">
               <span className="font-mono tabular-nums text-fg">
-                {masks.length > 0 ? `${maskKind === "blur" ? "블러" : "모자이크"} ${masks.length}곳` : "영역 0곳"}
+                {masks.length > 0 ? t.maskCount(msg.media.maskKindLabel[maskKind], masks.length) : t.maskCountNone}
               </span>
               <button
                 onClick={onClearMasks}
                 disabled={masks.length === 0}
-                title={`가림 영역 ${masks.length}곳을 모두 해제합니다`}
+                title={t.clearMasksTitle(masks.length)}
                 className={secondaryCls}
               >
-                <X size={12} /> 전체 해제
+                <X size={12} /> {t.clearMasks}
               </button>
             </div>
             {masks.length > 0 && (
-              <div className="text-[11px] text-fg-dim">가림이 켜지면 무손실 복사 대신 재인코딩됩니다.</div>
+              <div className="text-[11px] text-fg-dim">{t.maskEncodes}</div>
             )}
           </Section>
         )}
@@ -993,25 +935,19 @@ export const ExportPanel = memo(function ExportPanel({
       <div className="shrink-0 space-y-2 border-t border-edge bg-panel px-3 py-2.5">
         <div className="grid grid-cols-3 gap-2">
           <div>
-            <div className="text-[10px] text-fg-dim">예상 용량</div>
-            <div
-              className="font-mono tabular-nums text-fg"
-              title="소스 비트레이트에 화질(CRF)·픽셀 수 비를 곱한 근사치입니다. GIF·오디오 추출은 근거가 없어 표시하지 않습니다."
-            >
+            <div className="text-[10px] text-fg-dim">{t.estSize}</div>
+            <div className="font-mono tabular-nums text-fg" title={t.estSizeTitle}>
               {estBytes != null ? fmtBytes(estBytes) : "—"}
             </div>
           </div>
           <div>
-            <div className="text-[10px] text-fg-dim">예상 소요</div>
-            <div
-              className="font-mono tabular-nums text-fg"
-              title="실행 중 ffmpeg가 보고하는 실측 속도로 남은 시간을 계산합니다. 실행 전에는 기기·코덱에 따라 편차가 커서 추정하지 않습니다."
-            >
+            <div className="text-[10px] text-fg-dim">{t.estTime}</div>
+            <div className="font-mono tabular-nums text-fg" title={t.estTimeTitle}>
               {etaSec != null ? fmtDur(etaSec) : "—"}
             </div>
           </div>
           <div>
-            <div className="text-[10px] text-fg-dim">출력 길이</div>
+            <div className="text-[10px] text-fg-dim">{t.outLength}</div>
             <div className="font-mono tabular-nums text-fg">{fmtTime(outMs / 1000)}</div>
           </div>
         </div>
@@ -1049,14 +985,10 @@ export const ExportPanel = memo(function ExportPanel({
 
         {/* 비활성 이유는 title에 두면 안 된다 — disabled 버튼은 포인터 이벤트도 포커스도 못 받는다. */}
         {!busy && sttBusy && (
-          <div className="text-[11px] text-warn">이 영상의 자막을 만드는 중이라 내보내기·분할이 잠겼습니다.</div>
+          <div className="text-[11px] text-warn">{t.sttLocked}</div>
         )}
         {!busy && batch == null && (nothingToDo || nameInvalid) && (
-          <div className="text-[11px] text-fg-dim">
-            {nameInvalid
-              ? "파일명이 비었거나 \\ / .. 를 포함합니다"
-              : "바꿀 항목이 없습니다. I·O 키로 구간을 지정하거나 해상도·배속을 바꾸세요"}
-          </div>
+          <div className="text-[11px] text-fg-dim">{nameInvalid ? t.nameInvalidHint : t.nothingToDoHint}</div>
         )}
 
         {!busy ? (
@@ -1066,25 +998,25 @@ export const ExportPanel = memo(function ExportPanel({
             disabled={nothingToDo || nameInvalid || batch != null || sttBusy || flushing}
             title={
               batch != null
-                ? "분할 저장이 진행 중입니다"
+                ? t.exportBusySplit
                 : sttBusy
-                  ? "이 영상의 자막을 만드는 중입니다 — 끝난 뒤에 내보내세요"
+                  ? t.exportBusyStt
                   : nothingToDo
-                  ? "구간·배속·화질 등 변경할 항목을 선택하세요"
+                  ? t.exportNothingToDo
                   : nameInvalid
-                    ? "파일명이 비었거나 경로 문자를 포함합니다"
+                    ? t.exportNameInvalid
                     : undefined
             }
             className={primaryCls}
           >
-            내보내기
+            {t.exportButton}
           </button>
         ) : (
           <button
             onClick={() => void ipc.videoExportCancel(jobId!).catch((e) => pushToast("error", errorMessage(e)))}
             className={`${primaryCls} flex items-center justify-center gap-1 bg-transparent border border-edge text-warn hover:bg-raised`}
           >
-            <Loader2 size={12} className="animate-spin" /> 취소
+            <Loader2 size={12} className="animate-spin" /> {t.cancelExport}
           </button>
         )}
 
@@ -1103,36 +1035,36 @@ export const ExportPanel = memo(function ExportPanel({
               disabled={busy || batch != null || folderInvalid || segs.length === 0 || sttBusy}
               title={
                 busy
-                  ? "내보내기가 끝난 뒤에 실행하세요"
+                  ? t.splitBusyExport
                   : sttBusy
-                    ? "이 영상의 자막을 만드는 중입니다 — 끝난 뒤에 분할하세요"
+                    ? t.splitBusyStt
                     : batch != null
-                    ? "다른 분할이 진행 중입니다"
+                    ? t.splitBusyOther
                     : folderInvalid
-                      ? "폴더명이 비었거나 경로 문자를 포함합니다"
+                      ? t.splitFolderInvalid
                       : segs.length === 0
-                        ? "타임라인에 분할 지점(✂ 또는 T)을 먼저 찍으세요"
+                        ? t.splitNeedsTicks
                         : splitScopeWarn
               }
               className={secondaryCls}
             >
-              <Scissors size={12} /> 분할 전체 저장
+              <Scissors size={12} /> {t.saveAllSplits}
             </button>
           ) : (
             <button
               onClick={cancelSplit}
               className={`${secondaryCls} text-warn`}
             >
-              <Loader2 size={12} className="animate-spin" /> 분할 취소
+              <Loader2 size={12} className="animate-spin" /> {t.cancelSplit}
             </button>
           )}
           <button
             onClick={captureFrame}
             disabled={busy}
-            title="현재 재생 위치의 프레임을 PNG로 저장합니다. 파일명·구간·영역·해상도 설정은 적용되지 않습니다"
+            title={t.saveFrameTitle}
             className={secondaryCls}
           >
-            <Camera size={12} /> 프레임 저장
+            <Camera size={12} /> {t.saveFrame}
           </button>
         </div>
       </div>

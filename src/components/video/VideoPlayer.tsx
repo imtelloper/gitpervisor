@@ -39,6 +39,7 @@ import {
 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import {
   captionIndexAt,
   captionPlaySkipTo,
@@ -46,7 +47,6 @@ import {
   captionSourceCues,
 } from "../../lib/captionEdit";
 import {
-  CAPTION_STYLE_LABELS,
   CAPTION_STYLE_PRESET_IDS,
   captionStylePresetOf,
   setCaptionStylePreset,
@@ -130,6 +130,7 @@ function RegionBox({
   /** 없으면 삭제 버튼을 그리지 않는다(그리기 중엔 드래그를 방해하므로). */
   onRemove?: () => void;
 }) {
+  const msg = useMessages();
   const isCrop = tone === "accent";
   return (
     <div
@@ -151,7 +152,7 @@ function RegionBox({
       {onRemove && (
         <button
           onClick={onRemove}
-          title={`${label} 제거`}
+          title={msg.media.player.removeRegion(label)}
           className="pointer-events-auto absolute -right-2 -top-2 grid h-4 w-4 place-items-center rounded-full border border-edge bg-panel text-fg-dim hover:text-fg"
         >
           <X size={10} />
@@ -174,6 +175,9 @@ export default function VideoPlayer({
    */
   onOpenPath?: (path: string) => void;
 }) {
+  const msg = useMessages();
+  // `t`는 이 함수 안에서 시각 변수로 여러 번 가려진다 — 문구는 `tp`로 부른다.
+  const tp = msg.media.player;
   const pushToast = useUi((s) => s.pushToast);
   const askConfirm = useUi((s) => s.askConfirm);
   const qc = useQueryClient();
@@ -703,9 +707,9 @@ export default function VideoPlayer({
     } catch (e) {
       if (!(isIpcError(e) && e.code === "ALREADY_EXISTS")) return;
       // 같은 이름이 이미 있다 — 덮어쓰지 않고 옆에 만든다(원본을 지우지 않는 것이 우선).
-      await start(`${dir}${stem} (변환).mp4`).catch((e2) => {
-        if (isIpcError(e2) && e2.code === "ALREADY_EXISTS")
-          pushToast("error", `${stem} (변환).mp4 파일이 이미 있습니다`);
+      const altName = tp.convertedFileName(stem);
+      await start(`${dir}${altName}`).catch((e2) => {
+        if (isIpcError(e2) && e2.code === "ALREADY_EXISTS") pushToast("error", tp.convertedExists(altName));
       });
     }
   };
@@ -867,13 +871,13 @@ export default function VideoPlayer({
         ? []
         : segments.map((sg, i) => ({
             index: i + 1,
-            label: `${String(i + 1).padStart(2, "0")} · 클립`,
+            label: tp.railClipLabel(String(i + 1).padStart(2, "0")),
             startMs: sg.startMs,
             endMs: sg.endMs,
             // 클립 색은 타임라인 마커(앰버)와 달리 클립끼리 구분이 목적이라 색상환을 돈다.
             color: `hsl(${(i * 67) % 360} 62% 58%)`,
           })),
-    [segments, ticks.length],
+    [segments, ticks.length, tp],
   );
   const getTime = useCallback(() => videoRef.current?.currentTime ?? 0, []);
   const isHls = useCallback(() => hlsRef.current, []);
@@ -991,20 +995,18 @@ export default function VideoPlayer({
 
   if (mintError)
     return (
-      <EmptyState icon={FileWarning} title="미디어를 준비하지 못했습니다" desc={mintError} />
+      <EmptyState icon={FileWarning} title={tp.mintFailed} desc={mintError} />
     );
 
   if (playError)
     return (
       <EmptyState
         icon={FileWarning}
-        title="이 형식은 재생할 수 없습니다"
+        title={tp.unplayableTitle}
         desc={
           // 실시간 변환까지 실패했으면 그 이유가 진짜 원인이다 — 웹뷰 코덱 얘기만 하면
           // "ffmpeg가 없다"를 영영 못 본다.
-          hlsError
-            ? `${probe.data?.vcodec ? `원본 코덱 ${probe.data.vcodec}을(를) ` : ""}이 웹뷰가 지원하지 않아 실시간 변환을 시도했지만 실패했습니다 — ${hlsError}`
-            : "현재 플랫폼의 웹뷰가 이 코덱을 지원하지 않습니다. 파일 자체는 정상일 수 있습니다."
+          hlsError ? tp.hlsFailed(probe.data?.vcodec || null, hlsError) : tp.codecUnsupported
         }
         action={
           <div className="flex items-center gap-2">
@@ -1012,23 +1014,23 @@ export default function VideoPlayer({
               onClick={openExternally}
               className="flex items-center gap-1.5 rounded border border-edge px-3 py-1.5 text-xs text-fg-muted hover:bg-raised hover:text-fg"
             >
-              <ExternalLink size={13} /> 외부 앱으로 열기
+              <ExternalLink size={13} /> {tp.openExternally}
             </button>
             {/* ffmpeg가 있을 때만 — 없으면 눌러 봐야 "ffmpeg를 찾을 수 없습니다"만 나온다. */}
             {canEdit && (
               <button
                 onClick={() => void convertToMp4()}
                 disabled={converting}
-                title="같은 폴더에 mp4로 변환해 새 창에서 엽니다 (ffmpeg)"
+                title={tp.convertTitle}
                 className="flex items-center gap-1.5 rounded border border-edge px-3 py-1.5 text-xs text-fg-muted hover:bg-raised hover:text-fg disabled:opacity-40"
               >
                 {converting ? (
                   <>
-                    <Loader2 size={13} className="animate-spin" /> 변환 중…
+                    <Loader2 size={13} className="animate-spin" /> {tp.converting}
                   </>
                 ) : (
                   <>
-                    <FileVideo2 size={13} /> mp4로 변환해 열기
+                    <FileVideo2 size={13} /> {tp.convertAndOpen}
                   </>
                 )}
               </button>
@@ -1039,15 +1041,9 @@ export default function VideoPlayer({
     );
 
   if (switching)
-    return (
-      <EmptyState
-        icon={Loader2}
-        title="재생 가능한 형식으로 변환 준비 중…"
-        desc="이 웹뷰가 원본 코덱을 지원하지 않아, 재생하는 구간만 H.264로 바꿔 흘립니다. 원본 파일은 건드리지 않습니다."
-      />
-    );
+    return <EmptyState icon={Loader2} title={tp.switchingTitle} desc={tp.switchingDesc} />;
 
-  if (!url) return <EmptyState title="미디어 준비 중…" />;
+  if (!url) return <EmptyState title={tp.preparing} />;
 
   return (
     <div
@@ -1074,10 +1070,10 @@ export default function VideoPlayer({
             원인을 여기서 바로 읽을 수 있어야 한다. */}
         {usingHls && (
           <span
-            title={`이 웹뷰가 ${probe.data?.vcodec ?? "이 코덱"}을 재생하지 못해, 재생하는 구간만 ffmpeg로 H.264로 변환해 흘리고 있습니다. 원본 파일은 그대로입니다.`}
+            title={tp.hlsBadgeTitle(probe.data?.vcodec ?? null)}
             className="flex shrink-0 items-center gap-1 rounded border border-accent/40 bg-accent/10 px-1.5 py-0.5 text-accent"
           >
-            <Waves size={11} /> 실시간 변환 H.264
+            <Waves size={11} /> {tp.hlsBadge}
           </span>
         )}
         <div className="flex-1" />
@@ -1086,7 +1082,7 @@ export default function VideoPlayer({
             data-gpv="cc-toggle"
             onClick={() => setCcOn((v) => !v)}
             aria-pressed={ccOn}
-            title={ccOn ? "자막 미리보기 끄기" : "자막 미리보기 켜기"}
+            title={ccOn ? tp.ccOff : tp.ccOn}
             className={`flex items-center gap-1 rounded px-2 py-0.5 hover:bg-raised ${ccOn ? "text-accent" : "hover:text-fg"}`}
           >
             <Captions size={12} /> CC
@@ -1102,12 +1098,12 @@ export default function VideoPlayer({
                 .edit(capKey, (d) => setCaptionStylePreset(d, e.target.value as CaptionStylePreset))
             }
             disabled={sttBusy || captionReadOnly(capDoc)}
-            title="자막 스타일 — 미리보기(CC)와 자막 번인(편집 › 내보내기)에 같이 쓰입니다"
+            title={tp.captionStyleTitle}
             className="rounded border border-edge bg-panel px-1 py-0.5 text-xs text-fg disabled:text-fg-dim"
           >
             {CAPTION_STYLE_PRESET_IDS.map((p) => (
               <option key={p} value={p}>
-                {CAPTION_STYLE_LABELS[p]}
+                {msg.captions.stylePresetLabel[p]}
               </option>
             ))}
           </select>
@@ -1117,13 +1113,13 @@ export default function VideoPlayer({
             data-gpv="caption-trans"
             value={ccLangOn ?? ""}
             onChange={(e) => setCcLang(e.target.value || null)}
-            title="자막 미리보기 2단 — 원문 아래에 번역을 함께 보입니다"
+            title={tp.captionTransTitle}
             className="rounded border border-edge bg-panel px-1 py-0.5 text-xs text-fg"
           >
-            <option value="">원문만</option>
+            <option value="">{tp.captionOriginalOnly}</option>
             {capTrLangs.map((l) => (
               <option key={l} value={l}>
-                원문 + {captionLangLabel(l)}
+                {tp.captionWithLang(captionLangLabel(l))}
               </option>
             ))}
           </select>
@@ -1133,14 +1129,10 @@ export default function VideoPlayer({
             data-gpv="cut-play-toggle"
             onClick={() => setCutPlayOn((v) => !v)}
             aria-pressed={cutPlayOn}
-            title={
-              cutPlayOn
-                ? "편집 반영 재생 중 — 대본에서 자른 말·줄인 쉼을 건너뜁니다. 끄면 원본 그대로 재생합니다"
-                : "편집 반영 재생 켜기 — 대본에서 자른 말·줄인 쉼을 건너뛰며 재생합니다"
-            }
+            title={cutPlayOn ? tp.cutPlayOnTitle : tp.cutPlayOffTitle}
             className={`flex items-center gap-1 rounded px-2 py-0.5 hover:bg-raised ${cutPlayOn ? "text-accent" : "hover:text-fg"}`}
           >
-            <Scissors size={12} /> 편집 반영
+            <Scissors size={12} /> {tp.cutPlay}
           </button>
         )}
         {/* 대본 — 모드 스위치의 세 번째 칸이 아니다(아래 "두 상태뿐" 결정 유지). 켜면 가운데와 인스펙터 사이 칼럼. */}
@@ -1148,58 +1140,54 @@ export default function VideoPlayer({
           data-gpv="transcript-toggle"
           onClick={() => setTranscriptOpen((v) => !v)}
           aria-pressed={transcriptOpen}
-          title="대본 — 자동 자막 만들기·검색·자막 고치기"
+          title={tp.transcriptTitle}
           className={`flex items-center gap-1 rounded px-2 py-0.5 hover:bg-raised ${
             transcriptOpen ? "bg-raised text-accent" : "hover:text-fg"
           }`}
         >
-          <ScrollText size={12} /> 대본
+          <ScrollText size={12} /> {tp.transcript}
         </button>
         {/* 모드 스위치 — 두 상태(재생/편집)뿐이다. 디자인의 "내보내기" 모드는 편집 인스펙터가
             이미 가리키는 것과 같아서, 세 번째 칸을 두면 눌러도 아무것도 안 바뀐다. */}
         <div
           role="tablist"
-          aria-label="플레이어 모드"
+          aria-label={tp.modeLabel}
           className="flex items-stretch overflow-hidden rounded-md border border-edge bg-panel"
         >
           <button
             role="tab"
             aria-selected={!editOpen}
             onClick={() => setEditOpen(false)}
-            title="재생만 — 편집 패널을 접습니다"
+            title={tp.playOnlyTitle}
             className={`flex items-center gap-1 px-2 py-0.5 ${!editOpen ? "bg-raised text-accent" : "text-fg-dim hover:bg-raised hover:text-fg"}`}
           >
-            <Play size={11} /> 재생
+            <Play size={11} /> {tp.playMode}
           </button>
           <button
             role="tab"
             aria-selected={editOpen}
             onClick={() => setEditOpen(true)}
-            title="편집·내보내기 (ffmpeg)"
+            title={tp.editTitle}
             disabled={!canEdit}
             className={`flex items-center gap-1 border-l border-edge px-2 py-0.5 disabled:text-fg-dim/50 ${editOpen ? "bg-raised text-accent" : "text-fg-dim hover:bg-raised hover:text-fg"}`}
           >
-            <SlidersHorizontal size={11} /> 편집
+            <SlidersHorizontal size={11} /> {tp.editMode}
           </button>
         </div>
         <button
           onClick={saveFrame}
           disabled={!hasFfmpeg}
-          title={
-            hasFfmpeg
-              ? "현재 프레임을 원본 해상도 PNG로 영상 옆에 저장합니다 (S)"
-              : "ffmpeg가 필요합니다 — 설정 › 코드 도구에서 설치하세요"
-          }
+          title={hasFfmpeg ? tp.frameTitle : tp.frameNeedsFfmpeg}
           className="flex items-center gap-1 rounded px-2 py-0.5 hover:bg-raised hover:text-fg disabled:text-fg-dim/50 disabled:hover:bg-transparent"
         >
-          <Camera size={12} /> 프레임
+          <Camera size={12} /> {tp.frame}
         </button>
         <button
           onClick={openExternally}
-          title="시스템 기본 앱으로 열기"
+          title={tp.openSystemTitle}
           className="flex items-center gap-1 rounded px-2 py-0.5 hover:bg-raised hover:text-fg"
         >
-          <ExternalLink size={12} /> 외부 앱
+          <ExternalLink size={12} /> {tp.externalApp}
         </button>
       </div>
 
@@ -1218,7 +1206,7 @@ export default function VideoPlayer({
           onSaveAllSplits={() => {
             // 분할 실행은 인스펙터가 폴더명·모드를 들고 있다 — 레일은 거기로 안내만 한다.
             setEditOpen(true);
-            pushToast("info", "우측 자르기 탭에서 폴더와 방식을 확인하고 분할 저장을 누르세요.");
+            pushToast("info", tp.splitHintToast);
           }}
           saveDisabled={ticks.length === 0}
           collapsed={railCollapsed}
@@ -1331,7 +1319,7 @@ export default function VideoPlayer({
                   videoW={probe.data.width}
                   videoH={probe.data.height}
                   tone="accent"
-                  label="추출"
+                  label={tp.cropRegionLabel}
                   onRemove={maskActive ? undefined : clearCrop}
                 />
               )}
@@ -1342,7 +1330,7 @@ export default function VideoPlayer({
                   videoW={probe.data!.width}
                   videoH={probe.data!.height}
                   tone="warn"
-                  label={maskKind === "blur" ? "블러" : "모자이크"}
+                  label={msg.media.maskKindLabel[maskKind]}
                   onRemove={maskActive ? undefined : () => removeMask(i)}
                 />
               ))}
@@ -1364,7 +1352,7 @@ export default function VideoPlayer({
               videoH={probe.data.height}
               crop={null}
               onChange={addMask}
-              hint="가릴 영역을 드래그하세요 · 여러 번 그리면 여러 곳 (Esc 종료)"
+              hint={tp.maskDrawHint}
             />
           )}
         </div>
@@ -1419,7 +1407,7 @@ export default function VideoPlayer({
           </span>
           {/* 중앙 트랜스포트 — 큰 원형 재생 버튼 + 5s/1m/10m 원형 스킵(길이에 맞춰 노출) */}
           <div className="mx-auto flex items-center gap-0.5">
-            <button onClick={() => frameStep(-1)} title="이전 프레임 (,)" className={btnCls}>
+            <button onClick={() => frameStep(-1)} title={tp.prevFrame} className={btnCls}>
               <SkipBack size={13} />
             </button>
             {duration >= 900 && <SkipBtn secs={-600} label="10m" onSkip={seekBy} />}
@@ -1427,7 +1415,7 @@ export default function VideoPlayer({
             <SkipBtn secs={-5} label="5s" onSkip={seekBy} />
             <button
               onClick={togglePlay}
-              title="재생/일시정지 (Space)"
+              title={tp.playPause}
               className="mx-1.5 grid h-10 w-10 place-items-center rounded-full bg-accent text-on-accent shadow hover:bg-accent-hover"
             >
               {playing ? (
@@ -1439,7 +1427,7 @@ export default function VideoPlayer({
             <SkipBtn secs={5} label="5s" onSkip={seekBy} />
             {duration >= 90 && <SkipBtn secs={60} label="1m" onSkip={seekBy} />}
             {duration >= 900 && <SkipBtn secs={600} label="10m" onSkip={seekBy} />}
-            <button onClick={() => frameStep(1)} title="다음 프레임 (.)" className={btnCls}>
+            <button onClick={() => frameStep(1)} title={tp.nextFrame} className={btnCls}>
               <SkipForward size={13} />
             </button>
           </div>
@@ -1455,12 +1443,12 @@ export default function VideoPlayer({
               }}
               title={
                 rangeActive
-                  ? "구간 지정 중 — 타임라인을 드래그하거나 두 번 클릭하세요 (Esc 취소)"
+                  ? tp.rangeActiveTitle
                   : inPt != null && outPt != null
-                    ? `구간 ${fmtTime(inPt)} ~ ${fmtTime(outPt)} · 눌러서 다시 지정 · 우클릭 해제`
-                    : "구간 지정 — 누른 뒤 타임라인에서 정합니다 (I·O 키로 직접 지정도 가능)"
+                    ? tp.rangeSetTitle(fmtTime(inPt), fmtTime(outPt))
+                    : tp.rangeIdleTitle
               }
-              aria-label={rangeActive ? "구간 지정 취소" : "구간 지정"}
+              aria-label={rangeActive ? tp.rangeCancelLabel : tp.rangeSetLabel}
               className={`${btnCls} font-semibold ${
                 rangeActive
                   ? "bg-raised text-accent ring-1 ring-inset ring-accent"
@@ -1469,15 +1457,15 @@ export default function VideoPlayer({
                     : ""
               }`}
             >
-              구간
+              {tp.range}
             </button>
             {/* 구간 해제 — 우클릭만으로는 발견이 안 된다. 지정된 상태에서만 나타난다
                 (크롭·가림 해제 X와 같은 규칙). */}
             {(inPt != null || outPt != null) && (
               <button
                 onClick={clearRange}
-                title="구간 해제"
-                aria-label="구간 해제"
+                title={tp.rangeClear}
+                aria-label={tp.rangeClear}
                 className="-m-1 p-1 text-fg-dim hover:text-fg"
               >
                 <X size={11} />
@@ -1486,8 +1474,8 @@ export default function VideoPlayer({
             <button
               onClick={undo}
               disabled={hist.past === 0}
-              title={`되돌리기 (Ctrl+Z)${hist.past ? ` · ${hist.past}단계` : ""}`}
-              aria-label="되돌리기"
+              title={tp.undoTitle(hist.past)}
+              aria-label={tp.undo}
               className={`${btnCls} disabled:text-fg-dim/40`}
             >
               <Undo2 size={13} />
@@ -1495,15 +1483,15 @@ export default function VideoPlayer({
             <button
               onClick={redo}
               disabled={hist.future === 0}
-              title="다시 실행 (Ctrl+Y)"
-              aria-label="다시 실행"
+              title={tp.redoTitle}
+              aria-label={tp.redo}
               className={`${btnCls} disabled:text-fg-dim/40`}
             >
               <Redo2 size={13} />
             </button>
             <button
               onClick={() => setLoopOn((v) => !v)}
-              title="구간 반복 (R)"
+              title={tp.loopTitle}
               disabled={inPt == null || outPt == null}
               className={`${btnCls} ${loopOn ? "text-accent" : ""}`}
             >
@@ -1517,7 +1505,7 @@ export default function VideoPlayer({
                 e.preventDefault();
                 clearTicks();
               }}
-              title="여기에 분할 지점 추가 (T) · 우클릭으로 전체 삭제"
+              title={tp.addTickTitle}
               className={`${btnCls} flex items-center gap-0.5 ${ticks.length ? "text-warn" : ""}`}
             >
               <Scissors size={13} />
@@ -1532,14 +1520,14 @@ export default function VideoPlayer({
               <button
                 onClick={() => stepRate(-1)}
                 disabled={rate <= RATES[0]}
-                title="느리게 (-)"
+                title={tp.slowerTitle}
                 className="px-1.5 py-1 text-fg-dim hover:bg-raised hover:text-accent disabled:opacity-40"
               >
                 <ChevronsLeft size={13} />
               </button>
               <button
                 onClick={() => changeRate(1)}
-                title="재생 배속 — 클릭하면 1x로 복원 (-/=)"
+                title={tp.rateTitle}
                 className="flex min-w-11 items-center justify-center border-x border-edge px-1.5 font-mono text-xs font-semibold text-fg hover:bg-raised"
               >
                 {rate}x
@@ -1547,18 +1535,18 @@ export default function VideoPlayer({
               <button
                 onClick={() => stepRate(1)}
                 disabled={rate >= RATES[RATES.length - 1]}
-                title="빠르게 (=)"
+                title={tp.fasterTitle}
                 className="px-1.5 py-1 text-fg-dim hover:bg-raised hover:text-accent disabled:opacity-40"
               >
                 <ChevronsRight size={13} />
               </button>
             </div>
-            <button onClick={toggleMute} title="음소거 (M)" className={btnCls}>
+            <button onClick={toggleMute} title={tp.muteTitle} className={btnCls}>
               {muted ? <VolumeX size={14} /> : <Volume2 size={14} />}
             </button>
             <button
               onClick={() => setExpanded((v) => !v)}
-              title={expanded ? "축소 (F/Esc)" : "확대 (F)"}
+              title={expanded ? tp.collapseTitle : tp.expandTitle}
               className={btnCls}
             >
               {expanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
@@ -1577,7 +1565,7 @@ export default function VideoPlayer({
           >
             <div
               onMouseDown={transcriptW.startResize}
-              title="드래그해 폭 조절"
+              title={tp.resizeTitle}
               className="absolute inset-y-0 -left-1 z-20 w-2 cursor-col-resize"
             />
             <TranscriptPanel
@@ -1632,27 +1620,36 @@ export default function VideoPlayer({
       <PlayerStatusBar
         status={
           probe.error
-            ? { text: "메타 읽기 실패", tone: "danger" }
+            ? { text: tp.statusProbeFailed, tone: "danger" }
             : !canEdit
-              ? { text: "ffmpeg 없음", tone: "warn" }
-              : { text: "준비됨", tone: "ok" }
+              ? { text: tp.statusNoFfmpeg, tone: "warn" }
+              : { text: tp.statusReady, tone: "ok" }
         }
         items={[
-          { label: "코덱", value: probe.data ? `${probe.data.vcodec ?? "?"} · ${probe.data.acodec ?? "무음"}` : "—" },
-          { label: "해상도", value: probe.data ? `${probe.data.width}×${probe.data.height}` : "—" },
-          { label: "클립", value: `${segments.length}개` },
+          {
+            label: tp.statusCodec,
+            value: probe.data ? `${probe.data.vcodec ?? "?"} · ${probe.data.acodec ?? tp.statusSilent}` : "—",
+          },
+          { label: tp.statusResolution, value: probe.data ? `${probe.data.width}×${probe.data.height}` : "—" },
+          { label: tp.statusClips, value: tp.statusClipCount(segments.length) },
           ...(masks.length > 0
-            ? [{ label: "가림", value: `${masks.length}곳 · ${maskKind === "blur" ? "블러" : "모자이크"}`, tone: "warn" as const }]
+            ? [
+                {
+                  label: tp.statusMask,
+                  value: tp.statusMaskValue(masks.length, msg.media.maskKindLabel[maskKind]),
+                  tone: "warn" as const,
+                },
+              ]
             : []),
         ]}
         shortcuts={[
-          { keys: "Space", label: "재생" },
-          { keys: "I / O", label: "구간 지정" },
-          { keys: "T", label: "분할" },
+          { keys: "Space", label: tp.shortcuts.play },
+          { keys: "I / O", label: tp.shortcuts.range },
+          { keys: "T", label: tp.shortcuts.split },
           // 표기는 플랫폼을 따른다 — 핸들러는 이미 ctrlKey·metaKey 를 모두 받는다(위 onKeyDown).
           // mac 의 "다시 실행"은 ⌘Y 가 아니라 ⇧⌘Z 가 관례다(핸들러도 둘 다 받는다).
-          { keys: `${modLabel}+Z`, label: "되돌리기" },
-          { keys: isMac ? `⇧${modLabel}+Z` : "Ctrl+Y", label: "다시 실행" },
+          { keys: `${modLabel}+Z`, label: tp.shortcuts.undo },
+          { keys: isMac ? `⇧${modLabel}+Z` : "Ctrl+Y", label: tp.shortcuts.redo },
         ]}
         zoomPct={zoomPct}
       />
@@ -1759,6 +1756,8 @@ function Timeline({
   onRemoveTick: (i: number) => void;
   onInteract: () => void;
 }) {
+  // `t`는 이 컴포넌트에서 시각 변수로 쓰인다 — 문구는 `tl`로 부른다.
+  const tl = useMessages().media.timeline;
   const rootRef = useRef<HTMLDivElement>(null);
   const barRef = useRef<HTMLDivElement>(null);
   const ovRef = useRef<HTMLDivElement>(null);
@@ -2064,21 +2063,20 @@ function Timeline({
       <div className="mb-1 flex items-center gap-2 text-[11px] text-fg-dim">
         {rangeActive && (
           <span className="rounded bg-accent/20 px-1.5 py-0.5 font-semibold text-accent">
-            구간 지정 중 — 타임라인을 드래그하거나 두 번 클릭하세요{" "}
-            {pendingIn != null && `(시작 ${fmtClock(pendingIn, 1)} · 끝을 클릭)`} · Esc 취소
+            {tl.rangeHint(pendingIn != null ? fmtClock(pendingIn, 1) : null)}
           </span>
         )}
-        <label className="flex items-center gap-1" title="마커·플레이헤드·클립 경계·자막 경계에 붙입니다">
+        <label className="flex items-center gap-1" title={tl.snapTitle}>
           <input
             type="checkbox"
             checked={snap}
             onChange={(e) => setSnap(e.target.checked)}
             className="accent-accent"
           />
-          스냅
+          {tl.snap}
         </label>
         <div className="flex-1" />
-        <span>타임라인 확대</span>
+        <span>{tl.zoom}</span>
         <input
           type="range"
           min={0}
@@ -2097,25 +2095,21 @@ function Timeline({
             const ns = Math.min(Math.max(time - len / 2, 0), Math.max(0, duration - len));
             setView({ s: ns, e: ns + len });
           }}
-          aria-label="타임라인 확대"
+          aria-label={tl.zoom}
           className="h-1 w-32 accent-accent"
         />
         <button
           onClick={() => setView(null)}
           className="rounded border border-edge px-1.5 py-0.5 hover:bg-raised hover:text-fg"
         >
-          전체 맞춤
+          {tl.fitAll}
         </button>
       </div>
 
       {/* 눈금자 막대 */}
       <div
         ref={barRef}
-        title={
-          rangeActive
-            ? "드래그해 구간 지정 · 클릭 두 번으로도 지정됩니다"
-            : "탐색 · 휠: 줌 · Shift+휠: 좌우 이동"
-        }
+        title={rangeActive ? tl.barRangeTitle : tl.barSeekTitle}
         className={`relative h-7 overflow-hidden rounded-sm bg-accent/75 ${
           rangeActive ? "cursor-crosshair ring-1 ring-inset ring-fg/60" : "cursor-pointer"
         }`}
@@ -2151,7 +2145,7 @@ function Timeline({
               <span className="h-2.5 w-0.5 rounded-full bg-accent" />
               V1
             </div>
-            <div className="truncate text-[9px] text-fg-dim">{vcodec ?? "비디오"}</div>
+            <div className="truncate text-[9px] text-fg-dim">{vcodec ?? tl.videoTrack}</div>
           </div>
           <div
             onPointerDown={rangeActive ? startRangeDrag : undefined}
@@ -2206,7 +2200,7 @@ function Timeline({
                 <span className="h-2.5 w-0.5 rounded-full bg-ok" />
                 A1
               </div>
-              <div className="truncate text-[9px] text-fg-dim">{acodec ?? "오디오"}</div>
+              <div className="truncate text-[9px] text-fg-dim">{acodec ?? tl.audioTrack}</div>
             </div>
             <div className="relative h-8 flex-1 overflow-hidden rounded-sm border border-edge bg-raised">
               {barW > 0 && (
@@ -2234,7 +2228,7 @@ function Timeline({
                 <span className="h-2.5 w-0.5 rounded-full bg-mod" />
                 S1
               </div>
-              <div className="truncate text-[9px] text-fg-dim">자막</div>
+              <div className="truncate text-[9px] text-fg-dim">{tl.captionTrack}</div>
             </div>
             <div className="relative h-6 flex-1 overflow-hidden rounded-sm border border-edge bg-raised">
               <CaptionTrackBlocks
@@ -2255,9 +2249,9 @@ function Timeline({
           <div className="w-16 shrink-0 pt-0.5">
             <div className="flex items-center gap-1 text-[10px] font-semibold text-fg">
               <span className="h-2.5 w-0.5 rounded-full bg-warn" />
-              마커
+              {tl.markerTrack}
             </div>
-            <div className="truncate text-[9px] text-fg-dim">분할 · 구간</div>
+            <div className="truncate text-[9px] text-fg-dim">{tl.markerTrackSub}</div>
           </div>
           <div className="relative h-6 flex-1 overflow-hidden rounded-sm border border-edge bg-raised">
             {inPt != null && outPt != null && (
@@ -2266,7 +2260,7 @@ function Timeline({
                 style={{ left: `${pct(inPt)}%`, width: `${Math.max(0, pct(outPt) - pct(inPt))}%` }}
               >
                 <span className="absolute left-1 top-0 font-mono text-[9px] leading-5 text-accent">
-                  선택 구간 {(outPt - inPt).toFixed(1)}s
+                  {tl.selectedRange(outPt - inPt)}
                 </span>
               </div>
             )}
@@ -2292,7 +2286,7 @@ function Timeline({
           <div
             ref={ovRef}
             onPointerDown={startOverviewDrag}
-            title="전체 구간 — 썸 드래그로 보이는 창 이동"
+            title={tl.overviewTitle}
             className="relative h-2 flex-1 cursor-grab overflow-hidden rounded-sm bg-raised"
           >
             {inPt != null && (
@@ -2329,10 +2323,10 @@ function Timeline({
           </span>
           <button
             onClick={() => setView(null)}
-            title="전체 보기 (줌 해제)"
+            title={tl.resetZoomTitle}
             className="shrink-0 rounded border border-edge bg-panel px-1 text-[10px] leading-4 text-fg-dim hover:bg-raised hover:text-fg"
           >
-            전체
+            {tl.resetZoom}
           </button>
         </div>
       )}
@@ -2374,7 +2368,7 @@ function Timeline({
         <>
           <div
             onPointerDown={startDrag("in")}
-            title="구간 시작 (드래그로 이동)"
+            title={tl.inMarkerTitle}
             className="absolute top-6 z-10 h-7 w-2 -translate-x-1/2 cursor-ew-resize"
             style={{ left: `${pct(inPt)}%` }}
           >
@@ -2382,7 +2376,7 @@ function Timeline({
           </div>
           <div
             onPointerDown={startDrag("in")}
-            title="구간 시작 (드래그로 이동)"
+            title={tl.inMarkerTitle}
             // 외곽선 스타일 — bg-add 위 텍스트는 테마별 대비 보장이 없다(nord 실측 3:1 미달).
             // add/danger는 애초에 "패널 위 텍스트색"으로 설계된 토큰이라 이 방향이 안전하다.
             className={`${badgeCls} ${shift(pct(inPt), tight ? "left" : undefined)} z-10 cursor-ew-resize border border-add bg-panel text-add`}
@@ -2397,7 +2391,7 @@ function Timeline({
         <>
           <div
             onPointerDown={startDrag("out")}
-            title="구간 끝 (드래그로 이동)"
+            title={tl.outMarkerTitle}
             className="absolute top-6 z-10 h-7 w-2 -translate-x-1/2 cursor-ew-resize"
             style={{ left: `${pct(outPt)}%` }}
           >
@@ -2405,7 +2399,7 @@ function Timeline({
           </div>
           <div
             onPointerDown={startDrag("out")}
-            title="구간 끝 (드래그로 이동)"
+            title={tl.outMarkerTitle}
             className={`${badgeCls} ${shift(pct(outPt), tight ? "right" : undefined)} z-10 cursor-ew-resize border border-danger bg-panel text-danger`}
             style={{ left: `${pct(outPt)}%` }}
           >
@@ -2425,7 +2419,7 @@ function Timeline({
                 e.preventDefault();
                 onRemoveTick(i);
               }}
-              title={`분할 지점 ${fmtTime(t)} (드래그로 이동 · 우클릭 삭제)`}
+              title={tl.tickTitle(fmtTime(t))}
               className="absolute top-6 z-10 h-7 w-2 -translate-x-1/2 cursor-ew-resize"
               style={{ left: `${pct(t)}%` }}
             >
@@ -2438,7 +2432,7 @@ function Timeline({
                   e.preventDefault();
                   onRemoveTick(i);
                 }}
-                title={`분할 지점 ${fmtTime(t)} (드래그로 이동 · 우클릭 삭제)`}
+                title={tl.tickTitle(fmtTime(t))}
                 className={`${badgeCls} ${shift(pct(t))} z-10 cursor-ew-resize border border-warn bg-panel text-warn`}
                 style={{ left: `${pct(t)}%` }}
               >
@@ -2482,11 +2476,12 @@ function SkipBtn({
   label: string;
   onSkip: (d: number) => void;
 }) {
+  const tp = useMessages().media.player;
   const Icon = secs < 0 ? RotateCcw : RotateCw;
   return (
     <button
       onClick={() => onSkip(secs)}
-      title={`${secs < 0 ? "뒤로" : "앞으로"} ${label}`}
+      title={tp.skipTitle(secs < 0, label)}
       className="relative grid h-9 w-9 place-items-center rounded-full text-fg-dim hover:bg-raised hover:text-fg"
     >
       <Icon size={27} strokeWidth={1.25} className="absolute" />

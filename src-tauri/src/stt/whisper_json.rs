@@ -7,6 +7,7 @@
 
 use serde::Deserialize;
 
+use crate::i18n::text_stt;
 use crate::stt::doc::{SttWord, WordTiming};
 
 /// DTW 어절 시작은 일정하게 늦다 — 한국어 TTS 정답 대비 중앙값 +185~195ms(부록 B.1, turbo 기준).
@@ -150,7 +151,7 @@ struct Pending {
 pub fn parse_whisper_json(bytes: &[u8], vad: &[VadSpan], strict: bool) -> Result<WhisperOut, WhisperParseError> {
     let text = escape_invalid_utf8(bytes);
     let doc: WJson = serde_json::from_str(&text)
-        .map_err(|e| WhisperParseError::Malformed(format!("whisper JSON 해석 실패: {e}")))?;
+        .map_err(|e| WhisperParseError::Malformed(text_stt::stt_whisper_json_parse_failed(&e)))?;
     let mut words = Vec::new();
     let mut all_dtw = true;
 

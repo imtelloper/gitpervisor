@@ -24,6 +24,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use super::acquire;
 use crate::error::{ErrorCode, IpcError};
+use crate::i18n::text_db;
 use crate::state::AppState;
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(600); // 10분(§3.3)
@@ -152,7 +153,7 @@ fn free_port() -> Result<u16, IpcError> {
             }
         }
     }
-    Err(io("빈 포트를 찾지 못했습니다".into()))
+    Err(io(text_db::llm_free_port_not_found().into()))
 }
 
 /// 32바이트 난수 hex. `uuid` v4가 이미 트리에 있어 별도 난수 크레이트를 들이지 않는다.
@@ -199,27 +200,16 @@ fn resolve_model(
             .as_deref()
             .map(str::trim)
             .filter(|p| !p.is_empty())
-            .ok_or_else(|| {
-                IpcError::new(ErrorCode::NotFound, "사용자 지정 모델 경로가 비어 있습니다")
-            })?;
+            .ok_or_else(|| IpcError::new(ErrorCode::NotFound, text_db::llm_custom_model_path_empty()))?;
         // 판정은 `status()`의 `custom_model_ok`와 **같은 함수**로 한다 — 갈라지면 화면엔
         // "경로 없음"이라 떠 있는 파일로 서버가 기동한다(확장자 검사가 한쪽에만 있었다).
-        acquire::custom_model(Some(p)).ok_or_else(|| {
-            IpcError::new(
-                ErrorCode::NotFound,
-                "사용자 지정 모델이 없거나 .gguf 파일이 아닙니다",
-            )
-        })?
+        acquire::custom_model(Some(p))
+            .ok_or_else(|| IpcError::new(ErrorCode::NotFound, text_db::llm_custom_model_invalid()))?
     } else {
-        let spec = acquire::model_spec(&model_id).ok_or_else(|| {
-            IpcError::new(ErrorCode::NotFound, format!("모르는 모델: {model_id}"))
-        })?;
-        acquire::installed_model(app, spec).ok_or_else(|| {
-            IpcError::new(
-                ErrorCode::NotFound,
-                format!("{} 모델이 없습니다 — 설정 › AI에서 다운로드하세요", spec.label),
-            )
-        })?
+        let spec = acquire::model_spec(&model_id)
+            .ok_or_else(|| IpcError::new(ErrorCode::NotFound, text_db::llm_unknown_model(&model_id)))?;
+        acquire::installed_model(app, spec)
+            .ok_or_else(|| IpcError::new(ErrorCode::NotFound, text_db::llm_model_not_installed(spec.label)))?
     };
     let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
     Ok((model_id, path, size))
@@ -328,11 +318,11 @@ fn spawn_server(
 
     let mut child = cmd
         .spawn()
-        .map_err(|e| io(format!("llama-server 실행 실패: {e}")))?;
+        .map_err(|e| io(text_db::llm_server_spawn_failed(e)))?;
     // GPU·메모리를 크게 쓰는 프로세스라 "그 시각에 무엇이 돌았나"를 로그로 가를 수 있게 남긴다
     // (2026-09-21 조사 때 유휴 종료 줄만 있고 기동 줄이 없어 시각을 못 맞췄다 — DOCS/task/71).
     log::info!(
-        "[llm] llama-server 기동 pid={} model={} ngl={gpu_layers} ctx={ctx} threads={threads}",
+        "[llm] llama-server 기동 pid={} model={} ngl={gpu_layers} ctx={ctx} threads={threads}", // i18n-ok: 로그
         child.id(),
         model.file_name().map_or_else(|| model.to_string_lossy(), |n| n.to_string_lossy()),
     );
@@ -358,10 +348,7 @@ async fn wait_ready(
     let mut ticks = 0u32;
     while started.elapsed() < timeout {
         if !session.alive() {
-            return Err(io(format!(
-                "llama-server가 종료됐습니다:\n{}",
-                session.tail()
-            )));
+            return Err(io(text_db::llm_server_exited(&session.tail())));
         }
         if let Ok(resp) = http().get(&url).timeout(Duration::from_secs(2)).send().await {
             if resp.status().is_success() {
@@ -379,10 +366,7 @@ async fn wait_ready(
         ticks += 1;
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    Err(IpcError::new(
-        ErrorCode::Timeout,
-        format!("모델 로드 실패(시간 초과):\n{}", session.tail()),
-    ))
+    Err(IpcError::new(ErrorCode::Timeout, text_db::llm_model_load_timed_out(&session.tail())))
 }
 
 /// 대화 상대를 보장한다. 외부 URL 모드면 프로세스 없이 주소만 돌려주고, 관리형이면 필요할 때만
@@ -412,12 +396,7 @@ pub async fn ensure_server(
             .as_deref()
             .map(str::trim)
             .filter(|u| !u.is_empty())
-            .ok_or_else(|| {
-                IpcError::new(
-                    ErrorCode::NotFound,
-                    "외부 서버 URL이 비어 있습니다 — 설정 › AI › 고급",
-                )
-            })?;
+            .ok_or_else(|| IpcError::new(ErrorCode::NotFound, text_db::llm_external_url_empty()))?;
         return Ok(Endpoint {
             base: normalize_base(base),
             key: ext_key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty()),
@@ -451,17 +430,10 @@ pub async fn ensure_server(
     }
 
     let art = acquire::spec_for_backend(&backend).ok_or_else(|| {
-        IpcError::new(
-            ErrorCode::ToolNotFound,
-            "이 플랫폼용 llama.cpp 공식 빌드가 없습니다 — 고급 › 외부 서버 URL을 쓰세요",
-        )
+        IpcError::new(ErrorCode::ToolNotFound, text_db::llm_runtime_unsupported_platform())
     })?;
-    let exe = acquire::installed_server(app, &art).ok_or_else(|| {
-        IpcError::new(
-            ErrorCode::ToolNotFound,
-            "AI 런타임이 없습니다 — 설정 › AI에서 런타임을 다운로드하세요",
-        )
-    })?;
+    let exe = acquire::installed_server(app, &art)
+        .ok_or_else(|| IpcError::new(ErrorCode::ToolNotFound, text_db::llm_runtime_not_installed()))?;
     let threads = physical_threads();
     let ctx = ctx.clamp(2048, 32768);
 

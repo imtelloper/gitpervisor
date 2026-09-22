@@ -4,12 +4,11 @@
 // 옮겨도 진행 표시가 살아 있어야 한다. 취소는 기존 `llm_download_cancel`을 이름(stt-runtime·stt-model-<id>)으로.
 import { useQuery } from "@tanstack/react-query";
 
+import { useMessages } from "../../../i18n/ui-language";
 import { ipc } from "../../../lib/ipc";
 import { STT_LANGUAGES, useSttStatus } from "../../../lib/stt";
 import { mb, recommend, subHeading } from "./AiSection";
 import { Field, Hl, inputCls, type SectionProps } from "./shared";
-
-const SOURCE_LABEL = { managed: "앱 설치본", path: "PATH", wellknown: "관례 경로" } as const;
 
 export function SttSection({
   form,
@@ -35,6 +34,7 @@ export function SttSection({
   onCancel: (name: string) => void;
 }) {
   const { data: st } = useSttStatus();
+  const msg = useMessages();
   // AiSection·리소스 모니터와 같은 캐시 키(수집이 수 초라 두 번 돌리지 않는다).
   const { data: sys } = useQuery({
     queryKey: ["sys-info"],
@@ -49,11 +49,8 @@ export function SttSection({
 
   return (
     <>
-      <div className={`border-t border-edge pt-3 ${subHeading}`}>음성 인식 (자막)</div>
-      <div className="text-[11px] text-fg-dim">
-        영상 플레이어의 [대본]에서 자막 초안을 만듭니다. 로컬 whisper.cpp(CPU)로 인식하고, 인터넷은 엔진·모델을 받을
-        때만 씁니다.
-      </div>
+      <div className={`border-t border-edge pt-3 ${subHeading}`}>{msg.settings.stt.heading}</div>
+      <div className="text-[11px] text-fg-dim">{msg.settings.stt.intro}</div>
 
       <Hl id="sttRuntimeDownload" hl={hl}>
         <div className="flex items-center gap-2">
@@ -64,17 +61,21 @@ export function SttSection({
             className="shrink-0 rounded bg-accent/20 px-2 py-1 text-xs text-accent hover:bg-accent/30 disabled:opacity-50"
           >
             {runtimeBusy
-              ? "취소"
+              ? msg.settings.ai.cancel
               : found
-                ? "VAD 모델 받기 (1MB)"
-                : `엔진 다운로드 (${mb(st?.runtimeSize ?? 0)})`}
+                ? msg.settings.stt.vadDownload
+                : msg.settings.stt.engineDownload(mb(st?.runtimeSize ?? 0))}
           </button>
           <span className="truncate text-[11px] text-fg-dim" title={found ? runtime.path : undefined}>
             {runtimeStatus ||
               (found
-                ? `${st?.vadInstalled ? "설치됨 ✓" : "엔진 발견 — VAD 모델이 필요합니다"} ${runtime.path} (${SOURCE_LABEL[runtime.source]})`
+                ? msg.settings.stt.engineFound(
+                    !!st?.vadInstalled,
+                    runtime.path,
+                    msg.settings.stt.sourceLabel[runtime.source],
+                  )
                 : unsupported
-                  ? "이 플랫폼용 공식 빌드가 없습니다 — 터미널에서 `brew install whisper-cpp` (Intel Mac은 소스 빌드)"
+                  ? msg.settings.stt.unsupported
                   : "whisper.cpp b5130 + Silero VAD · github.com/ggml-org/whisper.cpp")}
           </span>
         </div>
@@ -100,13 +101,17 @@ export function SttSection({
                   <span className="ml-1 text-[11px] text-fg-dim">{m.note}</span>
                 </span>
                 <span className="shrink-0 text-[11px] text-fg-muted">{mb(m.size)}</span>
-                {rec && <span className={`shrink-0 text-[11px] ${rec.tone}`}>{rec.label}</span>}
+                {rec && (
+                  <span className={`shrink-0 text-[11px] ${rec.tone}`}>
+                    {msg.settings.ai.recommend[rec.level]}
+                  </span>
+                )}
                 {m.installed ? (
                   <button
                     onClick={() => onModelDelete(m.id, m.label)}
                     className="shrink-0 rounded px-2 py-0.5 text-[11px] text-danger hover:bg-danger/15"
                   >
-                    삭제
+                    {msg.settings.ai.delete}
                   </button>
                 ) : (
                   <button
@@ -114,7 +119,7 @@ export function SttSection({
                     disabled={modelBusy != null && !busy}
                     className="shrink-0 rounded bg-accent/20 px-2 py-0.5 text-[11px] text-accent hover:bg-accent/30 disabled:opacity-50"
                   >
-                    {busy ? "취소" : "다운로드"}
+                    {busy ? msg.settings.ai.cancel : msg.settings.ai.download}
                   </button>
                 )}
               </label>
@@ -123,11 +128,11 @@ export function SttSection({
         </div>
       </Hl>
       <div className="text-[11px] text-fg-dim">
-        {modelStatus || "받는 즉시 sha256으로 검증하고 원자적으로 설치합니다. 대본 패널에서 고른 모델이 여기 기본값이 됩니다."}
+        {modelStatus || msg.settings.stt.modelDownloadNote}
       </div>
 
       <Hl id="sttLanguage" hl={hl}>
-        <Field label="기본 언어" hint="한국어만 쓰면 '한국어'로 고정하는 편이 감지 오류가 적습니다">
+        <Field label={msg.settings.stt.languageLabel} hint={msg.settings.stt.languageHint}>
           <select
             value={form.sttLanguage}
             onChange={(e) => update("sttLanguage", e.target.value)}

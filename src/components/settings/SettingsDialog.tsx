@@ -4,6 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Search, Settings as SettingsIcon, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import type { NotifySecret, Settings, ThemeId } from "../../lib/ipc";
 import { errorMessage, ipc } from "../../lib/ipc";
 import { refreshTerminalThemes } from "../../lib/terminal";
@@ -81,6 +82,7 @@ export function SettingsDialog() {
   const { data: projects } = useProjects();
   const save = useSetSettings();
   const qc = useQueryClient();
+  const msg = useMessages();
 
   const [form, setForm] = useState<Settings | null>(null);
   const [category, setCategory] = useState<SettingsCategory>("general");
@@ -247,46 +249,56 @@ export function SettingsDialog() {
       if (!ok) return;
       void ipc
         .notifyTest(channel)
-        .then(() => useUi.getState().pushToast("success", "테스트 알림을 보냈습니다"))
+        .then(() => useUi.getState().pushToast("success", msg.settings.dialog.testNotifySent))
         .catch((e) => useUi.getState().pushToast("error", errorMessage(e)));
     });
   }
 
   async function downloadLspServers() {
     setLspBusy(true);
-    setLspStatus("다운로드 준비…");
+    setLspStatus(msg.settings.dialog.downloadPreparing);
     try {
       const failed: string[] = [];
       let noNode = false;
       // 앱 내 다운로드 가능한 서버만(php=npm, zig=네이티브). ruby/csharp/java/go는 PATH 발견 — 툴체인 설치본 사용.
       for (const lang of ["py", "ts", "php", "cpp", "rust", "lua", "zig"] as const) {
         const res = await ipc.lspEnsure(lang, (p) => {
-          const ph = p.phase === "download" ? "받는 중" : p.phase === "done" ? "완료" : "실패";
+          const ph =
+            p.phase === "download"
+              ? msg.settings.dialog.lspPhaseDownloading
+              : p.phase === "done"
+                ? msg.settings.dialog.lspPhaseDone
+                : msg.settings.dialog.phaseFailed;
           setLspStatus(`${p.name}: ${ph}${p.message ? ` (${p.message})` : ""}`);
         });
         if (!res.nodeFound && (lang === "py" || lang === "ts" || lang === "php")) noNode = true;
         failed.push(...res.missing);
       }
-      if (noNode) setLspStatus("⚠ Node.js를 찾지 못했습니다(파이썬·TS 서버에 필요)");
-      else if (failed.length) setLspStatus(`⚠ 일부 실패: ${[...new Set(failed)].join(", ")}`);
-      else setLspStatus("설치 완료 ✓ — 켠 프로젝트에서 파일을 열면 활성화됩니다");
+      if (noNode) setLspStatus(msg.settings.dialog.lspNoNode);
+      else if (failed.length)
+        setLspStatus(msg.settings.dialog.lspPartialFailure([...new Set(failed)].join(", ")));
+      else setLspStatus(msg.settings.dialog.lspInstalled);
     } catch {
-      setLspStatus("⚠ 다운로드 실패 — 네트워크를 확인하세요");
+      setLspStatus(msg.settings.dialog.lspDownloadFailed);
     }
     setLspBusy(false);
   }
 
   async function downloadFfmpeg() {
     setFfmpegBusy(true);
-    setFfmpegStatus("다운로드 준비…");
+    setFfmpegStatus(msg.settings.dialog.downloadPreparing);
     try {
       const res = await ipc.videoToolEnsure((p) => {
-        if (p.phase === "download")
-          setFfmpegStatus(`받는 중${p.percent != null ? ` ${p.percent}%` : "…"}`);
-        else if (p.phase === "extract") setFfmpegStatus("압축 해제 중…");
-        else if (p.phase === "error") setFfmpegStatus(`⚠ ${p.message ?? "실패"}`);
+        if (p.phase === "download") setFfmpegStatus(msg.settings.dialog.phaseDownloading(p.percent));
+        else if (p.phase === "extract") setFfmpegStatus(msg.settings.dialog.phaseExtracting);
+        else if (p.phase === "error")
+          setFfmpegStatus(`⚠ ${p.message ?? msg.settings.dialog.phaseFailed}`);
       });
-      setFfmpegStatus(res.found ? `설치 완료 ✓ (${res.version ?? "버전 미상"})` : "⚠ 설치 후에도 발견 실패");
+      setFfmpegStatus(
+        res.found
+          ? msg.settings.dialog.ffmpegInstalled(res.version)
+          : msg.settings.dialog.ffmpegStillMissing,
+      );
       // 열려 있는 플레이어·이 섹션의 발견 상태를 즉시 갱신.
       void qc.invalidateQueries({ queryKey: ["video-tool"] });
     } catch (e) {
@@ -296,22 +308,22 @@ export function SettingsDialog() {
   }
 
   // ---- AI (태스크 59) ----
-  // 다운로드 진행 phase → 한국어 상태 줄. ffmpeg 매핑과 같은 형식이라 그대로 재사용한다.
+  // 다운로드 진행 phase → 상태 줄. ffmpeg 매핑과 같은 형식이라 그대로 재사용한다.
   const llmPhase = (p: { phase: string; percent: number | null; message: string | null }) => {
-    if (p.phase === "download") return `받는 중${p.percent != null ? ` ${p.percent}%` : "…"}`;
-    if (p.phase === "verify") return "무결성 검증 중…";
-    if (p.phase === "extract") return "압축 해제 중…";
-    if (p.phase === "error") return `⚠ ${p.message ?? "실패"}`;
-    return "완료 ✓";
+    if (p.phase === "download") return msg.settings.dialog.phaseDownloading(p.percent);
+    if (p.phase === "verify") return msg.settings.dialog.phaseVerifying;
+    if (p.phase === "extract") return msg.settings.dialog.phaseExtracting;
+    if (p.phase === "error") return `⚠ ${p.message ?? msg.settings.dialog.phaseFailed}`;
+    return msg.settings.dialog.phaseDone;
   };
   const refreshLlm = () => void qc.invalidateQueries({ queryKey: ["llm-status"] });
 
   async function downloadLlmRuntime() {
     setLlmRuntimeBusy(true);
-    setLlmRuntimeStatus("다운로드 준비…");
+    setLlmRuntimeStatus(msg.settings.dialog.downloadPreparing);
     try {
       await ipc.llmRuntimeEnsure((p) => setLlmRuntimeStatus(llmPhase(p)));
-      setLlmRuntimeStatus("설치 완료 ✓");
+      setLlmRuntimeStatus(msg.settings.dialog.installed);
     } catch (e) {
       setLlmRuntimeStatus(`⚠ ${errorMessage(e)}`);
     }
@@ -321,10 +333,10 @@ export function SettingsDialog() {
 
   async function downloadLlmModel(id: string) {
     setLlmModelBusy(id);
-    setLlmModelStatus("다운로드 준비…");
+    setLlmModelStatus(msg.settings.dialog.downloadPreparing);
     try {
       await ipc.llmModelDownload(id, (p) => setLlmModelStatus(llmPhase(p)));
-      setLlmModelStatus("설치 완료 ✓");
+      setLlmModelStatus(msg.settings.dialog.installed);
     } catch (e) {
       setLlmModelStatus(`⚠ ${errorMessage(e)}`);
     }
@@ -335,14 +347,14 @@ export function SettingsDialog() {
   // GB 단위 재다운로드가 걸린 파괴적 동작 — 반드시 확인을 받는다(§7).
   function deleteLlmModel(id: string, label: string) {
     useUi.getState().askConfirm({
-      title: "모델 삭제",
-      message: `${label}을(를) 지웁니다. 다시 쓰려면 처음부터 내려받아야 합니다.`,
-      confirmLabel: "삭제",
+      title: msg.settings.ai.deleteModelTitle,
+      message: msg.settings.ai.deleteModelMessage(label),
+      confirmLabel: msg.settings.ai.delete,
       danger: true,
       onConfirm: () => {
         void ipc
           .llmModelDelete(id)
-          .then(() => setLlmModelStatus("삭제했습니다"))
+          .then(() => setLlmModelStatus(msg.settings.ai.deleted))
           .catch((e) => useUi.getState().pushToast("error", errorMessage(e)))
           .finally(refreshLlm);
       },
@@ -354,10 +366,10 @@ export function SettingsDialog() {
 
   async function downloadSttRuntime() {
     setSttRuntimeBusy(true);
-    setSttRuntimeStatus("다운로드 준비…");
+    setSttRuntimeStatus(msg.settings.dialog.downloadPreparing);
     try {
       await ipc.sttRuntimeEnsure((p) => setSttRuntimeStatus(llmPhase(p)));
-      setSttRuntimeStatus("설치 완료 ✓");
+      setSttRuntimeStatus(msg.settings.dialog.installed);
     } catch (e) {
       setSttRuntimeStatus(`⚠ ${errorMessage(e)}`);
     }
@@ -367,10 +379,10 @@ export function SettingsDialog() {
 
   async function downloadSttModel(id: string) {
     setSttModelBusy(id);
-    setSttModelStatus("다운로드 준비…");
+    setSttModelStatus(msg.settings.dialog.downloadPreparing);
     try {
       await ipc.sttModelDownload(id, (p) => setSttModelStatus(llmPhase(p)));
-      setSttModelStatus("설치 완료 ✓");
+      setSttModelStatus(msg.settings.dialog.installed);
     } catch (e) {
       setSttModelStatus(`⚠ ${errorMessage(e)}`);
     }
@@ -380,14 +392,14 @@ export function SettingsDialog() {
 
   function deleteSttModel(id: string, label: string) {
     useUi.getState().askConfirm({
-      title: "음성 인식 모델 삭제",
-      message: `${label}을(를) 지웁니다. 다시 쓰려면 처음부터 내려받아야 합니다.`,
-      confirmLabel: "삭제",
+      title: msg.settings.stt.deleteModelTitle,
+      message: msg.settings.ai.deleteModelMessage(label),
+      confirmLabel: msg.settings.ai.delete,
       danger: true,
       onConfirm: () => {
         void ipc
           .sttModelDelete(id)
-          .then(() => setSttModelStatus("삭제했습니다"))
+          .then(() => setSttModelStatus(msg.settings.ai.deleted))
           .catch((e) => useUi.getState().pushToast("error", errorMessage(e)))
           .finally(refreshStt);
       },
@@ -406,7 +418,7 @@ export function SettingsDialog() {
       }
       let acc = "";
       void chat(
-        [{ role: "user", content: "안녕하세요. 한 문장으로 자기소개해 주세요." }],
+        [{ role: "user", content: msg.settings.ai.testPrompt }],
         (delta) => {
           acc += delta;
           setLlmTestOutput(acc);
@@ -438,7 +450,7 @@ export function SettingsDialog() {
         {/* 헤더 */}
         <div className="flex shrink-0 items-center gap-2 border-b border-edge px-5 py-3">
           <SettingsIcon size={16} className="text-fg-muted" />
-          <span className="font-semibold">설정</span>
+          <span className="font-semibold">{msg.settings.dialog.title}</span>
           <div className="flex-1" />
           <button
             onClick={closeWithoutSave}
@@ -456,7 +468,7 @@ export function SettingsDialog() {
               <input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="설정 검색…"
+                placeholder={msg.settings.dialog.searchPlaceholder}
                 className="min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-fg-dim"
               />
             </div>
@@ -476,7 +488,7 @@ export function SettingsDialog() {
                     } ${dimmed ? "opacity-40" : ""}`}
                   >
                     <Icon size={14} className="shrink-0" />
-                    <span className="truncate">{c.label}</span>
+                    <span className="truncate">{msg.settings.categoryLabel[c.id]}</span>
                   </button>
                 );
               })}
@@ -485,7 +497,7 @@ export function SettingsDialog() {
 
           <div className="min-w-0 flex-1 space-y-4 overflow-y-auto p-5 text-[13px]">
             {noResults && (
-              <div className="text-[12px] text-fg-dim">"{query}"에 대한 설정 결과가 없습니다.</div>
+              <div className="text-[12px] text-fg-dim">{msg.settings.dialog.noResults(query)}</div>
             )}
             {category === "general" && <GeneralSection form={form} update={update} hl={hl} />}
             {category === "appearance" && (
@@ -568,7 +580,7 @@ export function SettingsDialog() {
           {isDirty && (
             <span className="flex items-center gap-1.5 text-[11px] text-warn">
               <span className="h-1.5 w-1.5 rounded-full bg-warn" />
-              저장되지 않은 변경
+              {msg.settings.dialog.unsaved}
             </span>
           )}
           <div className="flex-1" />
@@ -576,14 +588,14 @@ export function SettingsDialog() {
             onClick={closeWithoutSave}
             className="rounded px-3 py-1.5 text-fg-muted hover:bg-raised"
           >
-            취소
+            {msg.settings.dialog.cancel}
           </button>
           <button
             onClick={handleSave}
             disabled={save.isPending}
             className="rounded bg-accent px-3 py-1.5 font-medium text-on-accent hover:bg-accent-hover disabled:opacity-50"
           >
-            {save.isPending ? "저장 중…" : "저장"}
+            {save.isPending ? msg.settings.dialog.saving : msg.settings.dialog.save}
           </button>
         </div>
       </div>

@@ -22,6 +22,7 @@ import type {
   RepoStatus,
   TargetSize,
 } from "../lib/ipc";
+import { currentMessages } from "../i18n/ui-language";
 import { formatBytes } from "../lib/format";
 import { errorMessage, ipc, isIpcError } from "../lib/ipc";
 import { opensInOwnViewer } from "../lib/language-map";
@@ -133,7 +134,9 @@ export function useSaveConnection() {
       useDb.getState().onConnectionRemoved(id);
     },
     onError: (e) =>
-      useUi.getState().pushToast("error", `연결 저장 실패: ${errorMessage(e)}`),
+      useUi
+        .getState()
+        .pushToast("error", currentMessages().lib.mutationToast.dbConnectionSaveFailed(errorMessage(e))),
   });
 }
 export function useDeleteConnection() {
@@ -142,7 +145,9 @@ export function useDeleteConnection() {
     mutationFn: (id: string) => ipc.dbDeleteConnection(id),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["db-connections"] }),
     onError: (e) =>
-      useUi.getState().pushToast("error", `연결 삭제 실패: ${errorMessage(e)}`),
+      useUi
+        .getState()
+        .pushToast("error", currentMessages().lib.mutationToast.dbConnectionDeleteFailed(errorMessage(e))),
   });
 }
 
@@ -480,7 +485,7 @@ export function useCleanTarget() {
       void qc.invalidateQueries({ queryKey: ["target-sizes"] });
       useUi
         .getState()
-        .pushToast("success", `target 청소 완료 — ${formatBytes(res.freedBytes)} 회수`);
+        .pushToast("success", currentMessages().lib.mutationToast.targetCleaned(formatBytes(res.freedBytes)));
     },
     onError: (e) => useUi.getState().pushToast("error", errorMessage(e)),
   });
@@ -508,7 +513,7 @@ export function useClearQuarantine() {
       void qc.invalidateQueries({ queryKey: ["quarantined-tools"] });
       useUi
         .getState()
-        .pushToast("success", `격리 해제 완료 (${paths.length}개)`);
+        .pushToast("success", currentMessages().lib.mutationToast.quarantineCleared(paths.length));
     },
     onError: (e) => useUi.getState().pushToast("error", errorMessage(e)),
   });
@@ -849,7 +854,7 @@ export function useSetSettings() {
       void qc.invalidateQueries({ queryKey: keys.git });
       // ffmpeg 명시 경로(videoFfmpegPath)도 마찬가지 — 발견 상태 재확인
       void qc.invalidateQueries({ queryKey: ["video-tool"] });
-      useUi.getState().pushToast("success", "설정을 저장했습니다");
+      useUi.getState().pushToast("success", currentMessages().lib.mutationToast.settingsSaved);
     },
     onError: (e) => useUi.getState().pushToast("error", errorMessage(e)),
   });
@@ -953,7 +958,7 @@ export function useUpdateProjectPath() {
       void qc.invalidateQueries({ queryKey: keys.projects });
       void qc.invalidateQueries({ queryKey: ["dir"] });
       invalidateRepoData(qc);
-      useUi.getState().pushToast("success", `경로 변경됨 — ${project.path}`);
+      useUi.getState().pushToast("success", currentMessages().lib.mutationToast.projectPathChanged(project.path));
     },
     onError: (e) => useUi.getState().pushToast("error", errorMessage(e)),
   });
@@ -1041,7 +1046,7 @@ export function useCreateDir(projectId: string) {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["dir"] });
       void qc.invalidateQueries({ queryKey: ["statuses"] });
-      useUi.getState().pushToast("success", "폴더를 만들었습니다");
+      useUi.getState().pushToast("success", currentMessages().lib.mutationToast.folderCreated);
     },
     onError: (e) => useUi.getState().pushToast("error", errorMessage(e)),
   });
@@ -1058,7 +1063,7 @@ export function useCreateFile(projectId: string) {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["dir"] });
       void qc.invalidateQueries({ queryKey: ["statuses"] });
-      useUi.getState().pushToast("success", "파일을 만들었습니다");
+      useUi.getState().pushToast("success", currentMessages().lib.mutationToast.fileCreated);
     },
     onError: (e) => useUi.getState().pushToast("error", errorMessage(e)),
   });
@@ -1078,7 +1083,7 @@ export function useDeletePath(projectId: string) {
       void qc.invalidateQueries({ queryKey: ["dir"] });
       void qc.invalidateQueries({ queryKey: ["statuses"] });
       void qc.invalidateQueries({ queryKey: ["diff"] });
-      useUi.getState().pushToast("success", "삭제했습니다");
+      useUi.getState().pushToast("success", currentMessages().lib.mutationToast.pathDeleted);
     },
     onError: (e) => useUi.getState().pushToast("error", errorMessage(e)),
   });
@@ -1105,7 +1110,7 @@ export function useRenamePath(projectId: string) {
       // 이미지 캐시는 경로 키라 staleTime:Infinity로 남는다 — 나중에 다른 이미지가 그 이름을
       // 물려받으면 옛 그림이 그대로 뜬다.
       void qc.invalidateQueries({ queryKey: ["file-image"] });
-      useUi.getState().pushToast("success", "이름을 바꿨습니다");
+      useUi.getState().pushToast("success", currentMessages().lib.mutationToast.pathRenamed);
     },
     onError: (e) => useUi.getState().pushToast("error", errorMessage(e)),
   });
@@ -1157,7 +1162,7 @@ export function useCommit(projectId: string) {
   return useMutation({
     mutationFn: (v: { message: string; amend: boolean }) =>
       ipc.commit(projectId, v.message, v.amend),
-    onSuccess: () => useUi.getState().pushToast("success", "커밋 완료"),
+    onSuccess: () => useUi.getState().pushToast("success", currentMessages().lib.mutationToast.committed),
     onError: (e) => useUi.getState().pushToast("error", errorMessage(e)),
     onSettled: () => invalidateRepoData(qc),
   });
@@ -1178,7 +1183,7 @@ export function useSyncOp(projectId: string, op: SyncOp) {
       const ops = useOps.getState();
       if (ops.running[projectId]) {
         ops.finish(projectId);
-        useUi.getState().pushToast("success", `${op} 완료`);
+        useUi.getState().pushToast("success", currentMessages().lib.mutationToast.syncOpDone(op));
       }
     },
     onError: (e) => {
@@ -1208,7 +1213,7 @@ export function useProjectGitOps() {
       else if (op === "pull") await ipc.pull(projectId);
       else await ipc.fetch(projectId);
       ops.finish(projectId);
-      useUi.getState().pushToast("success", `${op} 완료`);
+      useUi.getState().pushToast("success", currentMessages().lib.mutationToast.syncOpDone(op));
     } catch (e) {
       ops.finish(projectId);
       useUi.getState().pushToast("error", errorMessage(e));
@@ -1228,15 +1233,17 @@ export function usePushFlow(projectId: string) {
 
   return () => {
     if (!status) return;
+    // 사이드바 우클릭 push(ProjectList)와 같은 문구라 그 키를 같이 쓴다.
+    const t = currentMessages().shell.projectList;
     if (!status.branch) {
-      useUi.getState().pushToast("error", "detached HEAD 상태에서는 푸시할 수 없습니다");
+      useUi.getState().pushToast("error", t.pushDetached);
       return;
     }
     if (!status.upstream) {
       useUi.getState().askConfirm({
-        title: "업스트림 설정",
-        message: `'${status.branch}' 브랜치에 업스트림이 없습니다. origin에 브랜치를 만들고 푸시할까요?`,
-        confirmLabel: "푸시",
+        title: t.upstreamTitle,
+        message: t.upstreamMessage(status.branch),
+        confirmLabel: t.upstreamConfirm,
         onConfirm: () => push.mutate(true),
       });
       return;
@@ -1259,9 +1266,8 @@ export function useSetProjectLogo() {
         (old ?? []).map((p) => (p.id === project.id ? project : p)),
       );
       void qc.invalidateQueries({ queryKey: ["project-logo", project.id] });
-      useUi
-        .getState()
-        .pushToast("success", relPath ? "로고를 지정했습니다" : "로고를 해제했습니다");
+      const t = currentMessages().lib.mutationToast;
+      useUi.getState().pushToast("success", relPath ? t.logoSet : t.logoCleared);
     },
     onError: (e) => useUi.getState().pushToast("error", errorMessage(e)),
   });

@@ -12,6 +12,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 
+import { currentMessages } from "../i18n/ui-language";
 import type {
   VideoExportFinished,
   VideoExportProgress,
@@ -111,10 +112,11 @@ export function setSplitQueryClient(qc: QueryClient) {
 /** 덮어쓰기 확인 1회 — 전역 다이얼로그를 프라미스로 감싼다. */
 function confirmOverwrite(folder: string): Promise<boolean> {
   return new Promise((resolve) => {
+    const m = currentMessages().media;
     useUi.getState().askConfirm({
-      title: "덮어쓰기",
-      message: `${folder} 폴더에 같은 이름의 분할 파일이 있습니다. 기존 분할 결과를 덮어쓸까요?`,
-      confirmLabel: "덮어쓰기",
+      title: m.overwriteTitle,
+      message: m.videoSplit.overwriteMessage(folder),
+      confirmLabel: m.overwriteConfirm,
       danger: true,
       onConfirm: () => resolve(true),
       onCancel: () => resolve(false),
@@ -149,9 +151,10 @@ function summarize(b: SplitBatch) {
   const ui = useUi.getState();
   const folder = b.folderRel.split("/").pop() ?? b.folderRel;
   const at = String(b.currentIndex).padStart(Math.max(2, String(b.total).length), "0");
-  if (b.error) ui.pushToast("error", `part-${at}에서 실패: ${b.error} · ${b.done}개 저장됨`);
-  else if (b.cancelled) ui.pushToast("info", `${b.done}/${b.total}개 저장 후 중단`);
-  else ui.pushToast("success", `${b.done}개로 분할 저장 — ${folder}/`);
+  const t = currentMessages().media.videoSplit;
+  if (b.error) ui.pushToast("error", t.failedAt(at, b.error, b.done));
+  else if (b.cancelled) ui.pushToast("info", t.cancelled(b.done, b.total));
+  else ui.pushToast("success", t.finished(b.done, folder));
 }
 
 interface VideoSplitState {
@@ -201,7 +204,7 @@ export const useVideoSplit = create<VideoSplitState>((set, get) => ({
     } catch (e) {
       if (!(isIpcError(e) && e.code === "ALREADY_EXISTS")) {
         set({ batch: null });
-        useUi.getState().pushToast("error", `분할 폴더를 만들지 못했습니다 — ${errorMessage(e)}`);
+        useUi.getState().pushToast("error", currentMessages().media.videoSplit.mkdirFailed(errorMessage(e)));
         return;
       }
     }
@@ -246,7 +249,7 @@ export const useVideoSplit = create<VideoSplitState>((set, get) => ({
         if (outcome.kind === "exists") {
           // overwrite=true인데도 또 충돌 = 우리가 모르는 이유(권한·잠금) — 무한 재시도 금지.
           if (overwrite) {
-            patch((b) => ({ ...b, error: "기존 파일을 덮어쓰지 못했습니다" }));
+            patch((b) => ({ ...b, error: currentMessages().media.videoSplit.overwriteFailed }));
             break;
           }
           if (!(await confirmOverwrite(opts.folder))) {
@@ -305,7 +308,7 @@ export const useVideoSplit = create<VideoSplitState>((set, get) => ({
         ? { kind: "cancelled" }
         : ev.ok
           ? { kind: "ok" }
-          : { kind: "error", error: ev.error ?? "분할 실패" },
+          : { kind: "error", error: ev.error ?? currentMessages().media.videoSplit.splitFailed },
     );
   },
 

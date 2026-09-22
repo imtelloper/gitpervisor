@@ -4,6 +4,7 @@
 // 카테고리를 옮겨도 진행 표시가 살아 있다(ffmpeg `ffmpegBusy/Status`와 같은 층, §3.6 I1).
 import { useQuery } from "@tanstack/react-query";
 
+import { useMessages } from "../../../i18n/ui-language";
 import { ipc } from "../../../lib/ipc";
 import { useLlmStatus } from "../../../lib/llm";
 import { Field, Hl, inputCls, type SectionProps } from "./shared";
@@ -20,10 +21,14 @@ export function mb(bytes: number): string {
  * ram ≥ size*1.3 + 1GB면 CPU/부분, 둘 다 미달이면 권장하지 않음.
  * **다운로드 버튼은 어느 쪽이든 살려 둔다** — 사용자가 자기 머신을 더 잘 안다.
  */
-export function recommend(size: number, ram: number, vram: number): { label: string; tone: string } {
-  if (vram >= size * 1.15) return { label: "GPU 전체", tone: "text-ok" };
-  if (ram >= size * 1.3 + 1024 ** 3) return { label: "CPU/부분", tone: "text-fg-muted" };
-  return { label: "권장 안 함", tone: "text-warn" };
+export function recommend(
+  size: number,
+  ram: number,
+  vram: number,
+): { level: "gpu" | "cpu" | "no"; tone: string } {
+  if (vram >= size * 1.15) return { level: "gpu", tone: "text-ok" };
+  if (ram >= size * 1.3 + 1024 ** 3) return { level: "cpu", tone: "text-fg-muted" };
+  return { level: "no", tone: "text-warn" };
 }
 
 export function AiSection({
@@ -56,6 +61,7 @@ export function AiSection({
   onTest: () => void;
 }) {
   const { data: st } = useLlmStatus();
+  const msg = useMessages();
   // 리소스 모니터의 시스템 정보 탭과 **같은 캐시 키**를 쓴다(수집이 수 초라 두 번 돌리지 않는다).
   const { data: sys } = useQuery({
     queryKey: ["sys-info"],
@@ -79,32 +85,35 @@ export function AiSection({
       <div className="rounded border border-edge bg-base px-3 py-2 text-[12px]">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
           <span>
-            런타임{" "}
+            {msg.settings.ai.runtimeLabel}{" "}
             {st?.runtime ? (
-              <span className="text-ok">{st.runtime} 설치됨</span>
+              <span className="text-ok">{msg.settings.ai.runtimeInstalled(st.runtime)}</span>
             ) : (
-              <span className="text-fg-dim">없음</span>
+              <span className="text-fg-dim">{msg.settings.ai.runtimeNone}</span>
             )}
           </span>
           <span>
-            모델 <span className="text-fg-muted">{st?.models.filter((m) => m.present).length ?? 0}개</span>
+            {msg.settings.ai.modelsLabel}{" "}
+            <span className="text-fg-muted">
+              {msg.settings.ai.modelCount(st?.models.filter((m) => m.present).length ?? 0)}
+            </span>
           </span>
           <span>
-            서버{" "}
+            {msg.settings.ai.serverLabel}{" "}
             {st?.server ? (
               <span className="text-ok">
-                :{st.server.port} {st.server.ready ? "준비됨" : "로드 중"} · 유휴{" "}
-                {Math.floor(st.server.idleSecs / 60)}분
+                {msg.settings.ai.serverRunning(
+                  st.server.port,
+                  st.server.ready,
+                  Math.floor(st.server.idleSecs / 60),
+                )}
               </span>
             ) : (
-              <span className="text-fg-dim">중지</span>
+              <span className="text-fg-dim">{msg.settings.ai.serverStopped}</span>
             )}
           </span>
         </div>
-        <div className="mt-1 text-[11px] text-fg-dim">
-          첫 요청에 서버가 자동 기동합니다(모델 로드 20~60초). 10분 쉬면 자동 종료, 앱 종료 시에도
-          함께 내려갑니다.
-        </div>
+        <div className="mt-1 text-[11px] text-fg-dim">{msg.settings.ai.serverNote}</div>
       </div>
 
       {/* ② 런타임 다운로드 — "클릭이 곧 동의": 크기·출처를 버튼 옆 한 줄에 */}
@@ -116,22 +125,24 @@ export function AiSection({
             className="shrink-0 rounded bg-accent/20 px-2 py-1 text-xs text-accent hover:bg-accent/30 disabled:opacity-50"
           >
             {runtimeBusy
-              ? "취소"
-              : `런타임 다운로드 (${mb(st?.runtimeSize ?? 0)})`}
+              ? msg.settings.ai.cancel
+              : msg.settings.ai.runtimeDownload(mb(st?.runtimeSize ?? 0))}
           </button>
           <span className="truncate text-[11px] text-fg-dim">
             {runtimeStatus ||
               (!st?.runtimeSupported
-                ? "이 플랫폼용 공식 빌드가 없습니다 — 고급의 외부 서버 URL을 쓰세요"
+                ? msg.settings.ai.runtimeUnsupported
                 : st?.runtime
-                  ? `설치됨 ✓ ${st.runtimePath ?? ""}`
+                  ? msg.settings.ai.installedPath(st.runtimePath ?? "")
                   : "llama.cpp b10809 · github.com/ggml-org/llama.cpp")}
           </span>
         </div>
       </Hl>
 
       {/* ③ 모델 표 */}
-      <div className={`border-t border-edge pt-3 ${subHeading}`}>모델 (huggingface.co)</div>
+      <div className={`border-t border-edge pt-3 ${subHeading}`}>
+        {msg.settings.ai.modelsHeading}
+      </div>
       <Hl id="llmModel" hl={hl}>
         <div className="flex flex-col gap-1">
           {(st?.models ?? []).map((m) => {
@@ -159,13 +170,17 @@ export function AiSection({
                   <span className="ml-1 text-[11px] text-fg-dim/70">{m.repo.split("/")[0]}</span>
                 </span>
                 <span className="shrink-0 text-[11px] text-fg-muted">{mb(m.size)}</span>
-                {rec && <span className={`shrink-0 text-[11px] ${rec.tone}`}>{rec.label}</span>}
+                {rec && (
+                  <span className={`shrink-0 text-[11px] ${rec.tone}`}>
+                    {msg.settings.ai.recommend[rec.level]}
+                  </span>
+                )}
                 {m.present ? (
                   <button
                     onClick={() => onModelDelete(m.id, m.label)}
                     className="shrink-0 rounded px-2 py-0.5 text-[11px] text-danger hover:bg-danger/15"
                   >
-                    삭제
+                    {msg.settings.ai.delete}
                   </button>
                 ) : (
                   <button
@@ -173,7 +188,7 @@ export function AiSection({
                     disabled={modelBusy != null && !busy}
                     className="shrink-0 rounded bg-accent/20 px-2 py-0.5 text-[11px] text-accent hover:bg-accent/30 disabled:opacity-50"
                   >
-                    {busy ? "취소" : "다운로드"}
+                    {busy ? msg.settings.ai.cancel : msg.settings.ai.download}
                   </button>
                 )}
               </label>
@@ -188,28 +203,28 @@ export function AiSection({
               className="accent-accent"
             />
             <span className="min-w-0 flex-1 truncate">
-              사용자 지정 GGUF
-              <span className="ml-1 text-[11px] text-fg-dim">고급의 경로를 씁니다</span>
+              {msg.settings.ai.customGguf}
+              <span className="ml-1 text-[11px] text-fg-dim">{msg.settings.ai.customGgufNote}</span>
             </span>
             <span className={`shrink-0 text-[11px] ${st?.customModelOk ? "text-ok" : "text-fg-dim"}`}>
-              {st?.customModelOk ? "확인됨" : "경로 없음"}
+              {st?.customModelOk ? msg.settings.ai.customGgufOk : msg.settings.ai.customGgufMissing}
             </span>
           </label>
         </div>
       </Hl>
       <Hl id="llmModelDownload" hl={hl}>
         <div className="text-[11px] text-fg-dim">
-          {modelStatus || "받는 즉시 sha256으로 검증하고 원자적으로 설치합니다. 취소하면 받던 파일을 지웁니다."}
+          {modelStatus || msg.settings.ai.modelDownloadNote}
         </div>
       </Hl>
       <Hl id="llmDeleteModels" hl={hl}>
-        <div className="text-[11px] text-fg-dim">
-          삭제한 모델은 다시 GB 단위로 받아야 합니다 — 확인 후 지웁니다.
-        </div>
+        <div className="text-[11px] text-fg-dim">{msg.settings.ai.deleteModelsNote}</div>
       </Hl>
 
       {/* ④ 테스트 */}
-      <div className={`border-t border-edge pt-3 ${subHeading}`}>테스트</div>
+      <div className={`border-t border-edge pt-3 ${subHeading}`}>
+        {msg.settings.ai.testHeading}
+      </div>
       <Hl id="llmTest" hl={hl}>
         <div className="flex items-center gap-2">
           <button
@@ -217,10 +232,10 @@ export function AiSection({
             disabled={testBusy}
             className="shrink-0 rounded bg-accent/20 px-2 py-1 text-xs text-accent hover:bg-accent/30 disabled:opacity-50"
           >
-            {testBusy ? "응답 대기 중…" : "테스트"}
+            {testBusy ? msg.settings.ai.testWaiting : msg.settings.ai.testButton}
           </button>
           <span className="truncate text-[11px] text-fg-dim">
-            "안녕하세요. 한 문장으로 자기소개해 주세요."를 보냅니다
+            {msg.settings.ai.testHint(msg.settings.ai.testPrompt)}
           </span>
         </div>
       </Hl>
@@ -232,15 +247,15 @@ export function AiSection({
 
       {/* ⑤ 고급 */}
       <details className="border-t border-edge pt-3">
-        <summary className={`cursor-pointer ${subHeading}`}>고급</summary>
+        <summary className={`cursor-pointer ${subHeading}`}>{msg.settings.ai.advanced}</summary>
         <div className="mt-3 space-y-4">
           <Hl id="llmProvider" hl={hl}>
-            <Field label="제공자">
+            <Field label={msg.settings.ai.providerLabel}>
               <div className="flex gap-4">
                 {(
                   [
-                    ["managed", "앱이 관리 (llama-server)"],
-                    ["external", "외부 OpenAI 호환 서버"],
+                    ["managed", msg.settings.ai.providerManaged],
+                    ["external", msg.settings.ai.providerExternal],
                   ] as const
                 ).map(([id, label]) => (
                   <label key={id} className="flex cursor-pointer items-center gap-1.5">
@@ -260,10 +275,7 @@ export function AiSection({
           {external && (
             <>
               <Hl id="llmExternalUrl" hl={hl}>
-                <Field
-                  label="외부 서버 URL"
-                  hint="Ollama는 http://localhost:11434/v1 — 끝의 /v1은 있어도 없어도 됩니다"
-                >
+                <Field label={msg.settings.ai.externalUrlLabel} hint={msg.settings.ai.externalUrlHint}>
                   <input
                     type="text"
                     value={form.llmExternalUrl ?? ""}
@@ -274,7 +286,7 @@ export function AiSection({
                 </Field>
               </Hl>
               <Hl id="llmExternalModel" hl={hl}>
-                <Field label="모델 이름" hint="그 서버가 아는 이름 — 예: qwen3:4b">
+                <Field label={msg.settings.ai.externalModelLabel} hint={msg.settings.ai.externalModelHint}>
                   <input
                     type="text"
                     value={form.llmExternalModel ?? ""}
@@ -285,7 +297,7 @@ export function AiSection({
                 </Field>
               </Hl>
               <Hl id="llmExternalKey" hl={hl}>
-                <Field label="API 키" hint="로컬 서버라면 대개 비워 둡니다. settings.json에 평문 저장됩니다">
+                <Field label={msg.settings.ai.externalKeyLabel} hint={msg.settings.ai.externalKeyHint}>
                   <input
                     type="password"
                     value={form.llmExternalKey ?? ""}
@@ -297,11 +309,11 @@ export function AiSection({
             </>
           )}
           <Hl id="llmCustomModelPath" hl={hl}>
-            <Field label="사용자 지정 GGUF 경로" hint="모델에서 '사용자 지정 GGUF'를 골랐을 때만 씁니다">
+            <Field label={msg.settings.ai.customPathLabel} hint={msg.settings.ai.customPathHint}>
               <input
                 type="text"
                 value={form.llmCustomModelPath ?? ""}
-                placeholder="(없음)"
+                placeholder={msg.settings.ai.customPathPlaceholder}
                 onChange={(e) => update("llmCustomModelPath", e.target.value)}
                 className={`${inputCls} font-mono`}
               />
@@ -309,7 +321,7 @@ export function AiSection({
           </Hl>
           <div className="flex gap-3">
             <Hl id="llmGpuLayers" hl={hl}>
-              <Field label="GPU 레이어 (-ngl)" hint="99 = 가능한 만큼 전부, 0 = CPU만">
+              <Field label={msg.settings.ai.gpuLayersLabel} hint={msg.settings.ai.gpuLayersHint}>
                 <input
                   type="number"
                   min={0}
@@ -321,7 +333,7 @@ export function AiSection({
               </Field>
             </Hl>
             <Hl id="llmContext" hl={hl}>
-              <Field label="컨텍스트 (-c)" hint="2048 ~ 32768. 클수록 KV 캐시 메모리를 더 씁니다">
+              <Field label={msg.settings.ai.contextLabel} hint={msg.settings.ai.contextHint}>
                 <input
                   type="number"
                   min={2048}
@@ -342,29 +354,27 @@ export function AiSection({
                 className="mt-0.5 accent-accent"
               />
               <span>
-                주간 리포트 자동 생성
+                {msg.settings.ai.reportAutoWeekly}
                 <span className="ml-1 block text-[11px] text-fg-dim">
-                  월요일 이후 앱이 켜져 있을 때 <b>지난주</b> 요약이 없으면 프로젝트별로 한 번
-                  만듭니다. 이미 있으면 건너뜁니다 — 앱이 한 주 꺼져 있었어도 켜면 한 번 만듭니다.
+                  {msg.settings.ai.reportAutoWeeklyHintBefore}
+                  <b>{msg.settings.ai.reportAutoWeeklyHintBold}</b>
+                  {msg.settings.ai.reportAutoWeeklyHintAfter}
                 </span>
               </span>
             </label>
           </Hl>
           <Hl id="llmReportModel" hl={hl}>
-            <Field
-              label="작업 리포트 전용 모델"
-              hint="요약은 기다려도 되니 더 정확한(=느린) 모델을 쓸 수 있습니다. 번역·채팅은 위에서 고른 모델 그대로입니다. 둘을 번갈아 쓰면 그때마다 서버를 다시 띄웁니다(수 초~수십 초)"
-            >
+            <Field label={msg.settings.ai.reportModelLabel} hint={msg.settings.ai.reportModelHint}>
               <select
                 value={form.llmReportModel ?? ""}
                 onChange={(e) => update("llmReportModel", e.target.value || null)}
                 className={inputCls}
               >
-                <option value="">위에서 고른 모델 사용</option>
+                <option value="">{msg.settings.ai.reportModelSameAsAbove}</option>
                 {(st?.models ?? []).map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.label}
-                    {m.present ? "" : " (미설치)"}
+                    {m.present ? "" : msg.settings.ai.notInstalledSuffix}
                   </option>
                 ))}
               </select>
@@ -374,39 +384,33 @@ export function AiSection({
               여기 자리를 두는 이유는 favoriteFolders 와 같다 — 설정 검색으로 찾을 수 있어야 하고,
               SETTINGS_INDEX 완전성 가드(e2e 29 ⑤)가 모든 Settings 키에 항목을 요구한다. */}
           <Hl id="reportPrompt" hl={hl}>
-            <Field
-              label="작업 리포트 요약 프롬프트"
-              hint="리포트 화면의 [프롬프트] 버튼에서 고칩니다. 카드 생성·주간 자동 생성·AI 채팅이 같은 프롬프트를 씁니다"
-            >
+            <Field label={msg.settings.ai.reportPromptLabel} hint={msg.settings.ai.reportPromptHint}>
               <div className="text-fg-muted">
-                {form.reportPrompt?.trim() ? "사용자 지정" : "기본값"}
+                {form.reportPrompt?.trim() ? msg.settings.ai.reportPromptCustom : msg.settings.ai.reportPromptDefault}
               </div>
             </Field>
           </Hl>
           <Hl id="llmLanguage" hl={hl}>
-            <Field label="출력 언어" hint="작업 요약·번역의 기본 언어">
+            <Field label={msg.settings.ai.languageLabel} hint={msg.settings.ai.languageHint}>
               <select
                 value={form.llmLanguage}
                 onChange={(e) => update("llmLanguage", e.target.value)}
                 className={inputCls}
               >
-                <option value="ko">한국어</option>
-                <option value="en">English</option>
+                <option value="ko">{msg.language.optionKorean}</option>
+                <option value="en">{msg.language.optionEnglish}</option>
               </select>
             </Field>
           </Hl>
           <Hl id="llmBackend" hl={hl}>
-            <Field
-              label="백엔드"
-              hint="Vulkan 초기화가 실패하면 앱이 자동으로 CPU 빌드를 받아 여기에 기록합니다"
-            >
+            <Field label={msg.settings.ai.backendLabel} hint={msg.settings.ai.backendHint}>
               <select
                 value={form.llmBackend}
                 onChange={(e) => update("llmBackend", e.target.value === "cpu" ? "cpu" : "auto")}
                 className={inputCls}
               >
-                <option value="auto">자동 (GPU 우선)</option>
-                <option value="cpu">CPU 전용</option>
+                <option value="auto">{msg.settings.ai.backendAuto}</option>
+                <option value="cpu">{msg.settings.ai.backendCpu}</option>
               </select>
             </Field>
           </Hl>

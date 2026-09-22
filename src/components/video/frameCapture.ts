@@ -11,6 +11,7 @@
 
 import type { QueryClient } from "@tanstack/react-query";
 
+import { currentMessages } from "../../i18n/ui-language";
 import { errorMessage, ipc, isIpcError } from "../../lib/ipc";
 
 /** 이 기능들이 스스로 만든 접미사 — 산출물을 다시 열었을 때 무한히 쌓이는 것을 막는다
@@ -95,16 +96,17 @@ export function captureFrame(deps: CaptureDeps, overwrite = false): void {
   void ipc
     .videoCaptureFrame(projectId, path, Math.max(0, atMs), out, overwrite, hls)
     .then(() => {
-      pushToast("success", `프레임 저장됨 — ${out.split("/").pop()}`);
+      pushToast("success", currentMessages().media.frameCapture.saved(out.split("/").pop() ?? out));
       void qc.invalidateQueries({ queryKey: ["dir"] });
       void qc.invalidateQueries({ queryKey: ["statuses"] });
     })
     .catch((e) => {
       if (isIpcError(e) && e.code === "ALREADY_EXISTS" && !overwrite) {
+        const m = currentMessages().media;
         askConfirm({
-          title: "덮어쓰기",
-          message: "같은 이름의 프레임 파일이 있습니다. 덮어쓸까요?",
-          confirmLabel: "덮어쓰기",
+          title: m.overwriteTitle,
+          message: m.frameCapture.overwriteMessage,
+          confirmLabel: m.overwriteConfirm,
           danger: true,
           onConfirm: () => captureFrame(deps, true),
         });

@@ -24,6 +24,7 @@ use tokio::sync::oneshot;
 
 use crate::commands::{JobGuard, VideoJob};
 use crate::error::{ErrorCode, IpcError};
+use crate::i18n::text_stt;
 use crate::llm::acquire as llm_acquire;
 use crate::state::AppState;
 use crate::stt::acquire::{self, WhisperBin, VAD_MODEL};
@@ -104,7 +105,7 @@ impl Drop for ActiveGuard {
 fn begin_active(job_id: &str, model_id: &str) -> Result<ActiveGuard, IpcError> {
     let mut a = ACTIVE.lock().unwrap_or_else(|e| e.into_inner());
     if a.is_some() {
-        return Err(IpcError::new(ErrorCode::Busy, "이미 다른 영상의 자막을 만드는 중입니다"));
+        return Err(IpcError::new(ErrorCode::Busy, text_stt::stt_already_running()));
     }
     *a = Some((job_id.to_string(), model_id.to_string()));
     Ok(ActiveGuard)
@@ -138,9 +139,9 @@ pub(crate) fn temp_dir(app: &AppHandle) -> Result<PathBuf, IpcError> {
     let dir = app
         .path()
         .app_local_data_dir()
-        .map_err(|e| io(format!("앱 데이터 경로 오류: {e}")))?
+        .map_err(|e| io(text_stt::stt_app_data_path_error(&e)))?
         .join(TEMP_DIR);
-    std::fs::create_dir_all(&dir).map_err(|e| io(format!("임시 폴더 생성 실패({}): {e}", dir.display())))?;
+    std::fs::create_dir_all(&dir).map_err(|e| io(text_stt::stt_temp_dir_create_failed(&dir.display(), &e)))?;
     Ok(dir)
 }
 
@@ -180,7 +181,7 @@ pub(crate) fn validate_language(lang: &str) -> Result<String, IpcError> {
     if ok {
         Ok(l)
     } else {
-        Err(io(format!("지원하지 않는 언어 코드: {lang}")))
+        Err(io(text_stt::stt_unsupported_language(lang)))
     }
 }
 
@@ -193,12 +194,10 @@ pub(crate) fn validate_prompt(prompt: Option<&str>, windows_argv: bool) -> Resul
         return Ok(None);
     }
     if p.chars().count() > PROMPT_MAX_CHARS {
-        return Err(io(format!("용어 힌트는 {PROMPT_MAX_CHARS}자까지입니다")));
+        return Err(io(text_stt::stt_prompt_too_long(PROMPT_MAX_CHARS)));
     }
     if windows_argv && !p.is_ascii() {
-        return Err(io(
-            "Windows에서는 용어 힌트에 영문·숫자만 쓸 수 있습니다 — 음성 인식 엔진이 명령줄의 한글을 깨뜨립니다".into(),
-        ));
+        return Err(io(text_stt::stt_prompt_ascii_only().into()));
     }
     Ok(Some(p))
 }
@@ -282,7 +281,7 @@ fn rel_arg(base: &Path, p: &Path) -> Result<String, IpcError> {
         .and_then(|r| r.to_str())
         .filter(|s| s.is_ascii())
         .map(|s| s.replace('\\', "/"))
-        .ok_or_else(|| io(format!("음성 인식 파일 경로가 앱 데이터 폴더 밖이거나 ASCII가 아닙니다: {}", p.display())))
+        .ok_or_else(|| io(text_stt::stt_path_not_ascii(&p.display())))
 }
 
 // ══════════════════════════ 프로세스 한 단계 ══════════════════════════
@@ -357,7 +356,7 @@ async fn run_step(
     #[cfg(unix)]
     cmd.process_group(0);
 
-    let mut child = cmd.spawn().map_err(|e| io(format!("{what} 실행 실패: {e}")))?;
+    let mut child = cmd.spawn().map_err(|e| io(text_stt::stt_process_spawn_failed(what, &e)))?;
     let set_pid = |pid: Option<u32>| {
         if let Some(j) = jobs.lock().unwrap_or_else(|e| e.into_inner()).get_mut(job_id) {
             j.pid = pid;
@@ -376,7 +375,7 @@ async fn run_step(
             child.wait().await
         }
     }
-    .map_err(|e| io(format!("{what} 종료 대기 실패: {e}")));
+    .map_err(|e| io(text_stt::stt_process_wait_failed(what, &e)));
     // 끝난 자식의 pid를 레지스트리에 남기지 않는다 — Child를 놓으면 핸들이 닫혀 OS가 pid를 다시 쓸 수 있는데,
     // 잡은 파싱·저장(1시간 영상의 -ojf는 수십 MB)이 끝나야 빠진다. 그 사이 앱을 끄면 video_kill_all이 남의
     // 프로세스 트리를 taskkill /T·killpg 한다.
@@ -391,7 +390,7 @@ async fn run_step(
     let (tail, vad_lines) = join(err_task.await);
     join(out_task.await);
     if cancelled {
-        return Err(IpcError::new(ErrorCode::Cancelled, "자막 만들기를 취소했습니다"));
+        return Err(IpcError::new(ErrorCode::Cancelled, text_stt::stt_cancelled()));
     }
     Ok(StepOut { ok: status.success(), stderr_tail: Vec::from(tail).join("\n"), vad_lines })
 }
@@ -400,21 +399,21 @@ async fn run_step(
 fn check_cancel(cancel_rx: &mut oneshot::Receiver<()>) -> Result<(), IpcError> {
     match cancel_rx.try_recv() {
         Err(oneshot::error::TryRecvError::Empty) => Ok(()),
-        _ => Err(IpcError::new(ErrorCode::Cancelled, "자막 만들기를 취소했습니다")),
+        _ => Err(IpcError::new(ErrorCode::Cancelled, text_stt::stt_cancelled())),
     }
 }
 
 /// 실패한 명령을 남긴다 — 토스트는 stderr 마지막 한 줄뿐이라 어떤 인자로 죽었는지 사후에 알 길이 없다.
 fn step_failed(what: &str, exe: &Path, args: &[String], step: StepOut) -> IpcError {
     log::error!(
-        "[stt] {what} 실패\n  exe: {}\n  args: {:?}\n  stderr(tail):\n{}",
+        "[stt] {what} 실패\n  exe: {}\n  args: {:?}\n  stderr(tail):\n{}", // i18n-ok: 로그
         exe.display(),
         args,
         step.stderr_tail
     );
     IpcError {
         code: ErrorCode::Io,
-        message: format!("{what} 실패: {}", crate::commands::last_error_line(&step.stderr_tail)),
+        message: text_stt::stt_step_failed(what, &crate::commands::last_error_line(&step.stderr_tail)),
         stderr: Some(step.stderr_tail),
     }
 }
@@ -461,11 +460,11 @@ impl WhisperRun<'_> {
         })
         .await?;
         if !step.ok {
-            return Err(step_failed("음성 인식", &self.bin.exe, &argv, step));
+            return Err(step_failed(text_stt::stt_step_speech_recognition(), &self.bin.exe, &argv, step));
         }
         let vad = step.vad_lines.iter().filter_map(|l| parse_vad_line(l)).collect();
         let bytes = std::fs::read(json_abs)
-            .map_err(|e| io(format!("음성 인식 결과 읽기 실패({}): {e}", json_abs.display())))?;
+            .map_err(|e| io(text_stt::stt_result_read_failed(&json_abs.display(), &e)))?;
         Ok((bytes, vad))
     }
 }
@@ -507,11 +506,11 @@ async fn transcribe_inner(
 ) -> Result<CaptionLoaded, IpcError> {
     // 1. 입력 경계 — job id는 임시 파일 이름에 들어가므로 uuid로 검증한다.
     let job = uuid::Uuid::parse_str(&req.job_id)
-        .map_err(|_| io(format!("잘못된 작업 id: {}", req.job_id)))?
+        .map_err(|_| io(text_stt::stt_invalid_job_id(&req.job_id)))?
         .simple()
         .to_string();
     let model = acquire::stt_model(&req.model_id).ok_or_else(|| {
-        IpcError::new(ErrorCode::NotFound, format!("모르는 음성 인식 모델: {}", req.model_id))
+        IpcError::new(ErrorCode::NotFound, text_stt::stt_unknown_model(&req.model_id))
     })?;
     let language = validate_language(&req.language)?;
     let prompt = validate_prompt(req.prompt.as_deref(), cfg!(windows))?;
@@ -532,23 +531,22 @@ async fn transcribe_inner(
 
     let not_ready = |m: String| IpcError::new(ErrorCode::ToolNotFound, m);
     let bin = acquire::find_whisper(app)
-        .ok_or_else(|| not_ready("음성 인식 엔진이 없습니다 — 설정 › AI › 음성 인식에서 받으세요".into()))?;
+        .ok_or_else(|| not_ready(text_stt::stt_engine_missing().into()))?;
     let build = {
         let bin = bin.clone();
         tauri::async_runtime::spawn_blocking(move || acquire::ensure_usable(&bin))
             .await
-            .map_err(|e| io(format!("엔진 확인 작업 실패: {e}")))??
+            .map_err(|e| io(text_stt::stt_engine_check_task_failed(&e)))??
     };
     check_cancel(&mut cancel_rx)?;
     let base = app
         .path()
         .app_local_data_dir()
-        .map_err(|e| io(format!("앱 데이터 경로 오류: {e}")))?;
-    let model_path = llm_acquire::installed_model(app, &model.spec).ok_or_else(|| {
-        not_ready(format!("{} 모델이 없습니다 — 설정 › AI › 음성 인식에서 받으세요", model.spec.label))
-    })?;
+        .map_err(|e| io(text_stt::stt_app_data_path_error(&e)))?;
+    let model_path = llm_acquire::installed_model(app, &model.spec)
+        .ok_or_else(|| not_ready(text_stt::stt_model_missing(model.spec.label)))?;
     let vad_path = llm_acquire::installed_model(app, &VAD_MODEL)
-        .ok_or_else(|| not_ready("VAD 모델이 없습니다 — 설정 › AI › 음성 인식에서 엔진을 받으세요".into()))?;
+        .ok_or_else(|| not_ready(text_stt::stt_vad_model_missing().into()))?;
     let (model_rel, vad_rel) = (rel_arg(&base, &model_path)?, rel_arg(&base, &vad_path)?);
 
     let ff = crate::commands::find_ffmpeg(app, state.inner())?;
@@ -556,25 +554,21 @@ async fn transcribe_inner(
     let repo = crate::commands::project_path(state, &req.project_id)?;
     let src = crate::commands::resolve_in_repo(&repo, &req.rel_path)?;
     if !src.is_file() {
-        return Err(IpcError::new(ErrorCode::NotFound, "원본 파일을 찾을 수 없습니다"));
+        return Err(IpcError::new(ErrorCode::NotFound, text_stt::stt_source_not_found()));
     }
     let src_s = src.display().to_string();
     let meta = crate::commands::probe_meta(&probe, &src_s).await?;
     if !meta.has_audio {
-        return Err(io("오디오 트랙이 없는 파일입니다".into()));
+        return Err(io(text_stt::stt_no_audio_track().into()));
     }
     if req.audio_stream as usize >= meta.audio_streams.len() {
-        return Err(io(format!(
-            "오디오 트랙 {}번이 없습니다 — 이 파일의 오디오 트랙은 {}개입니다",
-            req.audio_stream + 1,
-            meta.audio_streams.len()
-        )));
+        return Err(io(text_stt::stt_audio_track_missing(req.audio_stream + 1, meta.audio_streams.len())));
     }
     if meta.duration_ms == 0 {
-        return Err(io("길이를 알 수 없는 파일이라 자막을 만들 수 없습니다".into()));
+        return Err(io(text_stt::stt_unknown_duration().into()));
     }
     let (size_bytes, mtime_ms) = store::file_stamp(&src)
-        .ok_or_else(|| io(format!("원본 파일 정보를 읽지 못했습니다: {}", src.display())))?;
+        .ok_or_else(|| io(text_stt::stt_source_stat_failed(&src.display())))?;
 
     // 2. 공간 · 임시 파일
     let tmp_dir = temp_dir(app)?;
@@ -587,7 +581,7 @@ async fn transcribe_inner(
 
     let threads = default_threads();
     log::info!(
-        "[stt] 전사 시작 job={} model={} lang={language} threads={threads} dur={}ms engine={} ({:?})",
+        "[stt] 전사 시작 job={} model={} lang={language} threads={threads} dur={}ms engine={} ({:?})", // i18n-ok: 로그
         req.job_id,
         model.spec.id,
         meta.duration_ms,
@@ -610,7 +604,7 @@ async fn transcribe_inner(
     }, |_| {})
     .await?;
     if !step.ok {
-        return Err(step_failed("오디오 추출", &ff.ffmpeg, &audio_args, step));
+        return Err(step_failed(text_stt::stt_step_audio_extraction(), &ff.ffmpeg, &audio_args, step));
     }
 
     // 4. [transcribe] — 결과가 깨진 UTF-8이면 greedy로 한 번만 다시(§3.1).
@@ -638,7 +632,7 @@ async fn transcribe_inner(
             args.greedy = true;
             let (bytes, vad) = runner.run(&args, &json_abs, &mut cancel_rx).await?;
             // 그래도 깨지면 U+FFFD + cue suspect로 드러낸다(관대 모드는 InvalidUtf8을 내지 않는다).
-            parse_whisper_json(&bytes, &vad, false).map_err(|e| io(format!("음성 인식 결과 해석 실패: {e:?}")))?
+            parse_whisper_json(&bytes, &vad, false).map_err(|e| io(text_stt::stt_result_parse_failed(&e)))?
         }
         Err(WhisperParseError::Malformed(m)) => return Err(io(m)),
     };
@@ -668,7 +662,7 @@ async fn transcribe_inner(
     );
     let loaded = store::write_transcribed(app, &req.project_id, &req.rel_path, doc)?;
     log::info!(
-        "[stt] 전사 완료 job={} cues={} tokens={} wordTiming={:?}",
+        "[stt] 전사 완료 job={} cues={} tokens={} wordTiming={:?}", // i18n-ok: 로그
         req.job_id,
         loaded.doc.cues.len(),
         loaded.doc.tokens.len(),

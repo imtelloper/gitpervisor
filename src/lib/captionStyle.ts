@@ -25,8 +25,6 @@ export const CAPTION_STYLE_PRESETS: Record<CaptionStylePreset, CaptionStyleRow> 
 export const CAPTION_FONT_FAMILIES = ["Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans CJK KR"] as const;
 
 export const CAPTION_STYLE_PRESET_IDS: readonly CaptionStylePreset[] = ["basic", "box", "large"];
-export const CAPTION_STYLE_LABELS: Record<CaptionStylePreset, string> = { basic: "기본", box: "박스", large: "크게" };
-
 export function captionStylePresetOf(doc: CaptionDoc | null): CaptionStylePreset {
   return doc?.stylePreset ?? "basic";
 }

@@ -6,6 +6,7 @@ use serde::Deserialize;
 use tauri::{AppHandle, State};
 
 use crate::error::{ErrorCode, IpcError};
+use crate::i18n::text_stt;
 use crate::state::AppState;
 use crate::stt::doc::{cue_spans, cue_text, strip_invisible, CaptionDoc, TokenKind};
 use crate::stt::plan::{caption_plan, OutCue};
@@ -88,12 +89,12 @@ pub fn select_sub_text(
         return Ok(cues);
     }
     let bad = |m: String| IpcError::new(ErrorCode::Io, m);
-    let lang = lang.ok_or_else(|| bad("번역 자막의 언어가 지정되지 않았습니다".into()))?;
+    let lang = lang.ok_or_else(|| bad(text_stt::caption_translation_lang_missing().into()))?;
     let map = doc
         .translations
         .as_ref()
         .and_then(|t| t.get(lang))
-        .ok_or_else(|| bad(format!("{lang} 번역이 없습니다 — 먼저 번역하세요")))?;
+        .ok_or_else(|| bad(text_stt::caption_translation_missing(lang)))?;
     let mut out = Vec::with_capacity(cues.len());
     let mut missing = 0usize;
     for c in cues {
@@ -104,7 +105,7 @@ pub fn select_sub_text(
         }
     }
     if missing > 0 {
-        return Err(bad(format!("{lang} 번역이 끝나지 않았습니다 — 자막 {missing}줄에 번역이 없습니다")));
+        return Err(bad(text_stt::caption_translation_incomplete(lang, missing)));
     }
     Ok(out)
 }
@@ -189,19 +190,19 @@ pub fn caption_export_subs(
     rel_path: String,
     spec: SubExportSpec,
 ) -> Result<String, IpcError> {
-    let bad = |m: &str| IpcError::new(ErrorCode::Io, format!("자막 내보내기 오류: {m}"));
+    let bad = |m: &str| IpcError::new(ErrorCode::Io, text_stt::caption_export_error(m));
     let want = ext_of(spec.format);
     let ext = std::path::Path::new(&spec.out_rel)
         .extension()
         .and_then(|e| e.to_str())
         .map(str::to_ascii_lowercase);
     if ext.as_deref() != Some(want) {
-        return Err(bad(&format!("파일 확장자가 .{want}여야 합니다")));
+        return Err(bad(&text_stt::caption_export_wrong_extension(want)));
     }
     let repo = crate::commands::project_path(&state, &project_id)?;
     let out = crate::commands::resolve_in_repo(&repo, &spec.out_rel)?;
     if out.exists() && !spec.overwrite {
-        return Err(IpcError::new(ErrorCode::AlreadyExists, format!("{} 파일이 이미 있습니다", spec.out_rel)));
+        return Err(IpcError::new(ErrorCode::AlreadyExists, text_stt::caption_export_file_exists(&spec.out_rel)));
     }
 
     let doc = crate::stt::store::load_required(&app, &project_id, &rel_path)?;
@@ -219,7 +220,7 @@ pub fn caption_export_subs(
     let tmp = out.with_file_name(format!(".gpv-export-{}.tmp", uuid::Uuid::new_v4().simple()));
     if let Err(e) = std::fs::write(&tmp, body.as_bytes()) {
         std::fs::remove_file(&tmp).ok(); // 반쯤 쓴 임시 파일 — 정리 실패는 원래 오류를 가리지 않는다
-        return Err(IpcError::new(ErrorCode::Io, format!("자막 파일 쓰기 실패({}): {e}", tmp.display())));
+        return Err(IpcError::new(ErrorCode::Io, text_stt::caption_file_write_failed(&tmp.display(), &e)));
     }
     crate::commands::commit_tmp_output(&tmp, &out)?;
     Ok(spec.out_rel)

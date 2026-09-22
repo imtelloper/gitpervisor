@@ -49,6 +49,7 @@ import {
   toggleCaptionCut,
   type CaptionSelection,
 } from "../../../lib/captionEdit";
+import { useMessages } from "../../../i18n/ui-language";
 import {
   captionDefaultTranslateLang,
   captionLangLabel,
@@ -64,7 +65,6 @@ import {
   HAS_SETTINGS_DIALOG,
   rememberSttChoice,
   STT_LANGUAGES,
-  STT_PHASE_LABEL,
   sttAudioTrackLabel,
   sttReadyReason,
   useSttStatus,
@@ -83,10 +83,6 @@ const NOW_CLS = ["text-accent", "underline", "decoration-2", "underline-offset-4
 const PASS_TO_PLAYER = new Set(["ArrowLeft", "ArrowRight", ",", ".", "m", "M", "f", "F", "-", "=", "+"]);
 
 const PROMPT_MAX = 500;
-
-/** 근사 단어 시각 문서의 컷 비활성 이유 — 다시 인식하라고 하지 않는다(brew 엔진은 다시 돌려도 근사값일 수 있다). */
-const APPROX_CUT =
-  "이 자막은 단어 시각이 근사값이라(인식 엔진이 단어 시각을 주지 않았다) 자르기·무음 줄이기·편집본 내보내기를 쓸 수 없습니다. 보기·고치기·자막 파일 내보내기는 됩니다.";
 
 /** 추임새 목록 — 창·앱 재시작을 넘어 기억한다(개인 취향이라 설정 파일이 아니라 로컬). */
 const FILLERS_KEY = "gp:caption-fillers";
@@ -254,6 +250,7 @@ const CueRow = memo(function CueRow({
   silenceMinMs: number | undefined;
   h: RowHandlers;
 }) {
+  const tx = useMessages().captions.transcript;
   const firstWord = tokens.find((t) => t.kind === "word");
   const startMs = (firstWord ?? tokens[0])?.startMs ?? 0;
   const override = !!cue.caption?.trim();
@@ -265,7 +262,7 @@ const CueRow = memo(function CueRow({
       <div className="mb-0.5 flex items-center gap-1.5 text-[10px]">
         <button
           onClick={() => h.seek(startMs)}
-          title="이 자막 줄 처음으로 이동"
+          title={tx.seekCueStart}
           className="font-mono tabular-nums text-fg-dim hover:text-accent"
         >
           {fmtTime(startMs / 1000)}
@@ -273,13 +270,9 @@ const CueRow = memo(function CueRow({
         {cue.suspect && (
           <span
             className="rounded bg-warn/15 px-1 text-warn"
-            title={
-              cue.suspect === "repeat"
-                ? "같은 문장이 연달아 반복됐습니다 — 인식 엔진의 환각일 수 있으니 원본을 들어 보세요"
-                : "인식 결과에 깨진 글자가 있어 �로 바꿨습니다 — 직접 고쳐 주세요"
-            }
+            title={cue.suspect === "repeat" ? tx.suspectRepeatTitle : tx.suspectGarbledTitle}
           >
-            {cue.suspect === "repeat" ? "반복 의심" : "깨진 글자"}
+            {cue.suspect === "repeat" ? tx.suspectRepeat : tx.suspectGarbled}
           </span>
         )}
       </div>
@@ -287,7 +280,7 @@ const CueRow = memo(function CueRow({
       {/* 영상 줄 — 인식 단어. 텍스트 수정은 인식 교정(시각 그대로), Delete는 컷(영상에서 뺀다). */}
       <div
         className="leading-6 text-fg"
-        title="영상 줄 — 인식된 단어 (더블클릭·F2 고치기 · Shift+F2 자막 줄 고치기 · Alt+Shift+F2 번역 줄 고치기 · Delete 자르기/되살리기 · cue 첫 단어의 Backspace는 위와 합치기)"
+        title={tx.wordLineTitle}
       >
         {tokens.map((t, j) => {
           const i = first + j;
@@ -304,10 +297,10 @@ const CueRow = memo(function CueRow({
                 onMouseEnter={(e) => h.enter(e, t)}
                 title={
                   t.cut
-                    ? "잘린 쉼 — 편집본에서 빠집니다"
+                    ? tx.gapCutTitle
                     : kept != null
-                      ? `쉼 ${len}초 → ${(kept / 1000).toFixed(1)}초로 줄임(무음 줄이기)`
-                      : "쉼(무음)"
+                      ? tx.gapShortenedTitle((t.endMs - t.startMs) / 1000, kept / 1000)
+                      : tx.gapTitle
                 }
                 className={`mr-1 inline-block cursor-pointer rounded px-1 font-mono text-[10px] leading-4 ${
                   sel ? "bg-selection" : "bg-raised"
@@ -356,22 +349,18 @@ const CueRow = memo(function CueRow({
           <div
             data-gpv="caption-line"
             onClick={() => h.editCaption(cue.id)}
-            title={
-              readOnly
-                ? "자막 줄"
-                : "자막 줄 — 클릭(또는 단어를 고른 뒤 Shift+F2)해 자막만 고칩니다(영상은 그대로, 잘린 말은 빠짐)"
-            }
+            title={readOnly ? tx.captionLine : tx.captionLineEditTitle}
             className={`min-w-0 flex-1 whitespace-pre-line rounded px-1 ${readOnly ? "" : "cursor-text hover:bg-raised"} ${
               override ? "text-accent" : "text-fg-muted"
             } ${hitCls("caption")}`}
           >
-            {captionText || <span className="italic text-fg-dim">(빈 자막)</span>}
+            {captionText || <span className="italic text-fg-dim">{tx.emptyCaption}</span>}
           </div>
         )}
         {override && !readOnly && !editingCaption && (
           <button
             onClick={() => h.follow(cue.id)}
-            title="인식 텍스트 따라가기 — 자막 줄 수정을 지웁니다"
+            title={tx.followRecognized}
             className="mt-0.5 shrink-0 text-accent hover:text-fg"
           >
             <Link2 size={11} />
@@ -388,23 +377,19 @@ const CueRow = memo(function CueRow({
             <div
               data-gpv="translation-line"
               onClick={() => h.editTrans(cue.id)}
-              title={
-                readOnly
-                  ? "번역 줄"
-                  : "번역 줄 — 클릭(또는 단어를 고른 뒤 Alt+Shift+F2)해 고칩니다(비우면 이 줄 번역을 지웁니다)"
-              }
+              title={readOnly ? tx.translationLine : tx.translationLineEditTitle}
               className={`min-w-0 flex-1 whitespace-pre-line rounded px-1 text-fg-muted ${readOnly ? "" : "cursor-text hover:bg-raised"}`}
             >
-              {trans || <span className="italic text-fg-dim">(번역 없음)</span>}
+              {trans || <span className="italic text-fg-dim">{tx.noTranslation}</span>}
             </div>
           )}
           {transStale && !editingTrans && (
             <span
               data-gpv="translation-stale"
               className="mt-0.5 shrink-0 rounded bg-warn/15 px-1 text-[10px] text-warn"
-              title="번역한 뒤 원문이 바뀌었습니다 — 번역에서 이어서 번역하면 다시 번역합니다"
+              title={tx.translationStaleTitle}
             >
-              원문 바뀜
+              {tx.sourceChanged}
             </span>
           )}
         </div>
@@ -432,6 +417,8 @@ function TranscribeForm({
   label: string;
   onStart: (opts: TranscribeOpts) => void;
 }) {
+  const msg = useMessages();
+  const tx = msg.captions.transcript;
   const qc = useQueryClient();
   const openSettings = useUi((s) => s.openSettings);
   const { data: settings } = useSettings();
@@ -462,18 +449,18 @@ function TranscribeForm({
     <div className="space-y-2">
       <div className="grid grid-cols-2 gap-2">
         <label className="block space-y-1">
-          <span className="block text-[11px] text-fg-dim">모델</span>
+          <span className="block text-[11px] text-fg-dim">{tx.model}</span>
           <select value={modelId} onChange={(e) => setModelPick(e.target.value)} className={`${fieldCls} w-full`}>
             {(stt?.models ?? []).map((m) => (
               <option key={m.id} value={m.id}>
                 {m.label}
-                {m.installed ? "" : " (미설치)"}
+                {m.installed ? "" : tx.notInstalledSuffix}
               </option>
             ))}
           </select>
         </label>
         <label className="block space-y-1">
-          <span className="block text-[11px] text-fg-dim">언어</span>
+          <span className="block text-[11px] text-fg-dim">{tx.language}</span>
           <select value={language} onChange={(e) => setLangPick(e.target.value)} className={`${fieldCls} w-full`}>
             {STT_LANGUAGES.map((l) => (
               <option key={l.code} value={l.code}>
@@ -486,7 +473,7 @@ function TranscribeForm({
       {/* 트랙이 하나면 고를 것이 없다 — OBS 다중 트랙(마이크·데스크톱 소리 분리) 녹화에서만 보인다. */}
       {streams.length >= 2 && (
         <label className="block space-y-1">
-          <span className="block text-[11px] text-fg-dim">오디오 트랙</span>
+          <span className="block text-[11px] text-fg-dim">{tx.audioTrack}</span>
           <select
             data-gpv="stt-audio-track"
             value={track}
@@ -503,24 +490,22 @@ function TranscribeForm({
       )}
       <label className="block space-y-1">
         <span className="block text-[11px] text-fg-dim">
-          용어 힌트(선택){isWindows ? " — Windows는 영문·숫자만" : ""}
+          {isWindows ? tx.promptLabelWindows : tx.promptLabel}
         </span>
         <input
           value={prompt}
           maxLength={PROMPT_MAX}
           onChange={(e) => setPrompt(e.target.value)}
-          placeholder="고유명사를 쉼표로 — 예: Gitpervisor, Tauri, whisper"
+          placeholder={tx.promptPlaceholder}
           spellCheck={false}
           className={`${fieldCls} w-full`}
         />
       </label>
       {promptBad && (
-        <div className="text-[11px] text-warn">
-          Windows에서는 인식 엔진이 명령줄의 한글을 깨뜨립니다 — 용어 힌트는 영문·숫자로만 적어 주세요.
-        </div>
+        <div className="text-[11px] text-warn">{tx.promptNonAscii}</div>
       )}
       {hasAudio === false && (
-        <div className="text-[11px] text-warn">이 영상에는 오디오 트랙이 없어 자막을 만들 수 없습니다.</div>
+        <div className="text-[11px] text-warn">{tx.noAudio}</div>
       )}
       {notReady && (
         <div className="space-y-1.5 rounded border border-edge bg-base px-2 py-1.5">
@@ -537,13 +522,13 @@ function TranscribeForm({
                   onClick={() => openSettings(notReady.fix === "ffmpeg" ? "codetools" : "ai")}
                   className={smallBtn}
                 >
-                  {notReady.fix === "ffmpeg" ? "설정 › 코드 도구 열기" : "설정 › AI 열기"}
+                  {notReady.fix === "ffmpeg" ? tx.openCodeToolsSettings : msg.captions.openAiSettings}
                 </button>
               ) : (
-                <span className="text-[11px] text-fg-dim">메인 창의 설정에서 받을 수 있습니다.</span>
+                <span className="text-[11px] text-fg-dim">{msg.captions.settingsInMainWindow}</span>
               ))}
-            <button onClick={recheck} className={smallBtn} title="설치했으면 다시 확인합니다">
-              다시 확인
+            <button onClick={recheck} className={smallBtn} title={tx.recheckTitle}>
+              {tx.recheck}
             </button>
           </div>
         </div>
@@ -583,6 +568,7 @@ function SilencePanel({
   onClear: () => void;
   onSeek: (ms: number) => void;
 }) {
+  const tx = useMessages().captions.transcript;
   const applied = doc.silenceKeepMs != null;
   const [minS, setMinS] = useState(() => String((doc.silenceMinMs ?? doc.silenceKeepMs ?? 1000) / 1000));
   const [keepS, setKeepS] = useState(() => String((doc.silenceKeepMs ?? 600) / 1000));
@@ -606,27 +592,27 @@ function SilencePanel({
           step={0.1}
           value={minS}
           onChange={(e) => setMinS(e.target.value)}
-          aria-label="조건 — 이보다 긴 쉼(초)"
+          aria-label={tx.silenceMinAria}
           className={`${fieldCls} w-16 font-mono`}
         />
-        <span>초 넘는 쉼을</span>
+        <span>{tx.silenceOver}</span>
         <input
           type="number"
           min={0}
           step={0.1}
           value={keepS}
           onChange={(e) => setKeepS(e.target.value)}
-          aria-label="목표 길이(초)"
+          aria-label={tx.silenceKeepAria}
           className={`${fieldCls} w-16 font-mono`}
         />
-        <span>초로 줄이기</span>
+        <span>{tx.silenceTo}</span>
       </div>
       {invalid ? (
-        <div className="text-[11px] text-warn">길이는 0 이상, 앞 칸(조건)은 뒤 칸(목표) 이상이어야 합니다.</div>
+        <div className="text-[11px] text-warn">{tx.silenceInvalid}</div>
       ) : (
         <div className="text-fg">
-          {hits.length}곳 · 총 {(savedMs / 1000).toFixed(1)}초 줄어듦
-          {same && <span className="ml-1.5 text-accent">(적용됨)</span>}
+          {tx.silenceSummary(hits.length, savedMs / 1000)}
+          {same && <span className="ml-1.5 text-accent">{tx.silenceAppliedNote}</span>}
         </div>
       )}
       {hits.length > 0 && (
@@ -635,7 +621,7 @@ function SilencePanel({
             <button
               key={x.tokenId}
               onClick={() => onSeek(x.startMs)}
-              title="이 쉼으로 이동"
+              title={tx.seekPause}
               className="flex w-full items-center gap-2 px-2 py-0.5 text-left font-mono tabular-nums hover:bg-raised"
             >
               <span className="text-fg-dim">{fmtTime(x.startMs / 1000)}</span>
@@ -653,23 +639,20 @@ function SilencePanel({
           disabled={!!blocked || invalid || hits.length === 0 || same}
           className="flex-1 rounded bg-accent/20 px-3 py-1 font-semibold text-accent hover:bg-accent/30 disabled:bg-transparent disabled:font-normal disabled:text-fg-muted"
         >
-          {same ? "적용됨" : applied ? "바꿔 적용" : "적용"}
+          {same ? tx.silenceApplied : applied ? tx.silenceReapply : tx.silenceApply}
         </button>
         {applied && (
           <button
             onClick={onClear}
             disabled={locked}
-            title="모든 쉼을 원래 길이로 되돌립니다"
+            title={tx.silenceRestoreTitle}
             className={smallBtn}
           >
-            복구
+            {tx.silenceRestore}
           </button>
         )}
       </div>
-      <div className="text-[11px] text-fg-dim">
-        쉼의 가운데를 덜어 양 끝에 절반씩 남깁니다. 원본 파일은 그대로이고, 편집 반영 재생·편집본 내보내기에만
-        쓰입니다({modLabel}+Z로도 되돌립니다).
-      </div>
+      <div className="text-[11px] text-fg-dim">{tx.silenceHelp(modLabel)}</div>
     </div>
   );
 }
@@ -700,6 +683,8 @@ export const TranscriptPanel = memo(function TranscriptPanel({
   /** 선택한 cue 범위를 플레이어 구간(In/Out)으로 — 기존 단일 구간 내보내기가 받는다(§3.6). */
   onSetRangeDocMs: (startMs: number, endMs: number) => void;
 }) {
+  const msg = useMessages();
+  const tx = msg.captions.transcript;
   const qc = useQueryClient();
   const pushToast = useUi((s) => s.pushToast);
   const askConfirm = useUi((s) => s.askConfirm);
@@ -944,12 +929,8 @@ export const TranscriptPanel = memo(function TranscriptPanel({
       n = r.replaced;
       return r.doc;
     });
-    if (total === 0) pushToast("info", "바꿀 곳이 없습니다");
-    else
-      pushToast(
-        "success",
-        `${n}곳 바꿨습니다${n < total ? ` — ${total - n}곳은 단어가 비게 돼 건너뛰었습니다` : ""}`,
-      );
+    if (total === 0) pushToast("info", tx.replaceNone);
+    else pushToast("success", tx.replaced(n, total - n));
   };
 
   // ── 컷(P2) — 토큰을 지우지 않고 cut 표시만. 남길 구간은 저장 응답의 plan(Rust)이 계산한다 ──
@@ -957,7 +938,7 @@ export const TranscriptPanel = memo(function TranscriptPanel({
   const cutSelection = () => {
     if (!doc || !range) return;
     if (!cutAllowed) {
-      pushToast("info", APPROX_CUT);
+      pushToast("info", tx.approxCut);
       return;
     }
     edit((d) => {
@@ -975,9 +956,8 @@ export const TranscriptPanel = memo(function TranscriptPanel({
       skipped = r.skipped;
       return cutCaptionTokens(d, r.ids);
     });
-    const skip = skipped ? ` — 단어 일부만 맞았거나 자막 줄에서 찾은 ${skipped}곳은 건너뛰었습니다` : "";
-    if (ok) pushToast("success", `${places}곳을 잘랐습니다${skip}`);
-    else pushToast("info", `${places ? "이미 모두 잘려 있습니다" : "자를 곳이 없습니다"}${skip}`);
+    if (ok) pushToast("success", tx.cutFoundDone(places, skipped));
+    else pushToast("info", places ? tx.cutFoundAlready(skipped) : tx.cutFoundNone(skipped));
   };
   const cutFillers = () => {
     let n = 0;
@@ -986,7 +966,7 @@ export const TranscriptPanel = memo(function TranscriptPanel({
       n = ids.length;
       return cutCaptionTokens(d, ids);
     });
-    if (ok) pushToast("success", `추임새 ${n}곳을 잘랐습니다 — ${modLabel}+Z로 되돌립니다`);
+    if (ok) pushToast("success", tx.fillersCut(n, modLabel));
   };
   const changeFillers = (text: string) => {
     setFillerText(text);
@@ -1127,10 +1107,7 @@ export const TranscriptPanel = memo(function TranscriptPanel({
     const r = captionSelectionTimeRange(doc, spans, range);
     if (!r) return;
     onSetRangeDocMs(r.startMs, r.endMs);
-    pushToast(
-      "info",
-      `구간 ${fmtTime(r.startMs / 1000)} ~ ${fmtTime(r.endMs / 1000)} — 편집 › 내보내기에서 클립·GIF로 저장합니다`,
-    );
+    pushToast("info", tx.rangeSet(fmtTime(r.startMs / 1000), fmtTime(r.endMs / 1000)));
   };
 
   // ── 전사 ──
@@ -1144,13 +1121,13 @@ export const TranscriptPanel = memo(function TranscriptPanel({
         .then((changed) => {
           if (changed) void qc.invalidateQueries({ queryKey: ["settings"] });
         })
-        .catch((err) => pushToast("error", `모델·언어 기본값을 기억하지 못했습니다 — ${errorMessage(err)}`));
+        .catch((err) => pushToast("error", tx.rememberChoiceFailed(errorMessage(err))));
     };
     if (doc)
       askConfirm({
-        title: "다시 인식",
-        message: "지금 자막(편집 포함)을 새 인식 결과로 바꿉니다. 직전 판은 한 세대 백업으로 남습니다.",
-        confirmLabel: "다시 인식",
+        title: tx.retranscribe,
+        message: tx.retranscribeConfirm,
+        confirmLabel: tx.retranscribe,
         danger: true,
         onConfirm: go,
       });
@@ -1187,7 +1164,7 @@ export const TranscriptPanel = memo(function TranscriptPanel({
     try {
       // 내보내기는 Rust가 **저장본**을 읽는다 — 대기 중인 편집을 먼저 디스크에 보낸다.
       if (!(await useCaptionDoc.getState().flush(key))) {
-        pushToast("error", "저장되지 않은 편집이 있어 내보내지 않았습니다 — 패널 위 안내를 먼저 해결하세요");
+        pushToast("error", tx.unsavedBlocksExport);
         return;
       }
       const rel = await ipc.captionExportSubs(projectId, path, {
@@ -1198,16 +1175,16 @@ export const TranscriptPanel = memo(function TranscriptPanel({
         outRel: splitPath(path).dir + name,
         overwrite,
       });
-      pushToast("success", `자막 파일 저장 — ${baseName(rel)}`);
+      pushToast("success", tx.subsSaved(baseName(rel)));
       void qc.invalidateQueries({ queryKey: ["dir"] });
       void qc.invalidateQueries({ queryKey: ["statuses"] });
       setPopup("none");
     } catch (err) {
       if (isIpcError(err) && err.code === "ALREADY_EXISTS" && !overwrite)
         askConfirm({
-          title: "덮어쓰기",
-          message: `${name} 파일이 이미 있습니다. 덮어쓸까요?`,
-          confirmLabel: "덮어쓰기",
+          title: tx.overwrite,
+          message: tx.overwriteConfirm(name),
+          confirmLabel: tx.overwrite,
           danger: true,
           onConfirm: () => void exportSubs(true),
         });
@@ -1220,11 +1197,11 @@ export const TranscriptPanel = memo(function TranscriptPanel({
   const saveLabel = !entry
     ? ""
     : entry.saving
-      ? "저장 중…"
+      ? tx.saving
       : entry.dirty
-        ? "저장 대기"
+        ? tx.savePending
         : doc && !readOnly
-          ? "저장됨"
+          ? tx.saved
           : "";
 
   return (
@@ -1237,18 +1214,18 @@ export const TranscriptPanel = memo(function TranscriptPanel({
     >
       {/* 헤더 */}
       <div className="flex h-8 shrink-0 items-center gap-0.5 border-b border-edge px-2">
-        <span className="font-semibold text-fg">대본</span>
+        <span className="font-semibold text-fg">{tx.title}</span>
         {saveLabel && <span className="ml-1.5 text-[10px] text-fg-dim">{saveLabel}</span>}
         <div className="flex-1" />
         {doc && (
           <>
-            <button onClick={() => openFind(false)} title={`찾기 (${modLabel}+F)`} className={iconBtn}>
+            <button onClick={() => openFind(false)} title={tx.findTitle(modLabel)} className={iconBtn}>
               <Search size={13} />
             </button>
             <button
               onClick={() => openFind(true)}
               disabled={locked}
-              title={`찾아 바꾸기 (${isMac ? "⌥⌘F" : "Ctrl+H"})`}
+              title={tx.findReplaceTitle(isMac ? "⌥⌘F" : "Ctrl+H")}
               className={iconBtn}
             >
               <Replace size={13} />
@@ -1256,7 +1233,7 @@ export const TranscriptPanel = memo(function TranscriptPanel({
             <button
               onClick={() => useCaptionDoc.getState().undo(key)}
               disabled={locked || !entry?.past.length}
-              title={`되돌리기 (${modLabel}+Z)${entry?.past.length ? ` · ${entry.past.length}단계` : ""}`}
+              title={tx.undoTitle(modLabel, entry?.past.length ?? 0)}
               className={iconBtn}
             >
               <Undo2 size={13} />
@@ -1264,7 +1241,7 @@ export const TranscriptPanel = memo(function TranscriptPanel({
             <button
               onClick={() => useCaptionDoc.getState().redo(key)}
               disabled={locked || !entry?.future.length}
-              title={isMac ? "다시 실행 (⇧⌘Z)" : "다시 실행 (Ctrl+Y)"}
+              title={tx.redoTitle(isMac ? "⇧⌘Z" : "Ctrl+Y")}
               className={iconBtn}
             >
               <Redo2 size={13} />
@@ -1272,20 +1249,16 @@ export const TranscriptPanel = memo(function TranscriptPanel({
             <button
               onClick={setRangeFromSelection}
               disabled={!range}
-              title={
-                range
-                  ? "선택한 자막 줄 구간을 플레이어 구간(In/Out)으로 — 편집 › 내보내기에서 클립·GIF로"
-                  : "단어를 클릭(Shift+클릭·드래그로 범위)해 자막 줄을 먼저 고르세요"
-              }
+              title={range ? tx.rangeTitle : tx.rangeNeedSelection}
               className={`${iconBtn} flex items-center gap-0.5`}
             >
               <Scissors size={13} />
-              <span className="text-[11px]">구간</span>
+              <span className="text-[11px]">{tx.range}</span>
             </button>
             <button
               data-gpv="silence-toggle"
               onClick={() => setPopup((p) => (p === "silence" ? "none" : "silence"))}
-              title={doc.silenceKeepMs != null ? "무음 줄이기 — 적용됨" : "무음 줄이기 — 긴 쉼을 짧게"}
+              title={doc.silenceKeepMs != null ? tx.silenceToggleApplied : tx.silenceToggle}
               className={`${iconBtn} ${popup === "silence" ? "bg-raised" : ""} ${
                 popup === "silence" || doc.silenceKeepMs != null ? "text-accent" : ""
               }`}
@@ -1296,7 +1269,7 @@ export const TranscriptPanel = memo(function TranscriptPanel({
               data-gpv="hide-cut-toggle"
               onClick={() => setHideCut((v) => !v)}
               aria-pressed={hideCut}
-              title={hideCut ? "잘린 부분 보이기" : "잘린 부분 숨기기"}
+              title={hideCut ? tx.showCut : tx.hideCut}
               className={`${iconBtn} ${hideCut ? "bg-raised text-accent" : ""}`}
             >
               <EyeOff size={13} />
@@ -1306,10 +1279,10 @@ export const TranscriptPanel = memo(function TranscriptPanel({
               onClick={() => setPopup((p) => (p === "translate" ? "none" : "translate"))}
               title={
                 translating
-                  ? "번역 중 — 진행·취소"
+                  ? tx.translateToggleBusy
                   : entry?.translateError
-                    ? `번역 자막 — ${entry.translateError}`
-                    : "번역 자막 — 로컬 AI로 자막 줄마다 번역"
+                    ? tx.translateToggleError(entry.translateError)
+                    : tx.translateToggle
               }
               className={`${iconBtn} ${popup === "translate" ? "bg-raised" : ""} ${
                 popup === "translate" || translating ? "text-accent" : entry?.translateError ? "text-warn" : ""
@@ -1321,7 +1294,7 @@ export const TranscriptPanel = memo(function TranscriptPanel({
               data-gpv="subs-export-toggle"
               onClick={() => setPopup((p) => (p === "export" ? "none" : "export"))}
               disabled={!!job}
-              title={job ? "자막을 만드는 중에는 내보낼 수 없습니다" : "자막 파일(SRT·VTT·TXT)로 저장"}
+              title={job ? tx.exportToggleBusy : tx.exportToggle}
               className={`${iconBtn} ${popup === "export" ? "bg-raised text-accent" : ""}`}
             >
               <Download size={13} />
@@ -1330,11 +1303,7 @@ export const TranscriptPanel = memo(function TranscriptPanel({
               onClick={() => setPopup((p) => (p === "form" ? "none" : "form"))}
               disabled={!!job || readOnly || translating}
               title={
-                readOnly
-                  ? "새 버전 앱에서 만든 자막 문서라 다시 인식해도 저장할 수 없습니다 — 앱을 업데이트하세요"
-                  : translating
-                    ? "번역 중에는 다시 인식할 수 없습니다 — 번역을 끝내거나 취소하세요"
-                    : "다시 인식 — 모델·언어를 골라 자막을 새로 만듭니다"
+                readOnly ? tx.retranscribeReadOnly : translating ? tx.retranscribeTranslating : tx.retranscribeTitle
               }
               className={`${iconBtn} ${popup === "form" ? "bg-raised text-accent" : ""}`}
             >
@@ -1349,11 +1318,11 @@ export const TranscriptPanel = memo(function TranscriptPanel({
         <div data-gpv="stt-progress" className="shrink-0 space-y-1 border-b border-edge px-3 py-2">
           <div className="flex items-center gap-2">
             <Loader2 size={12} className="animate-spin text-accent" />
-            <span className="text-fg">{STT_PHASE_LABEL[job.phase]} 중…</span>
+            <span className="text-fg">{msg.captions.stt.phaseProgress[job.phase]}</span>
             <span className="font-mono tabular-nums">{job.percent}%</span>
             {job.remainingMs != null && (
-              <span data-gpv="stt-eta" className="text-fg-dim" title="지금까지의 인식 속도로 잰 추정입니다">
-                {job.remainingMs < 60_000 ? "1분 안에 끝남" : `약 ${Math.ceil(job.remainingMs / 60_000)}분 남음`}
+              <span data-gpv="stt-eta" className="text-fg-dim" title={tx.etaTitle}>
+                {job.remainingMs < 60_000 ? tx.etaUnderMinute : tx.etaMinutes(Math.ceil(job.remainingMs / 60_000))}
               </span>
             )}
             <div className="flex-1" />
@@ -1361,15 +1330,13 @@ export const TranscriptPanel = memo(function TranscriptPanel({
               onClick={() => useCaptionDoc.getState().cancelTranscribe(key)}
               className={`${smallBtn} text-warn`}
             >
-              취소
+              {msg.captions.cancel}
             </button>
           </div>
           <div className="h-1.5 overflow-hidden rounded bg-raised">
             <div className="h-full rounded bg-accent transition-[width]" style={{ width: `${job.percent}%` }} />
           </div>
-          <div className="text-[11px] text-fg-dim">
-            CPU로 인식합니다 — 긴 영상은 수 분 걸립니다. 그동안 이 영상의 편집·내보내기·분할은 잠깁니다.
-          </div>
+          <div className="text-[11px] text-fg-dim">{tx.cpuNote}</div>
         </div>
       )}
 
@@ -1379,45 +1346,41 @@ export const TranscriptPanel = memo(function TranscriptPanel({
       )}
       {entry?.loadError && (
         <div className="flex shrink-0 items-start gap-2 border-b border-edge bg-danger/10 px-3 py-1.5 text-danger">
-          <span className="min-w-0 flex-1">자막 문서를 읽지 못했습니다 — {entry.loadError}</span>
+          <span className="min-w-0 flex-1">{tx.loadFailed(entry.loadError)}</span>
           <button onClick={() => void useCaptionDoc.getState().reload(key)} className={smallBtn}>
-            다시 읽기
+            {tx.reload}
           </button>
         </div>
       )}
       {readOnly && (
-        <div className="shrink-0 border-b border-edge bg-warn/10 px-3 py-1.5 text-warn">
-          새 버전 앱에서 만든 자막 문서라 읽기만 합니다 — 앱을 업데이트하면 고칠 수 있습니다.
-        </div>
+        <div className="shrink-0 border-b border-edge bg-warn/10 px-3 py-1.5 text-warn">{tx.readOnlyBanner}</div>
       )}
       {entry?.stale && doc && (
-        <div className="shrink-0 border-b border-edge bg-warn/10 px-3 py-1.5 text-warn">
-          원본 영상이 바뀌어 자막 시각이 어긋날 수 있습니다 — 오른쪽 위 ⟳로 다시 인식하세요.
-        </div>
+        <div className="shrink-0 border-b border-edge bg-warn/10 px-3 py-1.5 text-warn">{tx.staleBanner}</div>
       )}
       {doc && !cutAllowed && !readOnly && (
         <div data-gpv="approx-note" className="shrink-0 border-b border-edge bg-warn/10 px-3 py-1.5 text-warn">
-          {APPROX_CUT}
+          {tx.approxCut}
         </div>
       )}
       {entry?.conflict && (
         <div className="shrink-0 space-y-1 border-b border-edge bg-warn/10 px-3 py-1.5 text-warn">
-          <div>다른 창에서 이 자막을 고쳐 저장했습니다. 여기 편집은 아직 저장되지 않았습니다.</div>
+          <div>{tx.conflictBanner}</div>
           <div className="flex gap-1.5">
             <button onClick={() => void useCaptionDoc.getState().reload(key)} className={smallBtn}>
-              다시 불러오기(여기 편집 버림)
+              {tx.conflictReload}
             </button>
             <button onClick={() => void useCaptionDoc.getState().overwriteConflict(key)} className={smallBtn}>
-              여기 편집으로 덮어쓰기
+              {tx.conflictOverwrite}
             </button>
           </div>
         </div>
       )}
       {entry?.saveError && !entry.conflict && (
         <div className="flex shrink-0 items-start gap-2 border-b border-edge bg-danger/10 px-3 py-1.5 text-danger">
-          <span className="min-w-0 flex-1">저장하지 못했습니다 — {entry.saveError}</span>
+          <span className="min-w-0 flex-1">{tx.saveFailed(entry.saveError)}</span>
           <button onClick={() => void useCaptionDoc.getState().flush(key)} className={smallBtn}>
-            다시 저장
+            {tx.retrySave}
           </button>
         </div>
       )}
@@ -1443,24 +1406,24 @@ export const TranscriptPanel = memo(function TranscriptPanel({
                   closeFind();
                 }
               }}
-              placeholder="찾기 (Enter 다음 · Shift+Enter 이전)"
+              placeholder={tx.findPlaceholder}
               spellCheck={false}
               className={`${fieldCls} min-w-0 flex-1`}
             />
             <span className="w-12 shrink-0 text-center font-mono text-[10px] tabular-nums text-fg-dim">
               {query.trim() ? `${matches.length ? curHit + 1 : 0}/${matches.length}` : ""}
             </span>
-            <button onClick={() => stepHit(-1)} disabled={!matches.length} title="이전" className={iconBtn}>
+            <button onClick={() => stepHit(-1)} disabled={!matches.length} title={tx.prev} className={iconBtn}>
               ↑
             </button>
-            <button onClick={() => stepHit(1)} disabled={!matches.length} title="다음" className={iconBtn}>
+            <button onClick={() => stepHit(1)} disabled={!matches.length} title={tx.next} className={iconBtn}>
               ↓
             </button>
             <button
               data-gpv="find-cut-all"
               onClick={cutAllFound}
               disabled={!matches.length || locked || !cutAllowed}
-              title="찾은 곳 모두 컷 — 단어 전체와 맞은 곳만 자릅니다(일부만 맞은 곳은 건너뜀)"
+              title={tx.cutAllFoundTitle}
               className={iconBtn}
             >
               <Scissors size={12} />
@@ -1469,20 +1432,20 @@ export const TranscriptPanel = memo(function TranscriptPanel({
               data-gpv="filler-toggle"
               onClick={() => setFillerOpen((v) => !v)}
               disabled={locked || !cutAllowed}
-              title="추임새 단어 목록 — 한 번에 자르기"
+              title={tx.fillerToggleTitle}
               className={`${iconBtn} text-[11px] ${fillerOpen ? "bg-raised text-accent" : ""}`}
             >
-              추임새
+              {tx.fillers}
             </button>
             <button
               onClick={() => setFind((f) => ({ ...f, replace: !f.replace }))}
               disabled={locked}
-              title="바꾸기 열기/닫기"
+              title={tx.replaceToggleTitle}
               className={`${iconBtn} ${find.replace ? "text-accent" : ""}`}
             >
               <Replace size={12} />
             </button>
-            <button onClick={closeFind} title="닫기 (Esc)" className={iconBtn}>
+            <button onClick={closeFind} title={tx.closeFindTitle} className={iconBtn}>
               <X size={12} />
             </button>
           </div>
@@ -1501,15 +1464,15 @@ export const TranscriptPanel = memo(function TranscriptPanel({
                     closeFind();
                   }
                 }}
-                placeholder="바꿀 글 (텍스트만 — 영상·시각은 그대로)"
+                placeholder={tx.replacePlaceholder}
                 spellCheck={false}
                 className={`${fieldCls} min-w-0 flex-1`}
               />
               <button onClick={replaceOne} disabled={!cur} className={smallBtn}>
-                바꾸기
+                {tx.replaceOne}
               </button>
               <button onClick={replaceAll} disabled={!matches.length} className={smallBtn}>
-                모두
+                {tx.replaceAll}
               </button>
             </div>
           )}
@@ -1519,18 +1482,15 @@ export const TranscriptPanel = memo(function TranscriptPanel({
                 <input
                   value={fillerText}
                   onChange={(e) => changeFillers(e.target.value)}
-                  placeholder="추임새 단어 — 쉼표로 (예: 음, 어, 그)"
+                  placeholder={tx.fillerPlaceholder}
                   spellCheck={false}
                   className={`${fieldCls} min-w-0 flex-1`}
                 />
                 <button onClick={cutFillers} disabled={fillerIds.length === 0} className={smallBtn}>
-                  {fillerIds.length}곳 모두 컷
+                  {tx.cutAllFillers(fillerIds.length)}
                 </button>
               </div>
-              <div className="text-[11px] text-fg-dim">
-                단어 전체가 목록과 같은 곳만 자릅니다(앞뒤 문장부호 무시). 인식 엔진이 추임새를 빼고 적는 일이 많아
-                전부 잡히지는 않습니다.
-              </div>
+              <div className="text-[11px] text-fg-dim">{tx.fillerHelp}</div>
             </div>
           )}
         </div>
@@ -1540,7 +1500,7 @@ export const TranscriptPanel = memo(function TranscriptPanel({
       {popup === "silence" && doc && (
         <SilencePanel
           doc={doc}
-          blocked={readOnly ? "읽기 전용 문서입니다" : job ? "자막을 만드는 중입니다" : cutAllowed ? null : APPROX_CUT}
+          blocked={readOnly ? tx.silenceReadOnly : job ? tx.silenceBusy : cutAllowed ? null : tx.approxCut}
           locked={locked}
           onApply={(minMs, keepMs) => edit((d) => setCaptionSilence(d, { minMs, keepMs }))}
           onClear={() => edit((d) => setCaptionSilence(d, null))}
@@ -1552,7 +1512,7 @@ export const TranscriptPanel = memo(function TranscriptPanel({
       {popup === "export" && doc && (
         <div data-gpv="subs-export" className="shrink-0 space-y-1.5 border-b border-edge px-3 py-2">
           <div className="flex items-center gap-2">
-            <span className="text-[11px] text-fg-dim">형식</span>
+            <span className="text-[11px] text-fg-dim">{tx.exportFormat}</span>
             <div className="flex overflow-hidden rounded border border-edge">
               {(["srt", "vtt", "txt"] as const).map((f) => (
                 <button
@@ -1566,28 +1526,24 @@ export const TranscriptPanel = memo(function TranscriptPanel({
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-[11px] text-fg-dim">시각</span>
+            <span className="text-[11px] text-fg-dim">{tx.exportTiming}</span>
             <div className="flex overflow-hidden rounded border border-edge">
               {(["source", "edited"] as const).map((tl) => (
                 <button
                   key={tl}
                   data-gpv={`subs-timeline-${tl}`}
                   onClick={() => setSubsTl(tl)}
-                  title={
-                    tl === "source"
-                      ? "원본 영상의 시각 — 자른 말도 들어갑니다(원본에는 그 소리가 있다)"
-                      : "편집본(대본 편집 반영 mp4)의 시각 — 자른 말을 빼고 뒤를 당깁니다"
-                  }
+                  title={tl === "source" ? tx.timelineSourceTitle : tx.timelineEditedTitle}
                   className={`px-2 py-0.5 ${subsTl === tl ? "bg-raised text-accent" : "hover:bg-raised"}`}
                 >
-                  {tl === "source" ? "원본 시각" : "편집본 시각"}
+                  {tl === "source" ? tx.timelineSource : tx.timelineEdited}
                 </button>
               ))}
             </div>
           </div>
           {subsLangAvail && (
             <div className="flex flex-wrap items-center gap-2">
-              <span className="text-[11px] text-fg-dim">글</span>
+              <span className="text-[11px] text-fg-dim">{tx.exportText}</span>
               <div className="flex overflow-hidden rounded border border-edge">
                 {(["caption", "translation", "both"] as const).map((t) => (
                   <button
@@ -1596,14 +1552,14 @@ export const TranscriptPanel = memo(function TranscriptPanel({
                     onClick={() => setSubsText(t)}
                     className={`px-2 py-0.5 ${subsTextEff === t ? "bg-raised text-accent" : "hover:bg-raised"}`}
                   >
-                    {t === "caption" ? "원문" : t === "translation" ? "번역" : "2단"}
+                    {t === "caption" ? tx.textCaption : t === "translation" ? tx.textTranslation : tx.textBoth}
                   </button>
                 ))}
               </div>
               {subsTextEff !== "caption" &&
                 (trLangs.length > 1 ? (
                   <select
-                    aria-label="번역 언어"
+                    aria-label={tx.translationLangAria}
                     value={subsLangAvail}
                     onChange={(e) => setTransPick(e.target.value)}
                     className={fieldCls}
@@ -1621,14 +1577,11 @@ export const TranscriptPanel = memo(function TranscriptPanel({
           )}
           {subsGap && subsGap.missing > 0 && (
             <div data-gpv="subs-trans-missing" className="text-[11px] text-warn">
-              {captionLangLabel(subsLang ?? "")} 번역이 {subsGap.missing}줄 빠졌습니다 — 원문으로 채우지 않으니 [번역]에서
-              이어서 번역하세요.
+              {tx.transMissing(captionLangLabel(subsLang ?? ""), subsGap.missing)}
             </div>
           )}
           {subsGap && subsGap.missing === 0 && subsGap.stale > 0 && (
-            <div className="text-[11px] text-warn">
-              원문을 고친 뒤 다시 번역하지 않은 줄 {subsGap.stale}개가 옛 번역 그대로 들어갑니다.
-            </div>
+            <div className="text-[11px] text-warn">{tx.transStale(subsGap.stale)}</div>
           )}
           <div className="flex items-center gap-1">
             <span className="max-w-[40%] shrink-0 truncate font-mono text-[11px] text-fg-dim" title={splitPath(path).dir || "./"}>
@@ -1645,16 +1598,14 @@ export const TranscriptPanel = memo(function TranscriptPanel({
             />
           </div>
           {nameInvalid && (
-            <div className="text-[11px] text-warn">
-              파일명이 비었거나 \ / .. 를 포함하거나, 확장자가 .{fmt}가 아닙니다
-            </div>
+            <div className="text-[11px] text-warn">{tx.nameInvalid(fmt)}</div>
           )}
           <button
             onClick={() => void exportSubs(false)}
             disabled={nameInvalid || exporting || !!job || (!!subsGap && subsGap.missing > 0)}
             className="w-full rounded bg-accent/20 px-3 py-1 font-semibold text-accent hover:bg-accent/30 disabled:bg-transparent disabled:font-normal disabled:text-fg-muted"
           >
-            {exporting ? "저장 중…" : "자막 파일 저장"}
+            {exporting ? tx.saving : tx.saveSubs}
           </button>
         </div>
       )}
@@ -1666,13 +1617,7 @@ export const TranscriptPanel = memo(function TranscriptPanel({
           doc={doc}
           lang={transLang}
           onLang={setTransPick}
-          blocked={
-            readOnly
-              ? "새 버전 앱에서 만든 자막 문서라 읽기만 합니다"
-              : job
-                ? "자막을 만드는 중에는 번역할 수 없습니다"
-                : null
-          }
+          blocked={readOnly ? tx.translateBlockedReadOnly : job ? tx.translateBlockedBusy : null}
         />
       )}
 
@@ -1684,7 +1629,7 @@ export const TranscriptPanel = memo(function TranscriptPanel({
             hasAudio={hasAudio}
             audioStreams={audioStreams}
             defaultTrack={doc.source.audioStream}
-            label="다시 인식"
+            label={tx.retranscribe}
             onStart={start}
           />
         </div>
@@ -1721,22 +1666,20 @@ export const TranscriptPanel = memo(function TranscriptPanel({
               />
             );
           })}
-          {doc.cues.length === 0 && <div className="px-3 py-4 text-fg-dim">인식된 말이 없습니다.</div>}
+          {doc.cues.length === 0 && <div className="px-3 py-4 text-fg-dim">{tx.noSpeech}</div>}
         </div>
       ) : entry?.loading ? (
-        <div className="px-3 py-4 text-fg-dim">자막 문서를 읽는 중…</div>
+        <div className="px-3 py-4 text-fg-dim">{tx.loadingDoc}</div>
       ) : job ? null : (
         <div className="min-h-0 flex-1 overflow-y-auto px-3 py-4">
-          <div className="mb-1 font-semibold text-fg">아직 자막이 없습니다</div>
-          <div className="mb-3 text-fg-dim">
-            이 영상의 음성을 이 컴퓨터에서 인식해 자막 초안을 만듭니다. 인터넷은 엔진·모델을 받을 때만 씁니다.
-          </div>
+          <div className="mb-1 font-semibold text-fg">{tx.emptyTitle}</div>
+          <div className="mb-3 text-fg-dim">{tx.emptyDesc}</div>
           <TranscribeForm
             tool={tool}
             hasAudio={hasAudio}
             audioStreams={audioStreams}
             defaultTrack={0}
-            label="자막 만들기"
+            label={tx.generate}
             onStart={start}
           />
         </div>

@@ -27,6 +27,25 @@
 | 로컬 LLM · AI | Local LLM · AI | 모델 이름은 번역하지 않는다 |
 | 메모리 경보 | Memory alert | health 배너 |
 
+## 1-1. 영상·자막 (태스크 72)
+
+| 한국어 | 영어 | 뜻·주의 |
+|---|---|---|
+| 자막 / 자막 줄 | Captions / Caption line | 컨테이너 트랙을 말할 때만 "subtitle track" |
+| 자막 만들기 | Generate captions | |
+| 음성 인식 | Speech recognition | 설정 경로는 "Settings › AI › Speech recognition" |
+| 다시 인식 | Re-transcribe | |
+| 대본 / 대본 편집본 | Transcript / Transcript edit | |
+| 원본 시각 / 편집본 시각 | Source timing / Transcript edit timing | |
+| 자막 입힌 영상 | Captioned video | |
+| 번인 / 소프트 자막 | Burn-in / Soft captions | |
+| 무음 줄이기 | Silence trimming | |
+| 쉼 · 추임새 | Pause · Fillers | |
+| 번역 자막 | Translated captions | |
+| 용어 힌트 | Vocabulary hint | |
+| 자막 문서 | Caption document | |
+| 설정 › 코드 도구 | Settings › Code tools | |
+
 ## 2. Git — Git 공식 영어를 따른다
 
 | 한국어 | 영어 |

@@ -12,6 +12,7 @@ use tauri::AppHandle;
 
 use crate::commands::RangeMs;
 use crate::error::{ErrorCode, IpcError};
+use crate::i18n::text_stt;
 use crate::stt::plan::OutCue;
 use crate::stt::store::CaptionLoaded;
 use crate::stt::subs::{build_srt, normalize_cues, select_sub_text, source_cues, SubText, SubTimeline};
@@ -139,6 +140,9 @@ fn ass_black(opacity_pct: u32) -> String {
     format!("&H{:02X}000000", 255 - permille(opacity_pct.min(100) * 10, 255))
 }
 
+/// ASS `[Script Info]`의 주석 줄 — 여러 줄 format 문자열 안에서는 표시를 달 수 없어 상수로 뺐다.
+const ASS_HEADER_COMMENT: &str = "; Gitpervisor 자막 번인"; // i18n-ok: ASS 파일 주석(데이터, libass만 읽는다)
+
 /// 번인용 ASS. `PlayResX/Y` = 출력 프레임 크기라 스타일 값(‰)이 곧 출력 px다. cue 텍스트의 줄바꿈은 `\N`.
 pub fn build_ass(cues: &[OutCue], preset: CaptionStylePreset, out_w: u32, out_h: u32) -> String {
     let st = caption_style(preset);
@@ -153,7 +157,7 @@ pub fn build_ass(cues: &[OutCue], preset: CaptionStylePreset, out_w: u32, out_h:
     };
     let mut s = format!(
         "[Script Info]\n\
-         ; Gitpervisor 자막 번인\n\
+         {header_comment}\n\
          ScriptType: v4.00+\n\
          PlayResX: {w}\n\
          PlayResY: {h}\n\
@@ -170,6 +174,7 @@ pub fn build_ass(cues: &[OutCue], preset: CaptionStylePreset, out_w: u32, out_h:
          \n\
          [Events]\n\
          Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n",
+        header_comment = ASS_HEADER_COMMENT,
         font = caption_font(),
         size = permille(st.size, h).max(1),
         mh = permille(st.margin_h, w),
@@ -214,10 +219,7 @@ pub fn export_cues(
     let cues = select_sub_text(&loaded.doc, cues, subs.text, subs.lang.as_deref())?;
     let cues = shift_cues(cues, range, if subs.mode == SubsMode::Soft { speed } else { 1.0 });
     if normalize_cues(&cues).is_empty() {
-        return Err(IpcError::new(
-            ErrorCode::Io,
-            "내보낼 자막이 없습니다 — 구간 안에 자막이 없거나 자막 줄이 전부 비었습니다",
-        ));
+        return Err(IpcError::new(ErrorCode::Io, text_stt::caption_export_no_cues()));
     }
     Ok(cues)
 }
@@ -244,19 +246,19 @@ pub(crate) fn write_burn_ass(
     out_h: u32,
 ) -> Result<(SubsFile, TempFiles), IpcError> {
     let dir = temp_dir(app)?.join(format!("{TEMP_PREFIX}burn-{}", uuid::Uuid::new_v4().simple()));
-    std::fs::create_dir(&dir).map_err(|e| io(format!("자막 임시 폴더 생성 실패({}): {e}", dir.display())))?;
+    std::fs::create_dir(&dir).map_err(|e| io(text_stt::caption_burn_temp_dir_failed(&dir.display(), &e)))?;
     let ass = dir.join(BURN_ASS_NAME);
     // 파일 먼저, 비워진 폴더는 그다음(TempFiles는 순서대로 지운다).
     let guard = TempFiles(vec![ass.clone(), dir.clone()]);
     std::fs::write(&ass, build_ass(cues, preset, out_w, out_h))
-        .map_err(|e| io(format!("자막 파일 쓰기 실패({}): {e}", ass.display())))?;
+        .map_err(|e| io(text_stt::caption_file_write_failed(&ass.display(), &e)))?;
     Ok((SubsFile::Burn { dir }, guard))
 }
 
 pub(crate) fn write_soft_srt(app: &AppHandle, cues: &[OutCue]) -> Result<(SubsFile, TempFiles), IpcError> {
     let srt = temp_dir(app)?.join(format!("{TEMP_PREFIX}subs-{}.srt", uuid::Uuid::new_v4().simple()));
     let guard = TempFiles(vec![srt.clone()]);
-    std::fs::write(&srt, build_soft_srt(cues)).map_err(|e| io(format!("자막 파일 쓰기 실패({}): {e}", srt.display())))?;
+    std::fs::write(&srt, build_soft_srt(cues)).map_err(|e| io(text_stt::caption_file_write_failed(&srt.display(), &e)))?;
     Ok((SubsFile::Soft { srt }, guard))
 }
 

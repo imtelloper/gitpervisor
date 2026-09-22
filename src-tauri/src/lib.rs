@@ -279,7 +279,7 @@ async fn open_float_window(
 ) -> Result<(), String> {
     // 메인 창이 이미 떠 있는 origin을 그대로 로드한다 — dev(localhost devUrl)·prod(tauri://localhost)
     // 모두에서 같은 index를 띄운다. 런타임의 WebviewUrl::App은 dev에서 about:blank로 떨어진다.
-    let url = tauri::Url::parse(&origin).map_err(|e| format!("잘못된 origin: {e}"))?;
+    let url = tauri::Url::parse(&origin).map_err(|e| i18n::text_system::window_origin_invalid(e))?;
 
     // 프리워밍 풀에서 먼저 꺼낸다 — 있으면 창 생성·번들 로드·React 부트스트랩이 전부 이미
     // 끝나 있으므로 paneId를 이벤트로 넘기고 보여주는 것으로 끝난다(수십 ms). 없으면(앱 시작
@@ -318,7 +318,7 @@ async fn open_float_window(
     let app2 = app.clone();
     app.run_on_main_thread(move || {
         let r = WebviewWindowBuilder::new(&app2, &label, WebviewUrl::External(url))
-            .title("터미널")
+            .title(i18n::text_system::window_title_terminal())
             .inner_size(900.0, 600.0)
             .min_inner_size(360.0, 240.0)
             .center()
@@ -331,7 +331,7 @@ async fn open_float_window(
             log::error!("플로팅 창 생성 실패: {e}");
         }
     })
-    .map_err(|e| format!("플로팅 창 예약 실패: {e}"))?;
+    .map_err(|e| i18n::text_system::window_float_schedule_failed(e))?;
     Ok(())
 }
 
@@ -388,7 +388,7 @@ fn spawn_float_pool_window(app: &tauri::AppHandle, url: tauri::Url) {
     let app2 = app.clone();
     let scheduled = app.run_on_main_thread(move || {
         let r = WebviewWindowBuilder::new(&app2, &label, WebviewUrl::External(url))
-            .title("터미널")
+            .title(i18n::text_system::window_title_terminal())
             .inner_size(900.0, 600.0)
             .min_inner_size(360.0, 240.0)
             .center()
@@ -438,7 +438,7 @@ pub(crate) fn float_pool_drain(app: &tauri::AppHandle) {
 /// 메인 창 프론트가 부트 후 유휴 시점에 호출 — 풀이 비어 있으면 1개 프리워밍한다.
 #[tauri::command]
 async fn float_pool_warm(app: tauri::AppHandle, origin: String) -> Result<(), String> {
-    let url = tauri::Url::parse(&origin).map_err(|e| format!("잘못된 origin: {e}"))?;
+    let url = tauri::Url::parse(&origin).map_err(|e| i18n::text_system::window_origin_invalid(e))?;
     // 경보 게이트는 spawn_float_pool_window 안에 있다(호출자 전부를 덮는다).
     let need = {
         let pool = FLOAT_POOL.lock().unwrap_or_else(|e| e.into_inner());
@@ -530,11 +530,11 @@ async fn open_sysmon_window(app: tauri::AppHandle, origin: String) -> Result<(),
         focus_window(&win);
         return Ok(());
     }
-    let url = tauri::Url::parse(&origin).map_err(|e| format!("잘못된 origin: {e}"))?;
+    let url = tauri::Url::parse(&origin).map_err(|e| i18n::text_system::window_origin_invalid(e))?;
     let app2 = app.clone();
     app.run_on_main_thread(move || {
         let r = WebviewWindowBuilder::new(&app2, "sysmon", WebviewUrl::External(url))
-            .title("리소스 모니터")
+            .title(i18n::text_system::window_title_resource_monitor())
             .inner_size(660.0, 640.0)
             .min_inner_size(480.0, 360.0)
             .center()
@@ -547,7 +547,7 @@ async fn open_sysmon_window(app: tauri::AppHandle, origin: String) -> Result<(),
             log::error!("리소스 모니터 창 생성 실패: {e}");
         }
     })
-    .map_err(|e| format!("리소스 모니터 창 예약 실패: {e}"))?;
+    .map_err(|e| i18n::text_system::window_sysmon_schedule_failed(e))?;
     Ok(())
 }
 
@@ -563,11 +563,11 @@ async fn open_aggregate_window(app: tauri::AppHandle, origin: String) -> Result<
         focus_window(&win);
         return Ok(());
     }
-    let url = tauri::Url::parse(&origin).map_err(|e| format!("잘못된 origin: {e}"))?;
+    let url = tauri::Url::parse(&origin).map_err(|e| i18n::text_system::window_origin_invalid(e))?;
     let app2 = app.clone();
     app.run_on_main_thread(move || {
         let r = WebviewWindowBuilder::new(&app2, "aggregate", WebviewUrl::External(url))
-            .title("터미널 모아보기")
+            .title(i18n::text_system::window_title_aggregate())
             .inner_size(1100.0, 720.0)
             .min_inner_size(520.0, 320.0)
             .center()
@@ -580,7 +580,7 @@ async fn open_aggregate_window(app: tauri::AppHandle, origin: String) -> Result<
             log::error!("모아보기 창 생성 실패: {e}");
         }
     })
-    .map_err(|e| format!("모아보기 창 예약 실패: {e}"))?;
+    .map_err(|e| i18n::text_system::window_aggregate_schedule_failed(e))?;
     Ok(())
 }
 
@@ -608,14 +608,14 @@ async fn open_doc_window(
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-')
     {
-        return Err("잘못된 문서 창 id".into());
+        return Err(i18n::text_system::window_doc_id_invalid().into());
     }
     let label = format!("{DOC_LABEL_PREFIX}{doc_id}");
     if let Some(win) = app.get_webview_window(&label) {
         focus_window(&win);
         return Ok(());
     }
-    let url = tauri::Url::parse(&origin).map_err(|e| format!("잘못된 origin: {e}"))?;
+    let url = tauri::Url::parse(&origin).map_err(|e| i18n::text_system::window_origin_invalid(e))?;
     // 프론트가 준 크기는 **클램프**한다 — 화면보다 큰 창은 타이틀바(커스텀)가 화면 밖으로 나가
     // 움직일 수도 닫을 수도 없는 창이 된다. 기본은 텍스트 뷰어에 맞춘 900×760이고,
     // 이미지처럼 넓은 편집 UI가 들어가는 대상만 프론트가 더 큰 값을 넘긴다(태스크 30 §3.2).
@@ -641,7 +641,7 @@ async fn open_doc_window(
             log::error!("문서 창 생성 실패: {e}");
         }
     })
-    .map_err(|e| format!("문서 창 예약 실패: {e}"))?;
+    .map_err(|e| i18n::text_system::window_doc_schedule_failed(e))?;
     Ok(())
 }
 
@@ -663,7 +663,7 @@ fn register_capture_hotkey(app: &tauri::AppHandle) {
             log::error!("[capture] 전역 단축키 등록 실패: {e}");
             let _ = app.emit(
                 "capture://hotkey-error",
-                "Ctrl+Shift+X 를 다른 프로그램이 쓰고 있어 화면 캡쳐 단축키를 등록하지 못했습니다",
+                i18n::text_system::capture_hotkey_register_failed(),
             );
         }
     }
@@ -691,7 +691,7 @@ pub(crate) fn ensure_capture_overlay(
         .map(WebviewUrl::External)
         .unwrap_or_else(|| WebviewUrl::App("index.html".into()));
     WebviewWindowBuilder::new(app, commands::CAPTURE_OVERLAY_LABEL, url)
-        .title("화면 캡쳐")
+        .title(i18n::text_system::window_title_screen_capture())
         // 숨긴 채로 만든다 — 프리워밍 경로에서 화면에 잠깐 뜨면 그게 캡쳐에 찍힌다.
         .visible(false)
         .decorations(false)
@@ -714,6 +714,28 @@ const FLOAT_LABEL_PREFIX: &str = "float-";
 /// 파일 뷰어 창 라벨 접두사. **`float-`와 달라야 한다** — Destroyed 훅의 float 분기가 라벨 뒷부분을
 /// PTY paneId로 보고 세션을 죽인다(open_doc_window 주석).
 const DOC_LABEL_PREFIX: &str = "doc-";
+
+/// UI 언어가 바뀌면 떠 있는 보조 창의 제목을 새 언어로 다시 쓴다 — 제목은 창을 만들 때 한 번만 받는다
+/// (DOCS/i18n-design.md §4.4). 문서 창(`doc-`)의 제목은 프론트가 준 파일 이름이라 언어와 무관하다.
+pub(crate) fn retitle_aux_windows(app: &tauri::AppHandle) {
+    for (label, win) in app.webview_windows() {
+        // `float-pool-` 도 `float-` 로 시작한다 — 둘 다 터미널 창이다.
+        let title = if label.starts_with(FLOAT_LABEL_PREFIX) {
+            i18n::text_system::window_title_terminal()
+        } else if label == "sysmon" {
+            i18n::text_system::window_title_resource_monitor()
+        } else if label == "aggregate" {
+            i18n::text_system::window_title_aggregate()
+        } else if label == commands::CAPTURE_OVERLAY_LABEL {
+            i18n::text_system::window_title_screen_capture()
+        } else {
+            continue;
+        };
+        if let Err(e) = win.set_title(title) {
+            log::warn!("[i18n] 창 제목 갱신 실패 {label}: {e}");
+        }
+    }
+}
 
 /// 메인 창 "닫기 확인"을 이미 띄웠는가.
 ///
@@ -841,7 +863,7 @@ pub(crate) fn shutdown_children(app: &tauri::AppHandle) {
     shutdown_step("session", health::end_session);
 
     log::info!(
-        "[shutdown] 자식 정리 완료 {}ms — 터미널 {} · LSP {} · 창 {}개 닫음",
+        "[shutdown] 자식 정리 완료 {}ms — 터미널 {} · LSP {} · 창 {}개 닫음", // i18n-ok: 로그
         t0.elapsed().as_millis(),
         fmt_count(n_term),
         fmt_count(n_lsp),
@@ -908,10 +930,8 @@ pub fn run() {
         .iter()
         .any(|k| std::env::var_os(k).is_some());
     if e2e_env_on_installed_identifier(cfg!(debug_assertions), &context.config().identifier, has_e2e_env) {
-        eprintln!(
-            "[e2e] 이 디버그 exe 는 설치본 identifier({INSTALLED_IDENTIFIER})로 빌드됐다 — 띄우면 설치본의 \
-             로그·세션·캐시를 쓴다. tests/e2e/shard.mjs 가 .dev 설정으로 다시 빌드한다(또는 npm run dev:app)."
-        );
+        // 한 줄로 둔다 — 여러 줄 문자열은 줄마다 로그 매크로로 인식되지 않아 i18n 가드에 걸린다(개발자용 stderr).
+        eprintln!("[e2e] 이 디버그 exe 는 설치본 identifier({INSTALLED_IDENTIFIER})로 빌드됐다 — 띄우면 설치본의 로그·세션·캐시를 쓴다. tests/e2e/shard.mjs 가 .dev 설정으로 다시 빌드한다(또는 npm run dev:app).");
         std::process::exit(3);
     }
 

@@ -7,8 +7,7 @@
 // 사용자 데이터가 한글이면 오탐이다 — 그래서 픽스처 레포(이름·파일·커밋)를 전부 ASCII 로 만들고, 터미널(xterm)·
 // 편집기(Monaco) 안쪽은 뺀다(셸 출력·파일 내용은 UI 문구가 아니다).
 //
-// 아직 이관하지 않은 화면(설정 대화상자·AI 설정·동영상 편집기 — 태스크 72 와 겹쳐 리베이스 뒤로 미룸)은 돌지 않는다.
-// 이관이 끝나면 SCREENS 에 더한다.
+// 동영상 편집기·자막 패널은 돌지 않는다 — 영상 픽스처와 ffmpeg 가 있어야 열린다. 그쪽은 소스 가드(e2e 66)가 지킨다.
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -121,6 +120,14 @@ export async function run({ cdp, report: r }) {
         },
         leave: () => ui(`(s.setAggregateOpen(false), true)`),
       },
+      ...["general", "appearance", "codetools", "terminal", "notify", "ai", "maintenance", "update"].map((cat) => ({
+        name: `설정 › ${cat}`,
+        enter: async () => {
+          await ui(`(s.openSettings(${J(cat)}), true)`);
+          await sleep(800);
+        },
+        leave: () => ui(`(s.setSettingsOpen(false), true)`),
+      })),
     ];
 
     for (const s of SCREENS) {
@@ -143,7 +150,7 @@ export async function run({ cdp, report: r }) {
     );
   } finally {
     await cdp.invoke("set_settings", { settings: orig }).catch(() => {});
-    await ui(`(s.closeReport(), s.setAggregateOpen(false), true)`).catch(() => {});
+    await ui(`(s.closeReport(), s.setAggregateOpen(false), s.setSettingsOpen(false), true)`).catch(() => {});
     if (projectId) await cdp.try("remove_project", { id: projectId });
     try {
       rmSync(root, { recursive: true, force: true, maxRetries: 5 });

@@ -5,6 +5,7 @@
 import { Loader2 } from "lucide-react";
 import { useMemo } from "react";
 
+import { useMessages } from "../../../i18n/ui-language";
 import { CAPTION_TRANSLATE_LANGS, captionLangLabel, captionTranslationCounts } from "../../../lib/captionTranslate";
 import type { CaptionDoc } from "../../../lib/ipc";
 import { llmReadyReason, useLlmStatus } from "../../../lib/llm";
@@ -30,6 +31,7 @@ export function TranslatePanel({
   /** 번역을 시작할 수 없는 이유(전사 중·읽기 전용) — null이면 가능. */
   blocked: string | null;
 }) {
+  const msg = useMessages();
   const job = useCaptionDoc((s) => s.entries[capKey]?.translate ?? null);
   const error = useCaptionDoc((s) => s.entries[capKey]?.translateError ?? null);
   const openSettings = useUi((s) => s.openSettings);
@@ -44,30 +46,30 @@ export function TranslatePanel({
   return (
     <div data-gpv="translate-panel" className="shrink-0 space-y-1.5 border-b border-edge px-3 py-2">
       <div className="flex flex-wrap items-center gap-1.5">
-        <span className="text-[11px] text-fg-dim">대상 언어</span>
+        <span className="text-[11px] text-fg-dim">{msg.captions.translate.targetLang}</span>
         <select
           data-gpv="translate-lang"
-          aria-label="번역 대상 언어"
+          aria-label={msg.captions.translate.targetLangAria}
           value={job?.lang ?? lang}
           onChange={(e) => onLang(e.target.value)}
           disabled={!!job}
           className={fieldCls}
         >
-          {CAPTION_TRANSLATE_LANGS.map((l) => (
-            <option key={l.code} value={l.code}>
-              {l.label}
+          {CAPTION_TRANSLATE_LANGS.map((code) => (
+            <option key={code} value={code}>
+              {msg.captions.translateLangLabel[code]}
             </option>
           ))}
         </select>
         <span data-gpv="translate-count" className="font-mono text-[11px] tabular-nums text-fg-dim">
-          {counts.done + counts.stale}/{counts.total}줄
+          {msg.captions.translate.lineCount(counts.done + counts.stale, counts.total)}
         </span>
         {counts.stale > 0 && (
           <span
             className="rounded bg-warn/15 px-1 text-[10px] text-warn"
-            title="번역한 뒤 원문(자막 줄·인식 단어)을 고친 줄 — 이어서 번역하면 다시 번역합니다"
+            title={msg.captions.translate.staleTitle}
           >
-            원문 바뀜 {counts.stale}
+            {msg.captions.translate.staleBadge(counts.stale)}
           </span>
         )}
       </div>
@@ -76,7 +78,7 @@ export function TranslatePanel({
         <div data-gpv="translate-progress" className="space-y-1">
           <div className="flex items-center gap-2">
             <Loader2 size={12} className="animate-spin text-accent" />
-            <span className="text-fg">{captionLangLabel(job.lang)}로 번역 중…</span>
+            <span className="text-fg">{msg.captions.translate.translating(captionLangLabel(job.lang))}</span>
             <span className="font-mono tabular-nums">
               {job.done + job.failed}/{job.total}
             </span>
@@ -86,7 +88,7 @@ export function TranslatePanel({
               onClick={() => useCaptionDoc.getState().cancelTranslate(capKey)}
               className={`${smallBtn} text-warn`}
             >
-              취소
+              {msg.captions.cancel}
             </button>
           </div>
           <div className="h-1.5 overflow-hidden rounded bg-raised">
@@ -104,10 +106,10 @@ export function TranslatePanel({
               <span className="min-w-0 flex-1 text-fg">{notReady}</span>
               {HAS_SETTINGS_DIALOG ? (
                 <button onClick={() => openSettings("ai")} className={smallBtn}>
-                  설정 › AI 열기
+                  {msg.captions.openAiSettings}
                 </button>
               ) : (
-                <span className="text-[11px] text-fg-dim">메인 창의 설정에서 받을 수 있습니다.</span>
+                <span className="text-[11px] text-fg-dim">{msg.captions.settingsInMainWindow}</span>
               )}
             </div>
           )}
@@ -119,20 +121,17 @@ export function TranslatePanel({
             className="w-full rounded bg-accent/20 px-3 py-1 font-semibold text-accent hover:bg-accent/30 disabled:bg-transparent disabled:font-normal disabled:text-fg-muted"
           >
             {counts.total === 0
-              ? "번역할 자막이 없습니다"
+              ? msg.captions.translate.nothingToTranslate
               : pending === 0
-                ? "모두 번역됨"
+                ? msg.captions.translate.allTranslated
                 : counts.done + counts.stale > 0
-                  ? `이어서 번역 (남은 ${pending}줄)`
-                  : `번역 시작 (${counts.total}줄)`}
+                  ? msg.captions.translate.continueTranslate(pending)
+                  : msg.captions.translate.startTranslate(counts.total)}
           </button>
         </>
       )}
       {error && <div className="text-[11px] text-danger">{error}</div>}
-      <div className="text-[11px] text-fg-dim">
-        로컬 AI(설정 › AI의 기본 모델)로 자막 줄마다 번역합니다. 시각은 보내지 않아 그대로이고, 번역한 줄은 곧바로
-        저장돼 창을 닫았다 열어도 이어서 합니다. 번역 줄은 눌러서 고칠 수 있습니다.
-      </div>
+      <div className="text-[11px] text-fg-dim">{msg.captions.translate.help}</div>
     </div>
   );
 }

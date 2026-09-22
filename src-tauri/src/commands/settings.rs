@@ -29,7 +29,10 @@ pub fn set_settings(
     *state.settings.write().unwrap_or_else(|e| e.into_inner()) = settings.clone();
     state::save_settings(&app, &settings)?;
     // 아래 이벤트를 받은 창들이 `ui_language_resolved`를 다시 묻는다 — 그 전에 걸어 둬야 새 값을 받는다.
-    crate::i18n::apply_setting(&settings.ui_language);
+    let before = crate::i18n::lang();
+    if crate::i18n::apply_setting(&settings.ui_language) != before {
+        crate::retitle_aux_windows(&app);
+    }
     // 다른 창에도 알린다 — 설정 편집은 메인 창에서만 하는데 `["settings"]`는 창마다 별개이고
     // staleTime이 Infinity라(queries/index.ts), 별도 리포트 창(67)은 자기 사본이 창을 연 시점에
     // 얼어붙는다. 그러면 "메인 창의 설정 › AI에서 준비하세요" 안내를 따라와도 그 창은 영영 모른다.

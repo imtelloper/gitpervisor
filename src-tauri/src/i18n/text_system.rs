@@ -1,4 +1,4 @@
-//! 시스템 정보·OS 알림·health(경보 사유·세션·이벤트 로그)·웹뷰 가드·화면 캡쳐·진단 문구 — 문구 하나 = 함수 하나, 모든 `Lang`을 `match`로 적는다(DOCS/i18n-design.md §4.4).
+//! 시스템 정보·OS 알림·health(경보 사유·세션·이벤트 로그)·웹뷰 가드·화면 캡쳐·진단·보조 창 문구 — 문구 하나 = 함수 하나, 모든 `Lang`을 `match`로 적는다(DOCS/i18n-design.md §4.4).
 //! 빠진 언어는 컴파일 오류다. 정적 문구는 `&'static str`, 보간이 있으면 `String`을 돌려준다.
 //! 한 플랫폼에서만 부르는 문구는 호출처와 같은 `#[cfg]`를 단다 — `mod i18n`이 비공개라 안 쓰이면 경고가 난다.
 
@@ -643,5 +643,87 @@ pub fn capture_clipboard_busy() -> &'static str {
     match lang() {
         Lang::Ko => "다른 프로그램이 클립보드를 쓰고 있습니다 — 잠시 후 다시 시도하세요",
         Lang::En => "Another app is using the clipboard — try again in a moment",
+    }
+}
+
+// ─────────────────────────── 보조 창·전역 단축키(lib.rs) ───────────────────────────
+// 창 제목은 창을 만들 때의 언어로 굳는다(보조 창은 열 때마다 새로 만든다).
+
+pub fn window_title_terminal() -> &'static str {
+    match lang() {
+        Lang::Ko => "터미널",
+        Lang::En => "Terminal",
+    }
+}
+
+pub fn window_title_resource_monitor() -> &'static str {
+    match lang() {
+        Lang::Ko => "리소스 모니터",
+        Lang::En => "Resource monitor",
+    }
+}
+
+pub fn window_title_aggregate() -> &'static str {
+    match lang() {
+        Lang::Ko => "터미널 모아보기",
+        Lang::En => "Terminal aggregate view",
+    }
+}
+
+pub fn window_title_screen_capture() -> &'static str {
+    match lang() {
+        Lang::Ko => "화면 캡쳐",
+        Lang::En => "Screen capture",
+    }
+}
+
+/// 보조 창 커맨드가 받은 `origin`(메인 창 URL)이 URL로 해석되지 않을 때.
+pub fn window_origin_invalid(err: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("잘못된 origin: {err}"),
+        Lang::En => format!("Invalid origin: {err}"),
+    }
+}
+
+pub fn window_float_schedule_failed(err: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("플로팅 창 예약 실패: {err}"),
+        Lang::En => format!("Failed to schedule floating window: {err}"),
+    }
+}
+
+pub fn window_sysmon_schedule_failed(err: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("리소스 모니터 창 예약 실패: {err}"),
+        Lang::En => format!("Failed to schedule resource monitor window: {err}"),
+    }
+}
+
+pub fn window_aggregate_schedule_failed(err: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("모아보기 창 예약 실패: {err}"),
+        Lang::En => format!("Failed to schedule Aggregate window: {err}"),
+    }
+}
+
+pub fn window_doc_id_invalid() -> &'static str {
+    match lang() {
+        Lang::Ko => "잘못된 문서 창 id",
+        Lang::En => "Invalid document window id",
+    }
+}
+
+pub fn window_doc_schedule_failed(err: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("문서 창 예약 실패: {err}"),
+        Lang::En => format!("Failed to schedule document window: {err}"),
+    }
+}
+
+/// `capture://hotkey-error` 이벤트 본문 — 메인 창이 그대로 띄운다.
+pub fn capture_hotkey_register_failed() -> &'static str {
+    match lang() {
+        Lang::Ko => "Ctrl+Shift+X 를 다른 프로그램이 쓰고 있어 화면 캡쳐 단축키를 등록하지 못했습니다",
+        Lang::En => "Could not register the screen capture shortcut — another program is using Ctrl+Shift+X",
     }
 }

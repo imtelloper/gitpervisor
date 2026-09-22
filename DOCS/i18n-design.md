@@ -334,18 +334,23 @@ pub fn project_path_missing(path: &str) -> String {
 | P1~P4 프런트 | 167개 파일 → 도메인 21개(`src/i18n/text-*.ts`), 키 약 1,960개. 10개 그룹 병렬 이관 + 그룹별 검토(한국어 바이트 대조·모듈 최상위 캡처·훅 규칙·영어) |
 | P5 Rust | 47개 파일 → `crate::i18n::text_{db,files,tools,system,git_net}` — 함수 하나 = 문구 하나, 모든 `Lang` match |
 | 가드 | 프런트 e2e 66(기준 목록 177→10) · Rust `user_facing_korean_lives_in_i18n_modules`(기준 목록 4) — 둘 다 반증 확인 |
-| 영어 순회 e2e 67 | 첫 회차에 누출 2건(지난 세션 배너 문구가 시작 언어로 굳음 · `toLocaleString()` 무인자 4곳)을 잡아 고침 |
+| 영어 순회 e2e 67 | 첫 회차에 누출 2건(지난 세션 배너 문구가 시작 언어로 굳음 · `toLocaleString()` 무인자 4곳)을 잡아 고침. 설정 8개 섹션도 돈다 |
+| 리베이스 후 마감 | 태스크 72(STT·자막)와 겹친 파일 이관 — 프런트 22개(도메인 `captions` 신설, `settings`·`media`·`lib` 확장), Rust 15개(`text_video`·`text_stt` 신설). 기준 목록 **양쪽 0** — 이제 어떤 파일이든 한국어 UI 문구가 들어오면 가드가 빨갛다 |
+| 마감 항목 | NSIS `["Korean", "English"]` + `displayLanguageSelector: false` · 영어 "베타" 표기 제거 · 언어를 바꾸면 떠 있는 보조 창(터미널·리소스 모니터·모아보기·캡쳐) 제목을 다시 씀(`retitle_aux_windows`) · 원문 오타 "브라우저은" 수정 |
 
-**아직 한국어인 곳(태스크 72와 겹쳐 리베이스 후 이관)** — 프런트: 설정 대화상자·AI 설정·설정 검색 색인·
-동영상 편집기(ExportPanel·VideoPlayer·frameCapture)·`lib/events.ts`·`lib/ipc.ts`·`queries/index.ts`·
-`stores/videoSplit.ts`. Rust: `commands/video.rs`·`lib.rs`(창 제목 등)·`llm/acquire.rs`·`llm/server.rs`.
-태스크 72의 새 파일(STT·자막)도 리베이스하면 가드가 잡는다 → 기준 목록에 넣은 뒤 이관.
+**이관하며 정한 것**
+- 모델 비고(`ModelSpec.note`)는 const 카탈로그 안이라 문자열로는 언어를 못 고른다 → 문구 함수 포인터
+  (`fn() -> &'static str`)를 담는다. 부를 때 `(m.note)()`.
+- 설정 검색 색인은 label·keywords를 카탈로그로 옮기고, 검색은 **모든 언어**의 label·keywords를 본다
+  ("prompt"·"프롬프트" 둘 다 찾힌다).
+- 설정 › AI의 "테스트" 프롬프트는 화면에 보이는 문장 그대로 모델에 보낸다 — 영어 UI면 영어 문장.
+  (§4.6 "LLM 프롬프트는 번역하지 않는다"의 예외: 보이는 문구와 보내는 문구가 같은 경우)
+- 디스크에 새로 만드는 파일 이름(`… (변환).mp4`)은 UI 언어를 따른다 — "새 폴더"와 같은 선례.
+- 스토어에 저장된 오류 문구·토스트는 만든 순간의 언어로 남는다(§4.2).
+- e2e 는 한국어로 돈다 — 스위트가 찾는 한국어 원문은 한 글자도 바꾸지 않았다(이관 에이전트들이 번들로 대조).
+- 스캐너(e2e 66)는 정규식 리터럴을 모른다 — 정규식 속 따옴표를 `\x22`로 쓰고 주석 몇 줄에 `i18n-ok`를 달아 피했다.
 
-**남은 결정·후속**
-- 영어 모드에서 설정 대화상자는 아직 한국어 → 선택 상자의 "베타 — 일부 화면은 한국어" 표기를 위 이관 뒤에 뗀다.
-- 창 제목(`lib.rs`의 "터미널"·"리소스 모니터" 등)과 NSIS 영어(`bundle.windows.nsis.languages`)는 `lib.rs`·
-  `tauri.conf.json` 이관 때 함께.
-- 원문 오타 "브라우저은"(`msg.app.aggregate.hideBrowserTitle`)은 바이트 일치 원칙으로 보존 — 따로 고친다.
-- 스캐너(e2e 66)는 정규식 리터럴을 모른다 — 이관 에이전트들이 정규식 속 따옴표를 `"`로 쓰고 주석 몇 줄에
-  `i18n-ok`를 달아 피했다. 동작은 같다.
+**후속(범위 밖)**
+- 한국어 판정을 쓰는 e2e(64·65 의 Rust 오류 정규식 등)는 영어 UI 로 돌리면 깨진다 — e2e 는 샤드가 `uiLanguage=ko` 로 고정하므로 문제없다.
+- 동영상 편집기·자막 패널은 영어 순회(67)가 돌지 않는다(영상 픽스처·ffmpeg 필요) — 소스 가드(66)만 지킨다.
 

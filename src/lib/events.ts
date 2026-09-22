@@ -2,6 +2,7 @@ import type { Query, QueryClient } from "@tanstack/react-query";
 import { focusManager } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 
+import { currentMessages } from "../i18n/ui-language";
 import { invalidateVideoMedia } from "../queries";
 import { useOps } from "../stores/ops";
 import { useUi } from "../stores/ui";
@@ -24,12 +25,6 @@ interface OpFinished {
   ok: boolean;
   error: string | null;
 }
-
-const OP_LABEL: Record<SyncOp, string> = {
-  push: "푸시",
-  pull: "풀",
-  fetch: "페치",
-};
 
 /**
  * 이 창이 시작시킨 단일 내보내기 잡 id — `video://export-finished`는 **모든 창**에 오는데
@@ -76,9 +71,10 @@ export function attachVideoEvents(qc: QueryClient) {
     }
     const { ok, cancelled, error, outRel } = e.payload;
     const name = outRel.split("/").pop() ?? outRel;
-    if (cancelled) useUi.getState().pushToast("info", "내보내기를 취소했습니다");
-    else if (ok) useUi.getState().pushToast("success", `내보내기 완료 — ${name}`);
-    else useUi.getState().pushToast("error", error ?? "내보내기 실패");
+    const t = currentMessages().lib.videoExport;
+    if (cancelled) useUi.getState().pushToast("info", t.cancelled);
+    else if (ok) useUi.getState().pushToast("success", t.done(name));
+    else useUi.getState().pushToast("error", error ?? t.failed);
     invalidateVideoOutputs(qc, e.payload);
   });
 
@@ -88,9 +84,10 @@ export function attachVideoEvents(qc: QueryClient) {
     if (name === undefined) return;
     localSttJobs.delete(e.payload.jobId);
     const { ok, cancelled, error } = e.payload;
-    if (cancelled) useUi.getState().pushToast("info", "자막 만들기를 취소했습니다");
-    else if (ok) useUi.getState().pushToast("success", `자막을 만들었습니다 — ${name}`);
-    else useUi.getState().pushToast("error", error ?? "자막 만들기 실패");
+    const t = currentMessages().lib.sttJob;
+    if (cancelled) useUi.getState().pushToast("info", t.cancelled);
+    else if (ok) useUi.getState().pushToast("success", t.done(name));
+    else useUi.getState().pushToast("error", error ?? t.failed);
   });
 }
 
@@ -305,8 +302,10 @@ export function attachRepoEvents(qc: QueryClient) {
     // 진행 중 표시가 남아있을 때만 토스트 → mutation 콜백과 중복 방지.
     if (ops.running[projectId]) {
       ops.finish(projectId);
-      if (ok) useUi.getState().pushToast("success", `${OP_LABEL[op]} 완료`);
-      else useUi.getState().pushToast("error", error ?? `${OP_LABEL[op]} 실패`);
+      const t = currentMessages().lib;
+      const label = t.gitOpLabel[op];
+      if (ok) useUi.getState().pushToast("success", t.gitOpDone(label));
+      else useUi.getState().pushToast("error", error ?? t.gitOpFailed(label));
     }
     void qc.invalidateQueries({ queryKey: ["statuses"] });
     void qc.invalidateQueries({ queryKey: ["log"] });

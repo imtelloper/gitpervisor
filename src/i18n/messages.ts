@@ -26,6 +26,7 @@ import { folderText } from "./text-folder";
 import { pdfText } from "./text-pdf";
 import { mediaText } from "./text-media";
 import { windowsText } from "./text-windows";
+import { captionsText } from "./text-captions";
 
 export function messagesFor(locale: Locale) {
   return {
@@ -51,6 +52,7 @@ export function messagesFor(locale: Locale) {
     pdf: pdfText[locale],
     media: mediaText[locale],
     windows: windowsText[locale],
+    captions: captionsText[locale],
   };
 }
 

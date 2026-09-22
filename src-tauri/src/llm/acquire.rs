@@ -22,6 +22,7 @@ use tauri::{AppHandle, Manager, State};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::{ErrorCode, IpcError};
+use crate::i18n::text_db;
 use crate::state::AppState;
 
 /// llama.cpp 릴리스 빌드 태그. 자산 이름·설치 폴더·`.ok` 마커가 전부 이 값에서 나온다.
@@ -191,7 +192,9 @@ pub struct ModelSpec {
     pub size: u64,
     /// 권장 최소 물리 RAM. 프론트가 `sys_info_static`과 대조해 뱃지를 만든다.
     pub min_ram: u64,
-    pub note: &'static str,
+    /// 설정 목록의 한 줄 비고 — UI 언어를 따라야 하는데 const 카탈로그 안에서는 언어를 고를 수 없어
+    /// 문자열 대신 문구 함수(`crate::i18n::text_*`)를 가리킨다. 부를 때 `(m.note)()`.
+    pub note: fn() -> &'static str,
 }
 
 const GB: u64 = 1024 * 1024 * 1024;
@@ -205,7 +208,7 @@ pub const MODELS: &[ModelSpec] = &[
         sha256: "7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5",
         size: 2_497_280_256,
         min_ram: 8 * GB,
-        note: "기본 — 한국어·코드 양호, Apache-2.0",
+        note: text_db::llm_model_note_qwen3_4b,
     },
     ModelSpec {
         id: "qwen3-4b-2507-q4",
@@ -217,7 +220,7 @@ pub const MODELS: &[ModelSpec] = &[
         sha256: "2fde00ce69dd4899c70d020845e2638353015bba0fdf161b3eb965f2bca4464e",
         size: 2_497_280_736,
         min_ram: 8 * GB,
-        note: "기본 상위 — 사고 모드 없음, Apache-2.0",
+        note: text_db::llm_model_note_qwen3_4b_2507,
     },
     ModelSpec {
         id: "qwen3-1.7b-q8",
@@ -227,7 +230,7 @@ pub const MODELS: &[ModelSpec] = &[
         sha256: "061b54daade076b5d3362dac252678d17da8c68f07560be70818cace6590cb1a",
         size: 1_834_426_016,
         min_ram: 6 * GB,
-        note: "저사양 — 가장 빠름",
+        note: text_db::llm_model_note_qwen3_1_7b,
     },
     ModelSpec {
         id: "qwen3-8b-q4",
@@ -237,7 +240,7 @@ pub const MODELS: &[ModelSpec] = &[
         sha256: "d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785",
         size: 5_027_783_488,
         min_ram: 12 * GB,
-        note: "품질 우선",
+        note: text_db::llm_model_note_qwen3_8b,
     },
     ModelSpec {
         id: "gemma4-e4b-qat-q4",
@@ -247,7 +250,7 @@ pub const MODELS: &[ModelSpec] = &[
         sha256: "676c35070db6dbe52f93e9c864ee0fba4eddea94b9c875d9cb10daff453fbaee",
         size: 5_154_941_280,
         min_ram: 12 * GB,
-        note: "품질 — 번역 강세, Apache-2.0",
+        note: text_db::llm_model_note_gemma4_e4b,
     },
     ModelSpec {
         id: "gemma4-12b-qat-q4",
@@ -262,7 +265,7 @@ pub const MODELS: &[ModelSpec] = &[
         // 주간 요약 한 건에 ~50초다(8B는 ~13초). 그래서 note에 초를 적어 둔다 — 대화용으로 고르면
         // 매 응답이 답답하고, **예약·배치 요약용으로는 이게 가장 정확하다**(태스크 70 §6:
         // 블라인드 14.11/15 — 8B 9.22, 형식 만점, 8B가 출력마다 4~6건씩 내는 해시 오귀속이 없다).
-        note: "배치/예약 요약용 — 가장 정확, 느림(주간 ~50초), Apache-2.0",
+        note: text_db::llm_model_note_gemma4_12b,
     },
 ];
 
@@ -395,11 +398,7 @@ pub(crate) fn check_free_space(root: &Path, need: u64) -> Result<(), IpcError> {
     // 5% 여유 — 해제 중 임시 사본이 잠깐 두 벌이 되는 구간을 흡수한다.
     let need = need + need / 20;
     if avail < need {
-        return Err(io(format!(
-            "여유 공간 부족: 필요 {} / 남음 {}",
-            human(need),
-            human(avail)
-        )));
+        return Err(io(text_db::llm_disk_space_low(&human(need), &human(avail))));
     }
     Ok(())
 }
@@ -430,19 +429,14 @@ pub(crate) async fn download_verified(
             .get(url)
             .send()
             .await
-            .map_err(|e| io(format!("다운로드 실패: {e}")))?
+            .map_err(|e| io(text_db::llm_download_failed(e)))?
             .error_for_status()
-            .map_err(|e| io(format!("다운로드 상태 오류: {e}")))?;
+            .map_err(|e| io(text_db::llm_download_status_error(e)))?;
         let total = resp.content_length();
         if let Some(t) = total.filter(|t| *t != expect_size) {
-            return Err(io(format!(
-                "원본 파일이 교체됐습니다 — {url} 크기가 {} 인데 앱은 {} 을 기대합니다. \
-                 앱을 업데이트하면 새 해시로 받습니다.",
-                human(t),
-                human(expect_size)
-            )));
+            return Err(io(text_db::llm_download_size_mismatch(url, &human(t), &human(expect_size))));
         }
-        let mut file = std::fs::File::create(&part).map_err(|e| io(format!("임시 파일 생성 실패: {e}")))?;
+        let mut file = std::fs::File::create(&part).map_err(|e| io(text_db::llm_temp_file_create_failed(e)))?;
         let mut hasher = Sha256::new();
         let mut got: u64 = 0;
         let mut last_pct: u64 = u64::MAX;
@@ -452,13 +446,13 @@ pub(crate) async fn download_verified(
             // 수신과 취소를 함께 기다린다 — 둘 다 취소 안전한 future다.
             let chunk = tokio::select! {
                 _ = cancel.cancelled() => {
-                    return Err(IpcError::new(ErrorCode::Cancelled, "다운로드를 취소했습니다"));
+                    return Err(IpcError::new(ErrorCode::Cancelled, text_db::llm_download_cancelled()));
                 }
-                c = resp.chunk() => c.map_err(|e| io(format!("본문 수신 실패: {e}")))?,
+                c = resp.chunk() => c.map_err(|e| io(text_db::llm_download_body_failed(e)))?,
             };
             let Some(chunk) = chunk else { break };
             hasher.update(&chunk);
-            file.write_all(&chunk).map_err(|e| io(format!("임시 파일 쓰기 실패: {e}")))?;
+            file.write_all(&chunk).map_err(|e| io(text_db::llm_temp_file_write_failed(e)))?;
             got += chunk.len() as u64;
             if let Some(t) = total.filter(|t| *t > 0) {
                 let pct = got * 100 / t;
@@ -472,13 +466,10 @@ pub(crate) async fn download_verified(
         send_progress(ch, name, "verify", None, None);
         let hex: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
         if hex != sha256 {
-            return Err(io(format!(
-                "무결성 검증 실패 — {url} 의 sha256이 {hex} 인데 앱에 고정된 값은 {sha256} 입니다. \
-                 원본이 같은 이름으로 재업로드됐거나 전송이 변조됐습니다."
-            )));
+            return Err(io(text_db::llm_download_hash_mismatch(url, &hex, sha256)));
         }
         std::fs::remove_file(dest).ok();
-        std::fs::rename(&part, dest).map_err(|e| io(format!("설치 이동 실패: {e}")))?;
+        std::fs::rename(&part, dest).map_err(|e| io(text_db::llm_install_move_failed(e)))?;
         Ok(())
     }
     .await;
@@ -491,23 +482,23 @@ pub(crate) async fn download_verified(
 pub(crate) fn extract_archive(kind: ArchiveKind, archive: &Path, temp: &Path) -> Result<(), IpcError> {
     match kind {
         ArchiveKind::Zip => {
-            let file = std::fs::File::open(archive).map_err(|e| io(format!("아카이브 열기 실패: {e}")))?;
+            let file = std::fs::File::open(archive).map_err(|e| io(text_db::llm_archive_open_failed(e)))?;
             zip::ZipArchive::new(file)
-                .map_err(|e| io(format!("zip 열기 실패: {e}")))?
+                .map_err(|e| io(text_db::llm_zip_open_failed(e)))?
                 .extract(temp)
-                .map_err(|e| io(format!("zip 해제 실패: {e}")))?;
+                .map_err(|e| io(text_db::llm_zip_extract_failed(e)))?;
             Ok(())
         }
         ArchiveKind::TarGz => {
             // 아카이브가 11~17MB라 메모리에 통째로 올려도 무해하다(lsp/acquire.rs와 같은 방식).
-            let bytes = std::fs::read(archive).map_err(|e| io(format!("아카이브 읽기 실패: {e}")))?;
+            let bytes = std::fs::read(archive).map_err(|e| io(text_db::llm_archive_read_failed(e)))?;
             let mut buf = Vec::new();
             flate2::read::GzDecoder::new(&bytes[..])
                 .read_to_end(&mut buf)
-                .map_err(|e| io(format!("gunzip 실패: {e}")))?;
+                .map_err(|e| io(text_db::llm_gunzip_failed(e)))?;
             tar::Archive::new(&buf[..])
                 .unpack(temp)
-                .map_err(|e| io(format!("tar 해제 실패: {e}")))?;
+                .map_err(|e| io(text_db::llm_tar_extract_failed(e)))?;
             Ok(())
         }
     }
@@ -537,7 +528,7 @@ pub(crate) fn register_cancel<'a>(
     {
         let mut map = state.llm_downloads.lock().unwrap_or_else(|e| e.into_inner());
         if map.contains_key(name) {
-            return Err(IpcError::new(ErrorCode::Busy, "이미 다운로드가 진행 중입니다"));
+            return Err(IpcError::new(ErrorCode::Busy, text_db::llm_download_busy()));
         }
         map.insert(name.to_string(), token.clone());
     }
@@ -560,7 +551,7 @@ pub(crate) fn http_client() -> Result<reqwest::Client, IpcError> {
         .connect_timeout(Duration::from_secs(30))
         .read_timeout(Duration::from_secs(60))
         .build()
-        .map_err(|e| io(format!("HTTP 클라이언트 오류: {e}")))
+        .map_err(|e| io(text_db::llm_http_client_failed(e)))
 }
 
 /// 런타임 아카이브 1개를 보장 — 이미 설치돼 있으면 즉시 반환(멱등).
@@ -576,8 +567,8 @@ pub async fn ensure_runtime(
         send_progress(ch, name, "done", None, None);
         return Ok(exe);
     }
-    let root = llm_root(app).ok_or_else(|| io("앱 데이터 경로 오류".into()))?;
-    std::fs::create_dir_all(&root).map_err(|e| io(format!("설치 폴더 생성 실패: {e}")))?;
+    let root = llm_root(app).ok_or_else(|| io(text_db::llm_app_data_dir_error().into()))?;
+    std::fs::create_dir_all(&root).map_err(|e| io(text_db::llm_install_dir_create_failed(e)))?;
     // 압축 해제본이 아카이브의 2~3배라 넉넉히 잡는다.
     check_free_space(&root, art.size * 4)?;
 
@@ -585,7 +576,7 @@ pub async fn ensure_runtime(
     let client = http_client()?;
     let temp = root.join(format!(".tmp-{}", art.dir));
     std::fs::remove_dir_all(&temp).ok();
-    std::fs::create_dir_all(&temp).map_err(|e| io(format!("temp 생성 실패: {e}")))?;
+    std::fs::create_dir_all(&temp).map_err(|e| io(text_db::llm_temp_dir_create_failed(e)))?;
 
     send_progress(ch, name, "download", Some(0), None);
     let archive = temp.join("archive");
@@ -600,7 +591,7 @@ pub async fn ensure_runtime(
     };
     let dest = root.join(art.dir);
     std::fs::remove_dir_all(&dest).ok();
-    std::fs::rename(&src, &dest).map_err(|e| io(format!("설치 이동 실패: {e}")))?;
+    std::fs::rename(&src, &dest).map_err(|e| io(text_db::llm_install_move_failed(e)))?;
     std::fs::remove_dir_all(&temp).ok();
 
     #[cfg(not(windows))]
@@ -621,9 +612,9 @@ pub async fn ensure_runtime(
         let exe = dest.join(art.exe_rel);
         tauri::async_runtime::spawn_blocking(move || smoke(&exe))
             .await
-            .map_err(|e| io(format!("설치 확인 작업 실패: {e}")))??;
+            .map_err(|e| io(text_db::llm_install_check_task_failed(e)))??;
     }
-    std::fs::write(dest.join(".ok"), art.build).map_err(|e| io(format!("마커 쓰기 실패: {e}")))?;
+    std::fs::write(dest.join(".ok"), art.build).map_err(|e| io(text_db::llm_marker_write_failed(e)))?;
     send_progress(ch, name, "done", None, None);
     Ok(dest.join(art.exe_rel))
 }
@@ -691,7 +682,7 @@ pub fn status(app: &AppHandle, state: &AppState) -> LlmStatus {
                 file: m.file.to_string(),
                 size: m.size,
                 min_ram: m.min_ram,
-                note: m.note.to_string(),
+                note: (m.note)().to_string(),
                 present: path.is_some(),
                 path: path.map(|p| p.to_string_lossy().into_owned()),
             }
@@ -728,10 +719,7 @@ pub async fn llm_runtime_ensure(
         .llm_backend
         .clone();
     let art = spec_for_backend(&backend).ok_or_else(|| {
-        IpcError::new(
-            ErrorCode::ToolNotFound,
-            "이 플랫폼용 llama.cpp 공식 빌드가 없습니다 — 고급 › 외부 서버 URL을 쓰세요",
-        )
+        IpcError::new(ErrorCode::ToolNotFound, text_db::llm_runtime_unsupported_platform())
     })?;
     if let Err(e) = ensure_runtime(&app, state.inner(), &art, &on_progress).await {
         let msg = e.to_string().replace('"', "'");
@@ -750,7 +738,7 @@ pub async fn llm_model_download(
     on_progress: Channel<String>,
 ) -> Result<LlmStatus, IpcError> {
     let spec = model_spec(&model_id)
-        .ok_or_else(|| IpcError::new(ErrorCode::NotFound, format!("모르는 모델: {model_id}")))?;
+        .ok_or_else(|| IpcError::new(ErrorCode::NotFound, text_db::llm_unknown_model(&model_id)))?;
     download_model(&app, state.inner(), spec, spec.id, &on_progress).await?;
     Ok(status(&app, state.inner()))
 }
@@ -765,8 +753,8 @@ pub(crate) async fn download_model(
     on_progress: &Channel<String>,
 ) -> Result<(), IpcError> {
     let run = async {
-        let dir = models_dir(app).ok_or_else(|| io("앱 데이터 경로 오류".into()))?;
-        std::fs::create_dir_all(&dir).map_err(|e| io(format!("모델 폴더 생성 실패: {e}")))?;
+        let dir = models_dir(app).ok_or_else(|| io(text_db::llm_app_data_dir_error().into()))?;
+        std::fs::create_dir_all(&dir).map_err(|e| io(text_db::llm_models_dir_create_failed(e)))?;
         let dest = dir.join(spec.file);
         if dest.is_file() {
             send_progress(on_progress, name, "done", None, None);
@@ -821,7 +809,7 @@ pub async fn llm_model_delete(
     model_id: String,
 ) -> Result<LlmStatus, IpcError> {
     let spec = model_spec(&model_id)
-        .ok_or_else(|| IpcError::new(ErrorCode::NotFound, format!("모르는 모델: {model_id}")))?;
+        .ok_or_else(|| IpcError::new(ErrorCode::NotFound, text_db::llm_unknown_model(&model_id)))?;
     crate::llm::server::stop_if_model(state.inner(), spec.id);
     delete_model(&app, spec)?;
     Ok(status(&app, state.inner()))
@@ -832,7 +820,7 @@ pub(crate) fn delete_model(app: &AppHandle, spec: &ModelSpec) -> Result<(), IpcE
     if let Some(dir) = models_dir(app) {
         let dest = dir.join(spec.file);
         if dest.is_file() {
-            std::fs::remove_file(&dest).map_err(|e| io(format!("모델 삭제 실패: {e}")))?;
+            std::fs::remove_file(&dest).map_err(|e| io(text_db::llm_model_delete_failed(e)))?;
         }
         std::fs::remove_file(dest.with_extension("part")).ok();
     }

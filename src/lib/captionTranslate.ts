@@ -7,26 +7,19 @@
 //   번역이 있게. 번역할 때 원문의 해시를 `translationSrc`에 같이 적어, 원문을 고친 cue를 "원문이 바뀜"으로 알아본다.
 // - 순수 함수 + 주입된 `chat` — LLM 호출·Busy 재시도는 스토어가 `chatWithBusyRetry`로 넣는다. e2e는 `__gpv.caption`에
 //   가짜 chat을 넣어 배치·검증·쪼개기를 결정적으로 단언한다(TS 단위 테스트 러너가 없다).
+import { currentMessages } from "../i18n/ui-language";
 import { captionLangLineChars, captionSourceCues, wrapCaptionWords } from "./captionEdit";
 import { fnv16 } from "./floating";
 import type { CaptionDoc } from "./ipc";
 import type { ChatMsg } from "./llm";
 import { langName } from "./llm";
 
-/** 번역 대상 언어 — Vrew의 "100개 언어"는 약속하지 않는다(로컬 소형 모델이 버티는 언어만). */
-export const CAPTION_TRANSLATE_LANGS: ReadonlyArray<{ code: string; label: string }> = [
-  { code: "ko", label: "한국어" },
-  { code: "en", label: "영어" },
-  { code: "ja", label: "일본어" },
-  { code: "zh", label: "중국어" },
-  { code: "es", label: "스페인어" },
-  { code: "fr", label: "프랑스어" },
-  { code: "de", label: "독일어" },
-  { code: "vi", label: "베트남어" },
-];
+/** 번역 대상 언어 — Vrew의 "100개 언어"는 약속하지 않는다(로컬 소형 모델이 버티는 언어만). 라벨은 카탈로그 `translateLangLabel`. */
+export const CAPTION_TRANSLATE_LANGS = ["ko", "en", "ja", "zh", "es", "fr", "de", "vi"] as const;
 
 export function captionLangLabel(code: string): string {
-  return CAPTION_TRANSLATE_LANGS.find((l) => l.code === code)?.label ?? code;
+  const lang = CAPTION_TRANSLATE_LANGS.find((l) => l === code);
+  return lang ? currentMessages().captions.translateLangLabel[lang] : code;
 }
 
 /** 번역할 cue 하나 — `src`는 원문 해시(번역과 같이 저장). */

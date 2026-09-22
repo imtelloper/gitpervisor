@@ -10,6 +10,7 @@ use std::ops::Range;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ErrorCode, IpcError};
+use crate::i18n::text_stt;
 use crate::stt::video_subs::CaptionStylePreset;
 
 pub const DOC_VERSION: u32 = 1;
@@ -380,7 +381,7 @@ pub fn build_doc(source: DocSource, engine: DocEngine, mut words: Vec<SttWord>) 
 // ══════════════════════════ 불변식 ══════════════════════════
 
 fn bad(m: String) -> IpcError {
-    IpcError::new(ErrorCode::Io, format!("자막 문서 오류: {m}"))
+    IpcError::new(ErrorCode::Io, text_stt::caption_doc_invalid(&m))
 }
 
 /// cue → 토큰 인덱스 구간 `(첫, 끝)`. cue가 순서대로·빈틈없이·겹치지 않게 토큰 전체를 덮는지도 여기서 본다.
@@ -390,20 +391,20 @@ pub fn cue_spans(doc: &CaptionDoc) -> Result<Vec<(usize, usize)>, IpcError> {
         index
             .get(id)
             .copied()
-            .ok_or_else(|| bad(format!("cue {} 가 가리키는 토큰 {id} 이 없습니다", cue.id)))
+            .ok_or_else(|| bad(text_stt::caption_doc_cue_token_missing(&cue.id, id)))
     };
     let mut spans = Vec::with_capacity(doc.cues.len());
     let mut next = 0usize;
     for c in &doc.cues {
         let (a, b) = (find(c, &c.first_token_id)?, find(c, &c.last_token_id)?);
         if a != next || b < a {
-            return Err(bad(format!("cue {} 가 앞 cue와 이어지지 않거나 거꾸로입니다", c.id)));
+            return Err(bad(text_stt::caption_doc_cue_not_contiguous(&c.id)));
         }
         spans.push((a, b));
         next = b + 1;
     }
     if next != doc.tokens.len() {
-        return Err(bad("cue가 토큰 전체를 덮지 않습니다".into()));
+        return Err(bad(text_stt::caption_doc_cues_incomplete().into()));
     }
     Ok(spans)
 }
@@ -419,7 +420,7 @@ pub fn validate_doc(doc: &mut CaptionDoc) -> Result<(), IpcError> {
             TokenKind::Word => {
                 t.text = strip_invisible(&t.text);
                 if t.text.trim().is_empty() {
-                    return Err(bad(format!("단어 {} 의 텍스트가 비었습니다", t.id)));
+                    return Err(bad(text_stt::caption_doc_word_empty(&t.id)));
                 }
             }
             TokenKind::Gap => {
@@ -428,20 +429,20 @@ pub fn validate_doc(doc: &mut CaptionDoc) -> Result<(), IpcError> {
             }
         }
         if t.start_ms > t.end_ms || t.end_ms > dur {
-            return Err(bad(format!("토큰 {} 의 시각({}~{}ms)이 범위를 벗어났습니다", t.id, t.start_ms, t.end_ms)));
+            return Err(bad(text_stt::caption_doc_token_time_out_of_range(&t.id, t.start_ms, t.end_ms)));
         }
         if t.start_ms < prev_end {
-            return Err(bad(format!("토큰 {} 이 앞 토큰과 겹치거나 순서가 어긋났습니다", t.id)));
+            return Err(bad(text_stt::caption_doc_token_overlap(&t.id)));
         }
         prev_end = t.end_ms;
         if !ids.insert(t.id.clone()) {
-            return Err(bad(format!("토큰 id {} 가 중복됐습니다", t.id)));
+            return Err(bad(text_stt::caption_doc_duplicate_token_id(&t.id)));
         }
     }
     let mut cue_ids = HashSet::with_capacity(doc.cues.len());
     for c in &mut doc.cues {
         if !cue_ids.insert(c.id.clone()) {
-            return Err(bad(format!("cue id {} 가 중복됐습니다", c.id)));
+            return Err(bad(text_stt::caption_doc_duplicate_cue_id(&c.id)));
         }
         if let Some(cap) = &c.caption {
             c.caption = Some(strip_invisible(cap));

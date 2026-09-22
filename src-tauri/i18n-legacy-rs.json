@@ -1,9 +1,4 @@
 {
   "_": "사용자 노출 한국어가 아직 남은 Rust 파일(주석·로그·테스트·i18n-ok 제외 줄 수). i18n.rs 의 user_facing_korean_lives_in_i18n_modules 테스트가 이 목록을 **줄어들기만** 하게 지킨다 — DOCS/i18n-design.md §5.2. 파일을 crate::i18n::text_* 로 옮기면 여기서 지운다.",
-  "files": {
-    "src/commands/video.rs": 56,
-    "src/lib.rs": 19,
-    "src/llm/acquire.rs": 37,
-    "src/llm/server.rs": 12
-  }
+  "files": {}
 }

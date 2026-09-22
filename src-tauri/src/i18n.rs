@@ -13,6 +13,8 @@ pub mod text_files;
 pub mod text_tools;
 pub mod text_system;
 pub mod text_git_net;
+pub mod text_video;
+pub mod text_stt;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lang {

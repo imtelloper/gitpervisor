@@ -1,7 +1,8 @@
 // 공용 lib — 리포트 UI 라벨·LLM·클립보드·터미널·상대 시간 등.
 
+import type { SyncOp } from "../stores/ops";
 import { defineText } from "./define-text";
-import { plural } from "./format-locale";
+import { fmtInt, plural } from "./format-locale";
 
 const ko = {
   // 여러 곳의 실패 토스트에 붙는 버튼(클립보드 복사·터미널 붙여넣기).
@@ -80,9 +81,47 @@ const ko = {
   },
   themeLabel: { darcula: "다크 (Darcula)", light: "라이트 (IntelliJ)" },
   translateWaitingForOtherAiJob: "다른 AI 작업이 끝나면 시작합니다…",
+  // lib/events.ts — 백엔드 이벤트(op-finished·내보내기·전사 종결)로 뜨는 토스트.
+  gitOpLabel: { push: "푸시", pull: "풀", fetch: "페치" },
+  gitOpDone: (label: string) => `${label} 완료`,
+  gitOpFailed: (label: string) => `${label} 실패`,
+  videoExport: {
+    cancelled: "내보내기를 취소했습니다",
+    done: (name: string) => `내보내기 완료 — ${name}`,
+    failed: "내보내기 실패",
+  },
+  sttJob: {
+    cancelled: "자막 만들기를 취소했습니다",
+    done: (name: string) => `자막을 만들었습니다 — ${name}`,
+    failed: "자막 만들기 실패",
+  },
+  // queries/index.ts — mutation 결과 토스트.
+  mutationToast: {
+    dbConnectionSaveFailed: (err: string) => `연결 저장 실패: ${err}`,
+    dbConnectionDeleteFailed: (err: string) => `연결 삭제 실패: ${err}`,
+    targetCleaned: (freed: string) => `target 청소 완료 — ${freed} 회수`,
+    quarantineCleared: (count: number) => `격리 해제 완료 (${fmtInt(count)}개)`,
+    settingsSaved: "설정을 저장했습니다",
+    projectPathChanged: (path: string) => `경로 변경됨 — ${path}`,
+    folderCreated: "폴더를 만들었습니다",
+    fileCreated: "파일을 만들었습니다",
+    pathDeleted: "삭제했습니다",
+    pathRenamed: "이름을 바꿨습니다",
+    committed: "커밋 완료",
+    // 한국어는 원래부터 영문 키 그대로다("push 완료") — e2e 40 c-8b 가 /push/ 로 이 토스트를 찾는다.
+    syncOpDone: (op: SyncOp) => `${op} 완료`,
+    logoSet: "로고를 지정했습니다",
+    logoCleared: "로고를 해제했습니다",
+  },
+  // lib/ipc.ts. 영어에도 "timed out"을 남긴다 — 타임아웃을 "시간 초과"·"timed out" 문구로 가려내는 관례
+  // (queries keepLastGoodStatuses)와 맞춘다. 한국어 "IPC 응답 시간 초과"는 e2e 48 이 접두어로 본다.
+  ipcTimeout: (cmd: string) => `IPC 응답 시간 초과: ${cmd}`,
+  ipcMutatingTimeout: (cmd: string) =>
+    `${cmd} 응답을 받지 못했습니다 — 실제 결과는 새로고침된 상태로 확인하세요`,
 };
 
 const EN_MONTH_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const EN_GIT_OP = { push: "Push", pull: "Pull", fetch: "Fetch" };
 
 export const libText = defineText(ko, {
   en: {
@@ -159,5 +198,37 @@ export const libText = defineText(ko, {
     },
     themeLabel: { darcula: "Dark (Darcula)", light: "Light (IntelliJ)" },
     translateWaitingForOtherAiJob: "Waiting for another AI task to finish…",
+    gitOpLabel: EN_GIT_OP,
+    gitOpDone: (label) => `${label} complete`,
+    gitOpFailed: (label) => `${label} failed`,
+    videoExport: {
+      cancelled: "Export canceled",
+      done: (name) => `Export complete — ${name}`,
+      failed: "Export failed",
+    },
+    sttJob: {
+      cancelled: "Caption generation canceled",
+      done: (name) => `Captions created — ${name}`,
+      failed: "Caption generation failed",
+    },
+    mutationToast: {
+      dbConnectionSaveFailed: (err) => `Couldn't save the connection: ${err}`,
+      dbConnectionDeleteFailed: (err) => `Couldn't delete the connection: ${err}`,
+      targetCleaned: (freed) => `Cleaned target — freed ${freed}`,
+      quarantineCleared: (count) => `Quarantine cleared (${fmtInt(count)})`,
+      settingsSaved: "Settings saved",
+      projectPathChanged: (path) => `Path changed — ${path}`,
+      folderCreated: "Folder created",
+      fileCreated: "File created",
+      pathDeleted: "Deleted",
+      pathRenamed: "Renamed",
+      committed: "Committed",
+      syncOpDone: (op) => `${EN_GIT_OP[op]} complete`,
+      logoSet: "Logo set",
+      logoCleared: "Logo cleared",
+    },
+    ipcTimeout: (cmd) => `IPC response timed out: ${cmd}`,
+    ipcMutatingTimeout: (cmd) =>
+      `${cmd} timed out with no response — check the refreshed state for the actual result`,
   },
 });

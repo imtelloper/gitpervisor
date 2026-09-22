@@ -506,7 +506,7 @@ export function captionMatchCutIds(
 }
 
 /** 추임새 기본 목록 — 사용자가 고친다(로컬 저장). Whisper는 추임새를 전사에서 빼는 경향이 있어 목록은 보조 수단이다(§2.3). */
-export const DEFAULT_CAPTION_FILLERS: readonly string[] = ["음", "어", "아", "그", "저기", "흠", "um", "uh"];
+export const DEFAULT_CAPTION_FILLERS: readonly string[] = ["음", "어", "아", "그", "저기", "흠", "um", "uh"]; // i18n-ok: 음성 군말 데이터(받아쓰기 언어, UI 문구 아님)
 
 /** 입력 글 → 추임새 목록(쉼표·공백으로 나눈다 — 항목 하나 = 단어 하나). */
 export function parseCaptionFillers(text: string): string[] {

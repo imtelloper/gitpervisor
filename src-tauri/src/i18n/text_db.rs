@@ -1,4 +1,4 @@
-//! DB 탐색기·diff·리포트·LLM 채팅 오류 문구 — 문구 하나 = 함수 하나, 모든 `Lang`을 `match`로 적는다(DOCS/i18n-design.md §4.4).
+//! DB 탐색기·diff·리포트·로컬 LLM(채팅·런타임/모델 다운로드·서버) 문구 — 문구 하나 = 함수 하나, 모든 `Lang`을 `match`로 적는다(DOCS/i18n-design.md §4.4).
 //! 빠진 언어는 컴파일 오류다. 정적 문구는 `&'static str`, 보간이 있으면 `String`을 돌려준다.
 
 use std::fmt::Display;
@@ -682,5 +682,323 @@ pub fn llm_chat_receive_failed(e: impl Display) -> String {
     match lang() {
         Lang::Ko => format!("응답 수신 실패: {e}"),
         Lang::En => format!("Failed to receive response: {e}"),
+    }
+}
+
+// ---- llm/acquire.rs: 모델 카탈로그 비고(설정 › AI 목록) ----
+
+pub fn llm_model_note_qwen3_4b() -> &'static str {
+    match lang() {
+        Lang::Ko => "기본 — 한국어·코드 양호, Apache-2.0",
+        Lang::En => "Default — good at Korean and code, Apache-2.0",
+    }
+}
+
+pub fn llm_model_note_qwen3_4b_2507() -> &'static str {
+    match lang() {
+        Lang::Ko => "기본 상위 — 사고 모드 없음, Apache-2.0",
+        Lang::En => "A step up from default — no thinking mode, Apache-2.0",
+    }
+}
+
+pub fn llm_model_note_qwen3_1_7b() -> &'static str {
+    match lang() {
+        Lang::Ko => "저사양 — 가장 빠름",
+        Lang::En => "Low-end hardware — fastest",
+    }
+}
+
+pub fn llm_model_note_qwen3_8b() -> &'static str {
+    match lang() {
+        Lang::Ko => "품질 우선",
+        Lang::En => "Quality first",
+    }
+}
+
+pub fn llm_model_note_gemma4_e4b() -> &'static str {
+    match lang() {
+        Lang::Ko => "품질 — 번역 강세, Apache-2.0",
+        Lang::En => "Quality — strong at translation, Apache-2.0",
+    }
+}
+
+pub fn llm_model_note_gemma4_12b() -> &'static str {
+    match lang() {
+        Lang::Ko => "배치/예약 요약용 — 가장 정확, 느림(주간 ~50초), Apache-2.0",
+        Lang::En => "For batch/scheduled summaries — most accurate, slow (~50 s per weekly summary), Apache-2.0",
+    }
+}
+
+// ---- llm/acquire.rs: 런타임·모델 다운로드(stt 획득도 같은 헬퍼를 쓴다) ----
+
+/// `need`·`avail`은 사람이 읽는 크기("2.6GB").
+pub fn llm_disk_space_low(need: &str, avail: &str) -> String {
+    match lang() {
+        Lang::Ko => format!("여유 공간 부족: 필요 {need} / 남음 {avail}"),
+        Lang::En => format!("Not enough free space: need {need} / available {avail}"),
+    }
+}
+
+pub fn llm_download_failed(e: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("다운로드 실패: {e}"),
+        Lang::En => format!("Download failed: {e}"),
+    }
+}
+
+pub fn llm_download_status_error(e: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("다운로드 상태 오류: {e}"),
+        Lang::En => format!("Download status error: {e}"),
+    }
+}
+
+/// `got`·`expected`는 사람이 읽는 크기("2.6GB").
+pub fn llm_download_size_mismatch(url: &str, got: &str, expected: &str) -> String {
+    match lang() {
+        Lang::Ko => format!(
+            "원본 파일이 교체됐습니다 — {url} 크기가 {got} 인데 앱은 {expected} 을 기대합니다. \
+             앱을 업데이트하면 새 해시로 받습니다."
+        ),
+        Lang::En => format!(
+            "The source file was replaced — {url} is {got} but the app expects {expected}. \
+             Update the app to download it with the new hash."
+        ),
+    }
+}
+
+pub fn llm_temp_file_create_failed(e: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("임시 파일 생성 실패: {e}"),
+        Lang::En => format!("Failed to create temporary file: {e}"),
+    }
+}
+
+pub fn llm_download_cancelled() -> &'static str {
+    match lang() {
+        Lang::Ko => "다운로드를 취소했습니다",
+        Lang::En => "Download cancelled",
+    }
+}
+
+pub fn llm_download_body_failed(e: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("본문 수신 실패: {e}"),
+        Lang::En => format!("Failed to receive data: {e}"),
+    }
+}
+
+pub fn llm_temp_file_write_failed(e: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("임시 파일 쓰기 실패: {e}"),
+        Lang::En => format!("Failed to write temporary file: {e}"),
+    }
+}
+
+pub fn llm_download_hash_mismatch(url: &str, got: &str, expected: &str) -> String {
+    match lang() {
+        Lang::Ko => format!(
+            "무결성 검증 실패 — {url} 의 sha256이 {got} 인데 앱에 고정된 값은 {expected} 입니다. \
+             원본이 같은 이름으로 재업로드됐거나 전송이 변조됐습니다."
+        ),
+        Lang::En => format!(
+            "Integrity check failed — the sha256 of {url} is {got} but the app expects {expected}. \
+             The source was re-uploaded under the same name or the transfer was tampered with."
+        ),
+    }
+}
+
+pub fn llm_install_move_failed(e: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("설치 이동 실패: {e}"),
+        Lang::En => format!("Failed to move files into place: {e}"),
+    }
+}
+
+pub fn llm_archive_open_failed(e: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("아카이브 열기 실패: {e}"),
+        Lang::En => format!("Failed to open archive: {e}"),
+    }
+}
+
+pub fn llm_zip_open_failed(e: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("zip 열기 실패: {e}"),
+        Lang::En => format!("Failed to open zip: {e}"),
+    }
+}
+
+pub fn llm_zip_extract_failed(e: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("zip 해제 실패: {e}"),
+        Lang::En => format!("Failed to extract zip: {e}"),
+    }
+}
+
+pub fn llm_archive_read_failed(e: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("아카이브 읽기 실패: {e}"),
+        Lang::En => format!("Failed to read archive: {e}"),
+    }
+}
+
+pub fn llm_gunzip_failed(e: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("gunzip 실패: {e}"),
+        Lang::En => format!("gunzip failed: {e}"),
+    }
+}
+
+pub fn llm_tar_extract_failed(e: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("tar 해제 실패: {e}"),
+        Lang::En => format!("Failed to extract tar: {e}"),
+    }
+}
+
+pub fn llm_download_busy() -> &'static str {
+    match lang() {
+        Lang::Ko => "이미 다운로드가 진행 중입니다",
+        Lang::En => "A download is already in progress",
+    }
+}
+
+pub fn llm_http_client_failed(e: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("HTTP 클라이언트 오류: {e}"),
+        Lang::En => format!("HTTP client error: {e}"),
+    }
+}
+
+pub fn llm_app_data_dir_error() -> &'static str {
+    match lang() {
+        Lang::Ko => "앱 데이터 경로 오류",
+        Lang::En => "App data path error",
+    }
+}
+
+pub fn llm_install_dir_create_failed(e: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("설치 폴더 생성 실패: {e}"),
+        Lang::En => format!("Failed to create install folder: {e}"),
+    }
+}
+
+pub fn llm_temp_dir_create_failed(e: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("temp 생성 실패: {e}"),
+        Lang::En => format!("Failed to create temp folder: {e}"),
+    }
+}
+
+pub fn llm_install_check_task_failed(e: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("설치 확인 작업 실패: {e}"),
+        Lang::En => format!("Install check task failed: {e}"),
+    }
+}
+
+pub fn llm_marker_write_failed(e: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("마커 쓰기 실패: {e}"),
+        Lang::En => format!("Failed to write install marker: {e}"),
+    }
+}
+
+/// 런타임 다운로드(acquire)와 서버 기동(server) 양쪽이 쓴다.
+pub fn llm_runtime_unsupported_platform() -> &'static str {
+    match lang() {
+        Lang::Ko => "이 플랫폼용 llama.cpp 공식 빌드가 없습니다 — 고급 › 외부 서버 URL을 쓰세요",
+        Lang::En => "No official llama.cpp build for this platform — use Advanced › External server URL",
+    }
+}
+
+/// 다운로드·삭제(acquire)와 서버 기동(server) 양쪽이 쓴다.
+pub fn llm_unknown_model(model_id: &str) -> String {
+    match lang() {
+        Lang::Ko => format!("모르는 모델: {model_id}"),
+        Lang::En => format!("Unknown model: {model_id}"),
+    }
+}
+
+pub fn llm_models_dir_create_failed(e: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("모델 폴더 생성 실패: {e}"),
+        Lang::En => format!("Failed to create model folder: {e}"),
+    }
+}
+
+pub fn llm_model_delete_failed(e: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("모델 삭제 실패: {e}"),
+        Lang::En => format!("Failed to delete model: {e}"),
+    }
+}
+
+// ---- llm/server.rs ----
+
+pub fn llm_free_port_not_found() -> &'static str {
+    match lang() {
+        Lang::Ko => "빈 포트를 찾지 못했습니다",
+        Lang::En => "Could not find a free port",
+    }
+}
+
+pub fn llm_custom_model_path_empty() -> &'static str {
+    match lang() {
+        Lang::Ko => "사용자 지정 모델 경로가 비어 있습니다",
+        Lang::En => "Custom model path is empty",
+    }
+}
+
+pub fn llm_custom_model_invalid() -> &'static str {
+    match lang() {
+        Lang::Ko => "사용자 지정 모델이 없거나 .gguf 파일이 아닙니다",
+        Lang::En => "Custom model not found or not a .gguf file",
+    }
+}
+
+/// `label`은 카탈로그 모델 이름(번역하지 않는다).
+pub fn llm_model_not_installed(label: &str) -> String {
+    match lang() {
+        Lang::Ko => format!("{label} 모델이 없습니다 — 설정 › AI에서 다운로드하세요"),
+        Lang::En => format!("The {label} model is not installed — download it in Settings › AI"),
+    }
+}
+
+pub fn llm_server_spawn_failed(e: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("llama-server 실행 실패: {e}"),
+        Lang::En => format!("Failed to start llama-server: {e}"),
+    }
+}
+
+/// `tail`은 서버 로그 끝부분(번역하지 않는다).
+pub fn llm_server_exited(tail: &str) -> String {
+    match lang() {
+        Lang::Ko => format!("llama-server가 종료됐습니다:\n{tail}"),
+        Lang::En => format!("llama-server exited:\n{tail}"),
+    }
+}
+
+pub fn llm_model_load_timed_out(tail: &str) -> String {
+    match lang() {
+        Lang::Ko => format!("모델 로드 실패(시간 초과):\n{tail}"),
+        Lang::En => format!("Model load failed (timed out):\n{tail}"),
+    }
+}
+
+pub fn llm_external_url_empty() -> &'static str {
+    match lang() {
+        Lang::Ko => "외부 서버 URL이 비어 있습니다 — 설정 › AI › 고급",
+        Lang::En => "External server URL is empty — Settings › AI › Advanced",
+    }
+}
+
+pub fn llm_runtime_not_installed() -> &'static str {
+    match lang() {
+        Lang::Ko => "AI 런타임이 없습니다 — 설정 › AI에서 런타임을 다운로드하세요",
+        Lang::En => "AI runtime is not installed — download it in Settings › AI",
     }
 }
