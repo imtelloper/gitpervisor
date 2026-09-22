@@ -19,6 +19,7 @@
 //
 // 좌표는 전부 oriented px 다(types.ts 규약). 크롬 프리미티브의 두께·반경만 css px.
 
+import { currentMessages } from "../../../i18n/ui-language";
 import { CHROME_COLORS, type ChromePrim } from "../../../lib/annotate/chrome";
 import { snapAngle } from "../../../lib/annotate/geometry";
 import { normalizeNode } from "../../../lib/annotate/schema";
@@ -292,5 +293,10 @@ function freshVert(p: Point, curvature: boolean): PathVert {
  */
 function hint(at: Point, scale: number): ChromePrim {
   const gap = HINT_GAP_CSS / Math.max(scale, 1e-6);
-  return { k: "text", x: at.x + gap * 2, y: at.y + gap, text: "클릭 = 코너 · 드래그 = 곡선" };
+  return {
+    k: "text",
+    x: at.x + gap * 2,
+    y: at.y + gap,
+    text: currentMessages().imagePanels.nodeCanvas.penCursorHint,
+  };
 }

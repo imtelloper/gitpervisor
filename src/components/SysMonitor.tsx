@@ -1,3 +1,4 @@
+import { useMessages } from "../i18n/ui-language";
 import type { ProcSortKey } from "../lib/ipc";
 import { ipc } from "../lib/ipc";
 import { useSysMetrics } from "../queries";
@@ -41,13 +42,16 @@ function Metric({
   /** SSD — 클릭 시 디스크 용량 분석 뷰로 연다 */
   disk?: boolean;
 }) {
+  const msg = useMessages();
   const v = pct == null ? null : Math.max(0, Math.min(100, Math.round(pct)));
   return (
     <button
       type="button"
       onClick={() => openSysmon(sortBy, disk)}
       title={`${tip ? `${tip} — ` : ""}${
-        disk ? "클릭하면 디스크 용량 분석" : "클릭하면 프로세스별 상세 보기"
+        disk
+          ? msg.sysmon.titleBarMetric.clickForDiskUsage
+          : msg.sysmon.titleBarMetric.clickForProcesses
       }`}
       className="flex w-[50px] cursor-pointer flex-col gap-[3px] rounded-sm px-0 py-0 text-left hover:opacity-80"
     >
@@ -78,18 +82,19 @@ function Metric({
 /** 타이틀바 좌측 시스템 모니터 (CPU / GPU / RAM / 저장소) — 클릭하면 프로세스별 상세 팝업.
  *  드래그 영역이 아니다(클릭 대상) — 타이틀바 드래그는 주변 spacer가 유지한다(태스크 05 §4.2). */
 export function SysMonitor() {
+  const msg = useMessages();
   const { data: m } = useSysMetrics();
 
   return (
     <div className="flex items-center gap-2.5">
-      <Metric label="CPU" pct={m?.cpu ?? null} tip="CPU 사용률" sortBy="cpu" />
+      <Metric label="CPU" pct={m?.cpu ?? null} tip={msg.sysmon.titleBarMetric.cpuTip} sortBy="cpu" />
       <Metric
         label="GPU"
         pct={m?.gpu ?? null}
         tip={
           m && m.gpu == null
-            ? "이 플랫폼에서는 GPU 사용률을 읽을 수 없습니다"
-            : "GPU 사용률 (전 어댑터)"
+            ? msg.sysmon.common.gpuUnsupported
+            : msg.sysmon.titleBarMetric.gpuTipAllAdapters
         }
         // GPU를 못 읽는 플랫폼(macOS/Linux)에선 정렬 핸드오프를 하지 않는다 — 전 행이
         // null이라 GPU 정렬은 아무 의미가 없고, 그 값이 localStorage에 눌러앉아 이후
@@ -99,7 +104,11 @@ export function SysMonitor() {
       <Metric
         label="RAM"
         pct={m?.ram ?? null}
-        tip={m ? `메모리 ${gb(m.ramUsed)} / ${gb(m.ramTotal)} GB` : "메모리"}
+        tip={
+          m
+            ? msg.sysmon.common.memoryTip(gb(m.ramUsed), gb(m.ramTotal))
+            : msg.sysmon.common.memory
+        }
         sortBy="ram"
       />
       <Metric
@@ -111,10 +120,12 @@ export function SysMonitor() {
         // 엉뚱한 외장 볼륨 수치에 존재하지도 않는 드라이브 문자를 붙였다.
         tip={
           m
-            ? `저장소${m.storageMount ? ` ${m.storageMount}` : ""} ${gb(
-                m.storageUsed,
-              )} / ${gb(m.storageTotal)} GB`
-            : "저장소"
+            ? msg.sysmon.titleBarMetric.storageTip(
+                m.storageMount,
+                gb(m.storageUsed),
+                gb(m.storageTotal),
+              )
+            : msg.sysmon.titleBarMetric.storage
         }
       />
     </div>

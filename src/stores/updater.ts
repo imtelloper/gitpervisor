@@ -4,6 +4,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { create } from "zustand";
 
+import { currentMessages } from "../i18n/ui-language";
 import { useUi } from "./ui";
 
 // 자동 업데이트(Tauri updater) 상태. 서명 검증·다운로드·설치는 플러그인이 처리하고, 여기선
@@ -83,9 +84,9 @@ export const useUpdater = create<UpdaterState>((set, get) => ({
           set({ notifiedVersion: update.version });
           useUi.getState().pushToast(
             "info",
-            `새 버전 v${update.version}이 나왔습니다`,
+            currentMessages().stores.updater.newVersionAvailable(update.version),
             {
-              label: "업데이트 열기",
+              label: currentMessages().stores.updater.openUpdate,
               run: () => useUi.getState().openSettings("update"),
             },
             { durationMs: null },

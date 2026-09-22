@@ -4,6 +4,8 @@
 // 처리한다 — 저장하지 않고 취소하면 이 요소만 지우면 원상태다(스토어를 더럽히지 않는다).
 import { useEffect, useMemo, useState } from "react";
 
+import type { Messages } from "../../../i18n/messages";
+import { useMessages } from "../../../i18n/ui-language";
 import { refreshTerminalThemes } from "../../../lib/terminal";
 import { BUILTIN_TOKENS, contrastRatio, customThemeCss, normalizeHex } from "../../../lib/theme-apply";
 import {
@@ -17,41 +19,50 @@ import { inputCls } from "./shared";
 
 const PREVIEW_STYLE_ID = "gp-custom-theme-preview";
 
-const TOKEN_LABEL: Record<ThemeToken, string> = {
-  base: "바탕",
-  panel: "패널",
-  raised: "떠 있는 면",
-  selection: "선택",
-  edge: "경계선",
-  accent: "강조",
-  "accent-hover": "강조 hover",
-  "on-accent": "강조 위 텍스트",
-  fg: "본문",
-  "fg-muted": "보조",
-  "fg-dim": "흐림",
-  ok: "정상",
-  warn: "주의",
-  danger: "위험",
-  mod: "수정",
-  add: "추가",
-  del: "삭제",
-  untrk: "미추적",
-};
+function tokenLabelsFor(msg: Messages): Record<ThemeToken, string> {
+  const t = msg.settings.customThemeEditor;
+  return {
+    base: t.tokenBase,
+    panel: t.tokenPanel,
+    raised: t.tokenRaised,
+    selection: t.tokenSelection,
+    edge: t.tokenEdge,
+    accent: t.tokenAccent,
+    "accent-hover": t.tokenAccentHover,
+    "on-accent": t.tokenOnAccent,
+    fg: t.tokenFg,
+    "fg-muted": t.tokenFgMuted,
+    "fg-dim": t.tokenFgDim,
+    ok: t.tokenOk,
+    warn: t.tokenWarn,
+    danger: t.tokenDanger,
+    mod: t.tokenMod,
+    add: t.tokenAdd,
+    del: t.tokenDel,
+    untrk: t.tokenUntrk,
+  };
+}
 
-const GROUPS: { label: string; tokens: readonly ThemeToken[] }[] = [
-  { label: "배경", tokens: ["base", "panel", "raised", "selection", "edge"] },
-  { label: "텍스트", tokens: ["fg", "fg-muted", "fg-dim"] },
-  { label: "강조", tokens: ["accent", "accent-hover", "on-accent"] },
-  { label: "상태", tokens: ["ok", "warn", "danger"] },
-  { label: "파일 변경", tokens: ["mod", "add", "del", "untrk"] },
-];
+function tokenGroupsFor(msg: Messages): { label: string; tokens: readonly ThemeToken[] }[] {
+  const t = msg.settings.customThemeEditor;
+  return [
+    { label: t.groupBackground, tokens: ["base", "panel", "raised", "selection", "edge"] },
+    { label: t.groupText, tokens: ["fg", "fg-muted", "fg-dim"] },
+    { label: t.groupAccent, tokens: ["accent", "accent-hover", "on-accent"] },
+    { label: t.groupStatus, tokens: ["ok", "warn", "danger"] },
+    { label: t.groupFileChanges, tokens: ["mod", "add", "del", "untrk"] },
+  ];
+}
 
 // 대비 힌트 — 읽기가 실제로 걸리는 3쌍만(WCAG AA 본문 기준 4.5:1).
-const HINTS: { label: string; fg: ThemeToken; bg: ThemeToken }[] = [
-  { label: "본문 / 바탕", fg: "fg", bg: "base" },
-  { label: "보조 / 바탕", fg: "fg-muted", bg: "base" },
-  { label: "강조 위 텍스트 / 강조", fg: "on-accent", bg: "accent" },
-];
+function contrastHintsFor(msg: Messages): { label: string; fg: ThemeToken; bg: ThemeToken }[] {
+  const t = msg.settings.customThemeEditor;
+  return [
+    { label: t.hintBodyOnBase, fg: "fg", bg: "base" },
+    { label: t.hintMutedOnBase, fg: "fg-muted", bg: "base" },
+    { label: t.hintOnAccent, fg: "on-accent", bg: "accent" },
+  ];
+}
 
 export function CustomThemeEditor({
   initial,
@@ -62,6 +73,8 @@ export function CustomThemeEditor({
   onSave: (t: CustomTheme) => void;
   onCancel: () => void;
 }) {
+  const msg = useMessages();
+  const tokenLabel = tokenLabelsFor(msg);
   const [name, setName] = useState(initial.name);
   const [base, setBase] = useState<ThemeName>(initial.base);
   // 편집 중인 hex는 **문자열 그대로** 들고 있는다(타이핑 중간값 허용) — 유효한 값만 색으로 승격.
@@ -109,7 +122,7 @@ export function CustomThemeEditor({
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder="테마 이름"
+          placeholder={msg.settings.customThemeEditor.namePlaceholder}
           className={`${inputCls} flex-1`}
         />
         <select
@@ -123,17 +136,14 @@ export function CustomThemeEditor({
         >
           {THEMES.map((t) => (
             <option key={t.id} value={t.id}>
-              기반: {t.label}
+              {msg.settings.customThemeEditor.baseOption(t.label)}
             </option>
           ))}
         </select>
       </div>
-      <div className="text-[11px] text-fg-dim">
-        기반 테마에서 에디터 문법색·터미널 ANSI 색을 물려받습니다. 기반을 바꾸면 아래 색이 그
-        테마의 값으로 초기화됩니다.
-      </div>
+      <div className="text-[11px] text-fg-dim">{msg.settings.customThemeEditor.baseHint}</div>
 
-      {GROUPS.map((g) => (
+      {tokenGroupsFor(msg).map((g) => (
         <div key={g.label}>
           <div className="mb-1 text-[11px] font-medium text-fg-muted">{g.label}</div>
           <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
@@ -142,7 +152,7 @@ export function CustomThemeEditor({
               return (
                 <label key={k} className="flex items-center gap-2">
                   <span className="w-[92px] shrink-0 truncate text-fg-muted">
-                    {TOKEN_LABEL[k]}
+                    {tokenLabel[k]}
                   </span>
                   <input
                     type="color"
@@ -165,10 +175,10 @@ export function CustomThemeEditor({
 
       <div>
         <div className="mb-1 text-[11px] font-medium text-fg-muted">
-          대비 (WCAG AA 본문 4.5:1)
+          {msg.settings.customThemeEditor.contrastHeading}
         </div>
         <div className="space-y-1">
-          {HINTS.map((h) => {
+          {contrastHintsFor(msg).map((h) => {
             const ratio = contrastRatio(colors[h.fg], colors[h.bg]);
             const aa = ratio >= 4.5;
             return (
@@ -177,7 +187,7 @@ export function CustomThemeEditor({
                   className="flex h-5 w-16 shrink-0 items-center justify-center rounded border border-edge text-[11px]"
                   style={{ backgroundColor: colors[h.bg], color: colors[h.fg] }}
                 >
-                  Aa 가나
+                  {msg.settings.customThemeEditor.contrastSample}
                 </span>
                 <span className="min-w-0 flex-1 truncate text-fg-muted">{h.label}</span>
                 <span className="tabular-nums text-fg-dim">{ratio.toFixed(2)}:1</span>
@@ -186,7 +196,7 @@ export function CustomThemeEditor({
                     aa ? "bg-ok/20 text-ok" : "bg-warn/20 text-warn"
                   }`}
                 >
-                  {aa ? "AA" : "낮음"}
+                  {aa ? "AA" : msg.settings.customThemeEditor.contrastLow}
                 </span>
               </div>
             );
@@ -197,19 +207,19 @@ export function CustomThemeEditor({
       <div className="flex items-center gap-2">
         {bad.length > 0 && (
           <span className="text-[11px] text-danger">
-            색 형식 오류: {bad.map((k) => TOKEN_LABEL[k]).join(", ")}
+            {msg.settings.customThemeEditor.badColors(bad.map((k) => tokenLabel[k]).join(", "))}
           </span>
         )}
         <div className="flex-1" />
         <button onClick={onCancel} className="rounded px-3 py-1 text-fg-muted hover:bg-raised">
-          취소
+          {msg.settings.customThemeEditor.cancel}
         </button>
         <button
           disabled={!canSave}
           onClick={() => onSave({ ...initial, name: name.trim(), base, colors, updatedAt: Date.now() })}
           className="rounded bg-accent px-3 py-1 font-medium text-on-accent hover:bg-accent-hover disabled:opacity-50"
         >
-          저장
+          {msg.settings.customThemeEditor.save}
         </button>
       </div>
     </div>

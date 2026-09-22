@@ -8,6 +8,8 @@
 // 표시된 영상 영역과 1:1이라 레터박스 보정이 필요 없다.
 import { Fragment, useRef, useState } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
+
 export interface CropRect {
   x: number;
   y: number;
@@ -30,7 +32,7 @@ export function CropOverlay({
   videoH,
   crop,
   onChange,
-  hint = "드래그해서 추출할 영역을 지정하세요 (Esc 취소)",
+  hint,
 }: {
   videoW: number;
   videoH: number;
@@ -39,6 +41,7 @@ export function CropOverlay({
   /** 사각형이 없을 때 뜨는 안내 — 크롭/모자이크가 같은 오버레이를 쓴다. */
   hint?: string;
 }) {
+  const msg = useMessages();
   const rootRef = useRef<HTMLDivElement>(null);
   // 드래그 중 라이브 사각형(video px, 소수 허용) — 커밋 시 짝수 정수화.
   //
@@ -154,7 +157,7 @@ export function CropOverlay({
     >
       {!shown && (
         <div className="pointer-events-none absolute inset-x-0 top-2 text-center text-[11px] text-fg-dim">
-          {hint}
+          {hint ?? msg.media.cropOverlay.defaultHint}
         </div>
       )}
       {shown && (

@@ -1,6 +1,7 @@
 import { Plus, StickyNote, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { registerDraftFlush } from "../../lib/drafts";
 import { relativeTime } from "../../lib/format";
 import {
@@ -12,9 +13,9 @@ import {
 } from "../../queries";
 import { MarkdownBody } from "../diff/MarkdownView";
 
-function memoTitle(text: string): string {
+function memoTitle(text: string, untitled: string): string {
   const first = text.split("\n").find((l) => l.trim());
-  return first?.trim().slice(0, 60) || "새 메모";
+  return first?.trim().slice(0, 60) || untitled;
 }
 
 interface MemoPanelProps {
@@ -41,6 +42,7 @@ export function MemoPanel({
   onClose,
   flushRef,
 }: MemoPanelProps) {
+  const msg = useMessages();
   const { data: notes } = useNotes();
 
   const addMemo = useAddMemo();
@@ -275,7 +277,7 @@ export function MemoPanel({
                 />
               )}
               <div className="truncate text-[13px] text-fg">
-                {memoTitle(m.text)}
+                {memoTitle(m.text, msg.notes.memoPanel.untitledMemo)}
               </div>
               <div className="mt-0.5 truncate text-[11px] text-fg-dim">
                 {relativeTime(new Date(m.updatedAt).getTime())}
@@ -286,9 +288,9 @@ export function MemoPanel({
           {dragId && overId === null && <div className="mx-2 h-0.5 bg-accent" />}
           {memos.length === 0 && (
             <div className="px-3 py-4 text-[12px] leading-5 text-fg-dim">
-              메모가 없습니다.
+              {msg.notes.memoPanel.emptyListLine1}
               <br />
-              아래 버튼으로 추가하세요.
+              {msg.notes.memoPanel.emptyListLine2}
             </div>
           )}
         </div>
@@ -297,7 +299,7 @@ export function MemoPanel({
           onClick={handleAdd}
           className="flex items-center gap-1.5 border-t border-edge px-3 py-2.5 text-[13px] text-fg-muted hover:bg-raised hover:text-fg"
         >
-          <Plus size={14} /> 새 메모
+          <Plus size={14} /> {msg.notes.memoPanel.newMemo}
         </button>
       </div>
 
@@ -305,11 +307,13 @@ export function MemoPanel({
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex items-center gap-2 border-b border-edge px-3 py-2">
           <span className="min-w-0 flex-1 truncate text-[12px] text-fg-dim">
-            {active ? memoTitle(active.text) : "메모"}
+            {active
+              ? memoTitle(active.text, msg.notes.memoPanel.untitledMemo)
+              : msg.notes.memoPanel.editorFallbackTitle}
           </span>
           <button
             onClick={toggleMdMode}
-            title="Markdown 모드 — 본문을 렌더해서 보여줍니다. 렌더된 본문을 클릭하면 편집, 포커스가 빠지면 다시 렌더"
+            title={msg.notes.memoPanel.markdownModeTitle}
             className={`rounded p-1 text-[11px] font-semibold ${
               mdMode
                 ? "bg-selection text-accent"
@@ -321,7 +325,7 @@ export function MemoPanel({
           {active && (
             <button
               onClick={handleDelete}
-              title="이 메모 삭제"
+              title={msg.notes.memoPanel.deleteMemoTitle}
               className="rounded p-1 text-fg-dim hover:bg-raised hover:text-danger"
             >
               <Trash2 size={14} />
@@ -329,7 +333,7 @@ export function MemoPanel({
           )}
           <button
             onClick={onClose}
-            title="닫기 (Esc)"
+            title={msg.notes.memoPanel.closeTitle}
             className="rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
           >
             <X size={15} />
@@ -340,7 +344,7 @@ export function MemoPanel({
             textarea가 사라져도 본문은 text state에 남아 디바운스 저장·flush는 그대로 돈다. */}
         {!active ? (
           <div className="flex flex-1 items-center justify-center text-[13px] text-fg-dim">
-            왼쪽에서 메모를 선택하거나 새로 만드세요
+            {msg.notes.memoPanel.noneSelected}
           </div>
         ) : !mdMode || editing || text.trim() === "" ? (
           <textarea
@@ -353,7 +357,7 @@ export function MemoPanel({
               if (mdMode && !editing) setEditing(true);
             }}
             onBlur={() => mdMode && setEditing(false)}
-            placeholder="메모 작성…"
+            placeholder={msg.notes.memoPanel.editorPlaceholder}
             spellCheck={false}
             autoFocus
             className="min-h-0 flex-1 resize-none bg-transparent px-4 py-3 text-[14px] leading-7 text-fg outline-none placeholder:text-fg-dim"

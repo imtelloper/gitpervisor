@@ -5,6 +5,7 @@ import {
 } from "@tauri-apps/plugin-clipboard-manager";
 import { warn } from "@tauri-apps/plugin-log";
 
+import { currentMessages } from "../i18n/ui-language";
 import { useUi } from "../stores/ui";
 import { isMac, isWindows } from "./platform";
 
@@ -57,8 +58,8 @@ function noteFailure(detail: string, what: string): void {
   // Windows 경합은 사람 말로 옮긴다 — capture.rs가 쓰는 것과 같은 문장.
   lastFailure =
     isWindows && /open|another|held|busy|access/i.test(detail)
-      ? "다른 프로그램이 클립보드를 쓰고 있습니다 — 다시 시도하세요"
-      : detail || "알 수 없는 오류";
+      ? currentMessages().lib.clipboard.heldByOtherApp
+      : detail || currentMessages().lib.clipboard.unknownError;
   // 로그 파일에 남긴다 — 다음번 "어떤 PC에서는 안 된다"를 추측이 아니라 근거로 좁힌다.
   void warn(`[clipboard] ${what}: ${detail}`).catch(() => {});
 }
@@ -92,7 +93,7 @@ function execCommandCopy(text: string): boolean {
 export async function copyText(text: string): Promise<boolean> {
   const errors: string[] = [];
   if (text.length > BIG_TEXT) {
-    void warn(`[clipboard] 큰 복사 (${PLAT}, ${text.length}자) — 자르지 않고 시도`).catch(
+    void warn(`[clipboard] 큰 복사 (${PLAT}, ${text.length}자) — 자르지 않고 시도`).catch( // i18n-ok: 로그
       () => {},
     );
   }
@@ -131,7 +132,7 @@ export async function copyText(text: string): Promise<boolean> {
       // `"verify"` 주입은 **쓰지 않고 true 만 받은** 상태를 만든다 — 아래 되읽기가 그 거짓 성공을
       // 실제로 잡는지 보려는 것이라, 되읽은 값을 가짜로 바꾸면 검증 경로가 아니라 주입을 테스트하게 된다.
       if (!forced.has("verify") && !execCommandCopy(text)) {
-        throw new Error("execCommand가 false를 반환했습니다");
+        throw new Error(currentMessages().lib.clipboard.execCommandFalse);
       }
       // **`execCommand` 의 true 는 "명령을 보냈다"이지 "클립보드에 들어갔다"가 아니다.**
       // 2026-09-10 이 머신에서 실측: OS 클립보드가 통째로 고장 나 앞의 두 단계가 각각
@@ -147,9 +148,7 @@ export async function copyText(text: string): Promise<boolean> {
       if (!isMac) {
         const back = await readText().catch(() => null);
         if (back !== text) {
-          throw new Error(
-            `클립보드에 반영되지 않았습니다(되읽기=${back === null ? "실패" : "불일치"})`,
-          );
+          throw new Error(currentMessages().lib.clipboard.notReflected(back === null));
         }
       }
       lastFailure = "";
@@ -158,10 +157,10 @@ export async function copyText(text: string): Promise<boolean> {
       errors.push(`exec: ${short(e)}`);
     }
   } else {
-    errors.push("webview: macOS 비-ASCII는 인코딩이 깨져 건너뜀");
+    errors.push(currentMessages().lib.clipboard.macNonAsciiSkipped);
   }
 
-  noteFailure(errors.join(" | "), `복사 실패 (${PLAT}, ${text.length}자)`);
+  noteFailure(errors.join(" | "), `복사 실패 (${PLAT}, ${text.length}자)`); // i18n-ok: 로그(what 은 warn 에만 들어간다)
   return false;
 }
 
@@ -184,18 +183,18 @@ export async function copyImage(bytes: Uint8Array): Promise<boolean> {
       last = short(e);
     }
   }
-  noteFailure(last, `이미지 복사 실패 (${PLAT}, ${bytes.length}B, 8회 재시도)`);
+  noteFailure(last, `이미지 복사 실패 (${PLAT}, ${bytes.length}B, 8회 재시도)`); // i18n-ok: 로그(what 은 warn 에만 들어간다)
   return false;
 }
 
 /** 마지막 복사 실패 사유(사람이 읽을 문장). */
 export function lastCopyFailure(): string {
-  return lastFailure || "알 수 없는 오류";
+  return lastFailure || currentMessages().lib.clipboard.unknownError;
 }
 
 /** 실패 토스트 문구 — 복사 호출부 전부가 같은 문장을 쓰게 한다. */
 export function copyFailMessage(): string {
-  return `복사에 실패했습니다 — ${lastCopyFailure()}`;
+  return currentMessages().lib.clipboard.copyFailed(lastCopyFailure());
 }
 
 /** 복사 + 토스트 — 메뉴에서 텍스트를 복사하는 **모든** 호출부가 지나는 한 문(A-K1).
@@ -204,13 +203,13 @@ export function copyFailMessage(): string {
  *  고정 문구 6개였다 — 사유 없음·재시도 없음·폴백 없음), 무엇보다 `copyText`의 계층 폴백을 지나지
  *  않는다. 실패 토스트에는 **[다시 시도]** 를 단다(A-K6): 잠금 해제 뒤 자동 재시도는 사용자가
  *  원치 않는 시점에 클립보드를 덮을 수 있어 사람이 누르게 한다. */
-export function copyWithToast(text: string, okMsg = "복사했습니다"): void {
+export function copyWithToast(text: string, okMsg = currentMessages().lib.clipboard.copied): void {
   const pushToast = useUi.getState().pushToast;
   void copyText(text).then((ok) => {
     if (ok) pushToast("success", okMsg);
     else
       pushToast("error", copyFailMessage(), {
-        label: "다시 시도",
+        label: currentMessages().lib.toastRetry,
         run: () => copyWithToast(text, okMsg),
       });
   });

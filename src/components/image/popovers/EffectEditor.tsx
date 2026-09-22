@@ -16,6 +16,8 @@
 import { useState } from "react";
 import { Eye, EyeOff, Minus } from "lucide-react";
 
+import type { Messages } from "../../../i18n/messages";
+import { useMessages } from "../../../i18n/ui-language";
 import type { Effect, Paint } from "../../../lib/annotate/types";
 import { hexToRgb } from "../../../lib/color";
 import { NumField } from "../inspector/fields/NumField";
@@ -23,10 +25,12 @@ import { Select } from "../inspector/fields/Select";
 import { ColorPicker } from "./ColorPicker";
 import { Popover } from "./Popover";
 
-const SHADOW_KINDS = [
-  { value: "drop-shadow" as const, label: "드롭" },
-  { value: "inner-shadow" as const, label: "이너" },
-];
+function shadowKindsFor(msg: Messages) {
+  return [
+    { value: "drop-shadow" as const, label: msg.imageInspector.effectEditor.kindDrop },
+    { value: "inner-shadow" as const, label: msg.imageInspector.effectEditor.kindInner },
+  ];
+}
 
 export interface EffectEditorProps {
   effect: Effect;
@@ -37,6 +41,7 @@ export interface EffectEditorProps {
 }
 
 export function EffectEditor({ effect, onLive, onCommit, onRemove, onToggle }: EffectEditorProps) {
+  const msg = useMessages();
   const [colorAnchor, setColorAnchor] = useState<HTMLElement | null>(null);
 
   return (
@@ -46,9 +51,9 @@ export function EffectEditor({ effect, onLive, onCommit, onRemove, onToggle }: E
             `{...effect, type: v}` 가 블러에도 섀도 타입을 넣는 코드로 읽힌다. */}
         {(effect.type === "drop-shadow" || effect.type === "inner-shadow") && (
           <Select
-            label="효과 종류"
+            label={msg.imageInspector.effectEditor.kindSelect}
             value={effect.type}
-            options={SHADOW_KINDS}
+            options={shadowKindsFor(msg)}
             onChange={(v) => onCommit({ ...effect, type: v })}
           />
         )}
@@ -56,7 +61,7 @@ export function EffectEditor({ effect, onLive, onCommit, onRemove, onToggle }: E
         <button
           type="button"
           onClick={onToggle}
-          title={effect.visible ? "숨기기" : "표시"}
+          title={effect.visible ? msg.imageInspector.vocab.hide : msg.imageInspector.vocab.show}
           className="shrink-0 text-fg-dim hover:text-fg"
         >
           {effect.visible ? <Eye size={12} /> : <EyeOff size={12} />}
@@ -64,7 +69,7 @@ export function EffectEditor({ effect, onLive, onCommit, onRemove, onToggle }: E
         <button
           type="button"
           onClick={onRemove}
-          title="제거"
+          title={msg.imageInspector.vocab.remove}
           className="shrink-0 text-fg-dim hover:text-fg"
         >
           <Minus size={12} />
@@ -80,7 +85,7 @@ export function EffectEditor({ effect, onLive, onCommit, onRemove, onToggle }: E
           못하고, 아래 섀도 필드가 전부 "Effect 에 x 가 없다" 로 터진다. */}
       {"radius" in effect ? (
         <NumField
-          label="반경"
+          label={msg.imageInspector.vocab.radius}
           value={effect.radius}
           unit="px"
           min={0}
@@ -107,7 +112,7 @@ export function EffectEditor({ effect, onLive, onCommit, onRemove, onToggle }: E
             onLiveEnd={() => onCommit(effect)}
           />
           <NumField
-            label="흐림"
+            label={msg.imageInspector.effectEditor.blur}
             value={effect.blur}
             unit="px"
             min={0}
@@ -116,7 +121,7 @@ export function EffectEditor({ effect, onLive, onCommit, onRemove, onToggle }: E
             onLiveEnd={() => onCommit(effect)}
           />
           <NumField
-            label="확산"
+            label={msg.imageInspector.effectEditor.spread}
             value={effect.spread}
             unit="px"
             onCommit={(v) => onCommit({ ...effect, spread: v })}
@@ -127,7 +132,7 @@ export function EffectEditor({ effect, onLive, onCommit, onRemove, onToggle }: E
           <div className="flex h-7 items-center gap-1.5">
             <button
               type="button"
-              title="색"
+              title={msg.imageInspector.vocab.color}
               onClick={(e) => setColorAnchor(e.currentTarget)}
               style={{ background: effect.color }}
               className="h-4 w-4 shrink-0 rounded border border-edge"
@@ -137,7 +142,7 @@ export function EffectEditor({ effect, onLive, onCommit, onRemove, onToggle }: E
             </span>
             <div className="min-w-0 flex-1">
               <NumField
-                label="알파"
+                label={msg.imageInspector.effectEditor.alpha}
                 value={Math.round(effect.opacity * 100)}
                 unit="%"
                 min={0}
@@ -154,10 +159,10 @@ export function EffectEditor({ effect, onLive, onCommit, onRemove, onToggle }: E
               onClose={() => setColorAnchor(null)}
               placement="left-start"
               width={232}
-              title="효과 색 · 단색"
+              title={msg.imageInspector.effectEditor.colorPopoverTitle}
             >
               <ColorPicker
-                title="효과 색"
+                title={msg.imageInspector.effectEditor.colorPickerTitle}
                 paint={{ type: "solid", color: effect.color, opacity: effect.opacity }}
                 onLive={(p) => applyColor(p, effect, onLive)}
                 onCommit={(p) => applyColor(p, effect, onCommit)}

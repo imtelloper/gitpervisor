@@ -1,5 +1,6 @@
 import { Copy } from "lucide-react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { KIND_BADGE } from "../../lib/change-kind";
 import { copyWithToast } from "../../lib/clipboard";
 import { splitPath } from "../../lib/format";
@@ -25,6 +26,7 @@ export function CommitDetailPane({
   active?: { target: DiffTarget; repoId: string } | null;
   selectedSha?: string | null;
 }) {
+  const msg = useMessages();
   const storeSha = useUi((s) => s.selectedCommitSha);
   const sha = selectedSha !== undefined ? selectedSha : storeSha;
   const activeDiff = useUi(selectActiveDiff);
@@ -42,7 +44,7 @@ export function CommitDetailPane({
     return (
       <Shell width={width} startResize={startResize}>
         <div className="flex h-full items-center justify-center p-3 text-xs text-fg-dim">
-          커밋을 선택하세요
+          {msg.git.log.selectCommit}
         </div>
       </Shell>
     );
@@ -52,7 +54,7 @@ export function CommitDetailPane({
     return (
       <Shell width={width} startResize={startResize}>
         <div className="p-3 text-xs leading-5 text-fg-dim">
-          커밋을 불러오지 못했습니다 — {errorMessage(error)}
+          {msg.git.log.commitLoadFailed(errorMessage(error))}
         </div>
       </Shell>
     );
@@ -61,7 +63,7 @@ export function CommitDetailPane({
     return (
       <Shell width={width} startResize={startResize}>
         <div className="flex h-full items-center justify-center p-3 text-xs text-fg-dim">
-          커밋 상세 …
+          {msg.git.log.commitDetailLoading}
         </div>
       </Shell>
     );
@@ -80,8 +82,8 @@ export function CommitDetailPane({
             {commit.subject}
           </div>
           <button
-            onClick={() => copyWithToast(fullMessage, "커밋 메시지를 복사했습니다")}
-            title="커밋 메시지 복사"
+            onClick={() => copyWithToast(fullMessage, msg.git.log.commitMessageCopied)}
+            title={msg.git.log.copyCommitMessageTitle}
             className="shrink-0 select-none rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
           >
             <Copy size={13} />
@@ -97,8 +99,8 @@ export function CommitDetailPane({
             {commit.authorName} &lt;{commit.authorEmail}&gt;
           </div>
           <button
-            onClick={() => copyWithToast(commit.sha, "커밋 해시를 복사했습니다")}
-            title="전체 해시 복사"
+            onClick={() => copyWithToast(commit.sha, msg.git.log.commitHashCopied)}
+            title={msg.git.log.copyFullHash}
             className="flex select-none items-center gap-1 font-mono hover:text-fg"
           >
             <span>{commit.sha.slice(0, 12)}</span>
@@ -110,7 +112,7 @@ export function CommitDetailPane({
 
       <div className="p-1">
         <div className="px-2 py-1 text-[11px] font-semibold text-fg-muted">
-          변경 파일 {files.length}
+          {msg.git.log.changedFiles(files.length)}
         </div>
         {files.map((f) => {
           const badge = KIND_BADGE[f.kind];

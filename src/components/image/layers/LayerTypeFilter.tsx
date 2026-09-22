@@ -9,30 +9,38 @@
 
 import { useEffect, useState } from "react";
 
+import type { Messages } from "../../../i18n/messages";
+import { useMessages } from "../../../i18n/ui-language";
 import {
   DEFAULT_LAYER_FILTER,
   type LayerFilter,
   type LayerType,
 } from "../../../lib/annotate/layer-rows";
 
-const TYPES: readonly { id: LayerType; label: string }[] = [
-  { id: "frame", label: "프레임" },
-  { id: "group", label: "그룹" },
-  { id: "shape", label: "도형" },
-  { id: "text", label: "텍스트" },
-  { id: "image", label: "이미지" },
-  { id: "vector", label: "벡터" },
-  { id: "component", label: "컴포넌트" },
-];
+function typesFor(msg: Messages): readonly { id: LayerType; label: string }[] {
+  const t = msg.imagePanels.layerFilter;
+  return [
+    { id: "frame", label: t.typeFrame },
+    { id: "group", label: t.typeGroup },
+    { id: "shape", label: t.typeShape },
+    { id: "text", label: t.typeText },
+    { id: "image", label: t.typeImage },
+    { id: "vector", label: t.typeVector },
+    { id: "component", label: t.typeComponent },
+  ];
+}
 
 type StateKey = "hiddenOnly" | "lockedOnly" | "overriddenOnly" | "includeMasks";
 
-const STATES: readonly { id: StateKey; label: string }[] = [
-  { id: "hiddenOnly", label: "숨김만" },
-  { id: "lockedOnly", label: "잠금만" },
-  { id: "overriddenOnly", label: "재정의된 인스턴스" },
-  { id: "includeMasks", label: "마스크 포함" },
-];
+function statesFor(msg: Messages): readonly { id: StateKey; label: string }[] {
+  const t = msg.imagePanels.layerFilter;
+  return [
+    { id: "hiddenOnly", label: t.hiddenOnly },
+    { id: "lockedOnly", label: t.lockedOnly },
+    { id: "overriddenOnly", label: t.overriddenOnly },
+    { id: "includeMasks", label: t.includeMasks },
+  ];
+}
 
 export interface LayerTypeFilterProps {
   value: LayerFilter;
@@ -40,6 +48,8 @@ export interface LayerTypeFilterProps {
 }
 
 export function LayerTypeFilter({ value, onApply }: LayerTypeFilterProps) {
+  const msg = useMessages();
+  const t = msg.imagePanels.layerFilter;
   const [draft, setDraft] = useState<LayerFilter>(value);
   // 팝오버가 닫힌 채 살아 있을 수 있으므로(호출부 사정) 밖에서 값이 바뀌면 초안을 맞춘다.
   useEffect(() => setDraft(value), [value]);
@@ -54,19 +64,19 @@ export function LayerTypeFilter({ value, onApply }: LayerTypeFilterProps) {
 
   return (
     <div style={{ width: 236 }} className="flex flex-col gap-1 text-[11px]">
-      <div className="px-1 pt-1 text-fg-dim">타입</div>
-      {TYPES.map((t) => (
+      <div className="px-1 pt-1 text-fg-dim">{t.typeHeading}</div>
+      {typesFor(msg).map((ty) => (
         <Check
-          key={t.id}
-          label={t.label}
-          checked={draft.types.has(t.id)}
-          onChange={() => toggleType(t.id)}
+          key={ty.id}
+          label={ty.label}
+          checked={draft.types.has(ty.id)}
+          onChange={() => toggleType(ty.id)}
         />
       ))}
 
       <div className="my-1 border-t border-edge" />
 
-      {STATES.map((s) => (
+      {statesFor(msg).map((s) => (
         <Check
           key={s.id}
           label={s.label}
@@ -80,13 +90,13 @@ export function LayerTypeFilter({ value, onApply }: LayerTypeFilterProps) {
           onClick={() => setDraft(DEFAULT_LAYER_FILTER)}
           className="rounded border border-edge px-2 py-1 text-fg-muted hover:text-fg"
         >
-          초기화
+          {t.reset}
         </button>
         <button
           onClick={() => onApply(draft)}
           className="rounded bg-accent px-2 py-1 text-on-accent hover:bg-accent-hover"
         >
-          적용
+          {t.apply}
         </button>
       </div>
     </div>

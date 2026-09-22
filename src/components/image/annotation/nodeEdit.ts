@@ -20,6 +20,7 @@
 //
 // 좌표는 oriented px, 두께·반경만 css px(chrome.ts 규약).
 
+import { currentMessages } from "../../../i18n/ui-language";
 import { CHROME_COLORS, type ChromePrim } from "../../../lib/annotate/chrome";
 import type { SnapIndex } from "../../../lib/annotate/snap";
 import type { ObjId, PathNode, PathVert, Rect } from "../../../lib/annotate/types";
@@ -61,13 +62,28 @@ const HANDLE_EPS = 1e-3;
 /** 아트보드 라벨을 객체 위로 띄우는 거리(css px) — 뱃지 높이 16 + 여백 2. */
 const LABEL_GAP_CSS = 18;
 
-/** 시안 `Node Type` 라벨. `없음` 은 모드가 아니라 "양 핸들 (0,0)" 이다(37 은 4모드). */
-export const NODE_MODE_LABELS: Record<NodeModeUi, string> = {
-  none: "없음",
-  corner: "코너",
-  mirrored: "대칭",
-  asymmetric: "비대칭",
-  auto: "자동",
+/**
+ * 시안 `Node Type` 라벨. `없음` 은 모드가 아니라 "양 핸들 (0,0)" 이다(37 은 4모드).
+ *
+ * getter 라 읽는 순간의 UI 언어를 따른다 — 상수 표로 두면 언어를 바꿔도 모듈 평가 시점 문구가 남는다.
+ * 호출처(컨텍스트 바·인스펙터·히스토리 라벨)가 `NODE_MODE_LABELS[m]` 그대로 쓰게 이름·모양을 유지한다.
+ */
+export const NODE_MODE_LABELS: Readonly<Record<NodeModeUi, string>> = {
+  get none() {
+    return currentMessages().imagePanels.nodeMode.none;
+  },
+  get corner() {
+    return currentMessages().imagePanels.nodeMode.corner;
+  },
+  get mirrored() {
+    return currentMessages().imagePanels.nodeMode.mirrored;
+  },
+  get asymmetric() {
+    return currentMessages().imagePanels.nodeMode.asymmetric;
+  },
+  get auto() {
+    return currentMessages().imagePanels.nodeMode.auto;
+  },
 };
 
 // ── 상태 ────────────────────────────────────────────────────────────────────
@@ -309,7 +325,9 @@ export function applyNodeOp(
   if (typeof op === "object") {
     if (!sel.length) return null;
     const next = moveVerts(o, sel, op.nudge[0], op.nudge[1]);
-    return next === o ? null : { obj: next, sel, label: "노드 이동" };
+    return next === o
+      ? null
+      : { obj: next, sel, label: currentMessages().imagePanels.historyLabel.moveNodes };
   }
   switch (op) {
     case "select-all":
@@ -318,7 +336,9 @@ export function applyNodeOp(
       if (!sel.length) return null;
       const next = deleteVerts(o, sel);
       // `deleteVerts` 는 지울 것이 하나도 없으면 원본을 돌려준다 — 그걸 커밋하면 빈 칸이다.
-      return next === o ? null : { obj: next, sel: [], label: "노드 삭제" };
+      return next === o
+        ? null
+        : { obj: next, sel: [], label: currentMessages().imagePanels.historyLabel.deleteNodes };
     }
     case "add": {
       // `노드 추가` = 인접한 선택 정점 두 개 사이 t=.5 삽입(세그먼트 클릭 삽입의 버튼판).
@@ -326,7 +346,9 @@ export function applyNodeOp(
       const seg = adjacentSeg(o, sel);
       if (!seg) return null;
       const r = insertVert(o, seg.sub, seg.seg, 0.5);
-      return r ? { obj: r.obj, sel: [r.ref], label: "노드 추가" } : null;
+      return r
+        ? { obj: r.obj, sel: [r.ref], label: currentMessages().imagePanels.historyLabel.addNode }
+        : null;
     }
     case "close":
     case "open": {
@@ -335,7 +357,8 @@ export function applyNodeOp(
       const want = op === "close";
       // 이미 그 상태면 커밋하지 않는다 — 빈 칸이 생기면 Ctrl+Z 가 아무 일도 안 하는 것처럼 보인다.
       if (!s || s.closed === want) return null;
-      return { obj: setClosed(o, sub, want), sel, label: want ? "패스 닫기" : "패스 열기" };
+      const h = currentMessages().imagePanels.historyLabel;
+      return { obj: setClosed(o, sub, want), sel, label: want ? h.closePath : h.openPath };
     }
     case "reverse": {
       const sub = subOfSel(o, sel);
@@ -349,7 +372,11 @@ export function applyNodeOp(
       const back = sel.map((r) =>
         r.sub !== sub ? r : { sub, vert: cur.closed ? (n - r.vert) % n : n - 1 - r.vert },
       );
-      return { obj: next, sel: back, label: "방향 반전" };
+      return {
+        obj: next,
+        sel: back,
+        label: currentMessages().imagePanels.historyLabel.reverseDirection,
+      };
     }
   }
 }
@@ -365,7 +392,9 @@ export function insertAtSeg(
   t: number,
 ): NodeOpResult | null {
   const r = insertVert(o, sub, seg, t);
-  return r ? { obj: r.obj, sel: [r.ref], label: "노드 추가" } : null;
+  return r
+    ? { obj: r.obj, sel: [r.ref], label: currentMessages().imagePanels.historyLabel.addNode }
+    : null;
 }
 
 /** 5모드 버튼·인스펙터(§3.3). 이미 그 모드면 `null` — 같은 값 커밋은 빈 히스토리 칸이다. */
@@ -376,7 +405,9 @@ export function applyNodeMode(
 ): { obj: PathNode; label: string } | null {
   if (!sel.length) return null;
   const next = setVertMode(o, sel, m);
-  return next === o ? null : { obj: next, label: `노드 모드 ${NODE_MODE_LABELS[m]}` };
+  return next === o
+    ? null
+    : { obj: next, label: currentMessages().imagePanels.historyLabel.setNodeMode(NODE_MODE_LABELS[m]) };
 }
 
 /**
@@ -418,14 +449,19 @@ export function nodeEditState(
 
 /** 상태바 요약(시안 `노드 1개 선택 · 대칭 핸들`). 42 상태바 힌트 슬롯이 부른다. */
 export function nodeStatusText(s: NodeEditState): string {
-  if (s.draft) return `펜 · 정점 ${s.draft.verts}`;
-  if (!s.selected.length) return `노드 ${s.nodeCount} · 세그먼트 ${s.segmentCount}`;
-  return `노드 ${s.selected.length}개 선택 · ${handleLabel(s.mode)}`;
+  const t = currentMessages().imagePanels.nodeStatus;
+  if (s.draft) return t.penDraft(s.draft.verts);
+  if (!s.selected.length) return t.counts(s.nodeCount, s.segmentCount);
+  return t.selected(s.selected.length, handleLabel(s.mode));
 }
 
 /** 캔버스 HUD(시안 `Node Info`). */
 export function nodeHudText(s: NodeEditState): string {
-  const head = `노드 ${s.nodeCount} · 세그먼트 ${s.segmentCount} · 선택 ${s.selected.length}`;
+  const head = currentMessages().imagePanels.nodeStatus.hud(
+    s.nodeCount,
+    s.segmentCount,
+    s.selected.length,
+  );
   return s.selected.length ? `${head} · ${handleLabel(s.mode)}` : head;
 }
 
@@ -738,8 +774,10 @@ export function createNodeGestures(c: NodeGestureCtx, env: NodeGestureEnv) {
       return;
     }
     // `next === d.base` 면 길이 0 드래그(= 클릭)라 커밋이 없다 — `commit` 이 참조로 판정한다.
-    if (next) c.commit(d.base, next, d.mode === "handle" ? "핸들 조정" : "노드 이동", c.sel());
-    else c.schedule();
+    if (next) {
+      const h = currentMessages().imagePanels.historyLabel;
+      c.commit(d.base, next, d.mode === "handle" ? h.adjustHandle : h.moveNodes, c.sel());
+    } else c.schedule();
   };
 
   /**
@@ -895,7 +933,8 @@ function selMode(o: PathNode, sel: readonly VertRef[]): NodeModeUi | "mixed" | n
 }
 
 function handleLabel(m: NodeEditState["mode"]): string {
-  if (m === "mixed") return "혼합 핸들";
-  if (m === null || m === "none") return "핸들 없음";
-  return `${NODE_MODE_LABELS[m]} 핸들`;
+  const t = currentMessages().imagePanels.nodeStatus;
+  if (m === "mixed") return t.handleMixed;
+  if (m === null || m === "none") return t.handleNone;
+  return t.handleOfMode(NODE_MODE_LABELS[m]);
 }

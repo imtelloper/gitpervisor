@@ -1,5 +1,7 @@
 import { forwardRef, useImperativeHandle, useState } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
+
 // ── 드래그 이동 고스트 ──
 // 커서를 따라다니는 라벨은 pointermove마다 갱신된다 — 목록을 그리는 부모의 state로 두면
 // 이동 한 번에 행 수백 개가 프레임마다 리렌더된다. 고스트만 자기 state를 갖고, 부모는 핸들로
@@ -25,6 +27,7 @@ export interface DragGhostHandle {
   update(g: GhostState | null): void;
 }
 export const DragGhost = forwardRef<DragGhostHandle>(function DragGhost(_props, ref) {
+  const msg = useMessages();
   const [g, setG] = useState<GhostState | null>(null);
   useImperativeHandle(ref, () => ({ update: setG }), []);
   if (!g) return null;
@@ -35,7 +38,9 @@ export const DragGhost = forwardRef<DragGhostHandle>(function DragGhost(_props, 
     >
       <div className="truncate font-medium text-fg">{g.label}</div>
       <div className={`truncate text-[11px] ${g.dest !== null ? "text-accent" : "text-fg-dim"}`}>
-        {g.dest !== null ? `→ ${g.dest || "루트"}` : "여기로는 이동할 수 없습니다"}
+        {g.dest !== null
+          ? `→ ${g.dest || msg.shell.dragGhost.rootFolder}`
+          : msg.shell.dragGhost.cannotDropHere}
       </div>
     </div>
   );

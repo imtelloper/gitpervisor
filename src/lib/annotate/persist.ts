@@ -11,6 +11,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { currentMessages } from "../../i18n/ui-language";
 import { ipc, isIpcError } from "../ipc";
 import type { DocHistory, HistoryLogEntry } from "./history";
 import {
@@ -134,8 +135,8 @@ export function useImageDocPersist(
         const conflict = isIpcError(e) && e.code === "CONFLICT";
         setError(
           conflict
-            ? "다른 창에서 이 이미지의 편집 문서를 저장했습니다."
-            : (e as Error)?.message || "편집 문서 저장 실패",
+            ? currentMessages().annotate.persist.conflict
+            : (e as Error)?.message || currentMessages().annotate.persist.saveFailed,
         );
         setState("error");
       } finally {
@@ -180,7 +181,7 @@ export function useImageDocPersist(
         env = parseImageDoc(res.json).env;
       } catch (e) {
         // 상위 버전·손상 — 덮어쓰지 않는다. 저장은 사용자가 편집을 시작할 때 다시 시도한다.
-        setError((e as Error)?.message || "편집 문서를 읽을 수 없습니다");
+        setError((e as Error)?.message || currentMessages().annotate.persist.readFailed);
         setState("error");
         return null;
       }

@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { memo, useMemo } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { fmtTime } from "./VideoPlayer";
 
 export interface RailMedia {
@@ -66,6 +67,7 @@ export const LibraryRail = memo(function LibraryRail({
   collapsed?: boolean;
   onToggleCollapse: () => void;
 }) {
+  const msg = useMessages();
   const q = query.trim().toLowerCase();
   const shown = useMemo(
     () => (q ? media.filter((m) => m.name.toLowerCase().includes(q)) : media),
@@ -78,7 +80,7 @@ export const LibraryRail = memo(function LibraryRail({
         <button
           type="button"
           onClick={onToggleCollapse}
-          aria-label="라이브러리 펼치기"
+          aria-label={msg.media.libraryRail.expand}
           className="flex h-6 w-6 items-center justify-center rounded text-fg-dim hover:bg-raised hover:text-fg"
         >
           <ChevronsRight size={14} />
@@ -86,14 +88,14 @@ export const LibraryRail = memo(function LibraryRail({
         <div className="h-px w-6 bg-edge" />
         <div
           className="flex h-6 w-6 items-center justify-center rounded text-fg-dim"
-          title={`미디어 ${media.length}개`}
+          title={msg.media.libraryRail.mediaCount(media.length)}
         >
           <FileVideo2 size={14} />
         </div>
         <div className="text-[10px] text-fg-dim">{media.length}</div>
         <div
           className="mt-1 flex h-6 w-6 items-center justify-center rounded text-fg-dim"
-          title={`분할 클립 ${clips.length}개`}
+          title={msg.media.libraryRail.clipCount(clips.length)}
         >
           <Scissors size={14} />
         </div>
@@ -105,11 +107,11 @@ export const LibraryRail = memo(function LibraryRail({
   return (
     <aside className="flex w-60 shrink-0 flex-col border-r border-edge bg-panel text-xs">
       <div className="flex items-center gap-1 px-2 py-2">
-        <span className="flex-1 text-[11px] font-semibold text-fg-muted">라이브러리</span>
+        <span className="flex-1 text-[11px] font-semibold text-fg-muted">{msg.media.libraryRail.title}</span>
         <button
           type="button"
           onClick={onToggleCollapse}
-          aria-label="라이브러리 접기"
+          aria-label={msg.media.libraryRail.collapse}
           className="flex h-6 w-6 items-center justify-center rounded text-fg-dim hover:bg-raised hover:text-fg"
         >
           <ChevronsLeft size={14} />
@@ -125,8 +127,8 @@ export const LibraryRail = memo(function LibraryRail({
           type="search"
           value={query}
           onChange={(e) => onQueryChange(e.target.value)}
-          placeholder="클립 검색"
-          aria-label="라이브러리 검색"
+          placeholder={msg.media.libraryRail.searchPlaceholder}
+          aria-label={msg.media.libraryRail.searchLabel}
           className="h-7 w-full rounded border border-edge bg-base pl-7 pr-2 text-xs text-fg placeholder:text-fg-dim"
         />
       </div>
@@ -134,7 +136,7 @@ export const LibraryRail = memo(function LibraryRail({
       <div className="min-h-0 flex-1 overflow-y-auto px-1">
         {shown.length === 0 ? (
           <p className="px-2 py-3 text-[11px] text-fg-dim">
-            {media.length === 0 ? "열린 영상이 없습니다." : "검색 결과가 없습니다."}
+            {media.length === 0 ? msg.media.libraryRail.noMedia : msg.media.libraryRail.noResults}
           </p>
         ) : (
           shown.map((m) => (
@@ -160,7 +162,7 @@ export const LibraryRail = memo(function LibraryRail({
       </div>
 
       <div className="flex items-center gap-1.5 border-t border-edge px-2 py-2">
-        <span className="text-[11px] font-semibold text-fg-muted">분할 클립</span>
+        <span className="text-[11px] font-semibold text-fg-muted">{msg.media.libraryRail.clipsTitle}</span>
         <span className="rounded bg-raised px-1.5 py-0.5 text-[10px] text-fg-dim">
           {clips.length}
         </span>
@@ -169,7 +171,7 @@ export const LibraryRail = memo(function LibraryRail({
       <div className="max-h-56 overflow-y-auto px-1">
         {clips.length === 0 ? (
           <p className="px-2 pb-2 text-[11px] leading-relaxed text-fg-dim">
-            분할 지점을 찍으면 여기에 클립이 나열됩니다.
+            {msg.media.libraryRail.clipsEmpty}
           </p>
         ) : (
           clips.map((c) => (
@@ -194,7 +196,9 @@ export const LibraryRail = memo(function LibraryRail({
                 type="button"
                 onClick={() => onPlayClip(c)}
                 aria-label={
-                  playingClip === c.index ? `${c.label} 미리보기 정지` : `${c.label} 구간 재생`
+                  playingClip === c.index
+                    ? msg.media.libraryRail.stopPreview(c.label)
+                    : msg.media.libraryRail.playSegment(c.label)
                 }
                 className={`flex h-6 w-6 shrink-0 items-center justify-center rounded hover:bg-raised hover:text-fg ${
                   playingClip === c.index ? "text-accent" : "text-fg-dim"
@@ -219,7 +223,7 @@ export const LibraryRail = memo(function LibraryRail({
           className="flex h-7 w-full items-center justify-center gap-1.5 rounded border border-edge text-xs text-fg-muted hover:bg-raised hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent"
         >
           <Save size={13} />
-          분할 전체 저장
+          {msg.media.libraryRail.saveAllSplits}
         </button>
       </div>
     </aside>

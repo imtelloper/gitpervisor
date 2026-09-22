@@ -122,7 +122,7 @@ export function layerPool(maxBytes: number): LayerPool {
         if (!warned) {
           warned = true;
           console.warn(
-            `[annotate] 격리 레이어 풀 상한 초과(${maxBytes}B) — ${cw}×${ch} 임시 할당. 40 §3.5 원장 확인`,
+            `[annotate] 격리 레이어 풀 상한 초과(${maxBytes}B) — ${cw}×${ch} 임시 할당. 40 §3.5 원장 확인`, // i18n-ok: 여러 줄 로그
           );
         }
         return makeCtx(cw, ch);

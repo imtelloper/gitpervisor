@@ -17,6 +17,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight, Search } from "lucide-react";
 
+import type { Messages } from "../../i18n/messages";
+import { useMessages } from "../../i18n/ui-language";
 import { groupStyles, styleSection, type StyleSlot } from "../../lib/annotate/styles";
 import { nodeOf } from "../../lib/annotate/tree";
 import type {
@@ -38,12 +40,15 @@ const POPOVER_W = 236;
 /** 슬롯이 정해지기 전까지 항목은 셋 중 무엇이든 될 수 있다(styles.ts 와 같은 유니온). */
 type StyleDef = ColorStyle | TextStyleDef | EffectStyle;
 
-const EFFECT_LABEL: Record<Effect["type"], string> = {
-  "drop-shadow": "드롭 섀도",
-  "inner-shadow": "이너 섀도",
-  "layer-blur": "레이어 블러",
-  "background-blur": "배경 블러",
-};
+function effectLabels(msg: Messages): Record<Effect["type"], string> {
+  const t = msg.imagePanels.styleLibrary;
+  return {
+    "drop-shadow": t.effectDropShadow,
+    "inner-shadow": t.effectInnerShadow,
+    "layer-blur": t.effectLayerBlur,
+    "background-blur": t.effectBackgroundBlur,
+  };
+}
 
 /**
  * 스와치 미리보기. 그라디언트는 각도만 CSS 로 흉내 낸다 — 정본 렌더는 39 다.
@@ -81,6 +86,8 @@ export interface StyleLibraryProps {
 }
 
 export function StyleLibrary({ slot, mode, objects, onApply }: StyleLibraryProps) {
+  const msg = useMessages();
+  const t = msg.imagePanels.styleLibrary;
   const [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
   const [menu, setMenu] = useState<{ x: number; y: number; item: StyleDef } | null>(null);
@@ -128,10 +135,10 @@ export function StyleLibrary({ slot, mode, objects, onApply }: StyleLibraryProps
 
   function startRename(item: StyleDef) {
     useUi.getState().askPrompt({
-      title: "스타일 이름",
-      label: "이름 (`섹션 / 이름` 으로 적으면 섹션으로 묶입니다)",
+      title: t.renamePromptTitle,
+      label: t.renamePromptLabel,
       defaultValue: item.name,
-      validate: (v) => (v.trim() ? null : "이름을 입력하세요"),
+      validate: (v) => (v.trim() ? null : t.nameRequired),
       onConfirm: (v) => {
         const name = v.trim();
         if (name && name !== item.name) {
@@ -144,10 +151,10 @@ export function StyleLibrary({ slot, mode, objects, onApply }: StyleLibraryProps
   function confirmRemove(item: StyleDef) {
     const n = refCount(objects, item.id);
     useUi.getState().askConfirm({
-      title: "스타일 삭제",
-      message: `'${item.name}' 을(를) 라이브러리에서 지웁니다.`,
-      detail: n > 0 ? `참조 노드 ${n}개의 값은 유지되고 연결만 풀립니다.` : undefined,
-      confirmLabel: "삭제",
+      title: t.deleteConfirmTitle,
+      message: t.deleteConfirmMessage(item.name),
+      detail: n > 0 ? t.deleteConfirmDetail(n) : undefined,
+      confirmLabel: t.deleteConfirmButton,
       danger: true,
       onConfirm: () => useImageLibrary.getState().removeStyle(slot, item.id),
     });
@@ -166,8 +173,8 @@ export function StyleLibrary({ slot, mode, objects, onApply }: StyleLibraryProps
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="스타일 검색"
-          aria-label="스타일 검색"
+          placeholder={t.searchPlaceholder}
+          aria-label={t.searchPlaceholder}
           style={{ height: 26 }}
           className="w-full rounded border border-edge bg-base pl-6 pr-1.5 text-[11px] text-fg outline-none placeholder:text-fg-dim focus:border-accent"
         />
@@ -176,7 +183,7 @@ export function StyleLibrary({ slot, mode, objects, onApply }: StyleLibraryProps
       {/* 비어 있으면 **아무 말도 하지 않는다.** 검색 결과 0 만 한 줄로 알린다 — 그건 입력에
           대한 응답이라 침묵이 곧 고장으로 읽힌다. */}
       {items.length > 0 && groups.length === 0 && (
-        <div className="px-2 py-3 text-fg-dim">검색 결과가 없습니다</div>
+        <div className="px-2 py-3 text-fg-dim">{t.noSearchResults}</div>
       )}
 
       <div className={`min-h-0 flex-1 ${mode === "popover" ? "overflow-y-auto" : ""}`}>
@@ -218,7 +225,7 @@ export function StyleLibrary({ slot, mode, objects, onApply }: StyleLibraryProps
                     </span>
                     {appliedId === item.id && (
                       <span className="shrink-0 rounded bg-accent/15 px-1 text-[9px] text-accent">
-                        적용됨
+                        {t.appliedBadge}
                       </span>
                     )}
                   </button>
@@ -234,8 +241,8 @@ export function StyleLibrary({ slot, mode, objects, onApply }: StyleLibraryProps
           y={menu.y}
           onClose={() => setMenu(null)}
           items={[
-            { label: "이름 변경", onClick: () => startRename(menu.item) },
-            { label: "삭제", danger: true, onClick: () => confirmRemove(menu.item) },
+            { label: t.menuRename, onClick: () => startRename(menu.item) },
+            { label: t.menuDelete, danger: true, onClick: () => confirmRemove(menu.item) },
           ]}
         />
       )}
@@ -245,6 +252,7 @@ export function StyleLibrary({ slot, mode, objects, onApply }: StyleLibraryProps
 
 /** 행 왼쪽의 한 눈 미리보기 — 색 칩 / `가나 Ag` 표본 / 효과 요약. */
 function Sample({ slot, item }: { slot: StyleSlot; item: StyleDef }) {
+  const msg = useMessages();
   if (slot === "text" && "style" in item) {
     const t = item.style;
     return (
@@ -259,14 +267,16 @@ function Sample({ slot, item }: { slot: StyleSlot; item: StyleDef }) {
         title={`${t.fontFamily} ${t.fontWeight} ${t.fontSize} · ${t.lineHeight}%`}
         className="w-8 shrink-0 truncate text-fg"
       >
-        가나 Ag
+        {msg.imagePanels.styleLibrary.textSample}
       </span>
     );
   }
   if (slot === "effect" && "effects" in item) {
+    const labels = effectLabels(msg);
     return (
       <span className="w-8 shrink-0 truncate text-[9px] text-fg-dim">
-        {item.effects.map((e) => EFFECT_LABEL[e.type]).join(" · ") || "없음"}
+        {item.effects.map((e) => labels[e.type]).join(" · ") ||
+          msg.imagePanels.styleLibrary.noEffects}
       </span>
     );
   }

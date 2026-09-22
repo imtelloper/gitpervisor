@@ -13,6 +13,8 @@
 import type { ReactNode } from "react";
 import { Eye, EyeOff, Minus, Plus, Settings2 } from "lucide-react";
 
+import { useMessages } from "../../../../i18n/ui-language";
+
 export interface StackListProps<T extends { visible: boolean }> {
   title: string;
   items: readonly T[];
@@ -37,6 +39,7 @@ export function StackList<T extends { visible: boolean }>({
   onRemove,
   onOpen,
 }: StackListProps<T>) {
+  const msg = useMessages();
   return (
     <section className="mt-3 first:mt-0">
       <div className="mb-1 flex items-center justify-between">
@@ -44,7 +47,7 @@ export function StackList<T extends { visible: boolean }>({
         <button
           type="button"
           onClick={onAdd}
-          title={`${title} 추가`}
+          title={msg.imageInspector.stack.add(title)}
           className="text-fg-dim hover:text-fg"
         >
           <Plus size={13} />
@@ -62,7 +65,7 @@ export function StackList<T extends { visible: boolean }>({
             <button
               type="button"
               onClick={(e) => onOpen(i, e.currentTarget)}
-              title="설정"
+              title={msg.imageInspector.stack.settings}
               className="shrink-0 text-fg-dim hover:text-fg"
             >
               <Settings2 size={12} />
@@ -71,7 +74,7 @@ export function StackList<T extends { visible: boolean }>({
           <button
             type="button"
             onClick={() => onToggle(i)}
-            title={item.visible ? "숨기기" : "표시"}
+            title={item.visible ? msg.imageInspector.vocab.hide : msg.imageInspector.vocab.show}
             className="shrink-0 text-fg-dim hover:text-fg"
           >
             {item.visible ? <Eye size={12} /> : <EyeOff size={12} />}
@@ -79,7 +82,7 @@ export function StackList<T extends { visible: boolean }>({
           <button
             type="button"
             onClick={() => onRemove(i)}
-            title="제거"
+            title={msg.imageInspector.vocab.remove}
             className="shrink-0 text-fg-dim hover:text-fg"
           >
             <Minus size={12} />

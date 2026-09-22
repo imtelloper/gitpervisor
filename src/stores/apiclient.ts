@@ -1,5 +1,6 @@
 import { create } from "zustand";
 
+import { currentMessages } from "../i18n/ui-language";
 import { ipc } from "../lib/ipc";
 import { resolveRequest, mergeVars } from "../lib/apiclient";
 import { registerDraftFlush } from "../lib/drafts";
@@ -337,7 +338,7 @@ function emptyBody(): ApiRequestBody {
 function newRequest(init?: Partial<ApiRequest>): ApiRequest {
   return {
     id: crypto.randomUUID(),
-    name: "새 요청",
+    name: currentMessages().stores.apiclient.newRequestName,
     method: "GET",
     url: "",
     params: [],

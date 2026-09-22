@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { useUi } from "../../stores/ui";
 
 /** 전역 텍스트 입력 다이얼로그 호스트 — useUi.askPrompt 로 띄운다 (새 폴더 이름·다른 이름 저장 등). */
 export function PromptHost() {
+  const msg = useMessages();
   const prompt = useUi((s) => s.prompt);
   const closePrompt = useUi((s) => s.closePrompt);
 
@@ -74,14 +76,14 @@ export function PromptHost() {
             onClick={closePrompt}
             className="rounded px-3 py-1.5 text-[13px] text-fg-muted hover:bg-raised"
           >
-            취소
+            {msg.shell.dialogButtons.cancel}
           </button>
           <button
             onClick={submit}
             disabled={!canSubmit}
             className="rounded bg-accent px-3 py-1.5 text-[13px] font-medium text-on-accent hover:bg-accent-hover disabled:opacity-50"
           >
-            {prompt.confirmLabel ?? "확인"}
+            {prompt.confirmLabel ?? msg.shell.dialogButtons.confirm}
           </button>
         </div>
       </div>

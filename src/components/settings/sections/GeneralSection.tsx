@@ -28,8 +28,8 @@ export function GeneralSection({ form, update, hl }: SectionProps) {
 
       <Hl id="remoteRefreshMinutes" hl={hl}>
         <Field
-          label="원격 새로고침 주기 (분)"
-          hint="0 = 끔 · 기본 5분. 배경 fetch로 pull 받을 커밋(↓)을 자동 감지합니다"
+          label={msg.settings.general.remoteRefreshLabel}
+          hint={msg.settings.general.remoteRefreshHint}
         >
           <input
             type="number"
@@ -46,13 +46,13 @@ export function GeneralSection({ form, update, hl }: SectionProps) {
           있어야 하고, `SETTINGS_INDEX` 완전성 가드(e2e 29 ⑤)가 모든 Settings 키에 항목을 요구한다. */}
       <Hl id="favoriteFolders" hl={hl}>
         <Field
-          label="즐겨찾기 폴더"
-          hint="타이틀바의 [폴더] 버튼에서 등록·삭제합니다. 등록한 폴더만 앱이 읽을 수 있습니다"
+          label={msg.settings.general.favoriteFoldersLabel}
+          hint={msg.settings.general.favoriteFoldersHint}
         >
           <div className="text-fg-muted">
             {form.favoriteFolders?.length
               ? form.favoriteFolders.map((f) => f.name).join(" · ")
-              : "등록된 폴더 없음"}
+              : msg.settings.general.favoriteFoldersNone}
           </div>
         </Field>
       </Hl>
@@ -65,29 +65,29 @@ export function GeneralSection({ form, update, hl }: SectionProps) {
             onChange={(e) => update("confirmDiscard", e.target.checked)}
             className="accent-accent"
           />
-          <span>변경 되돌리기·파일 삭제 전 확인 다이얼로그</span>
+          <span>{msg.settings.general.confirmDiscard}</span>
         </label>
       </Hl>
 
       <Hl id="gitPath" hl={hl}>
-        <Field label="git 실행 파일 경로" hint="비우면 PATH에서 자동 탐색 (변경은 다음 git 작업부터 적용)">
+        <Field label={msg.settings.general.gitPathLabel} hint={msg.settings.general.gitPathHint}>
           <input
             type="text"
             value={form.gitPath ?? ""}
-            placeholder="(자동 탐색)"
+            placeholder={msg.settings.autoDetectPlaceholder}
             onChange={(e) => update("gitPath", e.target.value)}
             className={`${inputCls} font-mono`}
           />
         </Field>
       </Hl>
       <div className="text-[11px] text-fg-dim">
-        현재:{" "}
+        {msg.settings.general.gitCurrent}{" "}
         {gitCheck?.found ? (
           <span className="font-mono text-fg-muted">
             {gitCheck.path} · {gitCheck.version}
           </span>
         ) : (
-          <span className="text-danger">git을 찾지 못함</span>
+          <span className="text-danger">{msg.settings.general.gitNotFound}</span>
         )}
       </div>
     </>

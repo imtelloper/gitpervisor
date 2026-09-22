@@ -1,7 +1,9 @@
+import { useMessages } from "../../i18n/ui-language";
 import { useUi } from "../../stores/ui";
 
 /** 전역 확인 다이얼로그 호스트 — useUi.askConfirm 으로 띄운다 */
 export function ConfirmHost() {
+  const msg = useMessages();
   const confirm = useUi((s) => s.confirm);
   const closeConfirm = useUi((s) => s.closeConfirm);
 
@@ -36,7 +38,7 @@ export function ConfirmHost() {
             onClick={cancel}
             className="rounded px-3 py-1.5 text-[13px] text-fg-muted hover:bg-raised"
           >
-            취소
+            {msg.shell.dialogButtons.cancel}
           </button>
           <button
             autoFocus
@@ -50,7 +52,7 @@ export function ConfirmHost() {
                 : "bg-accent text-on-accent hover:bg-accent-hover"
             }`}
           >
-            {confirm.confirmLabel ?? "확인"}
+            {confirm.confirmLabel ?? msg.shell.dialogButtons.confirm}
           </button>
         </div>
       </div>

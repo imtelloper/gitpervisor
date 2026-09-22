@@ -22,6 +22,7 @@ import {
   type CropSession,
 } from "../../lib/annotate/crop";
 import type { EditorDoc } from "../../lib/annotate/types";
+import { useMessages } from "../../i18n/ui-language";
 import { NumField } from "./inspector/fields/NumField";
 import { Toggle } from "./inspector/fields/Toggle";
 import type { CropApi } from "./useCropSession";
@@ -61,24 +62,25 @@ export function CropInspectorSection({
   /** 이미 적용된 크롭 해제 — 세션과 무관한 문서 조작이라 호출자(ImageEditor)가 든다. */
   onClear(): void;
 }) {
+  const msg = useMessages();
   if (!session) {
     return (
-      <Section title="크롭">
+      <Section title={msg.imageInspector.crop.sectionTitle}>
         <div className="flex items-center gap-1.5">
           <button
-            title="크롭 (C)"
+            title={msg.imageInspector.crop.enterTitle}
             onClick={onEnter}
             className="flex items-center gap-1 rounded bg-raised px-2 py-1 text-fg-muted hover:text-fg"
           >
             <Crop size={14} />
-            크롭 선택
+            {msg.imageInspector.crop.enterButton}
           </button>
           {doc.crop && (
             <button
               onClick={onClear}
               className="rounded px-2 py-1 text-fg-dim hover:bg-raised hover:text-fg"
             >
-              해제
+              {msg.imageInspector.crop.clear}
             </button>
           )}
         </div>
@@ -95,26 +97,29 @@ export function CropInspectorSection({
   const forced = Math.abs(session.straighten) > FORCE_CONSTRAIN_DEG;
 
   return (
-    <Section title="크롭">
+    <Section title={msg.imageInspector.crop.sectionTitle}>
       <div className="mb-1.5 flex items-center gap-1.5">
         <button
-          title="크롭 모드 — 다시 누르면 취소"
+          title={msg.imageInspector.crop.activeTitle}
           onClick={api.cropCancel}
           className="flex items-center gap-1 rounded bg-accent/20 px-2 py-1 text-accent"
         >
           <Crop size={14} />
-          영역을 드래그
+          {msg.imageInspector.crop.dragArea}
         </button>
         {/* 아직 문서에 반영되지 않았다는 표시. 이 배지가 없으면 사용자는 값을 만진 것만으로
             저장까지 된 줄 알고 창을 닫는다. */}
-        <span className="rounded bg-raised px-1.5 py-0.5 text-[11px] text-fg-dim">적용 전</span>
+        <span className="rounded bg-raised px-1.5 py-0.5 text-[11px] text-fg-dim">
+          {msg.imageInspector.crop.pendingBadge}
+        </span>
         <span className="text-[11px] text-fg-muted">
-          {aspectLabel(session.aspect)} {rect.w >= rect.h ? "가로" : "세로"}
+          {aspectLabel(session.aspect)}{" "}
+          {rect.w >= rect.h ? msg.imageInspector.crop.landscape : msg.imageInspector.crop.portrait}
         </span>
       </div>
 
       <NumField
-        label="각도"
+        label={msg.imageInspector.vocab.angle}
         value={session.straighten}
         unit="°"
         min={-MAX_STRAIGHTEN_DEG}
@@ -174,26 +179,26 @@ export function CropInspectorSection({
 
       <Toggle
         checked={session.deleteOutside}
-        label="크롭 영역 밖 삭제"
+        label={msg.imageInspector.crop.deleteOutside}
         onChange={(v) => api.cropSet({ deleteOutside: v })}
       />
       {/* 되돌릴 수 없는 동작은 **켠 순간** 보여야 한다 — 적용하고 나서야 알면 그 커밋 하나를
           통째로 되돌리는 것 말고는 방법이 없다. */}
       {session.deleteOutside && (
         <div className="mb-1 text-[11px] text-warn">
-          적용하면 크롭과 겹치지 않는 주석이 함께 지워집니다
+          {msg.imageInspector.crop.deleteOutsideWarning}
         </div>
       )}
 
       <Toggle
         checked={session.constrainToImage}
-        label="이미지 안으로 제한"
+        label={msg.imageInspector.crop.constrainToImage}
         onChange={(v) => api.cropSet({ constrainToImage: v })}
       />
       <div className="text-[11px] text-fg-dim">
         {forced
-          ? `직선화 ${FORCE_CONSTRAIN_DEG}°를 넘으면 항상 켜집니다`
-          : "끄면 이미지 밖은 투명으로 저장됩니다"}
+          ? msg.imageInspector.crop.constrainForced(FORCE_CONSTRAIN_DEG)
+          : msg.imageInspector.crop.constrainOffHint}
       </div>
     </Section>
   );

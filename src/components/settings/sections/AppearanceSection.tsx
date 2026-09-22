@@ -3,6 +3,7 @@
 import { Pencil, Plus, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import { useMessages } from "../../../i18n/ui-language";
 import type { ThemeId } from "../../../lib/ipc";
 import { BUILTIN_TOKENS } from "../../../lib/theme-apply";
 import { customThemeOf, isCustomThemeId, THEMES, type CustomTheme } from "../../../lib/themes";
@@ -31,6 +32,7 @@ export function AppearanceSection({
   hl,
   previewTheme,
 }: SectionProps & { previewTheme: (id: ThemeId) => void }) {
+  const msg = useMessages();
   const customThemes = useCustomThemes((s) => s.themes);
   const upsert = useCustomThemes((s) => s.upsert);
   const remove = useCustomThemes((s) => s.remove);
@@ -57,7 +59,7 @@ export function AppearanceSection({
     setEditing({
       draft: {
         id: `custom-${crypto.randomUUID().slice(0, 8)}`,
-        name: "새 테마",
+        name: msg.settings.appearance.newThemeName,
         base,
         colors: { ...BUILTIN_TOKENS[base] },
         updatedAt: Date.now(),
@@ -68,9 +70,9 @@ export function AppearanceSection({
 
   const confirmRemove = (t: CustomTheme) =>
     useUi.getState().askConfirm({
-      title: "테마 삭제",
-      message: `"${t.name}" 테마를 삭제합니다. 되돌릴 수 없습니다.`,
-      confirmLabel: "삭제",
+      title: msg.settings.appearance.deleteThemeTitle,
+      message: msg.settings.appearance.deleteThemeMessage(t.name),
+      confirmLabel: msg.settings.appearance.deleteThemeConfirm,
       danger: true,
       onConfirm: () => {
         remove(t.id);
@@ -85,7 +87,7 @@ export function AppearanceSection({
   return (
     <>
       <Hl id="theme" hl={hl}>
-        <Field label="테마" hint="클릭 즉시 미리보기 — 저장하지 않고 닫으면 원래 테마로 돌아갑니다">
+        <Field label={msg.settings.appearance.themeLabel} hint={msg.settings.appearance.themeHint}>
           <div className="grid grid-cols-2 gap-2">
             {THEMES.map((t) => (
               <button
@@ -105,10 +107,10 @@ export function AppearanceSection({
         </Field>
 
         <div className="mt-3">
-          <div className="mb-1 font-medium">내 테마</div>
+          <div className="mb-1 font-medium">{msg.settings.appearance.myThemes}</div>
           {orphan && (
             <div className="mb-1.5 text-[11px] text-warn">
-              선택된 테마({form.theme})의 정의를 찾을 수 없어 기본 테마로 표시 중입니다.
+              {msg.settings.appearance.orphanTheme(form.theme)}
             </div>
           )}
           <div className="grid grid-cols-2 gap-2">
@@ -131,14 +133,14 @@ export function AppearanceSection({
                   <span className="truncate">{t.name}</span>
                 </button>
                 <button
-                  title="편집"
+                  title={msg.settings.appearance.editThemeTitle}
                   onClick={() => setEditing({ draft: t, prevTheme: form.theme })}
                   className="shrink-0 rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
                 >
                   <Pencil size={13} />
                 </button>
                 <button
-                  title="삭제"
+                  title={msg.settings.appearance.deleteThemeButtonTitle}
                   onClick={() => confirmRemove(t)}
                   className="shrink-0 rounded p-1 text-fg-dim hover:bg-raised hover:text-danger"
                 >
@@ -151,7 +153,8 @@ export function AppearanceSection({
                 onClick={startNew}
                 className="flex items-center gap-1.5 rounded border border-dashed border-edge px-2.5 py-1.5 text-fg-muted hover:bg-raised hover:text-fg"
               >
-                <Plus size={13} />새 테마 만들기
+                <Plus size={13} />
+                {msg.settings.appearance.createTheme}
               </button>
             )}
           </div>
@@ -176,7 +179,7 @@ export function AppearanceSection({
       </Hl>
 
       <Hl id="diffFontSize" hl={hl}>
-        <Field label="Diff 폰트 크기" hint="10–24 px">
+        <Field label={msg.settings.appearance.diffFontSizeLabel} hint="10–24 px">
           <input
             type="number"
             min={10}

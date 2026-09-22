@@ -4,6 +4,7 @@
 // 스토어 없음: 상태는 react-query(["llm-status"])와 호출자 로컬 state가 전부다.
 import { useQuery } from "@tanstack/react-query";
 
+import { currentMessages } from "../i18n/ui-language";
 import type { ChatDone, LlmChatProgress, LlmStatus, Settings } from "./ipc";
 import { ipc, isIpcError } from "./ipc";
 
@@ -31,19 +32,20 @@ export interface ChatOpts {
  * 로드 모양만 그리던 시절엔 폴백 중에 "모델 로드 중… (undefined초)"가 떴다.
  */
 function progressMessage(p: LlmChatProgress): string {
+  const t = currentMessages().lib.llmProgress;
   switch (p.phase) {
     case "loading":
-      return `모델 로드 중… (${p.seconds}초)`;
+      return t.loading(p.seconds);
     case "download":
-      return `CPU 런타임 받는 중${p.percent != null ? ` ${p.percent}%` : "…"}`;
+      return t.downloading(p.percent);
     case "verify":
-      return "CPU 런타임 검증 중…";
+      return t.verifying;
     case "extract":
-      return "CPU 런타임 압축 해제 중…";
+      return t.extracting;
     case "error":
-      return `⚠ ${p.message ?? "실패"}`;
+      return t.failed(p.message);
     default:
-      return "런타임 준비 완료 — 모델을 올리는 중…";
+      return t.runtimeReady;
   }
 }
 
@@ -143,22 +145,23 @@ export function llmReadyReason(
    */
   modelId?: string | null,
 ): string | null {
-  if (!settings) return "설정을 불러오는 중입니다";
+  const t = currentMessages().lib.llmReady;
+  if (!settings) return t.settingsLoading;
   if (settings.llmProvider === "external") {
-    return settings.llmExternalUrl?.trim() ? null : "설정 › AI › 고급에서 외부 서버 URL을 입력하세요";
+    return settings.llmExternalUrl?.trim() ? null : t.externalUrlMissing;
   }
-  if (!status) return "AI 상태를 확인하는 중입니다";
+  if (!status) return t.statusLoading;
   if (!status.runtimeSupported) {
-    return "이 플랫폼용 llama.cpp 공식 빌드가 없습니다 — 설정 › AI › 고급에서 외부 서버 URL을 쓰세요";
+    return t.runtimeUnsupported;
   }
-  if (!status.runtime) return "설정 › AI에서 런타임을 다운로드하세요";
+  if (!status.runtime) return t.runtimeMissing;
   const want = modelId?.trim() || settings.llmModel;
   if (want === "custom") {
-    return status.customModelOk ? null : "설정 › AI › 고급의 GGUF 경로를 확인하세요";
+    return status.customModelOk ? null : t.customModelInvalid;
   }
   const model = status.models.find((m) => m.id === want);
-  if (!model) return "설정 › AI에서 모델을 고르세요";
-  return model.present ? null : `설정 › AI에서 ${model.label} 모델을 다운로드하세요`;
+  if (!model) return t.modelNotChosen;
+  return model.present ? null : t.modelMissing(model.label);
 }
 
 /** 언어 코드 → 프롬프트에 넣을 언어 이름. 60·61의 시스템 프롬프트(설정 `llmLanguage`)와 72 자막 번역이 쓴다. */

@@ -1,6 +1,7 @@
 import { Loader2, MessageSquare, Sparkles, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { IS_DOC_WINDOW } from "../../lib/floating";
 import { errorMessage } from "../../lib/ipc";
 import type { Project } from "../../lib/ipc";
@@ -56,6 +57,7 @@ export function ReportCard({
   /** [AI에게 묻기] — 뷰가 우측 채팅 패널을 이 컨텍스트로 연다(§3.2). */
   onAsk?: (ctx: ChatContext) => void;
 }) {
+  const msg = useMessages();
   const commitQs = useCommitsBetweenMany(projects, since, until, mine);
   const promptQs = usePromptDumps(projects, since, until);
   const { data: reports } = useReports();
@@ -132,7 +134,7 @@ export function ReportCard({
 
   const stale = !!saved && !!hash && saved.inputHash !== hash;
   const body = text || saved?.text || "";
-  const title = combined ? `종합 · ${projects.length}개 프로젝트` : (projects[0]?.name ?? "");
+  const title = combined ? msg.report.card.combinedTitle(projects.length) : (projects[0]?.name ?? "");
   const model =
     settings?.llmProvider === "external"
       ? (settings.llmExternalModel ?? "external")
@@ -170,7 +172,7 @@ export function ReportCard({
           temperature: 0.3,
           modelId: reportModel ?? undefined,
           signal: ac.signal,
-          onProgress: (_phase, message) => setNote(message ?? "모델 로드 중…"),
+          onProgress: (_phase, message) => setNote(message ?? msg.report.modelLoading),
         },
       );
       if (!ac.signal.aborted) setText(done.text);
@@ -190,7 +192,7 @@ export function ReportCard({
       // 새 기간 머리글 아래에 붙어, 누르지도 않은 취소가 일어난 것처럼 보인다.
       if (keyAtStart !== keyRef.current)
         return;
-      setNote(ac.signal.aborted ? "취소됨" : errorMessage(e));
+      setNote(ac.signal.aborted ? msg.report.cancelled : errorMessage(e));
     } finally {
       setBusy(false);
       abortRef.current = null;
@@ -240,11 +242,11 @@ export function ReportCard({
           )}
           <span className="truncate text-xs font-medium text-fg">{title}</span>
           <span className="text-[11px] text-fg-muted">
-            커밋 {commitCount} · 프롬프트 {promptCount}
+            {msg.report.card.counts(commitCount, promptCount)}
           </span>
           {stale && (
             <span className="rounded bg-warn/15 px-1.5 py-0.5 text-[10px] text-warn">
-              입력이 바뀜
+              {msg.report.card.inputChanged}
             </span>
           )}
           <div className="ml-auto flex items-center gap-2">
@@ -259,10 +261,10 @@ export function ReportCard({
                 onClick={() =>
                   onAsk({ key, title, sources, period, since, until, body, hash })
                 }
-                title="이 리포트를 두고 AI와 대화합니다"
+                title={msg.report.card.askTitle}
                 className="flex items-center gap-1 rounded bg-raised px-2 py-0.5 text-[11px] text-fg-muted hover:text-fg"
               >
-                <MessageSquare size={11} /> AI에게 묻기
+                <MessageSquare size={11} /> {msg.report.card.ask}
               </button>
             )}
             {busy ? (
@@ -270,7 +272,7 @@ export function ReportCard({
                 onClick={() => abortRef.current?.abort()}
                 className="flex items-center gap-1 rounded bg-raised px-2 py-0.5 text-[11px] text-fg-muted hover:text-fg"
               >
-                <X size={11} /> 취소
+                <X size={11} /> {msg.report.cancel}
               </button>
             ) : (
               <button
@@ -279,7 +281,7 @@ export function ReportCard({
                 title={reason ?? undefined}
                 className="flex items-center gap-1 rounded bg-accent px-2 py-0.5 text-[11px] text-on-accent hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
               >
-                <Sparkles size={11} /> {saved ? "다시 생성" : "요약 생성"}
+                <Sparkles size={11} /> {saved ? msg.report.card.regenerate : msg.report.card.generate}
               </button>
             )}
           </div>
@@ -290,13 +292,13 @@ export function ReportCard({
             <span>{reason}</span>
             {/* 별도 창(doc-*)엔 설정 다이얼로그가 없다 — 버튼을 두면 눌러도 아무 일이 없다(§3.3). */}
             {IS_DOC_WINDOW ? (
-              <span className="text-fg-dim">메인 창의 설정 › AI에서 준비하세요</span>
+              <span className="text-fg-dim">{msg.report.prepareInMainSettings}</span>
             ) : (
               <button
                 onClick={() => openSettings("ai")}
                 className="rounded bg-raised px-1.5 py-0.5 text-fg-muted hover:text-fg"
               >
-                설정 열기
+                {msg.report.openSettings}
               </button>
             )}
           </div>
@@ -305,7 +307,7 @@ export function ReportCard({
         {busy && (
           <div className="mt-2 flex items-center gap-1.5 text-[11px] text-fg-muted">
             <Loader2 size={11} className="animate-spin" />
-            {note ?? "요약 생성 중…"}
+            {note ?? msg.report.card.generating}
           </div>
         )}
         {!busy && note && (
@@ -313,7 +315,7 @@ export function ReportCard({
         )}
 
         {empty ? (
-          <div className="mt-2 text-[11px] text-fg-dim">활동 없음</div>
+          <div className="mt-2 text-[11px] text-fg-dim">{msg.report.card.noActivity}</div>
         ) : body ? (
           <div className="mt-2 max-h-[50vh] overflow-auto rounded border border-edge">
             <MarkdownView content={body} />

@@ -4,6 +4,7 @@ import { Editor } from "@monaco-editor/react";
 import { useRef } from "react";
 import type { editor } from "monaco-editor";
 
+import { useMessages } from "../../i18n/ui-language";
 import { useSettings } from "../../queries";
 
 /**
@@ -25,6 +26,7 @@ export function MonacoBox({
   onChange?: (v: string) => void;
   onMountEditor?: (ed: editor.IStandaloneCodeEditor) => void;
 }) {
+  const msg = useMessages();
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
   const { data: settings } = useSettings();
   const theme = ensureMonacoTheme(settings?.theme);
@@ -53,7 +55,7 @@ export function MonacoBox({
         // 핸들러가 이 에디터를 붙잡는다(DiffViewer 와 같은 누수). 후자는 dispose 가능하다.
         const reg = ed.addAction({
           id: "gp.format",
-          label: "문서 서식",
+          label: msg.apiclient.monaco.formatDocument,
           keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyF],
           run: (e) => void e.getAction("editor.action.formatDocument")?.run(),
         });
@@ -62,7 +64,7 @@ export function MonacoBox({
           if (editorRef.current === ed) editorRef.current = null;
         });
       }}
-      loading={<span className="text-xs text-fg-dim">에디터 로딩 중…</span>}
+      loading={<span className="text-xs text-fg-dim">{msg.apiclient.monaco.loading}</span>}
     />
   );
 }

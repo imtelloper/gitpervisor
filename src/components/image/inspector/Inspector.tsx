@@ -12,17 +12,22 @@
 import { useId, type ReactNode } from "react";
 
 import { ResizeHandle } from "../../common/ResizeHandle";
+import type { Messages } from "../../../i18n/messages";
+import { useMessages } from "../../../i18n/ui-language";
 import { usePanelWidth } from "../../../lib/use-panel-width";
 import { useImageEditorUi, type EditorUiState } from "../../../stores/imageEditor";
 
 type InspectorTab = EditorUiState["inspectorTab"];
 
-const TABS: readonly { id: InspectorTab; label: string }[] = [
-  { id: "props", label: "속성" },
-  { id: "text", label: "텍스트" },
-  { id: "adjust", label: "조정" },
-  { id: "export", label: "내보내기" },
-];
+function inspectorTabsFor(msg: Messages): readonly { id: InspectorTab; label: string }[] {
+  const t = msg.imageInspector.tabs;
+  return [
+    { id: "props", label: t.props },
+    { id: "text", label: t.text },
+    { id: "adjust", label: t.adjust },
+    { id: "export", label: t.export },
+  ];
+}
 
 export function Inspector({
   panes,
@@ -32,6 +37,8 @@ export function Inspector({
   /** 시안 푸터 `초기화 · 복사 · 다른 이름으로 · 저장 (PNG)` — 버튼은 호출부가 넘긴다. */
   footer?: ReactNode;
 }) {
+  const msg = useMessages();
+  const tabs = inspectorTabsFor(msg);
   const tab = useImageEditorUi((s) => s.inspectorTab);
   const setTab = useImageEditorUi((s) => s.setTab);
   const { width, startResize } = usePanelWidth("gp:ie-right", 320, 260, 480, "left");
@@ -48,7 +55,7 @@ export function Inspector({
 
       {/* 방향키를 가로채지 않는다 — 편집기에서 방향키는 선택 객체의 1px 미세 이동이다. */}
       <div role="tablist" className="flex h-9 shrink-0 items-center gap-1 border-b border-edge px-2">
-        {TABS.map((t) => (
+        {tabs.map((t) => (
           <button
             key={t.id}
             id={`${uid}-${t.id}`}
@@ -67,7 +74,7 @@ export function Inspector({
         ))}
       </div>
 
-      {TABS.map((t) => (
+      {tabs.map((t) => (
         <div
           key={t.id}
           id={`${uid}-${t.id}-panel`}

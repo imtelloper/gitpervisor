@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
+import { currentMessages } from "../i18n/ui-language";
 import { useBrowsers } from "../stores/browser";
 import { collectByContent, useTerminals } from "../stores/terminals";
 import { useUi } from "../stores/ui";
@@ -193,8 +194,8 @@ export function ensureBrowserEvents(): void {
       .pushToast(
         e.payload.delegated ? "info" : "error",
         e.payload.delegated
-          ? "다운로드를 외부 브라우저에서 엽니다"
-          : "이 다운로드는 지원되지 않습니다",
+          ? currentMessages().lib.browserDownload.delegated
+          : currentMessages().lib.browserDownload.unsupported,
       );
   });
 }

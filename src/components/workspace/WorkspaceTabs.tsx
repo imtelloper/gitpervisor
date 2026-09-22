@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { CLAUDE_LAUNCH, queueInitialInput } from "../../lib/terminal";
 import { useSettings } from "../../queries";
 import { useAgentActivity } from "../../stores/agentActivity";
@@ -240,6 +241,7 @@ function TabMenu({
   onFloat: () => void;
   onCloseTab: () => void;
 }) {
+  const msg = useMessages();
   useEffect(() => {
     const close = () => onClose();
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -268,12 +270,12 @@ function TabMenu({
       <div className="my-1 border-t border-edge" />
       <PaneMenuItem
         icon={<ExternalLink size={14} />}
-        label="새 창으로 분리 (Float)"
+        label={msg.git.paneMenu.popOut}
         onClick={run(onFloat)}
       />
       <PaneMenuItem
         icon={<X size={14} />}
-        label="탭 닫기"
+        label={msg.git.viewerTabs.closeTab}
         danger
         onClick={run(onCloseTab)}
       />
@@ -295,6 +297,7 @@ function NewTabControls({
   onNewBrowser: () => void;
   onNewApiClient: () => void;
 }) {
+  const msg = useMessages();
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   // 탭줄 바로 아래가 곧 브라우저 뷰포트다 — 메뉴가 열린 동안 네이티브 webview를 숨긴다.
   useOccludesWebview(!!menu);
@@ -316,7 +319,7 @@ function NewTabControls({
       <button
         ref={btnRef}
         onClick={toggle}
-        title="새 탭"
+        title={msg.git.workspaceTabs.newTab}
         className="rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
       >
         <Plus size={14} />
@@ -330,7 +333,7 @@ function NewTabControls({
           >
             <MenuItem
               icon={<TerminalIcon size={14} />}
-              label="새 터미널"
+              label={msg.git.workspaceTabs.newTerminal}
               onClick={() => {
                 onNewTerminal();
                 setMenu(null);
@@ -339,7 +342,7 @@ function NewTabControls({
             {/* 새 터미널과 같되, 셸이 뜨면 `claude`를 입력해 바로 Claude Code 세션으로 들어간다. */}
             <MenuItem
               icon={<Sparkles size={14} />}
-              label="Claude Code 세션으로 새 터미널"
+              label={msg.git.workspaceTabs.newClaudeTerminal}
               onClick={() => {
                 onNewClaude();
                 setMenu(null);
@@ -347,7 +350,7 @@ function NewTabControls({
             />
             <MenuItem
               icon={<Globe size={14} />}
-              label="새 브라우저"
+              label={msg.git.workspaceTabs.newBrowser}
               onClick={() => {
                 onNewBrowser();
                 setMenu(null);
@@ -355,7 +358,7 @@ function NewTabControls({
             />
             <MenuItem
               icon={<Send size={14} />}
-              label="새 API 클라이언트"
+              label={msg.git.workspaceTabs.newApiClient}
               onClick={() => {
                 onNewApiClient();
                 setMenu(null);
@@ -408,6 +411,7 @@ function TabChip({
   onClose?: () => void;
   onContextMenu?: (e: React.MouseEvent) => void;
 }) {
+  const msg = useMessages();
   return (
     <div
       onClick={onClick}
@@ -425,7 +429,7 @@ function TabChip({
             e.stopPropagation();
             onClose();
           }}
-          title="탭 닫기"
+          title={msg.git.viewerTabs.closeTab}
           className="ml-0.5 shrink-0 rounded p-0.5 text-fg-dim opacity-0 hover:bg-edge hover:text-fg group-hover:opacity-100"
         >
           <X size={12} />

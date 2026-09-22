@@ -4,6 +4,7 @@ import { warn as logWarn } from "@tauri-apps/plugin-log";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { Terminal } from "@xterm/xterm";
 
+import { currentMessages } from "../i18n/ui-language";
 import { useUi } from "../stores/ui";
 import { copyFailMessage, copyText, readClipboardText } from "./clipboard";
 import { errorMessage } from "./ipc";
@@ -101,7 +102,7 @@ function warnOutputWriteFailure(inst: TermInstance, e: unknown): void {
   if (writeFailureWarned.has(inst.id)) return;
   writeFailureWarned.add(inst.id);
   void logWarn(
-    `[term-perf] 출력 쓰기 실패 term=${inst.id.slice(0, 8)}: ${errorMessage(e)}`,
+    `[term-perf] 출력 쓰기 실패 term=${inst.id.slice(0, 8)}: ${errorMessage(e)}`, // i18n-ok: 로그
   ).catch(() => {
     // 로그 전송까지 실패하면 남길 곳이 콘솔뿐이다(여기서 또 던지면 출력 경로가 막힌다).
     console.warn("[term-perf] 출력 쓰기 실패(로그 전송도 실패):", e);
@@ -420,12 +421,12 @@ export async function pasteIntoTerminal(id: string) {
     else if (failure) {
       useUi
         .getState()
-        .pushToast("error", `붙여넣기에 실패했습니다 — ${failure}`, {
-          label: "다시 시도",
+        .pushToast("error", currentMessages().lib.terminal.pasteFailed(failure), {
+          label: currentMessages().lib.toastRetry,
           run: () => void pasteIntoTerminal(id),
         });
     } else {
-      useUi.getState().pushToast("info", "클립보드가 비어 있습니다");
+      useUi.getState().pushToast("info", currentMessages().lib.terminal.clipboardEmpty);
     }
     // 포커스는 **어느 갈래에서든** 돌려준다 — 안 돌려주면 다음 키 입력이 PTY로 안 간다.
     inst?.term.focus();

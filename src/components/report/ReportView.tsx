@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import type { Project } from "../../lib/ipc";
 import type { ChatMsg } from "../../lib/llm";
 import { NO_COLOR, useProjectColors } from "../../lib/project-color";
@@ -66,6 +67,7 @@ function ScopePicker({
   scope: Scope;
   onChange: (next: Scope) => void;
 }) {
+  const msg = useMessages();
   const [open, setOpen] = useState(false);
   useOccludesWebview(open);
 
@@ -98,12 +100,12 @@ function ScopePicker({
       <button
         data-gpv="report-scope"
         onClick={() => setOpen((v) => !v)}
-        title="요약할 프로젝트를 고릅니다 — 2개 이상이면 맨 위에 종합 카드가 붙습니다"
+        title={msg.report.view.scopeTitle}
         className={`flex items-center gap-1 rounded border border-edge px-1.5 py-0.5 ${
           open ? "bg-raised text-fg" : "bg-panel text-fg hover:bg-raised"
         }`}
       >
-        {scope === "all" ? "전체" : `프로젝트 ${ids.length}개`}
+        {scope === "all" ? msg.report.view.scopeAll : msg.report.view.scopeCount(ids.length)}
         <ChevronDown size={11} />
       </button>
 
@@ -116,7 +118,7 @@ function ScopePicker({
               checked={scope === "all"}
               onChange={() => onChange(scope === "all" ? [] : "all")}
             />
-            전체
+            {msg.report.view.scopeAll}
           </label>
           <div className="my-1 border-t border-edge" />
           {all.map((p) => (
@@ -148,6 +150,7 @@ function ScopePicker({
  * **prop이 없어야 한다** — 별도 리포트 창(`DocWindow`)이 이걸 그대로 그린다(67 §3.3).
  */
 export function ReportView() {
+  const msg = useMessages();
   const { data: projects } = useProjects();
   const selectedProjectId = useUi((s) => s.selectedProjectId);
   const projectColorsOn = useUi((s) => s.projectColorsOn);
@@ -273,13 +276,13 @@ export function ReportView() {
           </div>
 
           <label className="flex cursor-pointer items-center gap-1">
-            <input type="checkbox" checked={mine} onChange={toggleMine} />내 커밋만
+            <input type="checkbox" checked={mine} onChange={toggleMine} />{msg.report.view.mineOnly}
           </label>
 
           <div className="flex items-center gap-1">
             <button
               onClick={() => setAnchor(shiftPeriod(period, anchor, -1))}
-              title="이전"
+              title={msg.report.view.prev}
               className="rounded p-0.5 hover:bg-raised hover:text-fg"
             >
               <ChevronLeft size={14} />
@@ -287,7 +290,7 @@ export function ReportView() {
             <span className="min-w-[84px] text-center text-fg">{range.label}</span>
             <button
               onClick={() => setAnchor(shiftPeriod(period, anchor, 1))}
-              title="다음"
+              title={msg.report.view.next}
               className="rounded p-0.5 hover:bg-raised hover:text-fg"
             >
               <ChevronRight size={14} />
@@ -298,12 +301,12 @@ export function ReportView() {
             <button
               data-gpv="report-prompt-toggle"
               onClick={() => setPromptOpen((v) => !v)}
-              title="요약 생성 프롬프트를 고칩니다"
+              title={msg.report.view.promptToggleTitle}
               className={`flex items-center gap-1 rounded px-2 py-0.5 hover:text-fg ${
                 promptOpen ? "bg-accent/20 text-fg" : "bg-raised"
               }`}
             >
-              <FileText size={11} /> 프롬프트{customPrompt ? " (사용자 지정)" : ""}
+              <FileText size={11} /> {msg.report.view.promptToggle(customPrompt)}
             </button>
             {scoped.length > 1 &&
               (queue ? (
@@ -311,14 +314,14 @@ export function ReportView() {
                   onClick={() => setQueue(null)}
                   className="flex items-center gap-1 rounded bg-raised px-2 py-0.5 hover:text-fg"
                 >
-                  <X size={11} /> 취소 ({batchTotal - queue.length + 1}/{batchTotal})
+                  <X size={11} /> {msg.report.view.cancelBatch(batchTotal - queue.length + 1, batchTotal)}
                 </button>
               ) : (
                 <button
                   onClick={startBatch}
                   className="flex items-center gap-1 rounded bg-raised px-2 py-0.5 hover:text-fg"
                 >
-                  <Sparkles size={11} /> 모두 생성
+                  <Sparkles size={11} /> {msg.report.view.generateAll}
                 </button>
               ))}
             {/* 패널이 닫혀 있을 때만 — 타이틀바에 아이콘을 늘리지 않는다(67 §3.2). */}
@@ -326,10 +329,10 @@ export function ReportView() {
               <button
                 data-gpv="report-chat-toggle"
                 onClick={() => openChat(true)}
-                title="AI 채팅 — 요약을 두고 대화하거나 그냥 물어봅니다"
+                title={msg.report.view.chatToggleTitle}
                 className="flex items-center gap-1 rounded bg-raised px-2 py-0.5 hover:text-fg"
               >
-                <MessageSquare size={11} /> AI 채팅
+                <MessageSquare size={11} /> {msg.report.view.chatToggle}
               </button>
             )}
           </div>
@@ -386,8 +389,8 @@ export function ReportView() {
           {scoped.length === 0 && (
             <div className="text-xs text-fg-dim">
               {all.length === 0
-                ? "등록된 프로젝트가 없습니다"
-                : "선택한 프로젝트가 없습니다"}
+                ? msg.report.view.noProjects
+                : msg.report.view.noneSelected}
             </div>
           )}
         </div>

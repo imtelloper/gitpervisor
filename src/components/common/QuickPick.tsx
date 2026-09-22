@@ -1,6 +1,8 @@
 import { Loader2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
+
 // QuickPick — 09(Quick Open)이 정의하고 13(심볼 검색)이 재사용하는 공유 프리미티브.
 // 입력 + 리스트 + 키보드 내비 + 백드롭. 동기 소스(퍼지)와 비동기 소스(IPC)를 모두 지원하며,
 // 비동기 경합은 내부 seq 토큰으로 최신 쿼리 응답만 반영한다(디바운스·로딩 스피너도 내부 책임).
@@ -52,9 +54,10 @@ export function QuickPick<T>({
   debounceMs = 0,
   onPick,
   onClose,
-  emptyText = "결과 없음",
+  emptyText,
   footer,
 }: QuickPickProps<T>) {
+  const msg = useMessages();
   const [query, setQuery] = useState("");
   const [items, setItems] = useState<QuickPickItem<T>[]>([]);
   const [active, setActive] = useState(0);
@@ -153,7 +156,9 @@ export function QuickPick<T>({
         </div>
         <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto py-1">
           {items.length === 0 ? (
-            <div className="px-3 py-4 text-center text-[12px] text-fg-dim">{emptyText}</div>
+            <div className="px-3 py-4 text-center text-[12px] text-fg-dim">
+              {emptyText ?? msg.shell.quickPick.noResults}
+            </div>
           ) : (
             items.map((it, i) => (
               <div

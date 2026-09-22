@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import type { DiffTarget, FileChange, RepoStatus } from "../../lib/ipc";
 import { KIND_BADGE } from "../../lib/change-kind";
 import { copyWithToast } from "../../lib/clipboard";
@@ -104,6 +105,7 @@ function ChangeRow({
   onContextMenu: (e: React.MouseEvent) => void;
   actions: RowActions;
 }) {
+  const msg = useMessages();
   const { dir, base } = splitPath(change.path);
   const kind = KIND_BADGE[change.kind];
   const { Icon, color } = fileIcon(change.path);
@@ -129,7 +131,7 @@ function ChangeRow({
           checked={change.staged}
           onChange={() => actions.onToggleStage(change)}
           onClick={(e) => e.stopPropagation()}
-          title={change.staged ? "언스테이지" : "스테이지"}
+          title={change.staged ? msg.git.changes.unstage : msg.git.changes.stage}
           className="shrink-0 accent-accent"
         />
       ) : (
@@ -150,7 +152,9 @@ function ChangeRow({
       )}
       {discardable && (
         <button
-          title={change.kind === "untracked" ? "파일 삭제" : "변경 되돌리기"}
+          title={
+            change.kind === "untracked" ? msg.git.changes.deleteFile : msg.git.changes.discardFile
+          }
           onClick={(e) => {
             e.stopPropagation();
             actions.onDiscard(change);
@@ -198,6 +202,7 @@ function Group({
   collapsed: boolean;
   onToggleCollapse: () => void;
 }) {
+  const msg = useMessages();
   if (total === 0) return null;
   const hidden = total - changes.length;
 
@@ -233,7 +238,7 @@ function Group({
           onClick={onShowMore}
           className="w-full px-3 py-1.5 text-left text-xs text-fg-dim hover:bg-raised hover:text-fg"
         >
-          {hidden.toLocaleString()}개 더 있음 — {Math.min(hidden, ROW_CAP_STEP).toLocaleString()}개 더 보기
+          {msg.git.changes.showMoreRows(hidden, Math.min(hidden, ROW_CAP_STEP))}
         </button>
       )}
     </div>
@@ -259,6 +264,7 @@ function RepoChanges({
   onSelect?: (target: DiffTarget, repoId: string) => void;
   active?: { target: DiffTarget; repoId: string } | null;
 }) {
+  const msg = useMessages();
   const { data: status } = useStatus(projectId);
   // 전역 강조 기준 = **활성 뷰어 패널**이 보는 파일(분할 시 패널을 옮기면 강조도 따라간다).
   const activeGlobal = useUi(selectActiveDiff);
@@ -432,7 +438,7 @@ function RepoChanges({
   const discardRows = (rows: Row[]) => {
     const { tracked, untracked } = discardPartsOf(rows);
     if (tracked.length === 0 && untracked.length === 0) {
-      pushToast("info", "되돌릴 항목이 없습니다 (스테이지·충돌 제외)");
+      pushToast("info", msg.git.changes.nothingToDiscard);
       return;
     }
     const run = () => {
@@ -444,10 +450,10 @@ function RepoChanges({
       return;
     }
     useUi.getState().askConfirm({
-      title: "선택 롤백",
-      message: `선택한 ${tracked.length + untracked.length}개 항목의 변경을 되돌립니다. 복구할 수 없습니다.`,
+      title: msg.git.changes.discardSelectedTitle,
+      message: msg.git.changes.discardSelectedMessage(tracked.length + untracked.length),
       detail: [...tracked, ...untracked].join("\n"),
-      confirmLabel: "롤백",
+      confirmLabel: msg.git.changes.discardSelectedConfirm,
       danger: true,
       onConfirm: run,
     });
@@ -507,11 +513,13 @@ function RepoChanges({
         return;
       }
       useUi.getState().askConfirm({
-        title: untracked ? "파일 삭제" : "변경 되돌리기",
+        title: untracked ? msg.git.changes.deleteFile : msg.git.changes.discardFile,
         message: untracked
-          ? `'${change.path}' 은(는) 추적되지 않는 파일입니다. 삭제하면 복구할 수 없습니다.`
-          : `'${change.path}' 의 저장되지 않은 변경을 되돌립니다. 복구할 수 없습니다.`,
-        confirmLabel: untracked ? "삭제" : "되돌리기",
+          ? msg.git.changes.deleteUntrackedMessage(change.path)
+          : msg.git.changes.discardFileMessage(change.path),
+        confirmLabel: untracked
+          ? msg.git.changes.deleteFileConfirm
+          : msg.git.changes.discardFileConfirm,
         danger: true,
         onConfirm: run,
       });
@@ -523,7 +531,7 @@ function RepoChanges({
       {/* 멀티선택 액션 바 — 실제 존재하는 선택 행이 있을 때만(상태 갱신으로 사라진 키는 무시). */}
       {selectedRows.length > 0 && (
         <div className="sticky top-0 z-10 flex items-center gap-1.5 border-b border-edge bg-raised px-3 py-1.5 text-xs">
-          <span className="text-fg-muted">{selectedRows.length}개 선택</span>
+          <span className="text-fg-muted">{msg.git.changes.selectedCount(selectedRows.length)}</span>
           <div className="flex-1" />
           <button
             onClick={() => {
@@ -533,7 +541,7 @@ function RepoChanges({
             disabled={stagePaths.length === 0}
             className="rounded px-2 py-0.5 text-fg-muted hover:bg-edge hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent"
           >
-            스테이지
+            {msg.git.changes.stage}
           </button>
           <button
             onClick={() => {
@@ -543,19 +551,19 @@ function RepoChanges({
             disabled={unstagePaths.length === 0}
             className="rounded px-2 py-0.5 text-fg-muted hover:bg-edge hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent"
           >
-            언스테이지
+            {msg.git.changes.unstage}
           </button>
           <button
             onClick={() => discardRows(selectedRows)}
-            title="선택 항목의 워크트리 변경 되돌리기"
+            title={msg.git.changes.discardSelectionHint}
             className="flex items-center gap-1 rounded bg-danger/15 px-2 py-0.5 text-danger hover:bg-danger/25"
           >
             <RotateCcw size={12} />
-            롤백
+            {msg.git.changes.rollback}
           </button>
           <button
             onClick={clearSel}
-            title="선택 해제"
+            title={msg.git.changes.clearSelection}
             className="rounded p-0.5 text-fg-dim hover:bg-edge hover:text-fg"
           >
             <X size={13} />
@@ -605,13 +613,17 @@ function RepoChanges({
         >
           {menuRows.length > 1 && (
             <div className="px-3 py-1 text-[11px] text-fg-dim">
-              {menuRows.length}개 선택
+              {msg.git.changes.selectedCount(menuRows.length)}
             </div>
           )}
           {menuCanDiscard ? (
             <MenuBtn
               icon={RotateCcw}
-              label={menuRows.length > 1 ? "선택 롤백" : "롤백 (되돌리기)"}
+              label={
+                menuRows.length > 1
+                  ? msg.git.changes.discardSelectedTitle
+                  : msg.git.changes.rollbackSingleMenu
+              }
               danger
               onClick={() => {
                 discardRows(menuRows);
@@ -619,12 +631,12 @@ function RepoChanges({
               }}
             />
           ) : (
-            <div className="px-3 py-1.5 text-fg-dim">롤백할 변경 없음</div>
+            <div className="px-3 py-1.5 text-fg-dim">{msg.git.changes.nothingToRollback}</div>
           )}
           {menuStagePaths.length > 0 && (
             <MenuBtn
               icon={Plus}
-              label="스테이지"
+              label={msg.git.changes.stage}
               onClick={() => {
                 stage.mutate(menuStagePaths);
                 clearSel();
@@ -635,7 +647,7 @@ function RepoChanges({
           {menuUnstagePaths.length > 0 && (
             <MenuBtn
               icon={Undo2}
-              label="스테이지 해제"
+              label={msg.git.changes.unstageMenu}
               onClick={() => {
                 unstage.mutate(menuUnstagePaths);
                 clearSel();
@@ -646,16 +658,16 @@ function RepoChanges({
           <div className="my-1 border-t border-edge/60" />
           <MenuBtn
             icon={Copy}
-            label="경로 복사"
-            onClick={() => copyText(menuChange.path, "경로를 복사했습니다")}
+            label={msg.git.changes.copyPath}
+            onClick={() => copyText(menuChange.path, msg.git.changes.pathCopied)}
           />
           <MenuBtn
             icon={Copy}
-            label="이름 복사"
+            label={msg.git.changes.copyName}
             onClick={() =>
               copyText(
                 menuChange.path.split("/").pop() ?? menuChange.path,
-                "파일 이름을 복사했습니다",
+                msg.git.changes.fileNameCopied,
               )
             }
           />
@@ -681,6 +693,7 @@ function NestedRepoSection({
   onSelect?: (target: DiffTarget, repoId: string) => void;
   active?: { target: DiffTarget; repoId: string } | null;
 }) {
+  const msg = useMessages();
   const count = changeCount(nested);
   const hasChanges = count > 0;
   const [open, setOpen] = useState(hasChanges);
@@ -714,7 +727,11 @@ function NestedRepoSection({
           </span>
         )}
         <span className="ml-auto shrink-0 pr-1 text-[11px] text-fg-dim">
-          {nested.error ? "오류" : count > 0 ? `${count}` : "깨끗함"}
+          {nested.error
+            ? msg.git.changes.nestedRepoError
+            : count > 0
+              ? `${count}`
+              : msg.git.changes.nestedRepoClean}
         </span>
       </button>
       {open &&
@@ -724,7 +741,7 @@ function NestedRepoSection({
           </div>
         ) : count === 0 ? (
           <div className="px-3 py-2 text-xs text-fg-dim">
-            변경 없음 — 워킹 트리가 깨끗합니다
+            {msg.git.changes.nestedRepoEmpty}
           </div>
         ) : (
           <>
@@ -762,6 +779,7 @@ export function ChangesPanel({
   active?: { target: DiffTarget; repoId: string } | null;
   embedded?: boolean;
 }) {
+  const msg = useMessages();
   const { data: statuses } = useStatuses();
   const status = statuses?.find((s) => s.projectId === projectId);
   // 이 프로젝트에 속한 임베디드 저장소들 — 상대경로 순으로 안정 정렬.
@@ -801,7 +819,7 @@ export function ChangesPanel({
         <div className="flex-1" />
         {!embedded && (
           <button
-            title="패널 접기"
+            title={msg.git.changes.collapsePanel}
             onClick={toggleCollapsed}
             className="rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
           >
@@ -817,7 +835,7 @@ export function ChangesPanel({
           </div>
         ) : isEmpty ? (
           <div className="px-3 py-3 text-xs text-fg-dim">
-            변경 없음 — 워킹 트리가 깨끗합니다 ✨
+            {msg.git.changes.panelEmpty}
           </div>
         ) : status ? (
           <>

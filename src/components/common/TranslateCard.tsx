@@ -1,6 +1,8 @@
 import { Copy, Languages, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import type { Messages } from "../../i18n/messages";
+import { useMessages } from "../../i18n/ui-language";
 import { copyText } from "../../lib/clipboard";
 import { errorMessage } from "../../lib/ipc";
 import { llmReadyReason, useLlmStatus } from "../../lib/llm";
@@ -9,8 +11,17 @@ import { useSettings } from "../../queries";
 import { useOccludesWebview } from "../../stores/occlusion";
 import { useUi, type TranslateRequest } from "../../stores/ui";
 
-/** 카드 토글이 다루는 두 언어(태스크 61 §7 — 목록 확장은 후속). */
-const LANG_LABEL: Record<string, string> = { ko: "한국어", en: "영어" };
+/** 카드 토글이 다루는 두 언어(태스크 61 §7 — 목록 확장은 후속). 모르는 코드는 코드 그대로. */
+function langLabel(msg: Messages, code: string): string {
+  switch (code) {
+    case "ko":
+      return msg.shell.translateCard.langKorean;
+    case "en":
+      return msg.shell.translateCard.langEnglish;
+    default:
+      return code;
+  }
+}
 
 /**
  * 선택 텍스트 번역 카드의 창별 호스트(태스크 61). `useUi`는 창마다 별개라 카드를 띄우는 창마다
@@ -33,6 +44,7 @@ function TranslateCard({
   req: TranslateRequest;
   onClose: () => void;
 }) {
+  const msg = useMessages();
   const { data: settings } = useSettings();
   const { data: llm } = useLlmStatus();
   const pushToast = useUi((s) => s.pushToast);
@@ -84,9 +96,9 @@ function TranslateCard({
 
   const modelLabel =
     settings?.llmProvider === "external"
-      ? "외부 서버"
+      ? msg.shell.translateCard.externalServer
       : settings?.llmModel === "custom"
-        ? "사용자 모델"
+        ? msg.shell.translateCard.customModel
         : (llm?.models.find((m) => m.id === settings?.llmModel)?.label ??
           settings?.llmModel ??
           "");
@@ -108,11 +120,11 @@ function TranslateCard({
       <div className="flex shrink-0 items-center gap-2 border-b border-edge px-3 py-1.5 text-[12px]">
         <Languages size={13} className="shrink-0 text-accent" />
         <span className="min-w-0 flex-1 truncate text-fg-muted">
-          번역 → {LANG_LABEL[target] ?? target}
+          {msg.shell.translateCard.header(langLabel(msg, target))}
         </span>
         <button
           onClick={() => setOverride({ req, target: other })}
-          title={`${LANG_LABEL[other] ?? other}로 번역`}
+          title={msg.shell.translateCard.translateToTitle(langLabel(msg, other))}
           className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-fg-dim hover:bg-raised hover:text-fg"
         >
           → {other.toUpperCase()}
@@ -120,18 +132,21 @@ function TranslateCard({
         <button
           onClick={() =>
             void copyText(out).then((ok) =>
-              pushToast(ok ? "success" : "error", ok ? "복사했습니다" : "복사에 실패했습니다"),
+              pushToast(
+                ok ? "success" : "error",
+                ok ? msg.shell.translateCard.copied : msg.shell.translateCard.copyFailed,
+              ),
             )
           }
           disabled={!out}
-          title="번역문 복사"
+          title={msg.shell.translateCard.copyTitle}
           className="shrink-0 rounded p-1 text-fg-dim hover:bg-raised hover:text-fg disabled:opacity-40"
         >
           <Copy size={13} />
         </button>
         <button
           onClick={onClose}
-          title="닫기"
+          title={msg.shell.translateCard.close}
           className="shrink-0 rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
         >
           <X size={13} />
@@ -142,7 +157,9 @@ function TranslateCard({
         {/* 원문 — 기본 3줄, 클릭하면 전문. */}
         <button
           onClick={() => setExpanded((v) => !v)}
-          title={expanded ? "원문 접기" : "원문 펼치기"}
+          title={
+            expanded ? msg.shell.translateCard.collapseSource : msg.shell.translateCard.expandSource
+          }
           className="block w-full px-3 py-2 text-left text-[12px] leading-5 text-fg-dim hover:bg-raised/50"
         >
           <span
@@ -159,7 +176,7 @@ function TranslateCard({
               onClick={() => openSettings("ai")}
               className="ml-2 rounded border border-edge px-1.5 py-0.5 text-[11px] text-fg-dim hover:bg-raised hover:text-fg"
             >
-              설정 열기
+              {msg.shell.translateCard.openSettings}
             </button>
           </div>
         ) : error ? (
@@ -168,7 +185,12 @@ function TranslateCard({
           <div className="whitespace-pre-wrap break-words px-3 py-2 text-[12px] leading-5 text-fg">
             {/* data 훅: e2e 49가 번역문만 따로 읽는다(커서·진행 문구가 섞이면 못 잰다). */}
             <span data-gpv-translation="">{out}</span>
-            {!done && (out ? <span className="text-accent">▍</span> : (phase ?? "번역 중…"))}
+            {!done &&
+              (out ? (
+                <span className="text-accent">▍</span>
+              ) : (
+                (phase ?? msg.shell.translateCard.translating)
+              ))}
           </div>
         )}
       </div>
@@ -176,14 +198,16 @@ function TranslateCard({
       <div className="flex shrink-0 items-center gap-2 border-t border-edge px-3 py-1 text-[10px] text-fg-dim">
         <span className="min-w-0 flex-1 truncate">{modelLabel}</span>
         {req.truncated && (
-          <span className="shrink-0 rounded bg-raised px-1 py-0.5 text-warn">잘림</span>
+          <span className="shrink-0 rounded bg-raised px-1 py-0.5 text-warn">
+            {msg.shell.translateCard.truncated}
+          </span>
         )}
         {!reason && !done && !error && (
           <button
             onClick={onClose}
             className="shrink-0 rounded px-1.5 py-0.5 hover:bg-raised hover:text-fg"
           >
-            취소
+            {msg.shell.translateCard.cancel}
           </button>
         )}
       </div>

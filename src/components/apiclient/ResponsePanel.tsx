@@ -1,5 +1,6 @@
 import { ShieldAlert } from "lucide-react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { statusColor } from "../../lib/method-color";
 import { usePanelWidth } from "../../lib/use-panel-width";
 import type { ApiResponse } from "../../stores/apiclient";
@@ -42,6 +43,7 @@ function prettyJson(text: string, ct: string | null): string {
  * StatusBar(상태색/ms/KB) + 서브탭(Body/Headers/Cookies) + Body 뷰토글(Pretty/Raw/Preview).
  */
 export function ResponsePanel({ tabId }: { tabId: string }) {
+  const msg = useMessages();
   const response = useApiClient((s) => s.responses[tabId]);
   const sending = useApiClient((s) => s.sending[tabId] ?? false);
   const view = useApiClient((s) => s.items[tabId]?.responseView ?? "body");
@@ -67,13 +69,13 @@ export function ResponsePanel({ tabId }: { tabId: string }) {
 
       {sending && (
         <div className="flex flex-1 items-center justify-center text-[13px] text-fg-dim">
-          요청 전송 중…
+          {msg.apiclient.response.sendingRequest}
         </div>
       )}
 
       {!sending && !response && (
         <div className="flex flex-1 items-center justify-center px-6 text-center text-[13px] text-fg-dim">
-          Send를 눌러 요청을 보내세요
+          {msg.apiclient.response.sendPrompt}
         </div>
       )}
 
@@ -144,16 +146,17 @@ function StatusBar({
   response: ApiResponse | undefined;
   sending: boolean;
 }) {
+  const msg = useMessages();
   if (sending)
     return (
       <div className="flex h-8 shrink-0 items-center gap-2 border-b border-edge bg-panel px-3 text-[11px] text-fg-dim">
-        전송 중…
+        {msg.apiclient.response.sending}
       </div>
     );
   if (!response)
     return (
       <div className="flex h-8 shrink-0 items-center gap-2 border-b border-edge bg-panel px-3 text-[11px] text-fg-dim">
-        응답 없음
+        {msg.apiclient.response.noResponse}
       </div>
     );
   return (
@@ -170,25 +173,25 @@ function StatusBar({
       <span>{Math.round(response.durationMs)}ms</span>
       <span>{fmtSize(response.sizeBytes)}</span>
       {response.remoteAddr && (
-        <span className="text-fg-dim" title="실제 접속 IP:port">
+        <span className="text-fg-dim" title={msg.apiclient.response.remoteAddrTitle}>
           {response.remoteAddr}
         </span>
       )}
       {response.truncated && (
-        <span className="text-warn" title="maxBodyBytes 초과로 본문이 잘렸습니다">
-          잘림
+        <span className="text-warn" title={msg.apiclient.response.truncatedTitle}>
+          {msg.apiclient.response.truncated}
         </span>
       )}
       {!response.verifyTls && (
         <span
           className="flex items-center gap-0.5 text-warn"
-          title="TLS 인증서 검증이 꺼진 채로 요청되었습니다"
+          title={msg.apiclient.response.tlsOffTitle}
         >
-          <ShieldAlert size={11} /> TLS 검증 꺼짐
+          <ShieldAlert size={11} /> {msg.apiclient.response.tlsOff}
         </span>
       )}
       {response.redirects.length > 0 && (
-        <span className="text-mod" title="리다이렉트 hop 수">
+        <span className="text-mod" title={msg.apiclient.response.redirectHopsTitle}>
           ↪ {response.redirects.length}
         </span>
       )}
@@ -233,6 +236,7 @@ function BodyView({
   response: ApiResponse;
   fmt: BodyFmt;
 }) {
+  const msg = useMessages();
   const ct = response.contentType;
 
   if (fmt === "preview") {
@@ -241,7 +245,7 @@ function BodyView({
         <div className="flex h-full items-center justify-center p-3">
           <img
             src={`data:${ct};base64,${response.bodyBase64}`}
-            alt="응답 미리보기"
+            alt={msg.apiclient.response.preview}
             className="max-h-full max-w-full object-contain"
           />
         </div>
@@ -250,7 +254,7 @@ function BodyView({
     if (ct && /html/i.test(ct)) {
       return (
         <iframe
-          title="응답 미리보기"
+          title={msg.apiclient.response.preview}
           sandbox=""
           srcDoc={response.bodyText}
           className="h-full w-full border-0 bg-white"
@@ -259,7 +263,7 @@ function BodyView({
     }
     return (
       <div className="flex h-full items-center justify-center px-6 text-center text-[13px] text-fg-dim">
-        이 콘텐츠 타입은 미리보기를 지원하지 않습니다 ({ct ?? "unknown"})
+        {msg.apiclient.response.previewUnsupported(ct ?? "unknown")}
       </div>
     );
   }
@@ -267,7 +271,7 @@ function BodyView({
   if (fmt === "raw") {
     return (
       <pre className="h-full w-full overflow-auto whitespace-pre-wrap break-all px-3 py-2 font-mono text-[12px] text-fg">
-        {response.bodyText || "(본문 없음 또는 바이너리)"}
+        {response.bodyText || msg.apiclient.response.rawEmpty}
       </pre>
     );
   }
@@ -276,7 +280,7 @@ function BodyView({
   if (!response.bodyText) {
     return (
       <div className="flex h-full items-center justify-center px-6 text-center text-[13px] text-fg-dim">
-        텍스트 본문 없음 (바이너리는 Preview 탭에서 확인)
+        {msg.apiclient.response.prettyEmpty}
       </div>
     );
   }

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ExternalLink, X, XSquare } from "lucide-react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { openDocWindow } from "../../lib/floating";
 import type { DiffTarget } from "../../lib/ipc";
 import { useOccludesWebview } from "../../stores/occlusion";
@@ -31,6 +32,7 @@ function tabLabel(target: DiffTarget): { name: string; hint: string | null } {
  * 닫으면 패널도 닫힌다(`closeViewerTab`).
  */
 export function ViewerFileTabs({ projectId, paneId }: { projectId: string; paneId: string }) {
+  const msg = useMessages();
   const viewerTabs = useUi((s) => s.viewerTabs);
   const activeDiff = useUi((s) => s.viewerByPane[paneId] ?? null);
   const closeViewerTab = useUi((s) => s.closeViewerTab);
@@ -112,7 +114,7 @@ export function ViewerFileTabs({ projectId, paneId }: { projectId: string; paneI
                   e.stopPropagation();
                   closeViewerTab(t.key, paneId);
                 }}
-                title="탭 닫기"
+                title={msg.git.viewerTabs.closeTab}
                 className="ml-0.5 shrink-0 rounded p-0.5 text-fg-dim opacity-0 hover:bg-edge hover:text-fg group-hover:opacity-100"
               >
                 <X size={12} />
@@ -148,7 +150,7 @@ export function ViewerFileTabs({ projectId, paneId }: { projectId: string; paneI
               }}
             >
               <X size={14} className="shrink-0" />
-              닫기
+              {msg.git.viewerTabs.close}
             </button>
             <button
               className={menuItemCls}
@@ -159,7 +161,7 @@ export function ViewerFileTabs({ projectId, paneId }: { projectId: string; paneI
               }}
             >
               <XSquare size={14} className="shrink-0" />
-              다른 탭 닫기
+              {msg.git.viewerTabs.closeOthers}
             </button>
             <button
               className={menuItemCls}
@@ -173,7 +175,7 @@ export function ViewerFileTabs({ projectId, paneId }: { projectId: string; paneI
               }}
             >
               <ExternalLink size={14} className="shrink-0" />
-              새 창으로 열기
+              {msg.git.viewerTabs.openInNewWindow}
             </button>
           </div>
         </div>

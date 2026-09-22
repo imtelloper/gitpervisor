@@ -1,6 +1,7 @@
 import { MousePointerClick, X } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import type { DiffTarget } from "../../lib/ipc";
 import { useProjects } from "../../queries";
 import { useUi } from "../../stores/ui";
@@ -73,6 +74,7 @@ function Body({
   initialTab: Tab;
   onClose: () => void;
 }) {
+  const msg = useMessages();
   const { data: projects } = useProjects();
   const name = projects?.find((p) => p.id === projectId)?.name ?? projectId;
   // Body 는 key={projectId} 라 프로젝트가 같으면 마운트가 유지된다 — 같은 프로젝트를 다른 탭으로
@@ -113,14 +115,14 @@ function Body({
                   : "border-transparent text-fg-muted hover:text-fg"
               }`}
             >
-              {t === "changes" ? "변경" : "로그"}
+              {t === "changes" ? msg.git.gitDialog.tabChanges : msg.git.gitDialog.tabLog}
             </button>
           ))}
         </div>
         <div className="flex-1" />
         <button
           onClick={onClose}
-          title="닫기"
+          title={msg.git.gitDialog.close}
           className="rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
         >
           <X size={14} />
@@ -155,7 +157,7 @@ function Body({
         )}
         <div className="min-h-0 min-w-0 flex-1">
           {active ? (
-            <Suspense fallback={<EmptyState title="diff 뷰어 로딩 중…" />}>
+            <Suspense fallback={<EmptyState title={msg.git.diff.diffViewerLoading} />}>
               <DiffViewer
                 projectId={active.repoId}
                 target={active.target}
@@ -163,7 +165,7 @@ function Body({
               />
             </Suspense>
           ) : (
-            <EmptyState icon={MousePointerClick} title="파일을 선택하세요" />
+            <EmptyState icon={MousePointerClick} title={msg.git.diff.selectFile} />
           )}
         </div>
       </div>

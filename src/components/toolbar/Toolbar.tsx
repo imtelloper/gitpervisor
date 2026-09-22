@@ -16,6 +16,8 @@ import {
   Trash2,
 } from "lucide-react";
 
+import type { Messages } from "../../i18n/messages";
+import { useMessages } from "../../i18n/ui-language";
 import { formatBytes } from "../../lib/format";
 import type { Project, RepoOpState } from "../../lib/ipc";
 import {
@@ -32,14 +34,27 @@ import { useTerminals } from "../../stores/terminals";
 import { useUi } from "../../stores/ui";
 import { ProjectLogo } from "../common/ProjectLogo";
 
-const OP_LABEL: Partial<Record<RepoOpState, string>> = {
-  merging: "MERGE 진행 중",
-  rebasing: "REBASE 진행 중",
-  "cherry-picking": "CHERRY-PICK 진행 중",
-  bisecting: "BISECT 진행 중",
-};
+function opLabelFor(msg: Messages, op: RepoOpState): string | undefined {
+  switch (op) {
+    case "normal":
+      return undefined;
+    case "merging":
+      return msg.shell.toolbar.opMerging;
+    case "rebasing":
+      return msg.shell.toolbar.opRebasing;
+    case "cherry-picking":
+      return msg.shell.toolbar.opCherryPicking;
+    case "bisecting":
+      return msg.shell.toolbar.opBisecting;
+    default: {
+      const unreachable: never = op;
+      return unreachable;
+    }
+  }
+}
 
 export function Toolbar({ project }: { project: Project }) {
+  const msg = useMessages();
   const { data: status, isFetching } = useStatus(project.id);
   const refreshAll = useRefreshAll();
   const fetchOp = useSyncOp(project.id, "fetch");
@@ -56,14 +71,15 @@ export function Toolbar({ project }: { project: Project }) {
   function handleCleanTarget() {
     if (cleanTarget.isPending) return;
     const paths = targetSize?.paths ?? [];
-    const folderWord = paths.length > 1 ? "폴더들" : "폴더";
     useUi.getState().askConfirm({
-      title: "target 청소",
-      message: `'${project.name}'의 Rust 빌드 산출물 ${formatBytes(
-        targetSize?.bytes ?? 0,
-      )}를 비웁니다. 아래 ${folderWord}가 통째로 삭제되며, 다음 빌드는 처음부터 진행됩니다. 계속할까요?`,
+      title: msg.shell.toolbar.cleanTargetTitle,
+      message: msg.shell.toolbar.cleanTargetMessage(
+        project.name,
+        formatBytes(targetSize?.bytes ?? 0),
+        paths.length,
+      ),
       detail: paths.join("\n"),
-      confirmLabel: "청소",
+      confirmLabel: msg.shell.toolbar.cleanTargetConfirm,
       danger: true,
       onConfirm: () => cleanTarget.mutate(project.id),
     });
@@ -72,7 +88,7 @@ export function Toolbar({ project }: { project: Project }) {
   const branchLabel =
     status?.branch ??
     (status?.detachedSha ? `@ ${status.detachedSha}` : undefined);
-  const opLabel = status ? OP_LABEL[status.opState] : undefined;
+  const opLabel = status ? opLabelFor(msg, status.opState) : undefined;
   const detached = !!status && !status.branch;
   const busy = !!running;
 
@@ -82,7 +98,7 @@ export function Toolbar({ project }: { project: Project }) {
   return (
     <header className="flex h-11 shrink-0 items-center gap-3 border-b border-edge bg-panel px-4">
       <button
-        title="파일 트리 토글"
+        title={msg.shell.toolbar.toggleFileTree}
         onClick={() => useUi.getState().toggleFileTree()}
         className={`-ml-1 rounded p-1.5 hover:bg-raised ${
           fileTreeOpen ? "text-accent" : "text-fg-muted hover:text-fg"
@@ -117,7 +133,7 @@ export function Toolbar({ project }: { project: Project }) {
       <button
         onClick={() => fetchOp.mutate(undefined)}
         disabled={busy}
-        title="원격에서 페치"
+        title={msg.shell.toolbar.fetchTitle}
         className={syncBtn}
       >
         <RefreshCcw
@@ -130,7 +146,7 @@ export function Toolbar({ project }: { project: Project }) {
       <button
         onClick={() => pullOp.mutate(undefined)}
         disabled={busy || detached}
-        title={detached ? "detached HEAD에서는 풀 불가" : "풀"}
+        title={detached ? msg.shell.toolbar.pullDetachedTitle : msg.shell.toolbar.pullTitle}
         className={syncBtn}
       >
         <ArrowDownToLine
@@ -149,7 +165,7 @@ export function Toolbar({ project }: { project: Project }) {
       <button
         onClick={startPush}
         disabled={busy || detached}
-        title={detached ? "detached HEAD에서는 푸시 불가" : "푸시"}
+        title={detached ? msg.shell.toolbar.pushDetachedTitle : msg.shell.toolbar.pushTitle}
         className={syncBtn}
       >
         <ArrowUpToLine
@@ -169,8 +185,8 @@ export function Toolbar({ project }: { project: Project }) {
         <span
           title={
             targetSize.targetCount > 1
-              ? `Rust 빌드 산출물 (target ${targetSize.targetCount}개 합산)`
-              : "Rust 빌드 산출물 (target)"
+              ? msg.shell.toolbar.targetSizeMultiTitle(targetSize.targetCount)
+              : msg.shell.toolbar.targetSizeSingleTitle
           }
           className="flex items-center gap-1.5 rounded border border-edge px-2 py-1 text-xs text-fg-muted"
         >
@@ -181,11 +197,11 @@ export function Toolbar({ project }: { project: Project }) {
               <Loader2
                 size={12}
                 className="animate-spin text-accent"
-                aria-label="청소 중"
+                aria-label={msg.shell.toolbar.cleaningLabel}
               />
             ) : (
               <button
-                title="target 청소 (빌드 산출물 삭제 — 용량 회수)"
+                title={msg.shell.toolbar.cleanTargetButtonTitle}
                 onClick={handleCleanTarget}
                 className="-mr-0.5 rounded p-0.5 text-fg-dim hover:bg-edge hover:text-danger"
               >
@@ -196,7 +212,7 @@ export function Toolbar({ project }: { project: Project }) {
       )}
 
       <button
-        title="프로젝트 메모"
+        title={msg.shell.toolbar.projectNotes}
         onClick={() => setMemoOpen(true)}
         className={`relative rounded p-1.5 hover:bg-raised ${
           memoCount > 0 ? "text-accent" : "text-fg-muted hover:text-fg"
@@ -211,7 +227,7 @@ export function Toolbar({ project }: { project: Project }) {
       </button>
 
       <button
-        title="이 프로젝트 경로에서 터미널 열기 (Ctrl+`)"
+        title={msg.shell.toolbar.openTerminalTitle}
         onClick={() => useTerminals.getState().openTerminal(project.id)}
         className="rounded p-1.5 text-fg-muted hover:bg-raised hover:text-fg"
       >
@@ -219,7 +235,7 @@ export function Toolbar({ project }: { project: Project }) {
       </button>
 
       <button
-        title="DB 탐색기 (탭)"
+        title={msg.shell.toolbar.dbExplorerTitle}
         onClick={() => useTerminals.getState().openDbTab(project.id)}
         className="rounded p-1.5 text-fg-muted hover:bg-raised hover:text-fg"
       >
@@ -227,7 +243,7 @@ export function Toolbar({ project }: { project: Project }) {
       </button>
 
       <button
-        title="모든 프로젝트 상태 새로고침 (F5)"
+        title={msg.shell.toolbar.refreshAllTitle}
         onClick={refreshAll}
         className="rounded p-1.5 text-fg-muted hover:bg-raised hover:text-fg"
       >
@@ -235,7 +251,7 @@ export function Toolbar({ project }: { project: Project }) {
       </button>
 
       <button
-        title="설정"
+        title={msg.shell.toolbar.settingsTitle}
         onClick={() => useUi.getState().setSettingsOpen(true)}
         className="rounded p-1.5 text-fg-muted hover:bg-raised hover:text-fg"
       >

@@ -2,6 +2,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { Database, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import type { DbConnection, DbEngine } from "../../lib/ipc";
 import { useDeleteConnection, useSaveConnection } from "../../queries";
 import { useDb } from "../../stores/db";
@@ -48,6 +49,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 export function ConnectionDialog() {
+  const msg = useMessages();
   const dialog = useDb((s) => s.dialog);
   const closeDialog = useDb((s) => s.closeDialog);
   const onRemoved = useDb((s) => s.onConnectionRemoved);
@@ -135,7 +137,7 @@ export function ConnectionDialog() {
         <div className="flex items-center gap-2">
           <Database size={16} className="text-accent" />
           <span className="font-semibold">
-            {isNew ? "연결 추가" : "연결 편집"}
+            {isNew ? msg.db.connectionDialog.addTitle : msg.db.connectionDialog.editTitle}
           </span>
           <div className="flex-1" />
           <button
@@ -147,16 +149,16 @@ export function ConnectionDialog() {
         </div>
 
         <div className="mt-4 space-y-3 text-[13px]">
-          <Field label="이름">
+          <Field label={msg.db.connectionDialog.nameLabel}>
             <input
               value={form.name}
               onChange={(e) => update("name", e.target.value)}
-              placeholder="예: NEXUS"
+              placeholder={msg.db.connectionDialog.namePlaceholder}
               className={inputCls}
             />
           </Field>
 
-          <Field label="엔진">
+          <Field label={msg.db.connectionDialog.engineLabel}>
             <select
               value={form.engine}
               onChange={(e) => handleEngine(e.target.value as DbEngine)}
@@ -172,7 +174,7 @@ export function ConnectionDialog() {
 
           {form.engine === "sqlite" ? (
             // SQLite는 파일 1개 = DB 1개 — 호스트/포트/인증이 아니라 파일 경로가 필요하다.
-            <Field label="데이터베이스 파일">
+            <Field label={msg.db.connectionDialog.sqliteFileLabel}>
               <div className="flex gap-2">
                 <input
                   value={form.database ?? ""}
@@ -186,13 +188,13 @@ export function ConnectionDialog() {
                     const picked = await open({
                       multiple: false,
                       directory: false,
-                      title: "SQLite 데이터베이스 파일 선택",
+                      title: msg.db.connectionDialog.sqliteFilePickerTitle,
                     });
                     if (typeof picked === "string") update("database", picked);
                   }}
                   className="shrink-0 rounded border border-edge px-3 text-fg-muted hover:bg-raised hover:text-fg"
                 >
-                  찾아보기
+                  {msg.db.connectionDialog.browse}
                 </button>
               </div>
             </Field>
@@ -200,7 +202,7 @@ export function ConnectionDialog() {
             <>
               <div className="flex gap-2">
                 <div className="flex-1">
-                  <Field label="호스트">
+                  <Field label={msg.db.connectionDialog.hostLabel}>
                     <input
                       value={form.host}
                       onChange={(e) => update("host", e.target.value)}
@@ -209,7 +211,7 @@ export function ConnectionDialog() {
                   </Field>
                 </div>
                 <div className="w-24">
-                  <Field label="포트">
+                  <Field label={msg.db.connectionDialog.portLabel}>
                     <input
                       type="number"
                       min={0}
@@ -235,7 +237,7 @@ export function ConnectionDialog() {
 
               <div className="flex gap-2">
                 <div className="flex-1">
-                  <Field label="사용자 (선택)">
+                  <Field label={msg.db.connectionDialog.usernameLabel}>
                     <input
                       value={form.username}
                       onChange={(e) => update("username", e.target.value)}
@@ -245,13 +247,17 @@ export function ConnectionDialog() {
                 </div>
                 <div className="flex-1">
                   <Field
-                    label={isNew ? "비밀번호 (선택)" : "비밀번호 (변경 시만)"}
+                    label={
+                      isNew
+                        ? msg.db.connectionDialog.passwordLabelNew
+                        : msg.db.connectionDialog.passwordLabelEdit
+                    }
                   >
                     <input
                       type="password"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
-                      placeholder={isNew ? "" : "(유지)"}
+                      placeholder={isNew ? "" : msg.db.connectionDialog.passwordKeepPlaceholder}
                       className={inputCls}
                     />
                   </Field>
@@ -259,7 +265,11 @@ export function ConnectionDialog() {
               </div>
 
               <Field
-                label={form.engine === "redis" ? "DB 번호 (0-15)" : "기본 DB (선택)"}
+                label={
+                  form.engine === "redis"
+                    ? msg.db.connectionDialog.redisDbLabel
+                    : msg.db.connectionDialog.defaultDbLabel
+                }
               >
                 <input
                   value={form.database ?? ""}
@@ -269,7 +279,7 @@ export function ConnectionDialog() {
                 />
               </Field>
 
-              <Field label="옵션 (선택)">
+              <Field label={msg.db.connectionDialog.optionsLabel}>
                 <input
                   value={form.options ?? ""}
                   onChange={(e) => update("options", e.target.value)}
@@ -291,7 +301,7 @@ export function ConnectionDialog() {
               onChange={(e) => update("readOnly", e.target.checked)}
               className="accent-accent"
             />
-            <span>읽기 전용 (쓰기 쿼리 차단)</span>
+            <span>{msg.db.connectionDialog.readOnly}</span>
           </label>
 
           {form.engine !== "mssql" && form.engine !== "sqlite" && (
@@ -304,7 +314,7 @@ export function ConnectionDialog() {
                 }
                 className="accent-accent"
               />
-              <span>TLS 사용 (암호화 연결 — 서버가 지원할 때)</span>
+              <span>{msg.db.connectionDialog.useTls}</span>
             </label>
           )}
 
@@ -320,12 +330,12 @@ export function ConnectionDialog() {
                 }
                 className="accent-accent"
               />
-              <span>Windows 인증 (통합 보안 — 사용자/비밀번호 무시)</span>
+              <span>{msg.db.connectionDialog.windowsAuth}</span>
             </label>
           )}
           {form.engine !== "sqlite" && (
             <div className="text-[11px] text-fg-dim">
-              비밀번호는 OS 키체인(Windows 자격증명 관리자)에 저장됩니다.
+              {msg.db.connectionDialog.passwordStorageNote}
             </div>
           )}
         </div>
@@ -337,7 +347,7 @@ export function ConnectionDialog() {
               disabled={del.isPending}
               className="flex items-center gap-1.5 rounded px-3 py-1.5 text-danger hover:bg-danger/10"
             >
-              <Trash2 size={14} /> 삭제
+              <Trash2 size={14} /> {msg.db.connectionDialog.delete}
             </button>
           )}
           <div className="flex-1" />
@@ -345,14 +355,14 @@ export function ConnectionDialog() {
             onClick={closeDialog}
             className="rounded px-3 py-1.5 text-fg-muted hover:bg-raised"
           >
-            취소
+            {msg.db.connectionDialog.cancel}
           </button>
           <button
             onClick={handleSave}
             disabled={save.isPending}
             className="rounded bg-accent px-3 py-1.5 font-medium text-on-accent hover:bg-accent-hover disabled:opacity-50"
           >
-            {save.isPending ? "저장 중…" : "저장"}
+            {save.isPending ? msg.db.connectionDialog.saving : msg.db.connectionDialog.save}
           </button>
         </div>
       </div>

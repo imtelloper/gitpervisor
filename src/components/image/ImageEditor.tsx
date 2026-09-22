@@ -164,6 +164,8 @@ import {
 } from "../../lib/image-codec";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 
+import type { Messages } from "../../i18n/messages";
+import { currentMessages, useMessages } from "../../i18n/ui-language";
 import { copyFailMessage, copyImage, copyText } from "../../lib/clipboard";
 import { IS_DOC_WINDOW } from "../../lib/floating";
 import { errorMessage, ipc, isIpcError } from "../../lib/ipc";
@@ -254,9 +256,9 @@ const MAX_OUTPUT_DIM = 16384;
  * 노드 편집 컨텍스트 바의 이름 — 레이어 패널·캔버스 아트보드 라벨과 **같은 값**이어야 한다.
  * 세 곳이 갈리면 같은 객체가 화면마다 다른 이름으로 보인다.
  */
-function nodeEditName(objects: readonly Node[], id: ObjId): string {
+function nodeEditName(msg: Messages, objects: readonly Node[], id: ObjId): string {
   const o = objects.find((n) => n.id === id);
-  return o ? (o.name ?? defaultLayerName(o, objects)) : "벡터 편집";
+  return o ? (o.name ?? defaultLayerName(o, objects)) : msg.imageEditor.vectorEditName;
 }
 
 /**
@@ -280,13 +282,14 @@ const COMPONENT_THUMB_MAX = 96;
 const EMPTY_DOC: EditorDoc = normalizeDoc({});
 
 /** 확장자 → 비-라운드트립 경고 문구(설계 D3, §6.3). 라운드트립 가능한 포맷이면 null. */
-function roundTripWarning(path: string): string | null {
+function roundTripWarning(msg: Messages, path: string): string | null {
+  const t = msg.imageEditor.editor;
   const base = path.split("/").pop() ?? path;
   const dot = base.lastIndexOf(".");
   const ext = dot > 0 ? base.slice(dot + 1).toLowerCase() : "";
-  if (ext === "svg") return "SVG → PNG 래스터화되어 저장됩니다";
-  if (ext === "gif") return "첫 프레임만 편집·저장됩니다";
-  return formatOfPath(path) === null ? "PNG로 저장됩니다" : null;
+  if (ext === "svg") return t.roundTripSvg;
+  if (ext === "gif") return t.roundTripGif;
+  return formatOfPath(path) === null ? t.roundTripPng : null;
 }
 
 // ── 액션 맵(45 §4) ──────────────────────────────────────────────────────────
@@ -363,17 +366,31 @@ function rememberColor(p: SelPatch): void {
 // ── 벡터 연산(46 §4) ────────────────────────────────────────────────────────
 
 /** 히스토리 라벨 = 사용자가 누른 버튼의 이름. 연산마다 다른 이름을 쓰면 되돌리기 목록이 거짓말을 한다. */
-const OP_LABEL: Record<PathOp, string> = {
-  union: "합집합",
-  subtract: "차집합",
-  intersect: "교집합",
-  exclude: "제외",
-  flatten: "평탄화",
-  outline: "윤곽선화",
-  separate: "패스 분리",
-};
+function opLabel(msg: Messages, op: PathOp): string {
+  const t = msg.imageEditor.vectorOp;
+  const labels: Record<PathOp, string> = {
+    union: t.union,
+    subtract: t.subtract,
+    intersect: t.intersect,
+    exclude: t.exclude,
+    flatten: t.flatten,
+    outline: t.outline,
+    separate: t.separate,
+  };
+  return labels[op];
+}
 
-const VECTOR_OPS = Object.keys(OP_LABEL) as PathOp[];
+// Record 로 두는 이유: PathOp 가 늘면 여기서 tsc 가 빠진 연산을 가리킨다(게이트 표가 조용히 모자라지 않게).
+const VECTOR_OP_SET: Record<PathOp, true> = {
+  union: true,
+  subtract: true,
+  intersect: true,
+  exclude: true,
+  flatten: true,
+  outline: true,
+  separate: true,
+};
+const VECTOR_OPS = Object.keys(VECTOR_OP_SET) as PathOp[];
 
 /**
  * 불리언 4연산 · 평탄화 · 윤곽선화 · 패스 분리 — 단축키·컨텍스트 바·인스펙터·미리보기 스트립·
@@ -443,7 +460,7 @@ export function vectorActions(ctx: {
   };
 
   const commit = (next: Node[], ids: ObjId[], op: PathOp): ObjId[] => {
-    ctx.applyDoc({ ...ctx.doc, objects: next }, "commit", OP_LABEL[op]);
+    ctx.applyDoc({ ...ctx.doc, objects: next }, "commit", opLabel(currentMessages(), op));
     ctx.select(ids);
     return ids;
   };
@@ -528,16 +545,22 @@ function applyPathPatch(node: PathNode, p: PathPatch): PathNode {
   return next;
 }
 
-const ALIGN_LABEL: Record<AlignMode, string> = {
-  left: "왼쪽",
-  hcenter: "가로 가운데",
-  right: "오른쪽",
-  top: "위",
-  vcenter: "세로 가운데",
-  bottom: "아래",
-};
+function alignHistoryLabel(msg: Messages, mode: AlignMode): string {
+  const t = msg.imageEditor.history;
+  const labels: Record<AlignMode, string> = {
+    left: t.alignLeft,
+    hcenter: t.alignHCenter,
+    right: t.alignRight,
+    top: t.alignTop,
+    vcenter: t.alignVCenter,
+    bottom: t.alignBottom,
+  };
+  return labels[mode];
+}
 
-const SLOT_TITLE: Record<PaintSlot, string> = { fills: "채우기", strokes: "선" };
+function slotTitle(msg: Messages, slot: PaintSlot): string {
+  return slot === "fills" ? msg.imageEditor.paintSlot.fills : msg.imageEditor.paintSlot.strokes;
+}
 
 /**
  * 선택 종류 → 자동으로 열 인스펙터 탭(45 §3.1 표). `none` 은 여기 없다 — 아무것도 안 골랐다고
@@ -552,21 +575,29 @@ const AUTO_TAB: Partial<Record<SelectionKind, EditorUiState["inspectorTab"]>> = 
   crop: "adjust",
 };
 
-const PAINT_KIND_TITLE: Record<Paint["type"], string> = {
-  solid: "단색",
-  linear: "선형 그라디언트",
-  radial: "방사형 그라디언트",
-  angular: "원뿔 그라디언트",
-  diamond: "다이아 그라디언트",
-  image: "이미지",
-};
+function paintKindTitle(msg: Messages, type: Paint["type"]): string {
+  const t = msg.imageEditor.paintKind;
+  const labels: Record<Paint["type"], string> = {
+    solid: t.solid,
+    linear: t.linear,
+    radial: t.radial,
+    angular: t.angular,
+    diamond: t.diamond,
+    image: t.image,
+  };
+  return labels[type];
+}
 
-const EFFECT_TITLE: Record<Effect["type"], string> = {
-  "drop-shadow": "드롭 섀도",
-  "inner-shadow": "이너 섀도",
-  "layer-blur": "레이어 블러",
-  "background-blur": "배경 블러",
-};
+function effectTitle(msg: Messages, type: Effect["type"]): string {
+  const t = msg.imageEditor.effect;
+  const labels: Record<Effect["type"], string> = {
+    "drop-shadow": t.dropShadow,
+    "inner-shadow": t.innerShadow,
+    "layer-blur": t.layerBlur,
+    "background-blur": t.backgroundBlur,
+  };
+  return labels[type];
+}
 
 /** 스택 한 겹만 갈아 끼운다 — 표시·블렌드는 그 겹의 것을 남긴다(팝오버는 색만 고친다). */
 function replacePaint(list: readonly Fill[], i: number, p: Paint): Fill[] {
@@ -596,6 +627,7 @@ function withSolidHead(list: readonly Fill[], hex: string): Fill[] {
  * 회전/반전/크롭/리사이즈/색보정 + 주석(마크업) 후 평탄화 저장(DOCS/image-annotation-design.md).
  */
 export default function ImageEditor() {
+  const msg = useMessages();
   const path = useUi((s) => s.imageEditorPath);
   const editorRepoId = useUi((s) => s.imageEditorRepoId);
   const selectedProjectId = useUi((s) => s.selectedProjectId);
@@ -889,13 +921,11 @@ export default function ImageEditor() {
   const syncInstances = useCallback(
     (input: EditorDoc, lib: ImageLibrary) => {
       const r = resolveInstances(input, lib);
-      if (r.doc !== docRef.current) applyDoc(r.doc, "commit", "컴포넌트 갱신");
+      const ie = currentMessages().imageEditor;
+      if (r.doc !== docRef.current) applyDoc(r.doc, "commit", ie.history.componentsSynced);
       // 조용히 끊으면 나중에 "왜 링크가 풀렸지"가 된다 — 무엇이 없어졌는지까지 말한다.
       for (const d of r.detached) {
-        pushToast(
-          "info",
-          `컴포넌트 '${d.name}'이(가) 라이브러리에 없어 인스턴스 ${d.count}개를 분리했습니다`,
-        );
+        pushToast("info", ie.toast.componentMissingDetached(d.name, d.count));
       }
     },
     [applyDoc, pushToast],
@@ -915,7 +945,9 @@ export default function ImageEditor() {
   useEffect(() => {
     if (!libReady) return;
     const styled = resyncStyles(docRef.current, lib);
-    if (styled !== docRef.current) applyDoc(styled, "commit", "스타일 갱신");
+    if (styled !== docRef.current) {
+      applyDoc(styled, "commit", currentMessages().imageEditor.history.stylesSynced);
+    }
     syncInstances(docRef.current, lib);
   }, [lib, libReady, docGen, applyDoc, syncInstances]);
 
@@ -1011,7 +1043,7 @@ export default function ImageEditor() {
     async (i: number) => {
       const d = await persistRef.current?.loadSnapshot(i);
       if (!d) return false;
-      applyDoc(d, "commit", "스냅샷 복원");
+      applyDoc(d, "commit", currentMessages().imageEditor.history.snapshotRestored);
       return true;
     },
     [applyDoc],
@@ -1028,13 +1060,14 @@ export default function ImageEditor() {
     if (leftTab === "history") void refreshSnapshots();
   }, [leftTab, refreshSnapshots]);
 
-  const saveSnapshot = () =>
+  const saveSnapshot = () => {
+    const t = currentMessages().imageEditor.dialog;
     askPrompt({
-      title: "스냅샷 저장",
+      title: t.snapshotTitle,
       // 상한을 넘기면 41 이 **가장 오래된 것부터 말없이 버린다** — 그 사실을 여기서 알린다.
-      label: "지금 상태를 이름 붙여 남깁니다. 되돌리기 목록에서 밀려나도 남고, 20개를 넘으면 오래된 것부터 지워집니다.",
-      defaultValue: "1차 검토본",
-      confirmLabel: "저장",
+      label: t.snapshotLabel,
+      defaultValue: t.snapshotDefaultName,
+      confirmLabel: t.save,
       onConfirm: (name) => {
         void (async () => {
           await persistRef.current?.saveSnapshot(name);
@@ -1042,6 +1075,7 @@ export default function ImageEditor() {
         })();
       },
     });
+  };
 
   // ── 원본 로드 ──
   useEffect(() => {
@@ -1054,7 +1088,7 @@ export default function ImageEditor() {
         const { mime, base64, stamp } = await ipc.readFileBase64(projectId, path);
         const image = await loadImage(`data:${mime};base64,${base64}`);
         if (!image.naturalWidth || !image.naturalHeight) {
-          throw new Error("이미지 크기를 확인할 수 없습니다 (지원되지 않는 형식일 수 있음)");
+          throw new Error(currentMessages().imageEditor.loadError.unknownSize);
         }
         // 입력 상한 — 없으면 캔버스 한계를 넘겨 **빈 화면**이 되거나 조용히 죽는다.
         // 저장 방향에는 이미 상한이 둘 있는데(MAX_OUTPUT_DIM, Rust 의 64MB) 로드 방향만
@@ -1066,8 +1100,12 @@ export default function ImageEditor() {
           mp > MAX_INPUT_PIXELS
         ) {
           throw new Error(
-            `이미지가 너무 큽니다 (${image.naturalWidth}×${image.naturalHeight}) — ` +
-              `한 변 ${MAX_OUTPUT_DIM}px · 총 ${Math.round(MAX_INPUT_PIXELS / 1e6)}백만 화소까지 편집할 수 있습니다`,
+            currentMessages().imageEditor.loadError.tooLarge(
+              image.naturalWidth,
+              image.naturalHeight,
+              MAX_OUTPUT_DIM,
+              Math.round(MAX_INPUT_PIXELS / 1e6),
+            ),
           );
         }
         if (alive) {
@@ -1116,7 +1154,7 @@ export default function ImageEditor() {
           { ...restored.doc, crop: null, outW: img.naturalWidth, outH: img.naturalHeight }
         : restored.doc;
       docRef.current = next;
-      histRef.current.reset(next, "이미지 열기", restored.log);
+      histRef.current.reset(next, currentMessages().imageEditor.history.openImage, restored.log);
       setDoc(next);
       setHistVer((v) => v + 1);
       setDocGen((v) => v + 1);
@@ -1271,9 +1309,12 @@ export default function ImageEditor() {
    * **조용히 끊지 않는다.** 토스트가 없으면 며칠 뒤 "왜 마스터를 고쳐도 안 따라오지"가 된다.
    * 되돌리기 한 칸이면 인스턴스가 돌아온다(변환과 같은 커밋 안에 있다).
    */
-  const detachForOrient = (objects: readonly Node[], what: string): Node[] => {
+  const detachForOrient = (objects: readonly Node[], what: "rotate" | "flip"): Node[] => {
     const r = detachAllInstances(objects);
-    if (r.count) pushToast("info", `${what}으로 인스턴스 ${r.count}개를 분리했습니다`);
+    if (r.count) {
+      const t = currentMessages().imageEditor.toast;
+      pushToast("info", what === "rotate" ? t.detachedByRotate(r.count) : t.detachedByFlip(r.count));
+    }
     return r.objects;
   };
 
@@ -1294,7 +1335,7 @@ export default function ImageEditor() {
       patchDoc({
         rotation: (d.rotation + (plus90 ? 90 : 270)) % 360,
         objects: transformObjects(
-          detachForOrient(d.objects, "회전"),
+          detachForOrient(d.objects, "rotate"),
           delta,
           base.width,
           base.height,
@@ -1314,7 +1355,7 @@ export default function ImageEditor() {
       if (!base) return;
       const d = docRef.current;
       const objects = transformObjects(
-        detachForOrient(d.objects, "반전"),
+        detachForOrient(d.objects, "flip"),
         axis === "h" ? "flipH" : "flipV",
         base.width,
         base.height,
@@ -1624,7 +1665,7 @@ export default function ImageEditor() {
     const outW = Math.max(1, Math.round(d.outW || sw));
     const outH = Math.max(1, Math.round(d.outH || sh));
     if (outW > MAX_OUTPUT_DIM || outH > MAX_OUTPUT_DIM) {
-      throw new Error(`출력 크기가 너무 큽니다 (한 변 ${MAX_OUTPUT_DIM}px 초과)`);
+      throw new Error(currentMessages().imageEditor.loadError.outputTooLarge(MAX_OUTPUT_DIM));
     }
     // 이미지·조정·주석이 **프리뷰와 같은 renderScene** 을 지난다. 큰 출력은 타일로 그려
     // 작업 메모리가 출력 크기에 비례해 늘지 않는다(태스크 40 §3.3).
@@ -1675,17 +1716,21 @@ export default function ImageEditor() {
               if (projectId && path && relPath === path) {
                 void persistRef.current?.deleteDoc();
               }
-              pushToast("success", `저장됨 — ${relPath.split("/").pop()}`);
+              pushToast(
+                "success",
+                currentMessages().imageEditor.toast.saved(relPath.split("/").pop() ?? ""),
+              );
               close();
             },
             onError: (e) => {
+              const t = currentMessages().imageEditor.dialog;
               // 기존 파일 충돌 → 덮어쓰기 확인 후 재시도(데이터 손실 방지).
               if (isIpcError(e) && e.code === "ALREADY_EXISTS") {
                 askConfirm({
-                  title: "덮어쓰기",
-                  message: `'${relPath.split("/").pop()}' 파일이 이미 있습니다. 덮어쓸까요?`,
+                  title: t.overwriteTitle,
+                  message: t.overwriteMessage(relPath.split("/").pop() ?? ""),
                   detail: relPath,
-                  confirmLabel: "덮어쓰기",
+                  confirmLabel: t.overwriteConfirm,
                   danger: true,
                   onConfirm: () => writeTo(relPath, true, ignoreStamp),
                 });
@@ -1693,11 +1738,10 @@ export default function ImageEditor() {
                 // 편집을 시작한 뒤 남이 그 파일을 바꿨다. 종전에는 이 저장이 그 변경을
                 // **말없이** 날렸다. 재시도는 반드시 ignoreStamp 로 — 안 그러면 무한 반복.
                 askConfirm({
-                  title: "외부에서 변경됨",
-                  message:
-                    "편집을 시작한 뒤 이 파일이 다른 곳에서 바뀌었습니다. 저장하면 그 변경을 덮어씁니다.",
+                  title: t.externalChangeTitle,
+                  message: t.externalChangeMessage,
                   detail: relPath,
-                  confirmLabel: "그래도 저장",
+                  confirmLabel: t.externalChangeConfirm,
                   danger: true,
                   onConfirm: () => writeTo(relPath, overwrite, true),
                 });
@@ -1729,13 +1773,12 @@ export default function ImageEditor() {
     const targetPath = inPlace ? path : `${dir}${baseNoExt}.${extOf(format)}`;
     const go = () => writeTo(targetPath, inPlace);
     if (doc.objects.length) {
+      const t = currentMessages().imageEditor.dialog;
       askConfirm({
-        title: "레이어를 이미지에 굽기",
-        message: inPlace
-          ? "주석이 이미지에 합쳐져 원본을 덮어씁니다. 벡터 편집 정보는 남지 않습니다."
-          : "주석이 합쳐진 새 파일로 저장됩니다(원본은 그대로). 벡터 편집 정보는 남지 않습니다.",
+        title: t.bakeTitle,
+        message: inPlace ? t.bakeMessageInPlace : t.bakeMessageNewFile,
         detail: targetPath,
-        confirmLabel: "합쳐서 저장",
+        confirmLabel: t.bakeConfirm,
         danger: true,
         onConfirm: go,
       });
@@ -1744,22 +1787,24 @@ export default function ImageEditor() {
     }
   };
 
-  const saveAs = () =>
+  const saveAs = () => {
+    const m = currentMessages().imageEditor.dialog;
     askPrompt({
-      title: "다른 이름으로 저장",
-      label: "같은 폴더에 저장됩니다.",
+      title: m.saveAsTitle,
+      label: m.saveAsLabel,
       // 주석이 있으면 원본을 건드리지 않는 이름을 기본값으로 — 안전한 쪽이 기본 경로다(§6.1).
       defaultValue: `${baseNoExt}${doc.objects.length ? "-annotated" : ""}.${extOf(format)}`,
-      confirmLabel: "저장",
+      confirmLabel: m.save,
       validate: (v) => {
         const t = v.trim();
-        if (!t) return "이름을 입력하세요";
-        if (/[\\/]/.test(t)) return "이름에 경로 구분자를 쓸 수 없습니다";
-        if (t === "." || t === ".." || t.includes("..")) return "잘못된 이름입니다";
+        if (!t) return m.nameRequired;
+        if (/[\\/]/.test(t)) return m.nameHasSeparator;
+        if (t === "." || t === ".." || t.includes("..")) return m.nameInvalid;
         return null;
       },
       onConfirm: (name) => writeTo(`${dir}${name}`, false),
     });
+  };
 
   /** 편집 결과를 PNG로 클립보드에 넣는다(§6.2). 파일 저장 포맷과 무관하게 항상 PNG.
    *  쓰기는 `copyImage`(8회 백오프)를 지난다 — 1회 시도는 Windows 클립보드 경합에 그대로 깨졌다(A-K3). */
@@ -1771,7 +1816,7 @@ export default function ImageEditor() {
       .then((bytes) => copyImage(bytes))
       .then((ok) =>
         ok
-          ? pushToast("success", "클립보드에 복사됨 (PNG)")
+          ? pushToast("success", currentMessages().imageEditor.toast.copiedPng)
           : pushToast("error", copyFailMessage()),
       )
       .catch((e) => pushToast("error", errorMessage(e)))
@@ -1809,7 +1854,7 @@ export default function ImageEditor() {
         applyDoc(
           { ...d, assets: got.assets, objects: [...d.objects, node] },
           "commit",
-          "이미지 배치",
+          currentMessages().imageEditor.history.placeImage,
         );
         setSelectedIds([node.id]);
       } catch (err) {
@@ -1833,11 +1878,11 @@ export default function ImageEditor() {
     void (async () => {
       await persistRef.current?.flush();
       if (persistRef.current?.state === "error") {
+        const t = currentMessages().imageEditor.dialog;
         askConfirm({
-          title: "편집 문서를 저장하지 못했습니다",
-          message:
-            "이 창의 편집 내용을 파일로 남기지 못했습니다. 그래도 닫으면 마지막 저장 이후 변경분을 잃습니다.",
-          confirmLabel: "그래도 닫기",
+          title: t.closeFailedTitle,
+          message: t.closeFailedMessage,
+          confirmLabel: t.closeFailedConfirm,
           danger: true,
           onConfirm: close,
         });
@@ -1870,11 +1915,11 @@ export default function ImageEditor() {
         void (async () => {
           await p.flush();
           if (persistRef.current?.state === "error") {
+            const t = currentMessages().imageEditor.dialog;
             askConfirm({
-              title: "편집 문서를 저장하지 못했습니다",
-              message:
-                "이 창의 편집 내용을 파일로 남기지 못했습니다. 그래도 닫으면 마지막 저장 이후 변경분을 잃습니다.",
-              confirmLabel: "그래도 닫기",
+              title: t.closeFailedTitle,
+              message: t.closeFailedMessage,
+              confirmLabel: t.closeFailedConfirm,
               danger: true,
               onConfirm: () => void win.destroy(),
             });
@@ -1930,7 +1975,7 @@ export default function ImageEditor() {
       applyDoc(
         { ...docRef.current, objects: [...docRef.current.objects, ...added] },
         "commit",
-        "붙여넣기",
+        currentMessages().imageEditor.history.paste,
       );
       setSelectedIds(added.map((o) => o.id));
     };
@@ -1983,7 +2028,7 @@ export default function ImageEditor() {
           applyDoc(
             { ...doc, assets: got.assets, objects: [...doc.objects, node] },
             "commit",
-            "이미지 붙여넣기",
+            currentMessages().imageEditor.history.pasteImage,
           );
           setSelectedIds([node.id]);
         } catch (err) {
@@ -2049,7 +2094,9 @@ export default function ImageEditor() {
     patchDoc(
       { objects: r.objects },
       "commit",
-      kind === "group" ? "그룹" : "프레임으로 감싸기",
+      kind === "group"
+        ? currentMessages().imageEditor.op.group
+        : currentMessages().imageEditor.history.wrapInFrame,
     );
     setSelectedIds([r.id]);
   };
@@ -2057,13 +2104,21 @@ export default function ImageEditor() {
   const ungroupSel = () => {
     const ids = selIds();
     if (ids.length !== 1) return;
-    patchDoc({ objects: treeUngroup(docRef.current.objects, ids[0]) }, "commit", "그룹 해제");
+    patchDoc(
+      { objects: treeUngroup(docRef.current.objects, ids[0]) },
+      "commit",
+      currentMessages().imageEditor.op.ungroup,
+    );
   };
 
   const removeSel = () => {
     const ids = selIds();
     if (!ids.length) return;
-    patchDoc({ objects: treeRemove(docRef.current.objects, ids) }, "commit", "삭제");
+    patchDoc(
+      { objects: treeRemove(docRef.current.objects, ids) },
+      "commit",
+      currentMessages().imageEditor.history.remove,
+    );
     setSelectedIds([]);
   };
 
@@ -2115,7 +2170,7 @@ export default function ImageEditor() {
     (def: ComponentDef, at?: { x: number; y: number }) => {
       const base = orientedRef.current;
       const center = at ?? { x: (base?.width ?? def.w) / 2, y: (base?.height ?? def.h) / 2 };
-      insertNodes(instantiate(def, center), "컴포넌트 배치");
+      insertNodes(instantiate(def, center), currentMessages().imageEditor.history.placeComponent);
     },
     [insertNodes],
   );
@@ -2136,19 +2191,20 @@ export default function ImageEditor() {
   const makeComponentFromSel = () => {
     const ids = selIds();
     if (!ids.length) return;
+    const ie = currentMessages().imageEditor;
     askPrompt({
-      title: "컴포넌트 만들기",
-      label: "이름에 '/' 를 넣으면 앞부분이 섹션이 됩니다 (예: 주석 / 번호 뱃지).",
-      defaultValue: "새 컴포넌트",
-      confirmLabel: "만들기",
-      validate: (v) => (v.trim() ? null : "이름을 입력하세요"),
+      title: ie.dialog.createComponentTitle,
+      label: ie.dialog.createComponentLabel,
+      defaultValue: ie.dialog.createComponentDefaultName,
+      confirmLabel: ie.dialog.createComponentConfirm,
+      validate: (v) => (v.trim() ? null : ie.dialog.nameRequired),
       onConfirm: (raw) => {
         const name = raw.trim();
         if (!name) return;
         try {
           const r = makeComponent(docRef.current.objects, ids, name, componentThumb);
           useImageLibrary.getState().upsertComponent(r.def);
-          patchDoc({ objects: r.objects }, "commit", "컴포넌트 만들기");
+          patchDoc({ objects: r.objects }, "commit", ie.history.createComponent);
           setSelectedIds([r.instanceId]);
         } catch (e) {
           // 중첩 인스턴스 거부는 사용자가 고칠 수 있는 상황이다("먼저 분리하세요").
@@ -2170,14 +2226,16 @@ export default function ImageEditor() {
     if (!ids.length) return;
     let next = objects;
     for (const id of ids) next = detachInstance(next, id);
-    patchDoc({ objects: next }, "commit", "인스턴스 분리");
+    patchDoc({ objects: next }, "commit", currentMessages().imageEditor.history.detachInstance);
     setSelectedIds(ids);
   };
 
   /** '재정의 초기화' — 바뀔 것이 없으면 커밋하지 않는다(빈 히스토리 칸 방지). */
   const resetInstance = (instId: ObjId) => {
     const next = resetOverrides(docRef.current, useImageLibrary.getState().lib, instId);
-    if (next !== docRef.current) applyDoc(next, "commit", "재정의 초기화");
+    if (next !== docRef.current) {
+      applyDoc(next, "commit", currentMessages().imageEditor.history.resetOverrides);
+    }
   };
 
   /** '이 인스턴스로 마스터 갱신' — 다른 인스턴스의 재정의는 유지된다(51 §3.6). */
@@ -2210,7 +2268,9 @@ export default function ImageEditor() {
     patchDoc(
       { objects: [...docRef.current.objects, ...copies] },
       "commit",
-      copies.length === 1 ? "복제" : copies.length + "개 복제",
+      copies.length === 1
+        ? currentMessages().imageEditor.history.duplicate
+        : currentMessages().imageEditor.history.duplicateMany(copies.length),
     );
     setSelectedIds(copies.map((o) => o.id));
   };
@@ -2225,7 +2285,7 @@ export default function ImageEditor() {
     if (on) {
       if (ids.length < 2) return;
       const r = treeMakeMask(docRef.current.objects, ids);
-      patchDoc({ objects: r.objects }, "commit", "마스크로 사용");
+      patchDoc({ objects: r.objects }, "commit", currentMessages().imageEditor.op.useAsMask);
       return;
     }
     let objs = docRef.current.objects;
@@ -2234,7 +2294,9 @@ export default function ImageEditor() {
         if (treeNodeOf(objs, sub)?.mask) objs = treeReleaseMask(objs, sub);
       }
     }
-    if (objs !== docRef.current.objects) patchDoc({ objects: objs }, "commit", "마스크 해제");
+    if (objs !== docRef.current.objects) {
+      patchDoc({ objects: objs }, "commit", currentMessages().imageEditor.history.releaseMask);
+    }
   };
 
   /** 보기 토글 뒤집기. 스토어에서 직접 읽는다 — 액션 맵은 리렌더 없이 최신 값을 봐야 한다. */
@@ -2254,7 +2316,11 @@ export default function ImageEditor() {
       // 아무 것도 안 움직이는데, 커밋은 그대로 나가 히스토리에 **빈 칸만** 쌓인다.
       const units = [...new Set(selIds().map((id) => moveUnit(objects, id)))];
       if (!units.length) return;
-      patchDoc({ objects: treeTranslate(objects, units, dx, dy) }, "commit", "이동");
+      patchDoc(
+        { objects: treeTranslate(objects, units, dx, dy) },
+        "commit",
+        currentMessages().imageEditor.history.move,
+      );
     },
     [patchDoc],
   );
@@ -2263,10 +2329,17 @@ export default function ImageEditor() {
     (dir: 1 | -1 | "front" | "back") => {
       const ids = selIds();
       if (!ids.length) return;
+      const h = currentMessages().imageEditor.history;
       patchDoc(
         { objects: treeReorder(docRef.current.objects, ids, dir) },
         "commit",
-        dir === 1 ? "앞으로" : dir === -1 ? "뒤로" : dir === "front" ? "맨 앞" : "맨 뒤",
+        dir === 1
+          ? h.bringForward
+          : dir === -1
+            ? h.sendBackward
+            : dir === "front"
+              ? h.bringToFront
+              : h.sendToBack,
       );
     },
     [patchDoc],
@@ -2424,7 +2497,7 @@ export default function ImageEditor() {
       // 사용자는 Ctrl+Shift+O 가 죽은 줄 알고 다시 누른다 — 한 줄이라도 남겨야 한다.
       if (!out.length && op === "outline" && list.length === 1) {
         if (treeNodeOf(docRef.current.objects, list[0])?.kind === "text") {
-          pushToast("info", "텍스트 윤곽선화는 아직 지원하지 않습니다");
+          pushToast("info", currentMessages().imageEditor.toast.textOutlineUnsupported);
         }
       }
       return out;
@@ -2469,31 +2542,34 @@ export default function ImageEditor() {
           {
             objects: alignObjects(docRef.current.objects, ids, mode, keyId, canvasRect()),
           },
-          `정렬 ${ALIGN_LABEL[mode]}`,
+          alignHistoryLabel(currentMessages(), mode),
         );
       },
       distribute: (axis) => {
         const ids = selIds();
         if (ids.length < 3) return;
+        const h = currentMessages().imageEditor.history;
         commitDoc(
           { objects: distributeObjects(docRef.current.objects, ids, axis) },
-          axis === "x" ? "수평 분배" : "수직 분배",
+          axis === "x" ? h.distributeH : h.distributeV,
         );
       },
       tidy: (gap) => {
         const ids = selIds();
         if (ids.length < 2) return;
+        const ie = currentMessages().imageEditor;
         commitDoc(
           { objects: tidyObjects(docRef.current.objects, ids, gap) },
-          gap === "auto" ? "간격 정리" : `간격 정리 ${gap}`,
+          gap === "auto" ? ie.op.tidy : ie.history.tidyGap(gap),
         );
       },
       flip: (axis) => {
         const ids = selIds();
         if (!ids.length) return;
+        const op = currentMessages().imageEditor.op;
         commitDoc(
           { objects: flipNodes(docRef.current.objects, ids, axis) },
-          axis === "h" ? "좌우 반전" : "상하 반전",
+          axis === "h" ? op.flipH : op.flipV,
         );
       },
       rotate: (deg) => {
@@ -2509,7 +2585,7 @@ export default function ImageEditor() {
               y: rect.y + rect.h / 2,
             }),
           },
-          `${deg}° 회전`,
+          currentMessages().imageEditor.history.rotate(deg),
         );
       },
       group: (kind) => groupSel(kind),
@@ -2544,7 +2620,7 @@ export default function ImageEditor() {
   const { start: startEyedropper } = useEyedropper();
   const pickColor = useCallback(() => {
     startEyedropper((hex) => {
-      const label = `채우기 ${hex.replace("#", "").toUpperCase()}`;
+      const label = currentMessages().imageEditor.history.fill(hex.replace("#", "").toUpperCase());
       if (!selIds().length) {
         patchSelection({ strokes: withSolidHead(styleRef.current.strokes, hex) }, label);
         return;
@@ -2674,9 +2750,13 @@ export default function ImageEditor() {
     const cur = popStack(pop.slot);
     if (!cur) return;
     const list = replacePaint(cur, pop.index, p);
-    const label = `${SLOT_TITLE[pop.slot]} ${
-      p.type === "solid" ? p.color.replace("#", "").toUpperCase() : PAINT_KIND_TITLE[p.type]
-    }`;
+    const m = currentMessages();
+    const value =
+      p.type === "solid" ? p.color.replace("#", "").toUpperCase() : paintKindTitle(m, p.type);
+    const label =
+      pop.slot === "fills"
+        ? m.imageEditor.history.fill(value)
+        : m.imageEditor.history.stroke(value);
     actions.patchSelection(
       pop.slot === "fills" ? { fills: list } : { strokes: list },
       label,
@@ -2709,12 +2789,13 @@ export default function ImageEditor() {
     if (!node || !isGeomNode(node) || !fill) return;
     const slot: StyleSlot = pop.slot === "fills" ? "fill" : "stroke";
     const single = (popStack(pop.slot)?.length ?? 0) <= 1;
+    const t = currentMessages().imageEditor.dialog;
     askPrompt({
-      title: "색 스타일로 저장",
-      label: "이름에 '/' 를 넣으면 앞부분이 섹션이 됩니다 (예: 브랜드 / Blue 500).",
-      defaultValue: fill.type === "solid" ? fill.color.toUpperCase() : "새 색 스타일",
-      confirmLabel: "저장",
-      validate: (v) => (v.trim() ? null : "이름을 입력하세요"),
+      title: t.colorStyleTitle,
+      label: t.colorStyleLabel,
+      defaultValue: fill.type === "solid" ? fill.color.toUpperCase() : t.colorStyleDefaultName,
+      confirmLabel: t.save,
+      validate: (v) => (v.trim() ? null : t.nameRequired),
       onConfirm: (raw) => {
         const name = raw.trim();
         if (!name) return;
@@ -2743,11 +2824,14 @@ export default function ImageEditor() {
 
   /** 목록 행 클릭 = 값 복사 + `styleRefs` 기록. 히스토리 한 칸은 여기서 붙는다(51 §3.8). */
   const applyStyleToSel = (slot: StyleSlot, style: StyleDef) =>
-    editStyleSlot(`스타일 ${styleSection(style.name).display}`, (n) => applyStyle(n, slot, style));
+    editStyleSlot(
+      currentMessages().imageEditor.history.applyStyle(styleSection(style.name).display),
+      (n) => applyStyle(n, slot, style),
+    );
 
   /** 연결 해제 — **값은 남는다**(51 §3.2). 값까지 되돌리면 해제가 색 삭제로 보인다. */
   const detachStyleFromSel = (slot: StyleSlot) =>
-    editStyleSlot("스타일 연결 해제", (n) => detachStyle(n, slot));
+    editStyleSlot(currentMessages().imageEditor.history.detachStyle, (n) => detachStyle(n, slot));
 
   /**
    * `갱신 가능` — 이 선택만 라이브러리 값으로 되돌린다.
@@ -2758,7 +2842,7 @@ export default function ImageEditor() {
    */
   const resyncSel = (slot: StyleSlot) => {
     const lib = useImageLibrary.getState().lib;
-    editStyleSlot("스타일 갱신", (n) => {
+    editStyleSlot(currentMessages().imageEditor.history.stylesSynced, (n) => {
       const id = n.styleRefs[slot];
       const style = id ? findStyle(lib, slot, id) : null;
       return style ? applyStyle(n, slot, style) : n;
@@ -2768,9 +2852,10 @@ export default function ImageEditor() {
   const putEffect = (e: Effect, live: boolean) => {
     if (pop?.kind !== "effect") return;
     const i = pop.index;
+    const m = currentMessages();
     actions.patchSelection(
       (n) => ({ effects: n.effects.map((x, k) => (k === i ? e : x)) }),
-      `${EFFECT_TITLE[e.type]} 편집`,
+      m.imageEditor.history.editEffect(effectTitle(m, e.type)),
       live,
     );
   };
@@ -2897,7 +2982,7 @@ export default function ImageEditor() {
         patchDoc(
           { objects: treeRemove(docRef.current.objects, ids) },
           "commit",
-          "잘라내기",
+          currentMessages().imageEditor.history.cut,
         );
         setSelectedIds([]);
       },
@@ -3375,7 +3460,7 @@ export default function ImageEditor() {
 
   if (!path) return null;
 
-  const warn = roundTripWarning(path);
+  const warn = roundTripWarning(msg, path);
   const canUndo = histRef.current.canUndo;
   const canRedo = histRef.current.canRedo;
   void histVer; // 히스토리 깊이 변화로 리렌더되게 하는 의존(값 자체는 쓰지 않는다)
@@ -3397,7 +3482,7 @@ export default function ImageEditor() {
     <div
       ref={rootRef}
       role="application"
-      aria-label="이미지 편집"
+      aria-label={msg.imageEditor.editor.ariaLabel}
       tabIndex={-1}
       className="fixed inset-0 z-50 flex flex-col overflow-hidden bg-panel outline-none"
       style={IS_DOC_WINDOW ? { top: 32 } : undefined}
@@ -3420,7 +3505,7 @@ export default function ImageEditor() {
           <AlertTriangle size={12} className="shrink-0" />
           <span
             className="truncate"
-            title="원본 포맷으로 되돌려 저장할 수 없습니다"
+            title={msg.imageEditor.editor.roundTripTitle}
           >
             {warn}
           </span>
@@ -3433,14 +3518,14 @@ export default function ImageEditor() {
         <div className="flex h-7 shrink-0 items-center gap-2 border-b border-edge bg-panel px-3 text-[11px]">
           <FileWarning size={12} className="shrink-0 text-warn" />
           <span className="flex-1 truncate text-fg-muted">
-            편집 문서를 저장한 뒤 원본 이미지가 바뀌었습니다 — 크롭과 출력 크기를 초기화했습니다.
+            {msg.imageEditor.editor.imageChangedBanner}
           </span>
           <button
             type="button"
             onClick={() => setImageChanged(false)}
             className="shrink-0 rounded px-1.5 py-0.5 text-fg-dim hover:bg-raised hover:text-fg"
           >
-            확인
+            {msg.imageEditor.editor.imageChangedDismiss}
           </button>
         </div>
       )}
@@ -3486,7 +3571,7 @@ export default function ImageEditor() {
           {nodeUi ? (
             <NodeContextBar
               state={nodeUi}
-              name={nodeEditName(doc.objects, nodeUi.id)}
+              name={nodeEditName(msg, doc.objects, nodeUi.id)}
               api={nodeApi}
             />
           ) : (
@@ -3533,15 +3618,15 @@ export default function ImageEditor() {
             {mode.kind !== "design" && (
               <div className="pointer-events-none absolute left-1/2 top-2 z-10 -translate-x-1/2 rounded border border-edge bg-panel/90 px-2 py-1 text-[11px] text-fg-muted">
                 {mode.kind === "crop"
-                  ? "크롭 모드 · ⏎ 적용 · Esc 취소"
-                  : "벡터 편집 모드 · Esc 로 편집 종료"}
+                  ? msg.imageEditor.editor.cropModeBanner
+                  : msg.imageEditor.editor.nodeEditModeBanner}
               </div>
             )}
             {loadErr ? (
               <div className="text-sm text-danger">{loadErr}</div>
             ) : !img ? (
               <div className="flex items-center gap-2 text-sm text-fg-dim">
-                <Loader2 size={16} className="animate-spin" /> 이미지 불러오는 중…
+                <Loader2 size={16} className="animate-spin" /> {msg.imageEditor.editor.loadingImage}
               </div>
             ) : showStage && oriented ? (
               // 바깥은 **변환이 걸리지 않는 앵커**다 — 줌 수식의 기준 프레임이라 rect 가
@@ -3617,7 +3702,7 @@ export default function ImageEditor() {
                   patchDoc(
                     { guides: [...docRef.current.guides, { axis, pos }] },
                     "commit",
-                    "가이드 추가",
+                    currentMessages().imageEditor.history.addGuide,
                   )
                 }
                 snapForGuide={snapForGuide}
@@ -3644,7 +3729,7 @@ export default function ImageEditor() {
               >
                 <button
                   type="button"
-                  title="축소"
+                  title={msg.imageEditor.zoom.zoomOut}
                   onClick={() => zoomBy(1 / (WHEEL_STEP * WHEEL_STEP))}
                   className="rounded-full p-1 hover:bg-raised hover:text-fg"
                 >
@@ -3652,7 +3737,7 @@ export default function ImageEditor() {
                 </button>
                 <button
                   type="button"
-                  title="화면 맞춤"
+                  title={msg.imageEditor.zoom.fitScreen}
                   onClick={() => setView(IDENTITY_VIEW)}
                   className="min-w-[3.5rem] rounded-full px-1 py-0.5 text-center font-mono hover:bg-raised hover:text-fg"
                 >
@@ -3660,7 +3745,7 @@ export default function ImageEditor() {
                 </button>
                 <button
                   type="button"
-                  title="확대"
+                  title={msg.imageEditor.zoom.zoomIn}
                   onClick={() => zoomBy(WHEEL_STEP * WHEEL_STEP)}
                   className="rounded-full p-1 hover:bg-raised hover:text-fg"
                 >
@@ -3723,7 +3808,11 @@ export default function ImageEditor() {
                 nodes={selNodes}
                 fontSize={fontSizeValue}
                 onFontSize={(v, live) =>
-                  patchSelection({ fontSize: v }, `글자 크기 ${v}`, live)
+                  patchSelection(
+                    { fontSize: v },
+                    currentMessages().imageEditor.history.fontSize(v),
+                    live,
+                  )
                 }
                 onTypo={(typo, label, live) => patchSelection({ typo }, label, live)}
                 onLiveEnd={endLive}
@@ -3793,11 +3882,11 @@ export default function ImageEditor() {
           // 켜진 동안만 통과시킨다 — 백드롭이 캔버스 클릭을 먼저 먹으면 스포이드가 한 번도
           // 성립하지 않는다(45 §3.7).
           modal={popFill.type === "solid" && tool !== "eyedropper"}
-          title={`${SLOT_TITLE[pop.slot]} · ${PAINT_KIND_TITLE[popFill.type]}`}
+          title={`${slotTitle(msg, pop.slot)} · ${paintKindTitle(msg, popFill.type)}`}
         >
           {popFill.type === "solid" ? (
             <ColorPicker
-              title={SLOT_TITLE[pop.slot]}
+              title={slotTitle(msg, pop.slot)}
               paint={popFill}
               docColors={docColors}
               onLive={(p) => putPaint(p, true)}
@@ -3843,7 +3932,7 @@ export default function ImageEditor() {
           placement="left-start"
           width={232}
           modal={tool !== "eyedropper"}
-          title={EFFECT_TITLE[popEffect.type]}
+          title={effectTitle(msg, popEffect.type)}
         >
           <EffectEditor
             effect={popEffect}
@@ -3854,7 +3943,7 @@ export default function ImageEditor() {
               const i = pop.index;
               actions.patchSelection(
                 (n) => ({ effects: n.effects.filter((_, k) => k !== i) }),
-                "효과 제거",
+                currentMessages().imageEditor.history.removeEffect,
               );
               // 인덱스가 신원이 아니다 — 지운 자리에 다음 효과가 들어오므로 반드시 닫는다.
               closePop();
@@ -3879,38 +3968,43 @@ export default function ImageEditor() {
 // 지금 그리는 것에 반영되는 것처럼 보이는데, 새 텍스트를 만드는 `newTextNode`(draft.ts)는
 // 아직 `fontSize` 밖의 타이포를 받지 않는다.
 
-const ALIGN_OPTS: readonly SelectOption<TextStyle["align"]>[] = [
-  { value: "left", label: "왼쪽" },
-  { value: "center", label: "가운데" },
-  { value: "right", label: "오른쪽" },
-  { value: "justify", label: "양쪽" },
-];
-const VALIGN_OPTS: readonly SelectOption<TextStyle["valign"]>[] = [
-  { value: "top", label: "위" },
-  { value: "middle", label: "가운데" },
-  { value: "bottom", label: "아래" },
-];
-const RESIZE_OPTS: readonly SelectOption<TextStyle["resize"]>[] = [
-  { value: "auto-width", label: "자동 폭" },
-  { value: "auto-height", label: "자동 높이" },
-  { value: "fixed", label: "고정" },
-];
-const LIST_OPTS: readonly SelectOption<TextStyle["list"]>[] = [
-  { value: "none", label: "없음" },
-  { value: "bullet", label: "글머리" },
-  { value: "number", label: "번호" },
-  { value: "check", label: "체크" },
-];
-const CASE_OPTS: readonly SelectOption<TextStyle["textCase"]>[] = [
-  { value: "none", label: "기본" },
-  { value: "upper", label: "대문자" },
-  { value: "lower", label: "소문자" },
-];
-const SCRIPT_OPTS: readonly SelectOption<TextStyle["script"]>[] = [
-  { value: "none", label: "없음" },
-  { value: "super", label: "위" },
-  { value: "sub", label: "아래" },
-];
+/** 선택지 표 — 라벨이 UI 언어를 따르므로 렌더 때 만든다(모듈 최상위 상수면 언어를 바꿔도 그대로다). */
+function typoOptions(msg: Messages) {
+  const t = msg.imageEditor.textTab;
+  const align: readonly SelectOption<TextStyle["align"]>[] = [
+    { value: "left", label: t.alignLeft },
+    { value: "center", label: t.alignCenter },
+    { value: "right", label: t.alignRight },
+    { value: "justify", label: t.alignJustify },
+  ];
+  const valign: readonly SelectOption<TextStyle["valign"]>[] = [
+    { value: "top", label: t.valignTop },
+    { value: "middle", label: t.valignMiddle },
+    { value: "bottom", label: t.valignBottom },
+  ];
+  const resize: readonly SelectOption<TextStyle["resize"]>[] = [
+    { value: "auto-width", label: t.resizeAutoWidth },
+    { value: "auto-height", label: t.resizeAutoHeight },
+    { value: "fixed", label: t.resizeFixed },
+  ];
+  const list: readonly SelectOption<TextStyle["list"]>[] = [
+    { value: "none", label: t.listNone },
+    { value: "bullet", label: t.listBullet },
+    { value: "number", label: t.listNumber },
+    { value: "check", label: t.listCheck },
+  ];
+  const textCase: readonly SelectOption<TextStyle["textCase"]>[] = [
+    { value: "none", label: t.caseNone },
+    { value: "upper", label: t.caseUpper },
+    { value: "lower", label: t.caseLower },
+  ];
+  const script: readonly SelectOption<TextStyle["script"]>[] = [
+    { value: "none", label: t.scriptNone },
+    { value: "super", label: t.scriptSuper },
+    { value: "sub", label: t.scriptSub },
+  ];
+  return { align, valign, resize, list, textCase, script };
+}
 
 /** 히스토리 라벨은 사용자가 화면에서 읽은 낱말이어야 한다 — 되돌리기 목록이 `justify` 라고 적으면 안 된다. */
 function optLabel<V>(opts: readonly SelectOption<V>[], v: V): string {
@@ -3957,6 +4051,10 @@ function TextTab({
   onTypo(patch: Partial<TextStyle>, label: string, live?: boolean): void;
   onLiveEnd(): void;
 }) {
+  const msg = useMessages();
+  const tx = msg.imageEditor.textTab;
+  const hist = msg.imageEditor.history;
+  const opts = typoOptions(msg);
   const texts = nodes.filter((n): n is TextNode => n.kind === "text");
   // 빈 선택에서 `mixedTextStyle` 은 모든 필드가 undefined 다 — 세 상태를 지키는 `NumField` 는
   // 그래도 되지만 `Select`·`Toggle` 은 값 하나를 요구하므로 아예 그리지 않는다.
@@ -4003,9 +4101,9 @@ function TextTab({
 
   return (
     <>
-      <TypoSection title="타이포그래피">
+      <TypoSection title={tx.typography}>
         <NumField
-          label="글자 크기"
+          label={tx.fontSize}
           value={fontSize}
           unit="px"
           min={4}
@@ -4016,27 +4114,27 @@ function TextTab({
         />
         {/* 행간·자간은 **%** 다(37 결정) — px 로 두면 캡션 11px 과 제목 28px 사이에서 같은
             숫자가 전혀 다른 간격이 된다. px 환산은 `layoutText` 한 곳에서만 한다. */}
-        {t && numField("lineHeight", "행간", "%", 25, 400, 5)}
-        {t && numField("letterSpacing", "자간", "%", -50, 200)}
+        {t && numField("lineHeight", tx.lineHeight, "%", 25, 400, 5)}
+        {t && numField("letterSpacing", tx.letterSpacing, "%", -50, 200)}
       </TypoSection>
 
       {t && (
         <>
-          <TypoSection title="문단">
-            {pick("align", "정렬", ALIGN_OPTS, t.align)}
-            {numField("paragraphSpacing", "문단 간격", "px", 0, 400)}
-            {numField("indent", "들여쓰기", "px", 0, 400)}
-            {pick("list", "목록", LIST_OPTS, t.list)}
+          <TypoSection title={tx.paragraph}>
+            {pick("align", tx.align, opts.align, t.align)}
+            {numField("paragraphSpacing", tx.paragraphSpacing, "px", 0, 400)}
+            {numField("indent", tx.indent, "px", 0, 400)}
+            {pick("list", tx.list, opts.list, t.list)}
             {/* 수준은 목록이 있을 때만 뜻이 있다 — 없는데 보이면 아무 일도 안 하는 칸이 된다. */}
-            {t.list !== "none" && numField("listLevel", "수준", undefined, 0, 8)}
+            {t.list !== "none" && numField("listLevel", tx.listLevel, undefined, 0, 8)}
           </TypoSection>
 
-          <TypoSection title="상자">
-            {pick("resize", "크기", RESIZE_OPTS, t.resize)}
+          <TypoSection title={tx.box}>
+            {pick("resize", tx.resize, opts.resize, t.resize)}
             {/* 세로 정렬은 남는 높이를 나누는 값이라 `고정` 상자에서만 움직인다(§3.2). */}
-            {pick("valign", "세로", VALIGN_OPTS, t.valign)}
+            {pick("valign", tx.valign, opts.valign, t.valign)}
             <NumField
-              label="말줄임"
+              label={tx.truncate}
               // 0 = 자르지 않음. `null` 을 빈 칸으로 그리면 "값 없음"(필드를 숨기는 상태)과
               // 구분되지 않아, 말줄임을 끄는 방법이 화면에서 사라진다.
               value={t.truncateLines === MIXED ? MIXED : (t.truncateLines ?? 0)}
@@ -4045,25 +4143,25 @@ function TextTab({
               onCommit={(v) =>
                 onTypo(
                   { truncateLines: v >= 1 ? v : null },
-                  v >= 1 ? `말줄임 ${v}줄` : "말줄임 해제",
+                  v >= 1 ? hist.truncateLines(v) : hist.truncateOff,
                 )
               }
             />
           </TypoSection>
 
-          <TypoSection title="장식">
+          <TypoSection title={tx.decoration}>
             <Toggle
-              label="밑줄"
+              label={tx.underline}
               checked={t.underline}
-              onChange={(v) => onTypo({ underline: v }, v ? "밑줄" : "밑줄 해제")}
+              onChange={(v) => onTypo({ underline: v }, v ? tx.underline : hist.underlineOff)}
             />
             <Toggle
-              label="취소선"
+              label={tx.strike}
               checked={t.strike}
-              onChange={(v) => onTypo({ strike: v }, v ? "취소선" : "취소선 해제")}
+              onChange={(v) => onTypo({ strike: v }, v ? tx.strike : hist.strikeOff)}
             />
-            {pick("textCase", "대소문자", CASE_OPTS, t.textCase)}
-            {pick("script", "첨자", SCRIPT_OPTS, t.script)}
+            {pick("textCase", tx.textCase, opts.textCase, t.textCase)}
+            {pick("script", tx.script, opts.script, t.script)}
           </TypoSection>
         </>
       )}

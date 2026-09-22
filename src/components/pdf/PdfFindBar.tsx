@@ -2,6 +2,7 @@
 
 import { ChevronDown, ChevronUp, X } from "lucide-react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { TBtn } from "../diff/ImageView";
 
 export interface PdfFindBarProps {
@@ -22,10 +23,11 @@ export default function PdfFindBar({
   onStep,
   onClose,
 }: PdfFindBarProps) {
+  const msg = useMessages();
   const count = !query
     ? ""
     : status.state === 1
-      ? "결과 없음"
+      ? msg.pdf.find.noResults
       : status.state === 0 || status.state === 2
         ? `${status.current}/${status.total}`
         : "";
@@ -39,7 +41,7 @@ export default function PdfFindBar({
         ref={inputRef}
         data-pdf-find-input
         value={query}
-        placeholder="문서에서 찾기"
+        placeholder={msg.pdf.find.placeholder}
         spellCheck={false}
         onChange={(e) => onQueryChange(e.target.value)}
         onKeyDown={(e) => {
@@ -60,13 +62,13 @@ export default function PdfFindBar({
       <span data-pdf-find-count className="min-w-14 text-center tabular-nums">
         {count}
       </span>
-      <TBtn data-pdf-find-prev label="이전 (Shift+Enter)" onClick={() => onStep(true)}>
+      <TBtn data-pdf-find-prev label={msg.pdf.find.prev} onClick={() => onStep(true)}>
         <ChevronUp size={13} />
       </TBtn>
-      <TBtn data-pdf-find-next label="다음 (Enter)" onClick={() => onStep(false)}>
+      <TBtn data-pdf-find-next label={msg.pdf.find.next} onClick={() => onStep(false)}>
         <ChevronDown size={13} />
       </TBtn>
-      <TBtn data-pdf-find-close label="닫기 (Esc)" onClick={onClose}>
+      <TBtn data-pdf-find-close label={msg.pdf.find.close} onClick={onClose}>
         <X size={13} />
       </TBtn>
     </div>

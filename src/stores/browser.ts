@@ -1,6 +1,7 @@
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { create } from "zustand";
 
+import { currentMessages } from "../i18n/ui-language";
 import { ipc } from "../lib/ipc";
 import { useTerminals } from "./terminals";
 
@@ -164,9 +165,9 @@ function loadPersisted(): Persisted {
 
 function hostTitle(url: string): string {
   try {
-    return new URL(url).host || "새 브라우저";
+    return new URL(url).host || currentMessages().stores.browser.newBrowserTitle;
   } catch {
-    return "새 브라우저";
+    return currentMessages().stores.browser.newBrowserTitle;
   }
 }
 
@@ -174,7 +175,7 @@ function makeItem(id: string, projectId: string, url: string): BrowserItem {
   return {
     id,
     projectId,
-    title: url ? hostTitle(url) : "새 브라우저",
+    title: url ? hostTitle(url) : currentMessages().stores.browser.newBrowserTitle,
     url,
     mode: url ? classifyMode(url) : "native",
   };

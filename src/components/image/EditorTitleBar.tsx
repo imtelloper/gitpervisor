@@ -12,6 +12,7 @@
 
 import { Redo2, Undo2, X } from "lucide-react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { EDITOR_SHORTCUTS, formatShortcut, type ShortcutId } from "../../lib/annotate/shortcuts";
 import { useProjects } from "../../queries";
 import { useImageEditorUi } from "../../stores/imageEditor";
@@ -61,6 +62,7 @@ export default function EditorTitleBar({
   onRedo,
   onClose,
 }: EditorTitleBarProps) {
+  const msg = useMessages();
   const { data: projects } = useProjects();
   const pixelPreview = useImageEditorUi((s) => s.pixelPreview);
   const setPixelPreview = useImageEditorUi((s) => s.setPixelPreview);
@@ -84,11 +86,11 @@ export default function EditorTitleBar({
 
       {dirty && (
         <span
-          title="저장되지 않은 편집이 있습니다"
+          title={msg.imageEditor.titleBar.unsavedTitle}
           className="flex shrink-0 items-center gap-1 text-[11px] text-fg-muted"
         >
           <span className="h-1.5 w-1.5 rounded-full bg-warn" />
-          편집됨
+          {msg.imageEditor.titleBar.edited}
         </span>
       )}
 
@@ -105,7 +107,7 @@ export default function EditorTitleBar({
             pixelPreview === 0 ? "bg-panel text-fg" : "text-fg-dim hover:text-fg"
           }`}
         >
-          디자인
+          {msg.imageEditor.titleBar.design}
         </button>
         <button
           type="button"
@@ -116,7 +118,7 @@ export default function EditorTitleBar({
             pixelPreview > 0 ? "bg-panel text-fg" : "text-fg-dim hover:text-fg"
           }`}
         >
-          픽셀 미리보기
+          {msg.imageEditor.titleBar.pixelPreview}
         </button>
       </div>
 
@@ -130,7 +132,7 @@ export default function EditorTitleBar({
           if (v === "fit" || v === "selection") onZoom(v);
           else onZoom(Number(v));
         }}
-        title={`확대·축소 (${pct}%)`}
+        title={msg.imageEditor.zoom.selectTitle(pct)}
         className="shrink-0 rounded border border-edge bg-base px-1 py-0.5 text-[11px] tabular-nums text-fg-muted outline-none focus:border-accent"
       >
         <option value="">{pct}%</option>
@@ -140,10 +142,10 @@ export default function EditorTitleBar({
           </option>
         ))}
         <option value="fit" className="text-fg">
-          맞춤
+          {msg.imageEditor.zoom.fit}
         </option>
         <option value="selection" className="text-fg">
-          선택 맞춤
+          {msg.imageEditor.zoom.fitSelection}
         </option>
       </select>
 

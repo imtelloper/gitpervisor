@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import type { DbConnection, DbEngine } from "../../lib/ipc";
 import { isSqlEngine } from "../../lib/ipc";
 import { usePanelWidth } from "../../lib/use-panel-width";
@@ -107,6 +108,7 @@ function SqlTableNode({
   coll: string;
   engine: DbEngine;
 }) {
+  const msg = useMessages();
   const [open, setOpen] = useState(false);
   const openCollection = useDb((s) => s.openCollection);
   const { data: meta, isLoading } = useTableMeta(connId, database, coll, open);
@@ -118,14 +120,14 @@ function SqlTableNode({
       >
         <button
           onClick={() => setOpen((o) => !o)}
-          title="컬럼/키/인덱스"
+          title={msg.db.sidebar.columnsKeysIndexes}
           className="shrink-0 text-fg-dim hover:text-fg"
         >
           {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         </button>
         <div
           onClick={() => void openCollection(connId, database, coll, engine)}
-          title={`${coll} — 클릭: 데이터 미리보기`}
+          title={msg.db.sidebar.tablePreviewTitle(coll)}
           className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5"
         >
           <Table2 size={13} className="shrink-0 text-fg-dim" />
@@ -164,7 +166,7 @@ function SqlTableNode({
             >
               {meta.keys.length === 0 ? (
                 <MetaRow pad={66}>
-                  <span className="text-fg-dim">없음</span>
+                  <span className="text-fg-dim">{msg.db.sidebar.none}</span>
                 </MetaRow>
               ) : (
                 meta.keys.map((k) => (
@@ -192,7 +194,7 @@ function SqlTableNode({
             >
               {meta.indexes.length === 0 ? (
                 <MetaRow pad={66}>
-                  <span className="text-fg-dim">없음</span>
+                  <span className="text-fg-dim">{msg.db.sidebar.none}</span>
                 </MetaRow>
               ) : (
                 meta.indexes.map((i) => (
@@ -214,7 +216,7 @@ function SqlTableNode({
             >
               {meta.constraints.length === 0 ? (
                 <MetaRow pad={66}>
-                  <span className="text-fg-dim">없음</span>
+                  <span className="text-fg-dim">{msg.db.sidebar.none}</span>
                 </MetaRow>
               ) : (
                 meta.constraints.map((c) => (
@@ -240,7 +242,7 @@ function SqlTableNode({
             >
               {meta.triggers.length === 0 ? (
                 <MetaRow pad={66}>
-                  <span className="text-fg-dim">없음</span>
+                  <span className="text-fg-dim">{msg.db.sidebar.none}</span>
                 </MetaRow>
               ) : (
                 meta.triggers.map((t) => (
@@ -354,6 +356,7 @@ function ProceduresGroup({
   connId: string;
   database: string;
 }) {
+  const msg = useMessages();
   const [open, setOpen] = useState(false);
   const { data: procs, isLoading } = useDbProcedures(connId, database, open);
   const openProc = useDb((s) => s.openProc);
@@ -370,7 +373,11 @@ function ProceduresGroup({
           <ChevronRight size={12} className="shrink-0" />
         )}
         <Cog size={12} className="shrink-0" />
-        <span>프로시저{procs ? ` (${procs.length})` : ""}</span>
+        <span>
+          {procs
+            ? msg.db.sidebar.proceduresWithCount(procs.length)
+            : msg.db.sidebar.procedures}
+        </span>
       </div>
       {open &&
         (isLoading ? (
@@ -379,7 +386,7 @@ function ProceduresGroup({
           </div>
         ) : procs && procs.length === 0 ? (
           <div style={{ paddingLeft: 46 }} className="py-0.5 text-xs text-fg-dim">
-            없음
+            {msg.db.sidebar.none}
           </div>
         ) : (
           procs?.map((p) => (
@@ -387,7 +394,7 @@ function ProceduresGroup({
               key={p}
               onClick={() => void openProc(connId, database, p)}
               style={{ paddingLeft: 46 }}
-              title={`${p} — 클릭: EXEC 템플릿 생성`}
+              title={msg.db.sidebar.procExecTitle(p)}
               className="flex cursor-pointer items-center gap-1.5 whitespace-nowrap py-0.5 pr-2 hover:bg-raised"
             >
               <Cog size={13} className="shrink-0 text-fg-dim" />
@@ -400,6 +407,7 @@ function ProceduresGroup({
 }
 
 function ConnNode({ conn }: { conn: DbConnection }) {
+  const msg = useMessages();
   const expanded = useDb((s) => s.expandedConns.includes(conn.id));
   const connecting = useDb((s) => s.connectingIds.includes(conn.id));
   const connected = useDb((s) => s.connectedIds.includes(conn.id));
@@ -427,7 +435,7 @@ function ConnNode({ conn }: { conn: DbConnection }) {
         <span className="font-medium">{conn.name}</span>
         {connecting && <Loader2 size={12} className="animate-spin text-fg-dim" />}
         {connected && !connecting && (
-          <span className="h-1.5 w-1.5 rounded-full bg-ok" title="연결됨" />
+          <span className="h-1.5 w-1.5 rounded-full bg-ok" title={msg.db.sidebar.connected} />
         )}
         <div className="ml-auto flex items-center opacity-0 group-hover:opacity-100">
           {connected && (
@@ -436,7 +444,7 @@ function ConnNode({ conn }: { conn: DbConnection }) {
                 e.stopPropagation();
                 void disconnect(conn.id);
               }}
-              title="연결 끊기"
+              title={msg.db.sidebar.disconnect}
               className="rounded p-0.5 text-fg-dim hover:bg-edge hover:text-fg"
             >
               <Unplug size={12} />
@@ -447,7 +455,7 @@ function ConnNode({ conn }: { conn: DbConnection }) {
               e.stopPropagation();
               openDialog(conn);
             }}
-            title="연결 편집"
+            title={msg.db.sidebar.editConnection}
             className="rounded p-0.5 text-fg-dim hover:bg-edge hover:text-fg"
           >
             <Pencil size={12} />
@@ -458,7 +466,7 @@ function ConnNode({ conn }: { conn: DbConnection }) {
         connected &&
         (isLoading ? (
           <div style={{ paddingLeft: 24 }} className="py-0.5 text-xs text-fg-dim">
-            데이터베이스 불러오는 중…
+            {msg.db.sidebar.loadingDatabases}
           </div>
         ) : (
           databases?.map((db) => (
@@ -475,6 +483,7 @@ function ConnNode({ conn }: { conn: DbConnection }) {
 }
 
 export function DbSidebar() {
+  const msg = useMessages();
   const { data: connections } = useDbConnections();
   const openDialog = useDb((s) => s.openDialog);
   const { width, startResize } = usePanelWidth("gp:db-sidebar-width", 260, 180, 480);
@@ -490,7 +499,7 @@ export function DbSidebar() {
         </span>
         <button
           onClick={() => openDialog("new")}
-          title="연결 추가"
+          title={msg.db.sidebar.addConnection}
           className="rounded p-0.5 text-fg-dim hover:bg-raised hover:text-fg"
         >
           <Plus size={14} />
@@ -501,8 +510,9 @@ export function DbSidebar() {
         {connections?.map((c) => <ConnNode key={c.id} conn={c} />)}
         {connections && connections.length === 0 && (
           <div className="px-3 py-4 text-xs leading-5 text-fg-dim">
-            연결이 없습니다.
-            <br />위 + 버튼으로 DB를 추가하세요.
+            {msg.db.sidebar.emptyLine1}
+            <br />
+            {msg.db.sidebar.emptyLine2}
           </div>
         )}
       </div>

@@ -1,3 +1,4 @@
+import { useMessages } from "../../i18n/ui-language";
 import { useProjectLogo } from "../../queries";
 
 /** 프로젝트 로고 — 수동 지정(태스크 54)이 있으면 그것, 없으면 레포 안에서 자동 감지한 이미지.
@@ -14,6 +15,7 @@ export function ProjectLogo({
   size?: number;
   className?: string;
 }) {
+  const msg = useMessages();
   const { data } = useProjectLogo(projectId);
   if (!data) return null;
   return (
@@ -24,7 +26,7 @@ export function ProjectLogo({
       draggable={false}
       width={size}
       height={size}
-      title={`로고: ${data.source}`}
+      title={msg.shell.projectLogo.logoTitle(data.source)}
       className={`shrink-0 rounded-sm object-contain ${className ?? ""}`}
     />
   );

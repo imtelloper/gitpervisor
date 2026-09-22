@@ -10,6 +10,8 @@
 //
 // 순수 함수만 둔다 — DOM·React 0. 배경: DOCS/task/44-image-panels.md §3.1·§3.2·§3.5
 
+import { currentMessages } from "../../i18n/ui-language";
+import type { Messages } from "../../i18n/messages";
 import type { Scene } from "./scene";
 import { ancestorsOf, isContainer, nodeOf } from "./tree";
 import type {
@@ -84,21 +86,25 @@ const BASE_ID = "__base";
 
 // ── 이름 ────────────────────────────────────────────────────────────────────
 
-const KIND_NAME: Record<NodeKind, string> = {
-  rect: "사각형",
-  ellipse: "타원",
-  line: "직선",
-  arrow: "화살표",
-  pen: "펜",
-  highlight: "형광펜",
-  mosaic: "모자이크",
-  path: "벡터",
-  frame: "프레임",
-  group: "그룹",
-  instance: "인스턴스",
-  badge: "번호 뱃지",
-  text: "텍스트",
-};
+type LayerRowsText = Messages["annotate"]["layerRows"];
+
+function kindNames(t: LayerRowsText): Record<NodeKind, string> {
+  return {
+    rect: t.kindRect,
+    ellipse: t.kindEllipse,
+    line: t.kindLine,
+    arrow: t.kindArrow,
+    pen: t.kindPen,
+    highlight: t.kindHighlight,
+    mosaic: t.kindMosaic,
+    path: t.kindPath,
+    frame: t.kindFrame,
+    group: t.kindGroup,
+    instance: t.kindInstance,
+    badge: t.kindBadge,
+    text: t.kindText,
+  };
+}
 
 /**
  * kind 별 등장 순번(1-based). 배열 참조마다 한 번만 세고 캐시한다 — 이름이 행마다 필요한데
@@ -133,13 +139,14 @@ function ordinals(objects: readonly Node[]): Map<ObjId, number> {
  * `name:null` 만 저장되니 파일에 남는 영향은 없고, 히스토리 라벨은 커밋 시점 문자열이라 불변이다.
  */
 export function defaultLayerName(node: Node, objects: readonly Node[]): string {
+  const t = currentMessages().annotate.layerRows;
   const n = ordinals(objects).get(node.id) ?? 1;
-  if (node.kind === "badge") return `번호 뱃지 #${node.n}`;
+  if (node.kind === "badge") return t.badgeName(node.n);
   if (node.kind === "text") {
     const line = node.text.replace(/\s+/g, " ").trim().slice(0, 20);
-    return line ? `텍스트 "${line}"` : `텍스트 ${n}`;
+    return line ? t.textNamed(line) : t.textNumbered(n);
   }
-  return `${KIND_NAME[node.kind]} ${n}`;
+  return t.numberedName(kindNames(t)[node.kind], n);
 }
 
 // ── 타입·뱃지 ───────────────────────────────────────────────────────────────
@@ -167,27 +174,29 @@ export function layerTypeOf(node: Node): LayerType {
 }
 
 /** 뱃지 문구(시안 ① `[패스스루]`). 컨테이너 기본값 `pass-through` 도 뱃지로 보인다. */
-const BLEND_LABEL: Record<BlendMode, string> = {
-  "pass-through": "패스스루",
-  normal: "표준",
-  darken: "어둡게",
-  multiply: "곱하기",
-  "linear-burn": "선형 번",
-  "color-burn": "컬러 번",
-  lighten: "밝게",
-  screen: "스크린",
-  "linear-dodge": "선형 닷지",
-  "color-dodge": "컬러 닷지",
-  overlay: "오버레이",
-  "soft-light": "소프트 라이트",
-  "hard-light": "하드 라이트",
-  difference: "차이",
-  exclusion: "제외",
-  hue: "색조",
-  saturation: "채도",
-  color: "색상",
-  luminosity: "광도",
-};
+function blendBadgeLabels(t: Messages["annotate"]["layerBlendBadge"]): Record<BlendMode, string> {
+  return {
+    "pass-through": t.passThrough,
+    normal: t.normal,
+    darken: t.darken,
+    multiply: t.multiply,
+    "linear-burn": t.linearBurn,
+    "color-burn": t.colorBurn,
+    lighten: t.lighten,
+    screen: t.screen,
+    "linear-dodge": t.linearDodge,
+    "color-dodge": t.colorDodge,
+    overlay: t.overlay,
+    "soft-light": t.softLight,
+    "hard-light": t.hardLight,
+    difference: t.difference,
+    exclusion: t.exclusion,
+    hue: t.hue,
+    saturation: t.saturation,
+    color: t.color,
+    luminosity: t.luminosity,
+  };
+}
 
 interface FlattenCtx {
   /** 배경 행에 붙일 파일명(시안 `배경 — 대시보드.png`). */
@@ -200,7 +209,9 @@ interface FlattenCtx {
 function badgesOf(n: Node, ctx: FlattenCtx): LayerBadge[] {
   const out: LayerBadge[] = [];
   if (n.mask) out.push({ kind: "mask" });
-  if (n.blend !== "normal") out.push({ kind: "blend", label: BLEND_LABEL[n.blend] });
+  if (n.blend !== "normal") {
+    out.push({ kind: "blend", label: blendBadgeLabels(currentMessages().annotate.layerBlendBadge)[n.blend] });
+  }
   if (ctx.nodeEditId !== null && ctx.nodeEditId === n.id) out.push({ kind: "nodeEdit" });
   if (n.kind === "instance") {
     out.push({ kind: "instance", state: ctx.instanceState?.(n) ?? null });
@@ -265,7 +276,7 @@ export function flattenLayers(
     id: BASE_ID,
     depth: 0,
     node: null,
-    name: `배경 — ${ctx.baseName}`,
+    name: currentMessages().annotate.layerRows.background(ctx.baseName),
     type: "image",
     hasChildren: false,
     collapsed: false,

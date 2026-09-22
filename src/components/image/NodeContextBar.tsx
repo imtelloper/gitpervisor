@@ -18,6 +18,7 @@
 import type { ReactNode } from "react";
 import { PenTool } from "lucide-react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { EDITOR_SHORTCUTS, formatShortcut, type ShortcutId } from "../../lib/annotate/shortcuts";
 import type { NodeModeUi } from "../../lib/annotate/vector/edit";
 import { useImageEditorUi } from "../../stores/imageEditor";
@@ -84,6 +85,8 @@ export function NodeContextBar({
   name: string;
   api: NodeBarApi;
 }) {
+  const msg = useMessages();
+  const t = msg.imagePanels.nodeBar;
   const toggles = useImageEditorUi((s) => s.toggles);
   const setToggle = useImageEditorUi((s) => s.setToggle);
   const sel = state.selected.length;
@@ -91,18 +94,18 @@ export function NodeContextBar({
   return (
     <div
       role="toolbar"
-      aria-label="컨텍스트"
+      aria-label={t.toolbarLabel}
       className="flex h-11 shrink-0 items-center gap-1 overflow-x-auto border-b border-edge bg-panel px-2 text-[12px]"
     >
       <PenTool size={14} className="shrink-0 text-fg-dim" />
       <span className="shrink-0 truncate text-fg-muted">{name}</span>
 
       <Sep />
-      <span className="shrink-0 text-fg-dim">노드</span>
+      <span className="shrink-0 text-fg-dim">{t.nodeHeading}</span>
       {MODES.map((m) => (
         <Btn
           key={m}
-          title={`정점 모드 ${NODE_MODE_LABELS[m]}`}
+          title={t.modeButtonTitle(NODE_MODE_LABELS[m])}
           // `mixed` 면 어느 칸도 눌린 상태가 아니다 — 한 칸을 켜 두면 값이 갈린 선택이 그
           // 값으로 통일된 것처럼 보이고, 사용자는 바꾼 적 없는 모드를 그대로 믿는다.
           pressed={state.mode === m}
@@ -116,52 +119,52 @@ export function NodeContextBar({
 
       <Sep />
       <Btn
-        title="선택한 두 정점 사이에 노드 추가"
+        title={t.addNodeTitle}
         // ponytail: 인접 판정은 `applyNodeOp` 안에 있고 요약에는 없다 — 이웃이 아닌 두 정점을
         //           고르면 눌러도 아무 일이 없다. 요약에 인접 여부를 실으면 정확해진다.
         disabled={sel !== 2}
         onClick={() => api.nodeOp("add")}
       >
-        노드 추가
+        {t.addNode}
       </Btn>
       <Btn title={tip("delete")} disabled={sel === 0} onClick={() => api.nodeOp("delete")}>
-        노드 삭제
+        {t.deleteNodes}
       </Btn>
       {/* 닫힌 패스에 '패스 닫기'를, 열린 패스에 '패스 열기'를 회색으로 남겨 두지 않는다 —
           지금 할 수 있는 쪽만 그린다(`CropContextBar` 의 오버레이 '없음'과 같은 규칙). */}
       {state.open ? (
-        <Btn title="서브패스를 닫는다" onClick={() => api.nodeOp("close")}>
-          패스 닫기
+        <Btn title={t.closePathTitle} onClick={() => api.nodeOp("close")}>
+          {t.closePath}
         </Btn>
       ) : (
-        <Btn title="서브패스를 연다" onClick={() => api.nodeOp("open")}>
-          패스 열기
+        <Btn title={t.openPathTitle} onClick={() => api.nodeOp("open")}>
+          {t.openPath}
         </Btn>
       )}
       <Btn
-        title="정점 순서를 뒤집는다"
+        title={t.reverseTitle}
         disabled={state.nodeCount < 2}
         onClick={() => api.nodeOp("reverse")}
       >
-        방향 반전
+        {t.reverse}
       </Btn>
 
       <Sep />
       {/* 노드 전용 스냅 상태를 두지 않는다(§3.7) — 42 토글 그대로다. 같은 값에 두 이름이
           생기면 상태바에서 끈 스냅이 노드 편집에서만 살아 있는 상태가 만들어진다. */}
       <Btn
-        title="픽셀에 스냅"
+        title={t.snapPixel}
         pressed={toggles.snapPixel}
         onClick={() => setToggle("snapPixel", !toggles.snapPixel)}
       >
-        픽셀에 스냅
+        {t.snapPixel}
       </Btn>
       <Btn
-        title="오브젝트에 스냅"
+        title={t.snapObjects}
         pressed={toggles.snapObjects}
         onClick={() => setToggle("snapObjects", !toggles.snapObjects)}
       >
-        오브젝트에 스냅
+        {t.snapObjects}
       </Btn>
 
       <Sep />
@@ -171,11 +174,11 @@ export function NodeContextBar({
       <div className="flex-1" />
       <button
         type="button"
-        title="노드 편집 완료 (Enter)"
+        title={t.doneTitle}
         onClick={api.exitNodeEdit}
         className="flex h-7 shrink-0 items-center gap-1 rounded bg-accent px-2 text-on-accent hover:opacity-90"
       >
-        편집 완료 ⏎
+        {t.done}
       </button>
     </div>
   );

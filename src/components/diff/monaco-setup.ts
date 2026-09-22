@@ -539,13 +539,13 @@ const patchedPython: monaco.languages.IMonarchLanguage = {
   },
 };
 
-// python 문법은 monaco import 시 등록되므로 즉시 덮어쓴다(지연 로드 대비 onLanguage도 등록).
+// python 문법은 monaco import 시 등록되므로 즉시 덮어쓴다(지연 로드 대비 onLanguage도 등록). i18n-ok: 주석(위 정규식 속 따옴표를 스캐너가 문자열로 읽음)
 monaco.languages.setMonarchTokensProvider("python", patchedPython);
 monaco.languages.onLanguage("python", () =>
   monaco.languages.setMonarchTokensProvider("python", patchedPython),
 );
 
-// Zig — Monaco 내장 언어가 아니라 직접 등록(id + monarch + 설정). zls LSP가 이 언어 id로 붙는다.
+// Zig — Monaco 내장 언어가 아니라 직접 등록(id + monarch + 설정). zls LSP가 이 언어 id로 붙는다. i18n-ok: 주석
 monaco.languages.register({ id: "zig", extensions: [".zig", ".zon"], aliases: ["Zig", "zig"] });
 monaco.languages.setLanguageConfiguration("zig", {
   comments: { lineComment: "//" },
@@ -585,13 +585,13 @@ monaco.languages.setMonarchTokensProvider("zig", {
   ],
   tokenizer: {
     root: [
-      [/@[a-zA-Z_]\w*/, "keyword.builtin"], // @import, @This 등
+      [/@[a-zA-Z_]\w*/, "keyword.builtin"], // @import, @This 등 — i18n-ok: 주석
       [
         /[a-zA-Z_]\w*/,
         { cases: { "@keywords": "keyword", "@typeKeywords": "type", "@default": "identifier" } },
       ],
       [/\/\/.*$/, "comment"],
-      [/\\\\.*$/, "string"], // 멀티라인 문자열(\\로 시작하는 줄)
+      [/\\\\.*$/, "string"], // 멀티라인 문자열(\\로 시작하는 줄) — i18n-ok: 주석
       [/"/, { token: "string.quote", next: "@string" }],
       [/'(\\.|[^'\\])'/, "string"],
       [/0[xX][0-9a-fA-F_]+/, "number.hex"],

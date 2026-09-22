@@ -12,17 +12,27 @@
 
 import type { ReactNode, Ref } from "react";
 
+import type { Messages } from "../../i18n/messages";
+import { useMessages } from "../../i18n/ui-language";
 import { usePanelWidth } from "../../lib/use-panel-width";
 import { useImageEditorUi } from "../../stores/imageEditor";
 import { ResizeHandle } from "../common/ResizeHandle";
 import { LayerPanel, type LayerPanelHandle, type LayerPanelProps } from "./layers/LayerPanel";
 import { HistoryPanel, type HistoryPanelProps } from "./panels/HistoryPanel";
 
-const TABS = [
-  { id: "layers", label: "레이어" },
-  { id: "assets", label: "에셋" },
-  { id: "history", label: "히스토리" },
-] as const;
+const TABS = [{ id: "layers" }, { id: "assets" }, { id: "history" }] as const;
+
+function tabLabel(msg: Messages, id: (typeof TABS)[number]["id"]): string {
+  const t = msg.imageEditor.leftPanel;
+  switch (id) {
+    case "layers":
+      return t.layers;
+    case "assets":
+      return t.assets;
+    case "history":
+      return t.history;
+  }
+}
 
 export interface LeftPanelProps {
   layers: LayerPanelProps;
@@ -34,6 +44,7 @@ export interface LeftPanelProps {
 }
 
 export function LeftPanel({ layers, layersRef, history, assets }: LeftPanelProps) {
+  const msg = useMessages();
   const tab = useImageEditorUi((s) => s.leftTab);
   const setTab = useImageEditorUi((s) => s.setTab);
   const { width, startResize } = usePanelWidth("gp:ie:left", 264, 200, 420);
@@ -50,7 +61,7 @@ export function LeftPanel({ layers, layersRef, history, assets }: LeftPanelProps
       */}
       <div
         role="tablist"
-        aria-label="좌 패널"
+        aria-label={msg.imageEditor.leftPanel.ariaLabel}
         className="flex shrink-0 border-b border-edge px-2"
       >
         {TABS.map((t) => (
@@ -67,7 +78,7 @@ export function LeftPanel({ layers, layersRef, history, assets }: LeftPanelProps
                 : "border-transparent text-fg-muted hover:text-fg"
             }`}
           >
-            {t.label}
+            {tabLabel(msg, t.id)}
           </button>
         ))}
       </div>

@@ -35,6 +35,8 @@ import {
   StretchHorizontal,
 } from "lucide-react";
 
+import type { Messages } from "../../../i18n/messages";
+import { useMessages } from "../../../i18n/ui-language";
 import type { AlignMode } from "../../../lib/annotate/align";
 import { BLEND_LABELS } from "../../../lib/annotate/blend-labels";
 import { isGeomNode, objectFrame } from "../../../lib/annotate/geometry";
@@ -166,23 +168,38 @@ const STROKE_TOOLS = new Set<Tool>([
 ]);
 const WIDTH_TOOLS = new Set<Tool>(["pen", "highlight", "line", "arrow", "rect", "ellipse"]);
 
-const ALIGNS: { mode: AlignMode; title: string; Icon: typeof AlignStartVertical }[] = [
-  { mode: "left", title: "왼쪽", Icon: AlignStartVertical },
-  { mode: "hcenter", title: "가로 가운데", Icon: AlignCenterVertical },
-  { mode: "right", title: "오른쪽", Icon: AlignEndVertical },
-  { mode: "top", title: "위", Icon: AlignStartHorizontal },
-  { mode: "vcenter", title: "세로 가운데", Icon: AlignCenterHorizontal },
-  { mode: "bottom", title: "아래", Icon: AlignEndHorizontal },
-];
+function alignsFor(
+  msg: Messages,
+): { mode: AlignMode; title: string; Icon: typeof AlignStartVertical }[] {
+  const t = msg.imageInspector.props;
+  return [
+    { mode: "left", title: t.alignLeft, Icon: AlignStartVertical },
+    { mode: "hcenter", title: t.alignHCenter, Icon: AlignCenterVertical },
+    { mode: "right", title: t.alignRight, Icon: AlignEndVertical },
+    { mode: "top", title: t.alignTop, Icon: AlignStartHorizontal },
+    { mode: "vcenter", title: t.alignVCenter, Icon: AlignCenterHorizontal },
+    { mode: "bottom", title: t.alignBottom, Icon: AlignEndHorizontal },
+  ];
+}
 
-const SLOT_LABEL: Record<PaintSlot, string> = { fills: "채우기", strokes: "선" };
+function slotLabel(msg: Messages, slot: PaintSlot): string {
+  return slot === "fills" ? msg.imageInspector.vocab.fill : msg.imageInspector.vocab.stroke;
+}
 
-const GRADIENT_LABEL: Record<string, string> = {
-  linear: "선형 그라디언트",
-  radial: "방사형 그라디언트",
-  angular: "원뿔 그라디언트",
-  diamond: "다이아 그라디언트",
-};
+function gradientLabel(msg: Messages, type: string): string {
+  switch (type) {
+    case "linear":
+      return msg.imageInspector.props.gradientLinear;
+    case "radial":
+      return msg.imageInspector.props.gradientRadial;
+    case "angular":
+      return msg.imageInspector.props.gradientAngular;
+    case "diamond":
+      return msg.imageInspector.props.gradientDiamond;
+    default:
+      return type;
+  }
+}
 
 /** 시안 ① `드롭 섀도 0·4 12 25%` — `효과 +` 가 처음 만드는 값(§7 ins-12). */
 const NEW_EFFECT: Effect = {
@@ -196,10 +213,12 @@ const NEW_EFFECT: Effect = {
   visible: true,
 };
 
-const MOSAIC_MODES: { value: MosaicMode; label: string }[] = [
-  { value: "pixelate", label: "픽셀화" },
-  { value: "blur", label: "블러" },
-];
+function mosaicModesFor(msg: Messages): { value: MosaicMode; label: string }[] {
+  return [
+    { value: "pixelate", label: msg.imageInspector.props.mosaicPixelate },
+    { value: "blur", label: msg.imageInspector.props.mosaicBlur },
+  ];
+}
 
 export function PropsTab({
   nodes,
@@ -212,6 +231,8 @@ export function PropsTab({
   instanceSection,
   styleRow,
 }: PropsTabProps) {
+  const msg = useMessages();
+  const mosaicModes = mosaicModesFor(msg);
   const tool = useImageEditorUi((s) => s.tool);
   const ratioLock = useImageEditorUi((s) => s.ratioLock);
   const tidyGap = useImageEditorUi((s) => s.tidyGap);
@@ -296,7 +317,12 @@ export function PropsTab({
     );
 
   const pickColor = (slot: PaintSlot, cur: Maybe<Fill[]>, hex: string) =>
-    editPaints(slot, cur, (list) => withSolidHead(list, hex), `${SLOT_LABEL[slot]} ${hex.slice(1)}`);
+    editPaints(
+      slot,
+      cur,
+      (list) => withSolidHead(list, hex),
+      msg.imageInspector.history.slotColor(slotLabel(msg, slot), hex.slice(1)),
+    );
 
   /** 비율 잠금은 **단일 선택에서만** 성립한다 — 노드마다 종횡비가 달라 같은 h 를 못 쓴다. */
   const frameEdit = (k: FrameKey, v: number): FrameEdit => {
@@ -319,10 +345,15 @@ export function PropsTab({
     onLiveEnd: actions.endLive,
     // MIXED 는 노드마다 현재값이 다르다 — 절대값을 쓰면 서로 다른 위치가 한 점으로 모인다.
     onDelta: (d: number, live: boolean) =>
-      actions.setFrame(ids, (cur) => frameDelta(k, cur, d), `${label} 조정`, live),
+      actions.setFrame(
+        ids,
+        (cur) => frameDelta(k, cur, d),
+        msg.imageInspector.history.adjustFrame(label),
+        live,
+      ),
   });
 
-  const radiusLabel = (v: number) => `반경 ${v}`;
+  const radiusLabel = (v: number) => msg.imageInspector.history.radius(v);
 
   const setRadius = (v: number, live = false) =>
     actions.patchSelection({ radius: [v, v, v, v] }, radiusLabel(v), live);
@@ -348,7 +379,7 @@ export function PropsTab({
         ) as [number, number, number, number];
         return { radius: next };
       },
-      `반경 ${d > 0 ? "+" : ""}${d}`,
+      msg.imageInspector.history.radiusDelta(d),
       live,
     );
 
@@ -359,23 +390,23 @@ export function PropsTab({
       {instanceSection}
       {/* 정렬은 하나만 골라도 뜻이 있다 — 기준이 캔버스가 된다(§3.5). 분배는 3개부터. */}
       {!empty && (
-        <Group title="정렬 · 분배">
+        <Group title={msg.imageInspector.props.alignDistributeTitle}>
           <div className="flex flex-wrap items-center gap-1">
-            {ALIGNS.map((a) => (
+            {alignsFor(msg).map((a) => (
               <IconBtn key={a.mode} title={a.title} onClick={() => actions.align(a.mode)}>
                 <a.Icon size={14} />
               </IconBtn>
             ))}
             <span className="mx-0.5 h-4 w-px bg-edge" />
             <IconBtn
-              title="수평 분배"
+              title={msg.imageInspector.props.distributeH}
               disabled={nodes.length < 3}
               onClick={() => actions.distribute("x")}
             >
               <AlignHorizontalDistributeCenter size={14} />
             </IconBtn>
             <IconBtn
-              title="수직 분배"
+              title={msg.imageInspector.props.distributeV}
               disabled={nodes.length < 3}
               onClick={() => actions.distribute("y")}
             >
@@ -390,12 +421,12 @@ export function PropsTab({
                 onClick={() => actions.tidy(tidyGap)}
                 className="flex items-center gap-1 rounded bg-raised px-2 py-1 text-[12px] text-fg-muted hover:text-fg"
               >
-                <StretchHorizontal size={13} /> 간격 정리
+                <StretchHorizontal size={13} /> {msg.imageInspector.props.tidy}
               </button>
               {typeof tidyGap === "number" && (
                 <div className="min-w-0 flex-1">
                   <NumField
-                    label="간격"
+                    label={msg.imageInspector.vocab.gap}
                     value={tidyGap}
                     unit="px"
                     min={0}
@@ -405,7 +436,7 @@ export function PropsTab({
               )}
               <button
                 type="button"
-                title="현재 간격의 중앙값을 쓴다"
+                title={msg.imageInspector.props.tidyAutoTitle}
                 onClick={() =>
                   useImageEditorUi.setState({ tidyGap: tidyGap === "auto" ? 24 : "auto" })
                 }
@@ -413,7 +444,7 @@ export function PropsTab({
                   tidyGap === "auto" ? "bg-accent/20 text-accent" : "bg-raised text-fg-dim hover:text-fg"
                 }`}
               >
-                자동
+                {msg.imageInspector.props.tidyAuto}
               </button>
             </div>
           )}
@@ -421,7 +452,7 @@ export function PropsTab({
       )}
 
       {frameVal("x") !== undefined && (
-        <Group title="위치 · 크기">
+        <Group title={msg.imageInspector.props.frameTitle}>
           <div className="grid grid-cols-2 gap-x-2">
             <NumField {...frameProps("x", "X")} />
             <NumField {...frameProps("y", "Y")} />
@@ -431,20 +462,29 @@ export function PropsTab({
           <div className="mt-1 flex items-center gap-1.5">
             <div className="min-w-0 flex-1">
               <NumField
-                label="각도"
+                label={msg.imageInspector.vocab.angle}
                 value={frameVal("rot")}
                 unit="°"
-                onCommit={(v) => actions.setFrame(ids, { rot: v }, `각도 ${v}°`)}
-                onLive={(v) => actions.setFrame(ids, { rot: v }, `각도 ${v}°`, true)}
+                onCommit={(v) =>
+                  actions.setFrame(ids, { rot: v }, msg.imageInspector.history.angle(v))
+                }
+                onLive={(v) =>
+                  actions.setFrame(ids, { rot: v }, msg.imageInspector.history.angle(v), true)
+                }
                 onLiveEnd={actions.endLive}
                 onDelta={(d, live) =>
-                  actions.setFrame(ids, (cur) => ({ rot: cur.rot + d }), "각도 조정", live)
+                  actions.setFrame(
+                    ids,
+                    (cur) => ({ rot: cur.rot + d }),
+                    msg.imageInspector.history.adjustAngle,
+                    live,
+                  )
                 }
               />
             </div>
             <button
               type="button"
-              title="비율 잠금"
+              title={msg.imageInspector.props.ratioLockTitle}
               onClick={() => useImageEditorUi.setState({ ratioLock: !ratioLock })}
               className={`shrink-0 rounded px-1.5 py-1 ${
                 ratioLock ? "bg-accent/20 text-accent" : "bg-raised text-fg-dim hover:text-fg"
@@ -461,20 +501,28 @@ export function PropsTab({
         radius !== undefined ||
         masked !== undefined ||
         mosaicMode !== undefined) && (
-        <Group title="모양">
+        <Group title={msg.imageInspector.props.appearanceTitle}>
           <NumField
-            label="불투명도"
+            label={msg.imageInspector.vocab.opacity}
             value={opacityPct}
             unit="%"
             min={0}
             max={100}
-            onCommit={(v) => actions.patchSelection({ opacity: v / 100 }, `불투명도 ${v}%`)}
-            onLive={(v) => actions.patchSelection({ opacity: v / 100 }, `불투명도 ${v}%`, true)}
+            onCommit={(v) =>
+              actions.patchSelection({ opacity: v / 100 }, msg.imageInspector.history.opacity(v))
+            }
+            onLive={(v) =>
+              actions.patchSelection(
+                { opacity: v / 100 },
+                msg.imageInspector.history.opacity(v),
+                true,
+              )
+            }
             onLiveEnd={actions.endLive}
             onDelta={(d, live) =>
               actions.patchSelection(
                 (n) => ({ opacity: clamp01(n.opacity + d / 100) }),
-                `불투명도 ${d > 0 ? "+" : ""}${d}%`,
+                msg.imageInspector.history.opacityDelta(d),
                 live,
               )
             }
@@ -482,9 +530,11 @@ export function PropsTab({
 
           {blend !== undefined && (
             <div className="flex h-7 items-center gap-1.5">
-              <span className="w-11 shrink-0 text-[11px] text-fg-dim">블렌드</span>
+              <span className="w-11 shrink-0 text-[11px] text-fg-dim">
+                {msg.imageInspector.vocab.blend}
+              </span>
               <Select
-                label="블렌드"
+                label={msg.imageInspector.vocab.blend}
                 value={blend}
                 options={BLEND_LABELS.map((b) => ({
                   value: b.value,
@@ -494,7 +544,9 @@ export function PropsTab({
                 onChange={(v) =>
                   actions.patchSelection(
                     { blend: v },
-                    `블렌드 ${BLEND_LABELS.find((b) => b.value === v)?.label ?? v}`,
+                    msg.imageInspector.history.blend(
+                      BLEND_LABELS.find((b) => b.value === v)?.label ?? v,
+                    ),
                   )
                 }
               />
@@ -506,7 +558,7 @@ export function PropsTab({
               <div className="flex items-center gap-1.5">
                 <div className="min-w-0 flex-1">
                   <NumField
-                    label="반경"
+                    label={msg.imageInspector.vocab.radius}
                     value={uniformRadius(radius)}
                     unit="px"
                     min={0}
@@ -518,7 +570,7 @@ export function PropsTab({
                 </div>
                 <button
                   type="button"
-                  title="개별 반경"
+                  title={msg.imageInspector.props.perCornerTitle}
                   onClick={() => setPerCorner((v) => !v)}
                   className={`shrink-0 rounded px-1.5 py-1 text-[11px] ${
                     perCorner ? "bg-accent/20 text-accent" : "bg-raised text-fg-dim hover:text-fg"
@@ -548,31 +600,46 @@ export function PropsTab({
 
           {mosaicMode !== undefined && (
             <div className="flex h-7 items-center gap-1.5">
-              <span className="w-11 shrink-0 text-[11px] text-fg-dim">모자이크</span>
+              <span className="w-11 shrink-0 text-[11px] text-fg-dim">
+                {msg.imageInspector.vocab.mosaic}
+              </span>
               <Select
-                label="모자이크"
+                label={msg.imageInspector.vocab.mosaic}
                 value={mosaicMode}
-                options={MOSAIC_MODES}
+                options={mosaicModes}
                 onChange={(v) =>
                   actions.patchSelection(
                     { mosaicMode: v },
-                    `모자이크 ${MOSAIC_MODES.find((m) => m.value === v)?.label ?? v}`,
+                    msg.imageInspector.history.mosaic(
+                      mosaicModes.find((m) => m.value === v)?.label ?? v,
+                    ),
                   )
                 }
               />
             </div>
           )}
           <NumField
-            label="강도"
+            label={msg.imageInspector.props.mosaicStrength}
             value={mosaicStrength}
             min={1}
-            onCommit={(v) => actions.patchSelection({ mosaicStrength: v }, `모자이크 강도 ${v}`)}
-            onLive={(v) => actions.patchSelection({ mosaicStrength: v }, `모자이크 강도 ${v}`, true)}
+            onCommit={(v) =>
+              actions.patchSelection(
+                { mosaicStrength: v },
+                msg.imageInspector.history.mosaicStrength(v),
+              )
+            }
+            onLive={(v) =>
+              actions.patchSelection(
+                { mosaicStrength: v },
+                msg.imageInspector.history.mosaicStrength(v),
+                true,
+              )
+            }
             onLiveEnd={actions.endLive}
             onDelta={(d, live) =>
               actions.patchSelection(
                 (n) => (n.kind === "mosaic" ? { mosaicStrength: Math.max(1, n.strength + d) } : null),
-                `모자이크 강도 ${d > 0 ? "+" : ""}${d}`,
+                msg.imageInspector.history.mosaicStrengthDelta(d),
                 live,
               )
             }
@@ -587,7 +654,7 @@ export function PropsTab({
           {masked !== undefined && (masked !== false || nodes.length > 1) && (
             <Toggle
               checked={masked}
-              label="마스크로 사용 (클리핑)"
+              label={msg.imageInspector.props.useAsMask}
               onChange={(v) => actions.mask(v)}
             />
           )}
@@ -597,20 +664,21 @@ export function PropsTab({
       {(["fills", "strokes"] as const).map((slot) => {
         const cur = slot === "fills" ? fills : strokes;
         if (cur === undefined) return null;
+        const title = slotLabel(msg, slot);
         const add = () =>
           editPaints(
             slot,
             cur,
             (list) => [...list, solidFill(recentColors[0] ?? DEFAULT_STROKE)],
-            `${SLOT_LABEL[slot]} 추가`,
+            msg.imageInspector.stack.add(title),
           );
         return (
           <div key={slot}>
             {cur === MIXED ? (
-              <MixedStack title={SLOT_LABEL[slot]} onAdd={add} />
+              <MixedStack title={title} onAdd={add} />
             ) : (
               <StackList
-                title={SLOT_LABEL[slot]}
+                title={title}
                 items={cur}
                 onAdd={add}
                 onToggle={(i) =>
@@ -618,7 +686,7 @@ export function PropsTab({
                     slot,
                     cur,
                     (list) => list.map((p, j) => (j === i ? { ...p, visible: !p.visible } : p)),
-                    `${SLOT_LABEL[slot]} ${cur[i].visible ? "숨기기" : "표시"}`,
+                    msg.imageInspector.stack.toggle(title, cur[i].visible),
                   )
                 }
                 onRemove={(i) =>
@@ -626,7 +694,7 @@ export function PropsTab({
                     slot,
                     cur,
                     (list) => list.filter((_, j) => j !== i),
-                    `${SLOT_LABEL[slot]} 제거`,
+                    msg.imageInspector.stack.remove(title),
                   )
                 }
                 render={(p, i) => (
@@ -644,7 +712,7 @@ export function PropsTab({
                       className="h-[18px] w-[18px] shrink-0 rounded border border-edge"
                     />
                     <span className="min-w-0 truncate font-mono text-[11px] text-fg-muted">
-                      {paintLabel(p)}
+                      {paintLabel(msg, p)}
                     </span>
                   </button>
                 )}
@@ -665,7 +733,7 @@ export function PropsTab({
             />
             {recentColors.length > 0 && (
               <SwatchRow
-                label="최근"
+                label={msg.imageInspector.props.recentSwatches}
                 colors={recentColors}
                 onPick={(c) => pickColor(slot, cur, c)}
                 active={headColor(cur)}
@@ -674,17 +742,28 @@ export function PropsTab({
 
             {slot === "strokes" && (
               <NumField
-                label="두께"
+                label={msg.imageInspector.vocab.strokeWidth}
                 value={strokeWidth}
                 unit="px"
                 min={0}
-                onCommit={(v) => actions.patchSelection({ strokeWidth: v }, `두께 ${v}`)}
-                onLive={(v) => actions.patchSelection({ strokeWidth: v }, `두께 ${v}`, true)}
+                onCommit={(v) =>
+                  actions.patchSelection(
+                    { strokeWidth: v },
+                    msg.imageInspector.history.strokeWidth(v),
+                  )
+                }
+                onLive={(v) =>
+                  actions.patchSelection(
+                    { strokeWidth: v },
+                    msg.imageInspector.history.strokeWidth(v),
+                    true,
+                  )
+                }
                 onLiveEnd={actions.endLive}
                 onDelta={(d, live) =>
                   actions.patchSelection(
                     (n) => ({ strokeWidth: Math.max(0, n.strokeWidth + d) }),
-                    `두께 ${d > 0 ? "+" : ""}${d}`,
+                    msg.imageInspector.history.strokeWidthDelta(d),
                     live,
                   )
                 }
@@ -698,22 +777,32 @@ export function PropsTab({
         <>
           {effects === MIXED ? (
             <MixedStack
-              title="효과"
-              onAdd={() => editEffects(effects, (l) => [...l, NEW_EFFECT], "효과 추가 드롭 섀도")}
+              title={msg.imageInspector.vocab.effect}
+              onAdd={() =>
+                editEffects(effects, (l) => [...l, NEW_EFFECT], msg.imageInspector.history.addDropShadow)
+              }
             />
           ) : (
             <StackList
-              title="효과"
+              title={msg.imageInspector.vocab.effect}
               items={effects}
-              onAdd={() => editEffects(effects, (l) => [...l, NEW_EFFECT], "효과 추가 드롭 섀도")}
+              onAdd={() =>
+                editEffects(effects, (l) => [...l, NEW_EFFECT], msg.imageInspector.history.addDropShadow)
+              }
               onToggle={(i) =>
                 editEffects(
                   effects,
                   (l) => l.map((e, j) => (j === i ? { ...e, visible: !e.visible } : e)),
-                  `효과 ${effects[i].visible ? "숨기기" : "표시"}`,
+                  msg.imageInspector.stack.toggle(msg.imageInspector.vocab.effect, effects[i].visible),
                 )
               }
-              onRemove={(i) => editEffects(effects, (l) => l.filter((_, j) => j !== i), "효과 제거")}
+              onRemove={(i) =>
+                editEffects(
+                  effects,
+                  (l) => l.filter((_, j) => j !== i),
+                  msg.imageInspector.stack.remove(msg.imageInspector.vocab.effect),
+                )
+              }
               onOpen={(i, anchor) => onOpenPopover({ kind: "effect", index: i, anchor })}
               render={(e) => (
                 <div className="flex min-w-0 items-center gap-1.5">
@@ -722,7 +811,7 @@ export function PropsTab({
                     className="h-[18px] w-[18px] shrink-0 rounded border border-edge"
                   />
                   <span className="min-w-0 truncate text-[11px] text-fg-muted">
-                    {effectLabel(e)}
+                    {effectLabel(msg, e)}
                   </span>
                 </div>
               )}
@@ -741,8 +830,10 @@ export function PropsTab({
             node={nodes[0]}
             // 라이브 틱에는 라벨이 없다(45 계약) — 히스토리 칸 이름은 첫 틱에 정해지므로
             // 스크럽 한 번은 `패스 속성` 으로 남는다. 값은 손을 뗄 때의 커밋이 확정한다.
-            onLive={(p) => actions.pathPatch(p, "패스 속성", true)}
-            onCommit={(p, label) => actions.pathPatch(p, label ?? "패스 속성")}
+            onLive={(p) => actions.pathPatch(p, msg.imageInspector.history.pathProps, true)}
+            onCommit={(p, label) =>
+              actions.pathPatch(p, label ?? msg.imageInspector.history.pathProps)
+            }
             onOp={actions.vectorOp}
             canOp={canVector}
           />
@@ -792,15 +883,21 @@ function IconBtn({
  * `i` 가 무엇을 가리키는지 정해지지 않는다. 더하기만 모든 노드에 같은 뜻이다.
  */
 function MixedStack({ title, onAdd }: { title: string; onAdd(): void }) {
+  const msg = useMessages();
   return (
     <section className="mt-3">
       <div className="mb-1 flex items-center justify-between">
         <span className="text-[11px] text-fg-dim">{title}</span>
-        <button type="button" onClick={onAdd} title={`${title} 추가`} className="text-fg-dim hover:text-fg">
+        <button
+          type="button"
+          onClick={onAdd}
+          title={msg.imageInspector.stack.add(title)}
+          className="text-fg-dim hover:text-fg"
+        >
           +
         </button>
       </div>
-      <div className="text-[11px] text-fg-dim">여러 값</div>
+      <div className="text-[11px] text-fg-dim">{msg.imageInspector.vocab.mixedValues}</div>
     </section>
   );
 }
@@ -918,10 +1015,10 @@ function withSolidHead(cur: readonly Fill[], hex: string): Fill[] {
   ];
 }
 
-function paintLabel(p: Fill): string {
+function paintLabel(msg: Messages, p: Fill): string {
   if (p.type === "solid") return `${p.color.replace("#", "").toUpperCase()} ${Math.round(p.opacity * 100)}%`;
-  if (p.type === "image") return "이미지";
-  return `${GRADIENT_LABEL[p.type] ?? p.type} ${Math.round(p.angle)}°`;
+  if (p.type === "image") return msg.imageInspector.props.imagePaint;
+  return `${gradientLabel(msg, p.type)} ${Math.round(p.angle)}°`;
 }
 
 /** 스와치 미리보기. 그라디언트는 각도만 CSS 로 흉내 낸다(정본 렌더는 39). */
@@ -932,15 +1029,15 @@ function paintCss(p: Fill): string {
   return `linear-gradient(${p.angle + 90}deg, ${stops})`;
 }
 
-function effectLabel(e: Effect): string {
+function effectLabel(msg: Messages, e: Effect): string {
   switch (e.type) {
     case "drop-shadow":
-      return `드롭 섀도 ${e.x}·${e.y} ${e.blur} ${Math.round(e.opacity * 100)}%`;
+      return msg.imageInspector.props.effectDropShadow(e.x, e.y, e.blur, Math.round(e.opacity * 100));
     case "inner-shadow":
-      return `이너 섀도 ${e.x}·${e.y} ${e.blur} ${Math.round(e.opacity * 100)}%`;
+      return msg.imageInspector.props.effectInnerShadow(e.x, e.y, e.blur, Math.round(e.opacity * 100));
     case "layer-blur":
-      return `레이어 블러 반경 ${e.radius}`;
+      return msg.imageInspector.props.effectLayerBlur(e.radius);
     case "background-blur":
-      return `배경 블러 반경 ${e.radius}`;
+      return msg.imageInspector.props.effectBackgroundBlur(e.radius);
   }
 }

@@ -18,6 +18,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { create } from "zustand";
 
+import { currentMessages } from "../i18n/ui-language";
 import { normalizeNode } from "../lib/annotate/schema";
 import { resyncComponents, styleFromNode, type StyleSlot } from "../lib/annotate/styles";
 import {
@@ -141,7 +142,12 @@ function normColorStyle(v: unknown): ColorStyle | null {
   if (!id || !isRec(v)) return null;
   const paint = normFill(v.paint);
   if (!paint) return null;
-  return { id, name: str(v.name, "색"), paint, updatedAt: num(v.updatedAt) };
+  return {
+    id,
+    name: str(v.name, currentMessages().stores.imageLibrary.fallbackColorStyleName),
+    paint,
+    updatedAt: num(v.updatedAt),
+  };
 }
 
 function normTextStyleDef(v: unknown): TextStyleDef | null {
@@ -149,7 +155,7 @@ function normTextStyleDef(v: unknown): TextStyleDef | null {
   if (!id || !isRec(v)) return null;
   return {
     id,
-    name: str(v.name, "텍스트"),
+    name: str(v.name, currentMessages().stores.imageLibrary.fallbackTextStyleName),
     style: normTypo(v.style),
     updatedAt: num(v.updatedAt),
   };
@@ -160,7 +166,7 @@ function normEffectStyle(v: unknown): EffectStyle | null {
   if (!id || !isRec(v)) return null;
   return {
     id,
-    name: str(v.name, "효과"),
+    name: str(v.name, currentMessages().stores.imageLibrary.fallbackEffectStyleName),
     effects: normEffects(v.effects),
     updatedAt: num(v.updatedAt),
   };
@@ -194,7 +200,7 @@ function normComponent(v: unknown): ComponentDef | null {
   }
   return {
     id,
-    name: str(v.name, "컴포넌트"),
+    name: str(v.name, currentMessages().stores.imageLibrary.fallbackComponentName),
     nodes: nodes as Node[],
     w: Math.max(0, num(v.w)),
     h: Math.max(0, num(v.h)),
@@ -239,12 +245,17 @@ function normalizeLibrary(raw: unknown): ImageLibrary {
  *
  * 글꼴은 시안의 Pretendard 가 아니라 앱 기본 스택(`DEFAULT_TEXT_STYLE`)이다: 번들에 없는
  * 글꼴 이름을 심으면 캔버스가 조용히 대체 글꼴로 그려, 스타일 이름과 화면이 어긋난다.
+ *
+ * 이름은 심는 순간의 UI 언어다 — 창들은 언어를 Rust 한 곳에서 받으므로 동시에 심어도 같은 바이트가 된다.
  */
-const SEED_TEXT_STYLES: readonly TextStyleDef[] = [
-  seedTextStyle("seed-text-h1", "제목 / H1", 28, 700, 130),
-  seedTextStyle("seed-text-body", "본문 / Body", 14, 400, 150),
-  seedTextStyle("seed-text-caption", "캡션 / Caption", 11, 500, 140),
-];
+function seedTextStyles(): readonly TextStyleDef[] {
+  const msg = currentMessages();
+  return [
+    seedTextStyle("seed-text-h1", msg.stores.imageLibrary.seedHeadingName, 28, 700, 130),
+    seedTextStyle("seed-text-body", msg.stores.imageLibrary.seedBodyName, 14, 400, 150),
+    seedTextStyle("seed-text-caption", msg.stores.imageLibrary.seedCaptionName, 11, 500, 140),
+  ];
+}
 
 function seedTextStyle(
   id: StyleId,
@@ -299,7 +310,7 @@ function save(): Promise<void> {
       dirty = true; // 다음 변경이나 flush 가 다시 시도한다
       useUi
         .getState()
-        .pushToast("error", `이미지 라이브러리 저장 실패 — ${errorMessage(e)}`);
+        .pushToast("error", currentMessages().stores.imageLibrary.saveFailed(errorMessage(e)));
     } finally {
       inFlight = null;
     }
@@ -464,7 +475,7 @@ async function init(): Promise<void> {
   const lib = useImageLibrary.getState().lib;
   if (!lib.seeded) {
     useImageLibrary.setState({
-      lib: { ...lib, textStyles: [...SEED_TEXT_STYLES, ...lib.textStyles], seeded: true },
+      lib: { ...lib, textStyles: [...seedTextStyles(), ...lib.textStyles], seeded: true },
     });
     schedule();
   }

@@ -1,6 +1,7 @@
 import { RotateCcw, X } from "lucide-react";
 import { useState } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { DEFAULT_REPORT_PROMPT, REPORT_PROMPT_VARS } from "../../lib/report";
 import { useSetSettings, useSettings } from "../../queries";
 
@@ -16,6 +17,7 @@ function normalizePrompt(text: string): string | null {
  * 고칠 수 없다. 모달이 아니라 레이아웃 안에 끼는 패널이라 네이티브 webview 점유 계약도 필요 없다.
  */
 export function ReportPromptEditor({ onClose }: { onClose: () => void }) {
+  const msg = useMessages();
   const { data: settings } = useSettings();
   const save = useSetSettings();
   // 편집을 시작하기 전엔 저장값을 그대로 보여 준다 — 다른 창에서 저장해도(settings://changed) 따라간다.
@@ -35,17 +37,17 @@ export function ReportPromptEditor({ onClose }: { onClose: () => void }) {
   return (
     <div data-gpv="report-prompt-editor" className="rounded border border-edge bg-panel p-3 text-xs">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="font-semibold text-fg">요약 생성 프롬프트</span>
-        <span className="text-fg-dim">{saved ? "사용자 지정" : "기본값"}</span>
+        <span className="font-semibold text-fg">{msg.report.promptEditor.title}</span>
+        <span className="text-fg-dim">{saved ? msg.report.promptEditor.custom : msg.report.promptEditor.default}</span>
         <div className="ml-auto flex items-center gap-1.5">
           <button
             data-gpv="report-prompt-reset"
             onClick={() => setDraft(DEFAULT_REPORT_PROMPT)}
             disabled={text === DEFAULT_REPORT_PROMPT}
-            title="앱 기본 프롬프트로 되돌립니다(저장해야 적용됩니다)"
+            title={msg.report.promptEditor.resetTitle}
             className="flex items-center gap-1 rounded bg-raised px-2 py-0.5 text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
           >
-            <RotateCcw size={11} /> 기본값으로
+            <RotateCcw size={11} /> {msg.report.promptEditor.reset}
           </button>
           <button
             data-gpv="report-prompt-save"
@@ -53,11 +55,11 @@ export function ReportPromptEditor({ onClose }: { onClose: () => void }) {
             disabled={!dirty || save.isPending}
             className="rounded bg-accent px-2 py-0.5 text-on-accent hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
           >
-            {save.isPending ? "저장 중…" : "저장"}
+            {save.isPending ? msg.report.promptEditor.saving : msg.report.promptEditor.save}
           </button>
           <button
             onClick={onClose}
-            title="닫기(저장하지 않은 편집은 버립니다)"
+            title={msg.report.promptEditor.closeTitle}
             className="rounded p-0.5 text-fg-dim hover:bg-raised hover:text-fg"
           >
             <X size={13} />
@@ -76,7 +78,7 @@ export function ReportPromptEditor({ onClose }: { onClose: () => void }) {
 
       <div className="mt-2 space-y-1 text-[11px] text-fg-dim">
         <div>
-          자리표시자:{" "}
+          {msg.report.promptEditor.placeholdersLabel}{" "}
           {REPORT_PROMPT_VARS.map((v, i) => (
             <span key={v.token}>
               {i > 0 && " · "}
@@ -84,10 +86,7 @@ export function ReportPromptEditor({ onClose }: { onClose: () => void }) {
             </span>
           ))}
         </div>
-        <div>
-          커밋·프롬프트 근거 목록은 이 뒤에 자동으로 붙습니다. 프롬프트가 길수록 근거로 싣는 분량이
-          줄어듭니다. 이미 저장된 요약은 다시 생성해야 바뀐 프롬프트가 반영됩니다.
-        </div>
+        <div>{msg.report.promptEditor.footnote}</div>
       </div>
     </div>
   );

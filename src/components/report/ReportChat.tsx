@@ -2,6 +2,7 @@ import { Loader2, MessageSquare, Plus, Save, X } from "lucide-react";
 import type { Dispatch, SetStateAction } from "react";
 import { useEffect, useRef, useState } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { IS_DOC_WINDOW } from "../../lib/floating";
 import { errorMessage, isIpcError } from "../../lib/ipc";
 import type { ChatMsg } from "../../lib/llm";
@@ -12,8 +13,6 @@ import { useReports, useSetReport, useSettings } from "../../queries";
 import { useUi } from "../../stores/ui";
 import MarkdownView from "../diff/MarkdownView";
 
-/** 59는 한 번에 한 요청만 받는다 — 카드가 요약을 만드는 중이면 채팅이 이 문구로 거절당한다. */
-const BUSY_NOTE = "다른 생성이 진행 중입니다 — 끝나면 다시 보내세요";
 /** 저장 버튼의 관문 — 요약 형식(`## 머리글`)이 아닌 답변을 카드 본문으로 앉히면 형식이 깨진다. */
 const isSummary = (t: string) => /^## /m.test(t);
 
@@ -38,6 +37,7 @@ export function ReportChat({
   setMessages: Dispatch<SetStateAction<ChatMsg[]>>;
   onClose: () => void;
 }) {
+  const msg = useMessages();
   const { data: settings } = useSettings();
   const { data: status } = useLlmStatus();
   const { data: reports } = useReports();
@@ -125,7 +125,7 @@ export function ReportChat({
           temperature: 0.3,
           modelId: reportModel ?? undefined,
           signal: ac.signal,
-          onProgress: (_phase, message) => setNote(message ?? "모델 로드 중…"),
+          onProgress: (_phase, message) => setNote(message ?? msg.report.modelLoading),
         },
       );
       if (!ac.signal.aborted) last(done.text);
@@ -134,11 +134,12 @@ export function ReportChat({
       // 한 글자도 못 받았으면 그건 답변이 아니라 안내다.
       if (ac.signal.aborted) {
         if (acc) last(acc);
-        else notice("취소됨");
+        else notice(msg.report.cancelled);
         return;
       }
       const isBusy = isIpcError(e) && e.code === "BUSY";
-      notice(isBusy ? BUSY_NOTE : errorMessage(e));
+      // 59는 한 번에 한 요청만 받는다 — 카드가 요약을 만드는 중이면 채팅이 이 문구로 거절당한다.
+      notice(isBusy ? msg.report.chat.busyNote : errorMessage(e));
       // 자동 재시도는 넣지 않는다(61의 3초 폴링과 다르다 — 사용자가 패널을 보고 있다).
       // 대신 입력한 글을 돌려준다: 다시 타이핑하게 하지 않는다.
       if (isBusy) setInput(text);
@@ -177,7 +178,7 @@ export function ReportChat({
         >
           {ctx
             ? `${ctx.title} · ${ctx.since === ctx.until ? ctx.since : `${ctx.since}~${ctx.until}`}`
-            : "리포트 채팅"}
+            : msg.report.chat.headerFallback}
         </span>
         <button
           // 진행 중인 답변도 끊는다 — 안 끊으면 그 답변이 갈 자리가 없어 조용히 버려지는데도
@@ -187,14 +188,14 @@ export function ReportChat({
             abortRef.current?.abort();
             setMessages([]);
           }}
-          title="새 대화 — 지금까지의 대화를 지웁니다(컨텍스트는 그대로)"
+          title={msg.report.chat.newChatTitle}
           className="shrink-0 rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
         >
           <Plus size={13} />
         </button>
         <button
           onClick={onClose}
-          title="닫기"
+          title={msg.report.chat.close}
           className="shrink-0 rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
         >
           <X size={13} />
@@ -214,13 +215,13 @@ export function ReportChat({
             {reason}
             {/* 별도 창(doc-*)엔 설정 다이얼로그가 없다 — 버튼 대신 어디서 하라고만 일러 준다(§3.3). */}
             {IS_DOC_WINDOW ? (
-              <div className="mt-1 text-fg-dim">메인 창의 설정 › AI에서 준비하세요</div>
+              <div className="mt-1 text-fg-dim">{msg.report.prepareInMainSettings}</div>
             ) : (
               <button
                 onClick={() => openSettings("ai")}
                 className="ml-2 rounded border border-edge px-1.5 py-0.5 text-[11px] text-fg-dim hover:bg-raised hover:text-fg"
               >
-                설정 열기
+                {msg.report.openSettings}
               </button>
             )}
           </div>
@@ -228,7 +229,7 @@ export function ReportChat({
 
         {messages.length === 0 && !reason && (
           <div className="text-[12px] leading-5 text-fg-dim">
-            카드의 [AI에게 묻기]를 누르면 그 리포트를 두고 대화합니다 — 그냥 물어봐도 됩니다.
+            {msg.report.chat.emptyHint}
           </div>
         )}
 
@@ -254,12 +255,12 @@ export function ReportChat({
                     disabled={!ctx || busy || !isSummary(m.content)}
                     title={
                       isSummary(m.content)
-                        ? "이 답변을 요약으로 저장합니다 — 카드 본문이 바뀝니다"
-                        : "요약 형식이 아닙니다 — '요약을 다시 써 줘'라고 요청하세요"
+                        ? msg.report.chat.saveAsSummaryTitle
+                        : msg.report.chat.notSummaryTitle
                     }
                     className="mt-1 flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-fg-dim hover:bg-raised hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    <Save size={10} /> 요약으로 저장
+                    <Save size={10} /> {msg.report.chat.saveAsSummary}
                   </button>
                 )}
               </>
@@ -272,12 +273,12 @@ export function ReportChat({
         {busy && (
           <div className="mb-1 flex items-center gap-1.5 text-[11px] text-fg-muted">
             <Loader2 size={11} className="animate-spin" />
-            <span className="min-w-0 flex-1 truncate">{note ?? "답변을 쓰는 중…"}</span>
+            <span className="min-w-0 flex-1 truncate">{note ?? msg.report.chat.writing}</span>
             <button
               onClick={() => abortRef.current?.abort()}
               className="shrink-0 rounded px-1.5 py-0.5 hover:bg-raised hover:text-fg"
             >
-              취소
+              {msg.report.cancel}
             </button>
           </div>
         )}
@@ -294,7 +295,7 @@ export function ReportChat({
               void send();
             }
           }}
-          placeholder="더 짧게 써 줘 · 존댓말로 · 영어로 (Enter 전송, Shift+Enter 줄바꿈)"
+          placeholder={msg.report.chat.inputPlaceholder}
           className="w-full resize-none rounded border border-edge bg-panel px-2 py-1 text-[12px] leading-5 text-fg placeholder:text-fg-dim disabled:opacity-50"
         />
       </div>

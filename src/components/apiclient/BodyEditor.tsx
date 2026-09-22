@@ -1,3 +1,4 @@
+import { useMessages } from "../../i18n/ui-language";
 import type {
   ApiRequestBody,
   BodyMode,
@@ -27,6 +28,7 @@ export function BodyEditor({
   body: ApiRequestBody;
   onChange: (patch: Partial<ApiRequestBody>) => void;
 }) {
+  const msg = useMessages();
   return (
     <div className="flex h-full flex-col">
       <div className="flex shrink-0 items-center gap-1 border-b border-edge px-3 py-1.5">
@@ -65,7 +67,7 @@ export function BodyEditor({
       <div className="min-h-0 flex-1">
         {body.mode === "none" && (
           <div className="flex h-full items-center justify-center text-[13px] text-fg-dim">
-            본문 없음
+            {msg.apiclient.body.noBody}
           </div>
         )}
         {body.mode === "json" && (
@@ -79,7 +81,7 @@ export function BodyEditor({
           <textarea
             value={body.text}
             onChange={(e) => onChange({ text: e.target.value })}
-            placeholder="원문 본문…"
+            placeholder={msg.apiclient.body.rawPlaceholder}
             spellCheck={false}
             className="h-full w-full resize-none bg-base px-3 py-2 font-mono text-[13px] text-fg outline-none"
           />
@@ -135,6 +137,7 @@ function FormBody({
   formType: FormType;
   onChange: (rows: FormRow[]) => void;
 }) {
+  const msg = useMessages();
   // urlencoded는 text 행만 — KeyValueEditor로 충분(KvRow 어댑트).
   if (formType === "urlencoded") {
     const rows: KvRow[] = form.map((f) => ({
@@ -216,7 +219,7 @@ function FormBody({
             <input
               value={f.filePath ?? ""}
               onChange={(e) => update(f.id, { filePath: e.target.value })}
-              placeholder="파일 경로"
+              placeholder={msg.apiclient.body.filePathPlaceholder}
               className="min-w-0 flex-1 rounded border border-edge bg-base px-2 py-1 font-mono outline-none focus:border-accent"
             />
           ) : (
@@ -229,7 +232,7 @@ function FormBody({
           )}
           <button
             onClick={() => remove(f.id)}
-            title="행 삭제"
+            title={msg.apiclient.body.deleteRow}
             className="shrink-0 text-fg-dim hover:text-danger"
           >
             ✕
@@ -265,10 +268,11 @@ function BinaryBody({
   body: ApiRequestBody;
   onChange: (patch: Partial<ApiRequestBody>) => void;
 }) {
+  const msg = useMessages();
   return (
     <div className="space-y-3 p-3 text-[13px]">
       <label className="block">
-        <div className="mb-0.5 text-[12px] text-fg-muted">파일 경로 (우선)</div>
+        <div className="mb-0.5 text-[12px] text-fg-muted">{msg.apiclient.body.binaryFilePathLabel}</div>
         <input
           value={body.binaryPath ?? ""}
           onChange={(e) => onChange({ binaryPath: e.target.value })}
@@ -277,11 +281,11 @@ function BinaryBody({
         />
       </label>
       <label className="block">
-        <div className="mb-0.5 text-[12px] text-fg-muted">또는 인라인 base64</div>
+        <div className="mb-0.5 text-[12px] text-fg-muted">{msg.apiclient.body.binaryBase64Label}</div>
         <textarea
           value={body.binaryBase64 ?? ""}
           onChange={(e) => onChange({ binaryBase64: e.target.value })}
-          placeholder="base64 데이터…"
+          placeholder={msg.apiclient.body.binaryBase64Placeholder}
           spellCheck={false}
           className="h-24 w-full resize-none rounded border border-edge bg-base px-2 py-1 font-mono text-[12px] outline-none focus:border-accent"
         />

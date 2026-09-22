@@ -13,6 +13,7 @@ import {
 
 import { memo } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { formatBytes, relativeTime } from "../../lib/format";
 import type { Project } from "../../lib/ipc";
 import { errorMessage } from "../../lib/ipc";
@@ -50,6 +51,7 @@ export const ProjectItem = memo(function ProjectItem({
   /** 프로젝트 색 — 이름순 전체 배정(useProjectColors). 모아보기 칩·셀 헤더와 같은 값. */
   color: ProjColor;
 }) {
+  const msg = useMessages();
   const { data: status, isLoading, error } = useStatus(project.id);
   const { data: notes } = useNotes();
   const hasNote = !!notes?.[project.id]?.some((m) => m.text.trim());
@@ -127,23 +129,23 @@ export const ProjectItem = memo(function ProjectItem({
         <ProjectLogo projectId={project.id} />
         <span className="whitespace-nowrap font-medium">{project.name}</span>
         {agent === "working" && (
-          <span title="Claude Code 작업 중…" className="flex shrink-0">
+          <span title={msg.shell.projectItem.agentWorkingTitle} className="flex shrink-0">
             <Loader2
               size={12}
               className="animate-spin text-accent"
-              aria-label="Claude Code 작업 중"
+              aria-label={msg.shell.projectItem.agentWorkingLabel}
             />
           </span>
         )}
         {agent === "done" && (
           <span
-            title="Claude Code 작업 완료 — 확인하세요"
+            title={msg.shell.projectItem.agentDoneTitle}
             className="flex shrink-0"
           >
             <CircleCheck
               size={12}
               className="text-add"
-              aria-label="Claude Code 작업 완료"
+              aria-label={msg.shell.projectItem.agentDoneLabel}
             />
           </span>
         )}
@@ -151,12 +153,12 @@ export const ProjectItem = memo(function ProjectItem({
           <StickyNote
             size={11}
             className="shrink-0 text-fg-dim"
-            aria-label="메모 있음"
+            aria-label={msg.shell.projectItem.hasNote}
           />
         )}
       </div>
       <button
-        title="프로젝트 제거 (레포는 삭제되지 않음)"
+        title={msg.shell.projectItem.removeTitle}
         onPointerDown={(e) => e.stopPropagation()}
         onClick={(e) => {
           e.stopPropagation();
@@ -183,9 +185,7 @@ export const ProjectItem = memo(function ProjectItem({
         {!!status?.behind && (
           <span
             className="flex shrink-0 items-center text-mod"
-            title={`원격에 새 커밋 ${status.behind}개${
-              lastFetchLabel ? ` — 마지막 확인 ${lastFetchLabel}` : ""
-            }`}
+            title={msg.shell.projectItem.behindTitle(status.behind, lastFetchLabel)}
           >
             <ArrowDown size={11} />
             {status.behind}
@@ -197,14 +197,14 @@ export const ProjectItem = memo(function ProjectItem({
             <CloudOff
               size={11}
               className="text-fg-dim"
-              aria-label="원격 확인 실패"
+              aria-label={msg.shell.projectItem.fetchFailed}
             />
           </span>
         )}
         {size && !size.error && size.bytes > 0 && (
           <span
             className="ml-auto flex shrink-0 items-center gap-1 text-fg-dim"
-            title="폴더 용량 (우클릭 → 용량 새로고침)"
+            title={msg.shell.projectItem.folderSizeTitle}
           >
             <HardDrive size={11} />
             {formatBytes(size.bytes)}
@@ -237,7 +237,7 @@ export const ProjectItem = memo(function ProjectItem({
             {nestedChanges > 0 && (
               <span
                 className="flex items-center gap-0.5 text-fg-muted"
-                title="중첩 저장소 변경"
+                title={msg.shell.projectItem.nestedChanges}
               >
                 <FolderGit2 size={11} />
                 {nestedChanges}
@@ -245,13 +245,13 @@ export const ProjectItem = memo(function ProjectItem({
             )}
           </>
         ) : status ? (
-          <span className="text-fg-dim">변경 없음</span>
+          <span className="text-fg-dim">{msg.shell.projectItem.noChanges}</span>
         ) : error ? (
           <span className="truncate text-danger" title={errorMessage(error)}>
             {errorMessage(error)}
           </span>
         ) : (
-          <span className="text-fg-dim">불러오는 중…</span>
+          <span className="text-fg-dim">{msg.shell.projectItem.loading}</span>
         )}
       </div>
     </div>

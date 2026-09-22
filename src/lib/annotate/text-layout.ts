@@ -161,7 +161,7 @@ function fontMetrics(
 ): { asc: number; desc: number } {
   const hit = fontMetricCache.get(font);
   if (hit) return hit;
-  const m = ctx.measureText("Mg가");
+  const m = ctx.measureText("Mg가"); // i18n-ok: 글꼴 높이 측정용 표본 글자
   const asc = m.fontBoundingBoxAscent;
   const desc = m.fontBoundingBoxDescent;
   const v =

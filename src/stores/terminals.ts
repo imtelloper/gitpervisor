@@ -2,6 +2,7 @@ import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { create } from "zustand";
 
+import { currentMessages } from "../i18n/ui-language";
 import { openFloatingWindow } from "../lib/floating";
 import {
   collectPanes,
@@ -264,7 +265,7 @@ export const useTerminals = create<TerminalsState>((set, get) => ({
         {
           id: tabId,
           projectId,
-          title: `터미널 ${n}`,
+          title: currentMessages().stores.terminals.defaultTitle(n),
           layout: { kind: "leaf", paneId, content: "terminal" },
           activePaneId: paneId,
           maximizedPaneId: null,

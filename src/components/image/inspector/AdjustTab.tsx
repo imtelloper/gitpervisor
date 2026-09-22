@@ -19,6 +19,8 @@
 import type { ReactNode } from "react";
 import { FlipHorizontal, FlipVertical, RotateCcw, RotateCw } from "lucide-react";
 
+import type { Messages } from "../../../i18n/messages";
+import { useMessages } from "../../../i18n/ui-language";
 import type { EditorDoc } from "../../../lib/annotate/types";
 import { useImageEditorUi } from "../../../stores/imageEditor";
 import { SnapSection } from "../SnapSection";
@@ -51,11 +53,13 @@ export interface AdjustTabProps {
   onLockRatio(v: boolean): void;
 }
 
-const PIXEL_PREVIEW: { v: 0 | 1 | 2; label: string }[] = [
-  { v: 0, label: "끄기" },
-  { v: 1, label: "1x" },
-  { v: 2, label: "2x" },
-];
+function pixelPreviewStepsFor(msg: Messages): { v: 0 | 1 | 2; label: string }[] {
+  return [
+    { v: 0, label: msg.imageInspector.vocab.off },
+    { v: 1, label: "1x" },
+    { v: 2, label: "2x" },
+  ];
+}
 
 export function AdjustTab({
   doc,
@@ -69,25 +73,34 @@ export function AdjustTab({
   lockRatio,
   onLockRatio,
 }: AdjustTabProps) {
+  const msg = useMessages();
   const pixelPreview = useImageEditorUi((s) => s.pixelPreview);
   const setPixelPreview = useImageEditorUi((s) => s.setPixelPreview);
 
   return (
     <div>
-      <div className="mb-2 text-[11px] text-fg-dim">이미지 전체에 적용</div>
+      <div className="mb-2 text-[11px] text-fg-dim">{msg.imageInspector.adjust.wholeImageCaption}</div>
 
-      <Section title="회전 · 반전">
+      <Section title={msg.imageInspector.adjust.rotateFlipTitle}>
         <div className="grid grid-cols-4 gap-1.5">
-          <IconBtn title="왼쪽 90°" onClick={() => onRotateImage(false)}>
+          <IconBtn title={msg.imageInspector.adjust.rotateLeft} onClick={() => onRotateImage(false)}>
             <RotateCcw size={15} />
           </IconBtn>
-          <IconBtn title="오른쪽 90°" onClick={() => onRotateImage(true)}>
+          <IconBtn title={msg.imageInspector.adjust.rotateRight} onClick={() => onRotateImage(true)}>
             <RotateCw size={15} />
           </IconBtn>
-          <IconBtn title="좌우 반전" active={doc.flipH} onClick={() => onFlipImage("h")}>
+          <IconBtn
+            title={msg.imageInspector.adjust.flipH}
+            active={doc.flipH}
+            onClick={() => onFlipImage("h")}
+          >
             <FlipHorizontal size={15} />
           </IconBtn>
-          <IconBtn title="상하 반전" active={doc.flipV} onClick={() => onFlipImage("v")}>
+          <IconBtn
+            title={msg.imageInspector.adjust.flipV}
+            active={doc.flipV}
+            onClick={() => onFlipImage("v")}
+          >
             <FlipVertical size={15} />
           </IconBtn>
         </div>
@@ -101,9 +114,9 @@ export function AdjustTab({
         <SnapSection />
       </div>
 
-      <Section title="픽셀 미리보기">
+      <Section title={msg.imageInspector.adjust.pixelPreviewTitle}>
         <div className="grid grid-cols-3 gap-1.5">
-          {PIXEL_PREVIEW.map((p) => (
+          {pixelPreviewStepsFor(msg).map((p) => (
             <button
               key={p.v}
               onClick={() => setPixelPreview(p.v)}
@@ -119,40 +132,40 @@ export function AdjustTab({
         </div>
       </Section>
 
-      <Section title="색 보정">
+      <Section title={msg.imageInspector.adjust.colorTitle}>
         <Slider
-          label="밝기"
+          label={msg.imageInspector.adjust.brightness}
           value={doc.brightness}
           onChange={(v) => onPatch({ brightness: v }, true)}
           onEnd={onEditEnd}
         />
         <Slider
-          label="대비"
+          label={msg.imageInspector.adjust.contrast}
           value={doc.contrast}
           onChange={(v) => onPatch({ contrast: v }, true)}
           onEnd={onEditEnd}
         />
         <Slider
-          label="채도"
+          label={msg.imageInspector.adjust.saturation}
           value={doc.saturate}
           onChange={(v) => onPatch({ saturate: v }, true)}
           onEnd={onEditEnd}
         />
       </Section>
 
-      <Section title="크기">
+      <Section title={msg.imageInspector.adjust.sizeTitle}>
         <div className="flex items-center gap-1.5">
           <NumInput value={doc.outW} onChange={onOutW} onEnd={onEditEnd} />
           <span className="text-fg-dim">×</span>
           <NumInput value={doc.outH} onChange={onOutH} onEnd={onEditEnd} />
           <button
             onClick={() => onLockRatio(!lockRatio)}
-            title="비율 고정"
+            title={msg.imageInspector.adjust.lockRatioTitle}
             className={`rounded px-2 py-1 text-[11px] ${
               lockRatio ? "bg-accent/20 text-accent" : "bg-raised text-fg-dim hover:text-fg"
             }`}
           >
-            {lockRatio ? "비율 ✓" : "비율"}
+            {lockRatio ? msg.imageInspector.adjust.ratioOn : msg.imageInspector.adjust.ratioOff}
           </button>
         </div>
       </Section>

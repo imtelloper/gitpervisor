@@ -1,6 +1,7 @@
 import { Cog, Send } from "lucide-react";
 import { forwardRef } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { methodColor } from "../../lib/method-color";
 import type { HttpMethod } from "../../stores/apiclient";
 import { useApiClient } from "../../stores/apiclient";
@@ -22,6 +23,7 @@ const METHODS: HttpMethod[] = [
  */
 export const RequestBuilder = forwardRef<HTMLInputElement, { tabId: string }>(
   function RequestBuilder({ tabId }, urlRef) {
+    const msg = useMessages();
     const draft = useApiClient((s) => s.draftById[tabId]);
     const patchDraft = useApiClient((s) => s.patchDraft);
     const sending = useApiClient((s) => s.sending[tabId] ?? false);
@@ -44,7 +46,7 @@ export const RequestBuilder = forwardRef<HTMLInputElement, { tabId: string }>(
           onChange={(e) =>
             patchDraft(tabId, { method: e.target.value as HttpMethod })
           }
-          title="HTTP 메서드"
+          title={msg.apiclient.builder.httpMethod}
           className={`rounded border border-edge bg-base px-1 py-0.5 text-xs font-semibold outline-none focus:border-accent ${methodColor(
             draft.method,
           )}`}
@@ -60,7 +62,7 @@ export const RequestBuilder = forwardRef<HTMLInputElement, { tabId: string }>(
           ref={urlRef}
           value={draft.url}
           onChange={(e) => patchDraft(tabId, { url: e.target.value })}
-          placeholder="{{base}}/users  또는  https://api.example.com/v1"
+          placeholder={msg.apiclient.builder.urlPlaceholder}
           spellCheck={false}
           className="min-w-0 flex-1 rounded border border-edge bg-base px-2 py-1 text-xs font-mono outline-none focus:border-accent"
         />
@@ -70,10 +72,10 @@ export const RequestBuilder = forwardRef<HTMLInputElement, { tabId: string }>(
           <select
             value={activeEnvId ?? ""}
             onChange={(e) => setEnvironment(e.target.value || null)}
-            title="활성 환경(Global)"
+            title={msg.apiclient.builder.activeEnvironment}
             className="rounded border border-edge bg-base px-1 py-0.5 text-fg outline-none focus:border-accent"
           >
-            <option value="">없음</option>
+            <option value="">{msg.apiclient.builder.noEnvironment}</option>
             {globalEnvs.map((env) => (
               <option key={env.id} value={env.id}>
                 {env.name}
@@ -83,7 +85,7 @@ export const RequestBuilder = forwardRef<HTMLInputElement, { tabId: string }>(
         </label>
         <button
           onClick={openEnvDialog}
-          title="환경 관리"
+          title={msg.apiclient.builder.manageEnvironments}
           className="shrink-0 rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
         >
           <Cog size={14} />
@@ -94,7 +96,7 @@ export const RequestBuilder = forwardRef<HTMLInputElement, { tabId: string }>(
           disabled={sending || !draft.url.trim()}
           className="flex shrink-0 items-center gap-1.5 rounded bg-accent px-3 py-1 text-xs font-medium text-on-accent hover:bg-accent-hover disabled:opacity-50"
         >
-          <Send size={12} /> {sending ? "전송 중…" : "Send"}{" "}
+          <Send size={12} /> {sending ? msg.apiclient.builder.sending : "Send"}{" "}
           <span className="font-mono opacity-70">Ctrl+↵</span>
         </button>
       </div>

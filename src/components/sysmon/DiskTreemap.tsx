@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 
 import { useQuery } from "@tanstack/react-query";
 
+import type { Messages } from "../../i18n/messages";
+import { useMessages } from "../../i18n/ui-language";
 import { formatBytes } from "../../lib/format";
 import { ipc } from "../../lib/ipc";
 import type { DiskTreemapNode } from "../../lib/ipc";
@@ -82,7 +84,7 @@ type Tile =
   | { kind: "files" | "other"; label: string; bytes: number };
 
 /** 노드 → 타일 목록(내림차순): 하위 폴더 + "[N 파일]"(직속) + "기타"(절단 잔여). */
-function tilesOf(n: DiskTreemapNode): Tile[] {
+function tilesOf(n: DiskTreemapNode, msg: Messages): Tile[] {
   const t: Tile[] = n.children.map((c) => ({
     kind: "dir",
     label: c.name,
@@ -92,11 +94,12 @@ function tilesOf(n: DiskTreemapNode): Tile[] {
   if (n.ownBytes > 0) {
     t.push({
       kind: "files",
-      label: `[${n.ownFiles.toLocaleString("en-US")} 파일]`,
+      label: msg.sysmon.diskTreemap.ownFilesTile(n.ownFiles),
       bytes: n.ownBytes,
     });
   }
-  if (n.otherBytes > 0) t.push({ kind: "other", label: "기타", bytes: n.otherBytes });
+  if (n.otherBytes > 0)
+    t.push({ kind: "other", label: msg.sysmon.diskTreemap.otherTile, bytes: n.otherBytes });
   return t.sort((a, b) => b.bytes - a.bytes);
 }
 
@@ -134,6 +137,7 @@ export function DiskTreemap({
   onDrill: (rel: string) => void;
   onReveal: (rel: string) => void;
 }) {
+  const msg = useMessages();
   const { data, isLoading, error } = useQuery({
     queryKey: ["disk-map", scanRoot, rel],
     queryFn: () => ipc.diskTreemap(rel, 2),
@@ -155,7 +159,7 @@ export function DiskTreemap({
 
   const boxes: React.ReactNode[] = [];
   if (data && size.w > 20 && size.h > 20) {
-    const tiles = tilesOf(data);
+    const tiles = tilesOf(data, msg);
     const rects = squarify(
       tiles.map((t) => t.bytes),
       { x: 0, y: 0, w: size.w, h: size.h },
@@ -174,7 +178,7 @@ export function DiskTreemap({
           w: r.w - PAD * 2,
           h: r.h - HEADER - PAD,
         };
-        const sub = tilesOf(t.node);
+        const sub = tilesOf(t.node, msg);
         const subRects = squarify(
           sub.map((s) => s.bytes),
           inner,
@@ -321,9 +325,11 @@ export function DiskTreemap({
       </div>
       <div ref={ref} className="relative min-h-0 flex-1 overflow-hidden">
         {isLoading ? (
-          <div className="px-3 py-4 text-[11px] text-fg-dim">읽는 중…</div>
+          <div className="px-3 py-4 text-[11px] text-fg-dim">{msg.sysmon.common.reading}</div>
         ) : error ? (
-          <div className="px-3 py-4 text-[11px] text-danger/80">트리맵을 읽지 못했습니다</div>
+          <div className="px-3 py-4 text-[11px] text-danger/80">
+            {msg.sysmon.diskTreemap.loadFailed}
+          </div>
         ) : (
           boxes
         )}

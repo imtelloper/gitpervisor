@@ -10,6 +10,7 @@ import {
   lookup,
 } from "./goto-definition";
 
+import { currentMessages } from "../../i18n/ui-language";
 import { ipc } from "../../lib/ipc";
 import { extToLang, lspActive } from "../../lib/lsp/client";
 import { useUi } from "../../stores/ui";
@@ -68,7 +69,9 @@ export function registerFindReferences(): void {
       if (matches.length === 0) return [];
 
       if (refs.truncated) {
-        useUi.getState().pushToast("info", "참조가 많아 일부만 표시합니다");
+        useUi
+          .getState()
+          .pushToast("info", currentMessages().git.editorProviders.referencesTruncated);
       }
 
       // peek 미리보기 모델을 표시 전에 선생성(지연 로딩 훅 부재 — §3.3)

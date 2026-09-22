@@ -3,6 +3,7 @@
 // edit 1건을 반환하면 최소 edit·undo·스크롤 보존은 Monaco가 처리한다(computeMoreMinimalEdits).
 import { monaco } from "./monaco-setup";
 
+import { currentMessages } from "../../i18n/ui-language";
 import { isIpcError, errorMessage, ipc } from "../../lib/ipc";
 import { useUi } from "../../stores/ui";
 
@@ -38,13 +39,14 @@ export function registerFormatProviders(): void {
         if (!res.changed || res.formatted == null) return [];
         return [{ range: model.getFullModelRange(), text: res.formatted }];
       } catch (e) {
+        const text = currentMessages().git.editorProviders;
         if (isIpcError(e) && e.code === "TOOL_NOT_FOUND") {
           useUi.getState().pushToast("error", errorMessage(e), {
-            label: "설정 열기",
+            label: text.openSettings,
             run: () => useUi.getState().setSettingsOpen(true),
           });
         } else {
-          useUi.getState().pushToast("error", `포맷 실패: ${errorMessage(e)}`);
+          useUi.getState().pushToast("error", text.formatFailed(errorMessage(e)));
         }
         return [];
       }

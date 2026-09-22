@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { registerDraftFlush } from "../../lib/drafts";
 import { useCommit, usePushFlow, useStatus } from "../../queries";
 import { useOps } from "../../stores/ops";
@@ -34,6 +35,7 @@ export function CommitForm({
    */
   bindShortcut?: boolean;
 }) {
+  const msg = useMessages();
   const { data: status } = useStatus(projectId);
   // 작성 중인 커밋 메시지는 앱이 갑자기 죽으면(예: OS의 메모리 부족 강제 종료) 통째로
   // 사라지던 유일한 데이터였다 — 메모·프로젝트·터미널 레이아웃은 모두 즉시 영속된다.
@@ -127,12 +129,12 @@ export function CommitForm({
           onChange={(e) => setAmend(e.target.checked)}
           className="accent-accent"
         />
-        Amend (마지막 커밋 수정)
+        {msg.git.commitForm.amendLabel}
       </label>
       <textarea
         value={message}
         onChange={(e) => setMessage(e.target.value)}
-        placeholder="커밋 메시지"
+        placeholder={msg.git.commitForm.messagePlaceholder}
         rows={3}
         className="w-full resize-none rounded border border-edge bg-base px-2 py-1.5 text-[13px] outline-none placeholder:text-fg-dim focus:border-accent"
       />
@@ -142,7 +144,7 @@ export function CommitForm({
           onClick={() => doCommit(false)}
           className="rounded border border-edge px-3 py-1.5 text-[13px] hover:bg-raised disabled:cursor-not-allowed disabled:opacity-40"
         >
-          {commit.isPending ? "커밋 중…" : "Commit"}
+          {commit.isPending ? msg.git.commitForm.committing : "Commit"}
         </button>
         <button
           disabled={!canCommit}
@@ -154,7 +156,7 @@ export function CommitForm({
       </div>
       {stagedCount === 0 && !amend && (
         <div className="mt-1.5 text-[11px] text-fg-dim">
-          커밋하려면 파일을 체크해 스테이지하세요
+          {msg.git.commitForm.stageHint}
         </div>
       )}
     </div>

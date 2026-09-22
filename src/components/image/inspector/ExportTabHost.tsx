@@ -11,6 +11,7 @@
 //
 // 배경: DOCS/task/45-image-inspector-popovers.md §3.3
 
+import { useMessages } from "../../../i18n/ui-language";
 import { FORMATS, supportsQuality, type ImgFormat } from "../../../lib/image-codec";
 import { Section, Slider } from "./AdjustTab";
 
@@ -22,8 +23,9 @@ export interface ExportTabHostProps {
 }
 
 export function ExportTabHost({ format, onFormat, quality, onQuality }: ExportTabHostProps) {
+  const msg = useMessages();
   return (
-    <Section title="포맷">
+    <Section title={msg.imageInspector.exportTab.formatTitle}>
       <div className="grid grid-cols-4 gap-1.5">
         {FORMATS.map((f) => (
           <button
@@ -42,7 +44,13 @@ export function ExportTabHost({ format, onFormat, quality, onQuality }: ExportTa
       {/* png 은 무손실이라 품질 슬라이더가 뜻이 없다 — 보여 주면 움직여도 파일이 안 바뀐다. */}
       {supportsQuality(format) && (
         <div className="mt-2">
-          <Slider label="품질" value={quality} onChange={onQuality} min={1} max={100} />
+          <Slider
+            label={msg.imageInspector.exportTab.quality}
+            value={quality}
+            onChange={onQuality}
+            min={1}
+            max={100}
+          />
         </div>
       )}
     </Section>

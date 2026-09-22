@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import {
   back,
   blurBrowser,
@@ -62,10 +63,10 @@ function rectOf(el: HTMLElement | null): Bounds {
   return { x: r.left, y: r.top, width: r.width, height: r.height };
 }
 
-const EMPTY_ITEM: BrowserItem = {
+// title 은 렌더 때 현재 언어로 채운다(BrowserPane).
+const EMPTY_ITEM: Omit<BrowserItem, "title"> = {
   id: "",
   projectId: "",
-  title: "새 브라우저",
   url: "",
   mode: "native",
 };
@@ -88,10 +89,14 @@ export function BrowserPane({
    *  안 잡힌다 — 호출자가 슬롯 좌표 등을 넣어주면 변경 시 bounds를 재동기화한다. */
   layoutKey?: string;
 }) {
+  const msg = useMessages();
   const viewportRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const item = useBrowsers((s) => s.items[id]) ?? EMPTY_ITEM;
+  const item: BrowserItem = useBrowsers((s) => s.items[id]) ?? {
+    ...EMPTY_ITEM,
+    title: msg.git.browser.newBrowserTitle,
+  };
   const url = item.url;
   const mode = item.mode;
   const setUrl = useBrowsers((s) => s.setUrl);
@@ -242,18 +247,22 @@ export function BrowserPane({
       <div className="flex h-9 shrink-0 items-center gap-1 border-b border-edge px-2">
         {/* 뒤로/앞으로는 네이티브 전용 — iframe(localhost·프리뷰)은 cross-origin이라
             contentWindow.history에 접근할 수 없다. 새로고침은 iframe도 key 교체로 지원. */}
-        <NavBtn label="뒤로" onClick={() => back(id)} disabled={!hasUrl || mode === "iframe"}>
+        <NavBtn
+          label={msg.git.browser.back}
+          onClick={() => back(id)}
+          disabled={!hasUrl || mode === "iframe"}
+        >
           <ArrowLeft size={15} />
         </NavBtn>
         <NavBtn
-          label="앞으로"
+          label={msg.git.browser.forward}
           onClick={() => forward(id)}
           disabled={!hasUrl || mode === "iframe"}
         >
           <ArrowRight size={15} />
         </NavBtn>
         <NavBtn
-          label={loading ? "정지" : "새로고침"}
+          label={loading ? msg.git.browser.stop : msg.git.browser.reload}
           onClick={() => {
             if (mode === "iframe") setIframeGen((g) => g + 1);
             else if (loading) stop(id);
@@ -294,7 +303,7 @@ export function BrowserPane({
                   inputRef.current?.blur();
                 }
               }}
-              placeholder="URL 입력 또는 검색…"
+              placeholder={msg.git.browser.omniboxPlaceholder}
               spellCheck={false}
               className="min-w-0 flex-1 bg-transparent text-fg outline-none placeholder:text-fg-dim"
             />
@@ -330,7 +339,7 @@ export function BrowserPane({
 
         {hasUrl && (
           <NavBtn
-            label={isBookmarked ? "북마크 제거" : "북마크 추가"}
+            label={isBookmarked ? msg.git.browser.removeBookmark : msg.git.browser.addBookmark}
             onClick={() => toggleBookmark(url, item.title)}
           >
             <Star
@@ -340,7 +349,7 @@ export function BrowserPane({
           </NavBtn>
         )}
         {mode === "native" && hasUrl && (
-          <NavBtn label="앱으로 포커스 (단축키 복귀)" onClick={() => blurBrowser()}>
+          <NavBtn label={msg.git.browser.focusApp} onClick={() => blurBrowser()}>
             <CornerUpLeft size={15} />
           </NavBtn>
         )}
@@ -378,7 +387,7 @@ export function BrowserPane({
         ) : (
           // 네이티브 모드: webview가 위를 덮는다. 숨겨질 때 보이는 중립 배경.
           <div className="flex h-full w-full items-center justify-center text-xs text-fg-dim">
-            {!active && "다른 곳에서 표시 중…"}
+            {!active && msg.git.browser.shownElsewhere}
           </div>
         )}
       </div>
@@ -411,6 +420,7 @@ function NavBtn({
 
 /** localhost dev 서버 빠른 접속 드롭다운 — 감지된 포트만 노출. */
 function DevPorts({ onPick }: { onPick: (url: string) => void }) {
+  const msg = useMessages();
   const [ports, setPorts] = useState<number[] | null>(null);
   const [open, setOpen] = useState(false);
   // 드롭다운이 webview 점유 영역으로 펼쳐진다 — 열린 동안 webview를 숨긴다.
@@ -427,7 +437,7 @@ function DevPorts({ onPick }: { onPick: (url: string) => void }) {
     <div className="relative shrink-0">
       <button
         onClick={() => (open ? setOpen(false) : void scan())}
-        title="개발 서버 빠른 접속"
+        title={msg.git.browser.devServersTitle}
         className="rounded p-1.5 text-fg-dim hover:bg-raised hover:text-fg"
       >
         <Plug size={15} />
@@ -437,9 +447,9 @@ function DevPorts({ onPick }: { onPick: (url: string) => void }) {
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
           <div className="absolute right-0 top-full z-50 mt-1 min-w-44 rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl">
             {ports === null ? (
-              <div className="px-3 py-1.5 text-fg-dim">검색 중…</div>
+              <div className="px-3 py-1.5 text-fg-dim">{msg.git.browser.devServersScanning}</div>
             ) : ports.length === 0 ? (
-              <div className="px-3 py-1.5 text-fg-dim">감지된 개발 서버 없음</div>
+              <div className="px-3 py-1.5 text-fg-dim">{msg.git.browser.devServersNone}</div>
             ) : (
               ports.map((p) => (
                 <button
@@ -470,6 +480,7 @@ function BookmarksMenu({
   bookmarks: BookmarkEntry[];
   onPick: (url: string) => void;
 }) {
+  const msg = useMessages();
   const [open, setOpen] = useState(false);
   // max-h-80(최대 320px)이 webview 점유 영역을 파고든다 — 열린 동안 webview를 숨긴다.
   useOccludesWebview(open);
@@ -477,7 +488,7 @@ function BookmarksMenu({
     <div className="relative shrink-0">
       <button
         onClick={() => setOpen((v) => !v)}
-        title="북마크"
+        title={msg.git.browser.bookmarksTitle}
         className="rounded p-1.5 text-fg-dim hover:bg-raised hover:text-fg"
       >
         <Bookmark size={15} />
@@ -488,7 +499,7 @@ function BookmarksMenu({
           <div className="absolute right-0 top-full z-50 mt-1 max-h-80 min-w-56 overflow-auto rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl">
             {bookmarks.length === 0 ? (
               <div className="px-3 py-1.5 text-fg-dim">
-                북마크 없음 — 주소창의 ★로 추가
+                {msg.git.browser.bookmarksNone}
               </div>
             ) : (
               bookmarks.map((b) => (
@@ -519,6 +530,7 @@ function BrowserEmpty({
   onPick: (url: string) => void;
   bookmarks: BookmarkEntry[];
 }) {
+  const msg = useMessages();
   const [ports, setPorts] = useState<number[]>([]);
   useEffect(() => {
     void scanDevPorts().then(setPorts);
@@ -527,8 +539,8 @@ function BrowserEmpty({
   return (
     <EmptyState
       icon={Globe}
-      title="주소를 입력하거나 검색하세요"
-      desc="위 주소창에 URL을 넣으면 바로 열리고, 검색어를 넣으면 Google에서 찾아봅니다"
+      title={msg.git.browser.emptyTitle}
+      desc={msg.git.browser.emptyDesc}
       action={
         <div className="flex max-w-md flex-wrap justify-center gap-2">
           {bookmarks.slice(0, 8).map((b) => (
@@ -548,7 +560,7 @@ function BrowserEmpty({
               onClick={() => onPick(`http://localhost:${p}`)}
               className="rounded border border-edge px-3 py-1.5 text-xs text-fg-muted hover:bg-raised hover:text-fg"
             >
-              localhost:{p} 열기
+              {msg.git.browser.openLocalhost(p)}
             </button>
           ))}
         </div>

@@ -1,5 +1,6 @@
 import { Check, GitBranch } from "lucide-react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { usePanelWidth } from "../../lib/use-panel-width";
 import { useBranches } from "../../queries";
 import { ResizeHandle } from "../common/ResizeHandle";
@@ -23,6 +24,7 @@ function Section({
 
 /** Log 패널 좌측: 로컬/리모트 브랜치 트리 (현재 HEAD 체크 표시). */
 export function BranchesPane({ projectId }: { projectId: string }) {
+  const msg = useMessages();
   const { data, isLoading, error } = useBranches(projectId);
   const { width, startResize } = usePanelWidth("gp:branches-width", 192, 130, 360);
 
@@ -33,21 +35,21 @@ export function BranchesPane({ projectId }: { projectId: string }) {
     >
       <div className="h-full overflow-y-auto p-2 text-xs">
         {isLoading ? (
-        <span className="text-fg-dim">브랜치 …</span>
+        <span className="text-fg-dim">{msg.git.log.branchesLoading}</span>
       ) : error ? (
-        <span className="text-fg-dim">브랜치를 불러오지 못했습니다</span>
+        <span className="text-fg-dim">{msg.git.log.branchesLoadFailed}</span>
       ) : data ? (
         <>
           <Section title="Local">
             {data.local.length === 0 ? (
-              <div className="px-1 text-fg-dim">없음</div>
+              <div className="px-1 text-fg-dim">{msg.git.log.branchesNone}</div>
             ) : (
               data.local.map((b) => {
                 const current = b.name === data.head;
                 return (
                   <div
                     key={b.name}
-                    title={b.upstream ? `↥ ${b.upstream}` : "업스트림 없음"}
+                    title={b.upstream ? `↥ ${b.upstream}` : msg.git.log.noUpstream}
                     className="flex items-center gap-1 rounded px-1 py-0.5 hover:bg-raised"
                   >
                     {current ? (
@@ -74,7 +76,7 @@ export function BranchesPane({ projectId }: { projectId: string }) {
           </Section>
           <Section title="Remote">
             {data.remote.length === 0 ? (
-              <div className="px-1 text-fg-dim">없음</div>
+              <div className="px-1 text-fg-dim">{msg.git.log.branchesNone}</div>
             ) : (
               data.remote.map((r) => (
                 <div

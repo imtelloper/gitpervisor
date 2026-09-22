@@ -24,6 +24,7 @@ import {
   useState,
 } from "react";
 
+import { currentMessages } from "../../i18n/ui-language";
 import { CHROME_COLORS, type ChromeScreen, type ChromeState } from "../../lib/annotate/chrome";
 import type { ImageStore } from "../../lib/annotate/imageStore";
 import { defaultLayerName } from "../../lib/annotate/layer-rows";
@@ -622,6 +623,7 @@ function AnnotationLayerImpl(
       setPenDraft(null);
       if (penUsable(d)) {
         const made = penFinish(d, closed, s.style, s.opacity);
+        const label = currentMessages().imagePanels.historyLabel.createPenPath;
         if ("sub" in made) {
           // 노드 편집 중 빈 곳에서 시작한 드래프트 = 같은 객체에 서브패스 추가(46 짝수-홀수 구멍).
           const t = d.target;
@@ -632,11 +634,11 @@ function AnnotationLayerImpl(
               s.objects.map((o) =>
                 o.id === host.id ? { ...host, subpaths: [...host.subpaths, made.sub] } : o,
               ),
-              "펜 경로 생성",
+              label,
             );
           }
         } else {
-          commitObjects([...s.objects, made], "펜 경로 생성");
+          commitObjects([...s.objects, made], label);
           s.onSelectionChange([made.id]);
           nodeSelRef.current = [];
           useImageEditorUi.getState().setMode({ kind: "nodeEdit", id: made.id });
@@ -889,7 +891,7 @@ function AnnotationLayerImpl(
         guideSelRef.current = -1;
         s.onGuidesChange(
           s.guides.filter((_, k) => k !== i).map((g) => ({ ...g })),
-          "가이드 삭제",
+          currentMessages().imagePanels.historyLabel.deleteGuide,
         );
         schedule();
         return true;
@@ -929,7 +931,12 @@ function AnnotationLayerImpl(
         // 여럿을 고른 채 절대 좌표를 쓰면 정점들이 한 점으로 뭉친다 — 인스펙터가 단일 선택에서만
         // X/Y 를 그리는 이유이고, 여기서도 같은 조건으로 막는다.
         if (!o || !v) return;
-        commitNode(o, moveVerts(o, sel, x - v.x, y - v.y), "노드 이동", sel);
+        commitNode(
+          o,
+          moveVerts(o, sel, x - v.x, y - v.y),
+          currentMessages().imagePanels.historyLabel.moveNodes,
+          sel,
+        );
       },
       setVertHandle(side, x, y) {
         const o = editedPath(p.current.objects, useImageEditorUi.getState().mode);
@@ -940,7 +947,7 @@ function AnnotationLayerImpl(
         commitNode(
           o,
           moveHandle(o, sel[0], side, { x: v.x + x, y: v.y + y }, { alt: false }),
-          "핸들 조정",
+          currentMessages().imagePanels.historyLabel.adjustHandle,
           sel,
         );
       },
@@ -1028,9 +1035,9 @@ function AnnotationLayerImpl(
         onPointerCancel={onPointerUp}
         onPointerLeave={clearCursor}
         onDoubleClick={onDoubleClick}
+        // 노드 편집은 도구가 `select` 여도 십자선이다(47 §3.5) — 정점을 집는 화면에서
+        // 화살표 커서는 "여기서는 객체를 고른다"는 다른 약속을 한다.
         className={`absolute inset-0 h-full w-full ${
-          // 노드 편집은 도구가 `select` 여도 십자선이다(47 §3.5) — 정점을 집는 화면에서
-          // 화살표 커서는 "여기서는 객체를 고른다"는 다른 약속을 한다.
           props.cropMode || props.tool !== "select" || mode.kind === "nodeEdit"
             ? "cursor-crosshair"
             : "cursor-default"
@@ -1321,7 +1328,11 @@ function buildChromeState(
         { scale: s.screen.scale },
         // 시안 ③ 아트보드 라벨. 파일명은 이 컴포넌트가 모른다 — 레이어 이름이 컨텍스트 바·
         // 레이어 패널과 같은 이름이라 그쪽을 쓴다.
-        { label: `${edited.name ?? defaultLayerName(edited, s.objects)} · 벡터 레이어 편집 중` },
+        {
+          label: currentMessages().imagePanels.nodeCanvas.editingVectorLayer(
+            edited.name ?? defaultLayerName(edited, s.objects),
+          ),
+        },
       ),
     );
   }

@@ -1,3 +1,4 @@
+import { useMessages } from "../../i18n/ui-language";
 import type {
   ApiRequestBody,
   AuthConfig,
@@ -31,6 +32,7 @@ function countRows(rows: KvRow[]): number {
  * 본문은 KeyValueEditor / BodyEditor / Auth 폼.
  */
 export function RequestTabs({ tabId }: { tabId: string }) {
+  const msg = useMessages();
   const draft = useApiClient((s) => s.draftById[tabId]);
   const view = useApiClient((s) => s.items[tabId]?.view ?? "params");
   const setView = useApiClient((s) => s.setView);
@@ -46,7 +48,7 @@ export function RequestTabs({ tabId }: { tabId: string }) {
     { view: "headers", label: "Headers", count: countRows(draft.headers) },
     { view: "body", label: "Body", count: bodyCount || null },
     { view: "auth", label: "Auth", count: authCount || null },
-    { view: "settings", label: "설정", count: countSettings(draft.settings) || null },
+    { view: "settings", label: msg.apiclient.requestTabs.settingsTab, count: countSettings(draft.settings) || null },
   ];
 
   return (
@@ -120,6 +122,7 @@ function SettingsForm({
   settings: RequestSettings | undefined;
   onChange: (s: RequestSettings) => void;
 }) {
+  const msg = useMessages();
   const s = settings ?? {};
   const set = (patch: Partial<RequestSettings>) => onChange({ ...s, ...patch });
   const verifyTls = s.verifyTls !== false; // 기본 true
@@ -130,35 +133,35 @@ function SettingsForm({
   return (
     <div className="space-y-4 p-3 text-[13px]">
       <Toggle
-        label="TLS 인증서 검증"
-        hint="끄면 자가서명·만료 인증서도 허용(개발용). 응답에 ⚠️ 검증 꺼짐 배지가 뜬다."
+        label={msg.apiclient.requestTabs.verifyTlsLabel}
+        hint={msg.apiclient.requestTabs.verifyTlsHint}
         checked={verifyTls}
         onChange={(v) => set({ verifyTls: v })}
       />
       <Toggle
-        label="리다이렉트 추종"
-        hint="3xx Location을 자동 추종. 다른 origin으로 넘어가면 Authorization·Cookie는 자동 제거된다."
+        label={msg.apiclient.requestTabs.followRedirectsLabel}
+        hint={msg.apiclient.requestTabs.followRedirectsHint}
         checked={followRedirects}
         onChange={(v) => set({ followRedirects: v })}
       />
       {followRedirects && (
-        <Field label="최대 리다이렉트 횟수">
+        <Field label={msg.apiclient.requestTabs.maxRedirectsLabel}>
           <input
             type="number"
             min={0}
             value={s.maxRedirects ?? ""}
-            placeholder="10 (기본)"
+            placeholder={msg.apiclient.requestTabs.maxRedirectsPlaceholder}
             onChange={(e) => set({ maxRedirects: numOrUndef(e.target.value) })}
             className="w-32 rounded border border-edge bg-base px-2 py-1 outline-none focus:border-accent"
           />
         </Field>
       )}
-      <Field label="타임아웃 (ms)">
+      <Field label={msg.apiclient.requestTabs.timeoutLabel}>
         <input
           type="number"
           min={0}
           value={s.timeoutMs ?? ""}
-          placeholder="30000 (기본)"
+          placeholder={msg.apiclient.requestTabs.timeoutPlaceholder}
           onChange={(e) => set({ timeoutMs: numOrUndef(e.target.value) })}
           className="w-32 rounded border border-edge bg-base px-2 py-1 outline-none focus:border-accent"
         />
@@ -211,6 +214,7 @@ function AuthForm({
   auth: AuthConfig;
   onChange: (auth: AuthConfig) => void;
 }) {
+  const msg = useMessages();
   const setKind = (kind: AuthConfig["kind"]) => {
     switch (kind) {
       case "none":
@@ -229,7 +233,7 @@ function AuthForm({
   return (
     <div className="space-y-3 p-3 text-[13px]">
       <label className="block">
-        <div className="mb-0.5 text-[12px] text-fg-muted">인증 방식</div>
+        <div className="mb-0.5 text-[12px] text-fg-muted">{msg.apiclient.requestTabs.authKindLabel}</div>
         <select
           value={auth.kind}
           onChange={(e) => setKind(e.target.value as AuthConfig["kind"])}
@@ -245,7 +249,7 @@ function AuthForm({
 
       {auth.kind === "inherit" && (
         <div className="text-[12px] text-fg-dim">
-          상위 폴더(컬렉션)의 인증을 위임합니다.
+          {msg.apiclient.requestTabs.inheritHint}
         </div>
       )}
 
@@ -254,7 +258,7 @@ function AuthForm({
           <input
             value={auth.token}
             onChange={(e) => onChange({ ...auth, token: e.target.value })}
-            placeholder="{{token}} 또는 토큰 값"
+            placeholder={msg.apiclient.requestTabs.bearerTokenPlaceholder}
             className="w-full rounded border border-edge bg-base px-2 py-1 font-mono outline-none focus:border-accent"
           />
         </Field>
@@ -298,7 +302,7 @@ function AuthForm({
               className="w-full rounded border border-edge bg-base px-2 py-1 font-mono outline-none focus:border-accent"
             />
           </Field>
-          <Field label="추가 위치">
+          <Field label={msg.apiclient.requestTabs.apiKeyLocationLabel}>
             <select
               value={auth.in}
               onChange={(e) =>

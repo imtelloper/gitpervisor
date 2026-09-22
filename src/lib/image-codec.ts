@@ -4,6 +4,8 @@
 // avif 는 Chromium canvas 가 인코딩을 못 하므로 네이티브를 먼저 시도하고, 실패하면
 // @jsquash/avif(WASM)로 폴백한다 — 코덱 wasm 은 avif 를 고를 때만 동적 로드한다.
 
+import { currentMessages } from "../i18n/ui-language";
+
 export type ImgFormat = "png" | "jpeg" | "webp" | "avif";
 
 /** UI에 노출하는 변환 대상 포맷(라벨/확장자). */
@@ -75,12 +77,12 @@ export async function encodeCanvas(
   const q = Math.max(0, Math.min(100, Math.round(quality)));
   if (fmt === "png") {
     const out = await canvasToBytes(canvas, "image/png");
-    if (!out) throw new Error("PNG 인코딩에 실패했습니다");
+    if (!out) throw new Error(currentMessages().lib.imageCodec.encodeFailed("PNG"));
     return out;
   }
   if (fmt === "jpeg" || fmt === "webp") {
     const out = await canvasToBytes(canvas, mimeOf(fmt), q / 100);
-    if (!out) throw new Error(`${fmt.toUpperCase()} 인코딩에 실패했습니다`);
+    if (!out) throw new Error(currentMessages().lib.imageCodec.encodeFailed(fmt.toUpperCase()));
     return out;
   }
   // ── avif ──
@@ -91,7 +93,7 @@ export async function encodeCanvas(
     if (native) return native;
   }
   const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("캔버스 컨텍스트를 얻지 못했습니다");
+  if (!ctx) throw new Error(currentMessages().lib.imageCodec.canvasContextUnavailable);
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const mod = await import("@jsquash/avif/encode");
   const buf = await mod.default(imageData, { quality: q });
@@ -124,7 +126,7 @@ export function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error("이미지를 디코드하지 못했습니다"));
+    img.onerror = () => reject(new Error(currentMessages().lib.imageCodec.decodeFailed));
     img.src = src;
   });
 }

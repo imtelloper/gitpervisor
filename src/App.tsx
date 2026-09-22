@@ -33,6 +33,7 @@ import { Toolbar } from "./components/toolbar/Toolbar";
 import { FileTreeDialog } from "./components/tree/FileTreeDialog";
 import { FileTreePanel } from "./components/tree/FileTreePanel";
 import { WorkspaceTabs } from "./components/workspace/WorkspaceTabs";
+import { currentMessages, useMessages } from "./i18n/ui-language";
 import { useAgentNotifications } from "./lib/agent-notify";
 import { useReportSchedule } from "./lib/report-schedule";
 import { getTerminal, listTerminals, refreshTerminalThemes } from "./lib/terminal";
@@ -53,7 +54,16 @@ const ImageEditor = lazy(() => import("./components/image/ImageEditor"));
 // 더 촘촘히 볼 이유가 없다. 절전에서 깨어나 늦게 발화해도 무해하다.
 const UPDATE_RECHECK_MS = 12 * 60 * 60_000;
 
+// status_of 의 경로 소실 오류(Rust `text_git_net::project_path_not_found`) — 오류 코드가 없어 문구로 판정한다.
+// Rust 가 그 문구를 현재 언어로 만들므로 두 언어를 다 받는다(언어를 바꾼 직후 캐시에 옛 언어 문구가 남아도 맞게).
+// 화면에 보이지 않는 비교값이다.
+const PATH_MISSING_ERRORS = new Set([
+  "프로젝트 경로를 찾을 수 없습니다", // i18n-ok: Rust status_of 오류와 비교(표시 안 함)
+  "Project path not found",
+]);
+
 export default function App() {
+  const msg = useMessages();
   // 실행 횟수는 **렌더 중** 올린다 — useEffect에 두면 자식(StarPrompt)이 이미 마운트하며
   // 증가 전 값을 읽어, 3번째 실행에서 카드가 한 박자 늦게(=다음 실행에) 뜬다.
   // 모듈 플래그로 멱등하므로 StrictMode 이중 마운트에도 1회다.
@@ -114,10 +124,11 @@ export default function App() {
   useEffect(() => {
     const un = listen<number>("app://close-requested", (e) => {
       const n = e.payload;
+      const t = currentMessages().windows.app;
       useUi.getState().askConfirm({
-        title: "터미널이 실행 중입니다",
-        message: `실행 중인 터미널 세션이 ${n}개 있습니다. 지금 닫으면 그 안에서 돌고 있는 명령(빌드·개발 서버·에이전트)이 모두 종료됩니다.`,
-        confirmLabel: "닫기",
+        title: t.closeConfirmTitle,
+        message: t.closeConfirmMessage(n),
+        confirmLabel: t.closeConfirmLabel,
         danger: true,
         onConfirm: () => void getCurrentWindow().destroy(),
         onCancel: () => void invoke("reset_close_guard").catch(() => {}),
@@ -155,7 +166,7 @@ export default function App() {
         (tab && getTerminal(tab.activePaneId)) ??
         listTerminals().find((t) => t.status === "live");
       if (!inst) {
-        useUi.getState().pushToast("error", "경로를 넣을 터미널이 없습니다");
+        useUi.getState().pushToast("error", currentMessages().windows.app.pastePathNoTerminal);
         return;
       }
       const p = e.payload.path;
@@ -169,7 +180,7 @@ export default function App() {
 
   // 선택 프로젝트의 경로 소실(폴더 이동/삭제) 감지 — 문구는 백엔드 status_of와 동일(단일 진실).
   const { data: selStatus } = useStatus(selectedProjectId);
-  const pathMissing = selStatus?.error === "프로젝트 경로를 찾을 수 없습니다";
+  const pathMissing = !!selStatus?.error && PATH_MISSING_ERRORS.has(selStatus.error);
 
   // 첫 로드 시 첫 프로젝트 자동 선택, 선택된 프로젝트가 제거되면 선택 정리
   useEffect(() => {
@@ -221,8 +232,8 @@ export default function App() {
                 ) : (
                   <EmptyState
                     icon={FolderGit2}
-                    title="프로젝트를 추가하세요"
-                    desc="좌측 하단 ‘프로젝트 추가’ 버튼으로 git 레포 폴더를 등록하면 상태가 표시됩니다"
+                    title={msg.windows.app.emptyTitle}
+                    desc={msg.windows.app.emptyDesc}
                   />
                 )}
               </main>

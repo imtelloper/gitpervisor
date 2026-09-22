@@ -48,6 +48,7 @@ import {
   type Rect,
   type TextNode,
 } from "../../../lib/annotate/types";
+import { currentMessages } from "../../../i18n/ui-language";
 import { useImageEditorUi } from "../../../stores/imageEditor";
 import type { Tool } from "../../../stores/imageEditor";
 import type { AnnotationLayerProps } from "../AnnotationLayer";
@@ -108,8 +109,6 @@ export const MIN_DRAG = 3;
 const GUIDE_GRAB_CSS = 4;
 /** 측정 라벨을 선에서 띄우는 거리(oriented px) — 겹치면 숫자가 선에 먹힌다. */
 const MEASURE_LABEL_GAP = 8;
-/** 측정 도구 산출물의 그룹 이름(시안 ⑤ 컴포넌트 이름 관례). */
-const MEASURE_GROUP_NAME = "측정 라벨";
 
 /**
  * 선택 도구처럼 구는 도구 — 히트·핸들·이동·마퀴가 같다. 배율(K)은 리사이즈 수식만 다르다.
@@ -540,9 +539,12 @@ export function createPointerHandlers(ctx: PointerCtx) {
       text: `${Math.round(dist)} px`,
     };
     const r = treeGroup([...s.objects, line, label], [line.id, label.id], "group");
+    const t = currentMessages().imagePanels;
+    // 그룹 이름은 시안 ⑤ 컴포넌트 이름 관례 — 만든 순간의 언어로 문서에 남는다.
+    const name = t.nodeCanvas.measureGroupName;
     commitObjects(
-      r.objects.map((o) => (o.id === r.id ? { ...o, name: MEASURE_GROUP_NAME } : o)),
-      "측정 라벨 생성",
+      r.objects.map((o) => (o.id === r.id ? { ...o, name } : o)),
+      t.historyLabel.createMeasureLabel,
     );
   };
 
@@ -1012,10 +1014,10 @@ export function createPointerHandlers(ctx: PointerCtx) {
       if (d.pos < 0 || d.pos > max) {
         next.splice(d.index, 1);
         guideSelRef.current = -1;
-        s.onGuidesChange(next, "가이드 삭제");
+        s.onGuidesChange(next, currentMessages().imagePanels.historyLabel.deleteGuide);
       } else if (d.moved) {
         next[d.index] = { axis: d.axis, pos: d.pos };
-        s.onGuidesChange(next, "가이드 이동");
+        s.onGuidesChange(next, currentMessages().imagePanels.historyLabel.moveGuide);
       }
       schedule();
       return;
@@ -1038,7 +1040,9 @@ export function createPointerHandlers(ctx: PointerCtx) {
     if (d.mode === "erase") {
       // 지운 게 없으면 커밋도 없다 — 빈 히스토리 항목이 쌓이면 Ctrl+Z 가 몇 번은
       // 아무 일도 안 하는 것처럼 보인다.
-      if (d.ids.size) commitObjects(remove(s.objects, [...d.ids]), "지우개");
+      if (d.ids.size) {
+        commitObjects(remove(s.objects, [...d.ids]), currentMessages().imagePanels.historyLabel.erase);
+      }
       return;
     }
     if (d.mode === "draw") {

@@ -39,6 +39,8 @@ import {
 } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import type { Messages } from "../../i18n/messages";
+import { currentMessages, useMessages } from "../../i18n/ui-language";
 import { encodingLabel, errorMessage, ipc, isIpcError } from "../../lib/ipc";
 import type { DiffTarget } from "../../lib/ipc";
 import { isMod } from "../../lib/platform";
@@ -54,12 +56,23 @@ import MarkdownView from "./MarkdownView";
 // PDF 뷰어는 lazy — 이 파일은 유휴 선로딩(main.tsx)되므로 정적 import면 pdf.js가 앱 시작마다 실린다.
 const PdfView = lazy(() => import("../pdf/PdfView"));
 
-/** Office 문서 종류별 아이콘·이름. 확장자 접두사로 가족을 가른다(doc/xls/ppt + m·x 변형). */
+/** Office 문서 종류별 아이콘. 확장자 접두사로 가족을 가른다(doc/xls/ppt + m·x 변형). 이름은 officeKindName. */
 const OFFICE_KIND = [
-  { prefix: "doc", icon: FileText, name: "Word 문서" },
-  { prefix: "xls", icon: FileSpreadsheet, name: "Excel 통합 문서" },
-  { prefix: "ppt", icon: Presentation, name: "PowerPoint 프레젠테이션" },
+  { prefix: "doc", icon: FileText },
+  { prefix: "xls", icon: FileSpreadsheet },
+  { prefix: "ppt", icon: Presentation },
 ] as const;
+
+function officeKindName(prefix: (typeof OFFICE_KIND)[number]["prefix"], msg: Messages): string {
+  switch (prefix) {
+    case "doc":
+      return msg.git.diff.officeWord;
+    case "xls":
+      return msg.git.diff.officeExcel;
+    case "ppt":
+      return msg.git.diff.officePowerPoint;
+  }
+}
 
 /**
  * Office 문서 카드 — 웹뷰가 못 그리는 형식을 OS 기본 앱으로 넘긴다.
@@ -77,19 +90,17 @@ function OfficeView({
   path: string;
   mode: DiffTarget["mode"];
 }) {
+  const msg = useMessages();
   const pushToast = useUi((s) => s.pushToast);
   const ext = path.split(".").pop()?.toLowerCase() ?? "";
   const kind = OFFICE_KIND.find((k) => ext.startsWith(k.prefix));
   // 커밋 뷰에서도 여는 건 **작업 트리의 현재 파일**이다(다른 뷰와 달리 과거 버전을 꺼내지
   // 않는다). 말 안 하면 사용자는 그 커밋 시점 문서를 본다고 믿는다 — 조용히 다른 내용이다.
-  const desc =
-    mode === "commit"
-      ? "웹뷰에서는 표시할 수 없는 형식입니다. 이 커밋 버전이 아니라 작업 트리의 현재 파일이 열립니다."
-      : "웹뷰에서는 표시할 수 없는 형식입니다. 기본 앱으로 열어 확인하세요.";
+  const desc = mode === "commit" ? msg.git.diff.officeDescCommit : msg.git.diff.officeDesc;
   return (
     <EmptyState
       icon={kind?.icon ?? FileQuestion}
-      title={kind?.name ?? "Office 문서"}
+      title={kind ? officeKindName(kind.prefix, msg) : msg.git.diff.officeGeneric}
       desc={desc}
       action={
         <button
@@ -100,23 +111,23 @@ function OfficeView({
           }
           className="flex items-center gap-1.5 rounded border border-edge px-3 py-1.5 text-xs text-fg-muted hover:bg-raised hover:text-fg"
         >
-          <ExternalLink size={13} /> 외부 앱으로 열기
+          <ExternalLink size={13} /> {msg.git.diff.openExternally}
         </button>
       }
     />
   );
 }
 
-function modeLabel(target: DiffTarget): string {
+function modeLabel(target: DiffTarget, msg: Messages): string {
   switch (target.mode) {
     case "worktree":
-      return "인덱스 ↔ 워킹 트리";
+      return msg.git.diff.modeWorktree;
     case "index":
-      return "HEAD ↔ 인덱스 (staged)";
+      return msg.git.diff.modeIndex;
     case "commit":
-      return `부모 ↔ 커밋 ${target.sha.slice(0, 7)}`;
+      return msg.git.diff.modeCommit(target.sha.slice(0, 7));
     case "file":
-      return "파일";
+      return msg.git.diff.modeFile;
   }
 }
 
@@ -226,6 +237,7 @@ export default function DiffViewer({
   /** 끈 자리를 메울 메뉴가 선택 텍스트를 읽는 통로. 마운트된 에디터의 선택을 준다. */
   selectionRef?: SelectionRef;
 }) {
+  const msg = useMessages();
   const { data: diff, isLoading, error, isPlaceholderData } = useDiff(projectId, target);
   const { data: settings } = useSettings();
   const monacoTheme = ensureMonacoTheme(settings?.theme);
@@ -478,7 +490,7 @@ export default function DiffViewer({
   // 그 사이 다른 파일로 갈아탈 수 있는데, 그때 현재 에디터의 기준(baseline)을 남의 내용으로
   // 덮으면 그 파일이 통째로 "변경 없음"이 되거나 방금 편집이 사라진다.
   const afterSave = (content: string, key: string) => {
-    pushToast("success", "저장됨");
+    pushToast("success", msg.git.diff.saved);
     clearFileDraft(key); // 디스크에 반영됐으니 그 파일의 초안은 역할이 끝났다
     if (editorKeyRef.current !== key) return; // 다른 파일로 옮겨 갔다 — 에디터 상태는 그쪽 것
     baselineRef.current = content;
@@ -515,11 +527,10 @@ export default function DiffViewer({
         // 표현 불가 문자(B-K4) — **파일은 손대지 않은 상태**다. 조용히 `?` 로 뭉개지 않고 묻는다.
         if (!isIpcError(e) || e.code !== "UNMAPPABLE") return; // 그 외는 useWriteFile 이 토스트
         useUi.getState().askConfirm({
-          title: `${encodingLabel(encoding ?? "UTF-8")} 로 저장할 수 없습니다`,
-          message:
-            "이 인코딩으로 표현할 수 없는 문자가 있습니다. UTF-8 로 저장하면 파일 인코딩이 UTF-8 로 바뀝니다(취소하면 파일은 그대로입니다).",
+          title: msg.git.diff.cannotSaveInEncoding(encodingLabel(encoding ?? "UTF-8")),
+          message: msg.git.diff.unmappableMessage,
           detail: errorMessage(e),
-          confirmLabel: "UTF-8 로 저장",
+          confirmLabel: msg.git.diff.saveAsUtf8,
           onConfirm: () =>
             void (async () => {
               try {
@@ -610,10 +621,12 @@ export default function DiffViewer({
     // 에디터를 붙잡아, 패널을 접어도 dispose 된 에디터와 분리된 DOM 서브트리가 힙에 남았다.
     // addAction 은 IDisposable 을 돌려주고 when 이 그 에디터로 한정돼(editorId) 다른 Monaco 에서
     // 누른 Ctrl+S 가 남의 에디터를 저장하는 경로도 같이 막힌다.
+    // 1회 등록 콜백이라 msg 클로저는 낡는다 — 마운트 시점 언어로 라벨을 만든다.
+    const labels = currentMessages().git;
     const regs = [
       editor.addAction({
         id: "gp.save",
-        label: "저장",
+        label: labels.diff.saveAction,
         keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS],
         run: () => saveRef.current(),
       }),
@@ -627,7 +640,7 @@ export default function DiffViewer({
     // precondition이 선택 없을 때 항목을 **비활성**으로 보인다(Monaco 관례 — 앱 메뉴와 다르다).
     regs.push(editor.addAction({
       id: "gp.translate",
-      label: "선택 영역 번역",
+      label: labels.paneMenu.translateSelection,
       contextMenuGroupId: "9_cutcopypaste",
       contextMenuOrder: 9,
       precondition: "editorHasSelection",
@@ -715,9 +728,9 @@ export default function DiffViewer({
   const stateBadge =
     !isFileView && diff && !ownViewer
       ? diff.oldContent === null && diff.newContent !== null
-        ? { text: "추가됨", className: "text-add" }
+        ? { text: msg.git.diff.stateAdded, className: "text-add" }
         : diff.newContent === null && diff.oldContent !== null
-          ? { text: "삭제됨", className: "text-del" }
+          ? { text: msg.git.diff.stateDeleted, className: "text-del" }
           : null
       : null;
 
@@ -742,18 +755,18 @@ export default function DiffViewer({
         {canFormat && (
           <button
             onClick={() => void editorRef.current?.getAction("editor.action.formatDocument")?.run()}
-            title="포맷 (Shift+Alt+F)"
+            title={msg.git.diff.formatTitle}
             className="flex shrink-0 items-center gap-1 rounded px-2 py-0.5 text-xs text-fg-dim hover:bg-raised hover:text-fg"
           >
             <Wand2 size={13} />
-            포맷
+            {msg.git.diff.format}
           </button>
         )}
         {editable && (
           <button
             onClick={() => saveRef.current()}
             disabled={!dirty || writeFile.isPending}
-            title="저장 (Ctrl+S)"
+            title={msg.git.diff.saveTitle}
             className={`flex shrink-0 items-center gap-1 rounded px-2 py-0.5 text-xs ${
               dirty
                 ? "bg-accent/20 text-accent hover:bg-accent/30"
@@ -761,23 +774,29 @@ export default function DiffViewer({
             } disabled:opacity-50`}
           >
             <Save size={13} />
-            {writeFile.isPending ? "저장 중…" : dirty ? "저장 *" : "저장됨"}
+            {writeFile.isPending
+              ? msg.git.diff.saving
+              : dirty
+                ? msg.git.diff.saveDirty
+                : msg.git.diff.saved}
           </button>
         )}
         {canEditFromDiff && (
           <button
             onClick={() => (onOpenFile ?? selectDiff)({ mode: "file", path }, projectId)}
-            title="이 파일을 편집 가능한 뷰로 열기"
+            title={msg.git.diff.editTitle}
             className="flex shrink-0 items-center gap-1 rounded px-2 py-0.5 text-xs text-fg-dim hover:bg-raised hover:text-fg"
           >
             <Pencil size={13} />
-            편집
+            {msg.git.diff.edit}
           </button>
         )}
         {isMarkdown && (
           <button
             onClick={() => setMdRaw((v) => !v)}
-            title={mdRaw ? "미리보기 (렌더된 마크다운)" : "원본 보기 (마크다운 소스)"}
+            title={
+              mdRaw ? msg.git.diff.markdownPreviewTitle : msg.git.diff.markdownSourceTitle
+            }
             className="shrink-0 rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
           >
             {mdRaw ? <Eye size={14} /> : <Code2 size={14} />}
@@ -788,8 +807,8 @@ export default function DiffViewer({
             onClick={toggleDiffCollapse}
             title={
               collapseUnchanged
-                ? "전체 펼치기 (변경 없는 영역까지 표시)"
-                : "변경 없는 영역 접기"
+                ? msg.git.diff.expandAllTitle
+                : msg.git.diff.collapseUnchangedTitle
             }
             className="shrink-0 rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
           >
@@ -801,7 +820,7 @@ export default function DiffViewer({
           </button>
         )}
         <span className="shrink-0 text-[11px] text-fg-dim">
-          {modeLabel(target)}
+          {modeLabel(target, msg)}
         </span>
       </div>
 
@@ -809,8 +828,7 @@ export default function DiffViewer({
         <div className="flex h-7 shrink-0 items-center gap-2 border-b border-edge bg-panel px-3 text-[11px]">
           <FileWarning size={12} className="shrink-0 text-warn" />
           <span className="flex-1 truncate text-fg-muted">
-            인코딩을 확정하지 못했습니다 — 읽기 전용으로 엽니다. 저장하면 원본이 손상됩니다.
-            상태바에서 인코딩을 직접 고르면 편집할 수 있습니다.
+            {msg.git.diff.lossyBanner}
           </span>
         </div>
       )}
@@ -819,14 +837,14 @@ export default function DiffViewer({
         <div className="flex h-7 shrink-0 items-center gap-2 border-b border-edge bg-panel px-3 text-[11px]">
           <FileWarning size={12} className="shrink-0 text-warn" />
           <span className="flex-1 truncate text-fg-muted">
-            저장하지 않은 편집을 복구했습니다.
+            {msg.git.diff.draftRecovered}
           </span>
           <button
             type="button"
             onClick={discardDraft}
             className="shrink-0 rounded px-1.5 py-0.5 text-fg-dim hover:bg-raised hover:text-fg"
           >
-            버리기
+            {msg.git.diff.discardDraft}
           </button>
         </div>
       )}
@@ -838,7 +856,7 @@ export default function DiffViewer({
           <MediaView projectId={projectId} path={path} onOpenPath={openPath} />
         ) : isPdfView ? (
           // isLoading보다 앞이어야 한다 — keepPreviousData가 이전 파일 diff를 잔상으로 남긴다.
-          <Suspense fallback={<EmptyState title="PDF 뷰어 로딩 중…" />}>
+          <Suspense fallback={<EmptyState title={msg.git.diff.pdfViewerLoading} />}>
             <PdfView
               key={`${projectId}:${path}`}
               projectId={projectId}
@@ -850,24 +868,24 @@ export default function DiffViewer({
         ) : isOfficeView ? (
           <OfficeView projectId={projectId} path={path} mode={target.mode} />
         ) : isLoading ? (
-          <EmptyState title="diff 불러오는 중…" />
+          <EmptyState title={msg.git.diff.diffLoading} />
         ) : error ? (
           <EmptyState
             icon={FileWarning}
-            title="diff를 불러오지 못했습니다"
+            title={msg.git.diff.diffLoadFailed}
             desc={errorMessage(error)}
           />
         ) : diff?.isBinary ? (
           <EmptyState
             icon={FileQuestion}
-            title="바이너리 파일"
-            desc="텍스트 diff를 표시할 수 없습니다"
+            title={msg.git.diff.binaryTitle}
+            desc={msg.git.diff.binaryDesc}
           />
         ) : diff?.tooLarge ? (
           <EmptyState
             icon={FileWarning}
-            title="파일이 너무 큽니다"
-            desc="1.5MB를 초과하는 파일은 표시하지 않습니다"
+            title={msg.git.diff.tooLargeTitle}
+            desc={msg.git.diff.tooLargeDesc}
           />
         ) : diff && isMarkdown && !mdRaw ? (
           <MarkdownView content={diff.newContent ?? ""} />
@@ -880,7 +898,7 @@ export default function DiffViewer({
             options={fileOptions}
             onMount={onFileMount}
             loading={
-              <span className="text-xs text-fg-dim">에디터 로딩 중…</span>
+              <span className="text-xs text-fg-dim">{msg.git.diff.editorLoading}</span>
             }
           />
         ) : diff ? (
@@ -895,7 +913,7 @@ export default function DiffViewer({
               options={options}
               onMount={handleMount}
               loading={
-                <span className="text-xs text-fg-dim">에디터 로딩 중…</span>
+                <span className="text-xs text-fg-dim">{msg.git.diff.editorLoading}</span>
               }
             />
           </div>

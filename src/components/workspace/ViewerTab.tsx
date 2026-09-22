@@ -1,6 +1,7 @@
 import { MousePointerClick } from "lucide-react";
 import { lazy, Suspense, useCallback, useRef, useState } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import type { SelectionRef } from "../diff/DiffViewer";
 import type { DiffTarget } from "../../lib/ipc";
 import { collectPanes, type Pane, type PaneSplit } from "../../lib/pane-tree";
@@ -100,6 +101,7 @@ function ViewerLeafView({
   projectId: string;
   active: boolean;
 }) {
+  const msg = useMessages();
   const entry = useUi((s) => s.viewerByPane[paneId] ?? null);
   const setActivePane = useUi((s) => s.setViewerActivePane);
   const [menu, setMenu] = useState<{ x: number; y: number; selection: string } | null>(
@@ -143,11 +145,11 @@ function ViewerLeafView({
         {!entry ? (
           <EmptyState
             icon={MousePointerClick}
-            title="파일을 선택하세요"
-            desc="왼쪽 변경 목록·파일 트리 또는 아래 Log의 커밋에서 파일을 클릭하면 여기에 표시됩니다"
+            title={msg.git.diff.selectFile}
+            desc={msg.git.viewerTab.emptyDesc}
           />
         ) : (
-          <Suspense fallback={<EmptyState title="diff 뷰어 로딩 중…" />}>
+          <Suspense fallback={<EmptyState title={msg.git.diff.diffViewerLoading} />}>
             {/* 임베디드 저장소 파일이면 그 저장소의 합성 id로 diff/편집을 라우팅한다(없으면 outer). */}
             <DiffViewer
               projectId={entry.repoId ?? projectId}

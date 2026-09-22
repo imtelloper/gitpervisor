@@ -1,5 +1,7 @@
 import { useMemo } from "react";
 
+import type { Messages } from "../../i18n/messages";
+import { useMessages } from "../../i18n/ui-language";
 import { parseYmd, today } from "../../lib/report";
 
 /** 하루치 값 — 두 시리즈를 합쳐 색을, 나눠서 툴팁을 만든다. */
@@ -31,15 +33,18 @@ export function levelOf(total: number): number {
 const CELL = 12;
 const GAP = 3;
 /** 요일 라벨(월요일 시작 — 한국 관례). 월·수·금만 적어 라벨이 셀을 압도하지 않게 한다. */
-const WEEKDAYS = ["월", "", "수", "", "금", "", ""];
+function weekdayLabels(msg: Messages): string[] {
+  const h = msg.report.heatmap;
+  return [h.weekdayMon, "", h.weekdayWed, "", h.weekdayFri, "", ""];
+}
 
 const cellColor = (level: number) =>
   `color-mix(in oklch, var(--color-accent) ${MIX[level]}%, var(--color-panel))`;
 
 /** "9월 3일 · 커밋 4 · 프롬프트 12" — 네이티브 title이 곧 접근 가능한 이름이다. */
-function cellTitle(day: string, v: DayValue): string {
+function cellTitle(msg: Messages, day: string, v: DayValue): string {
   const d = parseYmd(day);
-  return `${d.getMonth() + 1}월 ${d.getDate()}일 · 커밋 ${v.commits} · 프롬프트 ${v.prompts}`;
+  return msg.report.heatmap.cellTitle(d.getMonth() + 1, d.getDate(), v.commits, v.prompts);
 }
 
 /**
@@ -60,6 +65,7 @@ export function Heatmap({
   selected: string;
   onSelect: (day: string) => void;
 }) {
+  const msg = useMessages();
   const now = today();
 
   // 앞쪽 빈 칸 수 = 첫 날의 요일(월=0). 열 개수는 그 합을 7로 올림한 것.
@@ -75,11 +81,11 @@ export function Heatmap({
       const m = parseYmd(day).getMonth();
       if (m !== prev) {
         prev = m;
-        if (out[col] === null) out[col] = `${m + 1}월`;
+        if (out[col] === null) out[col] = msg.report.heatmap.monthLabel(m + 1);
       }
     });
     return out;
-  }, [days, lead, cols]);
+  }, [days, lead, cols, msg]);
 
   const track = { gap: `${GAP}px` } as const;
 
@@ -91,7 +97,7 @@ export function Heatmap({
           className="grid pt-[14px] text-[9px] leading-none text-fg-dim"
           style={{ ...track, gridTemplateRows: `repeat(7, ${CELL}px)` }}
         >
-          {WEEKDAYS.map((w, i) => (
+          {weekdayLabels(msg).map((w, i) => (
             <span key={i} className="flex items-center">
               {w}
             </span>
@@ -134,7 +140,7 @@ export function Heatmap({
                   data-day={day}
                   data-level={level}
                   data-selected={day === selected ? "1" : undefined}
-                  title={cellTitle(day, v)}
+                  title={cellTitle(msg, day, v)}
                   onClick={() => onSelect(day)}
                   style={{ background: cellColor(level) }}
                   className={`rounded-[2px] ${
@@ -153,7 +159,7 @@ export function Heatmap({
 
       {/* 범례 — 시퀀셜 램프는 값의 크기를 색으로만 말하므로 눈금이 반드시 함께 간다. */}
       <div className="mt-2 flex items-center gap-1 text-[10px] text-fg-dim">
-        <span>적음</span>
+        <span>{msg.report.heatmap.legendLess}</span>
         {MIX.map((_, i) => (
           <span
             key={i}
@@ -161,8 +167,8 @@ export function Heatmap({
             className="inline-block rounded-[2px]"
           />
         ))}
-        <span>많음</span>
-        <span className="ml-2">칸 = 하루(커밋 + 프롬프트), 클릭하면 그 날 요약으로</span>
+        <span>{msg.report.heatmap.legendMore}</span>
+        <span className="ml-2">{msg.report.heatmap.legendHint}</span>
       </div>
     </div>
   );

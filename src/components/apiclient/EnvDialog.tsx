@@ -1,6 +1,7 @@
 import { Plus, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import type { EnvVar } from "../../stores/apiclient";
 import { useApiClient } from "../../stores/apiclient";
 
@@ -9,6 +10,7 @@ import { useApiClient } from "../../stores/apiclient";
  * setEnvVar / addEnvironment / removeEnvironment 로 저장(즉시 영속).
  */
 export function EnvDialog() {
+  const msg = useMessages();
   const open = useApiClient((s) => s.envDialogOpen);
   const close = useApiClient((s) => s.closeEnvDialog);
   const environments = useApiClient((s) => s.environments);
@@ -63,12 +65,12 @@ export function EnvDialog() {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex shrink-0 items-center justify-between border-b border-edge px-5 py-3">
-          <span className="font-semibold">환경 관리</span>
+          <span className="font-semibold">{msg.apiclient.envDialog.title}</span>
           <button
             onClick={close}
             className="rounded px-2 py-0.5 text-fg-muted hover:bg-raised hover:text-fg"
           >
-            닫기 ✕
+            {msg.apiclient.envDialog.close}
           </button>
         </div>
 
@@ -78,7 +80,7 @@ export function EnvDialog() {
             <div className="min-h-0 flex-1 overflow-auto py-1">
               {envList.length === 0 && (
                 <div className="px-3 py-2 text-[12px] text-fg-dim">
-                  환경이 없습니다.
+                  {msg.apiclient.envDialog.empty}
                 </div>
               )}
               {envList.map((e) => (
@@ -99,7 +101,7 @@ export function EnvDialog() {
                   </button>
                   <button
                     onClick={() => removeEnvironment(e.id)}
-                    title="환경 삭제"
+                    title={msg.apiclient.envDialog.deleteEnvironment}
                     className="shrink-0 text-fg-dim opacity-0 hover:text-danger group-hover:opacity-100"
                   >
                     <Trash2 size={12} />
@@ -111,7 +113,7 @@ export function EnvDialog() {
               onClick={() =>
                 setSelected(
                   addEnvironment({
-                    name: "새 환경",
+                    name: msg.apiclient.envDialog.newEnvironmentName,
                     scope: "global",
                     collectionId: null,
                     vars: [],
@@ -120,7 +122,7 @@ export function EnvDialog() {
               }
               className="flex shrink-0 items-center gap-1 border-t border-edge px-3 py-2 text-[12px] text-fg-muted hover:bg-raised hover:text-fg"
             >
-              <Plus size={13} /> 환경 추가
+              <Plus size={13} /> {msg.apiclient.envDialog.addEnvironment}
             </button>
           </div>
 
@@ -128,7 +130,7 @@ export function EnvDialog() {
           <div className="flex min-w-0 flex-1 flex-col">
             {!env ? (
               <div className="flex flex-1 items-center justify-center text-[13px] text-fg-dim">
-                좌측에서 환경을 선택하세요
+                {msg.apiclient.envDialog.selectPrompt}
               </div>
             ) : (
               <>
@@ -186,7 +188,7 @@ export function EnvDialog() {
                       />
                       <label
                         className="flex shrink-0 items-center gap-1 text-[11px] text-fg-dim"
-                        title="히스토리에서 마스킹"
+                        title={msg.apiclient.envDialog.maskInHistory}
                       >
                         <input
                           type="checkbox"
@@ -200,7 +202,7 @@ export function EnvDialog() {
                       </label>
                       <button
                         onClick={() => removeVarRow(i)}
-                        title="변수 삭제"
+                        title={msg.apiclient.envDialog.deleteVariable}
                         className="shrink-0 text-fg-dim hover:text-danger"
                       >
                         <Trash2 size={12} />
@@ -211,7 +213,7 @@ export function EnvDialog() {
                     onClick={addVarRow}
                     className="flex items-center gap-1 px-3 py-2 text-[12px] text-fg-muted hover:text-fg"
                   >
-                    <Plus size={13} /> 변수 추가
+                    <Plus size={13} /> {msg.apiclient.envDialog.addVariable}
                   </button>
                 </div>
               </>

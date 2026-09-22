@@ -17,6 +17,8 @@
 
 import { useEffect, useMemo, useRef } from "react";
 
+import type { Messages } from "../../../i18n/messages";
+import { useMessages } from "../../../i18n/ui-language";
 import { objectAABB } from "../../../lib/annotate/geometry";
 import { renderScene } from "../../../lib/annotate/render";
 import { sceneOfNodes } from "../../../lib/annotate/scene";
@@ -30,12 +32,25 @@ const CELL_H = 60;
 /** 선 두께가 셀 가장자리에서 잘리지 않게 두는 여백. */
 const CELL_PAD = 6;
 
-const OPS: readonly { op: BoolOp; label: string }[] = [
-  { op: "union", label: "합집합" },
-  { op: "subtract", label: "차집합" },
-  { op: "intersect", label: "교집합" },
-  { op: "exclude", label: "제외" },
+const OPS: readonly { op: BoolOp }[] = [
+  { op: "union" },
+  { op: "subtract" },
+  { op: "intersect" },
+  { op: "exclude" },
 ];
+
+function boolOpLabel(msg: Messages, op: BoolOp): string {
+  switch (op) {
+    case "union":
+      return msg.imageInspector.boolean.union;
+    case "subtract":
+      return msg.imageInspector.boolean.subtract;
+    case "intersect":
+      return msg.imageInspector.boolean.intersect;
+    case "exclude":
+      return msg.imageInspector.boolean.exclude;
+  }
+}
 
 export function BooleanPreviewStrip({
   nodes,
@@ -45,6 +60,7 @@ export function BooleanPreviewStrip({
   nodes: readonly GeomNode[];
   onApply(op: BoolOp): void;
 }) {
+  const msg = useMessages();
   const ready = canBoolean(nodes);
 
   const cells = useMemo(() => {
@@ -75,9 +91,11 @@ export function BooleanPreviewStrip({
       data-boolean-preview=""
       className="flex items-end gap-1.5 rounded border border-edge bg-panel px-2 py-1.5"
     >
-      <span className="mb-4 shrink-0 text-[11px] text-fg-dim">불리언 미리보기</span>
+      <span className="mb-4 shrink-0 text-[11px] text-fg-dim">
+        {msg.imageInspector.boolean.previewTitle}
+      </span>
 
-      {["원본", ...OPS.map((o) => o.label)].map((label, i) => {
+      {[msg.imageInspector.boolean.original, ...OPS.map((o) => boolOpLabel(msg, o.op))].map((label, i) => {
         const op = i === 0 ? null : OPS[i - 1].op;
         const enabled = op !== null && cells.results[i - 1] !== null;
         const cell = (
@@ -95,12 +113,14 @@ export function BooleanPreviewStrip({
           </>
         );
         return op === null ? (
-          <div key={label} className="shrink-0 text-fg-dim">
+          // 키는 번역되지 않는 값으로 — 라벨로 두면 언어 전환 때 캔버스가 새로 마운트되는데
+          // 그리기 이펙트는 `cells` 만 보므로 칸이 빈 채로 남는다.
+          <div key="original" className="shrink-0 text-fg-dim">
             {cell}
           </div>
         ) : (
           <button
-            key={label}
+            key={op}
             type="button"
             title={label}
             disabled={!enabled}

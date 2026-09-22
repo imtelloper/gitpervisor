@@ -13,6 +13,7 @@
 
 import type { ReactNode } from "react";
 
+import { useMessages } from "../../../i18n/ui-language";
 import { MIXED, type Maybe } from "../../../lib/annotate/selection";
 import type { NodeModeUi } from "../../../lib/annotate/vector/edit";
 import type { AnnotationLayerHandle } from "../AnnotationLayer";
@@ -26,9 +27,13 @@ export type NodeInspectorApi = Pick<
   "setNodeMode" | "setVertPos" | "setVertHandle"
 >;
 
-const MODE_OPTIONS = (["none", "corner", "mirrored", "asymmetric", "auto"] as const).map(
-  (value) => ({ value: value as NodeModeUi, label: NODE_MODE_LABELS[value] }),
-);
+// 렌더 때 만든다 — `NODE_MODE_LABELS` 는 게터라 모듈 최상위에서 읽으면 로드 시점 언어로 굳는다.
+function nodeModeOptions() {
+  return (["none", "corner", "mirrored", "asymmetric", "auto"] as const).map((value) => ({
+    value: value as NodeModeUi,
+    label: NODE_MODE_LABELS[value],
+  }));
+}
 
 export function NodeInspectorSection({
   state,
@@ -37,6 +42,7 @@ export function NodeInspectorSection({
   state: NodeEditState;
   api: NodeInspectorApi;
 }) {
+  const msg = useMessages();
   const anchor = state.anchor;
   // 핸들 값은 `nodeEditState` 가 **정규화된 정점**에서 읽는다 — 문서에는 auto 정점의 핸들이
   // (0,0) 으로 들어 있어서, 문서를 그대로 보여 주면 화면에는 곡선이 휘어 있는데 인스펙터는
@@ -49,26 +55,27 @@ export function NodeInspectorSection({
   return (
     <section className="border-b border-edge px-3 py-2">
       <div className="mb-1 flex items-center justify-between text-[11px] text-fg-dim">
-        <span>노드</span>
+        <span>{msg.imageInspector.nodeSection.title}</span>
         {/* 열림/닫힘은 이 섹션에서 **읽기 전용**이다 — 바꾸는 것은 컨텍스트 바의
             `패스 닫기/열기` 하나뿐이라야 같은 조작이 두 곳에서 갈리지 않는다. */}
-        <span>{state.open ? "열린 패스" : "닫힌 패스"}</span>
+        <span>
+          {state.open ? msg.imageInspector.vocab.openPath : msg.imageInspector.vocab.closedPath}
+        </span>
       </div>
 
       {mode === null ? (
         // 고른 정점이 없으면 편집할 값이 없다. 빈 필드를 늘어놓으면 사용자는 그 칸이 무엇에
         // 적용되는지 모른 채 숫자를 적는다.
         <div className="text-[11px] text-fg-dim">
-          정점을 고르면 좌표·핸들을 편집할 수 있습니다 · 노드 {state.nodeCount} · 세그먼트{" "}
-          {state.segmentCount}
+          {msg.imageInspector.nodeSection.noVertexHint(state.nodeCount, state.segmentCount)}
         </div>
       ) : (
         <>
-          <Row label="모드">
+          <Row label={msg.imageInspector.nodeSection.modeRow}>
             <Select
-              label="정점 모드"
+              label={msg.imageInspector.nodeSection.modeSelect}
               value={mode}
-              options={MODE_OPTIONS}
+              options={nodeModeOptions()}
               onChange={(v) => api.setNodeMode(v)}
             />
           </Row>
@@ -91,7 +98,9 @@ export function NodeInspectorSection({
             />
           </div>
 
-          <div className="mt-2 mb-1 text-[11px] text-fg-dim">핸들</div>
+          <div className="mt-2 mb-1 text-[11px] text-fg-dim">
+            {msg.imageInspector.nodeSection.handles}
+          </div>
           <div className="grid grid-cols-2 gap-x-2">
             <NumField
               label="in X"

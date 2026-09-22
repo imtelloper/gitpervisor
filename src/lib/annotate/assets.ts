@@ -6,6 +6,7 @@
 //
 // 배경: DOCS/task/41-image-doc-persist-history.md §3.5
 
+import { currentMessages } from "../../i18n/ui-language";
 import { newObjId, type AssetId, type EditorDoc } from "./types";
 
 /** 문서 안 에셋 바이트 합 상한 — Rust 사이드카 상한 32MB 안쪽에 본문 몫을 남긴다. */
@@ -42,7 +43,7 @@ async function decodeSize(mime: string, base64: string): Promise<{ w: number; h:
 function assertBytesFit(doc: EditorDoc, bytes: number): void {
   if (usage(doc).bytes + bytes > MAX_ASSET_BYTES) {
     throw new Error(
-      `이미지가 너무 큽니다 — 이 문서의 이미지 합계는 ${Math.floor(MAX_ASSET_BYTES / 1024 / 1024)}MB까지입니다`,
+      currentMessages().annotate.assets.tooLarge(Math.floor(MAX_ASSET_BYTES / 1024 / 1024)),
     );
   }
 }
@@ -58,10 +59,10 @@ export async function acquireAsset(
   assertBytesFit(doc, base64Bytes(src.base64));
   const used = usage(doc);
   const { w, h } = await decodeSize(src.mime, src.base64);
-  if (w <= 0 || h <= 0) throw new Error("이미지를 읽을 수 없습니다");
+  if (w <= 0 || h <= 0) throw new Error(currentMessages().annotate.assets.unreadable);
   if (used.px + w * h > MAX_ASSET_PIXELS) {
     throw new Error(
-      `이미지 화소가 너무 많습니다 — 이 문서의 합계는 ${Math.floor(MAX_ASSET_PIXELS / 1024 / 1024)}MP까지입니다`,
+      currentMessages().annotate.assets.tooManyPixels(Math.floor(MAX_ASSET_PIXELS / 1024 / 1024)),
     );
   }
   const id = newObjId();

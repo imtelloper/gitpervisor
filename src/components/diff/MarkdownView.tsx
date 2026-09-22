@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import { useMessages } from "../../i18n/ui-language";
 import { copyText } from "../../lib/clipboard";
 import { useUi } from "../../stores/ui";
 
@@ -54,6 +55,7 @@ export function MarkdownBody({
  *  (TROUBLESHOOTING §7). 성공은 버튼 자체가 잠깐 "복사됨"으로 바뀌어 알리고(토스트는
  *  과하다), 실패만 토스트로 표면화한다. */
 function CopyAllButton({ content }: { content: string }) {
+  const msg = useMessages();
   const pushToast = useUi((s) => s.pushToast);
   const [done, setDone] = useState(false);
 
@@ -70,21 +72,21 @@ function CopyAllButton({ content }: { content: string }) {
     <button
       onClick={() =>
         void copyText(content).then((ok) =>
-          ok ? setDone(true) : pushToast("error", "복사에 실패했습니다"),
+          ok ? setDone(true) : pushToast("error", msg.git.markdownView.copyFailed),
         )
       }
-      title="전체 내용 복사 — 렌더된 화면이 아니라 마크다운 원문을 복사합니다"
+      title={msg.git.markdownView.copyAllTitle}
       // 본문(.md-body)은 최대 880px 중앙 정렬이라 넓은 화면에선 우측 여백에 놓이지만,
       // 창이 좁으면 첫 제목과 겹칠 수 있다 — 평소엔 살짝 흐리게 둬 읽기를 방해하지 않는다.
       className="absolute right-3 top-3 z-10 flex items-center gap-1 rounded border border-edge bg-panel/95 px-2 py-1 text-[11px] text-fg-muted opacity-70 shadow-sm transition-opacity hover:bg-raised hover:text-fg hover:opacity-100"
     >
       {done ? (
         <>
-          <Check size={12} className="text-add" /> 복사됨
+          <Check size={12} className="text-add" /> {msg.git.markdownView.copied}
         </>
       ) : (
         <>
-          <Copy size={12} /> 전체 복사
+          <Copy size={12} /> {msg.git.markdownView.copyAll}
         </>
       )}
     </button>

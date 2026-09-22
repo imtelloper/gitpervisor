@@ -18,6 +18,7 @@
 
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 
+import { useMessages } from "../../../../i18n/ui-language";
 import { MIXED, type Maybe } from "../../../../lib/annotate/selection";
 
 export interface NumFieldProps {
@@ -65,6 +66,7 @@ export function NumField({
   onLiveEnd,
   onDelta,
 }: NumFieldProps) {
+  const msg = useMessages();
   // 타이핑 중인 원문. `null` 이면 prop 값을 그대로 보여 준다 — 사본을 항상 들면 스크럽·
   // 되돌리기로 바깥에서 값이 바뀌어도 필드가 옛 숫자를 계속 보여 준다.
   const [draft, setDraft] = useState<string | null>(null);
@@ -200,7 +202,7 @@ export function NumField({
           spellCheck={false}
           aria-label={label}
           value={draft ?? (mixed ? "" : fmt(num as number))}
-          placeholder={mixed ? "혼합" : undefined}
+          placeholder={mixed ? msg.imageInspector.numField.mixedPlaceholder : undefined}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={onKeyDown}
           onBlur={commitDraft}

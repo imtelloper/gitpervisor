@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from "react";
 import { Toasts } from "./components/common/Toast";
 import { TranslateHost } from "./components/common/TranslateCard";
 import { FloatTitleBar } from "./components/FloatTitleBar";
+import { currentMessages, useMessages } from "./i18n/ui-language";
 import { PaneTreeRoot } from "./components/workspace/PaneTree";
 import { PromptHistoryButton } from "./components/workspace/TermSessionControls";
 import { floatPoolReady } from "./lib/floating";
@@ -93,7 +94,7 @@ export function FloatingTerminal({ paneId: fixedPaneId }: { paneId: string | nul
           {
             id,
             projectId: pid,
-            title: "터미널",
+            title: currentMessages().windows.floatingTerminal.defaultTitle,
             layout: { kind: "leaf", paneId, content: "terminal" },
             activePaneId: paneId,
             maximizedPaneId: null,
@@ -127,8 +128,10 @@ function FloatWorkspace({
    *  조회하는 유일한 id라, 되돌리기의 우회 등록도 이것 하나만 한다(redock 주석). */
   ownPaneId: string;
 }) {
+  const msg = useMessages();
   const tab = useTerminals((s) => s.terminals.find((t) => t.id === tabId));
-  const [title, setTitle] = useState("터미널");
+  // null = 프로젝트명을 아직 모름 — 렌더 때 기본 제목을 고르므로 언어를 바꾸면 따라간다.
+  const [title, setTitle] = useState<string | null>(null);
   // 되돌리기 진행 중 — 연타하면 같은 pane에 openTerminal 명령이 두 번 나가 메인에 빈 탭이 생긴다.
   const redocking = useRef(false);
 
@@ -214,7 +217,7 @@ function FloatWorkspace({
   return (
     <div className="flex h-screen flex-col bg-base">
       <FloatTitleBar
-        title={title}
+        title={title ?? msg.windows.floatingTerminal.defaultTitle}
         actions={
           <>
             {/* 이 창의 pane 전체(분할로 늘린 것 포함) 프롬프트 컬럼 마스터 토글. useTerminals가
@@ -223,10 +226,10 @@ function FloatWorkspace({
             <PromptHistoryButton className="h-full shrink-0 px-2 text-[11px]" />
             <button
               onClick={() => void redock()}
-              title="이 창의 터미널을 메인 창으로 되돌립니다 — 모아보기가 열려 있으면 거기 나타납니다"
+              title={msg.windows.floatingTerminal.redockTitle}
               className="flex h-full shrink-0 items-center gap-1 px-2 text-[11px] text-fg-muted transition-colors hover:bg-raised hover:text-fg"
             >
-              <Undo2 size={12} /> 메인으로 되돌리기
+              <Undo2 size={12} /> {msg.windows.floatingTerminal.redockLabel}
             </button>
           </>
         }

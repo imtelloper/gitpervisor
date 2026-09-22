@@ -25,6 +25,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { X } from "lucide-react";
 
+import { useMessages } from "../../../i18n/ui-language";
 import { useOccludesWebview } from "../../../stores/occlusion";
 
 /** 열린 순서대로 쌓인 닫기 콜백. 마지막이 맨 위. */
@@ -115,6 +116,7 @@ export function Popover({
   title,
   children,
 }: PopoverProps) {
+  const msg = useMessages();
   const boxRef = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
 
@@ -224,7 +226,7 @@ export function Popover({
           <span className="truncate">{title}</span>
           <button
             onClick={onClose}
-            title="닫기"
+            title={msg.imageInspector.popover.close}
             className="shrink-0 rounded p-0.5 text-fg-dim hover:bg-raised hover:text-fg"
           >
             <X size={12} />

@@ -16,6 +16,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { currentMessages, useMessages } from "../../i18n/ui-language";
 import {
   aspectRatioOf,
   autoTrimRect,
@@ -200,6 +201,7 @@ export function useCropSession(deps: CropSessionDeps): {
   session: CropSession | null;
   api: CropApi;
 } {
+  const msg = useMessages();
   const [session, setSession] = useState<CropSession | null>(null);
   const ref = useRef<SessionRef | null>(null);
   // `deps` 는 매 렌더 새 객체다 — 콜백 의존성에 넣으면 api 가 프레임마다 갈려 컨텍스트 바·
@@ -325,11 +327,11 @@ export function useCropSession(deps: CropSessionDeps): {
     );
     const r = autoTrimRect(canvas, bounds);
     if (!r) {
-      pushToast("info", "단색 여백을 찾지 못했습니다");
+      pushToast("info", currentMessages().imageEditor.toast.noSolidMargin);
       return;
     }
     if (sameRect(r, bounds)) {
-      pushToast("info", "제거할 여백이 없습니다");
+      pushToast("info", currentMessages().imageEditor.toast.noMarginToRemove);
       return;
     }
     cropSet({ rect: r });
@@ -384,7 +386,10 @@ export function useCropSession(deps: CropSessionDeps): {
       d.current.applyDoc(
         final,
         "commit",
-        `크롭 ${Math.round(final.outW)}×${Math.round(final.outH)}`,
+        currentMessages().imageEditor.history.cropApplied(
+          Math.round(final.outW),
+          Math.round(final.outH),
+        ),
       );
     }
     setDesign();
@@ -405,8 +410,8 @@ export function useCropSession(deps: CropSessionDeps): {
   }, [mode.kind, img, enter, discard]);
 
   useEffect(() => {
-    d.current.ui.setHint(session ? `크롭 ${cropLabel(session)}` : null);
-  }, [session]);
+    d.current.ui.setHint(session ? msg.imageEditor.cropBar.hint(cropLabel(session)) : null);
+  }, [session, msg]);
 
   // 언마운트(창 닫기 포함)에도 라이브 문서를 남기지 않는다. 41 flush 가 그 뒤에 돈다.
   useEffect(

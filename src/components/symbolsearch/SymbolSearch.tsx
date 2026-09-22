@@ -1,5 +1,6 @@
 import { useCallback } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { ipc } from "../../lib/ipc";
 import { useTerminals } from "../../stores/terminals";
 import { selectActiveDiff, useUi } from "../../stores/ui";
@@ -13,6 +14,7 @@ type Sym = { path: string; line: number; column: number };
  * 선택 시 터미널 탭이면 뷰어로 전환 후 selectDiff로 심볼 위치 착지.
  */
 export function SymbolSearch() {
+  const msg = useMessages();
   const open = useUi((s) => s.symbolSearchOpen);
   const setOpen = useUi((s) => s.setSymbolSearchOpen);
   const selectedProjectId = useUi((s) => s.selectedProjectId);
@@ -64,12 +66,12 @@ export function SymbolSearch() {
 
   return (
     <QuickPick
-      placeholder="심볼 이름으로 검색 (2자 이상)…"
+      placeholder={msg.search.symbolSearch.placeholder}
       source={source}
       debounceMs={250}
       onPick={onPick}
       onClose={() => setOpen(false)}
-      emptyText="심볼을 입력하세요 (함수·클래스·타입 정의)"
+      emptyText={msg.search.symbolSearch.emptyText}
     />
   );
 }

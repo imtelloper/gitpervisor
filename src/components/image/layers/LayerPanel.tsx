@@ -34,6 +34,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
+import { currentMessages, useMessages } from "../../../i18n/ui-language";
 import { instanceState } from "../../../lib/annotate/components";
 import {
   DEFAULT_LAYER_FILTER,
@@ -116,6 +117,8 @@ export const LayerPanel = forwardRef<LayerPanelHandle, LayerPanelProps>(function
   { doc, scene, baseName, onCommit, actions },
   handle,
 ) {
+  const msg = useMessages();
+  const t = msg.imagePanels.layerPanel;
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<LayerFilter>(DEFAULT_LAYER_FILTER);
   const [collapsed, setCollapsed] = useState<ReadonlySet<ObjId>>(NO_COLLAPSE);
@@ -204,31 +207,37 @@ export const LayerPanel = forwardRef<LayerPanelHandle, LayerPanelProps>(function
     // 번호가 따라오지 않아 `사각형 3` 이 둘 생긴다(`patchNodes` 가 빈 문자열을 null 로 만든다).
     const next = name === defaultLayerName(node, objects) ? "" : name;
     if ((node.name ?? "") === next) return;
-    commitRef.current(patchNodes(objects, [id], { name: next }), "이름 변경");
+    commitRef.current(
+      patchNodes(objects, [id], { name: next }),
+      currentMessages().imagePanels.historyLabel.renameLayer,
+    );
   }, []);
 
+  // 아래 콜백들은 참조가 고정돼야 해서(`memo` 행) 문구를 렌더의 `msg` 가 아니라 호출 시점에 읽는다.
   const onVisible = useCallback((row: Row) => {
     const n = row.node;
     if (!n) return;
+    const h = currentMessages().imagePanels.historyLabel;
     commitRef.current(
       patchNodes(docRef.current.objects, [n.id], { visible: !n.visible }),
-      n.visible ? "숨김" : "표시",
+      n.visible ? h.hideLayer : h.showLayer,
     );
   }, []);
 
   const onLocked = useCallback((row: Row) => {
     const n = row.node;
     if (!n) return;
+    const h = currentMessages().imagePanels.historyLabel;
     commitRef.current(
       patchNodes(docRef.current.objects, [n.id], { locked: !n.locked }),
-      n.locked ? "잠금 해제" : "잠금",
+      n.locked ? h.unlockLayer : h.lockLayer,
     );
   }, []);
 
   const onDrop = useCallback((target: DropTarget, ids: ObjId[]) => {
     commitRef.current(
       reparent(docRef.current.objects, ids, target.parentId, target.index),
-      "순서 변경",
+      currentMessages().imagePanels.historyLabel.reorderLayers,
     );
   }, []);
 
@@ -246,8 +255,9 @@ export const LayerPanel = forwardRef<LayerPanelHandle, LayerPanelProps>(function
     const nodes = selNodes.map((id) => nodeOf(objects, id)).filter((n): n is Node => n !== null);
     if (!nodes.length) return;
     const value = !nodes.every((n) => n[field]);
+    const h = msg.imagePanels.historyLabel;
     const label =
-      field === "visible" ? (value ? "표시" : "숨김") : value ? "잠금" : "잠금 해제";
+      field === "visible" ? (value ? h.showLayer : h.hideLayer) : value ? h.lockLayer : h.unlockLayer;
     const patch = field === "visible" ? { visible: value } : { locked: value };
     commitRef.current(patchNodes(objects, selNodes, patch), label);
   }
@@ -270,8 +280,8 @@ export const LayerPanel = forwardRef<LayerPanelHandle, LayerPanelProps>(function
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="레이어 검색"
-            aria-label="레이어 검색"
+            placeholder={t.searchPlaceholder}
+            aria-label={t.searchPlaceholder}
             style={{ height: 26 }}
             className="w-full rounded border border-edge bg-base pl-6 pr-1.5 text-[11px] text-fg outline-none placeholder:text-fg-dim focus:border-accent"
           />
@@ -281,8 +291,8 @@ export const LayerPanel = forwardRef<LayerPanelHandle, LayerPanelProps>(function
             const r = e.currentTarget.getBoundingClientRect();
             setFilterAt(filterAt ? null : { x: r.left, y: r.bottom + 4 });
           }}
-          title="타입 필터"
-          aria-label="타입 필터"
+          title={t.typeFilter}
+          aria-label={t.typeFilter}
           style={{ height: 26, width: 26 }}
           className={`flex shrink-0 items-center justify-center rounded border border-edge ${
             isDefaultFilter(filter) ? "text-fg-muted hover:text-fg" : "bg-accent/15 text-accent"
@@ -296,19 +306,19 @@ export const LayerPanel = forwardRef<LayerPanelHandle, LayerPanelProps>(function
         style={{ height: 30 }}
         className="flex shrink-0 items-center gap-1 border-b border-edge px-2 text-[11px]"
       >
-        <span className="text-fg-muted">레이어</span>
+        <span className="text-fg-muted">{t.heading}</span>
         <span className="text-fg-dim">
           · {filtering ? `${matched}/${doc.objects.length}` : doc.objects.length}
         </span>
         <span className="flex-1" />
-        <HeaderAction icon={Eye} title="선택 숨기기/표시" disabled={noSel} onClick={() => bulk("visible")} />
-        <HeaderAction icon={Lock} title="선택 잠금/잠금 해제" disabled={noSel} onClick={() => bulk("locked")} />
-        <HeaderAction icon={FolderPlus} title="그룹" disabled={noSel} onClick={actions.group} />
-        <HeaderAction icon={Trash2} title="삭제" disabled={noSel} onClick={actions.remove} />
+        <HeaderAction icon={Eye} title={t.bulkVisibleTitle} disabled={noSel} onClick={() => bulk("visible")} />
+        <HeaderAction icon={Lock} title={t.bulkLockTitle} disabled={noSel} onClick={() => bulk("locked")} />
+        <HeaderAction icon={FolderPlus} title={t.groupTitle} disabled={noSel} onClick={actions.group} />
+        <HeaderAction icon={Trash2} title={t.deleteTitle} disabled={noSel} onClick={actions.remove} />
       </div>
 
       <div ref={listRef} className="relative min-h-0 flex-1 overflow-y-auto">
-        <div role="tree" aria-label="레이어 트리">
+        <div role="tree" aria-label={t.treeLabel}>
           {shown.map((r) => (
             <LayerRow
               key={r.id}
@@ -339,9 +349,9 @@ export const LayerPanel = forwardRef<LayerPanelHandle, LayerPanelProps>(function
         className="flex shrink-0 items-center gap-2 border-t border-edge px-2 text-[11px] text-fg-dim"
       >
         {selectedIds.length > 0 && (
-          <span className="shrink-0 text-fg-muted">{selectedIds.length}개 선택됨</span>
+          <span className="shrink-0 text-fg-muted">{t.selectedCount(selectedIds.length)}</span>
         )}
-        <span className="truncate">⇧클릭 · 드래그로 순서 변경</span>
+        <span className="truncate">{t.footerHint}</span>
       </div>
 
       {filterAt && (

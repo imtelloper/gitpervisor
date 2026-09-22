@@ -19,6 +19,8 @@
 //
 // 배경: DOCS/task/51-image-styles-components.md §3.4~§3.6
 
+// UI 언어 스토어는 **던지는 오류 문구**에만 쓴다 — 커밋되는 문서에는 닿지 않아 위 결정론과 무관하다.
+import { currentMessages } from "../../i18n/ui-language";
 import { applyConstraints, isGeomNode, normalizeDeg } from "./geometry";
 import {
   ancestorsOf,
@@ -120,7 +122,7 @@ function rectOf(f: FrameNode): Rect {
 function defRootFrame(def: ComponentDef): FrameNode {
   const root = def.nodes[0];
   if (!root || root.kind !== "frame") {
-    throw new Error(`컴포넌트 '${def.name}': nodes[0] 이 루트 프레임이 아니다`);
+    throw new Error(`컴포넌트 '${def.name}': nodes[0] 이 루트 프레임이 아니다`); // i18n-ok: 내부 불변식 위반(개발자용)
   }
   return root;
 }
@@ -196,7 +198,7 @@ function firstFrame(objects: readonly Node[], instId: ObjId): FrameNode | null {
 /** 인스턴스의 기하를 드는 첫 자식 프레임. 없으면 불변식이 깨진 것이라 **throw** 한다. */
 export function instanceFrame(objects: readonly Node[], instId: ObjId): FrameNode {
   const f = firstFrame(objects, instId);
-  if (!f) throw new Error(`instanceFrame: 인스턴스 ${instId} 에 프레임 자식이 없다`);
+  if (!f) throw new Error(`instanceFrame: 인스턴스 ${instId} 에 프레임 자식이 없다`); // i18n-ok: 내부 불변식 위반(개발자용)
   return f;
 }
 
@@ -306,18 +308,18 @@ export function makeComponent(
 ): { objects: Node[]; def: ComponentDef; instanceId: ObjId } {
   for (const id of ids) {
     if (moveUnit(objects, id) !== id) {
-      throw new Error("인스턴스 안의 노드는 컴포넌트로 만들 수 없습니다 — 먼저 분리하세요");
+      throw new Error(currentMessages().annotate.components.nodeInsideInstance);
     }
     const [s, e] = subtreeRange(objects, id);
     for (let i = s; i < e; i++) {
       if (objects[i].kind === "instance") {
-        throw new Error("선택에 인스턴스가 있습니다 — 먼저 분리하세요");
+        throw new Error(currentMessages().annotate.components.selectionHasInstance);
       }
     }
   }
 
   const g = group(objects, ids, "frame");
-  if (!g.id) throw new Error("컴포넌트로 만들 노드가 없습니다");
+  if (!g.id) throw new Error(currentMessages().annotate.components.nothingToMake);
   const [fs, fe] = subtreeRange(g.objects, g.id);
   const frame = g.objects[fs] as FrameNode;
 

@@ -18,6 +18,8 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import type { Messages } from "../../i18n/messages";
+import { currentMessages, useMessages } from "../../i18n/ui-language";
 import { copyText } from "../../lib/clipboard";
 import { ipc, type FavEntry } from "../../lib/ipc";
 import { useUi } from "../../stores/ui";
@@ -39,6 +41,7 @@ import { modLabel } from "../../lib/platform";
  * 그래서 백엔드가 캐시된 썸네일(JPEG)을 주고, 그것도 **화면에 보이는 칸만** 요청한다.
  */
 export default function FolderWindow({ root }: { root: string }) {
+  const msg = useMessages();
   const SEP = root.includes("\\") ? "\\" : "/";
   const join = useCallback(
     (dir: string, name: string) => `${dir.replace(/[\\/]+$/, "")}${SEP}${name}`,
@@ -161,7 +164,9 @@ export default function FolderWindow({ root }: { root: string }) {
         return;
       }
       void ipc.favOpen(join(dir, e.name), "default").catch((err) =>
-        useUi.getState().pushToast("error", `열지 못했습니다 — ${msg(err)}`),
+        useUi
+          .getState()
+          .pushToast("error", currentMessages().folder.window.openFailedWithReason(errText(err))),
       );
     },
     [dir, images, join],
@@ -175,11 +180,10 @@ export default function FolderWindow({ root }: { root: string }) {
 
   const copyPath = useCallback(
     (e: FavEntry) => {
-      void copyText(join(dir, e.name)).then((ok) =>
-        useUi
-          .getState()
-          .pushToast(ok ? "success" : "error", ok ? "경로를 복사했습니다" : "복사에 실패했습니다"),
-      );
+      void copyText(join(dir, e.name)).then((ok) => {
+        const t = currentMessages().folder;
+        useUi.getState().pushToast(ok ? "success" : "error", ok ? t.copyPathDone : t.copyFailed);
+      });
     },
     [dir, join],
   );
@@ -267,7 +271,7 @@ export default function FolderWindow({ root }: { root: string }) {
 
   return (
     <div className="flex h-screen flex-col bg-base" onClick={() => setMenu(null)}>
-      <FloatTitleBar title={crumbs[crumbs.length - 1] ?? root} badge="폴더" />
+      <FloatTitleBar title={crumbs[crumbs.length - 1] ?? root} badge={msg.folder.window.badge} />
 
       <Toolbar
         crumbs={crumbs}
@@ -287,7 +291,7 @@ export default function FolderWindow({ root }: { root: string }) {
         // `default` 는 디렉터리를 받으면 그 폴더를 연다(commands/favorites.rs `fav_open`).
         onReveal={() =>
           void ipc.favOpen(dir, "default").catch(() => {
-            useUi.getState().pushToast("error", "탐색기를 열지 못했습니다");
+            useUi.getState().pushToast("error", msg.folder.window.revealFailed);
           })
         }
         count={shown.length}
@@ -297,19 +301,19 @@ export default function FolderWindow({ root }: { root: string }) {
         {error ? (
           <EmptyState
             icon={FolderSearch}
-            title="폴더를 읽지 못했습니다"
+            title={msg.folder.window.readFailedTitle}
             desc={error}
           />
         ) : entries === null ? (
-          <div className="p-4 text-xs text-fg-dim">읽는 중…</div>
+          <div className="p-4 text-xs text-fg-dim">{msg.folder.loading}</div>
         ) : shown.length === 0 ? (
           <EmptyState
             icon={Folder}
-            title={query || view.imagesOnly ? "조건에 맞는 항목이 없습니다" : "빈 폴더입니다"}
+            title={query || view.imagesOnly ? msg.folder.window.noMatchTitle : msg.folder.window.emptyTitle}
             desc={
               query || view.imagesOnly
-                ? "검색어나 '이미지만' 필터를 지우면 전체가 보입니다."
-                : "이 폴더에 표시할 파일이 없습니다."
+                ? msg.folder.window.noMatchDesc
+                : msg.folder.window.emptyDesc
             }
           />
         ) : view.mode === "list" ? (
@@ -344,12 +348,12 @@ export default function FolderWindow({ root }: { root: string }) {
           onPastePath={() => pastePath(menu.entry)}
           onOpen={() =>
             void ipc.favOpen(join(dir, menu.entry.name), "default").catch(() => {
-              useUi.getState().pushToast("error", "열지 못했습니다");
+              useUi.getState().pushToast("error", msg.folder.window.openFailed);
             })
           }
           onReveal={() =>
             void ipc.favOpen(join(dir, menu.entry.name), "reveal").catch(() => {
-              useUi.getState().pushToast("error", "탐색기를 열지 못했습니다");
+              useUi.getState().pushToast("error", msg.folder.window.revealFailed);
             })
           }
         />
@@ -374,12 +378,25 @@ export default function FolderWindow({ root }: { root: string }) {
 // ---- 보기 상태 (폴더별 기억) ---------------------------------------------------------
 
 const MODES = [
-  { id: "grid-s", Icon: LayoutGrid, title: `작은 썸네일 (${modLabel}+1)` },
-  { id: "grid-m", Icon: LayoutGrid, title: `중간 썸네일 (${modLabel}+2)` },
-  { id: "grid-l", Icon: LayoutGrid, title: `큰 썸네일 (${modLabel}+3)` },
-  { id: "list", Icon: List, title: `목록 (${modLabel}+4)` },
+  { id: "grid-s", Icon: LayoutGrid },
+  { id: "grid-m", Icon: LayoutGrid },
+  { id: "grid-l", Icon: LayoutGrid },
+  { id: "list", Icon: List },
 ] as const;
 type Mode = (typeof MODES)[number]["id"];
+/** 보기 버튼 툴팁 — 렌더 때 계산해야 언어를 바꾸면 따라간다. */
+function modeTitle(msg: Messages, id: Mode): string {
+  switch (id) {
+    case "grid-s":
+      return msg.folder.window.modeSmall(modLabel);
+    case "grid-m":
+      return msg.folder.window.modeMedium(modLabel);
+    case "grid-l":
+      return msg.folder.window.modeLarge(modLabel);
+    case "list":
+      return msg.folder.window.modeList(modLabel);
+  }
+}
 /** 썸네일 한 변 — 백엔드가 **이 셋만** 받는다(캐시 폭주 방지). */
 const EDGE: Record<Exclude<Mode, "list">, 128 | 192 | 320> = {
   "grid-s": 128,
@@ -418,7 +435,7 @@ function writeView(root: string, v: View) {
   }
 }
 
-const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /** 선택 — `name` 이 본체이고 `index` 는 마지막으로 보인 자리(이름이 사라졌을 때의 폴백). */
 interface Sel {
@@ -475,6 +492,7 @@ function Toolbar({
   onReveal: () => void;
   count: number;
 }) {
+  const msg = useMessages();
   return (
     <div className="flex shrink-0 items-center gap-2 border-b border-edge bg-panel px-2 py-1.5 text-[11px]">
       <div className="flex min-w-0 flex-1 items-center gap-0.5 truncate">
@@ -491,7 +509,7 @@ function Toolbar({
             </button>
           </span>
         ))}
-        <span className="ml-1 shrink-0 text-fg-dim">{count}개</span>
+        <span className="ml-1 shrink-0 text-fg-dim">{msg.folder.window.itemCount(count)}</span>
       </div>
 
       <div className="flex shrink-0 items-center gap-1 rounded border border-edge px-1.5 py-0.5">
@@ -499,7 +517,7 @@ function Toolbar({
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="이름 검색"
+          placeholder={msg.folder.window.searchPlaceholder}
           className="w-28 bg-transparent text-[11px] text-fg outline-none placeholder:text-fg-dim"
         />
         {query && (
@@ -511,7 +529,7 @@ function Toolbar({
 
       <button
         onClick={() => setView((v) => ({ ...v, imagesOnly: !v.imagesOnly }))}
-        title="이미지만 보기"
+        title={msg.folder.window.imagesOnlyTitle}
         className={`shrink-0 rounded p-1 ${
           view.imagesOnly ? "bg-raised text-accent" : "text-fg-muted hover:bg-raised hover:text-fg"
         }`}
@@ -522,19 +540,19 @@ function Toolbar({
       <select
         value={view.sort}
         onChange={(e) => setView((v) => ({ ...v, sort: e.target.value as Sort }))}
-        title="정렬"
+        title={msg.folder.window.sortTitle}
         className="shrink-0 rounded border border-edge bg-panel px-1 py-0.5 text-[11px] text-fg-muted"
       >
-        <option value="mtime">최신순</option>
-        <option value="name">이름순</option>
-        <option value="size">크기순</option>
+        <option value="mtime">{msg.folder.window.sortNewest}</option>
+        <option value="name">{msg.folder.window.sortName}</option>
+        <option value="size">{msg.folder.window.sortSize}</option>
       </select>
 
       <div className="flex shrink-0 items-center rounded border border-edge">
-        {MODES.map(({ id, Icon, title }, i) => (
+        {MODES.map(({ id, Icon }, i) => (
           <button
             key={id}
-            title={title}
+            title={modeTitle(msg, id)}
             onClick={() => setView((v) => ({ ...v, mode: id }))}
             className={`p-1 ${
               view.mode === id ? "bg-raised text-accent" : "text-fg-muted hover:bg-raised hover:text-fg"
@@ -548,14 +566,14 @@ function Toolbar({
 
       <button
         onClick={onRefresh}
-        title="새로고침 (F5) — 창을 클릭해 돌아와도 자동으로 갱신됩니다"
+        title={msg.folder.window.refreshTitle}
         className="shrink-0 rounded p-1 text-fg-muted hover:bg-raised hover:text-fg"
       >
         <RotateCw size={13} />
       </button>
       <button
         onClick={onReveal}
-        title="탐색기에서 이 폴더 열기"
+        title={msg.folder.window.revealFolderTitle}
         className="shrink-0 rounded p-1 text-fg-muted hover:bg-raised hover:text-fg"
       >
         <FolderOpen size={13} />
@@ -755,13 +773,14 @@ function ListView({
   onOpen: (e: FavEntry) => void;
   onMenu: (x: number, y: number, e: FavEntry) => void;
 }) {
+  const msg = useMessages();
   return (
     <table className="w-full text-[12px]">
       <thead className="sticky top-0 bg-panel text-[11px] text-fg-dim">
         <tr>
-          <th className="px-2 py-1 text-left font-normal">이름</th>
-          <th className="w-20 px-2 py-1 text-right font-normal">크기</th>
-          <th className="w-24 px-2 py-1 text-right font-normal">수정</th>
+          <th className="px-2 py-1 text-left font-normal">{msg.folder.window.columnName}</th>
+          <th className="w-20 px-2 py-1 text-right font-normal">{msg.folder.window.columnSize}</th>
+          <th className="w-24 px-2 py-1 text-right font-normal">{msg.folder.window.columnModified}</th>
         </tr>
       </thead>
       <tbody>
@@ -818,6 +837,7 @@ function ItemMenu({
   onOpen: () => void;
   onReveal: () => void;
 }) {
+  const msg = useMessages();
   useEffect(() => {
     const close = () => onClose();
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -847,14 +867,14 @@ function ItemMenu({
     >
       <div className="truncate px-3 py-1 text-[11px] text-fg-dim">{entry.name}</div>
       <div className="my-1 border-t border-edge" />
-      <Row icon={<Copy size={14} />} label="경로 복사" hint={`${modLabel}+C`} onClick={run(onCopyPath)} />
+      <Row icon={<Copy size={14} />} label={msg.folder.menuCopyPath} hint={`${modLabel}+C`} onClick={run(onCopyPath)} />
       <Row
         icon={<ClipboardPaste size={14} />}
-        label="터미널에 경로 붙여넣기"
+        label={msg.folder.window.menuPasteToTerminal}
         onClick={run(onPastePath)}
       />
-      <Row icon={<ExternalLink size={14} />} label="기본 앱으로 열기" onClick={run(onOpen)} />
-      <Row icon={<FolderOpen size={14} />} label="탐색기에서 보기" onClick={run(onReveal)} />
+      <Row icon={<ExternalLink size={14} />} label={msg.folder.menuOpenDefault} onClick={run(onOpen)} />
+      <Row icon={<FolderOpen size={14} />} label={msg.folder.menuReveal} onClick={run(onReveal)} />
     </div>
   );
 }

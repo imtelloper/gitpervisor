@@ -32,6 +32,7 @@ import type {
   PDFViewer,
 } from "pdfjs-dist/legacy/web/pdf_viewer.mjs";
 
+import { currentMessages, useMessages } from "../../i18n/ui-language";
 import { errorMessage, ipc, isIpcError, type DiffTarget } from "../../lib/ipc";
 import { loadPdfjs, type PdfDocOpts, type Pdfjs } from "../../lib/pdf/pdfjs";
 import { isMod, modLabel } from "../../lib/platform";
@@ -51,12 +52,13 @@ const POLL_MS = 1500;
 /** %%EOF 가 끝에 없어도 mtime 이 이만큼 지났으면 쓰기가 끝난 것으로 보고 그대로 연다(기형 PDF 허용). */
 const EOF_GRACE_MS = 3000;
 const PRESETS = new Set(["auto", "page-width", "page-fit", "page-actual"]);
-/** 파일 없음 — 오버레이가 이 문구로 '없음' 모양(외부 앱 버튼 없음·삭제 안내)을 고른다. */
-const NOT_FOUND = "파일을 찾을 수 없습니다";
+/** 파일 없음 — 오버레이가 이 표식으로 '없음' 모양(외부 앱 버튼 없음·삭제 안내)을 고른다. 화면 문구가 아니라
+ *  표식이다(표시는 렌더 때 `msg.pdf.view.fileNotFound`) — 문구를 담아 두면 언어를 바꾼 뒤 비교가 어긋난다. */
+const NOT_FOUND = "pdf:not-found";
 
-/** pdf.js 예외 문구는 영어다 — 흔한 것만 한국어로 바꾸고 그 밖(IPC 오류 등)은 원문. */
+/** pdf.js 예외 문구는 영어다 — 흔한 것만 UI 언어로 바꾸고 그 밖(IPC 오류 등)은 원문. */
 function loadErrorText(e: unknown): string {
-  if ((e as Error | null)?.name === "InvalidPDFException") return "손상되었거나 PDF 형식이 아닌 파일입니다";
+  if ((e as Error | null)?.name === "InvalidPDFException") return currentMessages().pdf.view.invalidPdf;
   return errorMessage(e);
 }
 
@@ -187,6 +189,7 @@ function findEvent(type: "" | "again", query: string, findPrevious: boolean) {
 }
 
 export default function PdfView({ projectId, path, mode, selectionRef }: PdfViewProps) {
+  const msg = useMessages();
   const pushToast = useUi((s) => s.pushToast);
   const rootRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -307,7 +310,7 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
         // 암호 취소면 pdf.js 가 PasswordException 으로 거절한다.
         const cancelled = (e as Error | null)?.name === "PasswordException";
         if (shown) setStatus("ready", cancelled ? null : loadErrorText(e)); // 현 화면 유지
-        else setStatus("error", cancelled ? "암호가 필요합니다" : loadErrorText(e));
+        else setStatus("error", cancelled ? currentMessages().pdf.view.passwordRequired : loadErrorText(e));
         return;
       }
       if (pending === t) pending = null;
@@ -788,13 +791,13 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
         <TBtn
           data-pdf-sidebar-toggle
           aria-pressed={sidebar}
-          label="사이드바 (썸네일·목차)"
+          label={msg.pdf.view.sidebarToggle}
           onClick={() => setSidebar((o) => !o)}
         >
           <PanelLeft size={13} />
         </TBtn>
         <div className="mx-1 h-4 w-px bg-edge" />
-        <TBtn data-pdf-prev label="이전 페이지" onClick={() => liveViewer()?.previousPage()}>
+        <TBtn data-pdf-prev label={msg.pdf.view.prevPage} onClick={() => liveViewer()?.previousPage()}>
           <ChevronLeft size={13} />
         </TBtn>
         <input
@@ -807,49 +810,49 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
             if (e.key === "Enter") commitPage();
           }}
           inputMode="numeric"
-          aria-label="페이지 번호"
+          aria-label={msg.pdf.view.pageNumber}
           className="w-10 shrink-0 rounded border border-edge bg-base px-1 py-0.5 text-center tabular-nums text-fg outline-none focus:border-accent"
         />
         <span data-pdf-pages className="tabular-nums @max-sm:hidden">
           / {pagesCount}
         </span>
-        <TBtn data-pdf-next label="다음 페이지" onClick={() => liveViewer()?.nextPage()}>
+        <TBtn data-pdf-next label={msg.pdf.view.nextPage} onClick={() => liveViewer()?.nextPage()}>
           <ChevronRight size={13} />
         </TBtn>
         <div className="flex-1" />
-        <TBtn data-pdf-zoom-out label="축소 (−)" onClick={() => zoom(-1)}>
+        <TBtn data-pdf-zoom-out label={msg.pdf.view.zoomOut} onClick={() => zoom(-1)}>
           <Minus size={13} />
         </TBtn>
         <span data-pdf-zoom className="w-12 shrink-0 text-center tabular-nums @max-sm:hidden">
           {Math.round(scale * 100)}%
         </span>
-        <TBtn data-pdf-zoom-in label="확대 (+)" onClick={() => zoom(1)}>
+        <TBtn data-pdf-zoom-in label={msg.pdf.view.zoomIn} onClick={() => zoom(1)}>
           <Plus size={13} />
         </TBtn>
         <select
           data-pdf-fit
           value={fit}
           onChange={(e) => ctl.current?.applyScale(e.target.value)}
-          title="맞춤"
+          title={msg.pdf.view.fitTitle}
           className="rounded border border-edge bg-base px-1 py-0.5 text-fg-muted outline-none focus:border-accent @max-lg:hidden"
         >
           <option value="" disabled>
-            사용자 지정
+            {msg.pdf.view.fitCustom}
           </option>
-          <option value="auto">자동 (0)</option>
-          <option value="page-width">폭 맞춤</option>
-          <option value="page-fit">쪽 맞춤</option>
-          <option value="page-actual">실제 크기</option>
+          <option value="auto">{msg.pdf.view.fitAuto}</option>
+          <option value="page-width">{msg.pdf.view.fitWidth}</option>
+          <option value="page-fit">{msg.pdf.view.fitPage}</option>
+          <option value="page-actual">{msg.pdf.view.fitActual}</option>
         </select>
         <div className="mx-1 h-4 w-px bg-edge" />
         <TBtn
           data-pdf-find-toggle
-          label={`찾기 (${modLabel}+F)`}
+          label={msg.pdf.view.find(modLabel)}
           onClick={() => (find.open ? closeFind() : openFind())}
         >
           <Search size={13} />
         </TBtn>
-        <TBtn data-pdf-open-external label="외부 앱으로 열기" onClick={openExternal}>
+        <TBtn data-pdf-open-external label={msg.pdf.view.openExternal} onClick={openExternal}>
           <ExternalLink size={13} />
         </TBtn>
       </div>
@@ -859,7 +862,7 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
           data-pdf-worktree-note
           className="shrink-0 border-b border-edge bg-panel px-3 py-1 text-xs text-fg-dim"
         >
-          이 버전이 아니라 작업 트리의 현재 파일입니다
+          {msg.pdf.view.worktreeNote}
         </div>
       )}
 
@@ -882,7 +885,7 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
                     : "border-edge text-fg-dim hover:text-fg"
                 }`}
               >
-                {t === "thumbs" ? "썸네일" : "목차"}
+                {t === "thumbs" ? msg.pdf.view.tabThumbs : msg.pdf.view.tabOutline}
               </button>
             ))}
             <div className="col-span-2 min-h-0">
@@ -940,7 +943,7 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
 
           {status !== "ready" && (
             <div className="absolute inset-0 z-20 bg-base">
-              {status === "loading" && <EmptyState title="PDF 불러오는 중…" />}
+              {status === "loading" && <EmptyState title={msg.pdf.view.loading} />}
               {/* 암호 폼·오류는 컨트롤이 컨테이너의 직계 자식이다(계약 셀렉터 `form > input`, `[data-pdf-error] > button`)
                   — EmptyState 로 감싸지 않고 grid 로 같은 모양을 낸다. */}
               {status === "password" && (
@@ -953,25 +956,25 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
                   className="mx-auto grid h-full w-56 grid-cols-2 content-center gap-2 text-center"
                 >
                   <Lock size={32} className="col-span-2 mx-auto mb-1 text-fg-dim" strokeWidth={1.5} />
-                  <div className="col-span-2 font-medium text-fg-muted">암호로 보호된 PDF입니다</div>
+                  <div className="col-span-2 font-medium text-fg-muted">{msg.pdf.view.passwordProtected}</div>
                   <input
                     ref={pwInputRef}
                     type="password"
                     data-pdf-password-input
                     autoFocus
-                    placeholder="암호"
+                    placeholder={msg.pdf.view.passwordPlaceholder}
                     className="col-span-2 rounded border border-edge bg-base px-2 py-1 text-xs text-fg outline-none focus:border-accent"
                   />
                   {pw?.reason === 2 && (
                     <div data-pdf-password-error className="col-span-2 text-xs text-danger">
-                      암호가 틀렸습니다
+                      {msg.pdf.view.passwordWrong}
                     </div>
                   )}
                   <button
                     type="submit"
                     className="mt-1 rounded bg-accent px-3 py-1.5 text-xs text-on-accent hover:bg-accent-hover"
                   >
-                    열기
+                    {msg.pdf.view.passwordOpen}
                   </button>
                   <button
                     type="button"
@@ -979,7 +982,7 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
                     onClick={() => ctl.current?.cancelPassword()}
                     className="mt-1 rounded border border-edge px-3 py-1.5 text-xs text-fg-muted hover:bg-raised hover:text-fg"
                   >
-                    취소
+                    {msg.pdf.view.passwordCancel}
                   </button>
                 </form>
               )}
@@ -993,10 +996,10 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
                       '삭제됨' 으로 말하고, 없는 파일에는 동작할 수 없는 [외부 앱으로 열기]를 두지 않는다. */}
                   <div className="col-span-2 font-medium text-fg-muted">
                     {errorText !== NOT_FOUND
-                      ? "PDF를 열지 못했습니다"
+                      ? msg.pdf.view.openFailed
                       : mode && mode !== "file"
-                        ? "작업 트리에 이 파일이 없습니다(삭제됨)"
-                        : NOT_FOUND}
+                        ? msg.pdf.view.deletedInWorktree
+                        : msg.pdf.view.fileNotFound}
                   </div>
                   {errorText && errorText !== NOT_FOUND && (
                     <div className="col-span-2 mx-auto max-w-80 text-xs leading-5 text-fg-dim">
@@ -1010,14 +1013,14 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
                       errorText === NOT_FOUND ? "col-span-2 justify-self-center" : "justify-self-end"
                     }`}
                   >
-                    다시 시도
+                    {msg.pdf.view.retry}
                   </button>
                   {errorText !== NOT_FOUND && (
                     <button
                       onClick={openExternal}
                       className="mt-2 flex items-center gap-1.5 justify-self-start rounded border border-edge px-3 py-1.5 text-xs text-fg-muted hover:bg-raised hover:text-fg"
                     >
-                      <ExternalLink size={13} /> 외부 앱으로 열기
+                      <ExternalLink size={13} /> {msg.pdf.view.openExternal}
                     </button>
                   )}
                 </div>

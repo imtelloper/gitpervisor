@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 
+import { useMessages } from "../../i18n/ui-language";
 import type { DiffTarget } from "../../lib/ipc";
 import { useSettings } from "../../queries";
 import { ConfirmHost } from "../common/ConfirmDialog";
@@ -25,6 +26,7 @@ type Sel = { target: DiffTarget; repoId: string };
  * 선택·상태를 전부 여기 로컬로 들고, 메인 창 스토어는 읽지도 쓰지도 않는다.
  */
 export function LogWindow({ projectId, name }: { projectId: string; name: string }) {
+  const msg = useMessages();
   const { data: settings } = useSettings();
   const qc = useQueryClient();
   useEffect(() => {
@@ -77,11 +79,11 @@ export function LogWindow({ projectId, name }: { projectId: string; name: string
         />
         <div className="min-h-0 min-w-0 flex-1">
           {sel ? (
-            <Suspense fallback={<EmptyState title="diff 뷰어 로딩 중…" />}>
+            <Suspense fallback={<EmptyState title={msg.git.diff.diffViewerLoading} />}>
               <DiffViewer projectId={sel.repoId} target={sel.target} onOpenFile={onSelect} />
             </Suspense>
           ) : (
-            <EmptyState title="커밋의 파일을 고르면 변경 내용이 보입니다" />
+            <EmptyState title={msg.git.log.logWindowEmpty} />
           )}
         </div>
       </div>

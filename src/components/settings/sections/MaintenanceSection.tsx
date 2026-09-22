@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { useMessages } from "../../../i18n/ui-language";
 import { clearBrowserData } from "../../../lib/browser";
 import { formatBytes } from "../../../lib/format";
 import type { LogStatus } from "../../../lib/ipc";
@@ -40,29 +41,28 @@ export function MaintenanceSection({ hl }: { hl: Set<string> }) {
 }
 
 function BrowserData() {
+  const msg = useMessages();
   const [busy, setBusy] = useState(false);
   const toast = (kind: "error" | "success", m: string) => useUi.getState().pushToast(kind, m);
   const confirmClear = () =>
     useUi.getState().askConfirm({
-      title: "브라우저 데이터 초기화",
-      message:
-        "임베디드 브라우저의 모든 로그인 세션·쿠키·사이트 데이터를 지웁니다. 모든 사이트에서 로그아웃됩니다.",
-      confirmLabel: "초기화",
+      title: msg.settings.maintenance.browserDataReset,
+      message: msg.settings.maintenance.browserDataResetMessage,
+      confirmLabel: msg.settings.maintenance.browserDataResetConfirm,
       danger: true,
       onConfirm: () => {
         setBusy(true);
         void clearBrowserData()
-          .then(() => toast("success", "브라우저 로그인/쿠키 데이터를 지웠습니다"))
+          .then(() => toast("success", msg.settings.maintenance.browserDataCleared))
           .catch((e) => toast("error", errorMessage(e)))
           .finally(() => setBusy(false));
       },
     });
   return (
     <div className="space-y-2">
-      <div className={subHeading}>브라우저</div>
+      <div className={subHeading}>{msg.settings.maintenance.browserHeading}</div>
       <div className="text-[11px] leading-5 text-fg-muted">
-        임베디드 브라우저 탭·팝업이 공유하는 로그인 세션과 쿠키를 지웁니다. 북마크와 방문 기록은
-        유지됩니다.
+        {msg.settings.maintenance.browserIntro}
       </div>
       <button
         disabled={busy}
@@ -70,13 +70,16 @@ function BrowserData() {
         className="flex items-center gap-1.5 rounded border border-edge px-2.5 py-1 text-danger hover:bg-danger/15 disabled:opacity-50"
       >
         <Globe size={12} />
-        {busy ? "초기화 중…" : "브라우저 데이터 초기화"}
+        {busy
+          ? msg.settings.maintenance.browserResetting
+          : msg.settings.maintenance.browserDataReset}
       </button>
     </div>
   );
 }
 
 function Diagnostics() {
+  const msg = useMessages();
   const [status, setStatus] = useState<LogStatus | null>(null);
   const [log, setLog] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -88,10 +91,11 @@ function Diagnostics() {
   const toast = (kind: "error" | "success", m: string) => useUi.getState().pushToast(kind, m);
   return (
     <div className="space-y-2">
-      <div className={subHeading}>진단 / 로그</div>
+      <div className={subHeading}>{msg.settings.maintenance.diagnosticsHeading}</div>
       <div className="text-[11px] leading-5 text-fg-muted">
-        앱이 비정상 종료해도 원인과 백트레이스가 <span className="font-mono">panic.log</span>에
-        기록됩니다. 여기서 로그 폴더를 열거나 마지막 크래시 내용을 확인할 수 있습니다.
+        {msg.settings.maintenance.diagnosticsIntroBeforeFile}
+        <span className="font-mono">panic.log</span>
+        {msg.settings.maintenance.diagnosticsIntroAfterFile}
       </div>
       {status?.logDir && (
         <div className="break-all font-mono text-[10px] text-fg-dim">{status.logDir}</div>
@@ -102,7 +106,7 @@ function Diagnostics() {
           className="flex items-center gap-1.5 rounded border border-edge px-2.5 py-1 text-fg-muted hover:bg-raised hover:text-fg"
         >
           <FolderOpen size={12} />
-          로그 폴더 열기
+          {msg.settings.maintenance.openLogsFolder}
         </button>
         <button
           disabled={busy}
@@ -119,7 +123,7 @@ function Diagnostics() {
           className="flex items-center gap-1.5 rounded border border-edge px-2.5 py-1 text-fg-muted hover:bg-raised hover:text-fg disabled:opacity-50"
         >
           <ScrollText size={12} />
-          패닉 로그 보기
+          {msg.settings.maintenance.viewPanicLog}
         </button>
         {hasCrash && (
           <button
@@ -128,30 +132,33 @@ function Diagnostics() {
                 await ipc.clearCrashLog();
                 setLog(null);
                 refresh();
-                toast("success", "크래시 로그를 비웠습니다");
+                toast("success", msg.settings.maintenance.crashLogCleared);
               } catch (e) {
                 toast("error", errorMessage(e));
               }
             }}
             className="rounded border border-edge px-2.5 py-1 text-danger hover:bg-danger/15"
           >
-            비우기
+            {msg.settings.maintenance.clearCrashLog}
           </button>
         )}
       </div>
       {hasCrash ? (
         <span className="text-[12px] text-danger">
-          ⚠️ 마지막 크래시: {status?.lastCrashAt ?? "?"} ({formatBytes(status?.panicLogBytes ?? 0)})
+          {msg.settings.maintenance.lastCrash(
+            status?.lastCrashAt ?? "?",
+            formatBytes(status?.panicLogBytes ?? 0),
+          )}
         </span>
       ) : (
         <span className="flex items-center gap-1.5 text-[12px] text-add">
           <ShieldCheck size={13} />
-          크래시 기록 없음
+          {msg.settings.maintenance.noCrashes}
         </span>
       )}
       {log !== null && (
         <pre className="max-h-52 overflow-auto whitespace-pre-wrap rounded border border-edge bg-base p-2 font-mono text-[10px] leading-4">
-          {log || "(비어 있음)"}
+          {log || msg.settings.maintenance.logEmpty}
         </pre>
       )}
     </div>
@@ -159,6 +166,7 @@ function Diagnostics() {
 }
 
 function Quarantine() {
+  const msg = useMessages();
   const { data, isFetching, refetch } = useQuarantinedTools();
   const clear = useClearQuarantine();
   const items = data ?? [];
@@ -183,11 +191,11 @@ function Quarantine() {
     setSelected(allSelected ? new Set() : new Set(items.map((i) => i.path)));
   return (
     <div className="space-y-2">
-      <div className={subHeading}>macOS 격리 도구</div>
+      <div className={subHeading}>{msg.settings.maintenance.quarantineHeading}</div>
       <div className="text-[11px] leading-5 text-fg-muted">
-        Homebrew cask로 설치한 CLI는 macOS 격리 속성이 박혀 터미널에서{" "}
-        <span className="font-mono">permission denied</span>로 실행이 막힙니다. 여기서 한 번에 해제할
-        수 있습니다.
+        {msg.settings.maintenance.quarantineIntroBeforeError}
+        <span className="font-mono">permission denied</span>
+        {msg.settings.maintenance.quarantineIntroAfterError}
       </div>
       <div className="flex items-center gap-2">
         <button
@@ -196,16 +204,18 @@ function Quarantine() {
           className="flex items-center gap-1.5 rounded border border-edge px-2.5 py-1 text-fg-muted hover:bg-raised hover:text-fg disabled:opacity-50"
         >
           <RefreshCw size={12} className={isFetching ? "animate-spin" : ""} />
-          다시 검사
+          {msg.settings.maintenance.rescan}
         </button>
         {items.length === 0 && !isFetching && (
           <span className="flex items-center gap-1.5 text-[12px] text-add">
             <ShieldCheck size={13} />
-            차단된 항목 없음
+            {msg.settings.maintenance.noBlocked}
           </span>
         )}
         {items.length > 0 && (
-          <span className="text-[12px] text-danger">⚠️ 차단된 항목 {items.length}개</span>
+          <span className="text-[12px] text-danger">
+            {msg.settings.maintenance.blockedCount(items.length)}
+          </span>
         )}
       </div>
       {items.length > 0 && (
@@ -213,7 +223,7 @@ function Quarantine() {
           <div className="max-h-44 overflow-y-auto rounded border border-edge bg-base">
             <label className="flex cursor-pointer items-center gap-2 border-b border-edge px-2 py-1.5 text-[12px] font-medium text-fg-muted hover:bg-raised">
               <input type="checkbox" checked={allSelected} onChange={toggleAll} className="accent-accent" />
-              <span>전체 선택</span>
+              <span>{msg.settings.maintenance.selectAll}</span>
             </label>
             {items.map((it) => (
               <label
@@ -241,7 +251,9 @@ function Quarantine() {
             disabled={selectedList.length === 0 || clear.isPending}
             className="w-full rounded bg-accent px-3 py-1.5 text-[12px] font-medium text-on-accent hover:bg-accent-hover disabled:opacity-50"
           >
-            {clear.isPending ? "해제 중…" : `선택 ${selectedList.length}개 격리 해제`}
+            {clear.isPending
+              ? msg.settings.maintenance.clearing
+              : msg.settings.maintenance.clearSelected(selectedList.length)}
           </button>
         </>
       )}

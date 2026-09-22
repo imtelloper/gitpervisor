@@ -49,6 +49,8 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
+import type { Messages } from "../../i18n/messages";
+import { useMessages } from "../../i18n/ui-language";
 import type { AlignMode } from "../../lib/annotate/align";
 import { BLEND_LABELS } from "../../lib/annotate/blend-labels";
 import {
@@ -256,13 +258,14 @@ function PaintChip({
   text: string;
   onClick(): void;
 }) {
+  const msg = useMessages();
   const bg = swatchBg(paint);
   return (
     <button
       type="button"
       // 색 피커 팝오버(45 4단계)가 붙기 전까지는 속성 탭으로 보내는 것이 전부다. 아무 일도
       // 안 하는 스와치보다는 편집할 수 있는 곳으로 데려가는 편이 낫다(툴 레일 스와치와 같은 처리).
-      title={`${label} — 속성 탭에서 편집`}
+      title={msg.imageEditor.contextBar.paintChipTitle(label)}
       onClick={onClick}
       className={BTN}
     >
@@ -277,10 +280,11 @@ function PaintChip({
   );
 }
 
-function paintText(p: Fill | null): string {
-  if (!p) return "없음";
+function paintText(msg: Messages, p: Fill | null): string {
+  const t = msg.imageEditor.contextBar;
+  if (!p) return t.paintNone;
   if (p.type === "solid") return p.color.replace("#", "").toUpperCase();
-  return p.type === "image" ? "이미지" : "그라디언트";
+  return p.type === "image" ? t.paintImage : t.paintGradient;
 }
 
 /** 담당 태스크의 콘텐츠가 아직 없는 변형 — 무엇이 선택됐는지만 적는다. */
@@ -303,6 +307,7 @@ function BlendSeg({
   container: boolean;
   onChange(v: BlendMode): void;
 }) {
+  const msg = useMessages();
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   if (value === undefined) return null;
   return (
@@ -329,14 +334,19 @@ function BlendSeg({
           이 캐럿이 없으면 그 값이 무엇인지 확인할 방법도 되돌릴 방법도 화면에 없다. */}
       <button
         type="button"
-        title="블렌드 모드 전체"
+        title={msg.imageEditor.contextBar.blendAllTitle}
         onClick={(e) => setAnchor(e.currentTarget)}
         className="rounded px-1.5 py-0.5 text-fg-dim hover:text-fg"
       >
         …
       </button>
       {anchor && (
-        <Popover anchor={anchor} open onClose={() => setAnchor(null)} title="블렌드">
+        <Popover
+          anchor={anchor}
+          open
+          onClose={() => setAnchor(null)}
+          title={msg.imageEditor.contextBar.blendPopoverTitle}
+        >
           <BlendMenu
             value={value}
             container={container}
@@ -360,13 +370,14 @@ function NoneBar({
   zoom: number;
   onZoom(target: number | "fit"): void;
 }) {
+  const msg = useMessages();
   const toggles = useImageEditorUi((s) => s.toggles);
   const setToggle = useImageEditorUi((s) => s.setToggle);
 
   return (
     <>
       {/* 시안 ⑧ 의 `캔버스` 칩은 라벨뿐이다 — 이 앱에 캔버스 배경색 개념이 없다(INDEX §10.5). */}
-      <SlotLabel icon={MousePointer2} text="캔버스" />
+      <SlotLabel icon={MousePointer2} text={msg.imageEditor.contextBar.canvas} />
       <Sep />
 
       <Btn
@@ -384,7 +395,7 @@ function NoneBar({
         <Grid3x3 size={14} />
       </Btn>
       <Btn
-        title="자석(스냅)"
+        title={msg.imageEditor.contextBar.snapTitle}
         pressed={toggles.snap}
         onClick={() => setToggle("snap", !toggles.snap)}
       >
@@ -394,7 +405,7 @@ function NoneBar({
       <Sep />
       <Field>
         <NumField
-          label="줌"
+          label={msg.imageEditor.zoom.label}
           value={Math.round(zoom * 100)}
           unit="%"
           min={1}
@@ -406,7 +417,7 @@ function NoneBar({
         />
       </Field>
       <Btn title={tip("zoom.fit")} onClick={() => onZoom("fit")}>
-        맞춤
+        {msg.imageEditor.zoom.fit}
       </Btn>
     </>
   );
@@ -423,6 +434,8 @@ function ShapeBar({
   actions: EditorActions;
   canVector: Partial<Record<PathOp, boolean>>;
 }) {
+  const msg = useMessages();
+  const ie = msg.imageEditor;
   const setTab = useImageEditorUi((s) => s.setTab);
   const openProps = () => setTab("inspector", "props");
   const Icon = KIND_ICON[layerTypeOf(node)];
@@ -441,34 +454,43 @@ function ShapeBar({
       <SlotLabel icon={Icon} text={node.name ?? defaultLayerName(node, objects)} />
       <Sep />
 
-      <PaintChip label="채우기" paint={fill} text={paintText(fill)} onClick={openProps} />
       <PaintChip
-        label="선"
+        label={ie.paintSlot.fills}
+        paint={fill}
+        text={paintText(msg, fill)}
+        onClick={openProps}
+      />
+      <PaintChip
+        label={ie.paintSlot.strokes}
         paint={stroke}
-        text={`선 ${Math.round(node.strokeWidth)}`}
+        text={ie.contextBar.strokeWidth(Math.round(node.strokeWidth))}
         onClick={openProps}
       />
 
       <Sep />
       <Field>
         <NumField
-          label="반경"
+          label={ie.contextBar.radius}
           value={radius}
           min={0}
-          onCommit={(v) => actions.patchSelection({ radius: [v, v, v, v] }, `반경 ${v}`)}
-          onLive={(v) => actions.patchSelection({ radius: [v, v, v, v] }, `반경 ${v}`, true)}
+          onCommit={(v) => actions.patchSelection({ radius: [v, v, v, v] }, ie.history.radius(v))}
+          onLive={(v) =>
+            actions.patchSelection({ radius: [v, v, v, v] }, ie.history.radius(v), true)
+          }
           onLiveEnd={actions.endLive}
         />
       </Field>
       <Field>
         <NumField
-          label="불투명도"
+          label={ie.contextBar.opacity}
           value={Math.round(node.opacity * 100)}
           unit="%"
           min={0}
           max={100}
-          onCommit={(v) => actions.patchSelection({ opacity: v / 100 }, `불투명도 ${v}%`)}
-          onLive={(v) => actions.patchSelection({ opacity: v / 100 }, `불투명도 ${v}%`, true)}
+          onCommit={(v) => actions.patchSelection({ opacity: v / 100 }, ie.history.opacity(v))}
+          onLive={(v) =>
+            actions.patchSelection({ opacity: v / 100 }, ie.history.opacity(v), true)
+          }
           onLiveEnd={actions.endLive}
         />
       </Field>
@@ -477,7 +499,7 @@ function ShapeBar({
       <BlendSeg
         value={node.blend}
         container={isContainer(node)}
-        onChange={(v) => actions.patchSelection({ blend: v }, `블렌드 ${blendLabel(v)}`)}
+        onChange={(v) => actions.patchSelection({ blend: v }, ie.history.blend(blendLabel(v)))}
       />
 
       {/* 시안 ③ 컨텍스트 바 `평탄화 · 윤곽선화`. 도형 하나에 건 평탄화가 곧 '패스로'다
@@ -487,12 +509,12 @@ function ShapeBar({
           <Sep />
           {canVector.flatten && (
             <Btn title={tip("flatten")} onClick={() => actions.vectorOp("flatten")}>
-              평탄화
+              {ie.vectorOp.flatten}
             </Btn>
           )}
           {canVector.outline && (
             <Btn title={tip("outline")} onClick={() => actions.vectorOp("outline")}>
-              윤곽선화
+              {ie.vectorOp.outline}
             </Btn>
           )}
         </>
@@ -505,7 +527,7 @@ function ShapeBar({
       </Btn>
       {isContainer(node) && (
         <Btn title={tip("ungroup")} onClick={actions.ungroup}>
-          그룹 해제
+          {ie.op.ungroup}
         </Btn>
       )}
       <Btn title={tip("duplicate")} onClick={actions.duplicate}>
@@ -529,6 +551,8 @@ function MultiBar({
   actions: EditorActions;
   canVector: Partial<Record<PathOp, boolean>>;
 }) {
+  const msg = useMessages();
+  const ie = msg.imageEditor;
   const tidyGap = useImageEditorUi((s) => s.tidyGap);
 
   // 반올림은 **비교 뒤**다. getter 안에서 반올림하면 0.501 과 0.504 가 같은 50 으로 읽혀
@@ -543,7 +567,9 @@ function MultiBar({
     <>
       {/* `N개 선택` 은 자기 span 안에 홀로 둔다 — e2e 30 `selCount` 가 이 문구를 담은 가장
           안쪽 요소를 찾는다(상태바와 같은 계약). 옆 글자를 같은 노드에 붙이면 개수가 어긋난다. */}
-      <span className="shrink-0 tabular-nums text-fg-muted">{count}개 선택</span>
+      <span className="shrink-0 tabular-nums text-fg-muted">
+        {ie.contextBar.selectedCount(count)}
+      </span>
       <Sep />
 
       {ALIGNS.map((a) => (
@@ -566,7 +592,7 @@ function MultiBar({
         </>
       )}
       <Btn title={tip("tidy")} onClick={() => actions.tidy(tidyGap)}>
-        간격 정리
+        {ie.op.tidy}
       </Btn>
 
       {/* 텍스트·모자이크가 섞이면 `canBoolean` 이 거짓이라 아이콘 4개가 통째로 사라진다 —
@@ -583,48 +609,50 @@ function MultiBar({
             ))}
           {canVector.flatten && (
             <Btn title={tip("flatten")} onClick={() => actions.vectorOp("flatten")}>
-              평탄화
+              {ie.vectorOp.flatten}
             </Btn>
           )}
         </>
       )}
 
       <Sep />
-      <Btn title="좌우 반전" onClick={() => actions.flip("h")}>
+      <Btn title={ie.op.flipH} onClick={() => actions.flip("h")}>
         <FlipHorizontal size={14} />
       </Btn>
-      <Btn title="상하 반전" onClick={() => actions.flip("v")}>
+      <Btn title={ie.op.flipV} onClick={() => actions.flip("v")}>
         <FlipVertical size={14} />
       </Btn>
       {/* 제목에 `오른쪽 90` 을 쓰지 마라 — e2e 30 (c) 가 그 문자열로 **이미지 전체** 회전
           버튼(조정 탭)을 찾는다. 이 바가 문서 순서상 먼저라 선택 회전이 대신 눌린다. */}
-      <Btn title="반시계 방향 90° 회전" onClick={() => actions.rotate(-90)}>
+      <Btn title={ie.contextBar.rotateCcw90} onClick={() => actions.rotate(-90)}>
         <RotateCcw size={14} />
       </Btn>
-      <Btn title="시계 방향 90° 회전" onClick={() => actions.rotate(90)}>
+      <Btn title={ie.contextBar.rotateCw90} onClick={() => actions.rotate(90)}>
         <RotateCw size={14} />
       </Btn>
 
       <Sep />
       <Btn title={tip("mask")} onClick={() => actions.mask(true)}>
-        마스크로 사용
+        {ie.op.useAsMask}
       </Btn>
       <Btn title={tip("group")} onClick={() => actions.group("group")}>
-        그룹
+        {ie.op.group}
       </Btn>
 
       <Sep />
       <Field>
         <NumField
-          label="불투명도"
+          label={ie.contextBar.opacity}
           value={opacity}
           unit="%"
           min={0}
           max={100}
-          onCommit={(v) => actions.patchSelection({ opacity: v / 100 }, `불투명도 ${v}%`)}
+          onCommit={(v) => actions.patchSelection({ opacity: v / 100 }, ie.history.opacity(v))}
           // 스크럽·방향키는 단일값일 때만 산다. MIXED 의 상대 델타(§3.4)는 "각 객체 현재값 + Δ"
           // 라 패치 한 장으로 표현할 수 없다 — 액션에 델타 함수가 생기면 `onDelta` 를 잇는다.
-          onLive={(v) => actions.patchSelection({ opacity: v / 100 }, `불투명도 ${v}%`, true)}
+          onLive={(v) =>
+            actions.patchSelection({ opacity: v / 100 }, ie.history.opacity(v), true)
+          }
           onLiveEnd={actions.endLive}
         />
       </Field>
@@ -633,38 +661,40 @@ function MultiBar({
         // 하나라도 리프면 `pass-through` 는 못 쓴다 — 눌리면 37 정규화가 조용히 `normal` 로
         // 되돌려, 목록에서 고른 값과 문서에 남는 값이 달라진다.
         container={nodes.length > 0 && nodes.every(isContainer)}
-        onChange={(v) => actions.patchSelection({ blend: v }, `블렌드 ${blendLabel(v)}`)}
+        onChange={(v) => actions.patchSelection({ blend: v }, ie.history.blend(blendLabel(v)))}
       />
     </>
   );
 }
 
 function ImageBar({ size }: { size: { w: number; h: number } | null }) {
+  const msg = useMessages();
+  const ie = msg.imageEditor;
   const setTab = useImageEditorUi((s) => s.setTab);
   const setMode = useImageEditorUi((s) => s.setMode);
 
   return (
     <>
-      <SlotLabel icon={ImageIcon} text="배경 이미지" />
+      <SlotLabel icon={ImageIcon} text={ie.contextBar.backgroundImage} />
       <Sep />
       {/*
         시안 ⑧ 은 밝기·대비·채도 세 버튼이 각자 그 슬라이더로 **포커스**한다. 지금은 셋 다 탭을
         여는 것 말고 할 일이 없어서(조정 탭은 45 3단계) 하나로 둔다 — 같은 일을 하는 버튼 셋은
         사용자가 둘은 고장 났다고 읽는다. 필드 포커스 훅이 생기면 그때 셋으로 나눈다.
       */}
-      <Btn title="색 보정 — 밝기 · 대비 · 채도" onClick={() => setTab("inspector", "adjust")}>
+      <Btn title={ie.contextBar.colorAdjustTitle} onClick={() => setTab("inspector", "adjust")}>
         <Sun size={14} />
-        색 보정
+        {ie.contextBar.colorAdjust}
       </Btn>
       <Btn title={tip("mode.crop")} onClick={() => setMode({ kind: "crop" })}>
         <Crop size={14} />
-        크롭
+        {ie.op.crop}
       </Btn>
       {size && (
         <>
           <Sep />
           <span className="shrink-0 tabular-nums text-fg-dim">
-            원본 크기 {size.w} × {size.h}
+            {ie.contextBar.originalSize(size.w, size.h)}
           </span>
         </>
       )}
@@ -682,6 +712,7 @@ export function ContextBar({
   canVector = {},
   crop,
 }: ContextBarProps) {
+  const msg = useMessages();
   const selectedIds = useImageEditorUi((s) => s.selectedIds);
   const mode = useImageEditorUi((s) => s.mode);
   // 선택 **순서**는 여기서 쓰지 않는다(정렬 기준 keyId 는 액션이 정한다) — 값 읽기는 문서 순서로 족하다.
@@ -731,7 +762,11 @@ export function ContextBar({
       body = (
         <SlotLabel
           icon={PenTool}
-          text={editing ? (editing.name ?? defaultLayerName(editing, objects)) : "벡터 편집"}
+          text={
+            editing
+              ? (editing.name ?? defaultLayerName(editing, objects))
+              : msg.imageEditor.vectorEditName
+          }
         />
       );
       break;
@@ -740,7 +775,7 @@ export function ContextBar({
       body = crop ? (
         <CropContextBar session={crop.session} api={crop.api} maxDeg={crop.maxDeg} />
       ) : (
-        <SlotLabel icon={Crop} text="크롭" />
+        <SlotLabel icon={Crop} text={msg.imageEditor.op.crop} />
       );
       break;
   }
@@ -750,7 +785,7 @@ export function ContextBar({
     // 실제로 넘치는 창 폭이 확인되면 넣는다 — 지금 넣으면 접기 규칙을 추측으로 정하게 된다.
     <div
       role="toolbar"
-      aria-label="컨텍스트"
+      aria-label={msg.imageEditor.contextBar.ariaLabel}
       className="flex h-11 shrink-0 items-center gap-1 overflow-x-auto border-b border-edge bg-panel px-2 text-[12px]"
     >
       {body}

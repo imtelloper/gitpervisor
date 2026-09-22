@@ -22,6 +22,7 @@ import {
 } from "react";
 import { Component, LayoutGrid, List, Search } from "lucide-react";
 
+import { useMessages } from "../../../i18n/ui-language";
 import { instanceCounts } from "../../../lib/annotate/components";
 import type { ComponentDef, EditorDoc } from "../../../lib/annotate/types";
 import { useImageLibrary } from "../../../stores/imageLibrary";
@@ -45,6 +46,8 @@ export interface AssetsPanelProps {
 }
 
 export function AssetsPanel({ doc, onPlace }: AssetsPanelProps) {
+  const msg = useMessages();
+  const t = msg.imagePanels.assetsPanel;
   const [query, setQuery] = useState("");
   const [list, setList] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number; def: ComponentDef } | null>(null);
@@ -67,9 +70,9 @@ export function AssetsPanel({ doc, onPlace }: AssetsPanelProps) {
 
   function startRename(def: ComponentDef) {
     useUi.getState().askPrompt({
-      title: "컴포넌트 이름",
+      title: t.renamePromptTitle,
       defaultValue: def.name,
-      validate: (v) => (v.trim() ? null : "이름을 입력하세요"),
+      validate: (v) => (v.trim() ? null : t.nameRequired),
       onConfirm: (v) => {
         const name = v.trim();
         if (name && name !== def.name) useImageLibrary.getState().renameComponent(def.id, name);
@@ -82,10 +85,10 @@ export function AssetsPanel({ doc, onPlace }: AssetsPanelProps) {
       (o) => o.kind === "instance" && o.componentId === def.id,
     ).length;
     useUi.getState().askConfirm({
-      title: "컴포넌트 삭제",
-      message: `'${def.name}' 을(를) 라이브러리에서 지웁니다.`,
-      detail: n > 0 ? `이 문서의 인스턴스 ${n}개가 분리됩니다 (모양은 그대로입니다).` : undefined,
-      confirmLabel: "삭제",
+      title: t.deleteConfirmTitle,
+      message: t.deleteConfirmMessage(def.name),
+      detail: n > 0 ? t.deleteConfirmDetail(n) : undefined,
+      confirmLabel: t.deleteConfirmButton,
       danger: true,
       onConfirm: () => useImageLibrary.getState().removeComponent(def.id),
     });
@@ -121,8 +124,8 @@ export function AssetsPanel({ doc, onPlace }: AssetsPanelProps) {
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="에셋 검색"
-            aria-label="에셋 검색"
+            placeholder={t.searchPlaceholder}
+            aria-label={t.searchPlaceholder}
             style={{ height: 26 }}
             className="w-full rounded border border-edge bg-base pl-6 pr-1.5 text-[11px] text-fg outline-none placeholder:text-fg-dim focus:border-accent"
           />
@@ -130,8 +133,8 @@ export function AssetsPanel({ doc, onPlace }: AssetsPanelProps) {
         <button
           type="button"
           onClick={() => setList((v) => !v)}
-          title={list ? "카드로 보기" : "목록으로 보기"}
-          aria-label={list ? "카드로 보기" : "목록으로 보기"}
+          title={list ? t.viewAsCards : t.viewAsList}
+          aria-label={list ? t.viewAsCards : t.viewAsList}
           style={{ height: 26, width: 26 }}
           className="flex shrink-0 items-center justify-center rounded border border-edge text-fg-muted hover:text-fg"
         >
@@ -144,16 +147,16 @@ export function AssetsPanel({ doc, onPlace }: AssetsPanelProps) {
           style={{ height: 26 }}
           className="flex items-center gap-1 bg-panel px-2 text-fg-dim"
         >
-          <span>로컬 컴포넌트</span>
+          <span>{t.localComponents}</span>
           <span>· {shown.length}</span>
         </div>
 
         {shown.length === 0 ? (
           q ? (
-            <div className="px-2 py-3 text-fg-dim">검색 결과가 없습니다</div>
+            <div className="px-2 py-3 text-fg-dim">{t.noSearchResults}</div>
           ) : (
             <div className="py-6">
-              <EmptyState icon={Component} title="로컬 컴포넌트가 없습니다" />
+              <EmptyState icon={Component} title={t.noLocalComponents} />
             </div>
           )
         ) : list ? (
@@ -195,7 +198,7 @@ export function AssetsPanel({ doc, onPlace }: AssetsPanelProps) {
               style={{ height: 26 }}
               className="flex items-center gap-1 bg-panel px-2 text-fg-dim"
             >
-              <span>문서 이미지</span>
+              <span>{t.documentImages}</span>
               <span>· {assets.length}</span>
             </div>
             <div className="grid grid-cols-3 gap-1.5 p-1.5">
@@ -221,9 +224,9 @@ export function AssetsPanel({ doc, onPlace }: AssetsPanelProps) {
         style={{ height: 32 }}
         className="flex shrink-0 items-center gap-2 border-t border-edge px-2 text-fg-dim"
       >
-        <span className="shrink-0">인스턴스</span>
+        <span className="shrink-0">{t.instancesHeading}</span>
         <span className="truncate">
-          {counts.linked} 연결됨 · {counts.overridden} 재정의됨 · {counts.detached} 분리됨
+          {t.instanceCounts(counts.linked, counts.overridden, counts.detached)}
         </span>
       </div>
 
@@ -233,8 +236,8 @@ export function AssetsPanel({ doc, onPlace }: AssetsPanelProps) {
           y={menu.y}
           onClose={() => setMenu(null)}
           items={[
-            { label: "이름 변경", onClick: () => startRename(menu.def) },
-            { label: "삭제", danger: true, onClick: () => confirmRemove(menu.def) },
+            { label: t.menuRename, onClick: () => startRename(menu.def) },
+            { label: t.menuDelete, danger: true, onClick: () => confirmRemove(menu.def) },
           ]}
         />
       )}

@@ -2,6 +2,7 @@
 // onTest는 셸의 handleTest(선저장 후 발송). 시크릿 입력·테스트 버튼은 토글 켤 때만 조건 렌더.
 import { Send } from "lucide-react";
 
+import { useMessages } from "../../../i18n/ui-language";
 import type { NotifySecret, Settings } from "../../../lib/ipc";
 import { useHealthMute } from "../../../stores/health";
 import { Field, Hl, inputCls, type SectionProps } from "./shared";
@@ -28,32 +29,27 @@ export function NotifySection({
   smtpHas,
   onTest,
 }: NotifySectionProps) {
+  const msg = useMessages();
   const healthMuted = useHealthMute((st) => st.muted);
   const setHealthMuted = useHealthMute((st) => st.setMuted);
   return (
     <>
       <Hl id="notifyMode" hl={hl}>
-        <Field
-          label="AI 작업 완료 알림"
-          hint="터미널의 Claude가 작업을 끝내면 OS 알림을 보냅니다. 상태바의 AI 칩을 클릭하면 해당 프로젝트로 이동합니다."
-        >
+        <Field label={msg.settings.notify.modeLabel} hint={msg.settings.notify.modeHint}>
           <select
             value={form.notifyMode || "project-inactive"}
             onChange={(e) => update("notifyMode", e.target.value as Settings["notifyMode"])}
             className={inputCls}
           >
-            <option value="off">끔</option>
-            <option value="project-inactive">프로젝트 단위 · 창이 비활성일 때만</option>
-            <option value="terminal">터미널 단위로 매번</option>
-            <option value="always">항상 (포커스 중에도)</option>
+            <option value="off">{msg.settings.notify.modeOff}</option>
+            <option value="project-inactive">{msg.settings.notify.modeProjectInactive}</option>
+            <option value="terminal">{msg.settings.notify.modeTerminal}</option>
+            <option value="always">{msg.settings.notify.modeAlways}</option>
           </select>
         </Field>
       </Hl>
 
-      <div className="text-[11px] leading-5 text-fg-muted">
-        아래를 켜면 OS 알림에 더해 Slack·이메일로도 완료 알림을 보냅니다 — 원격에서도 작업 종료를 알 수
-        있습니다(시크릿은 OS 키링에 저장).
-      </div>
+      <div className="text-[11px] leading-5 text-fg-muted">{msg.settings.notify.externalIntro}</div>
 
       <Hl id="slackEnabled" hl={hl}>
         <label className="flex cursor-pointer items-center gap-2">
@@ -63,7 +59,7 @@ export function NotifySection({
             onChange={(e) => update("slackEnabled", e.target.checked)}
             className="accent-accent"
           />
-          <span>Slack 웹훅으로도 알림</span>
+          <span>{msg.settings.notify.slackEnabled}</span>
         </label>
       </Hl>
       {form.slackEnabled && (
@@ -73,7 +69,9 @@ export function NotifySection({
               type="password"
               value={slackSecret}
               placeholder={
-                slackHas ? "(저장됨 — 변경하려면 새 URL 입력)" : "https://hooks.slack.com/services/..."
+                slackHas
+                  ? msg.settings.notify.slackSecretSaved
+                  : "https://hooks.slack.com/services/..."
               }
               onChange={(e) => setSlackSecret(e.target.value)}
               className={`${inputCls} font-mono`}
@@ -84,7 +82,7 @@ export function NotifySection({
             className="flex items-center gap-1.5 rounded border border-edge px-2.5 py-1 text-fg-muted hover:bg-raised hover:text-fg"
           >
             <Send size={12} />
-            테스트 전송
+            {msg.settings.notify.testSend}
           </button>
         </div>
       )}
@@ -97,7 +95,7 @@ export function NotifySection({
             onChange={(e) => update("emailEnabled", e.target.checked)}
             className="accent-accent"
           />
-          <span>이메일(SMTP)로도 알림</span>
+          <span>{msg.settings.notify.emailEnabled}</span>
         </label>
       </Hl>
       {form.emailEnabled && (
@@ -107,7 +105,7 @@ export function NotifySection({
               <input
                 type="text"
                 value={form.smtpHost ?? ""}
-                placeholder="SMTP 호스트 (예: smtp.gmail.com)"
+                placeholder={msg.settings.notify.smtpHostPlaceholder}
                 onChange={(e) => update("smtpHost", e.target.value)}
                 className={`${inputCls} min-w-[200px] flex-1 font-mono`}
               />
@@ -118,7 +116,7 @@ export function NotifySection({
                 value={form.smtpPort || 587}
                 onChange={(e) => update("smtpPort", Number(e.target.value))}
                 className={`${inputCls} w-20`}
-                title="포트 (465=암호화, 587=STARTTLS)"
+                title={msg.settings.notify.smtpPortTitle}
               />
             </Hl>
           </div>
@@ -126,7 +124,7 @@ export function NotifySection({
             <input
               type="text"
               value={form.smtpFrom ?? ""}
-              placeholder="보내는 주소 (from)"
+              placeholder={msg.settings.notify.smtpFromPlaceholder}
               onChange={(e) => update("smtpFrom", e.target.value)}
               className={`${inputCls} font-mono`}
             />
@@ -135,7 +133,7 @@ export function NotifySection({
             <input
               type="text"
               value={form.smtpTo ?? ""}
-              placeholder="받는 주소 (to)"
+              placeholder={msg.settings.notify.smtpToPlaceholder}
               onChange={(e) => update("smtpTo", e.target.value)}
               className={`${inputCls} font-mono`}
             />
@@ -144,7 +142,7 @@ export function NotifySection({
             <input
               type="text"
               value={form.smtpUsername ?? ""}
-              placeholder="사용자명 (보통 from과 동일)"
+              placeholder={msg.settings.notify.smtpUsernamePlaceholder}
               onChange={(e) => update("smtpUsername", e.target.value)}
               className={`${inputCls} font-mono`}
             />
@@ -153,7 +151,11 @@ export function NotifySection({
             <input
               type="password"
               value={smtpSecret}
-              placeholder={smtpHas ? "(저장됨 — 변경하려면 입력)" : "비밀번호 / 앱 비밀번호"}
+              placeholder={
+                smtpHas
+                  ? msg.settings.notify.smtpSecretSaved
+                  : msg.settings.notify.smtpSecretPlaceholder
+              }
               onChange={(e) => setSmtpSecret(e.target.value)}
               className={`${inputCls} font-mono`}
             />
@@ -166,7 +168,7 @@ export function NotifySection({
                 onChange={(e) => update("smtpTls", e.target.checked)}
                 className="accent-accent"
               />
-              <span>TLS 암호화 사용 (권장)</span>
+              <span>{msg.settings.notify.smtpTls}</span>
             </label>
           </Hl>
           <button
@@ -174,7 +176,7 @@ export function NotifySection({
             className="flex items-center gap-1.5 rounded border border-edge px-2.5 py-1 text-fg-muted hover:bg-raised hover:text-fg"
           >
             <Send size={12} />
-            테스트 전송
+            {msg.settings.notify.testSend}
           </button>
         </div>
       )}
@@ -190,11 +192,10 @@ export function NotifySection({
               onChange={(e) => setHealthMuted(!e.target.checked)}
               className="accent-accent"
             />
-            <span>시스템 메모리 경보 표시</span>
+            <span>{msg.settings.notify.healthAlert}</span>
           </label>
           <div className="mt-1 pl-6 text-[11px] leading-5 text-fg-dim">
-            메모리 여유가 줄어 OS가 앱을 종료할 수 있을 때 우측 하단에 카드로 알립니다. 끄면 경고·위험
-            단계 모두 뜨지 않습니다 — 지난 실행이 비정상 종료됐다는 안내는 이 설정과 무관하게 뜹니다.
+            {msg.settings.notify.healthAlertHint}
           </div>
         </div>
       </Hl>

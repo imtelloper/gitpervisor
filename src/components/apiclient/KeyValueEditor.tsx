@@ -1,5 +1,6 @@
 import { Trash2 } from "lucide-react";
 
+import { useMessages } from "../../i18n/ui-language";
 import type { KvRow } from "../../stores/apiclient";
 
 /**
@@ -21,9 +22,10 @@ export function KeyValueEditor({
   keyPlaceholder?: string;
   valuePlaceholder?: string;
 }) {
+  const msg = useMessages();
   if (readOnly) {
     if (rows.length === 0)
-      return <div className="px-3 py-4 text-[12px] text-fg-dim">없음</div>;
+      return <div className="px-3 py-4 text-[12px] text-fg-dim">{msg.apiclient.keyValue.none}</div>;
     return (
       <div className="text-[12px]">
         {rows.map((r) => (
@@ -73,7 +75,7 @@ export function KeyValueEditor({
             type="checkbox"
             checked={r.enabled}
             onChange={(e) => update(r.id, { enabled: e.target.checked })}
-            title="이 행 사용"
+            title={msg.apiclient.keyValue.enableRow}
             className="shrink-0 accent-accent"
           />
           <input
@@ -90,7 +92,7 @@ export function KeyValueEditor({
           />
           <button
             onClick={() => remove(r.id)}
-            title="행 삭제"
+            title={msg.apiclient.keyValue.deleteRow}
             className="shrink-0 text-fg-dim hover:text-danger"
           >
             <Trash2 size={12} />

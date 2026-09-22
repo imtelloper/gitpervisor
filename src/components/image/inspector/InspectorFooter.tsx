@@ -15,6 +15,7 @@
 
 import { Copy, Loader2 } from "lucide-react";
 
+import { useMessages } from "../../../i18n/ui-language";
 import { extOf, type ImgFormat } from "../../../lib/image-codec";
 
 export interface InspectorFooterProps {
@@ -38,6 +39,7 @@ export function InspectorFooter({
   onSaveAs,
   onSave,
 }: InspectorFooterProps) {
+  const msg = useMessages();
   return (
     <>
       <button
@@ -45,22 +47,22 @@ export function InspectorFooter({
         disabled={busy}
         className="mr-auto rounded px-2 py-1.5 text-[13px] text-fg-muted hover:bg-raised disabled:opacity-50"
       >
-        초기화
+        {msg.imageInspector.footer.reset}
       </button>
       <button
         onClick={onCopy}
         disabled={busy || !canSave}
-        title="편집 결과를 PNG로 클립보드에 복사"
+        title={msg.imageInspector.footer.copyTitle}
         className="flex items-center gap-1.5 rounded px-2 py-1.5 text-[13px] text-fg-muted hover:bg-raised disabled:opacity-50"
       >
-        <Copy size={14} /> 복사
+        <Copy size={14} /> {msg.imageInspector.footer.copy}
       </button>
       <button
         onClick={onSaveAs}
         disabled={busy || !canSave}
         className="rounded border border-edge px-2 py-1.5 text-[13px] text-fg-muted hover:bg-raised disabled:opacity-50"
       >
-        다른 이름으로
+        {msg.imageInspector.footer.saveAs}
       </button>
       <button
         onClick={onSave}
@@ -68,7 +70,7 @@ export function InspectorFooter({
         className="flex items-center gap-1.5 rounded bg-accent px-3 py-1.5 text-[13px] font-medium text-on-accent hover:bg-accent-hover disabled:opacity-50"
       >
         {busy && <Loader2 size={14} className="animate-spin" />}
-        저장 ({extOf(format)})
+        {msg.imageInspector.footer.save(extOf(format))}
       </button>
     </>
   );

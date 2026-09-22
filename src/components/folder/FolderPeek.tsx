@@ -10,6 +10,7 @@ import {
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
+import { useMessages } from "../../i18n/ui-language";
 import { copyText } from "../../lib/clipboard";
 import { ipc, type FavEntry } from "../../lib/ipc";
 import { useUi } from "../../stores/ui";
@@ -46,6 +47,7 @@ const CONCURRENCY = 4;
  * `onMouseEnter` 는 TitleBar 가 준다 — 포인터가 패널에 닿으면 가는 길에 지나친 항목의 전환 예약을 취소한다.
  */
 export function FolderPeek({ path, onMouseEnter }: { path: string; onMouseEnter?: () => void }) {
+  const msg = useMessages();
   const sep = path.includes("\\") ? "\\" : "/";
   const join = (name: string) => `${path.replace(/[\\/]+$/, "")}${sep}${name}`;
 
@@ -155,7 +157,7 @@ export function FolderPeek({ path, onMouseEnter }: { path: string; onMouseEnter?
     void copyText(join(name)).then((ok) =>
       toast(
         ok ? "success" : "error",
-        ok ? "경로를 복사했습니다" : "복사에 실패했습니다",
+        ok ? msg.folder.copyPathDone : msg.folder.copyFailed,
       ),
     );
 
@@ -173,7 +175,7 @@ export function FolderPeek({ path, onMouseEnter }: { path: string; onMouseEnter?
     setMenu(null);
     void ipc
       .favDelete(join(name))
-      .then(() => toast("success", `휴지통으로 보냈습니다 — ${name}`))
+      .then(() => toast("success", msg.folder.peek.trashed(name)))
       .catch((e) => {
         setFiles(before ?? null);
         toast("error", e instanceof Error ? e.message : String(e));
@@ -198,17 +200,17 @@ export function FolderPeek({ path, onMouseEnter }: { path: string; onMouseEnter?
         </span>
         {!!files?.length && (
           <span className="shrink-0 text-[11px] text-fg-dim">
-            {files.length}개{files.length === MAX ? "+" : ""}
+            {msg.folder.peek.fileCount(files.length, files.length === MAX)}
           </span>
         )}
       </div>
 
       {error && <div className="px-1 py-3 text-[12px] text-danger">{error}</div>}
       {!error && files === null && (
-        <div className="px-1 py-3 text-[12px] text-fg-dim">읽는 중…</div>
+        <div className="px-1 py-3 text-[12px] text-fg-dim">{msg.folder.loading}</div>
       )}
       {!error && files?.length === 0 && (
-        <div className="px-1 py-3 text-[12px] text-fg-dim">파일이 없습니다</div>
+        <div className="px-1 py-3 text-[12px] text-fg-dim">{msg.folder.peek.empty}</div>
       )}
 
       {!!files?.length && (
@@ -225,7 +227,7 @@ export function FolderPeek({ path, onMouseEnter }: { path: string; onMouseEnter?
                   ev.stopPropagation();
                   setMenu({ x: ev.clientX, y: ev.clientY, name: e.name });
                 }}
-                title={`${e.name}\n클릭: 경로 복사${e.kind === "image" ? " · 더블클릭: 크게 보기" : ""} · 우클릭: 메뉴`}
+                title={msg.folder.peek.itemTitle(e.name, e.kind === "image")}
                 className="flex w-full min-w-0 flex-col items-stretch gap-1 rounded border border-edge/60 p-1 hover:border-accent hover:bg-raised"
               >
                 <span className="relative flex h-36 w-full items-center justify-center overflow-hidden rounded bg-base">
@@ -254,7 +256,7 @@ export function FolderPeek({ path, onMouseEnter }: { path: string; onMouseEnter?
                   파일이 안 지워지고 경로만 복사된다. 호버할 때만 보인다. */}
               <button
                 onClick={() => remove(e.name)}
-                title={`휴지통으로 보내기 — ${e.name}`}
+                title={msg.folder.peek.trashTitle(e.name)}
                 className="absolute right-1.5 top-1.5 hidden rounded bg-panel/90 p-1 text-fg-dim hover:text-danger group-hover/peek:block"
               >
                 <Trash2 size={13} />
@@ -266,7 +268,7 @@ export function FolderPeek({ path, onMouseEnter }: { path: string; onMouseEnter?
 
       {/* 클릭이 무엇을 하는지 한 줄로 말한다 — 안 말하면 "왜 창이 안 열리지"가 된다. */}
       <div className="shrink-0 px-1 pt-2 text-[11px] text-fg-dim">
-        클릭: 경로 복사 · 더블클릭: 이미지 크게 보기 · 우클릭: 메뉴 · 폴더 이름 클릭: 창으로 열기
+        {msg.folder.peek.footerHint}
       </div>
 
       {lbIndex >= 0 &&
@@ -324,6 +326,7 @@ function PeekMenu({
   onReveal: () => void;
   onDelete: () => void;
 }) {
+  const msg = useMessages();
   useEffect(() => {
     const close = () => onClose();
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -353,21 +356,21 @@ function PeekMenu({
     >
       <div className="truncate px-3 py-1 text-[11px] text-fg-dim">{name}</div>
       <div className="my-1 border-t border-edge" />
-      <PeekRow icon={<Copy size={14} />} label="경로 복사" onClick={run(onCopy)} />
+      <PeekRow icon={<Copy size={14} />} label={msg.folder.menuCopyPath} onClick={run(onCopy)} />
       <PeekRow
         icon={<ExternalLink size={14} />}
-        label="기본 앱으로 열기"
+        label={msg.folder.menuOpenDefault}
         onClick={run(onOpen)}
       />
       <PeekRow
         icon={<FolderOpen size={14} />}
-        label="탐색기에서 보기"
+        label={msg.folder.menuReveal}
         onClick={run(onReveal)}
       />
       <div className="my-1 border-t border-edge" />
       <PeekRow
         icon={<Trash2 size={14} />}
-        label="휴지통으로 보내기"
+        label={msg.folder.peek.menuTrash}
         danger
         onClick={run(onDelete)}
       />

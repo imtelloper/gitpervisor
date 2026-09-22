@@ -39,6 +39,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { create } from "zustand";
 
+import { useMessages } from "../../i18n/ui-language";
 import type { ChromeScreen } from "../../lib/annotate/chrome";
 import { imageStore } from "../../lib/annotate/imageStore";
 import { renderScene } from "../../lib/annotate/render";
@@ -310,6 +311,7 @@ function onScroll(): void {
 // ── 컴포넌트 ────────────────────────────────────────────────────────────────
 
 function Harness() {
+  const msg = useMessages();
   const st = useSpike();
   useOccludesWebview(true); // 내장 브라우저(네이티브 자식 webview)가 하니스 위로 뜨지 않게
   useEffect(() => {
@@ -323,7 +325,7 @@ function Harness() {
       <ToolRail tools={PDF_TOOLS} paint={PAINT} onFocusRoot={NOOP} onPlaceImage={NOOP} />
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex h-10 shrink-0 items-center gap-2 border-b border-edge px-3 text-[12px]">
-          <span className="font-medium">PDF 주석 스파이크</span>
+          <span className="font-medium">{msg.pdf.spike.title}</span>
           <select
             value={st.strategy}
             onChange={(e) => void pdfSpike.setStrategy(e.target.value as Strategy)}
@@ -341,10 +343,10 @@ function Harness() {
             +
           </button>
           <span className="text-fg-muted">
-            활성 {st.active + 1}/{PAGE_COUNT}
+            {msg.pdf.spike.activePage(st.active + 1, PAGE_COUNT)}
           </span>
           <button className="ml-auto rounded px-2 hover:bg-raised" onClick={() => pdfSpike.close()}>
-            닫기
+            {msg.pdf.spike.close}
           </button>
         </div>
         <div
@@ -386,8 +388,8 @@ function Harness() {
 /** 정렬이 눈에 보이게 하는 가짜 본문. 회색이라 게이트 1b 의 빨강 잉크 판정에 걸리지 않는다. */
 function FakeText({ ds, page }: { ds: number; page: number }) {
   const lines = [
-    `${page + 1}쪽 — 가짜 본문 Lorem ipsum dolor sit amet`,
-    "주석 오버레이 정렬 확인용 줄 0123456789",
+    `${page + 1}쪽 — 가짜 본문 Lorem ipsum dolor sit amet`, // i18n-ok: 스파이크 정렬용 가짜 본문(픽스처)
+    "주석 오버레이 정렬 확인용 줄 0123456789", // i18n-ok: 스파이크 정렬용 가짜 본문(픽스처)
     "The quick brown fox jumps over the lazy dog",
   ];
   return (

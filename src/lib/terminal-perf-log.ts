@@ -274,7 +274,7 @@ export function noteTypedInput(termId: string, data: string): void {
     // 대기 중인 측정이 있으면 새로 잡지 않는다 — 빠른 연타에서 t0이 계속 밀려 지연이 0으로 보인다.
     if (!pendingEcho.has(termId)) pendingEcho.set(termId, { at: performance.now() });
   } catch (e) {
-    breakPerf("입력 집계", e);
+    breakPerf("입력 집계", e); // i18n-ok: 로그
   }
 }
 
@@ -309,16 +309,16 @@ export function noteTerminalOutput(termId: string, bytes: number): (() => void) 
               push(win.paintMs, paint);
               if (paint - ms >= SLOW_PAINT_MS) emitSlow("paint", paint, termId);
             } catch (e) {
-              breakPerf("에코 표시 콜백", e);
+              breakPerf("에코 표시 콜백", e); // i18n-ok: 로그
             }
           }),
         );
       } catch (e) {
-        breakPerf("에코 파싱 콜백", e);
+        breakPerf("에코 파싱 콜백", e); // i18n-ok: 로그
       }
     };
   } catch (e) {
-    breakPerf("출력 집계", e);
+    breakPerf("출력 집계", e); // i18n-ok: 로그
     return undefined;
   }
 }
@@ -329,7 +329,7 @@ export function noteWriteRoundtrip(startedAt: number): void {
   try {
     push(win.writeMs, performance.now() - startedAt);
   } catch (e) {
-    breakPerf("전송 왕복 집계", e);
+    breakPerf("전송 왕복 집계", e); // i18n-ok: 로그
   }
 }
 
@@ -374,7 +374,7 @@ function tick(): void {
       emitLine(formatTerminalPerfSummary(win, currentState(), elapsed), "info");
     win = newWindow(now);
   } catch (e) {
-    breakPerf("주기 집계", e);
+    breakPerf("주기 집계", e); // i18n-ok: 로그
   }
 }
 
@@ -408,7 +408,7 @@ export function startTerminalPerfLog(src: TerminalPerfSource): void {
             if (entry.duration >= SLOW_LONGTASK_MS) emitSlow("longtask", entry.duration, "-");
           }
         } catch (e) {
-          breakPerf("longtask 집계", e);
+          breakPerf("longtask 집계", e); // i18n-ok: 로그
         }
       }).observe({ entryTypes: ["longtask"] });
     } catch (e) {
@@ -428,7 +428,7 @@ export function startTerminalPerfLog(src: TerminalPerfSource): void {
       // 시작값을 못 읽으면 첫 전이까지 ok로 남는다 — 측정을 멈출 일은 아니다.
       .catch(() => {});
   } catch (e) {
-    breakPerf("설치", e);
+    breakPerf("설치", e); // i18n-ok: 로그
   }
 }
 

@@ -5,6 +5,7 @@ import {
 } from "@tauri-apps/plugin-notification";
 import { useEffect, useRef } from "react";
 
+import { currentMessages } from "../i18n/ui-language";
 import { useProjects, useSettings } from "../queries";
 import { useAgentActivity, type AgentState } from "../stores/agentActivity";
 import { ipc, type Project, type Settings } from "./ipc";
@@ -81,7 +82,8 @@ export function useAgentNotifications() {
   const lastExternal = useRef<Record<string, number>>({});
 
   const projectName = (pid: string | undefined) =>
-    (pid && projRef.current?.find((p) => p.id === pid)?.name) || "프로젝트";
+    (pid && projRef.current?.find((p) => p.id === pid)?.name) ||
+    currentMessages().lib.agentNotify.projectFallback;
   const projectPath = (pid: string | undefined) =>
     pid ? projRef.current?.find((p) => p.id === pid)?.path : undefined;
 
@@ -102,7 +104,7 @@ export function useAgentNotifications() {
     key: string,
     fallback: string,
   ) => {
-    const title = `${projectName(pid)} — 작업 완료`;
+    const title = currentMessages().lib.agentNotify.doneTitle(projectName(pid));
     let body = fallback;
     const path = projectPath(pid);
     if (path) {
@@ -125,7 +127,7 @@ export function useAgentNotifications() {
       for (const [pid, st] of Object.entries(byProject)) {
         if (st === "done" && prev[pid] === "working") {
           if (m === "project-inactive" && document.hasFocus()) continue;
-          void fireDone(pid, `p:${pid}`, "작업이 끝났습니다");
+          void fireDone(pid, `p:${pid}`, currentMessages().lib.agentNotify.projectDoneBody);
         }
       }
     }
@@ -140,7 +142,7 @@ export function useAgentNotifications() {
       for (const [tid, st] of Object.entries(byTerminal)) {
         if (st === "done" && prev[tid] === "working") {
           const pid = listTerminals().find((t) => t.id === tid)?.projectId;
-          void fireDone(pid, `t:${tid}`, "터미널 작업이 끝났습니다");
+          void fireDone(pid, `t:${tid}`, currentMessages().lib.agentNotify.terminalDoneBody);
         }
       }
     }

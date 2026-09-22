@@ -11,6 +11,7 @@
 //    (useUi.selectDiff)로 해당 파일을 뷰어에 열고 그 줄로 이동.
 import { monaco } from "./monaco-setup";
 
+import { currentMessages } from "../../i18n/ui-language";
 import type { DefMatch, DiffTarget } from "../../lib/ipc";
 import { ipc } from "../../lib/ipc";
 import { extToLang, lspActive } from "../../lib/lsp/client";
@@ -181,7 +182,7 @@ function escapeMd(text: string): string {
   return text.replace(/[\\`*_{}[\]()#+\-!~]/g, "\\$&");
 }
 
-/** 코드블록 펜스 — 내용의 최장 백틱 런+1(최소 3)로 연장해 시그니처에 백틱이 있어도 안 깨지게(htmlContent.js:115 미러). */
+/** 코드블록 펜스 — 내용의 최장 백틱 런+1(최소 3)로 연장해 시그니처에 백틱이 있어도 안 깨지게(htmlContent.js:115 미러). */ // i18n-ok: 주석 — 위 정규식 속 백틱을 스캐너가 템플릿 시작으로 읽는다
 function fencedBlock(lang: string, code: string): string {
   const longest = (code.match(/`+/g) ?? []).reduce((n, r) => Math.max(n, r.length), 0);
   const fence = "`".repeat(Math.max(3, longest + 1));
@@ -222,10 +223,11 @@ export function registerGotoDefinition() {
       if (!matches.length) return null;
       const m = matches[0];
       const lang = monacoLangId(ctx?.ext ?? "");
+      const text = currentMessages().git.editorProviders;
       const hint =
         matches.length > 1
-          ? `_정의 후보 ${matches.length}개 · Ctrl+클릭으로 이동 → ${m.path}:${m.line}_`
-          : `_Ctrl+클릭으로 이동 → ${m.path}:${m.line}_`;
+          ? text.definitionHintMulti(matches.length, m.path, m.line)
+          : text.definitionHintSingle(m.path, m.line);
       return {
         range: new monaco.Range(
           position.lineNumber,

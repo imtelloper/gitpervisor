@@ -4,6 +4,7 @@ import { Editor } from "@monaco-editor/react";
 import { Play, Plus, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { isSqlEngine } from "../../lib/ipc";
 import { useDbConnections, useSettings, useTableMeta } from "../../queries";
 import { LIMIT_OPTIONS, useDb } from "../../stores/db";
@@ -11,6 +12,7 @@ import { useUi } from "../../stores/ui";
 import { DbSidebar } from "./DbSidebar";
 
 function QueryEditor() {
+  const msg = useMessages();
   const queryText = useDb((s) => s.queryText);
   const setQuery = useDb((s) => s.setQuery);
   const runQuery = useDb((s) => s.runQuery);
@@ -32,14 +34,14 @@ function QueryEditor() {
         <span className="min-w-0 flex-1 truncate text-xs text-fg-dim">
           {activeDatabase
             ? `${dialect} · ${activeDatabase}`
-            : "왼쪽에서 DB를 선택하세요"}
+            : msg.db.queryEditor.selectDbPrompt}
         </span>
         <label className="flex shrink-0 items-center gap-1 text-xs text-fg-dim">
-          행
+          {msg.db.queryEditor.rowLimitLabel}
           <select
             value={limit}
             onChange={(e) => setLimit(Number(e.target.value))}
-            title="조회 행 수 제한"
+            title={msg.db.queryEditor.rowLimitTitle}
             className="rounded border border-edge bg-base px-1 py-0.5 text-fg outline-none focus:border-accent"
           >
             {LIMIT_OPTIONS.map((n) => (
@@ -53,19 +55,19 @@ function QueryEditor() {
           <button
             onClick={() => void runExplain()}
             disabled={running || !activeDatabase}
-            title="예상 실행 계획 (쿼리 미실행)"
+            title={msg.db.queryEditor.explainTitle}
             className="shrink-0 rounded border border-edge px-2 py-1 text-xs text-fg-muted hover:bg-raised hover:text-fg disabled:opacity-50"
           >
-            실행 계획
+            {msg.db.queryEditor.explain}
           </button>
         )}
         <button
           onClick={() => void runQuery()}
           disabled={running || !activeDatabase}
-          title="쿼리 실행 (Ctrl+Enter)"
+          title={msg.db.queryEditor.runTitle}
           className="flex shrink-0 items-center gap-1.5 rounded bg-accent px-3 py-1 text-xs font-medium text-on-accent hover:bg-accent-hover disabled:opacity-50"
         >
-          <Play size={12} /> 실행
+          <Play size={12} /> {msg.db.queryEditor.run}
           <span className="hidden font-mono opacity-70 min-[520px]:inline">Ctrl+↵</span>
         </button>
       </div>
@@ -88,13 +90,13 @@ function QueryEditor() {
             // addCommand 는 해제 수단이 없어 모듈 전역 레지스트리에 마운트마다 쌓인다(DiffViewer 와 같은 누수).
             const reg = editor.addAction({
               id: "gp.runQuery",
-              label: "쿼리 실행",
+              label: msg.db.queryEditor.runQueryAction,
               keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter],
               run: () => void useDb.getState().runQuery(),
             });
             editor.onDidDispose(() => reg.dispose());
           }}
-          loading={<span className="text-xs text-fg-dim">에디터 로딩 중…</span>}
+          loading={<span className="text-xs text-fg-dim">{msg.db.queryEditor.editorLoading}</span>}
         />
       </div>
     </div>
@@ -203,6 +205,7 @@ function Center({ children, danger }: { children: React.ReactNode; danger?: bool
 }
 
 function ResultGrid() {
+  const msg = useMessages();
   const result = useDb((s) => s.result);
   const error = useDb((s) => s.resultError);
   const running = useDb((s) => s.running);
@@ -240,10 +243,10 @@ function ResultGrid() {
   const [overrides, setOverrides] = useState<Record<string, number>>({});
   useEffect(() => setOverrides({}), [result]);
 
-  if (running) return <Center>실행 중…</Center>;
+  if (running) return <Center>{msg.db.resultGrid.running}</Center>;
   if (error) return <Center danger>{error}</Center>;
-  if (!result) return <Center>컬렉션을 클릭하거나 쿼리를 실행하세요</Center>;
-  if (result.rows.length === 0) return <Center>결과 없음</Center>;
+  if (!result) return <Center>{msg.db.resultGrid.emptyPrompt}</Center>;
+  if (result.rows.length === 0) return <Center>{msg.db.resultGrid.noResults}</Center>;
 
   const widthOf = (name: string) => overrides[name] ?? autoWidths[name] ?? 160;
 
@@ -318,7 +321,7 @@ function ResultGrid() {
                   <div
                     onMouseDown={(e) => startResize(e, c.name)}
                     onDoubleClick={() => autoFit(c.name)}
-                    title="드래그: 너비 조절 · 더블클릭: 자동 맞춤"
+                    title={msg.db.resultGrid.columnResizeTitle}
                     className="absolute right-0 top-0 z-10 h-full w-1.5 cursor-col-resize hover:bg-accent"
                   />
                 </th>
@@ -334,14 +337,14 @@ function ResultGrid() {
                       <button
                         onClick={() =>
                           askConfirm({
-                            title: "행 삭제",
-                            message: "이 행을 삭제할까요? 되돌릴 수 없습니다.",
-                            confirmLabel: "삭제",
+                            title: msg.db.resultGrid.deleteRowTitle,
+                            message: msg.db.resultGrid.deleteRowMessage,
+                            confirmLabel: msg.db.resultGrid.deleteRowConfirm,
                             danger: true,
                             onConfirm: () => void deleteRow(i),
                           })
                         }
-                        title="행 삭제"
+                        title={msg.db.resultGrid.deleteRowTooltip}
                         className="text-fg-dim opacity-0 hover:text-danger group-hover:opacity-100"
                       >
                         <Trash2 size={12} />
@@ -364,7 +367,7 @@ function ResultGrid() {
                               setEdit({ row: i, col: j, value: cellText(cell) })
                           : undefined
                       }
-                      title={cellEditable ? "더블클릭으로 편집" : undefined}
+                      title={cellEditable ? msg.db.resultGrid.cellEditTitle : undefined}
                       className={`truncate border-b border-r border-edge px-2 py-1 align-top font-mono ${
                         cellEditable ? "cursor-text" : ""
                       }`}
@@ -400,17 +403,17 @@ function ResultGrid() {
         {result.rowCount} docs · {result.columns.length} fields
         {result.rowCount >= limit && (
           <span className="ml-2 text-mod">
-            · 상위 {limit}개만 표시 — 더 있을 수 있어요 (행 수를 늘려보세요)
+            {msg.db.resultGrid.limitReached(limit)}
           </span>
         )}
         {editable && (
           <>
-            <span className="ml-2 text-fg-dim">· 셀 더블클릭 → 편집(Enter)</span>
+            <span className="ml-2 text-fg-dim">{msg.db.resultGrid.cellEditHint}</span>
             <button
               onClick={() => setInsertOpen(true)}
               className="ml-2 rounded border border-edge px-1.5 align-middle hover:bg-raised hover:text-fg"
             >
-              <Plus size={11} className="inline" /> 행 추가
+              <Plus size={11} className="inline" /> {msg.db.resultGrid.addRow}
             </button>
           </>
         )}
@@ -422,6 +425,7 @@ function ResultGrid() {
 
 /** 행 추가 폼 — non-identity 컬럼 입력. 비우면 nullable/기본값 컬럼은 생략. */
 function InsertRowDialog({ onClose }: { onClose: () => void }) {
+  const msg = useMessages();
   const editTable = useDb((s) => s.editTable);
   const activeConnId = useDb((s) => s.activeConnId);
   const insertRow = useDb((s) => s.insertRow);
@@ -464,9 +468,9 @@ function InsertRowDialog({ onClose }: { onClose: () => void }) {
         className="max-h-[80vh] w-[440px] overflow-auto rounded-lg border border-edge bg-panel p-5 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="mb-3 font-semibold">행 추가 · {editTable.table}</div>
+        <div className="mb-3 font-semibold">{msg.db.insertRowDialog.title(editTable.table)}</div>
         <div className="space-y-2 text-[13px]">
-          {!meta && <div className="text-fg-dim">컬럼 불러오는 중…</div>}
+          {!meta && <div className="text-fg-dim">{msg.db.insertRowDialog.loadingColumns}</div>}
           {cols.map((c) => {
             const required = !c.nullable && !c.hasDefault;
             return (
@@ -475,7 +479,7 @@ function InsertRowDialog({ onClose }: { onClose: () => void }) {
                   <span className={c.pk ? "text-mod" : ""}>{c.name}</span>
                   <span className="text-fg-dim">{c.typeName}</span>
                   {required && <span className="text-danger">*</span>}
-                  {c.hasDefault && <span className="text-fg-dim">기본값</span>}
+                  {c.hasDefault && <span className="text-fg-dim">{msg.db.insertRowDialog.hasDefault}</span>}
                 </div>
                 <input
                   value={vals[c.name] ?? ""}
@@ -484,9 +488,9 @@ function InsertRowDialog({ onClose }: { onClose: () => void }) {
                   }
                   placeholder={
                     c.nullable
-                      ? "(비우면 NULL)"
+                      ? msg.db.insertRowDialog.emptyMeansNull
                       : c.hasDefault
-                        ? "(비우면 기본값)"
+                        ? msg.db.insertRowDialog.emptyMeansDefault
                         : ""
                   }
                   className="w-full rounded border border-edge bg-base px-2 py-1 font-mono outline-none focus:border-accent"
@@ -500,14 +504,14 @@ function InsertRowDialog({ onClose }: { onClose: () => void }) {
             onClick={onClose}
             className="rounded px-3 py-1.5 text-fg-muted hover:bg-raised"
           >
-            취소
+            {msg.db.insertRowDialog.cancel}
           </button>
           <button
             onClick={() => void submit()}
             disabled={busy || !meta}
             className="rounded bg-accent px-3 py-1.5 font-medium text-on-accent hover:bg-accent-hover disabled:opacity-50"
           >
-            {busy ? "추가 중…" : "추가"}
+            {busy ? msg.db.insertRowDialog.adding : msg.db.insertRowDialog.add}
           </button>
         </div>
       </div>
@@ -526,7 +530,9 @@ interface PlanNode {
 
 /** SQL Server ShowPlan XML → 연산자 트리. 기본 네임스페이스를 제거해 querySelector로 다룬다. */
 function parsePlan(xml: string): PlanNode[] {
-  const clean = xml.replace(/xmlns(:\w+)?="[^"]*"/g, "");
+  // 따옴표를 \x22 로 쓴다 — i18n 소스 스캐너(tests/e2e/lib/i18n-scan.mjs)가 정규식 속 `"`를 문자열 시작으로 읽어
+  // 이 아래 주석을 코드로 오인한다.
+  const clean = xml.replace(/xmlns(:\w+)?=\x22[^\x22]*\x22/g, "");
   const doc = new DOMParser().parseFromString(clean, "application/xml");
   const childRelOps = (el: Element): Element[] =>
     [...el.querySelectorAll("RelOp")].filter(
@@ -618,6 +624,7 @@ function PlanTreeNode({
 }
 
 function PlanView() {
+  const msg = useMessages();
   const xml = useDb((s) => s.planXml);
   const closePlan = useDb((s) => s.closePlan);
   const nodes = useMemo(() => (xml ? parsePlan(xml) : []), [xml]);
@@ -625,13 +632,13 @@ function PlanView() {
   return (
     <div className="flex h-full flex-col">
       <div className="flex h-8 shrink-0 items-center gap-2 overflow-hidden border-b border-edge px-3 text-xs text-fg-dim">
-        <span className="shrink-0">예상 실행 계획</span>
-        <span className="min-w-0 flex-1 truncate text-[11px]">데이터 흐름: 오른쪽 → 왼쪽</span>
+        <span className="shrink-0">{msg.db.planView.title}</span>
+        <span className="min-w-0 flex-1 truncate text-[11px]">{msg.db.planView.dataFlow}</span>
         <button
           onClick={closePlan}
           className="shrink-0 rounded px-2 py-0.5 hover:bg-raised hover:text-fg"
         >
-          결과로 ✕
+          {msg.db.planView.backToResults}
         </button>
       </div>
       <div className="min-h-0 flex-1 overflow-auto p-3">
@@ -640,7 +647,7 @@ function PlanView() {
             <PlanTreeNode key={i} node={n} total={total} root />
           ))
         ) : (
-          <Center>계획을 표시할 수 없습니다</Center>
+          <Center>{msg.db.planView.cannotDisplay}</Center>
         )}
       </div>
     </div>

@@ -8,6 +8,7 @@ import { TranslateHost } from "./components/common/TranslateCard";
 import { FloatTitleBar } from "./components/FloatTitleBar";
 import { GitDialog } from "./components/git/GitDialog";
 import { FileTreeDialog } from "./components/tree/FileTreeDialog";
+import { useMessages } from "./i18n/ui-language";
 import { announceAggregateWindow } from "./lib/aggregate-window";
 import { refreshTerminalThemes } from "./lib/terminal";
 import { useSettings } from "./queries";
@@ -23,6 +24,7 @@ import { useSettings } from "./queries";
  * 종료하지 않기 때문. 닫히면 메인이 다시 이어받는다.
  */
 export function AggregateWindow() {
+  const msg = useMessages();
   const { data: settings } = useSettings();
 
   // 열림만 여기서 알린다. "닫힘"은 Rust의 Destroyed 훅이 메인에 보낸다(lib.rs) — 예전엔 이 창의
@@ -42,7 +44,7 @@ export function AggregateWindow() {
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-base">
-      <FloatTitleBar title="터미널 모아보기" badge="모아보기" />
+      <FloatTitleBar title={msg.windows.aggregateWindow.title} badge={msg.windows.aggregateWindow.badge} />
       <div className="min-h-0 flex-1">
         <AggregateTerminals />
       </div>

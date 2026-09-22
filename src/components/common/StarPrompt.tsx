@@ -1,6 +1,8 @@
 import { Star, X } from "lucide-react";
 import { useState } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
+
 /**
  * GitHub star 부탁 카드 — 우측 하단, 3번째 실행에 딱 한 번.
  *
@@ -31,6 +33,7 @@ export function bumpLaunchCount(): number {
 }
 
 export function StarPrompt() {
+  const msg = useMessages();
   const [show, setShow] = useState(
     () =>
       localStorage.getItem(KEY_ASKED) == null &&
@@ -55,18 +58,18 @@ export function StarPrompt() {
       <div className="flex items-start gap-2">
         <Star size={14} className="mt-0.5 shrink-0 text-accent" />
         <div className="min-w-0 flex-1 font-medium text-fg">
-          Gitpervisor가 도움이 되고 있나요?
+          {msg.shell.starPrompt.question}
         </div>
         <button
           onClick={done}
-          title="닫기 — 이 안내는 다시 표시되지 않습니다"
+          title={msg.shell.starPrompt.closeTitle}
           className="-mr-1 -mt-1 shrink-0 rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
         >
           <X size={14} />
         </button>
       </div>
       <div className="mt-1 pl-6 leading-5 text-fg-muted">
-        GitHub에서 ⭐ 하나 남겨 주시면 개발에 큰 힘이 됩니다. 이 안내는 다시 표시되지 않습니다.
+        {msg.shell.starPrompt.body}
       </div>
       <div className="mt-2 pl-6">
         <button
@@ -74,7 +77,7 @@ export function StarPrompt() {
           onClick={star}
           className="flex items-center gap-1.5 rounded bg-accent px-2.5 py-1 font-medium text-on-accent hover:bg-accent-hover"
         >
-          <Star size={12} /> GitHub에서 Star 남기기
+          <Star size={12} /> {msg.shell.starPrompt.starOnGithub}
         </button>
       </div>
     </div>

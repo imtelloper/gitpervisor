@@ -6,6 +6,7 @@ import type { ITheme } from "@xterm/xterm";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 
+import { currentMessages } from "../i18n/ui-language";
 import { collectPanes, useTerminals } from "../stores/terminals";
 import { useTermThemes } from "../stores/termThemes";
 import { useUi } from "../stores/ui";
@@ -928,7 +929,9 @@ export function createTerminalImpl(opts: {
     inst.status = "exited";
     // errorMessage는 IpcError({code,message,...})까지 푼다 — String(e)로는 "[object Object]"가
     // 찍혀 원인이 통째로 가려진다(실제로 겪음: term_attach의 "세션을 찾을 수 없습니다"가 묻혔다).
-    term.writeln(`\r\n\x1b[31m[터미널 연결 실패] ${errorMessage(e)}\x1b[0m`);
+    term.writeln(
+      `\r\n\x1b[31m${currentMessages().lib.terminal.connectFailed(errorMessage(e))}\x1b[0m`,
+    );
   });
 
   // 입력·리사이즈는 **open 완료 뒤부터** 보낸다. term_open은 셸 spawn이 끝나야 세션을

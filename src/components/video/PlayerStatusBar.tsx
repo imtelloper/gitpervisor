@@ -2,6 +2,8 @@
 // 표시 전용이라 값 계산은 전부 부모 몫이다(문자열로 받는다).
 import { memo } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
+
 type Tone = "ok" | "warn" | "danger";
 
 export interface StatusItem {
@@ -40,6 +42,7 @@ export const PlayerStatusBar = memo(function PlayerStatusBar({
   /** 타임라인 확대율(%) — 140 → "확대 140%". */
   zoomPct: number;
 }) {
+  const msg = useMessages();
   return (
     <div className="flex h-6 shrink-0 items-center gap-3 border-t border-edge bg-panel px-3 text-[11px] text-fg-dim">
       <span className="flex shrink-0 items-center gap-1.5">
@@ -65,7 +68,7 @@ export const PlayerStatusBar = memo(function PlayerStatusBar({
         </span>
       ))}
 
-      <span className="shrink-0 whitespace-nowrap">확대 {Math.round(zoomPct)}%</span>
+      <span className="shrink-0 whitespace-nowrap">{msg.media.playerStatusBar.zoom(Math.round(zoomPct))}</span>
     </div>
   );
 });

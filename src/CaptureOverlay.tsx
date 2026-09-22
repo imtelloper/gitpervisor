@@ -1,6 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { useMessages } from "./i18n/ui-language";
 import { ipc, type CaptureRect, type CaptureSession } from "./lib/ipc";
 
 /**
@@ -15,6 +16,7 @@ import { ipc, type CaptureRect, type CaptureSession } from "./lib/ipc";
  * 들어오지 않는다 — `<img>`가 창을 정확히 채우므로 비율 × 프레임 크기 = 버퍼 좌표다.
  */
 export function CaptureOverlay() {
+  const msg = useMessages();
   const [sess, setSess] = useState<CaptureSession | null>(null);
   /** 드래그 중인 사각형(뷰포트 CSS px). null이면 아직 안 그었다. */
   const [box, setBox] = useState<Box | null>(null);
@@ -148,7 +150,7 @@ export function CaptureOverlay() {
           <div className="absolute inset-0 bg-black/35" />
           {cursor && <Crosshair x={cursor.x} y={cursor.y} />}
           <div className="absolute left-1/2 top-6 -translate-x-1/2 rounded bg-black/70 px-3 py-1.5 text-xs text-white">
-            드래그해서 영역 선택 · Enter 확정 · Esc/우클릭 취소
+            {msg.windows.captureOverlay.hint}
           </div>
         </>
       )}

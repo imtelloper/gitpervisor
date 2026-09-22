@@ -13,6 +13,7 @@
 
 import { Check } from "lucide-react";
 
+import { useMessages } from "../../../i18n/ui-language";
 import { BLEND_LABELS } from "../../../lib/annotate/blend-labels";
 import type { Maybe } from "../../../lib/annotate/selection";
 import type { BlendMode } from "../../../lib/annotate/types";
@@ -28,8 +29,9 @@ export function BlendMenu({
   container: boolean;
   onChange(v: BlendMode): void;
 }) {
+  const msg = useMessages();
   return (
-    <div role="menu" aria-label="블렌드 모드" className="min-w-[140px]">
+    <div role="menu" aria-label={msg.imageInspector.blendMenu.ariaLabel} className="min-w-[140px]">
       {BLEND_LABELS.map((o, i) => {
         const disabled = o.value === "pass-through" && !container;
         const checked = value === o.value;

@@ -3,6 +3,7 @@
 // LLM 호출 자체는 `lib/llm.ts`의 `chat()`이 한다(59 계약). 여기는 **순수 함수**만 둔다 —
 // 카드가 스트리밍 상태를 들고, 이 파일은 "무엇을 보낼지"와 "입력이 바뀌었는지"만 답한다.
 
+import { currentMessages } from "../i18n/ui-language";
 import { fnv16 } from "./floating";
 import type { Commit, Project, PromptItem } from "./ipc";
 import type { ChatMsg } from "./llm";
@@ -10,10 +11,27 @@ import { langName } from "./llm";
 
 export type Period = "day" | "week" | "month";
 
+/**
+ * 화면용 기간 라벨(리포트 기간 버튼). getter 인 이유: 호출처가 `PERIOD_LABEL[p]` 로 읽는데, 모듈 상수에
+ * 문자열을 담아 두면 UI 언어를 바꿔도 첫 언어로 남는다 — 읽는 순간의 언어로 만든다.
+ */
 export const PERIOD_LABEL: Record<Period, string> = {
-  day: "일간",
-  week: "주간",
-  month: "월간",
+  get day() {
+    return currentMessages().lib.reportPeriod.day;
+  },
+  get week() {
+    return currentMessages().lib.reportPeriod.week;
+  },
+  get month() {
+    return currentMessages().lib.reportPeriod.month;
+  },
+};
+
+/** 프롬프트 `{기간}` 값 — 모델 입력이라 UI 언어와 무관하게 한국어다(프롬프트 본문이 한국어, i18n 설계 §4.6). */
+const PROMPT_PERIOD_LABEL: Record<Period, string> = {
+  day: "일간", // i18n-ok: LLM 프롬프트
+  week: "주간", // i18n-ok: LLM 프롬프트
+  month: "월간", // i18n-ok: LLM 프롬프트
 };
 
 // ── 날짜(로컬) ────────────────────────────────────────────────────────────────
@@ -61,7 +79,11 @@ export function periodRange(
     const d = parseYmd(since);
     // "9월 1주" — 그 주 월요일이 속한 달의 몇 번째 주인가.
     const nth = Math.floor((d.getDate() - 1) / 7) + 1;
-    return { since, until: addDays(since, 6), label: `${d.getMonth() + 1}월 ${nth}주` };
+    return {
+      since,
+      until: addDays(since, 6),
+      label: currentMessages().lib.reportWeekLabel(d.getMonth() + 1, nth),
+    };
   }
   const d = parseYmd(anchor);
   const first = new Date(d.getFullYear(), d.getMonth(), 1);
@@ -142,7 +164,7 @@ const BODY_CHARS = 120;
 const PROMPT_CHARS = 300;
 /** 채팅에 딸려 보내는 대화 — 최근 몇 개까지(ponytail: 슬라이딩 윈도, 요약 압축은 업그레이드 경로). */
 const HISTORY_MAX = 8;
-const WEEKDAY = ["일", "월", "화", "수", "목", "금", "토"];
+const WEEKDAY = ["일", "월", "화", "수", "목", "금", "토"]; // i18n-ok: LLM 프롬프트(근거 블록의 요일)
 
 /**
  * 응답 상한. 줄마다 공백 포함 최대 200자(≈ 135토큰, 실제로는 110~150자가 나온다)라 날짜 하나가
@@ -187,14 +209,14 @@ function group(
   const size = (a: string[]) => a.reduce((n, l) => n + l.length + 1, 0);
   while (kept.length > 0 && size(kept) > budget) kept.pop();
   if (kept.length === 0) {
-    const text = `${label} ${total}건 (내용 생략)`;
+    const text = `${label} ${total}건 (내용 생략)`; // i18n-ok: LLM 프롬프트
     return { text, used: text.length + 1 };
   }
   const dropped = total - kept.length;
   const out = [
-    `${label} ${total}건`,
+    `${label} ${total}건`, // i18n-ok: LLM 프롬프트
     ...kept,
-    ...(dropped > 0 ? [`…외 ${dropped}건`] : []),
+    ...(dropped > 0 ? [`…외 ${dropped}건`] : []), // i18n-ok: LLM 프롬프트
   ];
   return { text: out.join("\n"), used: size(out) };
 }
@@ -228,7 +250,7 @@ function evidenceBlock(args: {
   // 여러 프로젝트일 때만 줄머리에 이름을 붙인다 — 한 프로젝트면 매 줄이 같은 접두라 낭비다.
   const multi = sources.length > 1;
   const names = sources.map((s) => s.project.name).join(", ");
-  const head = `프로젝트: ${names || "(없음)"} (${since}~${until})`;
+  const head = `프로젝트: ${names || "(없음)"} (${since}~${until})`; // i18n-ok: LLM 프롬프트
 
   type Entry = { date: string; ms: number; line: string };
   const commits: Entry[] = [];
@@ -266,18 +288,18 @@ function evidenceBlock(args: {
   const keptP = [...prompts].sort(newest).slice(0, MAX_PROMPTS);
 
   const dates = [...new Set([...keptC, ...keptP].map((e) => e.date))].sort();
-  if (dates.length === 0) return `${head}\n\n(활동 없음)`;
+  if (dates.length === 0) return `${head}\n\n(활동 없음)`; // i18n-ok: LLM 프롬프트
 
   const perDay = budget / dates.length;
   const sections = dates.map((d) => {
     const c = group(
-      "커밋",
+      "커밋", // i18n-ok: LLM 프롬프트
       keptC.filter((e) => e.date === d).map((e) => e.line),
       commits.filter((e) => e.date === d).length,
       perDay * 0.5,
     );
     const p = group(
-      "프롬프트",
+      "프롬프트", // i18n-ok: LLM 프롬프트
       keptP.filter((e) => e.date === d).map((e) => e.line),
       prompts.filter((e) => e.date === d).length,
       perDay - c.used,
@@ -293,7 +315,7 @@ function evidenceBlock(args: {
   let kept = sections;
   while (kept.length > 1 && size(kept) > budget) kept = kept.slice(1);
   const folded = sections.length - kept.length;
-  const body = folded > 0 ? [`…이전 ${folded}일 생략`, ...kept] : kept;
+  const body = folded > 0 ? [`…이전 ${folded}일 생략`, ...kept] : kept; // i18n-ok: LLM 프롬프트
 
   return `${head}\n\n${body.join("\n\n")}`;
 }
@@ -303,7 +325,7 @@ function evidenceBlock(args: {
  * 그대로 넣으면 "Korean로 요약해라"가 된다. `langName`은 59 계약(61의 영어 프롬프트가 쓴다)이라
  * 건드리지 않고, 목록에 없는 코드만 그쪽으로 폴백한다.
  */
-const LANG_LABEL: Record<string, string> = { ko: "한국어", en: "영어" };
+const LANG_LABEL: Record<string, string> = { ko: "한국어", en: "영어" }; // i18n-ok: LLM 프롬프트
 
 /**
  * 요약 생성 system 프롬프트의 **기본값** — 설정 `reportPrompt`가 비면 이것을 쓴다. 사용자는 리포트
@@ -324,23 +346,42 @@ const LANG_LABEL: Record<string, string> = { ko: "한국어", en: "영어" };
  * "다음 할 일"은 33~38자로 규칙을 통째로 무시했다(태스크 70 §12).
  */
 export const DEFAULT_REPORT_PROMPT =
-  `너는 개발자의 작업 일지를 쓰는 비서다. 아래 커밋과 프롬프트를 근거로 {언어}로 {기간} 작업을 요약해라.\n` +
-  `아래 틀을 그대로 채워라. 머리글은 글자 그대로 쓰고 다른 머리글을 새로 만들지 마라.\n\n` +
-  `## 한 줄 요약\n무엇을 왜 했는지까지 담은 한 문장(공백 포함 160~220자)\n\n` +
-  `## 날짜별\n### YYYY-MM-DD (요일)\n` +
-  `- {프로젝트접두}무엇을 왜 했는지 한 문장. 어떻게 했고 무엇이 나아졌는지 한 문장.\n` +
-  `- 같은 형태\n- 같은 형태\n\n` +
-  `활동이 있는 날짜마다 위 날짜 블록을 반복한다. 날짜당 불릿은 정확히 3개이고, 불릿마다 두 문장이다.\n\n` +
-  `## 다음 할 일\n- 무엇을 왜 해야 하는지 한 문장. 끝나면 무엇이 나아지는지 한 문장.\n- 3개 이하\n\n` +
-  `모든 줄은 공백 포함 100자 이상 220자 이하여야 한다 — 짧으면 바꾼 이유·영향·세부를 근거 ` +
-  `안에서 덧붙여 채운다. 커밋 해시는 쓰지 마라.\n` +
-  `근거 없는 내용은 쓰지 마라. 프롬프트는 사용자가 AI에게 한 요청이다.`;
+  `너는 개발자의 작업 일지를 쓰는 비서다. 아래 커밋과 프롬프트를 근거로 {언어}로 {기간} 작업을 요약해라.\n` + // i18n-ok: LLM 프롬프트
+  `아래 틀을 그대로 채워라. 머리글은 글자 그대로 쓰고 다른 머리글을 새로 만들지 마라.\n\n` + // i18n-ok: LLM 프롬프트
+  `## 한 줄 요약\n무엇을 왜 했는지까지 담은 한 문장(공백 포함 160~220자)\n\n` + // i18n-ok: LLM 프롬프트
+  `## 날짜별\n### YYYY-MM-DD (요일)\n` + // i18n-ok: LLM 프롬프트
+  `- {프로젝트접두}무엇을 왜 했는지 한 문장. 어떻게 했고 무엇이 나아졌는지 한 문장.\n` + // i18n-ok: LLM 프롬프트
+  `- 같은 형태\n- 같은 형태\n\n` + // i18n-ok: LLM 프롬프트
+  `활동이 있는 날짜마다 위 날짜 블록을 반복한다. 날짜당 불릿은 정확히 3개이고, 불릿마다 두 문장이다.\n\n` + // i18n-ok: LLM 프롬프트
+  `## 다음 할 일\n- 무엇을 왜 해야 하는지 한 문장. 끝나면 무엇이 나아지는지 한 문장.\n- 3개 이하\n\n` + // i18n-ok: LLM 프롬프트
+  `모든 줄은 공백 포함 100자 이상 220자 이하여야 한다 — 짧으면 바꾼 이유·영향·세부를 근거 ` + // i18n-ok: LLM 프롬프트
+  `안에서 덧붙여 채운다. 커밋 해시는 쓰지 마라.\n` + // i18n-ok: LLM 프롬프트
+  `근거 없는 내용은 쓰지 마라. 프롬프트는 사용자가 AI에게 한 요청이다.`; // i18n-ok: LLM 프롬프트
 
-/** 자리표시자와 그 뜻 — 편집 화면의 도움말도 이 목록을 그린다(설명이 코드와 따로 놀지 않게). */
+/**
+ * 자리표시자와 그 뜻 — 편집 화면의 도움말도 이 목록을 그린다(설명이 코드와 따로 놀지 않게).
+ * 토큰은 사용자가 저장한 프롬프트와의 호환 때문에 번역하지 않는다. `desc` 가 getter 인 이유는
+ * `PERIOD_LABEL` 과 같다(읽는 순간의 UI 언어).
+ */
 export const REPORT_PROMPT_VARS: { token: string; desc: string }[] = [
-  { token: "{언어}", desc: "출력 언어(설정 › AI) — 한국어·영어" },
-  { token: "{기간}", desc: "일간·주간·월간" },
-  { token: "{프로젝트접두}", desc: '여러 프로젝트를 한 카드로 요약할 때만 "[프로젝트명] ", 하나면 빈칸' },
+  {
+    token: "{언어}", // i18n-ok: 프롬프트 자리표시자 토큰(저장된 프롬프트 호환)
+    get desc() {
+      return currentMessages().lib.reportPromptVarDesc.language;
+    },
+  },
+  {
+    token: "{기간}", // i18n-ok: 프롬프트 자리표시자 토큰(저장된 프롬프트 호환)
+    get desc() {
+      return currentMessages().lib.reportPromptVarDesc.period;
+    },
+  },
+  {
+    token: "{프로젝트접두}", // i18n-ok: 프롬프트 자리표시자 토큰(저장된 프롬프트 호환)
+    get desc() {
+      return currentMessages().lib.reportPromptVarDesc.projectPrefix;
+    },
+  },
 ];
 
 /** 프롬프트(없거나 공백뿐이면 기본값)의 자리표시자를 채운다. 모르는 `{…}`는 그대로 둔다. */
@@ -349,9 +390,9 @@ export function fillReportPrompt(
   v: { language: string; period: Period; multi: boolean },
 ): string {
   const values: Record<string, string> = {
-    "{언어}": LANG_LABEL[v.language] ?? langName(v.language),
-    "{기간}": PERIOD_LABEL[v.period],
-    "{프로젝트접두}": v.multi ? "[프로젝트명] " : "",
+    "{언어}": LANG_LABEL[v.language] ?? langName(v.language), // i18n-ok: LLM 프롬프트
+    "{기간}": PROMPT_PERIOD_LABEL[v.period], // i18n-ok: LLM 프롬프트
+    "{프로젝트접두}": v.multi ? "[프로젝트명] " : "", // i18n-ok: LLM 프롬프트
   };
   let out = template?.trim() ? template : DEFAULT_REPORT_PROMPT;
   for (const [token, value] of Object.entries(values)) out = out.split(token).join(value);
@@ -427,7 +468,7 @@ export function chatMessages(
   prompt?: string | null,
 ): ChatMsg[] {
   const lang = LANG_LABEL[language] ?? langName(language);
-  let system = `너는 개발자의 작업 리포트를 돕는 비서다. ${lang}로 답해라. 근거 없는 내용은 쓰지 마라.`;
+  let system = `너는 개발자의 작업 리포트를 돕는 비서다. ${lang}로 답해라. 근거 없는 내용은 쓰지 마라.`; // i18n-ok: LLM 프롬프트
   if (ctx) {
     const guide = fillReportPrompt(prompt, {
       language,
@@ -439,10 +480,10 @@ export function chatMessages(
       charBudget(ctx.period, llmCtx ?? DEFAULT_CTX, 600 + guide.length) * 0.5,
     );
     system +=
-      `\n사용자가 요약의 수정을 요청하면 아래 "요약 지침"을 따라 요약 전체를 다시 써라 — 부분만 주지 마라.\n` +
-      `### 요약 지침\n${guide}\n` +
-      `### 현재 요약\n${clip(ctx.body, 3000)}\n` +
-      `### 근거\n${evidenceBlock({
+      `\n사용자가 요약의 수정을 요청하면 아래 "요약 지침"을 따라 요약 전체를 다시 써라 — 부분만 주지 마라.\n` + // i18n-ok: LLM 프롬프트
+      `### 요약 지침\n${guide}\n` + // i18n-ok: LLM 프롬프트
+      `### 현재 요약\n${clip(ctx.body, 3000)}\n` + // i18n-ok: LLM 프롬프트
+      `### 근거\n${evidenceBlock({ // i18n-ok: LLM 프롬프트
         sources: ctx.sources,
         since: ctx.since,
         until: ctx.until,

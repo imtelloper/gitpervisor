@@ -11,6 +11,7 @@
 //
 // 배경: DOCS/task/45-image-inspector-popovers.md §3.4
 
+import { useMessages } from "../../../../i18n/ui-language";
 import { MIXED, type Maybe } from "../../../../lib/annotate/selection";
 
 export interface SelectOption<V> {
@@ -31,6 +32,7 @@ export function Select<V>({
   /** 화면에 라벨이 따로 없을 때의 접근성 이름. */
   label?: string;
 }) {
+  const msg = useMessages();
   const mixed = value === MIXED;
   const idx = mixed ? -1 : options.findIndex((o) => Object.is(o.value, value));
 
@@ -50,7 +52,7 @@ export function Select<V>({
         // MIXED 와 "목록에 없는 값"을 같은 칸으로 그린다 — 둘 다 사용자가 고른 적 없는
         // 상태이고, 어느 쪽이든 그대로 두면 문서는 바뀌지 않는다.
         <option value="" disabled>
-          {mixed ? "여러 값" : "—"}
+          {mixed ? msg.imageInspector.vocab.mixedValues : "—"}
         </option>
       )}
       {options.map((o, i) => (

@@ -11,6 +11,7 @@
 //
 // 배경: DOCS/task/48-image-crop-straighten.md §3.2·§3.4
 
+import { currentMessages } from "../../i18n/ui-language";
 import { rotateNodes, translateSubtree } from "./tree";
 import type { Node, Rect } from "./types";
 
@@ -41,23 +42,26 @@ export interface CropSession {
   deleteOutside: boolean;
 }
 
+// 라벨은 게터다 — 표는 모듈 로드 때 한 번 만들어지지만 문구는 **읽는 순간의 UI 언어**여야 한다.
+const cropText = () => currentMessages().annotate.crop;
+
 export const CROP_ASPECTS: readonly { id: CropAspect; label: string }[] = [
-  { id: "free", label: "자유" },
-  { id: "original", label: "원본" },
+  { id: "free", get label() { return cropText().aspectFree; } },
+  { id: "original", get label() { return cropText().aspectOriginal; } },
   { id: "1:1", label: "1:1" },
   { id: "3:2", label: "3:2" },
   { id: "4:3", label: "4:3" },
   { id: "16:9", label: "16:9" },
   // 세로 비율은 방향 토글이 아니라 '사용자' 칩으로 낸다(시안 ⑦ 에 방향 토글이 없다).
-  { id: { w: 2, h: 3 }, label: "사용자" },
+  { id: { w: 2, h: 3 }, get label() { return cropText().aspectCustom; } },
 ];
 
 export const CROP_OVERLAYS: readonly { id: CropOverlay; label: string }[] = [
-  { id: "none", label: "없음" },
-  { id: "thirds", label: "3분할" },
-  { id: "quarters", label: "4분할" },
-  { id: "golden", label: "황금비" },
-  { id: "diagonal", label: "대각선" },
+  { id: "none", get label() { return cropText().overlayNone; } },
+  { id: "thirds", get label() { return cropText().overlayThirds; } },
+  { id: "quarters", get label() { return cropText().overlayQuarters; } },
+  { id: "golden", get label() { return cropText().overlayGolden; } },
+  { id: "diagonal", get label() { return cropText().overlayDiagonal; } },
 ];
 
 export const MAX_STRAIGHTEN_DEG = 45;
@@ -439,6 +443,6 @@ function aspectLabelOf(a: CropAspect): string {
 export function cropLabel(s: CropSession, o?: { straighten?: boolean }): string {
   const base = `${Math.round(s.rect.w)} × ${Math.round(s.rect.h)} · ${aspectLabelOf(s.aspect)}`;
   return o?.straighten && s.straighten !== 0
-    ? `${base} · 직선화 ${s.straighten.toFixed(1)}°`
+    ? cropText().labelWithStraighten(base, s.straighten.toFixed(1))
     : base;
 }

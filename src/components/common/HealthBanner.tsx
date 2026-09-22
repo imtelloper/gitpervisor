@@ -2,6 +2,7 @@ import { listen } from "@tauri-apps/api/event";
 import { Activity, BellOff, FolderOpen, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { flushAllDrafts } from "../../lib/drafts";
 import { formatBytes } from "../../lib/format";
 import {
@@ -136,6 +137,7 @@ function LiveCard({
   onClose: () => void;
   onMute: () => void;
 }) {
+  const msg = useMessages();
   const danger = snap.level === "danger";
   const s = snap.sample;
   return (
@@ -150,20 +152,18 @@ function LiveCard({
           {danger ? "🔴" : "🟠"}
         </span>
         <div className={`min-w-0 flex-1 font-medium ${danger ? "text-danger" : "text-amber-300"}`}>
-          {danger
-            ? "시스템 메모리 부족이 임박했습니다 — 작업 저장을 권장합니다"
-            : "시스템 메모리 압박이 높아지고 있습니다"}
+          {danger ? msg.shell.healthBanner.liveDangerTitle : msg.shell.healthBanner.liveWarnTitle}
         </div>
         <button
           onClick={onClose}
-          title="닫기 — 상태가 바뀌면 다시 알립니다"
+          title={msg.shell.healthBanner.liveCloseTitle}
           className="-mr-1 -mt-1 shrink-0 rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
         >
           <X size={14} />
         </button>
       </div>
       <div className="mt-1 pl-6 leading-5 text-fg-muted">
-        여유가 더 줄면 OS가 메모리 확보를 위해 앱을 종료할 수 있어 미리 알려드립니다.
+        {msg.shell.healthBanner.liveExplanation}
       </div>
       {snap.reasons.length > 0 && (
         <ul className="mt-1 space-y-0.5 pl-6 text-fg-muted opacity-90">
@@ -177,19 +177,31 @@ function LiveCard({
             거짓 수치가 카드에 박혀 있었다. 값이 실재할 때만 보여준다(session.rs와 같은 규칙). */}
         {s.killThreshold > 0 && (
           <>
-            압박 {s.anchorFullAvg10.toFixed(0)}% / 종료기준 {s.killThreshold.toFixed(0)}% ·{" "}
+            {msg.shell.healthBanner.livePressure(
+              s.anchorFullAvg10.toFixed(0),
+              s.killThreshold.toFixed(0),
+            )}
+            {" · "}
           </>
         )}
-        여유 메모리 {s.memAvailablePct.toFixed(0)}% · 프로세스 {s.scopeProcs}개 · 앱 메모리{" "}
-        {(s.scopeMemBytes / 1_073_741_824).toFixed(1)}GB
+        {msg.shell.healthBanner.liveMemoryStats(
+          s.memAvailablePct.toFixed(0),
+          s.scopeProcs,
+          (s.scopeMemBytes / 1_073_741_824).toFixed(1),
+        )}
       </div>
       {/* 앱 메모리 한 덩어리만 보면 무엇을 닫아야 할지 알 수 없다 — 앱 자체(창·WebView2)와
           터미널에서 띄운 프로그램을 나눠 보여준다. Windows 전용 값이라 없을 수 있다. */}
       {s.scopeCoreBytes != null && s.scopeCoreBytes > 0 && (
         <div className="pl-6 font-mono text-[11px] text-fg-dim">
-          앱 자체 {formatBytes(s.scopeCoreBytes)}
+          {msg.shell.healthBanner.liveAppCore(formatBytes(s.scopeCoreBytes))}
           {s.scopeMemBytes - s.scopeCoreBytes > 0 && (
-            <> · 터미널 프로그램 {formatBytes(s.scopeMemBytes - s.scopeCoreBytes)}</>
+            <>
+              {" · "}
+              {msg.shell.healthBanner.liveTerminalPrograms(
+                formatBytes(s.scopeMemBytes - s.scopeCoreBytes),
+              )}
+            </>
           )}
         </div>
       )}
@@ -199,15 +211,15 @@ function LiveCard({
           onClick={() => void ipc.openSysmonWindow()}
           className="flex items-center gap-1.5 rounded border border-edge px-2 py-1 text-fg-muted hover:bg-raised hover:text-fg"
         >
-          <Activity size={12} /> 리소스 모니터 열기
+          <Activity size={12} /> {msg.shell.healthBanner.openResourceMonitor}
         </button>
         <button
           type="button"
           onClick={onMute}
-          title="이 종류의 경보를 더 이상 띄우지 않습니다 — 설정 › 알림에서 되돌릴 수 있습니다"
+          title={msg.shell.healthBanner.muteTitle}
           className="flex items-center gap-1.5 rounded border border-edge px-2 py-1 text-fg-dim hover:bg-raised hover:text-fg"
         >
-          <BellOff size={12} /> 이 알림 다시 보지 않기
+          <BellOff size={12} /> {msg.shell.healthBanner.mute}
         </button>
       </div>
     </div>
@@ -226,6 +238,7 @@ function topByName(top: TopProc[], n: number): [string, number][] {
 
 /** 재시작 시 1회 — 지난 실행이 왜 사라졌는지 알려준다. */
 function PrevSessionCard({ prev, onClose }: { prev: PrevSession; onClose: () => void }) {
+  const msg = useMessages();
   const r = prev.record;
   const top = r?.last.top?.length ? topByName(r.last.top, 3) : [];
   return (
@@ -238,11 +251,11 @@ function PrevSessionCard({ prev, onClose }: { prev: PrevSession; onClose: () => 
           ⚠
         </span>
         <div className="min-w-0 flex-1 font-medium text-amber-300">
-          지난 실행이 예기치 않게 종료되었습니다
+          {msg.shell.healthBanner.prevSessionTitle}
         </div>
         <button
           onClick={onClose}
-          title="닫기"
+          title={msg.shell.healthBanner.prevSessionClose}
           className="-mr-1 -mt-1 shrink-0 rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
         >
           <X size={14} />
@@ -251,15 +264,25 @@ function PrevSessionCard({ prev, onClose }: { prev: PrevSession; onClose: () => 
       <div className="mt-1 pl-6 leading-5 text-fg-muted">{prev.message}</div>
       {r && (
         <div className="mt-1.5 pl-6 font-mono text-[11px] text-fg-dim">
-          {new Date(r.updatedAt).toLocaleString()} · 프로세스 {r.last.scopeProcs}개 · 앱 메모리{" "}
-          {(r.last.scopeMemBytes / 1_073_741_824).toFixed(1)}GB
+          {msg.shell.healthBanner.prevSessionStats(
+            new Date(r.updatedAt).toLocaleString(),
+            r.last.scopeProcs,
+            (r.last.scopeMemBytes / 1_073_741_824).toFixed(1),
+          )}
           {/* LiveCard와 같은 이유 — Windows엔 PSI가 없어 늘 "압박 0%"가 붙었다. */}
-          {r.last.killThreshold > 0 && <> · 압박 {r.last.anchorFullAvg10.toFixed(0)}%</>}
+          {r.last.killThreshold > 0 && (
+            <>
+              {" · "}
+              {msg.shell.healthBanner.prevSessionPressure(r.last.anchorFullAvg10.toFixed(0))}
+            </>
+          )}
         </div>
       )}
       {top.length > 0 && (
         <div className="mt-1 pl-6 font-mono text-[11px] text-fg-dim">
-          종료 직전 큰 프로세스: {top.map(([n, b]) => `${n} ${formatBytes(b)}`).join(" · ")}
+          {msg.shell.healthBanner.prevSessionTopProcs(
+            top.map(([n, b]) => `${n} ${formatBytes(b)}`).join(" · "),
+          )}
         </div>
       )}
       {/* OS가 남긴 흔적(Windows 이벤트 로그) — 앱 로그에는 아무것도 안 남는 종료 경로를
@@ -277,7 +300,7 @@ function PrevSessionCard({ prev, onClose }: { prev: PrevSession; onClose: () => 
           onClick={() => void ipc.openLogsFolder()}
           className="flex items-center gap-1.5 rounded border border-edge px-2 py-1 text-fg-muted hover:bg-raised hover:text-fg"
         >
-          <FolderOpen size={12} /> 로그 폴더 열기
+          <FolderOpen size={12} /> {msg.shell.healthBanner.openLogsFolder}
         </button>
       </div>
     </div>

@@ -11,6 +11,8 @@
 
 import { forwardRef, useImperativeHandle, useRef } from "react";
 
+import type { Messages } from "../../i18n/messages";
+import { useMessages } from "../../i18n/ui-language";
 import type { Rect } from "../../lib/annotate/types";
 import { useImageEditorUi, type EditorUiState } from "../../stores/imageEditor";
 
@@ -20,16 +22,19 @@ export interface StatusBarHandle {
 }
 
 /** 상태바에 노출하는 보기 토글 — 나머지 토글(스냅 세부·그리드 간격 등)은 인스펙터 몫이다(45). */
-const VIEW_TOGGLES: {
+function viewToggles(msg: Messages): {
   k: "snap" | "smartGuides" | "pixelGrid" | "rulers" | "guidesVisible";
   label: string;
-}[] = [
-  { k: "snap", label: "스냅" },
-  { k: "smartGuides", label: "스마트 가이드" },
-  { k: "pixelGrid", label: "픽셀 그리드" },
-  { k: "rulers", label: "눈금자" },
-  { k: "guidesVisible", label: "가이드 표시" },
-];
+}[] {
+  const t = msg.imageEditor.statusBar;
+  return [
+    { k: "snap", label: t.snap },
+    { k: "smartGuides", label: t.smartGuides },
+    { k: "pixelGrid", label: t.pixelGrid },
+    { k: "rulers", label: t.rulers },
+    { k: "guidesVisible", label: t.guidesVisible },
+  ];
+}
 
 export interface EditorStatusBarProps {
   /** 화면 배율(100 = 원본 1:1). `screenScale * 100` 을 부모가 넘긴다. */
@@ -47,6 +52,7 @@ const selectHint = (s: EditorUiState) => s.hint;
 
 const EditorStatusBar = forwardRef<StatusBarHandle, EditorStatusBarProps>(
   function EditorStatusBar({ zoomPercent, undoDepth, selectBox }, ref) {
+    const msg = useMessages();
     const toggles = useImageEditorUi(selectToggles);
     const setToggle = useImageEditorUi(selectSetToggle);
     const count = useImageEditorUi(selectCount);
@@ -81,7 +87,7 @@ const EditorStatusBar = forwardRef<StatusBarHandle, EditorStatusBarProps>(
             한 자리씩 늘 때 오른쪽 전체가 흔들리지 않게 한다. */}
         <span ref={coordRef} className="w-[112px] shrink-0 whitespace-pre tabular-nums" />
 
-        {VIEW_TOGGLES.map((t) => (
+        {viewToggles(msg).map((t) => (
           <button
             key={t.k}
             aria-pressed={toggles[t.k]}
@@ -103,7 +109,9 @@ const EditorStatusBar = forwardRef<StatusBarHandle, EditorStatusBarProps>(
             {/* `N개 선택` 은 **자기 span 안에 홀로** 있어야 한다 — e2e 30 selCount 가
                 `^\s*(\d+)개 선택` 을 담은 가장 안쪽 요소를 찾는다. 옆 텍스트를 같은 노드에
                 붙이면 크기·색까지 삼킨 문자열이 잡혀 개수 단언이 엉뚱한 값을 본다. */}
-            <span className="shrink-0 tabular-nums">{count}개 선택</span>
+            <span className="shrink-0 tabular-nums">
+              {msg.imageEditor.contextBar.selectedCount(count)}
+            </span>
             {selectBox && (
               <span className="shrink-0 tabular-nums">
                 {Math.round(selectBox.w)} × {Math.round(selectBox.h)}
@@ -118,7 +126,9 @@ const EditorStatusBar = forwardRef<StatusBarHandle, EditorStatusBarProps>(
         </span>
 
         <span className="shrink-0 tabular-nums">{Math.round(zoomPercent)}%</span>
-        <span className="shrink-0 tabular-nums">실행 취소 {undoDepth}단계</span>
+        <span className="shrink-0 tabular-nums">
+          {msg.imageEditor.statusBar.undoDepth(undoDepth)}
+        </span>
       </div>
     );
   },

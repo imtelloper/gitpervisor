@@ -1,6 +1,7 @@
 import { AppWindow, Copy, FolderOpen, Search, Square } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { copyWithToast } from "../../lib/clipboard";
 import { formatBytes } from "../../lib/format";
 import { errorMessage, ipc } from "../../lib/ipc";
@@ -88,13 +89,18 @@ function SortHeader({
   disabled?: boolean;
   disabledTip?: string;
 }) {
+  const msg = useMessages();
   return (
     <th className={`px-2 py-1.5 font-medium ${className ?? ""}`}>
       <button
         type="button"
         disabled={disabled}
         onClick={() => onSort(k)}
-        title={disabled ? (disabledTip ?? `${label} 측정 불가`) : `${label} 기준 정렬`}
+        title={
+          disabled
+            ? (disabledTip ?? msg.sysmon.window.sortUnavailable(label))
+            : msg.sysmon.window.sortBy(label)
+        }
         className={`w-full text-right transition-colors ${
           disabled
             ? "cursor-default text-fg-dim/50"
@@ -140,6 +146,7 @@ function Row({
   onKill: (p: ProcessSample) => void;
   onMenu: (e: React.MouseEvent, p: ProcessSample) => void;
 }) {
+  const msg = useMessages();
   const cpu = Math.max(0, p.cpu);
   return (
     <tr
@@ -156,7 +163,7 @@ function Row({
               e.stopPropagation();
               onKill(p);
             }}
-            title="작업 끝내기 (프로세스 종료)"
+            title={msg.sysmon.window.killRowTitle}
             className="shrink-0 rounded p-0.5 text-fg-dim opacity-0 hover:bg-danger/20 hover:text-danger group-hover:opacity-100"
           >
             <Square size={11} className="fill-current" />
@@ -167,7 +174,7 @@ function Row({
         className="px-2 py-1 text-right font-mono text-fg-dim tabular-nums"
         title={
           grouped && (p.groupCount ?? 1) > 1
-            ? `프로세스 ${p.groupCount}개 합산 — PID는 최대 기여자`
+            ? msg.sysmon.window.groupedPidTitle(p.groupCount ?? 1)
             : undefined
         }
       >
@@ -211,6 +218,7 @@ interface RowMenu {
  * 아이콘은 exePath 키로 세션 캐시(경로당 1회 get_process_icons).
  */
 export function SysMonitorWindow() {
+  const msg = useMessages();
   // 이 창에도 저장된 테마 적용(FloatingTerminal과 동일 패턴) — 로드 전엔 main.tsx의
   // localStorage 선적용 값이 유지된다.
   const { data: settings } = useSettings();
@@ -292,39 +300,40 @@ export function SysMonitorWindow() {
   const killProc = (p: ProcessSample) => {
     const pids = p.groupPids ?? [p.pid];
     const label =
-      pids.length > 1 ? `${p.name} (${pids.length}개 프로세스)` : p.name;
+      pids.length > 1 ? msg.sysmon.window.killTargetGroup(p.name, pids.length) : p.name;
     // 그룹 종료는 "같은 실행 파일명"만으로 묶인다. macOS의 공용 XPC 서비스
     // (com.apple.WebKit.WebContent 등)는 여러 앱이 같은 이름·같은 경로로 돌아 앱 경계를
     // 넘어 함께 잡힐 수 있다 — 대상 pid를 그대로 보여 사용자가 판단하게 한다.
     const blast =
       pids.length > 1
-        ? `\n\n대상 PID: ${pids.slice(0, 12).join(", ")}${
-            pids.length > 12 ? ` 외 ${pids.length - 12}개` : ""
-          }\n같은 이름으로 도는 다른 앱의 프로세스가 함께 포함될 수 있습니다.`
+        ? msg.sysmon.window.killBlastRadius(
+            pids.slice(0, 12).join(", "),
+            Math.max(0, pids.length - 12),
+          )
         : "";
     askConfirm({
-      title: "작업 끝내기",
-      message: `'${label}'을(를) 종료할까요? 저장하지 않은 작업이 사라질 수 있습니다.${blast}`,
-      confirmLabel: "작업 끝내기",
+      title: msg.sysmon.window.kill,
+      message: msg.sysmon.window.killConfirm(label, blast),
+      confirmLabel: msg.sysmon.window.kill,
       danger: true,
       onConfirm: () => {
         void ipc
           .killProcesses(pids)
           .then((r) => {
             const skipped = r.skipped.length
-              ? ` · ${r.skipped.length}개 제외(앱 자신)`
+              ? msg.sysmon.window.killSkippedSelf(r.skipped.length)
               : "";
             if (r.failed.length === 0 && r.killed > 0) {
-              pushToast("success", `${label} 종료됨${skipped}`);
+              pushToast("success", msg.sysmon.window.killDone(label, skipped));
             } else if (r.killed > 0) {
               pushToast(
                 "info",
-                `${r.killed}개 종료 · ${r.failed.length}개 실패(권한 부족)${skipped}`,
+                msg.sysmon.window.killPartial(r.killed, r.failed.length, skipped),
               );
             } else if (r.skipped.length > 0) {
-              pushToast("info", "앱 자신은 종료하지 않았습니다");
+              pushToast("info", msg.sysmon.window.killOnlySelf);
             } else {
-              pushToast("error", "종료하지 못했습니다 (권한이 필요할 수 있음)");
+              pushToast("error", msg.sysmon.window.killFailed);
             }
           })
           .catch((e) => pushToast("error", errorMessage(e)));
@@ -356,7 +365,7 @@ export function SysMonitorWindow() {
   const revealExe = (p: ProcessSample) => {
     setMenu(null);
     if (!p.exePath) {
-      pushToast("info", "실행 파일 경로를 알 수 없습니다");
+      pushToast("info", msg.sysmon.window.exePathUnknown);
       return;
     }
     void ipc.revealPath(p.exePath).catch((e) => pushToast("error", errorMessage(e)));
@@ -364,16 +373,16 @@ export function SysMonitorWindow() {
 
   return (
     <div className="flex h-screen flex-col bg-base text-fg select-none">
-      <FloatTitleBar title="리소스 모니터" badge="모니터" />
+      <FloatTitleBar title={msg.sysmon.window.title} badge={msg.sysmon.window.badge} />
 
       {/* 뷰 전환 탭 — 프로세스 목록 ⇄ 디스크 용량 분석(disk-usage 설계 §3.4)
           ⇄ 시스템 정보(태스크 31 §3.3) */}
       <div className="flex shrink-0 items-center gap-0.5 border-b border-edge bg-panel px-2">
         {(
           [
-            ["proc", "프로세스"],
-            ["disk", "디스크"],
-            ["info", "시스템 정보"],
+            ["proc", msg.sysmon.window.tabProcesses],
+            ["disk", msg.sysmon.window.tabDisk],
+            ["info", msg.sysmon.window.tabSystemInfo],
           ] as const
         ).map(([k, label]) => (
           <button
@@ -399,14 +408,14 @@ export function SysMonitorWindow() {
         <>
       {/* 헤더: 전체 사용률 게이지 + 검색 + 프로그램별 토글 */}
       <div className="flex shrink-0 items-center gap-4 border-b border-edge bg-panel px-3 py-2.5">
-        <Gauge label="CPU" pct={totals?.cpu ?? null} tip="CPU 사용률 (전체)" />
+        <Gauge label="CPU" pct={totals?.cpu ?? null} tip={msg.sysmon.window.cpuTipTotal} />
         <Gauge
           label="GPU"
           pct={totals?.gpu ?? null}
           tip={
             totals && totals.gpu == null
-              ? "GPU 사용률을 읽을 수 없음"
-              : "GPU 사용률 (3D 엔진)"
+              ? msg.sysmon.window.gpuUnreadable
+              : msg.sysmon.window.gpuTip3d
           }
         />
         <Gauge
@@ -414,12 +423,12 @@ export function SysMonitorWindow() {
           pct={totals?.ram ?? null}
           tip={
             totals
-              ? `메모리 ${gb(totals.ramUsed)} / ${gb(totals.ramTotal)} GB`
-              : "메모리"
+              ? msg.sysmon.common.memoryTip(gb(totals.ramUsed), gb(totals.ramTotal))
+              : msg.sysmon.common.memory
           }
         />
         {measuring ? (
-          <span className="text-[10px] text-fg-dim">측정 중…</span>
+          <span className="text-[10px] text-fg-dim">{msg.sysmon.common.measuring}</span>
         ) : null}
         <div className="flex-1" />
         <div className="relative">
@@ -430,21 +439,21 @@ export function SysMonitorWindow() {
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="이름 검색"
+            placeholder={msg.sysmon.window.searchPlaceholder}
             className="w-32 rounded border border-edge bg-base py-1 pl-6 pr-2 text-[11px] text-fg placeholder:text-fg-dim focus:border-accent focus:outline-none"
           />
         </div>
         <button
           type="button"
           onClick={() => setGroupByName((v) => !v)}
-          title="같은 이름 프로세스를 합산해 프로그램 단위로 표시 (렌더러 20개 등)"
+          title={msg.sysmon.window.groupByNameTitle}
           className={`rounded border px-2 py-1 text-[11px] transition-colors ${
             groupByName
               ? "border-accent bg-accent/15 text-accent"
               : "border-edge text-fg-muted hover:bg-raised hover:text-fg"
           }`}
         >
-          프로그램별
+          {msg.sysmon.window.groupByName}
         </button>
       </div>
 
@@ -453,7 +462,9 @@ export function SysMonitorWindow() {
         <table className="w-full table-fixed border-collapse text-[11px]">
           <thead className="sticky top-0 z-10 bg-panel">
             <tr className="border-b border-edge text-fg-dim">
-              <th className="px-2 py-1.5 text-left font-medium">이름</th>
+              <th className="px-2 py-1.5 text-left font-medium">
+                {msg.sysmon.common.columnName}
+              </th>
               <th className="w-[72px] px-2 py-1.5 text-right font-medium">
                 PID
               </th>
@@ -472,7 +483,7 @@ export function SysMonitorWindow() {
                 className="w-[76px]"
               />
               <SortHeader
-                label="디스크"
+                label={msg.sysmon.window.columnDisk}
                 k="disk"
                 active={sortBy === "disk"}
                 onSort={setSortBy}
@@ -485,7 +496,7 @@ export function SysMonitorWindow() {
                 onSort={setSortBy}
                 className="w-[62px]"
                 disabled={!gpuSupported}
-                disabledTip="이 플랫폼에서는 GPU 사용률을 읽을 수 없습니다"
+                disabledTip={msg.sysmon.common.gpuUnsupported}
               />
             </tr>
           </thead>
@@ -504,14 +515,16 @@ export function SysMonitorWindow() {
         </table>
         {!data ? (
           <div className="px-3 py-6 text-center text-xs text-fg-dim">
-            측정 중…
+            {msg.sysmon.common.measuring}
           </div>
         ) : rows.length === 0 && query ? (
           // 검색은 백엔드가 이미 Top-N으로 자른 목록만 훑는다. 전체 프로세스를 뒤진 것처럼
           // 단정하면 거짓말이 된다(macOS는 1400개 중 200개만 내려온다) — 범위를 밝힌다.
           <div className="px-3 py-6 text-center text-xs text-fg-dim">
-            상위 {allRows.length}개 중에는 '{query}'와 일치하는 프로세스가 없습니다
-            {rest > 0 ? <div className="mt-1">나머지 {rest}개는 검색 범위 밖입니다</div> : null}
+            {msg.sysmon.window.noMatch(allRows.length, query)}
+            {rest > 0 ? (
+              <div className="mt-1">{msg.sysmon.window.restOutsideSearch(rest)}</div>
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -519,7 +532,7 @@ export function SysMonitorWindow() {
       {/* 푸터: 절단된 나머지 행 수 */}
       {rest > 0 && !query ? (
         <div className="shrink-0 border-t border-edge bg-panel px-3 py-1.5 text-right text-[10px] text-fg-dim">
-          … 외 {rest}개
+          {msg.sysmon.window.restFooter(rest)}
         </div>
       ) : null}
         </>
@@ -537,7 +550,7 @@ export function SysMonitorWindow() {
         >
           <MenuItem
             icon={Square}
-            label="작업 끝내기"
+            label={msg.sysmon.window.kill}
             danger
             onClick={() => {
               const p = menu.p;
@@ -547,20 +560,20 @@ export function SysMonitorWindow() {
           />
           <MenuItem
             icon={FolderOpen}
-            label="파일 위치 열기"
+            label={msg.sysmon.window.revealExe}
             onClick={() => revealExe(menu.p)}
           />
           <div className="my-1 border-t border-edge/60" />
           <MenuItem
             icon={Copy}
-            label="PID 복사"
-            onClick={() => copy(String(menu.p.pid), "PID를 복사했습니다")}
+            label={msg.sysmon.window.copyPid}
+            onClick={() => copy(String(menu.p.pid), msg.sysmon.window.pidCopied)}
           />
           {menu.p.exePath ? (
             <MenuItem
               icon={Copy}
-              label="경로 복사"
-              onClick={() => copy(menu.p.exePath!, "경로를 복사했습니다")}
+              label={msg.sysmon.window.copyPath}
+              onClick={() => copy(menu.p.exePath!, msg.sysmon.window.pathCopied)}
             />
           ) : null}
         </div>

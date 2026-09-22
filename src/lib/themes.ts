@@ -1,5 +1,7 @@
 import type { ITheme } from "@xterm/xterm";
 
+import { currentMessages } from "../i18n/ui-language";
+
 // 테마 레지스트리 — UI 토큰의 원천은 styles.css의 `:root[data-theme]` 블록(CSS 변수)이고,
 // 이 파일은 CSS로 표현 못 하는 성격의 데이터만 담는다: 메타(라벨/종류/스와치) +
 // Monaco defineTheme 이름 + CSS 파생만으론 부족한 xterm 보정(라이트 ANSI 16색).
@@ -72,10 +74,14 @@ const SOLARIZED_LIGHT_ANSI: Partial<ITheme> = {
   brightWhite: "#fdf6e3", // base3
 };
 
+// 번역되는 라벨은 getter 다 — 호출처가 `t.label` 로 읽으므로 읽는 순간의 UI 언어로 만든다(모듈 상수에
+// 문자열을 담아 두면 언어를 바꿔도 첫 언어로 남는다).
 export const THEMES: readonly ThemeMeta[] = [
   {
     id: "darcula",
-    label: "다크 (Darcula)",
+    get label() {
+      return currentMessages().lib.themeLabel.darcula;
+    },
     kind: "dark",
     monacoTheme: "gitpervisor-dark",
     swatch: ["#1e1f22", "#3574f0", "#62b543", "#db5c5c"],
@@ -103,7 +109,9 @@ export const THEMES: readonly ThemeMeta[] = [
   },
   {
     id: "light",
-    label: "라이트 (IntelliJ)",
+    get label() {
+      return currentMessages().lib.themeLabel.light;
+    },
     kind: "light",
     monacoTheme: "gitpervisor-light",
     swatch: ["#f7f8fa", "#3574f0", "#067d17", "#c7222d"],

@@ -246,11 +246,11 @@ export function reparent(
   if (!ids.length) return objects as Node[];
   if (newParent !== null) {
     const target = nodeOf(objects, newParent);
-    if (!target) throw new Error(`reparent: 부모 ${newParent} 가 없다`);
-    if (!isContainer(target)) throw new Error(`reparent: ${target.kind} 은 자식을 담을 수 없다`);
+    if (!target) throw new Error(`reparent: 부모 ${newParent} 가 없다`); // i18n-ok: 내부 불변식 위반(개발자용)
+    if (!isContainer(target)) throw new Error(`reparent: ${target.kind} 은 자식을 담을 수 없다`); // i18n-ok: 내부 불변식 위반(개발자용)
     for (const id of ids) {
       if (id === newParent || subtreeIds(objects, id).includes(newParent)) {
-        throw new Error("reparent: 자기 자손 안으로는 넣을 수 없다(순환)");
+        throw new Error("reparent: 자기 자손 안으로는 넣을 수 없다(순환)"); // i18n-ok: 내부 불변식 위반(개발자용)
       }
     }
   }
@@ -527,17 +527,17 @@ export function assertTreeInvariant(objects: readonly Node[]): void {
   const seen = new Map<ObjId, number>();
   for (let i = 0; i < objects.length; i++) {
     const o = objects[i];
-    if (seen.has(o.id)) throw new Error(`tree: id 중복 ${o.id} (${seen.get(o.id)}, ${i})`);
+    if (seen.has(o.id)) throw new Error(`tree: id 중복 ${o.id} (${seen.get(o.id)}, ${i})`); // i18n-ok: DEV 전용 불변식 검사
     seen.set(o.id, i);
     if (o.parentId !== null) {
       const pi = seen.get(o.parentId);
-      if (pi === undefined) throw new Error(`tree: ${o.id} 의 부모 ${o.parentId} 가 앞에 없다`);
+      if (pi === undefined) throw new Error(`tree: ${o.id} 의 부모 ${o.parentId} 가 앞에 없다`); // i18n-ok: DEV 전용 불변식 검사
       if (!isContainer(objects[pi])) {
-        throw new Error(`tree: ${o.parentId} 는 ${objects[pi].kind} 라 자식을 담을 수 없다`);
+        throw new Error(`tree: ${o.parentId} 는 ${objects[pi].kind} 라 자식을 담을 수 없다`); // i18n-ok: DEV 전용 불변식 검사
       }
     }
     if (o.blend === "pass-through" && !isContainer(o)) {
-      throw new Error(`tree: ${o.kind} ${o.id} 에 pass-through 블렌드`);
+      throw new Error(`tree: ${o.kind} ${o.id} 에 pass-through 블렌드`); // i18n-ok: DEV 전용 불변식 검사
     }
   }
   // ② 연속성 — 각 컨테이너의 자식 수가 슬라이스 안의 직계 자식 수와 같아야 한다.
@@ -548,7 +548,7 @@ export function assertTreeInvariant(objects: readonly Node[]): void {
     for (let i = s + 1; i < e; i++) if (objects[i].parentId === o.id) direct++;
     const all = childrenOf(objects, o.id).length;
     if (direct !== all) {
-      throw new Error(`tree: ${o.id} 의 자손이 흩어져 있다(슬라이스 ${direct} vs 전체 ${all})`);
+      throw new Error(`tree: ${o.id} 의 자손이 흩어져 있다(슬라이스 ${direct} vs 전체 ${all})`); // i18n-ok: DEV 전용 불변식 검사
     }
   }
 }

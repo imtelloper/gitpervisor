@@ -8,34 +8,38 @@
 // 번/닷지 순서가 다르다 — 시안은 `색상 → 선형`, 그쪽은 렌더 매핑 순서다. **목록 표시는 이 표가,
 // 정규화 검증은 `BLEND_MODES` 가 정본이다.**
 
+import { currentMessages } from "../../i18n/ui-language";
 import type { BlendMode } from "./types";
+
+// 라벨은 게터다 — 표는 모듈 로드 때 한 번 만들어지지만 문구는 **읽는 순간의 UI 언어**여야 한다.
+const blendText = () => currentMessages().annotate.blendMode;
 
 /** `group` 은 값이 아니라 **경계**다 — 이전 항목과 다르면 그 자리에 구분선을 그린다. */
 export const BLEND_LABELS = [
-  { value: "pass-through", label: "패스스루", group: 0 },
-  { value: "normal", label: "표준", group: 0 },
+  { value: "pass-through", get label() { return blendText().passThrough; }, group: 0 },
+  { value: "normal", get label() { return blendText().normal; }, group: 0 },
 
-  { value: "darken", label: "어둡게", group: 1 },
-  { value: "multiply", label: "곱하기", group: 1 },
-  { value: "color-burn", label: "색상 번", group: 1 },
-  { value: "linear-burn", label: "선형 번", group: 1 },
+  { value: "darken", get label() { return blendText().darken; }, group: 1 },
+  { value: "multiply", get label() { return blendText().multiply; }, group: 1 },
+  { value: "color-burn", get label() { return blendText().colorBurn; }, group: 1 },
+  { value: "linear-burn", get label() { return blendText().linearBurn; }, group: 1 },
 
-  { value: "lighten", label: "밝게", group: 2 },
-  { value: "screen", label: "스크린", group: 2 },
-  { value: "color-dodge", label: "색상 닷지", group: 2 },
-  { value: "linear-dodge", label: "선형 닷지", group: 2 },
+  { value: "lighten", get label() { return blendText().lighten; }, group: 2 },
+  { value: "screen", get label() { return blendText().screen; }, group: 2 },
+  { value: "color-dodge", get label() { return blendText().colorDodge; }, group: 2 },
+  { value: "linear-dodge", get label() { return blendText().linearDodge; }, group: 2 },
 
-  { value: "overlay", label: "오버레이", group: 3 },
-  { value: "soft-light", label: "소프트 라이트", group: 3 },
-  { value: "hard-light", label: "하드 라이트", group: 3 },
+  { value: "overlay", get label() { return blendText().overlay; }, group: 3 },
+  { value: "soft-light", get label() { return blendText().softLight; }, group: 3 },
+  { value: "hard-light", get label() { return blendText().hardLight; }, group: 3 },
 
-  { value: "difference", label: "차이", group: 4 },
-  { value: "exclusion", label: "제외", group: 4 },
+  { value: "difference", get label() { return blendText().difference; }, group: 4 },
+  { value: "exclusion", get label() { return blendText().exclusion; }, group: 4 },
 
-  { value: "hue", label: "색조", group: 5 },
-  { value: "saturation", label: "채도", group: 5 },
-  { value: "color", label: "색상", group: 5 },
-  { value: "luminosity", label: "광도", group: 5 },
+  { value: "hue", get label() { return blendText().hue; }, group: 5 },
+  { value: "saturation", get label() { return blendText().saturation; }, group: 5 },
+  { value: "color", get label() { return blendText().color; }, group: 5 },
+  { value: "luminosity", get label() { return blendText().luminosity; }, group: 5 },
 ] as const satisfies readonly { value: BlendMode; label: string; group: number }[];
 
 /**

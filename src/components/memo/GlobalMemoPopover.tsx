@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { GLOBAL_NOTES_ID } from "../../lib/ipc";
 import { useDragSize } from "../../lib/use-panel-width";
 import { useOccludesWebview } from "../../stores/occlusion";
@@ -22,6 +23,7 @@ export function GlobalMemoPopover({
   /** 부모(타이틀바 버튼)가 토글로 닫을 때 쓸 close를 심어 준다 — flush를 거치게 하기 위함. */
   closeRef?: React.RefObject<(() => void) | null>;
 }) {
+  const msg = useMessages();
   const flushRef = useRef<(() => void) | null>(null);
   // 최소폭 480 = 목록 240(MemoPanel의 w-[240px]) + 편집기 최소.
   const { size, startResize } = useDragSize(
@@ -83,7 +85,7 @@ export function GlobalMemoPopover({
       >
         <MemoPanel
           scopeId={GLOBAL_NOTES_ID}
-          scopeLabel="전역 메모"
+          scopeLabel={msg.notes.globalMemo.scopeLabel}
           onClose={close}
           flushRef={flushRef}
         />

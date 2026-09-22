@@ -2,6 +2,8 @@ import { useQuery } from "@tanstack/react-query";
 import { GitBranch, Gauge } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import type { Messages } from "../i18n/messages";
+import { useMessages } from "../i18n/ui-language";
 import type { FileDiff, Project, UsageWindow } from "../lib/ipc";
 import { encodingLabel } from "../lib/ipc";
 import { relativeTime } from "../lib/format";
@@ -10,6 +12,7 @@ import { useAgentActivity } from "../stores/agentActivity";
 import { useUi } from "../stores/ui";
 
 export function StatusBar({ project }: { project: Project | null }) {
+  const msg = useMessages();
   const { data: status, dataUpdatedAt } = useStatus(project?.id ?? null);
   const [now, setNow] = useState(() => Date.now());
 
@@ -37,7 +40,7 @@ export function StatusBar({ project }: { project: Project | null }) {
             <EncodingPicker projectId={project.id} />
             <span>
               {dataUpdatedAt > 0 &&
-                `마지막 갱신 ${relativeTime(dataUpdatedAt, now)}`}
+                msg.app.statusBar.lastUpdated(relativeTime(dataUpdatedAt, now))}
             </span>
           </div>
         </>
@@ -73,6 +76,7 @@ const ENCODING_CHOICES = [
  * (꺼진 구독자는 쿼리를 active 로 만들지 않아 무효화 재조회에 가담하지 않는다.)
  */
 function EncodingPicker({ projectId }: { projectId: string }) {
+  const msg = useMessages();
   const target = useUi((s) => s.selectedDiff);
   const repoId = useUi((s) => s.selectedDiffRepoId);
   const reopen = useReopenWithEncoding();
@@ -91,8 +95,8 @@ function EncodingPicker({ projectId }: { projectId: string }) {
         onClick={() => setOpen((v) => !v)}
         title={
           diff.lossy
-            ? "인코딩을 확정하지 못했습니다 — 직접 고르세요"
-            : "파일 인코딩 — 클릭해 다른 인코딩으로 다시 엽니다"
+            ? msg.app.statusBar.encodingUncertainTitle
+            : msg.app.statusBar.encodingTitle
         }
         className={`shrink-0 rounded px-1.5 py-0.5 font-mono hover:bg-raised hover:text-fg ${
           diff.lossy ? "text-warn" : ""
@@ -114,7 +118,7 @@ function EncodingPicker({ projectId }: { projectId: string }) {
               }}
               className="block w-full px-3 py-1 text-left hover:bg-raised hover:text-fg"
             >
-              자동 탐지
+              {msg.app.statusBar.encodingAutoDetect}
             </button>
             <div className="my-1 border-t border-edge" />
             {ENCODING_CHOICES.map((enc) => (
@@ -152,20 +156,28 @@ function resetIn(resetsAt: number | null): string {
   const m = Math.floor((s % 3600) / 60);
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
-// 리셋 시간이 없는 창의 라벨(모델별 창 등). 알려진 키는 짧은 한국어로.
-const KEY_LABEL: Record<string, string> = {
-  five_hour: "5시간",
-  seven_day: "주간",
-  seven_day_opus: "Opus",
-  seven_day_oauth: "주간",
-};
-function windowTail(w: UsageWindow): string {
-  return resetIn(w.resetsAt) || KEY_LABEL[w.key] || w.key;
+// 리셋 시간이 없는 창의 라벨(모델별 창 등). 알려진 키는 짧은 이름으로.
+function usageKeyLabel(key: string, msg: Messages): string | undefined {
+  switch (key) {
+    case "five_hour":
+      return msg.app.statusBar.usageWindowFiveHour;
+    case "seven_day":
+    case "seven_day_oauth":
+      return msg.app.statusBar.usageWindowWeekly;
+    case "seven_day_opus":
+      return "Opus";
+    default:
+      return undefined;
+  }
+}
+function windowTail(w: UsageWindow, msg: Messages): string {
+  return resetIn(w.resetsAt) || usageKeyLabel(w.key, msg) || w.key;
 }
 
 /** 좌측 하단 Claude 사용량 바 — statusline.js가 떨군 rate_limits를 "X% 사용 3h 7m · …"로.
  *  파일 없음/오래됨(6시간 초과)/빈 창이면 아무것도 렌더하지 않는다. */
 function ClaudeUsageBar() {
+  const msg = useMessages();
   const { data } = useClaudeUsage();
   if (!data || data.windows.length === 0) return null;
   // 6시간 넘게 갱신 안 됐으면(Claude Code 미사용) 숨긴다 — 오래된 수치 오해 방지.
@@ -175,17 +187,17 @@ function ClaudeUsageBar() {
   return (
     <span
       className="flex shrink-0 items-center gap-1.5"
-      title="Claude 사용량 (세션 5시간 · 주간) — /usage 와 동일 소스"
+      title={msg.app.statusBar.usageTitle}
     >
       <Gauge size={11} className="shrink-0 text-fg-muted" />
       {data.windows.map((w, i) => {
         const pct = Math.max(0, Math.round(w.usedPercentage));
-        const tail = windowTail(w);
+        const tail = windowTail(w, msg);
         return (
           <span key={w.key} className="flex items-center gap-1">
             {i > 0 && <span className="text-fg-dim/60">·</span>}
             <span className={usedColor(pct)}>{pct}%</span>
-            <span className="text-fg-dim">사용{tail ? ` ${tail}` : ""}</span>
+            <span className="text-fg-dim">{msg.app.statusBar.usageUsed(tail)}</span>
           </span>
         );
       })}
@@ -196,6 +208,7 @@ function ClaudeUsageBar() {
 /** 현재 AI가 돌고 있는(working) / 막 끝난(done) 프로젝트 칩 — 무지개(.ai-working) 애니메이션,
  *  클릭하면 해당 프로젝트로 이동. 비어 있으면 아무것도 렌더하지 않는다. */
 function AgentChips() {
+  const msg = useMessages();
   const byProject = useAgentActivity((s) => s.byProject);
   const { data: projects } = useProjects();
   const selectProject = useUi((s) => s.selectProject);
@@ -220,8 +233,8 @@ function AgentChips() {
           onClick={() => selectProject(p.id)}
           title={
             state === "working"
-              ? "AI 작업 중 — 클릭해 이동"
-              : "AI 작업 완료 — 클릭해 확인"
+              ? msg.app.statusBar.agentWorkingTitle
+              : msg.app.statusBar.agentDoneTitle
           }
           className={`max-w-[120px] truncate rounded px-1.5 py-0.5 text-[10px] leading-none text-fg ${
             state === "working" ? "ai-working" : "ai-done"

@@ -11,6 +11,7 @@
 //
 // 배경: DOCS/task/51-image-styles-components.md §3.6·§3.8
 
+import { useMessages } from "../../i18n/ui-language";
 import { instanceState } from "../../lib/annotate/components";
 import { nodeOf } from "../../lib/annotate/tree";
 import type { Node, ObjId } from "../../lib/annotate/types";
@@ -35,6 +36,7 @@ export function InstanceSection({
   onPush,
   onDetach,
 }: InstanceSectionProps) {
+  const msg = useMessages();
   const components = useImageLibrary((s) => s.lib.components);
 
   const node = instId ? nodeOf(objects, instId) : null;
@@ -45,7 +47,7 @@ export function InstanceSection({
 
   return (
     <section className="mt-3 first:mt-0">
-      <div className="mb-1 text-[11px] text-fg-dim">컴포넌트</div>
+      <div className="mb-1 text-[11px] text-fg-dim">{msg.imageInspector.instance.sectionTitle}</div>
 
       <div className="flex items-center gap-1.5 text-[11px]">
         <span
@@ -53,30 +55,30 @@ export function InstanceSection({
           className={`min-w-0 flex-1 truncate ${def ? "text-fg-muted" : "text-fg-dim"}`}
         >
           {/* 마스터가 사라진 인스턴스는 다음 재동기(51 §3.7)가 분리한다 — 그 사이에만 보인다. */}
-          {def?.name ?? "없는 컴포넌트"}
+          {def?.name ?? msg.imageInspector.instance.missingComponent}
         </span>
         <span className="shrink-0 rounded bg-accent/15 px-1 text-[9px] text-accent">
-          {overridden ? "재정의됨" : "연결됨"}
+          {overridden ? msg.imageInspector.instance.overridden : msg.imageInspector.instance.linked}
         </span>
       </div>
 
       <div className="mt-1 flex flex-wrap gap-1">
         <Action
-          label="재정의 초기화"
+          label={msg.imageInspector.instance.reset}
           // 재정의가 없으면 눌러도 문서가 그대로다 = 죽은 버튼. 회색으로 그 사실을 먼저 말한다.
           disabled={!overridden}
-          title="이 인스턴스의 변경을 마스터 값으로 되돌립니다"
+          title={msg.imageInspector.instance.resetTitle}
           onClick={onReset}
         />
         <Action
-          label="마스터 갱신"
+          label={msg.imageInspector.instance.pushMaster}
           disabled={!def}
-          title="이 인스턴스의 모양을 컴포넌트에 굳힙니다 (다른 인스턴스의 재정의는 유지)"
+          title={msg.imageInspector.instance.pushMasterTitle}
           onClick={onPush}
         />
         <Action
-          label="분리"
-          title="보통 그룹으로 바꿉니다 (모양은 그대로, 마스터와의 연결만 끊깁니다)"
+          label={msg.imageInspector.instance.detach}
+          title={msg.imageInspector.instance.detachTitle}
           onClick={onDetach}
         />
       </div>

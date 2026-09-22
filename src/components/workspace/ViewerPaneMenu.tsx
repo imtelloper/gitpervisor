@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { useEffect } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { collectPanes } from "../../lib/pane-tree";
 import { translateRequest } from "../../lib/translate";
 import { useUi, VIEWER_MAX_PANES } from "../../stores/ui";
@@ -36,6 +37,7 @@ export function ViewerPaneMenu({
   selection: string;
   onClose: () => void;
 }) {
+  const msg = useMessages();
   const layout = useUi((s) => s.viewerLayout);
   const maximized = useUi((s) => s.viewerMaximizedPaneId === paneId);
   const split = useUi((s) => s.splitViewerPane);
@@ -78,7 +80,7 @@ export function ViewerPaneMenu({
         <>
           <MenuItem
             icon={<Languages size={14} />}
-            label="선택 영역 번역"
+            label={msg.git.paneMenu.translateSelection}
             onClick={run(() => openTranslate(translateRequest(selection, x, y)))}
           />
           <div className="my-1 border-t border-edge" />
@@ -89,38 +91,38 @@ export function ViewerPaneMenu({
       <div className={full ? "pointer-events-none opacity-40" : ""}>
         <MenuItem
           icon={<SplitSquareHorizontal size={14} />}
-          label="오른쪽으로 분할"
+          label={msg.git.paneMenu.splitRight}
           hint={`${modLabel}+Shift+D`}
           onClick={run(() => split(paneId, "row", false))}
         />
         <MenuItem
           icon={<SplitSquareHorizontal size={14} />}
-          label="왼쪽으로 분할"
+          label={msg.git.paneMenu.splitLeft}
           onClick={run(() => split(paneId, "row", true))}
         />
         <MenuItem
           icon={<SplitSquareVertical size={14} />}
-          label="아래로 분할"
+          label={msg.git.paneMenu.splitDown}
           hint={`${modLabel}+Shift+E`}
           onClick={run(() => split(paneId, "col", false))}
         />
         <MenuItem
           icon={<SplitSquareVertical size={14} />}
-          label="위로 분할"
+          label={msg.git.paneMenu.splitUp}
           onClick={run(() => split(paneId, "col", true))}
         />
       </div>
       <div className="my-1 border-t border-edge" />
       <MenuItem
         icon={maximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
-        label={maximized ? "패널 최대화 해제" : "패널 최대화"}
+        label={maximized ? msg.git.paneMenu.unmaximize : msg.git.paneMenu.maximize}
         onClick={run(() => toggleMaximize(paneId))}
       />
       {/* 마지막 한 칸이면 닫기 항목 자체가 없다(뷰어가 통째로 비지 않게). */}
       {count > 1 && (
         <MenuItem
           icon={<X size={14} />}
-          label="패널 닫기"
+          label={msg.git.paneMenu.closePane}
           hint={`${modLabel}+Shift+W`}
           danger
           onClick={run(() => closePane(paneId))}

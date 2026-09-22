@@ -4,6 +4,7 @@
 import { defUri, ensurePreviewModel, lookup } from "../../components/diff/goto-definition";
 import { monaco } from "../../components/diff/monaco-setup";
 
+import { currentMessages } from "../../i18n/ui-language";
 import { ipc } from "../ipc";
 import { useUi } from "../../stores/ui";
 import { docFor } from "./sync";
@@ -180,7 +181,11 @@ export function registerLspProviders(): void {
       const doc = docFor(model);
       const word = model.getWordAtPosition(position);
       if (!doc || !word) {
-        return { range: new monaco.Range(1, 1, 1, 1), text: "", rejectReason: "이름을 바꿀 심볼이 없습니다" };
+        return {
+          range: new monaco.Range(1, 1, 1, 1),
+          text: "",
+          rejectReason: currentMessages().lib.lspRename.noSymbol,
+        };
       }
       // prepareRename으로 바꿀 수 있는 위치인지 + 범위 확인(실패해도 단어로 폴백).
       try {
@@ -213,9 +218,9 @@ export function registerLspProviders(): void {
           newName,
         })) as LspWorkspaceEdit;
       } catch {
-        return { edits: [], rejectReason: "이름 변경 실패" };
+        return { edits: [], rejectReason: currentMessages().lib.lspRename.failed };
       }
-      if (!we) return { edits: [], rejectReason: "이름을 바꿀 수 없습니다" };
+      if (!we) return { edits: [], rejectReason: currentMessages().lib.lspRename.notRenamable };
 
       const byUri = normalizeWorkspaceEdit(we);
       const currentEdits: monaco.languages.IWorkspaceTextEdit[] = [];
@@ -243,7 +248,9 @@ export function registerLspProviders(): void {
         }
       }
       if (otherFiles > 0) {
-        useUi.getState().pushToast("success", `${otherFiles}개 파일에 이름 변경 적용됨 · 현재 파일은 Ctrl+S로 저장`);
+        useUi
+          .getState()
+          .pushToast("success", currentMessages().lib.lspRename.appliedToOtherFiles(otherFiles));
       }
       return { edits: currentEdits };
     },

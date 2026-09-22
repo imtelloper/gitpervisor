@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { isMac, modLabel } from "../../lib/platform";
 import { useSearch } from "../../stores/search";
 import { useUi } from "../../stores/ui";
@@ -19,6 +20,7 @@ const hotkey = isMac ? `${modLabel}⇧F` : `${modLabel}+Shift+F`;
 
 /** 하단 접이식 Find in Files 패널 — 열려 있을 때만 App이 렌더한다(open 게이트는 App). */
 export function SearchPanel({ projectId }: { projectId: string }) {
+  const msg = useMessages();
   const height = useSearch((s) => s.height);
   const setHeight = useSearch((s) => s.setHeight);
   const query = useSearch((s) => s.query);
@@ -76,7 +78,7 @@ export function SearchPanel({ projectId }: { projectId: string }) {
               setOpen(false);
             }
           }}
-          placeholder={`검색 (${hotkey}) — Enter로 실행`}
+          placeholder={msg.search.findInFiles.queryPlaceholder(hotkey)}
           className="min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-fg-dim"
         />
         <input
@@ -89,20 +91,20 @@ export function SearchPanel({ projectId }: { projectId: string }) {
               submit();
             }
           }}
-          placeholder="포함 (예: *.ts, src/**)"
+          placeholder={msg.search.findInFiles.includePlaceholder}
           className="w-40 shrink-0 rounded border border-edge bg-raised px-2 py-0.5 text-[11px] outline-none focus:border-accent"
         />
-        <ToggleBtn active={opts.caseSensitive} onClick={() => setOpts({ caseSensitive: !opts.caseSensitive })} title="대소문자 구분">
+        <ToggleBtn active={opts.caseSensitive} onClick={() => setOpts({ caseSensitive: !opts.caseSensitive })} title={msg.search.findInFiles.caseSensitive}>
           <CaseSensitive size={14} />
         </ToggleBtn>
-        <ToggleBtn active={opts.wholeWord} onClick={() => setOpts({ wholeWord: !opts.wholeWord })} title="단어 단위">
+        <ToggleBtn active={opts.wholeWord} onClick={() => setOpts({ wholeWord: !opts.wholeWord })} title={msg.search.findInFiles.wholeWord}>
           <WholeWord size={14} />
         </ToggleBtn>
-        <ToggleBtn active={opts.regex} onClick={() => setOpts({ regex: !opts.regex })} title="정규식">
+        <ToggleBtn active={opts.regex} onClick={() => setOpts({ regex: !opts.regex })} title={msg.search.findInFiles.regex}>
           <Regex size={14} />
         </ToggleBtn>
         {searching && <Loader2 size={14} className="shrink-0 animate-spin text-fg-dim" />}
-        <button onClick={() => setOpen(false)} title="닫기 (Esc)" className="shrink-0 rounded p-1 text-fg-dim hover:bg-raised hover:text-fg">
+        <button onClick={() => setOpen(false)} title={msg.search.findInFiles.close} className="shrink-0 rounded p-1 text-fg-dim hover:bg-raised hover:text-fg">
           <X size={14} />
         </button>
       </div>
@@ -112,15 +114,18 @@ export function SearchPanel({ projectId }: { projectId: string }) {
           <div className="px-3 py-3 text-[12px] text-danger">{error}</div>
         ) : !result ? (
           <div className="px-3 py-3 text-[12px] text-fg-dim">
-            검색어를 입력하고 Enter를 누르세요.
+            {msg.search.findInFiles.idleHint}
           </div>
         ) : result.files.length === 0 ? (
-          <div className="px-3 py-3 text-[12px] text-fg-dim">일치하는 결과가 없습니다.</div>
+          <div className="px-3 py-3 text-[12px] text-fg-dim">{msg.search.findInFiles.noResults}</div>
         ) : (
           <>
             <div className="px-3 py-1 text-[11px] text-fg-dim">
-              {result.totalMatches}개 매치 · {result.files.length}개 파일
-              {result.truncated && " · 500+개 — 조건을 좁히세요"}
+              {msg.search.findInFiles.summary(
+                result.totalMatches,
+                result.files.length,
+                result.truncated,
+              )}
             </div>
             {result.files.map((f) => (
               <FileGroup

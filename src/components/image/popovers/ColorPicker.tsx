@@ -21,6 +21,7 @@
 import { useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { Pipette } from "lucide-react";
 
+import { useMessages } from "../../../i18n/ui-language";
 import type { Paint } from "../../../lib/annotate/types";
 import {
   hexToRgb,
@@ -80,6 +81,7 @@ export function ColorPicker({
   onSaveStyle,
   styles,
 }: ColorPickerProps) {
+  const msg = useMessages();
   const recent = useImageEditorUi((s) => s.recentColors);
   const { start: startEyedropper } = useEyedropper();
 
@@ -138,7 +140,7 @@ export function ColorPicker({
     <div aria-label={title} className="flex w-full flex-col gap-2">
       {/* SV — 가로 채도, 세로 명도. 흰→색상 위에 투명→검정을 겹치면 캔버스와 같은 그림이다. */}
       <DragArea
-        label="채도·명도"
+        label={msg.imageInspector.colorPicker.saturationValue}
         className="relative h-[120px] w-full rounded"
         style={{
           background: `linear-gradient(to top, #000, rgba(0,0,0,0)), linear-gradient(to right, #FFF, ${hueHex})`,
@@ -154,7 +156,7 @@ export function ColorPicker({
       <div className="flex items-center gap-2">
         <button
           type="button"
-          title="스포이드"
+          title={msg.imageInspector.colorPicker.eyedropper}
           onClick={() => startEyedropper((picked) => putHex(picked))}
           className="shrink-0 rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
         >
@@ -163,7 +165,7 @@ export function ColorPicker({
 
         <div className="flex min-w-0 flex-1 flex-col gap-1.5">
           <DragArea
-            label="색상"
+            label={msg.imageInspector.colorPicker.hue}
             className="relative h-2.5 rounded-full"
             style={{
               background:
@@ -178,7 +180,7 @@ export function ColorPicker({
           </DragArea>
 
           <DragArea
-            label="불투명도"
+            label={msg.imageInspector.vocab.opacity}
             className="relative h-2.5 rounded-full"
             style={{
               background: `linear-gradient(to right, ${rgba(rgb, 0)}, ${rgba(rgb, 1)}), ${CHECKER}`,
@@ -286,7 +288,7 @@ export function ColorPicker({
         })()}
 
       <NumField
-        label="불투명도"
+        label={msg.imageInspector.vocab.opacity}
         value={Math.round(alpha * 100)}
         unit="%"
         min={0}
@@ -294,9 +296,19 @@ export function ColorPicker({
         onCommit={(v) => put(hex, hsv, v / 100, false)}
       />
 
-      <Swatches label="최근 사용" colors={recent} current={hex} onPick={putHex} />
+      <Swatches
+        label={msg.imageInspector.colorPicker.recent}
+        colors={recent}
+        current={hex}
+        onPick={putHex}
+      />
       {docColors && (
-        <Swatches label="문서 색상" colors={docColors} current={hex} onPick={putHex} />
+        <Swatches
+          label={msg.imageInspector.colorPicker.documentColors}
+          colors={docColors}
+          current={hex}
+          onPick={putHex}
+        />
       )}
 
       {onSaveStyle && (
@@ -305,7 +317,7 @@ export function ColorPicker({
           onClick={onSaveStyle}
           className="h-6 rounded border border-edge text-[11px] text-fg-muted hover:bg-raised hover:text-fg"
         >
-          색 스타일로 저장
+          {msg.imageInspector.colorPicker.saveAsStyle}
         </button>
       )}
 

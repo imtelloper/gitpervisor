@@ -1,9 +1,12 @@
+import { currentMessages } from "../i18n/ui-language";
+
 export function relativeTime(timestamp: number, now = Date.now()): string {
   const diff = now - timestamp;
-  if (diff < 10_000) return "방금 전";
-  if (diff < 60_000) return `${Math.floor(diff / 1000)}초 전`;
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}분 전`;
-  return `${Math.floor(diff / 3_600_000)}시간 전`;
+  const t = currentMessages().lib.relativeTime;
+  if (diff < 10_000) return t.justNow;
+  if (diff < 60_000) return t.secondsAgo(Math.floor(diff / 1000));
+  if (diff < 3_600_000) return t.minutesAgo(Math.floor(diff / 60_000));
+  return t.hoursAgo(Math.floor(diff / 3_600_000));
 }
 
 export function splitPath(path: string): { dir: string; base: string } {

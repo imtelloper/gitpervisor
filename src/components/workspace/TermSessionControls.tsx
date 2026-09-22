@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { copyText } from "../../lib/clipboard";
 import { relativeTime } from "../../lib/format";
 import { TERM_SCHEMES } from "../../lib/term-color-schemes";
@@ -31,6 +32,7 @@ import { useUi } from "../../stores/ui";
  * 메뉴는 버튼 rect 기준 fixed + 백드롭 — 부모가 overflow-hidden이라 안에 그리면 잘린다.
  */
 export function ThemeButton({ termId }: { termId: string }) {
+  const msg = useMessages();
   const current = useTermThemes((s) => s.byTerminal[termId]);
   const setScheme = useTermThemes((s) => s.setScheme);
   const btnRef = useRef<HTMLButtonElement>(null);
@@ -79,7 +81,7 @@ export function ThemeButton({ termId }: { termId: string }) {
       <button
         ref={btnRef}
         onClick={() => (menu ? close() : open())}
-        title="이 터미널의 컬러 테마 — 세션이 닫힐 때까지 유지됩니다"
+        title={msg.git.termSession.themeTitle}
         className={`shrink-0 rounded p-0.5 ${
           menu || current
             ? "bg-raised text-accent"
@@ -105,7 +107,7 @@ export function ThemeButton({ termId }: { termId: string }) {
               className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-fg-muted hover:bg-raised hover:text-fg"
             >
               <Palette size={12} className="shrink-0 text-fg-dim" />
-              <span className="min-w-0 flex-1 truncate">앱 테마 (기본)</span>
+              <span className="min-w-0 flex-1 truncate">{msg.git.termSession.appThemeDefault}</span>
               {!current && <Check size={12} className="shrink-0 text-accent" />}
             </button>
             <div className="my-1 border-t border-edge/60" />
@@ -148,13 +150,14 @@ export function ThemeButton({ termId }: { termId: string }) {
  * 단위로 기억된다(promptHistory 스토어 — 세션이 닫힐 때 함께 정리).
  */
 export function PromptLogButton({ termId }: { termId: string }) {
+  const msg = useMessages();
   const count = usePromptHistory((s) => s.byTerminal[termId]?.length ?? 0);
   const open = usePromptHistory((s) => !!s.openPanels[termId]);
   const togglePanel = usePromptHistory((s) => s.togglePanel);
   return (
     <button
       onClick={() => togglePanel(termId)}
-      title={`입력한 프롬프트 ${count}개 — 클릭하면 우측 목록을 ${open ? "닫습니다" : "엽니다"}`}
+      title={msg.git.termSession.promptLogTitle(count, open)}
       className={`flex shrink-0 items-center gap-0.5 rounded p-0.5 ${
         open ? "bg-raised text-accent" : "text-fg-dim hover:bg-raised hover:text-fg"
       }`}
@@ -173,11 +176,12 @@ export function PromptLogButton({ termId }: { termId: string }) {
  * 세션 단위가 아니라 **프로젝트 단위** 기능이라 termId가 아닌 projectId를 받는다.
  */
 export function GitDialogButton({ projectId }: { projectId: string }) {
+  const msg = useMessages();
   const open = useUi((s) => s.openGitDialog);
   return (
     <button
       onClick={() => open(projectId)}
-      title="Git 변경·로그 보기"
+      title={msg.git.termSession.gitDialogTitle}
       className="flex shrink-0 items-center rounded p-0.5 text-fg-dim hover:bg-raised hover:text-fg"
     >
       <GitBranch size={12} />
@@ -191,11 +195,12 @@ export function GitDialogButton({ projectId }: { projectId: string }) {
  * GitDialogButton과 같은 이유로 termId가 아닌 projectId를 받는다(프로젝트 단위 기능).
  */
 export function FileTreeButton({ projectId }: { projectId: string }) {
+  const msg = useMessages();
   const open = useUi((s) => s.openFileTreeDialog);
   return (
     <button
       onClick={() => open(projectId)}
-      title="파일 트리 보기"
+      title={msg.git.termSession.fileTreeTitle}
       className="flex shrink-0 items-center rounded p-0.5 text-fg-dim hover:bg-raised hover:text-fg"
     >
       <FolderTree size={12} />
@@ -213,6 +218,7 @@ export function FileTreeButton({ projectId }: { projectId: string }) {
  * className은 두는 자리의 버튼 크기에 맞추는 용도 — 생략하면 타이틀바 치수다.
  */
 export function PromptHistoryButton({ className }: { className?: string }) {
+  const msg = useMessages();
   const terminals = useTerminals((s) => s.terminals);
   const openPanels = usePromptHistory((s) => s.openPanels);
   const setPanels = usePromptHistory((s) => s.setPanels);
@@ -230,8 +236,8 @@ export function PromptHistoryButton({ className }: { className?: string }) {
         // 사용처가 셋(메인 타이틀바·별도 모아보기 창 헤더·플로팅 창 타이틀바)이고 대상 집합은
         // 언제나 "그 창의 스토어에 있는 pane"이라, 세 곳에서 모두 참인 문장으로 쓴다.
         allOpen
-          ? "전체 프롬프트 목록 접기 — 이 창의 모든 터미널 우측의 입력 목록을 닫습니다"
-          : "전체 프롬프트 목록 펼치기 — 이 창의 모든 터미널 우측에 입력 목록을 엽니다"
+          ? msg.git.termSession.collapseAllPromptListsTitle
+          : msg.git.termSession.expandAllPromptListsTitle
       }
       className={`flex items-center gap-1 rounded ${
         allOpen
@@ -239,7 +245,7 @@ export function PromptHistoryButton({ className }: { className?: string }) {
           : "text-fg-muted hover:bg-raised hover:text-fg"
       } ${className ?? "mr-2.5 px-1.5 py-0.5 text-[10px]"}`}
     >
-      <History size={11} /> 히스토리
+      <History size={11} /> {msg.git.termSession.history}
     </button>
   );
 }
@@ -254,6 +260,7 @@ export function PromptHistoryButton({ className }: { className?: string }) {
  * 모른 채 Enter를 대신 눌러 주는 셈이라, 실행은 사용자가 붙여넣고 직접 결정하게 둔다.
  */
 export function PromptSidePanel({ termId }: { termId: string }) {
+  const msg = useMessages();
   const entries = usePromptHistory((s) => s.byTerminal[termId]);
   const clear = usePromptHistory((s) => s.clear);
   const togglePanel = usePromptHistory((s) => s.togglePanel);
@@ -263,7 +270,7 @@ export function PromptSidePanel({ termId }: { termId: string }) {
     void copyText(text).then((ok) =>
       pushToast(
         ok ? "success" : "error",
-        ok ? "프롬프트를 복사했습니다" : "복사에 실패했습니다",
+        ok ? msg.git.termSession.promptCopied : msg.git.termSession.copyFailed,
       ),
     );
   };
@@ -302,11 +309,13 @@ export function PromptSidePanel({ termId }: { termId: string }) {
     <div className="flex w-[15%] min-w-[110px] shrink-0 flex-col border-l border-edge bg-panel text-[11px]">
       <div className="flex shrink-0 items-center gap-1 border-b border-edge px-2 py-1 text-[10px] text-fg-dim">
         <History size={11} className="shrink-0 text-accent" />
-        <span className="min-w-0 flex-1 truncate">프롬프트 {list.length}</span>
+        <span className="min-w-0 flex-1 truncate">
+          {msg.git.termSession.promptCount(list.length)}
+        </span>
         {list.length > 0 && (
           <button
             onClick={() => clear(termId)}
-            title="이 터미널의 기록 지우기"
+            title={msg.git.termSession.clearHistoryTitle}
             className="shrink-0 rounded p-0.5 hover:bg-raised hover:text-danger"
           >
             <Trash2 size={11} />
@@ -314,7 +323,7 @@ export function PromptSidePanel({ termId }: { termId: string }) {
         )}
         <button
           onClick={() => togglePanel(termId)}
-          title="프롬프트 목록 닫기"
+          title={msg.git.paneMenu.closePromptList}
           className="shrink-0 rounded p-0.5 hover:bg-raised hover:text-fg"
         >
           <X size={11} />
@@ -343,7 +352,7 @@ export function PromptSidePanel({ termId }: { termId: string }) {
           ))}
         {list.length === 0 && (
           <div className="px-2 py-3 text-[10px] leading-4 text-fg-dim">
-            아직 입력한 프롬프트가 없습니다. Enter로 확정한 줄이 여기 쌓입니다.
+            {msg.git.termSession.noPrompts}
           </div>
         )}
       </div>
@@ -365,6 +374,7 @@ type Hover = { id: string; rect: DOMRect };
  * 진행 중 턴을 끊는다(terminal-engine이 Escape를 가로채지 않는다).
  */
 function PromptHoverCard({ entry, rect }: { entry: PromptEntry; rect: DOMRect }) {
+  const msg = useMessages();
   const lines = entry.text.split("\n");
   // 항목 왼쪽 여유에서 좌우 8px씩 뺀 폭. 하한 240이 발동하면 카드가 항목을 덮지만 hit-test에서
   // 빠져 있어 무해하고, 덮은 그 항목의 전문을 카드가 보여주므로 정보 손실도 없다.
@@ -388,19 +398,19 @@ function PromptHoverCard({ entry, rect }: { entry: PromptEntry; rect: DOMRect })
       <div className="flex shrink-0 items-center gap-2 border-b border-edge px-2.5 py-1 text-[10px] text-fg-muted">
         <History size={11} className="shrink-0 text-accent" />
         <span>{new Date(entry.at).toLocaleTimeString()}</span>
-        <span>
-          · {lines.length}줄 · {entry.text.length}자
-        </span>
+        <span>{msg.git.termSession.cardStats(lines.length, entry.text.length)}</span>
       </div>
       <pre className="min-h-0 flex-1 overflow-hidden whitespace-pre-wrap break-words px-2.5 py-2 font-mono text-[12px] leading-5 text-fg">
         {lines.slice(0, CARD_MAX_LINES).join("\n")}
       </pre>
       {lines.length > CARD_MAX_LINES && (
         <div className="shrink-0 border-t border-edge px-2.5 py-1 text-[10px] text-fg-muted">
-          … 외 {lines.length - CARD_MAX_LINES}줄
+          {msg.git.termSession.cardMoreLines(lines.length - CARD_MAX_LINES)}
         </div>
       )}
-      <div className="shrink-0 px-2.5 pb-1.5 text-[10px] text-fg-muted">클릭하면 복사</div>
+      <div className="shrink-0 px-2.5 pb-1.5 text-[10px] text-fg-muted">
+        {msg.git.termSession.clickToCopy}
+      </div>
     </div>
   );
 }

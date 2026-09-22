@@ -28,6 +28,8 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
+import type { Messages } from "../../../i18n/messages";
+import { useMessages } from "../../../i18n/ui-language";
 import type { DefaultPaint, PathNode, PathVert, Rect } from "../../../lib/annotate/types";
 import type { BoolOp } from "../../../lib/annotate/vector/boolean";
 import { isRegularPolygon, polygonSubPath } from "../../../lib/annotate/vector/convert";
@@ -65,35 +67,52 @@ export interface PathInspectorSectionProps {
   canOp: Record<PathOp, boolean>;
 }
 
-const BOOLS: readonly { op: BoolOp; short: string; title: string; Icon: LucideIcon }[] = [
-  { op: "union", short: "합", title: "합집합", Icon: SquaresUnite },
-  { op: "subtract", short: "차", title: "차집합", Icon: SquaresSubtract },
-  { op: "intersect", short: "교", title: "교집합", Icon: SquaresIntersect },
-  { op: "exclude", short: "제외", title: "제외", Icon: SquaresExclude },
-];
+function boolsFor(
+  msg: Messages,
+): readonly { op: BoolOp; short: string; title: string; Icon: LucideIcon }[] {
+  const t = msg.imageInspector.boolean;
+  return [
+    { op: "union", short: t.unionShort, title: t.union, Icon: SquaresUnite },
+    { op: "subtract", short: t.subtractShort, title: t.subtract, Icon: SquaresSubtract },
+    { op: "intersect", short: t.intersectShort, title: t.intersect, Icon: SquaresIntersect },
+    { op: "exclude", short: t.excludeShort, title: t.exclude, Icon: SquaresExclude },
+  ];
+}
 
-const ALIGNS = [
-  { value: "inside", label: "안쪽" },
-  { value: "center", label: "가운데" },
-  { value: "outside", label: "바깥" },
-] as const;
+function strokeAlignsFor(msg: Messages) {
+  const t = msg.imageInspector.path;
+  return [
+    { value: "inside", label: t.alignInside },
+    { value: "center", label: t.alignCenter },
+    { value: "outside", label: t.alignOutside },
+  ] as const;
+}
 
-const CAPS = [
-  { value: "butt", label: "평평" },
-  { value: "round", label: "둥근" },
-  { value: "square", label: "사각" },
-] as const;
+function strokeCapsFor(msg: Messages) {
+  const t = msg.imageInspector.path;
+  return [
+    { value: "butt", label: t.capButt },
+    { value: "round", label: t.capRound },
+    { value: "square", label: t.capSquare },
+  ] as const;
+}
 
-const JOINS = [
-  { value: "miter", label: "마이터" },
-  { value: "round", label: "둥근" },
-  { value: "bevel", label: "베벨" },
-] as const;
+function strokeJoinsFor(msg: Messages) {
+  const t = msg.imageInspector.path;
+  return [
+    { value: "miter", label: t.joinMiter },
+    { value: "round", label: t.joinRound },
+    { value: "bevel", label: t.joinBevel },
+  ] as const;
+}
 
-const HEADS = [
-  { value: "none", label: "없음" },
-  { value: "arrow", label: "화살표" },
-] as const;
+function arrowHeadsFor(msg: Messages) {
+  const t = msg.imageInspector.path;
+  return [
+    { value: "none", label: t.headNone },
+    { value: "arrow", label: t.headArrow },
+  ] as const;
+}
 
 export function PathInspectorSection({
   node,
@@ -102,6 +121,11 @@ export function PathInspectorSection({
   onOp,
   canOp,
 }: PathInspectorSectionProps) {
+  const msg = useMessages();
+  const aligns = strokeAlignsFor(msg);
+  const caps = strokeCapsFor(msg);
+  const joins = strokeJoinsFor(msg);
+  const heads = arrowHeadsFor(msg);
   // 마지막 라이브 값. 손을 뗄 때 이 값으로 커밋해 라이브 칸을 봉인한다(머리말 참조).
   const live = useRef<{ patch: PathPatch; label: string } | null>(null);
   const beginLive = (patch: PathPatch, label: string) => {
@@ -131,29 +155,31 @@ export function PathInspectorSection({
     <div>
       {/* 시안 ③ `열린 패스` — 이 한 줄이 없으면 `패스 분리`·정렬 옵션이 왜 어떤 패스에서만
           뜻이 있는지 화면에 단서가 없다(열린 서브패스는 안쪽/바깥 정렬이 성립하지 않는다). */}
-      <div className="mb-1 text-[11px] text-fg-dim">{open ? "열린 패스" : "닫힌 패스"}</div>
+      <div className="mb-1 text-[11px] text-fg-dim">
+        {open ? msg.imageInspector.vocab.openPath : msg.imageInspector.vocab.closedPath}
+      </div>
 
-      <Section title="선">
+      <Section title={msg.imageInspector.vocab.stroke}>
         <NumField
-          label="두께"
+          label={msg.imageInspector.vocab.strokeWidth}
           value={node.strokeWidth}
           unit="px"
           min={0}
-          {...num((v) => ({ strokeWidth: v }), (v) => `두께 ${v}`)}
+          {...num((v) => ({ strokeWidth: v }), (v) => msg.imageInspector.history.strokeWidth(v))}
         />
-        <Row label="정렬">
+        <Row label={msg.imageInspector.path.alignRow}>
           <Select
-            label="선 정렬"
+            label={msg.imageInspector.path.alignSelect}
             value={node.strokeAlign}
-            options={[...ALIGNS]}
+            options={[...aligns]}
             onChange={(v) =>
-              onCommit({ strokeAlign: v }, `선 정렬 ${labelOf(ALIGNS, v)}`)
+              onCommit({ strokeAlign: v }, msg.imageInspector.history.strokeAlign(labelOf(aligns, v)))
             }
           />
         </Row>
         <div className="grid grid-cols-2 gap-x-2">
           <NumField
-            label="대시"
+            label={msg.imageInspector.path.dash}
             value={dashLen}
             unit="px"
             min={0}
@@ -161,87 +187,100 @@ export function PathInspectorSection({
               // 길이 0 은 실선이다. `[0, g]` 를 그대로 두면 butt 캡에서 **아무것도 안 그려지고**
               // 값만 남아, 선이 사라진 이유가 화면 어디에도 없다.
               (v) => ({ dash: v > 0 ? [v, dashGap] : null }),
-              (v) => `대시 ${v}`,
+              (v) => msg.imageInspector.history.dash(v),
             )}
           />
           <NumField
-            label="간격"
+            label={msg.imageInspector.vocab.gap}
             value={dashGap}
             unit="px"
             min={0}
             {...num(
               (v) => ({ dash: dashLen > 0 ? [dashLen, v] : null }),
-              (v) => `대시 간격 ${v}`,
+              (v) => msg.imageInspector.history.dashGap(v),
             )}
           />
         </div>
-        <Row label="캡">
+        <Row label={msg.imageInspector.path.capRow}>
           <Select
-            label="선 끝"
+            label={msg.imageInspector.path.capSelect}
             value={node.cap}
-            options={[...CAPS]}
-            onChange={(v) => onCommit({ cap: v }, `선 끝 ${labelOf(CAPS, v)}`)}
-          />
-        </Row>
-        <Row label="조인">
-          <Select
-            label="선 꺾임"
-            value={node.join}
-            options={[...JOINS]}
-            onChange={(v) => onCommit({ join: v }, `선 꺾임 ${labelOf(JOINS, v)}`)}
-          />
-        </Row>
-        <NumField
-          label="마이터"
-          value={node.miterLimit}
-          min={1}
-          {...num((v) => ({ miterLimit: v }), (v) => `마이터 ${v}`)}
-        />
-        <Row label="시작">
-          <Select
-            label="시작 화살촉"
-            value={node.heads.start}
-            options={[...HEADS]}
+            options={[...caps]}
             onChange={(v) =>
-              onCommit({ heads: { ...node.heads, start: v } }, `시작 ${labelOf(HEADS, v)}`)
+              onCommit({ cap: v }, msg.imageInspector.history.strokeCap(labelOf(caps, v)))
             }
           />
         </Row>
-        <Row label="끝">
+        <Row label={msg.imageInspector.path.joinRow}>
           <Select
-            label="끝 화살촉"
-            value={node.heads.end}
-            options={[...HEADS]}
+            label={msg.imageInspector.path.joinSelect}
+            value={node.join}
+            options={[...joins]}
             onChange={(v) =>
-              onCommit({ heads: { ...node.heads, end: v } }, `끝 ${labelOf(HEADS, v)}`)
+              onCommit({ join: v }, msg.imageInspector.history.strokeJoin(labelOf(joins, v)))
+            }
+          />
+        </Row>
+        <NumField
+          label={msg.imageInspector.path.miter}
+          value={node.miterLimit}
+          min={1}
+          {...num((v) => ({ miterLimit: v }), (v) => msg.imageInspector.history.miter(v))}
+        />
+        <Row label={msg.imageInspector.path.startRow}>
+          <Select
+            label={msg.imageInspector.path.startSelect}
+            value={node.heads.start}
+            options={[...heads]}
+            onChange={(v) =>
+              onCommit(
+                { heads: { ...node.heads, start: v } },
+                msg.imageInspector.history.startHead(labelOf(heads, v)),
+              )
+            }
+          />
+        </Row>
+        <Row label={msg.imageInspector.path.endRow}>
+          <Select
+            label={msg.imageInspector.path.endSelect}
+            value={node.heads.end}
+            options={[...heads]}
+            onChange={(v) =>
+              onCommit(
+                { heads: { ...node.heads, end: v } },
+                msg.imageInspector.history.endHead(labelOf(heads, v)),
+              )
             }
           />
         </Row>
       </Section>
 
-      <Section title="채우기">
+      <Section title={msg.imageInspector.vocab.fill}>
         <div className="flex flex-wrap items-center gap-1">
           <Btn
             // 이미 비어 있으면 잠근다 — 눌러도 문서가 그대로면서 히스토리 칸만 하나 늘어난다.
             disabled={node.fills.length === 0}
-            title="채우기 겹을 전부 지운다"
-            onClick={() => onCommit({ fills: [] }, "채우기 없음")}
+            title={msg.imageInspector.path.clearFillsTitle}
+            onClick={() => onCommit({ fills: [] }, msg.imageInspector.path.noFill)}
           >
-            채우기 없음
+            {msg.imageInspector.path.noFill}
           </Btn>
         </div>
         <Toggle
           checked={node.fillRule === "evenodd"}
-          label="짝수-홀수"
+          label={msg.imageInspector.path.evenOdd}
           onChange={(v) =>
-            onCommit({ fillRule: v ? "evenodd" : "nonzero" }, v ? "짝수-홀수" : "논제로")
+            onCommit(
+              { fillRule: v ? "evenodd" : "nonzero" },
+              v ? msg.imageInspector.path.evenOdd : msg.imageInspector.path.nonzero,
+            )
           }
         />
       </Section>
 
-      <Section title="불리언 연산">
+      <Section title={msg.imageInspector.path.booleanTitle}>
         <div className="flex flex-wrap items-center gap-1">
-          {BOOLS.map((b) => (
+          {boolsFor(msg).map((b) => (
             <Btn
               key={b.op}
               title={b.title}
@@ -255,13 +294,13 @@ export function PathInspectorSection({
         </div>
         <div className="mt-1 flex flex-wrap items-center gap-1">
           <Btn disabled={!canOp.flatten} onClick={() => onOp("flatten")}>
-            평탄화
+            {msg.imageInspector.path.flatten}
           </Btn>
           <Btn disabled={!canOp.outline} onClick={() => onOp("outline")}>
-            윤곽선화
+            {msg.imageInspector.path.outline}
           </Btn>
           <Btn disabled={!canOp.separate} onClick={() => onOp("separate")}>
-            패스 분리
+            {msg.imageInspector.path.separate}
           </Btn>
         </div>
       </Section>
@@ -269,13 +308,13 @@ export function PathInspectorSection({
       {/* 정다각형일 때만 — 임의 패스에 `변 수` 를 보이면 그 값을 넣는 순간 사용자가 그린 모양이
           말없이 정N각형으로 바뀐다. 시안에 없는 필드다(INDEX §10.3 열린 질문). */}
       {sides !== null && (
-        <Section title="모양">
+        <Section title={msg.imageInspector.path.shapeTitle}>
           <NumField
-            label="변 수"
+            label={msg.imageInspector.path.sides}
             value={sides}
             min={3}
             max={12}
-            {...num((v) => sidesPatch(node, v), (v) => `변 수 ${v}`)}
+            {...num((v) => sidesPatch(node, v), (v) => msg.imageInspector.history.sides(v))}
           />
         </Section>
       )}

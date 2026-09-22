@@ -5,6 +5,8 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { PDFDocumentProxy } from "pdfjs-dist/legacy/build/pdf.mjs";
 
+import { useMessages } from "../../i18n/ui-language";
+
 export interface PdfOutlineProps {
   doc: PDFDocumentProxy;
   onDest(dest: string | unknown[]): void;
@@ -17,6 +19,7 @@ type OutlineNode = Pick<RawNode, "title" | "bold" | "italic" | "dest" | "url" | 
 };
 
 export default function PdfOutline({ doc, onDest, onUrl }: PdfOutlineProps) {
+  const msg = useMessages();
   // undefined = 받는 중, null = 없음(목차 없음·실패)
   const [outline, setOutline] = useState<OutlineNode[] | null | undefined>(undefined);
 
@@ -40,7 +43,7 @@ export default function PdfOutline({ doc, onDest, onUrl }: PdfOutlineProps) {
   if (!outline || outline.length === 0) {
     return (
       <div data-pdf-outline-empty className="p-3 text-xs text-fg-dim">
-        목차가 없습니다
+        {msg.pdf.outline.empty}
       </div>
     );
   }
@@ -64,6 +67,7 @@ function OutlineList({ items, ...cb }: Callbacks & { items: OutlineNode[] }) {
 }
 
 function OutlineItem({ item, onDest, onUrl }: Callbacks & { item: OutlineNode }) {
+  const msg = useMessages();
   // count < 0 이면 작성자가 접어 둔 항목
   const [open, setOpen] = useState(item.count === undefined || item.count >= 0);
   const hasKids = item.items.length > 0;
@@ -74,7 +78,7 @@ function OutlineItem({ item, onDest, onUrl }: Callbacks & { item: OutlineNode })
           <button
             data-pdf-outline-toggle
             aria-expanded={open}
-            aria-label={open ? "접기" : "펼치기"}
+            aria-label={open ? msg.pdf.outline.collapse : msg.pdf.outline.expand}
             onClick={() => setOpen(!open)}
             className="shrink-0 text-fg-dim hover:text-fg"
           >

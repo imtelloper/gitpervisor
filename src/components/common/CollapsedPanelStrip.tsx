@@ -1,5 +1,7 @@
 import { ChevronsRight } from "lucide-react";
 
+import { useMessages } from "../../i18n/ui-language";
+
 /** 접힌 사이드 패널 자리에 남는 세로 스트립 — 클릭하면 다시 펼친다. */
 export function CollapsedPanelStrip({
   title,
@@ -11,10 +13,11 @@ export function CollapsedPanelStrip({
   badge?: string;
   onExpand: () => void;
 }) {
+  const msg = useMessages();
   return (
     <button
       onClick={onExpand}
-      title={`${title} 펼치기`}
+      title={msg.shell.collapsedPanelStrip.expandTitle(title)}
       className="flex h-full w-7 shrink-0 flex-col items-center gap-2 border-r border-edge bg-panel py-2 hover:bg-raised"
     >
       <ChevronsRight size={14} className="shrink-0 text-fg-dim" />

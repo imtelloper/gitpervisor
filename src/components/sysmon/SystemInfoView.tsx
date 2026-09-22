@@ -3,47 +3,49 @@ import { useState } from "react";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
+import type { Messages } from "../../i18n/messages";
+import { useMessages } from "../../i18n/ui-language";
 import { copyText } from "../../lib/clipboard";
 import { formatBytes } from "../../lib/format";
 import { errorMessage, ipc } from "../../lib/ipc";
 import type { SystemInfo } from "../../lib/ipc";
 import { useUi } from "../../stores/ui";
 
-/** 못 구한 항목의 표시값 — 카드 전체를 죽이지 않고 이 셀만 비운다(설계 §1). */
-const NONE = "정보 없음";
+// 못 구한 항목은 null 로 둔다 — 카드 전체를 죽이지 않고 이 셀만 비운다(설계 §1). 표시값
+// ("정보 없음")은 그릴 때 현재 언어로 채운다(`systemInfo.none`).
 
-/** 값 정규화 — null/빈 문자열은 전부 "정보 없음"으로 수렴시킨다. */
-function txt(v: string | number | null | undefined): string {
-  if (v == null) return NONE;
+/** 값 정규화 — null/빈 문자열은 전부 null(정보 없음)로 수렴시킨다. */
+function txt(v: string | number | null | undefined): string | null {
+  if (v == null) return null;
   const s = String(v).trim();
-  return s === "" ? NONE : s;
+  return s === "" ? null : s;
 }
 
 /** MHz → "3.60 GHz"(소수 2자리, 설계 §3.3). */
-function ghz(mhz: number | null | undefined): string {
-  return mhz == null || mhz <= 0 ? NONE : `${(mhz / 1000).toFixed(2)} GHz`;
+function ghz(mhz: number | null | undefined): string | null {
+  return mhz == null || mhz <= 0 ? null : `${(mhz / 1000).toFixed(2)} GHz`;
 }
 
 /** 캐시 크기는 KB로 온다 — 바이트 표기는 기존 formatBytes로 통일. */
-function kb(v: number | null | undefined): string {
-  return v == null || v <= 0 ? NONE : formatBytes(v * 1024);
+function kb(v: number | null | undefined): string | null {
+  return v == null || v <= 0 ? null : formatBytes(v * 1024);
 }
 
-function bytes(v: number | null | undefined): string {
-  return v == null || v <= 0 ? NONE : formatBytes(v);
+function bytes(v: number | null | undefined): string | null {
+  return v == null || v <= 0 ? null : formatBytes(v);
 }
 
 /** 가동 시간 — "3d 4h 12m"(설계 §3.3). */
-function uptime(secs: number): string {
-  if (secs <= 0) return NONE;
+function uptime(secs: number): string | null {
+  if (secs <= 0) return null;
   const d = Math.floor(secs / 86400);
   const h = Math.floor((secs % 86400) / 3600);
   const m = Math.floor((secs % 3600) / 60);
   return [d ? `${d}d` : "", h ? `${h}h` : "", `${m}m`].filter(Boolean).join(" ");
 }
 
-function dateTime(ms: number): string {
-  if (!ms) return NONE;
+function dateTime(ms: number): string | null {
+  if (!ms) return null;
   const d = new Date(ms);
   const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(
@@ -51,27 +53,28 @@ function dateTime(ms: number): string {
   )}:${p(d.getMinutes())}`;
 }
 
+// 모르는 종류는 `systemInfo.volumeKindUnknown`.
 const VOLUME_KIND: Record<string, string> = {
   ssd: "SSD",
   hdd: "HDD",
-  unknown: "종류 불명",
 };
 
 interface Card {
   title: string;
-  rows: [string, string][];
+  rows: [string, string | null][];
 }
 
 /** 응답 → 카드 7개. 표시와 "요약 복사"가 같은 모델을 쓰므로 둘이 어긋날 수 없다. */
-function toCards(d: SystemInfo): Card[] {
+function toCards(d: SystemInfo, msg: Messages): Card[] {
   const { os, cpu, memory, gpus, board, volumes, app } = d;
+  const t = msg.sysmon.systemInfo;
 
-  const memRows: [string, string][] = [
-    ["총 용량", bytes(memory.totalBytes)],
-    ["스왑", bytes(memory.swapTotalBytes)],
+  const memRows: [string, string | null][] = [
+    [t.memoryTotal, bytes(memory.totalBytes)],
+    [t.memorySwap, bytes(memory.swapTotalBytes)],
   ];
   if (memory.modules.length === 0) {
-    memRows.push(["메모리 모듈", NONE]);
+    memRows.push([t.memoryModules, null]);
   } else {
     for (const m of memory.modules) {
       const detail = [
@@ -82,39 +85,39 @@ function toCards(d: SystemInfo): Card[] {
       ]
         .filter(Boolean)
         .join(" · ");
-      memRows.push([txt(m.slot) === NONE ? "모듈" : m.slot, detail]);
+      memRows.push([txt(m.slot) == null ? t.memoryModule : m.slot, detail]);
     }
   }
 
-  const gpuRows: [string, string][] = [];
+  const gpuRows: [string, string | null][] = [];
   if (gpus.length === 0) {
-    gpuRows.push(["GPU", NONE]);
+    gpuRows.push(["GPU", null]);
   } else {
     gpus.forEach((g, i) => {
       // GPU가 하나뿐이면 접두사 없이 — 내장+외장인 노트북에서만 번호를 붙인다.
       const p = gpus.length > 1 ? `GPU ${i + 1} ` : "";
-      gpuRows.push([`${p}이름`, txt(g.name)]);
-      gpuRows.push([`${p}드라이버`, txt(g.driverVersion)]);
-      gpuRows.push([`${p}드라이버 날짜`, txt(g.driverDate)]);
+      gpuRows.push([t.gpuName(p), txt(g.name)]);
+      gpuRows.push([t.gpuDriver(p), txt(g.driverVersion)]);
+      gpuRows.push([t.gpuDriverDate(p), txt(g.driverDate)]);
       gpuRows.push([`${p}VRAM`, bytes(g.vramBytes)]);
       gpuRows.push([
-        `${p}종류`,
-        g.isDiscrete == null ? NONE : g.isDiscrete ? "외장" : "내장",
+        t.gpuKind(p),
+        g.isDiscrete == null ? null : g.isDiscrete ? t.gpuDiscrete : t.gpuIntegrated,
       ]);
     });
   }
 
-  const volRows: [string, string][] =
+  const volRows: [string, string | null][] =
     volumes.length === 0
-      ? [["볼륨", NONE]]
+      ? [[t.volume, null]]
       : volumes.map((v) => [
-          txt(v.mount),
+          txt(v.mount) ?? t.none,
           [
-            txt(v.name) === NONE ? null : v.name,
-            VOLUME_KIND[v.kind] ?? VOLUME_KIND.unknown,
-            txt(v.fs) === NONE ? null : v.fs,
-            `${formatBytes(v.totalBytes)} (여유 ${formatBytes(v.availableBytes)})`,
-            v.removable ? "이동식" : null,
+            txt(v.name) == null ? null : v.name,
+            VOLUME_KIND[v.kind] ?? t.volumeKindUnknown,
+            txt(v.fs) == null ? null : v.fs,
+            t.volumeSize(formatBytes(v.totalBytes), formatBytes(v.availableBytes)),
+            v.removable ? t.volumeRemovable : null,
           ]
             .filter(Boolean)
             .join(" · "),
@@ -124,75 +127,77 @@ function toCards(d: SystemInfo): Card[] {
     {
       title: "OS",
       rows: [
-        ["이름", txt(os.name)],
-        ["버전", txt(os.version)],
-        ["빌드", txt(os.build)],
-        ["커널", txt(os.kernel)],
-        ["아키텍처", txt(os.arch)],
-        ["호스트 이름", txt(os.hostName)],
-        ["사용자", txt(os.userName)],
-        ["설치 날짜", txt(os.installDate)],
-        ["부팅 시각", dateTime(os.bootTimeMs)],
-        ["가동 시간", uptime(os.uptimeSecs)],
+        [t.osName, txt(os.name)],
+        [t.osVersion, txt(os.version)],
+        [t.osBuild, txt(os.build)],
+        [t.osKernel, txt(os.kernel)],
+        [t.osArch, txt(os.arch)],
+        [t.osHostName, txt(os.hostName)],
+        [t.osUser, txt(os.userName)],
+        [t.osInstallDate, txt(os.installDate)],
+        [t.osBootTime, dateTime(os.bootTimeMs)],
+        [t.osUptime, uptime(os.uptimeSecs)],
       ],
     },
     {
       title: "CPU",
       rows: [
-        ["모델", txt(cpu.brand)],
-        ["제조사", txt(cpu.vendor)],
-        ["물리 코어", txt(cpu.physicalCores)],
-        ["논리 프로세서", txt(cpu.logicalCores)],
-        ["기본 클럭", ghz(cpu.baseMhz)],
-        ["최대 클럭", ghz(cpu.maxMhz)],
-        ["현재 클럭(평균)", ghz(cpu.currentMhzAvg)],
-        ["L1 캐시", kb(cpu.cacheL1Kb)],
-        ["L2 캐시", kb(cpu.cacheL2Kb)],
-        ["L3 캐시", kb(cpu.cacheL3Kb)],
+        [t.cpuModel, txt(cpu.brand)],
+        [t.cpuVendor, txt(cpu.vendor)],
+        [t.cpuPhysicalCores, txt(cpu.physicalCores)],
+        [t.cpuLogicalCores, txt(cpu.logicalCores)],
+        [t.cpuBaseClock, ghz(cpu.baseMhz)],
+        [t.cpuMaxClock, ghz(cpu.maxMhz)],
+        [t.cpuCurrentClock, ghz(cpu.currentMhzAvg)],
+        [t.cpuCacheL1, kb(cpu.cacheL1Kb)],
+        [t.cpuCacheL2, kb(cpu.cacheL2Kb)],
+        [t.cpuCacheL3, kb(cpu.cacheL3Kb)],
       ],
     },
-    { title: "메모리", rows: memRows },
+    { title: t.cardMemory, rows: memRows },
     { title: "GPU", rows: gpuRows },
     {
-      title: "메인보드 · BIOS",
+      title: t.cardBoard,
       rows: board
         ? [
-            ["제조사", txt(board.manufacturer)],
-            ["모델", txt(board.product)],
-            ["BIOS 제조사", txt(board.biosVendor)],
-            ["BIOS 버전", txt(board.biosVersion)],
-            ["BIOS 날짜", txt(board.biosDate)],
+            [t.boardVendor, txt(board.manufacturer)],
+            [t.boardModel, txt(board.product)],
+            [t.biosVendor, txt(board.biosVendor)],
+            [t.biosVersion, txt(board.biosVersion)],
+            [t.biosDate, txt(board.biosDate)],
           ]
-        : [["메인보드", NONE]],
+        : [[t.board, null]],
     },
-    { title: "저장장치", rows: volRows },
+    { title: t.cardStorage, rows: volRows },
     {
-      title: "앱",
+      title: t.cardApp,
       rows: [
-        ["버전", txt(app.version)],
+        [t.appVersion, txt(app.version)],
         ["Tauri", txt(app.tauriVersion)],
         ["WebView", txt(app.webviewVersion)],
-        ["빌드", app.buildProfile === "debug" ? "개발(debug)" : "릴리스"],
+        [t.appBuild, app.buildProfile === "debug" ? t.appBuildDebug : t.appBuildRelease],
       ],
     },
   ];
 }
 
 /** 지원 문의용 텍스트 요약 — 화면과 같은 카드 모델을 그대로 직렬화한다. */
-function toSummary(cards: Card[], d: SystemInfo): string {
+function toSummary(cards: Card[], d: SystemInfo, msg: Messages): string {
+  const t = msg.sysmon.systemInfo;
   const body = cards
     .map(
       (c) =>
-        `[${c.title}]\n${c.rows.map(([k, v]) => `  ${k}: ${v}`).join("\n")}`,
+        `[${c.title}]\n${c.rows.map(([k, v]) => `  ${k}: ${v ?? t.none}`).join("\n")}`,
     )
     .join("\n\n");
   const notes = d.notes.length
-    ? `\n\n[수집 참고]\n${d.notes.map((n) => `  - ${n}`).join("\n")}`
+    ? `\n\n${t.summaryNotesHeader}\n${d.notes.map((n) => `  - ${n}`).join("\n")}`
     : "";
   return `${body}${notes}\n`;
 }
 
 function InfoCard({ card, noteTip }: { card: Card; noteTip?: string }) {
+  const msg = useMessages();
   return (
     <section className="overflow-hidden rounded border border-edge bg-panel">
       <h3 className="border-b border-edge px-3 py-1.5 text-[11px] font-medium text-fg">
@@ -205,11 +210,11 @@ function InfoCard({ card, noteTip }: { card: Card; noteTip?: string }) {
               <td className="w-[38%] px-3 py-1 align-top text-fg-dim">{k}</td>
               <td
                 className={`px-3 py-1 break-words ${
-                  v === NONE ? "text-fg-dim" : "text-fg-muted"
+                  v == null ? "text-fg-dim" : "text-fg-muted"
                 }`}
-                title={v === NONE ? noteTip : undefined}
+                title={v == null ? noteTip : undefined}
               >
-                {v}
+                {v ?? msg.sysmon.systemInfo.none}
               </td>
             </tr>
           ))}
@@ -225,6 +230,7 @@ function InfoCard({ card, noteTip }: { card: Card; noteTip?: string }) {
  * force 수집 결과를 같은 캐시에 직접 써 넣어 재요청 없이 갱신한다.
  */
 export function SystemInfoView() {
+  const msg = useMessages();
   const qc = useQueryClient();
   const pushToast = useUi((s) => s.pushToast);
   const [refreshing, setRefreshing] = useState(false);
@@ -238,7 +244,7 @@ export function SystemInfoView() {
     retry: false,
   });
 
-  const cards = data ? toCards(data) : [];
+  const cards = data ? toCards(data, msg) : [];
   const noteTip = data && data.notes.length ? data.notes.join("\n") : undefined;
 
   const refresh = () => {
@@ -252,10 +258,10 @@ export function SystemInfoView() {
 
   const copySummary = () => {
     if (!data) return;
-    void copyText(toSummary(cards, data)).then((ok) =>
+    void copyText(toSummary(cards, data, msg)).then((ok) =>
       pushToast(
         ok ? "success" : "error",
-        ok ? "시스템 정보를 복사했습니다" : "복사에 실패했습니다",
+        ok ? msg.sysmon.systemInfo.copied : msg.sysmon.systemInfo.copyFailed,
       ),
     );
   };
@@ -265,9 +271,11 @@ export function SystemInfoView() {
       <div className="flex shrink-0 items-center gap-2 border-b border-edge bg-panel px-3 py-2">
         <span className="min-w-0 truncate text-[11px] text-fg-dim">
           {data
-            ? `수집 ${dateTime(data.collectedAtMs)}`
+            ? msg.sysmon.systemInfo.collectedAt(
+                dateTime(data.collectedAtMs) ?? msg.sysmon.systemInfo.none,
+              )
             : isLoading
-              ? "수집 중…"
+              ? msg.sysmon.systemInfo.collecting
               : ""}
         </span>
         <div className="flex-1" />
@@ -275,38 +283,38 @@ export function SystemInfoView() {
           type="button"
           onClick={refresh}
           disabled={refreshing}
-          title="다시 수집합니다 (수 초 걸릴 수 있습니다)"
+          title={msg.sysmon.systemInfo.refreshTitle}
           className={`flex items-center gap-1 rounded border border-edge px-2 py-1 text-[11px] text-fg-muted transition-colors hover:bg-raised hover:text-fg ${
             refreshing ? "cursor-default opacity-60" : ""
           }`}
         >
           <RefreshCw size={12} className={refreshing ? "animate-spin" : ""} />
-          새로고침
+          {msg.sysmon.systemInfo.refresh}
         </button>
         <button
           type="button"
           onClick={copySummary}
           disabled={!data}
-          title="모든 항목을 텍스트로 복사합니다 (지원 문의용)"
+          title={msg.sysmon.systemInfo.copySummaryTitle}
           className={`flex items-center gap-1 rounded border border-edge px-2 py-1 text-[11px] text-fg-muted transition-colors hover:bg-raised hover:text-fg ${
             data ? "" : "cursor-default opacity-60"
           }`}
         >
           <Copy size={12} />
-          요약 복사
+          {msg.sysmon.systemInfo.copySummary}
         </button>
       </div>
 
       <div className="min-h-0 flex-1 select-text space-y-2.5 overflow-y-auto p-3">
         {isLoading ? (
           <div className="px-4 py-10 text-center text-xs text-fg-dim">
-            시스템 정보를 수집하는 중…
+            {msg.sysmon.systemInfo.collectingLong}
           </div>
         ) : error ? (
           <div className="px-4 py-10 text-center text-xs text-danger/80">
-            수집 실패: {errorMessage(error)}
+            {msg.sysmon.systemInfo.collectFailed(errorMessage(error))}
             <div className="mt-1 text-[10px] text-fg-dim">
-              "새로고침"으로 다시 시도할 수 있습니다
+              {msg.sysmon.systemInfo.retryHint}
             </div>
           </div>
         ) : (

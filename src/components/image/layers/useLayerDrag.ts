@@ -30,6 +30,7 @@ import {
   type RefObject,
 } from "react";
 
+import { currentMessages } from "../../../i18n/ui-language";
 import {
   dropTarget,
   type DropTarget,
@@ -98,7 +99,11 @@ export function useLayerDrag(
 
     const rowName = (id: ObjId): string => {
       const { getRows: rows, getObjects: objects } = env.current;
-      return rows().find((r) => r.id === id)?.name ?? nodeOf(objects(), id)?.name ?? "그룹";
+      return (
+        rows().find((r) => r.id === id)?.name ??
+        nodeOf(objects(), id)?.name ??
+        currentMessages().imagePanels.layerDrag.fallbackGroupName
+      );
     };
 
     /** 표시선·하이라이트·고스트를 지금 상태에 맞춘다. 스크롤 뒤에도 같은 좌표로 다시 부른다. */
@@ -149,11 +154,16 @@ export function useLayerDrag(
         }
       }
 
+      const t = currentMessages().imagePanels.layerDrag;
       ghostRef.current?.update({
         x: st.lastX,
         y: st.lastY,
-        label: st.ids.length > 1 ? `${st.ids.length}개 항목` : st.label,
-        dest: target ? (target.parentId ? `${rowName(target.parentId)} 안` : "최상위") : null,
+        label: st.ids.length > 1 ? t.ghostItemCount(st.ids.length) : st.label,
+        dest: target
+          ? target.parentId
+            ? t.ghostDestInside(rowName(target.parentId))
+            : t.ghostDestTopLevel
+          : null,
       });
     };
 

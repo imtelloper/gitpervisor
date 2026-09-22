@@ -1,9 +1,111 @@
 // 즐겨찾기 폴더 창.
 
 import { defineText } from "./define-text";
+import { plural } from "./format-locale";
 
-const ko = {};
+const ko = {
+  // 호버 미리보기(FolderPeek)와 폴더 창(FolderWindow)이 같은 일에 같은 문구를 쓴다.
+  copyPathDone: "경로를 복사했습니다",
+  copyFailed: "복사에 실패했습니다",
+  loading: "읽는 중…",
+  menuCopyPath: "경로 복사",
+  menuOpenDefault: "기본 앱으로 열기",
+  menuReveal: "탐색기에서 보기",
+  peek: {
+    trashed: (name: string) => `휴지통으로 보냈습니다 — ${name}`,
+    fileCount: (n: number, capped: boolean) => `${n}개${capped ? "+" : ""}`,
+    empty: "파일이 없습니다",
+    itemTitle: (name: string, isImage: boolean) =>
+      `${name}\n클릭: 경로 복사${isImage ? " · 더블클릭: 크게 보기" : ""} · 우클릭: 메뉴`,
+    trashTitle: (name: string) => `휴지통으로 보내기 — ${name}`,
+    footerHint: "클릭: 경로 복사 · 더블클릭: 이미지 크게 보기 · 우클릭: 메뉴 · 폴더 이름 클릭: 창으로 열기",
+    menuTrash: "휴지통으로 보내기",
+  },
+  window: {
+    badge: "폴더",
+    openFailedWithReason: (reason: string) => `열지 못했습니다 — ${reason}`,
+    openFailed: "열지 못했습니다",
+    revealFailed: "탐색기를 열지 못했습니다",
+    readFailedTitle: "폴더를 읽지 못했습니다",
+    noMatchTitle: "조건에 맞는 항목이 없습니다",
+    emptyTitle: "빈 폴더입니다",
+    noMatchDesc: "검색어나 '이미지만' 필터를 지우면 전체가 보입니다.",
+    emptyDesc: "이 폴더에 표시할 파일이 없습니다.",
+    modeSmall: (mod: string) => `작은 썸네일 (${mod}+1)`,
+    modeMedium: (mod: string) => `중간 썸네일 (${mod}+2)`,
+    modeLarge: (mod: string) => `큰 썸네일 (${mod}+3)`,
+    modeList: (mod: string) => `목록 (${mod}+4)`,
+    itemCount: (n: number) => `${n}개`,
+    searchPlaceholder: "이름 검색",
+    imagesOnlyTitle: "이미지만 보기",
+    sortTitle: "정렬",
+    sortNewest: "최신순",
+    sortName: "이름순",
+    sortSize: "크기순",
+    refreshTitle: "새로고침 (F5) — 창을 클릭해 돌아와도 자동으로 갱신됩니다",
+    revealFolderTitle: "탐색기에서 이 폴더 열기",
+    columnName: "이름",
+    columnSize: "크기",
+    columnModified: "수정",
+    menuPasteToTerminal: "터미널에 경로 붙여넣기",
+  },
+  lightbox: {
+    keysHint: "← → 이동 · Esc 닫기",
+    prev: "이전",
+    next: "다음",
+  },
+};
 
 export const folderText = defineText(ko, {
-  en: {},
+  en: {
+    copyPathDone: "Path copied",
+    copyFailed: "Couldn't copy",
+    loading: "Reading…",
+    menuCopyPath: "Copy path",
+    menuOpenDefault: "Open with default app",
+    menuReveal: "Show in file manager",
+    peek: {
+      trashed: (name) => `Moved to trash — ${name}`,
+      fileCount: (n, capped) => `${n}${capped ? "+" : ""} ${plural(n, "file", "files")}`,
+      empty: "No files",
+      itemTitle: (name, isImage) =>
+        `${name}\nClick: copy path${isImage ? " · Double-click: enlarge" : ""} · Right-click: menu`,
+      trashTitle: (name) => `Move to trash — ${name}`,
+      footerHint: "Click: copy path · Double-click: enlarge image · Right-click: menu · Click folder name: open in window",
+      menuTrash: "Move to trash",
+    },
+    window: {
+      badge: "Folder",
+      openFailedWithReason: (reason) => `Couldn't open — ${reason}`,
+      openFailed: "Couldn't open",
+      revealFailed: "Couldn't open the file manager",
+      readFailedTitle: "Couldn't read the folder",
+      noMatchTitle: "No matching items",
+      emptyTitle: "Empty folder",
+      noMatchDesc: "Clear the search or the 'Images only' filter to see everything.",
+      emptyDesc: "This folder has no files to show.",
+      modeSmall: (mod) => `Small thumbnails (${mod}+1)`,
+      modeMedium: (mod) => `Medium thumbnails (${mod}+2)`,
+      modeLarge: (mod) => `Large thumbnails (${mod}+3)`,
+      modeList: (mod) => `List (${mod}+4)`,
+      itemCount: (n) => `${n} ${plural(n, "item", "items")}`,
+      searchPlaceholder: "Search names",
+      imagesOnlyTitle: "Images only",
+      sortTitle: "Sort",
+      sortNewest: "Newest",
+      sortName: "Name",
+      sortSize: "Size",
+      refreshTitle: "Refresh (F5) — also refreshes when you click back into the window",
+      revealFolderTitle: "Open this folder in the file manager",
+      columnName: "Name",
+      columnSize: "Size",
+      columnModified: "Modified",
+      menuPasteToTerminal: "Paste path into terminal",
+    },
+    lightbox: {
+      keysHint: "← → to navigate · Esc to close",
+      prev: "Previous",
+      next: "Next",
+    },
+  },
 });

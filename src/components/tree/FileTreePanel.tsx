@@ -29,6 +29,7 @@ import {
 
 import { useQueryClient } from "@tanstack/react-query";
 
+import { currentMessages, useMessages } from "../../i18n/ui-language";
 import { copyWithToast } from "../../lib/clipboard";
 import { fileIcon, folderIcon } from "../../lib/file-icon";
 import {
@@ -280,6 +281,7 @@ function DirChildren({
   path: string;
   depth: number;
 }) {
+  const msg = useMessages();
   const { data, isLoading, error } = useDir(projectId, path);
   const openMenu = useContext(TreeMenuCtx);
   const pad = { paddingLeft: depth * INDENT + 24 };
@@ -358,7 +360,7 @@ function DirChildren({
         data-tree-isdir="1"
         className="py-0.5 text-xs text-fg-dim"
       >
-        불러오지 못함
+        {msg.tree.dir.loadFailed}
       </div>
     );
   if (!data || data.length === 0)
@@ -370,7 +372,7 @@ function DirChildren({
         data-tree-isdir="1"
         className="py-0.5 text-xs text-fg-dim"
       >
-        비어 있음
+        {msg.tree.dir.empty}
       </div>
     );
 
@@ -422,9 +424,10 @@ const DROP_HL = ["ring-1", "ring-inset", "ring-accent", "bg-accent/15"];
 /** 폴더/파일 이름 검증 — 빈 이름·경로 구분자·`..` 거부. 통과면 null. */
 function validateName(v: string): string | null {
   const t = v.trim();
-  if (!t) return "이름을 입력하세요";
-  if (/[\\/]/.test(t)) return "이름에 경로 구분자를 쓸 수 없습니다";
-  if (t === "." || t === ".." || t.includes("..")) return "잘못된 이름입니다";
+  const m = currentMessages().tree.nameValidation;
+  if (!t) return m.required;
+  if (/[\\/]/.test(t)) return m.hasSeparator;
+  if (t === "." || t === ".." || t.includes("..")) return m.invalid;
   return null;
 }
 
@@ -452,6 +455,7 @@ export function FileTreePanel({
   /** modal에서만 그리는 닫기(X) 버튼 핸들러. */
   onClose?: () => void;
 }) {
+  const msg = useMessages();
   const modal = variant === "modal";
   // 훅은 variant와 무관하게 **항상** 호출한다 — 분기로 건너뛰면 같은 컴포넌트의 훅 수가
   // variant에 따라 달라져 React가 깨진다. modal에서는 반환값만 쓰지 않는다.
@@ -601,7 +605,7 @@ export function FileTreePanel({
       if (isRunnable(name)) {
         void ipc
           .runExecutable(projectId, path)
-          .then(() => pushToast("success", `${name} 실행됨`))
+          .then(() => pushToast("success", currentMessages().tree.toast.executed(name)))
           .catch((err) => pushToast("error", errorMessage(err)));
         return;
       }
@@ -685,12 +689,12 @@ export function FileTreePanel({
       if (destDir && !(ts.expanded[projectId] ?? []).includes(destDir))
         ts.toggle(projectId, destDir);
       invalidateAfterMove(qc);
-      pushToast("success", `${ok}개 이동됨 → ${destDir ? toOsPath(destDir) : "루트"}`);
+      pushToast("success", msg.tree.toast.moved(ok, destDir ? toOsPath(destDir) : msg.tree.moveDestRoot));
     }
     if (errors.length)
       pushToast(
         "error",
-        `이동 실패 ${errors.length}개 — ${errors[0]}${errors.length > 1 ? " 외" : ""}`,
+        msg.tree.toast.moveFailed(errors.length, errors[0], errors.length > 1),
       );
   }
 
@@ -763,7 +767,7 @@ export function FileTreePanel({
         y: ev.clientY,
         label:
           st.paths.length > 1
-            ? `${st.paths.length}개 항목`
+            ? msg.tree.dragItemCount(st.paths.length)
             : (st.paths[0] ?? st.path).split("/").pop() ?? "",
         dest: destDir === null ? null : destDir ? toOsPath(destDir) : "",
       });
@@ -857,10 +861,10 @@ export function FileTreePanel({
     const baseDir = m.isDir ? m.path : parentDir(m.path);
     setMenu(null);
     askPrompt({
-      title: "새 폴더",
-      label: baseDir ? `${toOsPath(baseDir)} 안에 만듭니다` : "프로젝트 루트에 만듭니다",
-      placeholder: "폴더 이름",
-      confirmLabel: "만들기",
+      title: msg.tree.menu.newFolder,
+      label: baseDir ? msg.tree.dialog.createIn(toOsPath(baseDir)) : msg.tree.dialog.createInRoot,
+      placeholder: msg.tree.dialog.folderNamePlaceholder,
+      confirmLabel: msg.tree.dialog.create,
       validate: validateName,
       onConfirm: (name) => createDir.mutate(joinPath(baseDir, name.trim())),
     });
@@ -872,10 +876,10 @@ export function FileTreePanel({
     const baseDir = m.isDir ? m.path : parentDir(m.path);
     setMenu(null);
     askPrompt({
-      title: "새 파일",
-      label: baseDir ? `${toOsPath(baseDir)} 안에 만듭니다` : "프로젝트 루트에 만듭니다",
-      placeholder: "파일 이름 (예: main.py)",
-      confirmLabel: "만들기",
+      title: msg.tree.menu.newFile,
+      label: baseDir ? msg.tree.dialog.createIn(toOsPath(baseDir)) : msg.tree.dialog.createInRoot,
+      placeholder: msg.tree.dialog.fileNamePlaceholderExample,
+      confirmLabel: msg.tree.dialog.create,
       validate: validateName,
       onConfirm: (name) => {
         const rel = joinPath(baseDir, name.trim());
@@ -890,10 +894,10 @@ export function FileTreePanel({
   function removeEntry(m: TreeMenu) {
     setMenu(null);
     askConfirm({
-      title: `${m.isDir ? "폴더" : "파일"} 삭제`,
-      message: `'${m.name}'을(를) 삭제할까요? 되돌릴 수 없습니다.`,
+      title: msg.tree.dialog.deleteTitle(m.isDir),
+      message: msg.tree.dialog.deleteMessage(m.name),
       detail: absOf(m.path),
-      confirmLabel: "삭제",
+      confirmLabel: msg.tree.menu.delete,
       danger: true,
       onConfirm: () => deletePath.mutate(m.path),
     });
@@ -904,11 +908,11 @@ export function FileTreePanel({
   function renameEntry(m: TreeMenu) {
     setMenu(null);
     askPrompt({
-      title: `${m.isDir ? "폴더" : "파일"} 이름 바꾸기`,
+      title: msg.tree.dialog.renameTitle(m.isDir),
       label: toOsPath(m.path),
-      placeholder: m.isDir ? "폴더 이름" : "파일 이름",
+      placeholder: m.isDir ? msg.tree.dialog.folderNamePlaceholder : msg.tree.dialog.fileNamePlaceholder,
       defaultValue: m.name,
-      confirmLabel: "바꾸기",
+      confirmLabel: msg.tree.dialog.renameConfirm,
       validate: validateName,
       onConfirm: (v) => {
         const newName = v.trim();
@@ -951,14 +955,15 @@ export function FileTreePanel({
       { relPath: target, base64, overwrite },
       {
         onSuccess: () =>
-          pushToast("success", `변환됨 — ${target.split("/").pop()}${note}`),
+          pushToast("success", currentMessages().tree.toast.converted(target.split("/").pop() ?? "", note)),
         onError: (e) => {
           if (isIpcError(e) && e.code === "ALREADY_EXISTS") {
+            const d = currentMessages().tree.dialog;
             askConfirm({
-              title: "덮어쓰기",
-              message: `'${target.split("/").pop()}' 파일이 이미 있습니다. 덮어쓸까요?`,
+              title: d.overwriteTitle,
+              message: d.overwriteMessage(target.split("/").pop() ?? ""),
               detail: absOf(target),
-              confirmLabel: "덮어쓰기",
+              confirmLabel: d.overwriteTitle,
               danger: true,
               onConfirm: () => saveConverted(target, base64, note, true),
             });
@@ -975,13 +980,13 @@ export function FileTreePanel({
     const { mime, base64 } = await ipc.readFileBase64(projectId, relPath);
     const image = await loadImage(`data:${mime};base64,${base64}`);
     if (!image.naturalWidth || !image.naturalHeight) {
-      throw new Error("이미지 크기를 확인할 수 없습니다");
+      throw new Error(msg.tree.convert.imageSizeUnknown);
     }
     const c = document.createElement("canvas");
     c.width = image.naturalWidth;
     c.height = image.naturalHeight;
     const ctx = c.getContext("2d");
-    if (!ctx) throw new Error("캔버스 컨텍스트를 얻지 못했습니다");
+    if (!ctx) throw new Error(msg.tree.convert.canvasContextFailed);
     if (fmt === "jpeg") {
       ctx.fillStyle = "#ffffff";
       ctx.fillRect(0, 0, c.width, c.height);
@@ -995,7 +1000,7 @@ export function FileTreePanel({
     const dot = baseName.lastIndexOf(".");
     const stem = dot > 0 ? baseName.slice(0, dot) : baseName;
     // 애니메이션 gif 는 캔버스가 첫 프레임만 래스터화하므로 사용자에게 알린다.
-    const note = /\.gif$/i.test(relPath) ? " (첫 프레임)" : "";
+    const note = /\.gif$/i.test(relPath) ? msg.tree.convert.gifFirstFrameNote : "";
     return {
       target: `${dir}${stem}.${extOf(fmt)}`,
       base64: bytesToBase64(bytes),
@@ -1076,17 +1081,15 @@ export function FileTreePanel({
       }
     }
     if (ok) invalidateImageWrites();
-    const dupNote = dup ? `, 이름 충돌 ${dup}개 건너뜀` : "";
-    const tail = fail ? `, 실패 ${fail}` : "";
     if (conflicts.length) {
       pushToast(
         "info",
-        `변환 ${ok}개 완료 · 기존 파일 ${conflicts.length}개 보류${dupNote}${tail}`,
+        msg.tree.toast.batchConvertedWithConflicts(ok, conflicts.length, dup, fail),
       );
       askConfirm({
-        title: "덮어쓰기",
-        message: `이미 있는 파일 ${conflicts.length}개를 모두 덮어쓸까요?`,
-        confirmLabel: "모두 덮어쓰기",
+        title: msg.tree.dialog.overwriteTitle,
+        message: msg.tree.dialog.batchOverwriteMessage(conflicts.length),
+        confirmLabel: msg.tree.dialog.overwriteAll,
         danger: true,
         onConfirm: () => {
           void (async () => {
@@ -1100,12 +1103,12 @@ export function FileTreePanel({
               }
             }
             if (ok2) invalidateImageWrites();
-            pushToast("success", `덮어쓰기 ${ok2}개 완료`);
+            pushToast("success", currentMessages().tree.toast.batchOverwritten(ok2));
           })();
         },
       });
     } else {
-      pushToast(fail ? "error" : "success", `변환 ${ok}개 완료${dupNote}${tail}`);
+      pushToast(fail ? "error" : "success", msg.tree.toast.batchConverted(ok, dup, fail));
     }
   }
 
@@ -1159,7 +1162,7 @@ export function FileTreePanel({
         )}
         <div className="flex-1" />
         <button
-          title="새 파일 (루트)"
+          title={msg.tree.header.newFileRootTitle}
           onClick={() =>
             newFile({ x: 0, y: 0, name: "", path: "", isDir: true })
           }
@@ -1168,7 +1171,7 @@ export function FileTreePanel({
           <FilePlus size={14} />
         </button>
         <button
-          title="새 폴더 (루트)"
+          title={msg.tree.header.newFolderRootTitle}
           onClick={() =>
             newFolder({ x: 0, y: 0, name: "", path: "", isDir: true })
           }
@@ -1179,7 +1182,7 @@ export function FileTreePanel({
         {/* 모달에는 접을 패널이 없다 — 그 자리에 닫기(X)를 둔다. */}
         {modal ? (
           <button
-            title="닫기"
+            title={msg.tree.header.close}
             onClick={onClose}
             className="rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
           >
@@ -1187,7 +1190,7 @@ export function FileTreePanel({
           </button>
         ) : (
           <button
-            title="패널 접기"
+            title={msg.tree.header.collapsePanel}
             onClick={toggleCollapsed}
             className="rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
           >
@@ -1250,12 +1253,12 @@ export function FileTreePanel({
             <>
               <MenuItem
                 icon={FilePlus}
-                label="새 파일"
+                label={msg.tree.menu.newFile}
                 onClick={() => newFile(menu)}
               />
               <MenuItem
                 icon={FolderPlus}
-                label="새 폴더"
+                label={msg.tree.menu.newFolder}
                 onClick={() => newFolder(menu)}
               />
             </>
@@ -1267,7 +1270,7 @@ export function FileTreePanel({
               {menuIsRunnable && (
                 <MenuItem
                   icon={Play}
-                  label="실행하기"
+                  label={msg.tree.menu.run}
                   onClick={() => {
                     // 더블클릭 실행과 동일 경로 — 토스트 처리까지 onDouble이 담당한다.
                     onDouble(menu.path, menu.name);
@@ -1277,7 +1280,7 @@ export function FileTreePanel({
               )}
               <MenuItem
                 icon={ExternalLink}
-                label="새 창으로 열기"
+                label={msg.tree.menu.openInNewWindow}
                 onClick={() => {
                   // 이 트리가 보고 있는 저장소 id를 넘긴다 — 임베디드 저장소 파일이 바깥 레포
                   // 기준으로 해석되지 않게(이미지 편집과 같은 이유).
@@ -1289,13 +1292,13 @@ export function FileTreePanel({
               {showBatch && (
                 <>
                   <div className="px-3 py-1 text-[11px] text-fg-dim">
-                    선택한 이미지 {selImages.length}개
+                    {msg.tree.menu.selectedImages(selImages.length)}
                   </div>
                   {FORMATS.map((f) => (
                     <MenuItem
                       key={`batch-${f.id}`}
                       icon={ImageDown}
-                      label={`${f.label}(으)로 일괄 변환`}
+                      label={msg.tree.menu.batchConvertTo(f.label)}
                       onClick={() => void convertBatch(selImages, f.id)}
                     />
                   ))}
@@ -1306,7 +1309,7 @@ export function FileTreePanel({
                 <>
                   <MenuItem
                     icon={Globe}
-                    label="브라우저로 열기"
+                    label={msg.tree.menu.openInBrowser}
                     onClick={() => openHtmlInBrowser(menu)}
                   />
                   <div className="my-1 border-t border-edge/60" />
@@ -1316,7 +1319,7 @@ export function FileTreePanel({
                 <>
                   <MenuItem
                     icon={Pencil}
-                    label="이미지 편집"
+                    label={msg.tree.menu.editImage}
                     onClick={() => {
                       // 더블클릭과 **같은 함수·같은 크기**로 별도 창을 연다 — 여기만 모달로
                       // 두면 같은 파일이 진입 경로에 따라 다른 UI로 갈린다. 저장소 id를 함께
@@ -1333,7 +1336,7 @@ export function FileTreePanel({
                     <MenuItem
                       key={f.id}
                       icon={ImageDown}
-                      label={`${f.label}(으)로 변환`}
+                      label={msg.tree.menu.convertTo(f.label)}
                       onClick={() => void convert(menu, f.id)}
                     />
                   ))}
@@ -1344,7 +1347,7 @@ export function FileTreePanel({
                 <>
                   <MenuItem
                     icon={ImageIcon}
-                    label="프로젝트 로고로 지정"
+                    label={msg.tree.menu.setAsLogo}
                     onClick={() => {
                       // menu.path는 outer 레포 기준 상대경로 — 임베디드 저장소 파일도 같은 기준이라
                       // 패널 prop인 projectId와 그대로 맞는다.
@@ -1357,40 +1360,40 @@ export function FileTreePanel({
               )}
               <MenuItem
                 icon={FilePlus}
-                label="새 파일"
+                label={msg.tree.menu.newFile}
                 onClick={() => newFile(menu)}
               />
               <MenuItem
                 icon={FolderPlus}
-                label="새 폴더"
+                label={msg.tree.menu.newFolder}
                 onClick={() => newFolder(menu)}
               />
               <MenuItem
                 icon={PencilLine}
-                label="이름 바꾸기"
+                label={msg.tree.menu.rename}
                 onClick={() => renameEntry(menu)}
               />
               <MenuItem
                 icon={Trash2}
-                label="삭제"
+                label={msg.tree.menu.delete}
                 danger
                 onClick={() => removeEntry(menu)}
               />
               <div className="my-1 border-t border-edge/60" />
               <MenuItem
                 icon={Copy}
-                label="경로 복사"
-                onClick={() => copy(absOf(menu.path), "경로를 복사했습니다")}
+                label={msg.tree.menu.copyPath}
+                onClick={() => copy(absOf(menu.path), msg.tree.toast.copyPathDone)}
               />
               <MenuItem
                 icon={Link}
-                label="상대 경로 복사"
-                onClick={() => copy(toOsPath(menu.path), "상대 경로를 복사했습니다")}
+                label={msg.tree.menu.copyRelPath}
+                onClick={() => copy(toOsPath(menu.path), msg.tree.toast.copyRelPathDone)}
               />
               <MenuItem
                 icon={Type}
-                label="이름 복사"
-                onClick={() => copy(menu.name, "파일 이름을 복사했습니다")}
+                label={msg.tree.menu.copyName}
+                onClick={() => copy(menu.name, msg.tree.toast.copyNameDone)}
               />
             </>
           )}

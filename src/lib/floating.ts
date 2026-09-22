@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 
+import { currentMessages } from "../i18n/ui-language";
 import { isPdf } from "./language-map";
 
 /**
@@ -205,7 +206,8 @@ export function openFolderWindow(path: string): void {
  */
 export function openReportWindow(): void {
   const docs = readDocs();
-  docs["report"] = { projectId: "", path: "작업 리포트", report: true };
+  const title = currentMessages().lib.reportWindowTitle;
+  docs["report"] = { projectId: "", path: title, report: true };
   const keys = Object.keys(docs);
   const kept =
     keys.length > DOC_MAX
@@ -220,7 +222,7 @@ export function openReportWindow(): void {
   // Rust 가 420..3000 으로 클램프한다.
   void invoke("open_doc_window", {
     docId: "report",
-    title: "작업 리포트",
+    title,
     origin: window.location.origin,
     size: [1240, 820],
   }).catch((e) => {

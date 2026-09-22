@@ -1,9 +1,10 @@
 import { X } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { ipc } from "../../lib/ipc";
 
-const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /**
  * 즐겨찾기 폴더 이미지 라이트박스 — 원본을 `fav_read` 로 읽어 크게 보인다. 키보드(← → Esc)는
@@ -25,6 +26,7 @@ export function Lightbox({
   onClose: () => void;
   onStep: (d: number) => void;
 }) {
+  const msg = useMessages();
   const [src, setSrc] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -35,7 +37,7 @@ export function Lightbox({
     void ipc
       .favRead(path)
       .then((b) => alive && setSrc(`data:${b.mime};base64,${b.base64}`))
-      .catch((e) => alive && setErr(msg(e)));
+      .catch((e) => alive && setErr(errText(e)));
     return () => {
       alive = false;
     };
@@ -52,7 +54,7 @@ export function Lightbox({
         <span className="shrink-0 text-fg-dim">
           {index + 1} / {total}
         </span>
-        <span className="ml-auto shrink-0 text-fg-dim">← → 이동 · Esc 닫기</span>
+        <span className="ml-auto shrink-0 text-fg-dim">{msg.folder.lightbox.keysHint}</span>
         <button onClick={onClose} className="shrink-0 rounded p-1 hover:bg-raised hover:text-fg">
           <X size={13} />
         </button>
@@ -67,7 +69,7 @@ export function Lightbox({
           // 끝에서는 멈춘다(순환 없음) — 태스크 56의 뷰어 규약과 같다.
           <img src={src} alt={name} className="max-h-full max-w-full object-contain" />
         ) : (
-          <div className="text-xs text-fg-dim">읽는 중…</div>
+          <div className="text-xs text-fg-dim">{msg.folder.loading}</div>
         )}
       </div>
       <div
@@ -79,14 +81,14 @@ export function Lightbox({
           onClick={() => onStep(-1)}
           className="rounded px-3 py-1 text-xs hover:bg-raised disabled:opacity-30"
         >
-          이전
+          {msg.folder.lightbox.prev}
         </button>
         <button
           disabled={index === total - 1}
           onClick={() => onStep(1)}
           className="rounded px-3 py-1 text-xs hover:bg-raised disabled:opacity-30"
         >
-          다음
+          {msg.folder.lightbox.next}
         </button>
       </div>
     </div>

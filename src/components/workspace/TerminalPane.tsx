@@ -14,6 +14,8 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import type { Messages } from "../../i18n/messages";
+import { useMessages } from "../../i18n/ui-language";
 import { isMac } from "../../lib/platform";
 import {
   attachTerminal,
@@ -54,6 +56,7 @@ export function TerminalPane({
   /** 우상단 hover 오버레이의 내용(세션 컨트롤 + PaneControls) — 렌더 위치는 아래 주석 참고. */
   controls?: React.ReactNode;
 }) {
+  const msg = useMessages();
   const ref = useRef<HTMLDivElement>(null);
   const status = useTerminals((s) => s.paneStatus[paneId]) ?? "live";
   const maximized = useTerminals(
@@ -126,16 +129,16 @@ export function TerminalPane({
       {takenByWindow && (
         <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 bg-base/90 text-xs text-fg-muted">
           <LayoutGrid size={18} className="text-accent" />
-          <span>모아보기 창에서 표시 중</span>
+          <span>{msg.git.terminalPane.shownInAggregateWindow}</span>
           <span className="text-[11px] text-fg-dim">
-            그 창을 닫으면 여기로 돌아옵니다
+            {msg.git.terminalPane.returnsWhenWindowCloses}
           </span>
         </div>
       )}
 
       {status === "exited" && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-base/70 text-sm text-fg-muted">
-          <span>프로세스가 종료되었습니다</span>
+          <span>{msg.git.terminalPane.processExited}</span>
           <button
             onClick={async () => {
               // 옛 PTY가 backend에서 완전히 닫힌 뒤 새로 연다 — term_close↔term_open 레이스 방지.
@@ -146,7 +149,7 @@ export function TerminalPane({
             }}
             className="flex items-center gap-1.5 rounded border border-edge px-3 py-1.5 text-fg-muted hover:bg-raised hover:text-fg"
           >
-            <RotateCw size={13} /> 재시작
+            <RotateCw size={13} /> {msg.git.terminalPane.restart}
           </button>
         </div>
       )}
@@ -180,6 +183,7 @@ function PaneMenu({
   y: number;
   onClose: () => void;
 }) {
+  const msg = useMessages();
   const ts = useTerminals();
   // 프롬프트 컬럼 열림 — 여기서 직접 구독해야 라벨이 상태를 따라간다(다른 창이 같은 세션을
   // 토글하면 storage 이벤트로 즉시 반영). TerminalPane의 promptOpen과는 스코프가 다르다.
@@ -226,68 +230,68 @@ function PaneMenu({
       {selection && (
         <MenuItem
           icon={<Languages size={14} />}
-          label="선택 영역 번역"
+          label={msg.git.paneMenu.translateSelection}
           onClick={run(() => openTranslate(translateRequest(selection, x, y)))}
         />
       )}
       <div className="my-1 border-t border-edge" />
       <MenuItem
         icon={<SplitSquareHorizontal size={14} />}
-        label="오른쪽으로 분할"
+        label={msg.git.paneMenu.splitRight}
         hint={`${modLabel}+Shift+D`}
         onClick={run(() => ts.splitPane(tabId, paneId, "row", false))}
       />
       <MenuItem
         icon={<SplitSquareHorizontal size={14} />}
-        label="왼쪽으로 분할"
+        label={msg.git.paneMenu.splitLeft}
         onClick={run(() => ts.splitPane(tabId, paneId, "row", true))}
       />
       <MenuItem
         icon={<SplitSquareVertical size={14} />}
-        label="아래로 분할"
+        label={msg.git.paneMenu.splitDown}
         hint={`${modLabel}+Shift+E`}
         onClick={run(() => ts.splitPane(tabId, paneId, "col", false))}
       />
       <MenuItem
         icon={<SplitSquareVertical size={14} />}
-        label="위로 분할"
+        label={msg.git.paneMenu.splitUp}
         onClick={run(() => ts.splitPane(tabId, paneId, "col", true))}
       />
       <div className="my-1 border-t border-edge" />
       <MenuItem
         icon={<LayoutGrid size={14} />}
-        label="2분할 (좌우)"
+        label={msg.git.paneMenu.grid2}
         onClick={run(() => ts.splitGrid(tabId, paneId, 2))}
       />
       <MenuItem
         icon={<LayoutGrid size={14} />}
-        label="4분할 (2×2)"
+        label={msg.git.paneMenu.grid4}
         onClick={run(() => ts.splitGrid(tabId, paneId, 4))}
       />
       <MenuItem
         icon={<LayoutGrid size={14} />}
-        label="8분할 (2×4)"
+        label={msg.git.paneMenu.grid8}
         onClick={run(() => ts.splitGrid(tabId, paneId, 8))}
       />
       <div className="my-1 border-t border-edge" />
       <MenuItem
         icon={maximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
-        label={maximized ? "패널 최대화 해제" : "패널 최대화"}
+        label={maximized ? msg.git.paneMenu.unmaximize : msg.git.paneMenu.maximize}
         onClick={run(() => ts.toggleMaximize(tabId, paneId))}
       />
       <MenuItem
         icon={<History size={14} />}
-        label={promptOpen ? "프롬프트 목록 닫기" : "프롬프트 목록 열기"}
+        label={promptOpen ? msg.git.paneMenu.closePromptList : msg.git.paneMenu.openPromptList}
         onClick={run(() => togglePanel(paneId))}
       />
       <MenuItem
         icon={<ExternalLink size={14} />}
-        label="새 창으로 분리 (Float)"
+        label={msg.git.paneMenu.popOut}
         onClick={run(() => ts.floatPane(tabId, paneId))}
       />
       <MenuItem
         icon={<X size={14} />}
-        label="패널 닫기"
+        label={msg.git.paneMenu.closePane}
         hint={`${modLabel}+Shift+W`}
         danger
         onClick={run(() => ts.closePane(tabId, paneId))}
@@ -313,12 +317,13 @@ export function TermClipboardItems({
   selection: string;
   run: (fn: () => void) => () => void;
 }) {
+  const msg = useMessages();
   return (
     <>
       {selection ? (
         <MenuItem
           icon={<Copy size={14} />}
-          label="복사"
+          label={msg.git.terminalPane.copy}
           hint={`${modLabel}+Shift+C`}
           onClick={run(() => copyTerminalText(termId, selection))}
         />
@@ -326,12 +331,12 @@ export function TermClipboardItems({
         // 죽은 [복사] 버튼을 그리지 않는다 — 눌러도 아무 일이 없으면 클립보드가 고장 난 것으로
         // 보인다. 왜 없는지를 대신 말한다.
         <div className="px-3 py-1.5 text-[11px] text-fg-dim">
-          {noSelectionHint(termId)}
+          {noSelectionHint(termId, msg)}
         </div>
       )}
       <MenuItem
         icon={<ClipboardPaste size={14} />}
-        label="붙여넣기"
+        label={msg.git.terminalPane.paste}
         hint={`${modLabel}+V`}
         onClick={run(() => void pasteIntoTerminal(termId))}
       />
@@ -347,12 +352,10 @@ export function TermClipboardItems({
  *  **복사 키까지 말한다.** 그 모드에선 선택을 만든 뒤 마우스를 움직이거나 우클릭하는 순간
  *  마우스 리포트가 선택을 지운다(terminal-engine `onSelectionChange` 주석). 스태시 덕에 우클릭
  *  메뉴도 이제 동작하지만, 손이 이미 키보드에 있으면 키 한 번이 왕복 없이 끝난다. */
-function noSelectionHint(termId: string): string {
+function noSelectionHint(termId: string, msg: Messages): string {
   const mouse = getTerminal(termId)?.term.modes.mouseTrackingMode;
-  if (!mouse || mouse === "none") return "선택한 텍스트가 없습니다";
-  return isMac
-    ? "앱이 마우스를 쓰는 중 — Option+드래그로 선택 후 ⌘C"
-    : "앱이 마우스를 쓰는 중 — Shift+드래그로 선택 후 Ctrl+Shift+C";
+  if (!mouse || mouse === "none") return msg.git.terminalPane.noSelection;
+  return isMac ? msg.git.terminalPane.mouseModeHintMac : msg.git.terminalPane.mouseModeHint;
 }
 
 /** 컨텍스트 메뉴 한 줄 — 모아보기 칩 메뉴(AggregateTerminals)도 같은 모양을 쓴다. */

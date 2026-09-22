@@ -1,6 +1,8 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useState } from "react";
 
+import { useMessages } from "../i18n/ui-language";
+
 const win = getCurrentWindow();
 
 /** 플로팅 창의 커스텀 타이틀바 — 드래그 영역 + 창 컨트롤(최소화/최대화/닫기).
@@ -8,13 +10,14 @@ const win = getCurrentWindow();
  *  actions는 창 컨트롤 왼쪽에 붙는 창 전용 버튼 자리(되돌리기 등) — 생략하면 무영향. */
 export function FloatTitleBar({
   title,
-  badge = "터미널",
+  badge,
   actions,
 }: {
   title: string;
   badge?: string;
   actions?: React.ReactNode;
 }) {
+  const msg = useMessages();
   return (
     <header
       data-tauri-drag-region
@@ -31,7 +34,7 @@ export function FloatTitleBar({
           {title}
         </span>
         <span className="rounded bg-raised px-1.5 py-0.5 text-[10px] text-fg-dim">
-          {badge}
+          {badge ?? msg.app.floatTitleBar.terminalBadge}
         </span>
       </div>
 
@@ -40,13 +43,13 @@ export function FloatTitleBar({
       {actions}
 
       <div className="flex h-full">
-        <CtlButton onClick={() => void win.minimize()} title="최소화">
+        <CtlButton onClick={() => void win.minimize()} title={msg.app.windowControls.minimize}>
           <Glyph>
             <line x1="1" y1="5.5" x2="10" y2="5.5" />
           </Glyph>
         </CtlButton>
         <MaxRestoreButton />
-        <CtlButton onClick={() => void win.close()} title="닫기" danger>
+        <CtlButton onClick={() => void win.close()} title={msg.app.windowControls.close} danger>
           <Glyph>
             <path d="M1.5 1.5 L9.5 9.5 M9.5 1.5 L1.5 9.5" />
           </Glyph>
@@ -57,6 +60,7 @@ export function FloatTitleBar({
 }
 
 function MaxRestoreButton() {
+  const msg = useMessages();
   const [maximized, setMaximized] = useState(false);
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -72,7 +76,7 @@ function MaxRestoreButton() {
   return (
     <CtlButton
       onClick={() => void win.toggleMaximize()}
-      title={maximized ? "이전 크기로" : "최대화"}
+      title={maximized ? msg.app.windowControls.restore : msg.app.windowControls.maximize}
     >
       {maximized ? (
         <Glyph>

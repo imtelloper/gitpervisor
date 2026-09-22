@@ -13,6 +13,9 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+import type { Messages } from "../../../i18n/messages";
+import { imageEditorText } from "../../../i18n/text-image-editor";
+import { useMessages } from "../../../i18n/ui-language";
 import type { HistoryEntry } from "../../../lib/annotate/history";
 import type { SnapshotInfo } from "../../../lib/annotate/persist";
 import { relativeTime } from "../../../lib/format";
@@ -25,18 +28,24 @@ const TICK_MS = 60_000;
 
 type Chip = "all" | "mine" | "snap";
 
-const CHIPS: readonly { id: Chip; label: string }[] = [
-  { id: "all", label: "전체" },
-  { id: "mine", label: "내 작업" },
-  { id: "snap", label: "스냅샷" },
-];
+function chipsFor(msg: Messages): readonly { id: Chip; label: string }[] {
+  const t = msg.imagePanels.historyPanel;
+  return [
+    { id: "all", label: t.chipAll },
+    { id: "mine", label: t.chipMine },
+    { id: "snap", label: t.chipSnapshots },
+  ];
+}
 
 /**
- * 사용자가 직접 하지 않은 커밋인가(`내 작업` 필터가 걸러낸다).
+ * 사용자가 직접 하지 않은 커밋인가(`내 작업` 필터가 걸러낸다). 라벨은 ImageEditor 가 같은 키로 만든다.
+ * 지금 UI 언어가 아니라 **모든 언어**의 라벨과 비교한다 — 이전 세션 기록은 그때 언어로 남아 있다.
  * ponytail: 문자열 접두 비교 — 자동 라벨이 셋 이상 늘면 `HistoryEntry` 에 플래그를 둔다.
  */
 function isAutoLabel(label: string): boolean {
-  return label.startsWith("스타일 갱신") || label.startsWith("컴포넌트 갱신");
+  return Object.values(imageEditorText).some(
+    (t) => label.startsWith(t.history.stylesSynced) || label.startsWith(t.history.componentsSynced),
+  );
 }
 
 function pad2(n: number): string {
@@ -44,7 +53,8 @@ function pad2(n: number): string {
 }
 
 /** 그룹 제목 — `오늘 · 15:24` / `어제 · 14:50` / `3월 4일 · 09:10`. */
-function groupTitle(at: number, now: number): string {
+function groupTitle(msg: Messages, at: number, now: number): string {
+  const text = msg.imagePanels.historyPanel;
   const d = new Date(at);
   const time = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
   const day = (t: number) => {
@@ -52,9 +62,9 @@ function groupTitle(at: number, now: number): string {
     return new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
   };
   const diffDays = Math.round((day(now) - day(at)) / 86_400_000);
-  if (diffDays === 0) return `오늘 · ${time}`;
-  if (diffDays === 1) return `어제 · ${time}`;
-  return `${d.getMonth() + 1}월 ${d.getDate()}일 · ${time}`;
+  if (diffDays === 0) return text.groupToday(time);
+  if (diffDays === 1) return text.groupYesterday(time);
+  return text.groupDate(d.getMonth() + 1, d.getDate(), time);
 }
 
 interface Item {
@@ -66,14 +76,18 @@ interface Item {
 }
 
 /** 날짜가 바뀌거나 직전 항목과 10분 넘게 벌어지면 새 그룹. 제목은 그룹의 **최신** 시각. */
-function groupItems(items: readonly Item[], now: number): { title: string; items: Item[] }[] {
+function groupItems(
+  msg: Messages,
+  items: readonly Item[],
+  now: number,
+): { title: string; items: Item[] }[] {
   const out: { title: string; items: Item[] }[] = [];
   for (const it of items) {
     const last = out[out.length - 1];
     const prev = last?.items[last.items.length - 1];
     const sameDay = prev ? new Date(prev.at).toDateString() === new Date(it.at).toDateString() : false;
     if (!last || !prev || !sameDay || prev.at - it.at > GROUP_GAP_MS) {
-      out.push({ title: groupTitle(it.at, now), items: [it] });
+      out.push({ title: groupTitle(msg, it.at, now), items: [it] });
     } else {
       last.items.push(it);
     }
@@ -102,6 +116,8 @@ export function HistoryPanel({
   onSaveSnapshot,
   onUndo,
 }: HistoryPanelProps) {
+  const msg = useMessages();
+  const t = msg.imagePanels.historyPanel;
   const [chip, setChip] = useState<Chip>("all");
   const [now, setNow] = useState(() => Date.now());
   const visible = useImageEditorUi((s) => s.leftTab === "history");
@@ -121,13 +137,13 @@ export function HistoryPanel({
       const items = snapshots
         .map((s, index): Item => ({ index, at: s.at, label: s.name, readonly: false }))
         .reverse();
-      return groupItems(items, now);
+      return groupItems(msg, items, now);
     }
     const items = entries
       .map((e, index): Item => ({ index, at: e.at, label: e.label, readonly: e.readonly }))
       .filter((it) => chip !== "mine" || !isAutoLabel(it.label));
-    return groupItems(items, now);
-  }, [chip, entries, snapshots, now]);
+    return groupItems(msg, items, now);
+  }, [msg, chip, entries, snapshots, now]);
 
   const snap = chip === "snap";
 
@@ -137,7 +153,7 @@ export function HistoryPanel({
         style={{ height: 38 }}
         className="flex shrink-0 items-center gap-1 border-b border-edge px-2"
       >
-        {CHIPS.map((c) => (
+        {chipsFor(msg).map((c) => (
           <button
             key={c.id}
             onClick={() => setChip(c.id)}
@@ -153,7 +169,7 @@ export function HistoryPanel({
       <div className="min-h-0 flex-1 overflow-y-auto">
         {groups.length === 0 && (
           <div className="px-2 py-3 text-fg-dim">
-            {snap ? "저장된 스냅샷이 없습니다" : "표시할 기록이 없습니다"}
+            {snap ? t.emptySnapshots : t.emptyEntries}
           </div>
         )}
         {groups.map((g, gi) => (
@@ -170,9 +186,7 @@ export function HistoryPanel({
                 <button
                   key={`${it.index}-${it.at}`}
                   disabled={it.readonly}
-                  title={
-                    it.readonly ? "이전 세션 기록이라 되돌릴 수 없습니다" : undefined
-                  }
+                  title={it.readonly ? t.readonlyEntryTitle : undefined}
                   onClick={() => (snap ? onLoadSnapshot(it.index) : onJump(it.index))}
                   style={{ height: 34 }}
                   className={`flex w-full items-center gap-2 px-2 text-left ${
@@ -189,12 +203,12 @@ export function HistoryPanel({
                   <span className="min-w-0 flex-1 truncate">{it.label}</span>
                   {it.readonly && (
                     <span className="shrink-0 rounded border border-edge px-1 text-[9px]">
-                      이전 세션
+                      {t.previousSessionBadge}
                     </span>
                   )}
                   <span className="shrink-0 text-fg-dim">{relativeTime(it.at, now)}</span>
                   {current && (
-                    <span className="shrink-0 rounded bg-accent/15 px-1 text-accent">현재</span>
+                    <span className="shrink-0 rounded bg-accent/15 px-1 text-accent">{t.currentBadge}</span>
                   )}
                 </button>
               );
@@ -211,13 +225,13 @@ export function HistoryPanel({
           onClick={onUndo}
           className="rounded border border-edge px-2 py-1 text-fg-muted hover:text-fg"
         >
-          되돌리기
+          {t.undo}
         </button>
         <button
           onClick={onSaveSnapshot}
           className="rounded bg-accent px-2 py-1 text-on-accent hover:bg-accent-hover"
         >
-          스냅샷 저장
+          {t.saveSnapshot}
         </button>
       </div>
     </div>

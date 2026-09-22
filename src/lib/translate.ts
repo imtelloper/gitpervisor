@@ -1,4 +1,5 @@
 // 태스크 61 — 선택 텍스트 번역. 백엔드는 59의 `lib/llm.ts chat()`만 거친다(직접 invoke 없음).
+import { currentMessages } from "../i18n/ui-language";
 import { chatWithBusyRetry, langName, type ChatMsg } from "./llm";
 import type { TranslateRequest } from "../stores/ui";
 
@@ -9,7 +10,7 @@ export const MAX_TRANSLATE_CHARS = 8000;
 export function hangulRatio(text: string): number {
   const chars = text.replace(/\s/g, "");
   if (!chars.length) return 0;
-  return (chars.match(/[가-힣]/g)?.length ?? 0) / chars.length;
+  return (chars.match(/[가-힣]/g)?.length ?? 0) / chars.length; // i18n-ok: 정규식(한글 음절 판정)
 }
 
 /** 자동 방향 — 한글이 20% 이상이면 영어로, 아니면 설정 언어(llmLanguage, 기본 ko)로. */
@@ -63,7 +64,7 @@ export async function translateStream(
       temperature: 0.1,
       signal,
       onProgress: (_phase, message) => onStatus?.(message ?? null),
-      onBusy: () => onStatus?.("다른 AI 작업이 끝나면 시작합니다…"),
+      onBusy: () => onStatus?.(currentMessages().lib.translateWaitingForOtherAiJob),
     },
   );
   onStatus?.(null);

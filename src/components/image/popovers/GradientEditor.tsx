@@ -21,6 +21,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Minus, Shuffle } from "lucide-react";
 
+import type { Messages } from "../../../i18n/messages";
+import { useMessages } from "../../../i18n/ui-language";
 import { CHROME_COLORS, type ChromePrim } from "../../../lib/annotate/chrome";
 import type { Paint, PaintStop, Rect } from "../../../lib/annotate/types";
 import { hexToRgb } from "../../../lib/color";
@@ -31,12 +33,15 @@ import { Popover } from "./Popover";
 type Gradient = Extract<Paint, { type: "linear" | "radial" | "angular" | "diamond" }>;
 type Point = { x: number; y: number };
 
-const KINDS = [
-  { value: "linear", label: "선형" },
-  { value: "radial", label: "방사" },
-  { value: "angular", label: "원뿔" },
-  { value: "diamond", label: "다이아" },
-] as const;
+function gradientKindsFor(msg: Messages) {
+  const t = msg.imageInspector.gradient;
+  return [
+    { value: "linear", label: t.kindLinear },
+    { value: "radial", label: t.kindRadial },
+    { value: "angular", label: t.kindAngular },
+    { value: "diamond", label: t.kindDiamond },
+  ] as const;
+}
 
 /** 핸들 집기 반경(css px) — pointer.ts 의 `HANDLE_GRAB_CSS` 와 같은 값으로 둔다. */
 const GRAB_CSS = 10;
@@ -65,6 +70,7 @@ export function GradientEditor({
   onExtra,
   registerHit,
 }: GradientEditorProps) {
+  const msg = useMessages();
   const [edit, setEdit] = useState<{ i: number; anchor: HTMLElement } | null>(null);
 
   // 드래그 중에는 이벤트 리스너가 항상 최신 값을 봐야 한다 — 이펙트 재등록으로 해결하면
@@ -152,7 +158,7 @@ export function GradientEditor({
   return (
     <div className="flex w-full flex-col gap-2">
       <div className="flex items-center gap-1">
-        {KINDS.map((k) => (
+        {gradientKindsFor(msg).map((k) => (
           <button
             key={k.value}
             type="button"
@@ -167,7 +173,7 @@ export function GradientEditor({
         ))}
         <button
           type="button"
-          title="스톱 순서 반전"
+          title={msg.imageInspector.gradient.reverseStops}
           onClick={() => {
             // 열려 있던 스톱 색 피커는 닫는다 — 아래 둘 다 **배열 인덱스를 옮기므로** 그대로
             // 두면 피커가 남의 스톱을 편집하게 된다(`edit.i` 는 위치일 뿐 신원이 아니다).
@@ -181,14 +187,14 @@ export function GradientEditor({
       </div>
 
       <div
-        aria-label="미리보기"
+        aria-label={msg.imageInspector.gradient.preview}
         className="h-8 rounded border border-edge"
         style={{ background: cssGradient(paint) }}
       />
 
       {/* 스톱 바 — 빈 자리를 누르면 그 위치의 색으로 스톱이 하나 생긴다(시안 ④). */}
       <div
-        aria-label="스톱"
+        aria-label={msg.imageInspector.gradient.stops}
         onPointerDown={(e) => {
           if (e.button !== 0 || e.target !== e.currentTarget) return;
           const r = e.currentTarget.getBoundingClientRect();
@@ -217,7 +223,7 @@ export function GradientEditor({
         <div key={i} className="flex h-7 items-center gap-1.5">
           <button
             type="button"
-            title="색"
+            title={msg.imageInspector.vocab.color}
             onClick={(e) => setEdit({ i, anchor: e.currentTarget })}
             style={{ background: s.color }}
             className="h-4 w-4 shrink-0 rounded border border-edge"
@@ -225,7 +231,7 @@ export function GradientEditor({
           <span className="w-16 shrink-0 font-mono text-[11px] text-fg-muted">{s.color}</span>
           <div className="min-w-0 flex-1">
             <NumField
-              label="위치"
+              label={msg.imageInspector.gradient.stopPosition}
               value={s.pos * 100}
               unit="%"
               min={0}
@@ -235,7 +241,7 @@ export function GradientEditor({
           </div>
           <button
             type="button"
-            title="스톱 제거"
+            title={msg.imageInspector.gradient.removeStop}
             // 두 개 아래로 내려가면 램프가 성립하지 않는다 — 렌더는 스톱 0개를 통째로 무시한다.
             disabled={paint.stops.length <= 2}
             onClick={() => {
@@ -252,7 +258,7 @@ export function GradientEditor({
       {/* 방사는 각도가 그림에 영향이 없고(원), 원뿔은 반지름이 없어 스케일이 뜻이 없다.
           `undefined` 를 주면 NumField 가 필드를 통째로 감춘다 — 못 쓰는 칸을 만지게 두지 않는다. */}
       <NumField
-        label="각도"
+        label={msg.imageInspector.vocab.angle}
         value={paint.type === "radial" ? undefined : paint.angle}
         unit="°"
         onCommit={(v) => put({ ...paint, angle: v }, true)}
@@ -260,7 +266,7 @@ export function GradientEditor({
         onLiveEnd={() => onCommit(live.current)}
       />
       <NumField
-        label="스케일"
+        label={msg.imageInspector.gradient.scale}
         value={paint.type === "angular" ? undefined : paint.scale}
         min={0.01}
         step={0.05}
@@ -276,10 +282,10 @@ export function GradientEditor({
           onClose={() => setEdit(null)}
           placement="left-start"
           width={232}
-          title="그라디언트 스톱 · 단색"
+          title={msg.imageInspector.gradient.stopPopoverTitle}
         >
           <ColorPicker
-            title="그라디언트 스톱"
+            title={msg.imageInspector.gradient.stopPickerTitle}
             paint={{
               type: "solid",
               color: paint.stops[edit.i].color,

@@ -6,6 +6,7 @@ import {
   Trash2,
 } from "lucide-react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { methodColor } from "../../lib/method-color";
 import { usePanelWidth } from "../../lib/use-panel-width";
 import type { ApiNode } from "../../stores/apiclient";
@@ -23,6 +24,7 @@ function TreeNode({
   depth: number;
   tabId: string;
 }) {
+  const msg = useMessages();
   const node = useApiClient((s) => s.nodes[nodeId]) as ApiNode | undefined;
   const expanded = useApiClient((s) => s.expandedFolders.includes(nodeId));
   const activeReqId = useApiClient((s) => s.items[tabId]?.requestNodeId ?? null);
@@ -60,14 +62,14 @@ function TreeNode({
               selectRequest(tabId, nid); // 새 요청을 빌더에 바로 로드(편집 시작점)
               if (!expanded) toggleFolder(nodeId); // 접혀 있으면 펼쳐서 보이게
             }}
-            title="요청 추가"
+            title={msg.apiclient.sidebar.addRequest}
             className="shrink-0 text-fg-dim opacity-0 hover:text-fg group-hover:opacity-100"
           >
             <FilePlus2 size={12} />
           </button>
           <button
-            onClick={() => addFolder(nodeId, "새 폴더")}
-            title="폴더 추가"
+            onClick={() => addFolder(nodeId, msg.apiclient.sidebar.newFolderName)}
+            title={msg.apiclient.sidebar.addFolder}
             className="shrink-0 text-fg-dim opacity-0 hover:text-fg group-hover:opacity-100"
           >
             <FolderPlus size={12} />
@@ -75,14 +77,14 @@ function TreeNode({
           <button
             onClick={() =>
               askConfirm({
-                title: "폴더 삭제",
-                message: `"${node.name}" 폴더와 하위 항목을 삭제할까요?`,
-                confirmLabel: "삭제",
+                title: msg.apiclient.sidebar.deleteFolderTitle,
+                message: msg.apiclient.sidebar.deleteFolderMessage(node.name),
+                confirmLabel: msg.apiclient.sidebar.deleteConfirm,
                 danger: true,
                 onConfirm: () => removeNode(nodeId),
               })
             }
-            title="삭제"
+            title={msg.apiclient.sidebar.deleteTooltip}
             className="shrink-0 text-fg-dim opacity-0 hover:text-danger group-hover:opacity-100"
           >
             <Trash2 size={12} />
@@ -122,14 +124,14 @@ function TreeNode({
       <button
         onClick={() =>
           askConfirm({
-            title: "요청 삭제",
-            message: `"${req.name}" 요청을 삭제할까요?`,
-            confirmLabel: "삭제",
+            title: msg.apiclient.sidebar.deleteRequestTitle,
+            message: msg.apiclient.sidebar.deleteRequestMessage(req.name),
+            confirmLabel: msg.apiclient.sidebar.deleteConfirm,
             danger: true,
             onConfirm: () => removeNode(nodeId),
           })
         }
-        title="삭제"
+        title={msg.apiclient.sidebar.deleteTooltip}
         className="shrink-0 text-fg-dim opacity-0 hover:text-danger group-hover:opacity-100"
       >
         <Trash2 size={12} />
@@ -140,6 +142,7 @@ function TreeNode({
 
 /** 하단 HISTORY 섹션(§8.1) — DbSidebar MetaSection 패턴. */
 function HistorySection({ projectId }: { projectId: string }) {
+  const msg = useMessages();
   const history = useApiClient((s) => s.history);
   void projectId;
 
@@ -150,7 +153,7 @@ function HistorySection({ projectId }: { projectId: string }) {
       </div>
       <div className="max-h-40 overflow-auto pb-2">
         {history.length === 0 && (
-          <div className="px-3 py-1 text-[12px] text-fg-dim">기록 없음</div>
+          <div className="px-3 py-1 text-[12px] text-fg-dim">{msg.apiclient.sidebar.historyEmpty}</div>
         )}
         {history.map((h) => (
           <div
@@ -190,6 +193,7 @@ export function CollectionSidebar({
   tabId: string;
   projectId: string;
 }) {
+  const msg = useMessages();
   const rootIds = useApiClient((s) => s.rootIds);
   const addFolder = useApiClient((s) => s.addFolder);
   const addRequest = useApiClient((s) => s.addRequest);
@@ -213,14 +217,14 @@ export function CollectionSidebar({
         <div className="flex items-center gap-0.5">
           <button
             onClick={() => selectRequest(tabId, addRequest(null, {}))}
-            title="요청 추가"
+            title={msg.apiclient.sidebar.addRequest}
             className="rounded p-0.5 text-fg-dim hover:bg-raised hover:text-fg"
           >
             <FilePlus2 size={14} />
           </button>
           <button
-            onClick={() => addFolder(null, "새 컬렉션")}
-            title="컬렉션(폴더) 추가"
+            onClick={() => addFolder(null, msg.apiclient.sidebar.newCollectionName)}
+            title={msg.apiclient.sidebar.addCollection}
             className="rounded p-0.5 text-fg-dim hover:bg-raised hover:text-fg"
           >
             <FolderPlus size={14} />
@@ -234,8 +238,9 @@ export function CollectionSidebar({
         ))}
         {rootIds.length === 0 && (
           <div className="px-3 py-4 text-xs leading-5 text-fg-dim">
-            저장된 요청이 없습니다.
-            <br />위 버튼으로 요청/컬렉션을 추가하세요.
+            {msg.apiclient.sidebar.emptyLine1}
+            <br />
+            {msg.apiclient.sidebar.emptyLine2}
           </div>
         )}
       </div>

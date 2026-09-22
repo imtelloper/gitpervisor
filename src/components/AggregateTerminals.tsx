@@ -22,6 +22,8 @@ import {
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import type { Messages } from "../i18n/messages";
+import { useMessages } from "../i18n/ui-language";
 import type { Project } from "../lib/ipc";
 import { isMac, modLabel } from "../lib/platform";
 import { NO_COLOR, useProjectColors, type ProjColor } from "../lib/project-color";
@@ -150,14 +152,19 @@ function useDelayedClose(close: () => void, ms = 150) {
 
 // 자동배치 모드 선택 팝오버의 항목 — 아이콘은 lucide, 클래스(lucide-grid-2x2 / lucide-columns-3)가
 // e2e의 "현재 모드 아이콘" 단언 표식이다.
-const LAYOUT_MODES: { mode: AggregateLayout; Icon: typeof Grid2x2; title: string }[] = [
-  { mode: "grid", Icon: Grid2x2, title: "그리드 — 2×2·3×3 균등 배치" },
-  {
-    mode: "columns",
-    Icon: Columns3,
-    title: "세로 컬럼 — 셀을 좌우로 한 줄에 나열(최대 4열, 넘치면 줄바꿈)",
-  },
+const LAYOUT_MODES: { mode: AggregateLayout; Icon: typeof Grid2x2 }[] = [
+  { mode: "grid", Icon: Grid2x2 },
+  { mode: "columns", Icon: Columns3 },
 ];
+
+function layoutModeTitle(mode: AggregateLayout, msg: Messages): string {
+  switch (mode) {
+    case "grid":
+      return msg.app.aggregate.layoutGridTitle;
+    case "columns":
+      return msg.app.aggregate.layoutColumnsTitle;
+  }
+}
 
 /**
  * 터미널 모아보기 — 여러 프로젝트/탭에 흩어진 터미널·브라우저를 한 화면에 분할해 동시에 본다.
@@ -167,6 +174,7 @@ const LAYOUT_MODES: { mode: AggregateLayout; Icon: typeof Grid2x2; title: string
  * 브라우저 셀은 BrowserPane 재사용 — 같은 id의 네이티브 webview/iframe이 셀 위치로 따라온다.
  */
 export function AggregateTerminals() {
+  const msg = useMessages();
   const setAggregateOpen = useUi((s) => s.setAggregateOpen);
   const { data: projects } = useProjects();
   // 색은 **등록된 전체 프로젝트** 이름순 배정을 그대로 쓴다 — 사이드바 행과 같은 맵이라야
@@ -202,7 +210,7 @@ export function AggregateTerminals() {
   // 모든 셀 메타 (스토어 기준 — 반응형): 탭별 터미널·브라우저 pane + 독립 브라우저 탭.
   const all = useMemo<CellMeta[]>(() => {
     const projName = (id: string) =>
-      projects?.find((p) => p.id === id)?.name ?? "프로젝트";
+      projects?.find((p) => p.id === id)?.name ?? msg.app.aggregate.fallbackProjectName;
     const out: CellSource[] = [];
     for (const tab of terminals) {
       for (const paneId of collectByContent(tab.layout, "terminal")) {
@@ -223,7 +231,7 @@ export function AggregateTerminals() {
           tabId: tab.id,
           projectId: tab.projectId,
           projName: projName(tab.projectId),
-          title: browserItems[paneId]?.title ?? "브라우저",
+          title: browserItems[paneId]?.title ?? msg.app.aggregate.fallbackBrowserTitle,
         });
       }
     }
@@ -244,7 +252,7 @@ export function AggregateTerminals() {
     // 이름 오름차순, 같은 프로젝트 안에서는 원래 순서 유지 — Array#sort는 stable이다.
     out.sort((a, b) => a.projName.localeCompare(b.projName, "ko"));
     return out.map((c) => ({ ...c, color: colors.get(c.projName) ?? NO_COLOR }));
-  }, [terminals, projects, byTerminal, browserItems, browserTabIds, colors]);
+  }, [terminals, projects, byTerminal, browserItems, browserTabIds, colors, msg]);
 
   // 선택 집합 — 최초엔 클로드 활동(working/done) 있는 터미널만. 없으면 전부(브라우저 포함).
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
@@ -514,10 +522,10 @@ export function AggregateTerminals() {
         <LayoutGrid size={15} className="shrink-0 text-accent" />
         {/* 별도 창에선 창 타이틀바가 이미 "터미널 모아보기"라 중복이다 — 칩에 폭을 넘긴다 */}
         {!IS_AGGREGATE_WINDOW && (
-          <span className="shrink-0 text-sm font-semibold">터미널 모아보기</span>
+          <span className="shrink-0 text-sm font-semibold">{msg.app.aggregate.headerTitle}</span>
         )}
         <span className="shrink-0 text-[11px] text-fg-dim">
-          {n}/{all.length} 선택
+          {msg.app.aggregate.selectedCount(n, all.length)}
         </span>
         <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto pl-2">
           {/* 리포트 탭 — 칩 줄 맨 앞(칩이 많아 가로로 밀려도 보이게). 누르면 리포트↔터미널, X 는 탭 닫기. */}
@@ -532,15 +540,19 @@ export function AggregateTerminals() {
             >
               <button
                 onClick={() => setReportActive(!reportActive)}
-                title={reportActive ? "터미널로 돌아가기" : "리포트 보기"}
+                title={
+                  reportActive
+                    ? msg.app.aggregate.reportTabBackToTerminals
+                    : msg.app.aggregate.reportTabShow
+                }
                 className="flex items-center gap-1 py-1 pl-2 pr-1"
               >
-                <CalendarDays size={12} /> 리포트
+                <CalendarDays size={12} /> {msg.app.aggregate.reportTab}
               </button>
               <button
                 onClick={closeReport}
-                title="리포트 탭 닫기"
-                aria-label="리포트 탭 닫기"
+                title={msg.app.aggregate.reportTabClose}
+                aria-label={msg.app.aggregate.reportTabClose}
                 className="rounded p-1 hover:text-fg"
               >
                 <X size={11} />
@@ -578,7 +590,7 @@ export function AggregateTerminals() {
                       scheduleGroupClose();
                       setHovered(NO_HOVER);
                     }}
-                    title={`${name} — 탭 ${cells.length}개 (클릭: 전체 표시/숨김, 호버: 목록)`}
+                    title={msg.app.aggregate.groupChipTitle(name, cells.length)}
                     style={{
                       backgroundColor: cells[0].color.bg,
                     }}
@@ -635,12 +647,13 @@ export function AggregateTerminals() {
             <button
               onClick={canEven ? () => evenTracks() : undefined}
               aria-disabled={!canEven}
-              title="셀 자동배치 — 클릭: 지금 모드로 균등 정렬 · 호버: 모드 선택(그리드 / 세로 컬럼)"
+              title={msg.app.aggregate.autoLayoutTitle}
               className={`flex items-center gap-1 rounded px-2 py-1 text-xs text-fg-muted ${
                 canEven ? "hover:bg-raised hover:text-fg" : "opacity-40"
               }`}
             >
-              {layout === "columns" ? <Columns3 size={14} /> : <Grid2x2 size={14} />} 자동배치
+              {layout === "columns" ? <Columns3 size={14} /> : <Grid2x2 size={14} />}{" "}
+              {msg.app.aggregate.autoLayout}
             </button>
           </span>
         )}
@@ -668,8 +681,8 @@ export function AggregateTerminals() {
           }}
           title={
             groupTabs
-              ? "탭 모으기 끄기 — 탭을 개별 칩으로 펼칩니다"
-              : "탭 모으기 켜기 — 같은 프로젝트의 탭을 칩 하나로 묶습니다"
+              ? msg.app.aggregate.groupTabsOffTitle
+              : msg.app.aggregate.groupTabsOnTitle
           }
           className={`flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs ${
             groupTabs
@@ -677,7 +690,7 @@ export function AggregateTerminals() {
               : "text-fg-muted hover:bg-raised hover:text-fg"
           }`}
         >
-          <Layers size={14} /> 탭 모으기
+          <Layers size={14} /> {msg.app.aggregate.groupTabs}
         </button>
         <button
           onClick={() => {
@@ -686,12 +699,12 @@ export function AggregateTerminals() {
           }}
           title={
             IS_AGGREGATE_WINDOW
-              ? "창 닫기 — 터미널은 메인 창으로 돌아갑니다"
-              : `모아보기 닫기 (${hotkeyLabel})`
+              ? msg.app.aggregate.closeWindowTitle
+              : msg.app.aggregate.closeAggregateTitle(hotkeyLabel)
           }
           className="ml-1 flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs text-fg-muted hover:bg-raised hover:text-fg"
         >
-          <X size={14} /> 닫기
+          <X size={14} /> {msg.app.aggregate.close}
         </button>
       </div>
 
@@ -701,13 +714,13 @@ export function AggregateTerminals() {
           icon={LayoutGrid}
           title={
             all.length
-              ? "표시할 터미널·브라우저를 선택하세요"
-              : "열린 터미널·브라우저가 없습니다"
+              ? msg.app.aggregate.emptyPickTitle
+              : msg.app.aggregate.emptyNoneTitle
           }
           desc={
             all.length
-              ? "위 칩에서 보고 싶은 것을 고르면 여기에 분할로 표시됩니다"
-              : "위의 새 터미널 · 새 브라우저 버튼으로 바로 열 수 있습니다"
+              ? msg.app.aggregate.emptyPickDesc
+              : msg.app.aggregate.emptyNoneDesc
           }
         />
       ) : (
@@ -806,9 +819,9 @@ export function AggregateTerminals() {
                         onHide={() => toggle(t.id)}
                         onClose={() =>
                           askConfirm({
-                            title: "터미널 닫기",
-                            message: `'${t.projName} · ${t.title}' 터미널을 닫을까요? 실행 중인 프로세스가 종료됩니다.`,
-                            confirmLabel: "닫기",
+                            title: msg.app.aggregate.closeTerminal,
+                            message: msg.app.aggregate.closeTerminalConfirm(t.projName, t.title),
+                            confirmLabel: msg.app.aggregate.close,
                             danger: true,
                             onConfirm: () => closePane(t.tabId, t.id),
                           })
@@ -854,12 +867,10 @@ export function AggregateTerminals() {
             setHovered(NO_HOVER);
             const procs = closable.filter((c) => c.kind === "terminal").length;
             askConfirm({
-              title: "탭 모두 닫기",
+              title: msg.app.aggregate.closeAllTabsTitle,
               // 단일 브라우저 닫기는 확인이 없지만 묶음은 여러 개를 한 번에 없애므로 항상 확인한다.
-              message:
-                `'${groupMenu.name}' 탭 ${closable.length}개를 닫을까요?` +
-                (procs ? ` 터미널 ${procs}개의 실행 중인 프로세스가 종료됩니다.` : ""),
-              confirmLabel: "모두 닫기",
+              message: msg.app.aggregate.closeAllTabsConfirm(groupMenu.name, closable.length, procs),
+              confirmLabel: msg.app.aggregate.closeAllTabsConfirmLabel,
               danger: true,
               onConfirm: () =>
                 closable.forEach((c) =>
@@ -906,7 +917,7 @@ export function AggregateTerminals() {
               <div className="border-t border-edge" />
               <MenuRow
                 icon={<TerminalIcon size={13} />}
-                label={`'${groupMenu.name}'에 새 터미널 열기`}
+                label={msg.app.aggregate.newTerminalIn(groupMenu.name)}
                 onClick={() => addTerminal(cells[0].projectId)}
               />
               {/* 묶음 단위 닫기 — 종류가 섞이므로 "터미널/브라우저"가 아니라 "탭"으로 부른다.
@@ -914,7 +925,7 @@ export function AggregateTerminals() {
               {closable.length > 0 && (
                 <MenuItem
                   icon={<X size={13} />}
-                  label={`'${groupMenu.name}' 탭 ${closable.length}개 모두 닫기`}
+                  label={msg.app.aggregate.closeAllTabsMenu(groupMenu.name, closable.length)}
                   danger
                   onClick={closeAll}
                 />
@@ -933,10 +944,10 @@ export function AggregateTerminals() {
           onMouseEnter={holdLayoutOpen}
           onMouseLeave={scheduleLayoutClose}
         >
-          {LAYOUT_MODES.map(({ mode, Icon, title }) => (
+          {LAYOUT_MODES.map(({ mode, Icon }) => (
             <button
               key={mode}
-              title={title}
+              title={layoutModeTitle(mode, msg)}
               onClick={() => pickLayout(mode)}
               className={`rounded p-1 ${
                 layout === mode
@@ -1007,9 +1018,9 @@ export function AggregateTerminals() {
                   const c = chipMenu.cell;
                   if (c.kind === "terminal" && c.tabId != null) {
                     askConfirm({
-                      title: "터미널 닫기",
-                      message: `'${c.projName} · ${c.title}' 터미널을 닫을까요? 실행 중인 프로세스가 종료됩니다.`,
-                      confirmLabel: "닫기",
+                      title: msg.app.aggregate.closeTerminal,
+                      message: msg.app.aggregate.closeTerminalConfirm(c.projName, c.title),
+                      confirmLabel: msg.app.aggregate.close,
                       danger: true,
                       onConfirm: () => closePane(c.tabId!, c.id),
                     });
@@ -1065,6 +1076,7 @@ function ChipMenu({
   onFloat?: () => void;
   onCloseCell?: () => void;
 }) {
+  const msg = useMessages();
   // 메뉴가 **열린 순간**의 선택(PaneMenu와 같은 규약, 태스크 65) — 우클릭 뒤에 선택이 바뀌어도
   // 복사 대상은 사용자가 드래그한 그것이다.
   const [selection] = useState(() => snapshotSelection(cell.id));
@@ -1122,25 +1134,25 @@ function ChipMenu({
       )}
       <MenuItem
         icon={shown ? <EyeOff size={14} /> : <Eye size={14} />}
-        label={shown ? "그리드에서 숨기기" : "그리드에 표시"}
+        label={shown ? msg.app.aggregate.hideFromGrid : msg.app.aggregate.showInGrid}
         onClick={run(onToggle)}
       />
       <MenuItem
         icon={zoomed ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
-        label={zoomed ? "확대 해제" : "확대해서 보기"}
+        label={zoomed ? msg.app.aggregate.unzoom : msg.app.aggregate.zoom}
         onClick={run(onZoom)}
       />
       {onTogglePrompt && (
         <MenuItem
           icon={<History size={14} />}
-          label={promptOpen ? "프롬프트 목록 닫기" : "프롬프트 목록 열기"}
+          label={promptOpen ? msg.app.aggregate.closePromptList : msg.app.aggregate.openPromptList}
           onClick={run(onTogglePrompt)}
         />
       )}
       {onTranslate && (
         <MenuItem
           icon={<Languages size={14} />}
-          label="선택 영역 번역"
+          label={msg.app.aggregate.translateSelection}
           onClick={run(onTranslate)}
         />
       )}
@@ -1150,21 +1162,25 @@ function ChipMenu({
       {onNewTerminal && (
         <MenuItem
           icon={<TerminalIcon size={14} />}
-          label={`'${cell.projName}'에 새 터미널 열기`}
+          label={msg.app.aggregate.newTerminalIn(cell.projName)}
           onClick={run(onNewTerminal)}
         />
       )}
       {onFloat && (
         <MenuItem
           icon={<ExternalLink size={14} />}
-          label="새 창으로 분리 (Float)"
+          label={msg.app.aggregate.floatToWindow}
           onClick={run(onFloat)}
         />
       )}
       {onCloseCell && (
         <MenuItem
           icon={<X size={14} />}
-          label={cell.kind === "terminal" ? "터미널 닫기" : "브라우저 닫기"}
+          label={
+            cell.kind === "terminal"
+              ? msg.app.aggregate.closeTerminal
+              : msg.app.aggregate.closeBrowser
+          }
           danger
           onClick={run(onCloseCell)}
         />
@@ -1201,6 +1217,7 @@ function Chip({
   onMenu: (x: number, y: number) => void;
   onHover: (over: boolean) => void;
 }) {
+  const msg = useMessages();
   return (
     <button
       onClick={onToggle}
@@ -1210,7 +1227,7 @@ function Chip({
       }}
       onMouseEnter={() => onHover(true)}
       onMouseLeave={() => onHover(false)}
-      title={`${t.projName} · ${t.title} (우클릭: 메뉴)`}
+      title={msg.app.aggregate.chipTitle(t.projName, t.title)}
       // 배경이 프로젝트 색이다 — 정렬로 같은 프로젝트를 붙여 놓아도 경계가 어디인지
       // 한눈에 안 들어와서(3px 막대는 너무 약했다) 칩 전체를 물들인다.
       style={{ backgroundColor: t.color.bg }}
@@ -1244,11 +1261,16 @@ function Chip({
 /** "+" 메뉴가 만들 수 있는 것 — 그리드 셀 종류 + "초기 입력만 다른" Claude Code 세션 터미널.
  *  라벨은 메뉴 행과 프로젝트 선택 머리말 두 곳이 같은 문구를 써야 해서 한 곳에 모은다. */
 type NewCellKind = PaneKind | "claude";
-const NEW_CELL_LABEL: Record<NewCellKind, string> = {
-  terminal: "새 터미널",
-  browser: "새 브라우저",
-  claude: "Claude Code 세션 터미널",
-};
+function newCellLabel(kind: NewCellKind, msg: Messages): string {
+  switch (kind) {
+    case "terminal":
+      return msg.app.aggregate.newCellTerminal;
+    case "browser":
+      return msg.app.aggregate.newCellBrowser;
+    case "claude":
+      return msg.app.aggregate.newCellClaude;
+  }
+}
 
 /** 새 셀 추가 — "+" 하나로 종류(터미널 / Claude Code 세션 터미널 / 브라우저)를 고르고,
  *  프로젝트가 여러 개면 이어서 고른다.
@@ -1269,6 +1291,7 @@ function NewCellButton({
   onCreateTerminal: (projectId: string, claude?: boolean) => void;
   onCreateBrowser?: (projectId: string) => void;
 }) {
+  const msg = useMessages();
   const selectedProjectId = useUi((s) => s.selectedProjectId);
   // 버튼이 헤더 우측 끝이라 좌측 기준(left)이면 메뉴가 창 밖으로 잘린다 — 우측 모서리 정렬
   const [menu, setMenu] = useState<{ right: number; y: number } | null>(null);
@@ -1318,10 +1341,10 @@ function NewCellButton({
         // 텍스트가 없으므로 title이 유일한 설명이다 — e2e도 이 문구로 버튼을 찾는다.
         title={
           list.length === 0
-            ? "프로젝트를 추가하면 새 터미널·브라우저를 열 수 있습니다"
+            ? msg.app.aggregate.newCellNoProjectsTitle
             : onCreateBrowser
-              ? "새 터미널 · 새 브라우저 — 이 화면에 바로 연다"
-              : "새 터미널 · Claude Code 세션 터미널 — 이 화면에 바로 연다"
+              ? msg.app.aggregate.newCellTitleWithBrowser
+              : msg.app.aggregate.newCellTitleTerminalsOnly
         }
         className="ml-1 flex shrink-0 items-center rounded p-1 text-fg-muted hover:bg-raised hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
       >
@@ -1338,20 +1361,20 @@ function NewCellButton({
               <>
                 <MenuRow
                   icon={<TerminalIcon size={14} />}
-                  label={NEW_CELL_LABEL.terminal}
+                  label={newCellLabel("terminal", msg)}
                   onClick={() => pickKind("terminal")}
                 />
                 {/* 새 터미널과 같되, 셸이 뜨면 `claude`를 입력해 바로 Claude Code 세션으로 간다. */}
                 <MenuRow
                   icon={<Sparkles size={14} />}
-                  label={NEW_CELL_LABEL.claude}
+                  label={newCellLabel("claude", msg)}
                   onClick={() => pickKind("claude")}
                 />
                 {/* 별도 창은 브라우저를 위임해도 이 창 그리드에 안 뜬다 — 그 창에선 항목을 뺀다. */}
                 {onCreateBrowser && (
                   <MenuRow
                     icon={<Globe size={14} />}
-                    label={NEW_CELL_LABEL.browser}
+                    label={newCellLabel("browser", msg)}
                     onClick={() => pickKind("browser")}
                   />
                 )}
@@ -1360,7 +1383,7 @@ function NewCellButton({
               <>
                 {/* 어떤 종류를 만드는 중인지 잊지 않게 머리말로 남긴다 */}
                 <div className="px-3 py-1 text-[11px] text-fg-dim">
-                  {NEW_CELL_LABEL[kind]} — 프로젝트 선택
+                  {msg.app.aggregate.newCellPickProject(newCellLabel(kind, msg))}
                 </div>
                 {ordered.map((p) => (
                   <button
@@ -1382,11 +1405,11 @@ function NewCellButton({
 
 /** 그리드에서만 빼는 버튼 — 프로세스는 그대로 둔다(닫기 X와 구분되는 지점).
  *  상단 칩을 다시 누르면 돌아오므로, 별도 창에서도 안전해 항상 노출한다. */
-function HideButton({ onClick, what }: { onClick: () => void; what: string }) {
+function HideButton({ onClick, title }: { onClick: () => void; title: string }) {
   return (
     <button
       onClick={onClick}
-      title={`숨기기 — 이 화면에서만 빼고 ${what}은 계속 실행됩니다 (상단 칩으로 되돌리기)`}
+      title={title}
       className="shrink-0 rounded p-0.5 text-fg-dim hover:bg-raised hover:text-fg"
     >
       <EyeOff size={12} />
@@ -1438,6 +1461,7 @@ function AggregateCell({
   onHide: () => void;
   onClose: () => void;
 }) {
+  const msg = useMessages();
   const ref = useRef<HTMLDivElement>(null);
   const status = useAgentActivity((s) => s.byTerminal[meta.id]);
   const promptPanelOpen = usePromptHistory((s) => !!s.openPanels[meta.id]);
@@ -1496,17 +1520,17 @@ function AggregateCell({
           onClick={onZoom}
           title={
             zoomed
-              ? "원래 크기로 — 그리드로 돌아갑니다"
-              : "확대 — 이 터미널만 화면 가득 봅니다"
+              ? msg.app.aggregate.unzoomCellTitle
+              : msg.app.aggregate.zoomCellTitle
           }
           className="shrink-0 rounded p-0.5 text-fg-dim hover:bg-raised hover:text-fg"
         >
           {zoomed ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
         </button>
-        <HideButton onClick={onHide} what="터미널" />
+        <HideButton onClick={onHide} title={msg.app.aggregate.hideTerminalTitle} />
         <button
           onClick={onClose}
-          title="터미널 닫기 (프로세스 종료)"
+          title={msg.app.aggregate.closeTerminalCellTitle}
           className="-mr-1 shrink-0 rounded p-0.5 text-fg-dim hover:bg-raised hover:text-danger"
         >
           <X size={12} />
@@ -1551,6 +1575,7 @@ function BrowserCell({
   onHide: () => void;
   onClose: () => void;
 }) {
+  const msg = useMessages();
   const ensurePane = useBrowsers((s) => s.ensurePane);
   // 분할 pane 브라우저가 워크스페이스에서 아직 렌더된 적 없어도 스토어 아이템을 보장(멱등).
   useEffect(() => {
@@ -1571,13 +1596,13 @@ function BrowserCell({
         </span>
         <GitDialogButton projectId={meta.projectId} />
         <FileTreeButton projectId={meta.projectId} />
-        <HideButton onClick={onHide} what="브라우저" />
+        <HideButton onClick={onHide} title={msg.app.aggregate.hideBrowserTitle} />
         {/* 분할 pane(tabId 있음)은 closePane이라 위임을 탄다. 독립 브라우저 탭은 closeBrowserTab —
             위임 경로가 없는 메인 전용이라 별도 창에선 X를 감춘다(ChipMenu와 같은 규칙). */}
         {(!IS_AGGREGATE_WINDOW || meta.tabId != null) && (
           <button
             onClick={onClose}
-            title="브라우저 닫기"
+            title={msg.app.aggregate.closeBrowser}
             className="-mr-1 shrink-0 rounded p-0.5 text-fg-dim hover:bg-raised hover:text-danger"
           >
             <X size={12} />

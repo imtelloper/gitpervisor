@@ -7,6 +7,7 @@ import {
   X,
 } from "lucide-react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { useBrowsers } from "../../stores/browser";
 import { type PaneKind, useTerminals } from "../../stores/terminals";
 
@@ -23,6 +24,7 @@ export function PaneControls({
   paneId: string;
   content: PaneKind;
 }) {
+  const msg = useMessages();
   const splitPane = useTerminals((s) => s.splitPane);
   const setPaneContent = useTerminals((s) => s.setPaneContent);
   const closePane = useTerminals((s) => s.closePane);
@@ -45,21 +47,31 @@ export function PaneControls({
   return (
     <div className="flex shrink-0 items-center gap-0.5">
       <TBtn
-        title={content === "terminal" ? "웹으로 전환" : "터미널로 전환"}
+        title={
+          content === "terminal"
+            ? msg.git.paneControls.switchToWeb
+            : msg.git.paneControls.switchToTerminal
+        }
         onClick={toggleType}
       >
         {content === "terminal" ? <Globe size={13} /> : <TerminalIcon size={13} />}
       </TBtn>
-      <TBtn title="오른쪽으로 분할" onClick={() => splitPane(tabId, paneId, "row", false)}>
+      <TBtn
+        title={msg.git.paneMenu.splitRight}
+        onClick={() => splitPane(tabId, paneId, "row", false)}
+      >
         <SplitSquareHorizontal size={13} />
       </TBtn>
-      <TBtn title="아래로 분할" onClick={() => splitPane(tabId, paneId, "col", false)}>
+      <TBtn
+        title={msg.git.paneMenu.splitDown}
+        onClick={() => splitPane(tabId, paneId, "col", false)}
+      >
         <SplitSquareVertical size={13} />
       </TBtn>
-      <TBtn title="최대화/복원" onClick={() => toggleMaximize(tabId, paneId)}>
+      <TBtn title={msg.git.paneControls.maximizeRestore} onClick={() => toggleMaximize(tabId, paneId)}>
         <Maximize2 size={13} />
       </TBtn>
-      <TBtn title="패널 닫기" danger onClick={() => closePane(tabId, paneId)}>
+      <TBtn title={msg.git.paneMenu.closePane} danger onClick={() => closePane(tabId, paneId)}>
         <X size={13} />
       </TBtn>
     </div>

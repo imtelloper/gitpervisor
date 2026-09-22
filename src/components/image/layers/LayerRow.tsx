@@ -27,6 +27,8 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
+import type { Messages } from "../../../i18n/messages";
+import { useMessages } from "../../../i18n/ui-language";
 import type { LayerBadge, LayerRow as Row, LayerType } from "../../../lib/annotate/layer-rows";
 import type { ObjId } from "../../../lib/annotate/types";
 import { useImageEditorUi } from "../../../stores/imageEditor";
@@ -46,22 +48,29 @@ const TYPE_ICON: Record<LayerType, LucideIcon> = {
   component: Component,
 };
 
-const INSTANCE_LABEL: Record<"linked" | "overridden" | "detached", string> = {
-  linked: "연결됨",
-  overridden: "재정의됨",
-  detached: "분리됨",
-};
+function instanceLabel(msg: Messages, state: "linked" | "overridden" | "detached"): string {
+  const t = msg.imagePanels.layerRow;
+  switch (state) {
+    case "linked":
+      return t.instanceLinked;
+    case "overridden":
+      return t.instanceOverridden;
+    case "detached":
+      return t.instanceDetached;
+  }
+}
 
-function badgeText(b: LayerBadge): string {
+function badgeText(msg: Messages, b: LayerBadge): string {
+  const t = msg.imagePanels.layerRow;
   switch (b.kind) {
     case "mask":
-      return "마스크";
+      return t.badgeMask;
     case "blend":
       return b.label;
     case "nodeEdit":
-      return "노드 편집";
+      return t.badgeNodeEdit;
     case "instance":
-      return b.state ? INSTANCE_LABEL[b.state] : "인스턴스";
+      return b.state ? instanceLabel(msg, b.state) : t.badgeInstance;
   }
 }
 
@@ -88,6 +97,8 @@ export const LayerRow = memo(function LayerRow({
   onVisible,
   onLocked,
 }: LayerRowProps) {
+  const msg = useMessages();
+  const t = msg.imagePanels.layerRow;
   const selected = useImageEditorUi((s) => s.selectedIds.includes(row.id));
   const hovered = useImageEditorUi((s) => s.hoverId === row.id);
   const select = useImageEditorUi((s) => s.select);
@@ -136,7 +147,7 @@ export const LayerRow = memo(function LayerRow({
             e.stopPropagation();
             onToggle(row.id as ObjId);
           }}
-          title={row.collapsed ? "펼치기" : "접기"}
+          title={row.collapsed ? t.expand : t.collapse}
           className="shrink-0 text-fg-dim hover:text-fg"
         >
           {row.collapsed ? <ChevronRight size={11} /> : <ChevronDown size={11} />}
@@ -161,7 +172,7 @@ export const LayerRow = memo(function LayerRow({
           key={i}
           className="shrink-0 rounded border border-edge px-1 text-[8px] leading-4 text-fg-dim"
         >
-          {badgeText(b)}
+          {badgeText(msg, b)}
         </span>
       ))}
 
@@ -173,7 +184,7 @@ export const LayerRow = memo(function LayerRow({
               e.stopPropagation();
               onVisible(row);
             }}
-            title={node.visible ? "숨기기" : "표시"}
+            title={node.visible ? t.hide : t.show}
             className="shrink-0 opacity-45 hover:opacity-100"
           >
             {node.visible ? <Eye size={12} /> : <EyeOff size={12} />}
@@ -186,7 +197,7 @@ export const LayerRow = memo(function LayerRow({
             }}
             // 아이콘은 **효과적** 잠금(조상 포함)이고 버튼은 이 노드 자기 필드만 뒤집는다.
             // 조상이 잠근 행에서 눌러도 그림이 안 바뀌는 이유라 문구로 구분해 둔다.
-            title={node.locked ? "잠금 해제" : "잠금"}
+            title={node.locked ? t.unlock : t.lock}
             className="shrink-0 opacity-45 hover:opacity-100"
           >
             {row.locked ? <Lock size={12} /> : <LockOpen size={12} />}

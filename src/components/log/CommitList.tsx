@@ -1,6 +1,7 @@
 import { GitCommitHorizontal } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { copyWithToast } from "../../lib/clipboard";
 import { errorMessage } from "../../lib/ipc";
 import { shortDate } from "../../lib/format";
@@ -45,6 +46,7 @@ export function CommitList({
   selectedSha?: string | null;
   onSelectCommit?: (sha: string) => void;
 }) {
+  const msg = useMessages();
   const {
     data,
     isLoading,
@@ -75,14 +77,14 @@ export function CommitList({
   if (isLoading) {
     return (
       <div className="flex min-w-0 flex-1 items-center justify-center text-xs text-fg-dim">
-        로그 불러오는 중…
+        {msg.git.log.logLoading}
       </div>
     );
   }
   if (error) {
     return (
       <div className="min-w-0 flex-1">
-        <EmptyState title="로그를 불러오지 못했습니다" desc={errorMessage(error)} />
+        <EmptyState title={msg.git.log.logLoadFailed} desc={errorMessage(error)} />
       </div>
     );
   }
@@ -93,8 +95,8 @@ export function CommitList({
       <div className="min-w-0 flex-1">
         <EmptyState
           icon={GitCommitHorizontal}
-          title="아직 커밋이 없습니다"
-          desc="이 브랜치에는 커밋 히스토리가 없습니다"
+          title={msg.git.log.noCommitsTitle}
+          desc={msg.git.log.noCommitsDesc}
         />
       </div>
     );
@@ -142,7 +144,7 @@ export function CommitList({
             disabled={isFetchingNextPage}
             className="w-full py-2 text-xs text-fg-muted hover:bg-raised disabled:opacity-50"
           >
-            {isFetchingNextPage ? "불러오는 중…" : "더 보기"}
+            {isFetchingNextPage ? msg.git.log.loadingMore : msg.git.log.loadMore}
           </button>
         )}
       </div>
@@ -157,23 +159,23 @@ export function CommitList({
           onClick={(e) => e.stopPropagation()}
         >
           <CommitMenuItem
-            label="메시지 복사"
+            label={msg.git.log.copyMessage}
             onClick={() => {
-              copyWithToast(menu.message, "커밋 메시지를 복사했습니다");
+              copyWithToast(menu.message, msg.git.log.commitMessageCopied);
               setMenu(null);
             }}
           />
           <CommitMenuItem
-            label="전체 해시 복사"
+            label={msg.git.log.copyFullHash}
             onClick={() => {
-              copyWithToast(menu.sha, "커밋 해시를 복사했습니다");
+              copyWithToast(menu.sha, msg.git.log.commitHashCopied);
               setMenu(null);
             }}
           />
           <CommitMenuItem
-            label="짧은 해시 복사"
+            label={msg.git.log.copyShortHash}
             onClick={() => {
-              copyWithToast(menu.sha.slice(0, 7), "짧은 해시를 복사했습니다");
+              copyWithToast(menu.sha.slice(0, 7), msg.git.log.shortHashCopied);
               setMenu(null);
             }}
           />

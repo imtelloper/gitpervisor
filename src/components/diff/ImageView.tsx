@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { copyWithToast } from "../../lib/clipboard";
 import type { OcrResult } from "../../lib/ipc";
 import { errorMessage, ipc, isIpcError } from "../../lib/ipc";
@@ -123,6 +124,7 @@ export default function ImageView({
   projectId: string;
   path: string;
 }) {
+  const msg = useMessages();
   const { data, isLoading, error } = useFileImage(projectId, path);
 
   // 로딩·실패도 NavShell로 감싼다 — 전환 중 포커스가 body로 떨어지면 연타가 끊기고,
@@ -130,7 +132,7 @@ export default function ImageView({
   if (isLoading)
     return (
       <NavShell projectId={projectId} path={path}>
-        <EmptyState title="이미지 불러오는 중…" />
+        <EmptyState title={msg.git.imageView.loading} />
       </NavShell>
     );
   if (error || !data)
@@ -138,7 +140,7 @@ export default function ImageView({
       <NavShell projectId={projectId} path={path}>
         <EmptyState
           icon={FileWarning}
-          title="이미지를 불러오지 못했습니다"
+          title={msg.git.imageView.loadFailed}
           desc={error ? errorMessage(error) : undefined}
         />
       </NavShell>
@@ -164,6 +166,7 @@ function ZoomableImage({
   projectId: string;
   path: string;
 }) {
+  const msg = useMessages();
   const pushToast = useUi((s) => s.pushToast);
   const openImageEditor = useUi((s) => s.openImageEditor);
   // 웹뷰가 디코드하지 못한 형식 — 확장자가 목록에 있어도 엔진이 못 그릴 수 있다
@@ -299,7 +302,7 @@ function ZoomableImage({
       // 플랫폼별 문구가 두 벌로 갈린다(format-provider.ts 와 같은 처리).
       if (isIpcError(e) && e.code === "TOOL_NOT_FOUND")
         pushToast("error", errorMessage(e));
-      else pushToast("error", `글자 추출 실패: ${errorMessage(e)}`);
+      else pushToast("error", msg.git.imageView.ocrFailed(errorMessage(e)));
     } finally {
       setOcrBusy(false);
     }
@@ -342,8 +345,8 @@ function ZoomableImage({
       <NavShell projectId={projectId} path={path}>
         <EmptyState
           icon={FileWarning}
-          title="이 형식은 표시할 수 없습니다"
-          desc="현재 플랫폼의 웹뷰가 이 이미지 형식을 디코드하지 못합니다. 파일 자체는 정상일 수 있습니다."
+          title={msg.git.imageView.unsupportedTitle}
+          desc={msg.git.imageView.unsupportedDesc}
           action={
             <button
               onClick={() =>
@@ -353,7 +356,7 @@ function ZoomableImage({
               }
               className="flex items-center gap-1.5 rounded border border-edge px-3 py-1.5 text-xs text-fg-muted hover:bg-raised hover:text-fg"
             >
-              <ExternalLink size={13} /> 외부 앱으로 열기
+              <ExternalLink size={13} /> {msg.git.diff.openExternally}
             </button>
           }
         />
@@ -379,20 +382,20 @@ function ZoomableImage({
               ? openImageEditor(path, projectId)
               : openDocWindow(projectId, path, { size: [1180, 860], edit: true })
           }
-          title="이미지 편집 (새 창)"
+          title={msg.git.imageView.editTitle}
           className="flex items-center gap-1 rounded px-1.5 py-1 hover:bg-raised hover:text-fg"
         >
-          <Pencil size={13} /> 편집
+          <Pencil size={13} /> {msg.git.imageView.edit}
         </button>
         {/* 글자 추출 — 누를 때마다 다시 읽는다(캐시 없음). 진행 중엔 비활성해 두 번 돌지 않게. */}
         <button
           data-ocr-run
           onClick={() => void runOcr()}
           disabled={ocrBusy}
-          title="이미지에서 글자 추출"
+          title={msg.git.imageView.ocrTitle}
           className="flex items-center gap-1 rounded px-1.5 py-1 hover:bg-raised hover:text-fg disabled:text-fg-muted disabled:hover:bg-transparent"
         >
-          <ScanText size={13} /> {ocrBusy ? "추출 중…" : "글자 추출"}
+          <ScanText size={13} /> {ocrBusy ? msg.git.imageView.ocrRunning : msg.git.imageView.ocrRun}
         </button>
         <div className="flex-1" />
         {/* 같은 폴더에서 몇 번째 이미지인가 — ↑/↓로 넘길 게 남았는지 알려 준다(2장 이상일 때만). */}
@@ -401,21 +404,21 @@ function ZoomableImage({
             {idx + 1} / {siblings.length}
           </span>
         )}
-        <TBtn label="축소 (−)" onClick={() => zoomCenter(1 / BTN_STEP)}>
+        <TBtn label={msg.git.imageView.zoomOut} onClick={() => zoomCenter(1 / BTN_STEP)}>
           <Minus size={13} />
         </TBtn>
         {/* 배율을 숫자로 보여준다 — 얼마나 확대했는지 모르면 줌은 쓰기 어렵다 */}
         <span className="w-12 text-center tabular-nums">
           {view ? Math.round(view.scale * 100) : 100}%
         </span>
-        <TBtn label="확대 (+)" onClick={() => zoomCenter(BTN_STEP)}>
+        <TBtn label={msg.git.imageView.zoomIn} onClick={() => zoomCenter(BTN_STEP)}>
           <Plus size={13} />
         </TBtn>
         <div className="mx-1 h-4 w-px bg-edge" />
-        <TBtn label="화면 맞춤 (0)" onClick={applyFit}>
+        <TBtn label={msg.git.imageView.fitToView} onClick={applyFit}>
           <Scan size={13} />
         </TBtn>
-        <TBtn label="실제 크기 (1)" onClick={actualSize}>
+        <TBtn label={msg.git.imageView.actualSize} onClick={actualSize}>
           <Maximize size={13} />
         </TBtn>
       </div>
@@ -499,6 +502,7 @@ function OcrPanel({
   onHoverLine: (i: number | null) => void;
   onClose: () => void;
 }) {
+  const msg = useMessages();
   return (
     <div
       data-ocr-panel
@@ -507,9 +511,9 @@ function OcrPanel({
       <div className="flex h-8 shrink-0 items-center gap-1 border-b border-edge px-3 text-fg-dim">
         <span data-ocr-meta className="min-w-0 flex-1 truncate">
           {OCR_ENGINE_LABEL[result.engine]} · {result.languages.join(", ")} ·{" "}
-          {result.lines.length}줄
+          {msg.git.imageView.ocrLineCount(result.lines.length)}
         </span>
-        <TBtn label="닫기" onClick={onClose} data-ocr-close>
+        <TBtn label={msg.git.imageView.close} onClick={onClose} data-ocr-close>
           <X size={13} />
         </TBtn>
       </div>
@@ -521,7 +525,7 @@ function OcrPanel({
       >
         {result.lines.length === 0 ? (
           <div data-ocr-empty className="px-1 py-3 text-center text-fg-muted">
-            인식된 글자가 없습니다
+            {msg.git.imageView.ocrEmpty}
           </div>
         ) : (
           result.lines.map((line, i) => (
@@ -555,7 +559,7 @@ function OcrPanel({
           disabled={result.text === ""}
           className="flex w-full items-center justify-center gap-1.5 rounded border border-edge px-2 py-1.5 text-fg-muted hover:bg-raised hover:text-fg disabled:hover:bg-transparent disabled:hover:text-fg-muted"
         >
-          <Copy size={13} /> 전체 복사
+          <Copy size={13} /> {msg.git.imageView.copyAll}
         </button>
       </div>
     </div>

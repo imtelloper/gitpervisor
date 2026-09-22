@@ -13,6 +13,7 @@
 //
 // 배경: DOCS/task/39-image-render-v2.md
 
+import { currentMessages } from "../../i18n/ui-language";
 import { readableOn } from "../color";
 import {
   backgroundBlur,
@@ -596,7 +597,7 @@ export function occlusionIntegrity(scene: Scene): { warnings: string[] } {
       const n = scene.nodes[i];
       if (n?.kind === "mosaic") {
         warnings.push(
-          `가림 영역이 반투명 그룹 안에 있습니다 — 아래 원본이 비칩니다(그룹 불투명도 ${Math.round(c.opacity * 100)}%).`,
+          currentMessages().annotate.render.mosaicInTranslucentGroup(Math.round(c.opacity * 100)),
         );
         break;
       }
@@ -604,9 +605,7 @@ export function occlusionIntegrity(scene: Scene): { warnings: string[] } {
   }
   for (const n of byId.values()) {
     if (n.blend === "linear-burn") {
-      warnings.push(
-        "선형 번은 이 플랫폼의 캔버스에 없어 반전 합성으로 흉내 냅니다 — 투명 배경 위에서는 Figma 와 다릅니다.",
-      );
+      warnings.push(currentMessages().annotate.render.linearBurnEmulated);
       break;
     }
   }

@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { fuzzyMatch } from "../../lib/fuzzy";
 import { ipc } from "../../lib/ipc";
 import { useStatuses } from "../../queries";
@@ -22,6 +23,7 @@ type Pick = { path: string; repoId: string; isOuter: boolean };
  * QuickPick 프리미티브(09 정의)에 파일 소스를 주입하는 얇은 호스트.
  */
 export function QuickOpenHost() {
+  const msg = useMessages();
   const open = useUi((s) => s.quickOpenOpen);
   const setOpen = useUi((s) => s.setQuickOpenOpen);
   const selectedProjectId = useUi((s) => s.selectedProjectId);
@@ -151,14 +153,12 @@ export function QuickOpenHost() {
 
   return (
     <QuickPick
-      placeholder="파일 이름으로 검색…"
+      placeholder={msg.search.quickOpen.placeholder}
       source={source}
       onPick={onPick}
       onClose={() => setOpen(false)}
-      emptyText={lists ? "일치하는 파일 없음" : "파일 목록 불러오는 중…"}
-      footer={
-        truncated ? "일부만 표시 — 더 입력해 좁히세요(50,000개 초과)" : undefined
-      }
+      emptyText={lists ? msg.search.quickOpen.noMatches : msg.search.quickOpen.loadingFiles}
+      footer={truncated ? msg.search.quickOpen.truncatedFooter : undefined}
     />
   );
 }

@@ -1,6 +1,7 @@
 import { ExternalLink, FileWarning } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { errorMessage, ipc } from "../../lib/ipc";
 import { isVideo } from "../../lib/language-map";
 import { useUi } from "../../stores/ui";
@@ -44,6 +45,7 @@ export default function MediaView({
  * 그래서 실패를 감추지 않고 코덱 문제임을 알리고 외부 앱으로 넘긴다.
  */
 function AudioView({ projectId, path }: { projectId: string; path: string }) {
+  const msg = useMessages();
   const pushToast = useUi((s) => s.pushToast);
   const [url, setUrl] = useState<string | null>(null);
   const [mintError, setMintError] = useState<string | null>(null);
@@ -124,7 +126,7 @@ function AudioView({ projectId, path }: { projectId: string; path: string }) {
     return (
       <EmptyState
         icon={FileWarning}
-        title="미디어를 준비하지 못했습니다"
+        title={msg.git.mediaView.prepareFailed}
         desc={mintError}
       />
     );
@@ -133,30 +135,30 @@ function AudioView({ projectId, path }: { projectId: string; path: string }) {
     return (
       <EmptyState
         icon={FileWarning}
-        title="이 형식은 재생할 수 없습니다"
-        desc="현재 플랫폼의 웹뷰가 이 코덱을 지원하지 않습니다. 파일 자체는 정상일 수 있습니다."
+        title={msg.git.mediaView.unplayableTitle}
+        desc={msg.git.mediaView.unplayableDesc}
         action={
           <button
             onClick={openExternally}
             className="flex items-center gap-1.5 rounded border border-edge px-3 py-1.5 text-xs text-fg-muted hover:bg-raised hover:text-fg"
           >
-            <ExternalLink size={13} /> 외부 앱으로 열기
+            <ExternalLink size={13} /> {msg.git.diff.openExternally}
           </button>
         }
       />
     );
 
-  if (!url) return <EmptyState title="미디어 준비 중…" />;
+  if (!url) return <EmptyState title={msg.git.mediaView.preparing} />;
 
   return (
     <div className="flex h-full flex-col bg-base">
       <div className="flex h-8 shrink-0 items-center justify-end border-b border-edge px-3 text-xs text-fg-dim">
         <button
           onClick={openExternally}
-          title="시스템 기본 앱으로 열기"
+          title={msg.git.mediaView.openDefaultAppTitle}
           className="flex items-center gap-1 rounded px-2 py-0.5 hover:bg-raised hover:text-fg"
         >
-          <ExternalLink size={12} /> 외부 앱으로 열기
+          <ExternalLink size={12} /> {msg.git.diff.openExternally}
         </button>
       </div>
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-black/40 p-3">

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { mergeVars, resolveRequest } from "../../lib/apiclient";
 import { useApiClient } from "../../stores/apiclient";
 import { useUi } from "../../stores/ui";
@@ -39,6 +40,7 @@ export function ApiClientTab({
   projectId: string;
   active: boolean;
 }) {
+  const msg = useMessages();
   const urlRef = useRef<HTMLInputElement>(null);
   const pushToast = useUi((s) => s.pushToast);
 
@@ -72,7 +74,9 @@ export function ApiClientTab({
           if (unresolved.length > 0)
             pushToast(
               "info",
-              `정의되지 않은 변수: ${unresolved.map((u) => `{{${u}}}`).join(", ")}`,
+              msg.apiclient.tab.undefinedVariables(
+                unresolved.map((u) => `{{${u}}}`).join(", "),
+              ),
             );
         }
         void st.send(tabId);
@@ -85,7 +89,7 @@ export function ApiClientTab({
         const item = st.items[tabId];
         const collId = topCollectionOf(st.nodes, item?.requestNodeId ?? null);
         st.saveDraft(tabId, collId);
-        pushToast("success", "요청을 저장했습니다");
+        pushToast("success", msg.apiclient.tab.requestSaved);
         return;
       }
 
@@ -97,7 +101,7 @@ export function ApiClientTab({
         return;
       }
     },
-    [tabId, pushToast],
+    [tabId, pushToast, msg],
   );
 
   // 탭 언마운트 시 in-flight 요청 정리(§9.1.4) — closeTab과 별개로 안전망.

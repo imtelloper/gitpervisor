@@ -42,6 +42,8 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
+import type { Messages } from "../../i18n/messages";
+import { useMessages } from "../../i18n/ui-language";
 import type { DefaultPaint } from "../../lib/annotate/types";
 import { useImageEditorUi, type Mode, type Tool } from "../../stores/imageEditor";
 import { useOccludesWebview } from "../../stores/occlusion";
@@ -49,7 +51,6 @@ import { useOccludesWebview } from "../../stores/occlusion";
 export interface RailItem {
   /** 레일 항목은 도구가 아닐 수도 있다 — 크롭은 모드, 곡률은 토글이다(§3.2). */
   id: Tool | "crop" | "curvature";
-  label: string;
   /** 툴팁에 그대로 박히는 단축키 표기. 대안 키는 적지 않는다(e2e 정규식이 한 토큰만 읽는다). */
   key: string | null;
   icon: LucideIcon;
@@ -62,35 +63,67 @@ export interface RailItem {
 
 /** `.pen` 레일 순서 그대로. 형광펜은 레일에 없고 펜 플라이아웃에만 있다(§3.5). */
 export const TOOLS: readonly RailItem[] = [
-  { id: "select", label: "선택", key: "V", icon: MousePointer2, owner: 42, ready: true },
-  { id: "scale", label: "이동", key: "K", icon: Move, owner: 42, ready: true },
-  { id: "frame", label: "프레임", key: "F", icon: Frame, flyout: ["slice"], owner: 42, ready: true },
-  { id: "vpen", label: "펜", key: "P", icon: PenTool, flyout: ["pen", "highlight"], owner: 47, ready: true },
-  { id: "curvature", label: "곡률", key: null, icon: Spline, owner: 47, ready: true },
-  { id: "pen", label: "연필", key: "Shift+P", icon: Pencil, owner: 42, ready: true },
-  { id: "eraser", label: "지우개", key: "E", icon: Eraser, owner: 42, ready: true },
-  { id: "rect", label: "사각형", key: "R", icon: Square, flyout: ["polygon", "line", "arrow"], owner: 42, ready: true },
-  { id: "ellipse", label: "타원", key: "O", icon: Circle, owner: 42, ready: true },
-  { id: "polygon", label: "다각형", key: null, icon: Pentagon, owner: 46, ready: true },
-  { id: "line", label: "직선", key: "L", icon: Minus, owner: 42, ready: true },
-  { id: "arrow", label: "화살표", key: "A", icon: ArrowUpRight, owner: 42, ready: true },
-  { id: "text", label: "텍스트", key: "T", icon: Type, owner: 42, ready: true },
-  { id: "image", label: "이미지", key: null, icon: ImageIcon, owner: 42, ready: true },
-  { id: "badge", label: "번호 뱃지", key: "N", icon: Hash, owner: 42, ready: true },
-  { id: "callout", label: "말풍선", key: null, icon: MessageSquare, owner: 46, ready: true },
-  { id: "mosaic", label: "모자이크", key: "M", icon: Grid3x3, flyout: ["blur"], owner: 42, ready: true },
-  { id: "blur", label: "블러", key: null, icon: Droplet, owner: 42, ready: true },
-  { id: "eyedropper", label: "스포이드", key: "I", icon: Pipette, owner: 45, ready: false },
-  { id: "measure", label: "측정", key: null, icon: Ruler, owner: 43, ready: false },
-  { id: "crop", label: "크롭", key: "C", icon: Crop, owner: 42, ready: true },
-  { id: "slice", label: "슬라이스", key: "S", icon: Slice, owner: 52, ready: false },
-  { id: "hand", label: "손", key: "Space", icon: Hand, owner: 42, ready: true },
+  { id: "select", key: "V", icon: MousePointer2, owner: 42, ready: true },
+  { id: "scale", key: "K", icon: Move, owner: 42, ready: true },
+  { id: "frame", key: "F", icon: Frame, flyout: ["slice"], owner: 42, ready: true },
+  { id: "vpen", key: "P", icon: PenTool, flyout: ["pen", "highlight"], owner: 47, ready: true },
+  { id: "curvature", key: null, icon: Spline, owner: 47, ready: true },
+  { id: "pen", key: "Shift+P", icon: Pencil, owner: 42, ready: true },
+  { id: "eraser", key: "E", icon: Eraser, owner: 42, ready: true },
+  { id: "rect", key: "R", icon: Square, flyout: ["polygon", "line", "arrow"], owner: 42, ready: true },
+  { id: "ellipse", key: "O", icon: Circle, owner: 42, ready: true },
+  { id: "polygon", key: null, icon: Pentagon, owner: 46, ready: true },
+  { id: "line", key: "L", icon: Minus, owner: 42, ready: true },
+  { id: "arrow", key: "A", icon: ArrowUpRight, owner: 42, ready: true },
+  { id: "text", key: "T", icon: Type, owner: 42, ready: true },
+  { id: "image", key: null, icon: ImageIcon, owner: 42, ready: true },
+  { id: "badge", key: "N", icon: Hash, owner: 42, ready: true },
+  { id: "callout", key: null, icon: MessageSquare, owner: 46, ready: true },
+  { id: "mosaic", key: "M", icon: Grid3x3, flyout: ["blur"], owner: 42, ready: true },
+  { id: "blur", key: null, icon: Droplet, owner: 42, ready: true },
+  { id: "eyedropper", key: "I", icon: Pipette, owner: 45, ready: false },
+  { id: "measure", key: null, icon: Ruler, owner: 43, ready: false },
+  { id: "crop", key: "C", icon: Crop, owner: 42, ready: true },
+  { id: "slice", key: "S", icon: Slice, owner: 52, ready: false },
+  { id: "hand", key: "Space", icon: Hand, owner: 42, ready: true },
 ];
 
 /** 레일에는 없고 플라이아웃에만 있는 항목 — 지금은 형광펜 하나다. */
 const FLYOUT_ONLY: readonly RailItem[] = [
-  { id: "highlight", label: "형광펜", key: "H", icon: Highlighter, owner: 42, ready: true },
+  { id: "highlight", key: "H", icon: Highlighter, owner: 42, ready: true },
 ];
+
+/** 라벨은 표 밖에서 UI 언어로 고른다 — 표는 모듈 최상위라 언어가 바뀌어도 다시 계산되지 않는다. */
+function toolLabel(msg: Messages, id: RailItem["id"]): string {
+  const t = msg.imageEditor.toolRail;
+  const labels: Record<RailItem["id"], string> = {
+    select: t.select,
+    scale: t.scale,
+    frame: t.frame,
+    vpen: t.vpen,
+    curvature: t.curvature,
+    pen: t.pen,
+    eraser: t.eraser,
+    rect: t.rect,
+    ellipse: t.ellipse,
+    polygon: t.polygon,
+    line: t.line,
+    arrow: t.arrow,
+    text: t.text,
+    image: t.image,
+    badge: t.badge,
+    callout: t.callout,
+    mosaic: t.mosaic,
+    blur: t.blur,
+    eyedropper: t.eyedropper,
+    measure: t.measure,
+    crop: t.crop,
+    slice: t.slice,
+    hand: t.hand,
+    highlight: t.highlight,
+  };
+  return labels[id];
+}
 
 const BY_ID = new Map<string, RailItem>(
   [...TOOLS, ...FLYOUT_ONLY].map((t) => [t.id, t]),
@@ -147,8 +180,9 @@ function isActive(item: RailItem, tool: Tool, mode: Mode, curvature: boolean): b
   return mode.kind !== "crop" && tool === item.id;
 }
 
-function titleOf(item: RailItem): string {
-  return item.key ? `${item.label} (${item.key})` : item.label;
+function titleOf(msg: Messages, item: RailItem): string {
+  const label = toolLabel(msg, item.id);
+  return item.key ? `${label} (${item.key})` : label;
 }
 
 const BTN = "relative flex h-9 w-9 shrink-0 items-center justify-center rounded";
@@ -162,6 +196,7 @@ export default function ToolRail({
   onPlaceImage,
   tools,
 }: ToolRailProps) {
+  const msg = useMessages();
   const tool = useImageEditorUi((s) => s.tool);
   const mode = useImageEditorUi((s) => s.mode);
   const curvature = useImageEditorUi((s) => s.toggles.curvature);
@@ -246,7 +281,7 @@ export default function ToolRail({
       */}
       <div
         role="toolbar"
-        aria-label="도구"
+        aria-label={msg.imageEditor.toolRail.ariaLabel}
         aria-orientation="vertical"
         className="flex w-14 shrink-0 flex-col items-center gap-0.5 overflow-y-auto border-r border-edge bg-panel py-1.5"
       >
@@ -256,7 +291,7 @@ export default function ToolRail({
           return (
             <button
               key={item.id}
-              title={titleOf(item)}
+              title={titleOf(msg, item)}
               aria-pressed={on}
               onClick={() => {
                 if (heldRef.current) {
@@ -301,7 +336,7 @@ export default function ToolRail({
           피커 팝오버는 45 가 붙이고, 지금은 속성 탭으로 보내는 것이 전부다.
         */}
         <button
-          title="선 색 · 채우기 색"
+          title={msg.imageEditor.toolRail.swatchTitle}
           onClick={() => {
             setTab("inspector", "props");
             onFocusRoot();
@@ -348,7 +383,7 @@ export default function ToolRail({
             {flyout.items.map((sub) => (
               <button
                 key={sub.id}
-                title={titleOf(sub)}
+                title={titleOf(msg, sub)}
                 onClick={() => {
                   setFlyout(null);
                   activate(sub);
@@ -356,7 +391,7 @@ export default function ToolRail({
                 className="flex w-full items-center gap-2 px-3 py-1 text-left text-fg-muted hover:bg-raised hover:text-fg"
               >
                 <sub.icon size={14} className="shrink-0" />
-                <span className="flex-1">{sub.label}</span>
+                <span className="flex-1">{toolLabel(msg, sub.id)}</span>
                 {sub.key && <span className="text-[11px] text-fg-dim">{sub.key}</span>}
               </button>
             ))}

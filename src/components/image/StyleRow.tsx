@@ -15,6 +15,7 @@
 
 import { Unlink } from "lucide-react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { styleSection, styleState, type StyleSlot } from "../../lib/annotate/styles";
 import type { Node, StyleId } from "../../lib/annotate/types";
 import { useImageLibrary } from "../../stores/imageLibrary";
@@ -30,6 +31,7 @@ export interface StyleRowProps {
 }
 
 export function StyleRow({ slot, nodes, onDetach, onResync }: StyleRowProps) {
+  const msg = useMessages();
   const lib = useImageLibrary((s) => s.lib);
 
   let id: StyleId | undefined;
@@ -50,33 +52,34 @@ export function StyleRow({ slot, nodes, onDetach, onResync }: StyleRowProps) {
   const list =
     slot === "text" ? lib.textStyles : slot === "effect" ? lib.effectStyles : lib.colorStyles;
   const name = list.find((s) => s.id === id)?.name ?? null;
+  const t = msg.imagePanels.styleRow;
 
   return (
     <div className="mt-1 flex items-center gap-1.5 text-[11px]">
-      <span className="shrink-0 text-[10px] text-fg-dim">스타일</span>
+      <span className="shrink-0 text-[10px] text-fg-dim">{t.heading}</span>
       <span
         title={name ?? undefined}
         className={`min-w-0 flex-1 truncate ${missing ? "text-fg-dim" : "text-fg-muted"}`}
       >
         {/* 이름은 라이브러리에만 있다 — 지워진 스타일은 부를 이름이 없어 상태를 그대로 적는다.
             재동기(51 §3.7)가 곧 링크를 끊으므로 이 표시는 스쳐 지나간다. */}
-        {name === null ? "없는 스타일" : styleSection(name).display}
+        {name === null ? t.missingStyle : styleSection(name).display}
       </span>
       {stale && (
         <button
           type="button"
           onClick={onResync}
-          title="라이브러리 값으로 되돌립니다"
+          title={t.resyncTitle}
           className="shrink-0 rounded bg-accent/15 px-1 text-[9px] text-accent hover:bg-accent/25"
         >
-          갱신 가능
+          {t.resync}
         </button>
       )}
       <button
         type="button"
         onClick={onDetach}
-        title="스타일 연결 해제 (값은 그대로 남습니다)"
-        aria-label="스타일 연결 해제"
+        title={t.detachTitle}
+        aria-label={t.detachLabel}
         className="shrink-0 text-fg-dim hover:text-fg"
       >
         <Unlink size={11} />

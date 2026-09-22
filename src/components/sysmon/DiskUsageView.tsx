@@ -13,6 +13,8 @@ import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
+import type { Messages } from "../../i18n/messages";
+import { useMessages } from "../../i18n/ui-language";
 import { formatBytes } from "../../lib/format";
 import { errorMessage, ipc } from "../../lib/ipc";
 import type { DiskRoot, DiskScanStatus } from "../../lib/ipc";
@@ -38,11 +40,9 @@ function fmtInt(n: number): string {
 }
 
 /** 크기 셀 툴팁 — 할당 크기가 논리 크기와 다르면(압축·스파스) 함께 보여준다(§2.2). */
-function sizeTip(bytes: number, alloc: number): string | undefined {
+function sizeTip(bytes: number, alloc: number, msg: Messages): string | undefined {
   if (alloc === bytes) return undefined;
-  return `논리 ${formatBytes(bytes)} · 디스크 할당 ${formatBytes(alloc)}${
-    alloc < bytes ? " (압축/스파스)" : ""
-  }`;
+  return msg.sysmon.diskUsage.sizeTip(formatBytes(bytes), formatBytes(alloc), alloc < bytes);
 }
 
 /** 스캔 루트 + rel + name → 절대경로 ("탐색기에서 열기"용). 루트의 구분자를 따른다. */
@@ -86,6 +86,7 @@ function DirLevel({
   parentBytes: number;
   onReveal: (path: string) => void;
 }) {
+  const msg = useMessages();
   const { data, isLoading, error } = useDiskChildren(scanRoot, rel);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
@@ -95,7 +96,7 @@ function DirLevel({
         className="py-1 text-[11px] text-fg-dim"
         style={{ paddingLeft: depth * 14 + 24 }}
       >
-        읽는 중…
+        {msg.sysmon.common.reading}
       </div>
     );
   }
@@ -105,7 +106,7 @@ function DirLevel({
         className="py-1 text-[11px] text-danger/80"
         style={{ paddingLeft: depth * 14 + 24 }}
       >
-        {error ? errorMessage(error) : "읽기 실패"}
+        {error ? errorMessage(error) : msg.sysmon.diskUsage.readFailed}
       </div>
     );
   }
@@ -148,14 +149,14 @@ function DirLevel({
                   e.stopPropagation();
                   onReveal(absPath(scanRoot, childRel));
                 }}
-                title="탐색기에서 열기"
+                title={msg.sysmon.common.revealInExplorer}
                 className="shrink-0 rounded p-0.5 text-fg-dim opacity-0 hover:bg-raised hover:text-fg group-hover:opacity-100"
               >
                 <FolderOpen size={11} />
               </button>
               <span
                 className="w-[76px] shrink-0 text-right font-mono text-fg-muted tabular-nums"
-                title={sizeTip(d.bytes, d.alloc)}
+                title={sizeTip(d.bytes, d.alloc, msg)}
               >
                 {formatBytes(d.bytes)}
               </span>
@@ -195,14 +196,14 @@ function DirLevel({
           <button
             type="button"
             onClick={() => onReveal(absPath(scanRoot, rel, f.name))}
-            title="탐색기에서 열기"
+            title={msg.sysmon.common.revealInExplorer}
             className="shrink-0 rounded p-0.5 text-fg-dim opacity-0 hover:bg-raised hover:text-fg group-hover:opacity-100"
           >
             <FolderOpen size={11} />
           </button>
           <span
             className="w-[76px] shrink-0 text-right font-mono text-fg-muted tabular-nums"
-            title={sizeTip(f.bytes, f.alloc)}
+            title={sizeTip(f.bytes, f.alloc, msg)}
           >
             {formatBytes(f.bytes)}
           </span>
@@ -222,8 +223,7 @@ function DirLevel({
           className="py-1 text-[10px] text-fg-dim"
           style={{ paddingLeft: depth * 14 + 24 }}
         >
-          파일 {fmtInt(data.truncatedFiles)}개는 표시 범위 밖입니다(크기순 상위
-          1,000개만)
+          {msg.sysmon.diskUsage.truncatedFiles(data.truncatedFiles)}
         </div>
       ) : null}
     </>
@@ -238,6 +238,7 @@ function TopFilesList({
   scanRoot: string;
   onReveal: (path: string) => void;
 }) {
+  const msg = useMessages();
   const { data, isLoading } = useQuery({
     queryKey: ["disk-top", scanRoot],
     queryFn: () => ipc.diskTopFiles(100),
@@ -245,7 +246,7 @@ function TopFilesList({
     gcTime: 10 * 60_000,
   });
   if (isLoading) {
-    return <div className="px-3 py-4 text-[11px] text-fg-dim">읽는 중…</div>;
+    return <div className="px-3 py-4 text-[11px] text-fg-dim">{msg.sysmon.common.reading}</div>;
   }
   const max = data?.[0]?.bytes ?? 0;
   return (
@@ -269,7 +270,7 @@ function TopFilesList({
           <button
             type="button"
             onClick={() => onReveal(f.path)}
-            title="탐색기에서 열기"
+            title={msg.sysmon.common.revealInExplorer}
             className="shrink-0 rounded p-0.5 text-fg-dim opacity-0 hover:bg-raised hover:text-fg group-hover:opacity-100"
           >
             <FolderOpen size={11} />
@@ -295,6 +296,7 @@ function TopFilesList({
  * 진행률은 스캔 시작 시 만든 Channel로 스트리밍, 창 재오픈 시엔 status 폴링으로 재동기화.
  */
 export function DiskUsageView() {
+  const msg = useMessages();
   const qc = useQueryClient();
   const pushToast = useUi((s) => s.pushToast);
   const [status, setStatus] = useState<DiskScanStatus | null>(null);
@@ -373,7 +375,7 @@ export function DiskUsageView() {
     const picked = await open({
       directory: true,
       multiple: false,
-      title: "분석할 폴더 선택",
+      title: msg.sysmon.diskUsage.pickFolderDialogTitle,
     });
     if (!picked || Array.isArray(picked)) return;
     startScan(picked);
@@ -411,9 +413,11 @@ export function DiskUsageView() {
                 type="button"
                 disabled={scanning}
                 onClick={() => startScan(r.mount)}
-                title={`${r.mount} 사용 ${formatBytes(used)} / ${formatBytes(
-                  r.total,
-                )} — 클릭하면 스캔`}
+                title={msg.sysmon.diskUsage.rootTitle(
+                  r.mount,
+                  formatBytes(used),
+                  formatBytes(r.total),
+                )}
                 className={`flex items-center gap-1.5 rounded border px-2 py-1 text-[11px] transition-colors ${
                   status?.root === r.mount
                     ? "border-accent bg-accent/15 text-accent"
@@ -429,7 +433,7 @@ export function DiskUsageView() {
                   />
                 </span>
                 <span className="font-mono text-[10px] text-fg-dim tabular-nums">
-                  {formatBytes(r.available)} 남음
+                  {msg.sysmon.diskUsage.rootFree(formatBytes(r.available))}
                 </span>
               </button>
             );
@@ -443,7 +447,7 @@ export function DiskUsageView() {
             }`}
           >
             <FolderSearch size={12} />
-            폴더 선택…
+            {msg.sysmon.diskUsage.pickFolder}
           </button>
           <div className="flex-1" />
           {scanning ? (
@@ -453,7 +457,7 @@ export function DiskUsageView() {
               className="flex items-center gap-1 rounded border border-danger/40 px-2 py-1 text-[11px] text-danger hover:bg-danger/15"
             >
               <Square size={10} className="fill-current" />
-              중지
+              {msg.sysmon.diskUsage.stop}
             </button>
           ) : null}
         </div>
@@ -474,19 +478,28 @@ export function DiskUsageView() {
             ) : null}
             <span className="min-w-0 truncate font-mono text-[10px] text-fg-dim tabular-nums">
               {scanning
-                ? `스캔 중 — ${formatBytes(status.bytes)} · 파일 ${fmtInt(status.files)} · 폴더 ${fmtInt(status.dirs)}`
+                ? msg.sysmon.diskUsage.scanProgress(
+                    formatBytes(status.bytes),
+                    status.files,
+                    status.dirs,
+                  )
                 : status.phase === "done"
-                  ? `${status.root} — ${formatBytes(status.bytes)}${
+                  ? msg.sysmon.diskUsage.scanDone(
+                      status.root,
+                      formatBytes(status.bytes),
                       // 할당 크기가 0.5% 이상 다르면(압축·스파스 볼륨) 함께 표기
                       Math.abs(status.alloc - status.bytes) > status.bytes * 0.005
-                        ? ` (할당 ${formatBytes(status.alloc)})`
-                        : ""
-                    } · 파일 ${fmtInt(status.files)} · 폴더 ${fmtInt(status.dirs)} · ${(status.elapsedMs / 1000).toFixed(1)}s`
+                        ? formatBytes(status.alloc)
+                        : null,
+                      status.files,
+                      status.dirs,
+                      (status.elapsedMs / 1000).toFixed(1),
+                    )
                   : status.phase === "cancelled"
-                    ? "스캔이 취소되었습니다"
-                    : (status.error ?? "스캔 실패")}
+                    ? msg.sysmon.diskUsage.scanCancelled
+                    : (status.error ?? msg.sysmon.diskUsage.scanFailed)}
               {status.skipped > 0
-                ? ` · 접근 불가 폴더 ${fmtInt(status.skipped)}개 제외`
+                ? msg.sysmon.diskUsage.skippedDirs(status.skipped)
                 : ""}
             </span>
             {scanRoot ? (
@@ -495,9 +508,9 @@ export function DiskUsageView() {
                 <div className="flex shrink-0 overflow-hidden rounded border border-edge text-[10px]">
                   {(
                     [
-                      ["tree", "트리"],
-                      ["map", "트리맵"],
-                      ["top", "큰 파일 Top 100"],
+                      ["tree", msg.sysmon.diskUsage.modeTree],
+                      ["map", msg.sysmon.diskUsage.modeTreemap],
+                      ["top", msg.sysmon.diskUsage.modeTopFiles],
                     ] as const
                   ).map(([k, label]) => (
                     <button
@@ -531,13 +544,19 @@ export function DiskUsageView() {
             <>
               <div className="sticky top-0 z-10 flex items-center gap-1 border-b border-edge bg-panel py-1.5 pl-[4px] pr-2 text-[10px] font-medium text-fg-dim">
                 <span className="w-3 shrink-0" />
-                <span className="min-w-0 flex-1 pl-4">이름</span>
-                <span className="w-[76px] shrink-0 text-right">크기</span>
-                <span className="w-[110px] shrink-0 px-1.5 text-right">
-                  상위 대비
+                <span className="min-w-0 flex-1 pl-4">{msg.sysmon.common.columnName}</span>
+                <span className="w-[76px] shrink-0 text-right">
+                  {msg.sysmon.diskUsage.columnSize}
                 </span>
-                <span className="w-[64px] shrink-0 text-right">파일</span>
-                <span className="w-[74px] shrink-0 text-right">수정</span>
+                <span className="w-[110px] shrink-0 px-1.5 text-right">
+                  {msg.sysmon.diskUsage.columnShare}
+                </span>
+                <span className="w-[64px] shrink-0 text-right">
+                  {msg.sysmon.diskUsage.columnFiles}
+                </span>
+                <span className="w-[74px] shrink-0 text-right">
+                  {msg.sysmon.diskUsage.columnModified}
+                </span>
               </div>
               <DirLevel
                 scanRoot={scanRoot}
@@ -559,9 +578,9 @@ export function DiskUsageView() {
           )
         ) : !status || status.phase === "idle" ? (
           <div className="px-4 py-10 text-center text-xs text-fg-dim">
-            드라이브를 선택하면 폴더별 용량을 분석합니다
+            {msg.sysmon.diskUsage.emptyTitle}
             <div className="mt-1 text-[10px]">
-              symlink·정션은 계상하지 않으며, 접근 권한이 없는 폴더는 제외됩니다
+              {msg.sysmon.diskUsage.emptyNote}
             </div>
           </div>
         ) : null}

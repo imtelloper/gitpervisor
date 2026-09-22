@@ -9,6 +9,7 @@ import { PromptHost } from "./components/common/PromptDialog";
 import { Toasts } from "./components/common/Toast";
 import { TranslateHost } from "./components/common/TranslateCard";
 import { FloatTitleBar } from "./components/FloatTitleBar";
+import { useMessages } from "./i18n/ui-language";
 import { attachVideoEvents } from "./lib/events";
 import type { DiffTarget } from "./lib/ipc";
 import { docTarget } from "./lib/floating";
@@ -80,6 +81,7 @@ export function DocWindow({ docId }: { docId: string }) {
  * 저장된 요약이 창을 넘어 보이는 것은 Rust 의 `report://changed` 브로드캐스트가 맡는다.
  */
 function ReportWindow() {
+  const msg = useMessages();
   // 이 창에도 저장된 테마 적용 — 로드 전엔 main.tsx의 localStorage 선적용 값이 유지된다
   // (FileDocWindow와 같은 처리).
   const { data: settings } = useSettings();
@@ -117,7 +119,7 @@ function ReportWindow() {
 
   return (
     <div className="flex h-screen flex-col bg-base">
-      <FloatTitleBar title="작업 리포트" badge="리포트" />
+      <FloatTitleBar title={msg.windows.docWindow.reportTitle} badge={msg.windows.docWindow.reportBadge} />
       <Suspense
         fallback={
           <div className="min-h-0 flex-1">
@@ -149,6 +151,7 @@ function ReportWindow() {
  * 호스트(토스트·확인·프롬프트)도 **여기에** 있어야 한다: 메인 창의 호스트는 저쪽 스토어만 본다.
  */
 function FileDocWindow({ docId }: { docId: string }) {
+  const msg = useMessages();
   const target = useMemo(() => docTarget(docId), [docId]);
   /**
    * 이 창 **안에서** 다른 파일로 갈아탄 경로. 창은 "그 파일 하나"를 보는 것이 원칙이지만,
@@ -224,20 +227,20 @@ function FileDocWindow({ docId }: { docId: string }) {
   }, [qc]);
 
   const shownPath = navPath ?? target?.path ?? null;
-  const name = shownPath ? (shownPath.split("/").pop() ?? shownPath) : "파일";
+  const name = shownPath ? (shownPath.split("/").pop() ?? shownPath) : msg.windows.docWindow.fileFallbackName;
   const isMd = !!shownPath && languageOf(shownPath) === "markdown";
 
   return (
     <div className="flex h-screen flex-col bg-base">
-      <FloatTitleBar title={name} badge="파일" />
+      <FloatTitleBar title={name} badge={msg.windows.docWindow.fileBadge} />
       <div className="min-h-0 flex-1">
         {!target ? (
           // 여는 쪽이 적어 둔 대상이 없다 = localStorage가 지워졌거나 보관 상한에 밀려났다.
           // 조용히 빈 창을 남기지 않는다 — 무엇이 없어서 못 여는지 말한다.
           <EmptyState
             icon={FileQuestion}
-            title="열 파일을 찾지 못했습니다"
-            desc="창 정보가 만료되었습니다. 파일트리에서 다시 열어 주세요."
+            title={msg.windows.docWindow.targetMissingTitle}
+            desc={msg.windows.docWindow.targetMissingDesc}
           />
         ) : isMd ? (
           <MarkdownDoc projectId={target.projectId} path={shownPath ?? target.path} />
@@ -272,6 +275,7 @@ function FileDocWindow({ docId }: { docId: string }) {
 function MarkdownDoc({ projectId, path }: { projectId: string; path: string }) {
   // 메인 창 뷰어와 **같은 쿼리 키**를 쓴다(queries.keys.diff) — main.tsx가 창을 띄우기 전에
   // 같은 키로 프리페치해 두므로, 여기 마운트 시점엔 대개 이미 캐시에 있다.
+  const msg = useMessages();
   const { data, isLoading, error } = useDiff(projectId, { mode: "file", path });
   const [raw, setRaw] = useState(false);
 
@@ -279,7 +283,7 @@ function MarkdownDoc({ projectId, path }: { projectId: string; path: string }) {
     return (
       <EmptyState
         icon={FileWarning}
-        title="파일을 불러오지 못했습니다"
+        title={msg.windows.docWindow.loadFailedTitle}
         desc={errorMessage(error)}
       />
     );
@@ -288,8 +292,8 @@ function MarkdownDoc({ projectId, path }: { projectId: string; path: string }) {
     return (
       <EmptyState
         icon={FileWarning}
-        title="파일이 너무 큽니다"
-        desc="1.5MB를 초과하는 파일은 표시하지 않습니다"
+        title={msg.windows.docWindow.tooLargeTitle}
+        desc={msg.windows.docWindow.tooLargeDesc}
       />
     );
 
@@ -301,7 +305,7 @@ function MarkdownDoc({ projectId, path }: { projectId: string; path: string }) {
         <div className="flex-1" />
         <button
           onClick={() => setRaw((v) => !v)}
-          title={raw ? "미리보기 (렌더된 마크다운)" : "원본 보기 (마크다운 소스)"}
+          title={raw ? msg.windows.docWindow.markdownShowRendered : msg.windows.docWindow.markdownShowSource}
           className="shrink-0 rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
         >
           {raw ? <Eye size={14} /> : <Code2 size={14} />}
@@ -324,9 +328,10 @@ function MarkdownDoc({ projectId, path }: { projectId: string; path: string }) {
 }
 
 function Loading() {
+  const msg = useMessages();
   return (
     <div className="flex h-full items-center justify-center text-xs text-fg-dim">
-      불러오는 중…
+      {msg.windows.docWindow.loading}
     </div>
   );
 }

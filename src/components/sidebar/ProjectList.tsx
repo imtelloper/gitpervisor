@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
 import { openLogWindow } from "../../lib/floating";
 import type { OpenTarget, Project } from "../../lib/ipc";
 import { errorMessage, ipc } from "../../lib/ipc";
@@ -74,6 +75,7 @@ function MenuItem({
 }
 
 export function ProjectList() {
+  const msg = useMessages();
   const { data: projects } = useProjects();
   const { data: statuses } = useStatuses();
   const addProject = useAddProject();
@@ -252,7 +254,7 @@ export function ProjectList() {
     const picked = await open({
       directory: true,
       multiple: true,
-      title: "git 프로젝트 폴더 선택 (여러 개 선택 가능)",
+      title: msg.shell.projectList.addDialogTitle,
     });
     if (!picked) return;
     const paths = Array.isArray(picked) ? picked : [picked];
@@ -272,19 +274,19 @@ export function ProjectList() {
     const parent = await open({
       directory: true,
       multiple: false,
-      title: "새 프로젝트를 만들 위치 선택",
+      title: msg.shell.projectList.createLocationDialogTitle,
     });
     if (!parent || Array.isArray(parent)) return;
     useUi.getState().askPrompt({
-      title: "새 프로젝트 폴더",
-      label: `${parent} 안에 만듭니다 (git init 포함)`,
-      placeholder: "폴더 이름",
-      confirmLabel: "만들기",
+      title: msg.shell.projectList.createPromptTitle,
+      label: msg.shell.projectList.createPromptLabel(parent),
+      placeholder: msg.shell.projectList.createPromptPlaceholder,
+      confirmLabel: msg.shell.projectList.createPromptConfirm,
       validate: (v) => {
         const t = v.trim();
-        if (!t) return "이름을 입력하세요";
+        if (!t) return msg.shell.projectList.folderNameRequired;
         if (/[\\/]/.test(t) || t.includes("..") || t === "." || t === "..")
-          return "폴더 이름에 경로 구분자나 '..'는 쓸 수 없습니다";
+          return msg.shell.projectList.folderNameInvalid;
         return null;
       },
       onConfirm: (name) => {
@@ -303,7 +305,7 @@ export function ProjectList() {
     const picked = await open({
       directory: true,
       multiple: false,
-      title: `'${project.name}'의 새 위치 선택`,
+      title: msg.shell.projectList.editPathDialogTitle(project.name),
     });
     if (!picked || Array.isArray(picked)) return;
     updatePathMutate({ id: project.id, path: picked });
@@ -331,7 +333,7 @@ export function ProjectList() {
   }
 
   function handleCopyPath(project: Project) {
-    copyWithToast(project.path, "프로젝트 경로를 복사했습니다");
+    copyWithToast(project.path, msg.shell.projectList.pathCopied);
     setMenu(null);
   }
 
@@ -355,14 +357,14 @@ export function ProjectList() {
     setMenu(null);
     const status = statusById.get(project.id);
     if (status && !status.branch) {
-      useUi.getState().pushToast("error", "detached HEAD 상태에서는 푸시할 수 없습니다");
+      useUi.getState().pushToast("error", msg.shell.projectList.pushDetached);
       return;
     }
     if (status && !status.upstream) {
       useUi.getState().askConfirm({
-        title: "업스트림 설정",
-        message: `'${status.branch}' 브랜치에 업스트림이 없습니다. origin에 브랜치를 만들고 푸시할까요?`,
-        confirmLabel: "푸시",
+        title: msg.shell.projectList.upstreamTitle,
+        message: msg.shell.projectList.upstreamMessage(status.branch),
+        confirmLabel: msg.shell.projectList.upstreamConfirm,
         onConfirm: () => gitOps.push(project.id, true),
       });
       return;
@@ -383,14 +385,14 @@ export function ProjectList() {
           <button
             onClick={handleAdd}
             disabled={addProject.isPending}
-            title="기존 git 레포 폴더를 프로젝트로 추가"
+            title={msg.shell.projectList.addExistingTitle}
             className="shrink-0 rounded p-1 text-fg-dim hover:bg-raised hover:text-fg disabled:opacity-50"
           >
             <Plus size={14} />
           </button>
           <button
             onClick={() => void handleCreateFolder()}
-            title="새 프로젝트 폴더 만들기 (git init 포함)"
+            title={msg.shell.projectList.createNewTitle}
             className="shrink-0 rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
           >
             <FolderPlus size={13} />
@@ -399,8 +401,8 @@ export function ProjectList() {
             onClick={toggleProjectColors}
             title={
               projectColorsOn
-                ? "프로젝트 색 구분 끄기 (목록을 단색으로)"
-                : "프로젝트 색 구분 켜기"
+                ? msg.shell.projectList.colorsOffTitle
+                : msg.shell.projectList.colorsOnTitle
             }
             aria-pressed={projectColorsOn}
             className={`shrink-0 rounded p-1 ${
@@ -415,8 +417,8 @@ export function ProjectList() {
             onClick={toggleProjectSort}
             title={
               sortByChanges
-                ? "변경 우선 정렬 끄기 (등록 순서로)"
-                : "변경/활동 있는 프로젝트 먼저 보기"
+                ? msg.shell.projectList.sortOffTitle
+                : msg.shell.projectList.sortOnTitle
             }
             className={`shrink-0 rounded p-1 ${
               sortByChanges
@@ -453,10 +455,13 @@ export function ProjectList() {
         )}
         {projects && orderedProjects.length === 0 && (
           <div className="px-3 py-4 text-xs leading-5 text-fg-dim">
-            아직 프로젝트가 없습니다.
+            {msg.shell.projectList.emptyTitle}
             <br />
-            위 <Plus size={11} className="inline" /> 버튼으로 기존 폴더를 추가하거나{" "}
-            <FolderPlus size={11} className="inline" /> 버튼으로 새로 만드세요.
+            {msg.shell.projectList.emptyHintBeforeAddIcon}
+            <Plus size={11} className="inline" />
+            {msg.shell.projectList.emptyHintBetweenIcons}
+            <FolderPlus size={11} className="inline" />
+            {msg.shell.projectList.emptyHintAfterCreateIcon}
           </div>
         )}
       </div>
@@ -495,38 +500,38 @@ export function ProjectList() {
           <div className="my-1 border-t border-edge" />
           <MenuItem
             icon={StickyNote}
-            label="메모"
+            label={msg.shell.projectList.menuNotes}
             onClick={() => handleMemo(menu.project)}
           />
           <div className="my-1 border-t border-edge" />
           <MenuItem
             icon={FolderOpen}
-            label="탐색기에서 열기"
+            label={msg.shell.projectList.menuOpenInExplorer}
             onClick={() => handleOpenIn(menu.project, "explorer")}
           />
           <MenuItem
             icon={Terminal}
-            label="터미널에서 열기"
+            label={msg.shell.projectList.menuOpenInTerminal}
             onClick={() => handleOpenIn(menu.project, "terminal")}
           />
           <MenuItem
             icon={Copy}
-            label="프로젝트 경로 복사"
+            label={msg.shell.projectList.menuCopyPath}
             onClick={() => handleCopyPath(menu.project)}
           />
           <MenuItem
             icon={FolderSync}
-            label="프로젝트 경로 수정"
+            label={msg.shell.projectList.menuEditPath}
             onClick={() => void handleEditPath(menu.project)}
           />
           <MenuItem
             icon={RefreshCw}
-            label="원격 새로고침"
+            label={msg.shell.projectList.menuRefreshRemote}
             onClick={() => handleRefreshRemote(menu.project)}
           />
           <MenuItem
             icon={HardDrive}
-            label="용량 새로고침"
+            label={msg.shell.projectList.menuRefreshSize}
             onClick={() => {
               refreshSizes();
               setMenu(null);
@@ -536,7 +541,7 @@ export function ProjectList() {
           {menu.project.logo && (
             <MenuItem
               icon={ImageOff}
-              label="로고 해제"
+              label={msg.shell.projectList.menuClearLogo}
               onClick={() => {
                 setLogo.mutate({ id: menu.project.id, relPath: null });
                 setMenu(null);
@@ -546,7 +551,7 @@ export function ProjectList() {
           <div className="my-1 border-t border-edge" />
           <MenuItem
             icon={Trash2}
-            label="프로젝트 제거"
+            label={msg.shell.projectList.menuRemoveProject}
             danger
             onClick={() => {
               handleRemove(menu.project.id);

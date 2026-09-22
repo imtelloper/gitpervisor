@@ -7,6 +7,7 @@
 // v1 문서(`{stroke, strokeWidth, fill, radius:number, head}`)도 같은 입구로 들어온다.
 // `upgradeV1Object` 가 렌더 현행 해석 그대로 페인트 스택으로 옮긴다(§3.3 매핑표).
 
+import { currentMessages } from "../../i18n/ui-language";
 import { STYLE_DETACH_KEYS, type StyleSlot } from "./styles";
 import {
   BLEND_MODES,
@@ -448,7 +449,7 @@ export function normalizeNode(input: unknown): Node | null {
 /** v1 객체 하나를 v2 노드로. (내부적으로 normalizeNode 와 같은 경로다.) */
 export function upgradeV1Object(o: AnnoObjectV1): Node {
   const n = normalizeNode(o);
-  if (!n) throw new Error(`upgradeV1Object: 알 수 없는 kind ${(o as { kind?: string }).kind}`);
+  if (!n) throw new Error(`upgradeV1Object: 알 수 없는 kind ${(o as { kind?: string }).kind}`); // i18n-ok: 내부 불변식 위반(개발자용)
   return n;
 }
 
@@ -584,17 +585,17 @@ export function parseImageDoc(json: string): { env: ImageDocEnvelope; warnings: 
   try {
     raw = JSON.parse(json);
   } catch {
-    throw Object.assign(new Error("사이드카 JSON 을 읽을 수 없습니다"), { code: "PARSE_ERROR" });
+    throw Object.assign(new Error(currentMessages().annotate.schema.sidecarUnreadable), { code: "PARSE_ERROR" });
   }
   const r = isRec(raw) ? raw : {};
   const v = num(r.v, 1);
   if (v > DOC_VERSION) {
-    throw Object.assign(new Error(`문서 버전 ${v} 은 이 앱보다 높습니다`), { code: "UNSUPPORTED_VERSION" });
+    throw Object.assign(new Error(currentMessages().annotate.schema.versionTooNew(v)), { code: "UNSUPPORTED_VERSION" });
   }
   const foreign: unknown[] = Array.isArray(r.foreign) ? [...r.foreign] : [];
   const before = foreign.length;
   const doc = normalizeDoc(r.doc, foreign);
-  if (foreign.length > before) warnings.push(`알 수 없는 노드 ${foreign.length - before}개를 보존했습니다`);
+  if (foreign.length > before) warnings.push(currentMessages().annotate.schema.foreignNodesKept(foreign.length - before));
   return {
     env: {
       v: 2,
@@ -607,7 +608,7 @@ export function parseImageDoc(json: string): { env: ImageDocEnvelope; warnings: 
       doc,
       foreign,
       log: Array.isArray(r.log)
-        ? r.log.filter(isRec).map((e) => ({ at: num(e.at, 0), label: str(e.label, "편집") }))
+        ? r.log.filter(isRec).map((e) => ({ at: num(e.at, 0), label: str(e.label, currentMessages().annotate.history.edit) }))
         : [],
     },
     warnings,

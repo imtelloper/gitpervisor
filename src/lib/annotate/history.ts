@@ -9,6 +9,8 @@
 //
 // 배경: DOCS/task/41-image-doc-persist-history.md §3.4
 
+import { currentMessages } from "../../i18n/ui-language";
+import type { Messages } from "../../i18n/messages";
 import type { EditorDoc, Node } from "./types";
 
 /** 스냅샷 상한. 초과하면 가장 오래된 것부터 버린다. */
@@ -42,7 +44,7 @@ export class DocHistory {
   /** 이전 세션 기록(가장 오래된 것부터). 되돌리기 대상이 아니라 표시용이다. */
   private prior: HistoryEntry[] = [];
 
-  constructor(initial: EditorDoc, label = "이미지 열기") {
+  constructor(initial: EditorDoc, label = currentMessages().annotate.history.openImage) {
     this.cur = { doc: initial, label, at: Date.now(), readonly: false };
   }
 
@@ -146,7 +148,11 @@ export class DocHistory {
    * 새 이미지를 열 때처럼 히스토리를 통째로 초기화한다.
    * `priorLog` 를 주면 이전 세션 기록으로 목록 아래쪽에 남는다(되돌리기 불가).
    */
-  reset(doc: EditorDoc, label = "이미지 열기", priorLog?: readonly HistoryLogEntry[]): void {
+  reset(
+    doc: EditorDoc,
+    label = currentMessages().annotate.history.openImage,
+    priorLog?: readonly HistoryLogEntry[],
+  ): void {
     this.past = [];
     this.future = [];
     this.prior = (priorLog ?? []).map((e) => ({
@@ -168,24 +174,28 @@ export class DocHistory {
 
 // ── 라벨 만들기 ─────────────────────────────────────────────────────────────
 
-const KIND_LABEL: Record<string, string> = {
-  pen: "펜",
-  highlight: "형광펜",
-  line: "직선",
-  arrow: "화살표",
-  rect: "사각형",
-  ellipse: "타원",
-  text: "텍스트",
-  badge: "번호 뱃지",
-  mosaic: "가림 영역",
-  path: "패스",
-  frame: "프레임",
-  group: "그룹",
-  instance: "인스턴스",
-};
+type HistoryText = Messages["annotate"]["history"];
 
-function nameOf(n: Node): string {
-  return n.name ?? KIND_LABEL[n.kind] ?? n.kind;
+function kindLabels(t: HistoryText): Record<string, string> {
+  return {
+    pen: t.kindPen,
+    highlight: t.kindHighlight,
+    line: t.kindLine,
+    arrow: t.kindArrow,
+    rect: t.kindRect,
+    ellipse: t.kindEllipse,
+    text: t.kindText,
+    badge: t.kindBadge,
+    mosaic: t.kindMosaic,
+    path: t.kindPath,
+    frame: t.kindFrame,
+    group: t.kindGroup,
+    instance: t.kindInstance,
+  };
+}
+
+function nameOf(n: Node, t: HistoryText): string {
+  return n.name ?? kindLabels(t)[n.kind] ?? n.kind;
 }
 
 /**
@@ -195,42 +205,43 @@ function nameOf(n: Node): string {
  * ponytail: 휴리스틱 천장. 더 정확한 라벨이 필요하면 그 커밋 사이트가 직접 주면 된다.
  */
 export function describeChange(prev: EditorDoc, next: EditorDoc): string {
+  const t = currentMessages().annotate.history;
   if (prev.objects !== next.objects) {
     const before = prev.objects.length;
     const after = next.objects.length;
     if (after > before) {
       const added = next.objects.filter((o) => !prev.objects.some((p) => p.id === o.id));
-      if (added.length === 1) return `${nameOf(added[0])} 생성`;
-      if (added.length > 1) return `${added.length}개 추가`;
+      if (added.length === 1) return t.created(nameOf(added[0], t));
+      if (added.length > 1) return t.addedMany(added.length);
     }
     if (after < before) {
       const removed = prev.objects.filter((o) => !next.objects.some((p) => p.id === o.id));
-      if (removed.length === 1) return `${nameOf(removed[0])} 삭제`;
-      if (removed.length > 1) return `${removed.length}개 삭제`;
+      if (removed.length === 1) return t.deleted(nameOf(removed[0], t));
+      if (removed.length > 1) return t.deletedMany(removed.length);
     }
     // 개수가 같으면 순서·값 변경이다.
-    const moved = movedDelta(prev, next);
+    const moved = movedDelta(prev, next, t);
     if (moved) return moved;
-    return "속성 변경";
+    return t.propsChanged;
   }
-  if (prev.crop !== next.crop) return next.crop ? "크롭" : "크롭 해제";
-  if (prev.rotation !== next.rotation) return "회전";
-  if (prev.flipH !== next.flipH || prev.flipV !== next.flipV) return "반전";
-  if (prev.outW !== next.outW || prev.outH !== next.outH) return "크기 변경";
+  if (prev.crop !== next.crop) return next.crop ? t.crop : t.cropCleared;
+  if (prev.rotation !== next.rotation) return t.rotate;
+  if (prev.flipH !== next.flipH || prev.flipV !== next.flipV) return t.flip;
+  if (prev.outW !== next.outW || prev.outH !== next.outH) return t.resize;
   if (
     prev.brightness !== next.brightness ||
     prev.contrast !== next.contrast ||
     prev.saturate !== next.saturate
   ) {
-    return "색 보정";
+    return t.colorAdjust;
   }
-  if (prev.straighten !== next.straighten) return "직선화";
-  if (prev.guides !== next.guides) return "가이드";
-  return "편집";
+  if (prev.straighten !== next.straighten) return t.straighten;
+  if (prev.guides !== next.guides) return t.guides;
+  return t.edit;
 }
 
 /** 같은 id 가 옮겨졌으면 "번호 뱃지 이동 Δ12,−4" 처럼. 아니면 null. */
-function movedDelta(prev: EditorDoc, next: EditorDoc): string | null {
+function movedDelta(prev: EditorDoc, next: EditorDoc, t: HistoryText): string | null {
   const byId = new Map(prev.objects.map((o) => [o.id, o]));
   let one: { node: Node; dx: number; dy: number } | null = null;
   let count = 0;
@@ -248,7 +259,7 @@ function movedDelta(prev: EditorDoc, next: EditorDoc): string | null {
   }
   if (!one || count > 1) return null;
   const sign = (v: number) => (v < 0 ? `−${Math.abs(v)}` : `${v}`);
-  return `${nameOf(one.node)} 이동 ${sign(one.dx)},${sign(one.dy)}`;
+  return t.moved(nameOf(one.node, t), sign(one.dx), sign(one.dy));
 }
 
 /** 라벨용 대표 좌표 — 정확한 기하가 아니라 "움직였는가"만 본다(geometry 를 끌어오지 않는다). */
