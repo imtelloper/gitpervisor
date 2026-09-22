@@ -1,7 +1,8 @@
 # 다국어(UI 언어) 지원 설계
 
-> 상태: **P0 구현(i18n 브랜치, 2026-09-22).** §10은 권장안으로 확정 — 영어 먼저, 기본 `"system"`, 이행 중
-> 영어는 "베타" 표시로 공개, 로그는 사용자 언어, 웹사이트는 범위 밖. 용어집은 `DOCS/i18n-glossary.md`.
+> 상태: **P0~P5 구현(i18n 브랜치, 2026-09-22) — 남은 것은 태스크 72와 겹친 파일뿐(§11).** §10은 권장안으로
+> 확정 — 영어 먼저, 기본 `"system"`, 이행 중 영어는 "베타" 표시로 공개, 로그는 사용자 언어, 웹사이트는 범위 밖.
+> 용어집은 `DOCS/i18n-glossary.md`.
 > 이 문서는 "UI를 여러 언어로 보여 주기"만 다룬다. 이미 있는 **AI 출력 언어**(`llmLanguage`)와
 > LLM 번역 기능(`TranslateCard`)은 별개이며 그대로 둔다(§4.6).
 
@@ -322,3 +323,29 @@ pub fn project_path_missing(path: &str) -> String {
 3. **이행 중 영어 노출** — "베타" 표시로 P1부터 노출(권장) / P5 끝날 때까지 숨김.
 4. **로그 언어** — 사용자 문구를 그대로 쓰는 안(권장, §4.4) / 로그는 항상 한국어.
 5. **웹사이트** — 이번 범위 밖(권장) / 함께.
+
+---
+
+## 11. 구현 결과 (2026-09-22, i18n 브랜치)
+
+| 단계 | 결과 |
+|---|---|
+| P0 기반 | 설정 `uiLanguage`·Rust 판정(`i18n.rs`)·`ui_language_resolved`·카탈로그 뼈대·첫 렌더 전 언어 확정·가드 2종·용어집 |
+| P1~P4 프런트 | 167개 파일 → 도메인 21개(`src/i18n/text-*.ts`), 키 약 1,960개. 10개 그룹 병렬 이관 + 그룹별 검토(한국어 바이트 대조·모듈 최상위 캡처·훅 규칙·영어) |
+| P5 Rust | 47개 파일 → `crate::i18n::text_{db,files,tools,system,git_net}` — 함수 하나 = 문구 하나, 모든 `Lang` match |
+| 가드 | 프런트 e2e 66(기준 목록 177→10) · Rust `user_facing_korean_lives_in_i18n_modules`(기준 목록 4) — 둘 다 반증 확인 |
+| 영어 순회 e2e 67 | 첫 회차에 누출 2건(지난 세션 배너 문구가 시작 언어로 굳음 · `toLocaleString()` 무인자 4곳)을 잡아 고침 |
+
+**아직 한국어인 곳(태스크 72와 겹쳐 리베이스 후 이관)** — 프런트: 설정 대화상자·AI 설정·설정 검색 색인·
+동영상 편집기(ExportPanel·VideoPlayer·frameCapture)·`lib/events.ts`·`lib/ipc.ts`·`queries/index.ts`·
+`stores/videoSplit.ts`. Rust: `commands/video.rs`·`lib.rs`(창 제목 등)·`llm/acquire.rs`·`llm/server.rs`.
+태스크 72의 새 파일(STT·자막)도 리베이스하면 가드가 잡는다 → 기준 목록에 넣은 뒤 이관.
+
+**남은 결정·후속**
+- 영어 모드에서 설정 대화상자는 아직 한국어 → 선택 상자의 "베타 — 일부 화면은 한국어" 표기를 위 이관 뒤에 뗀다.
+- 창 제목(`lib.rs`의 "터미널"·"리소스 모니터" 등)과 NSIS 영어(`bundle.windows.nsis.languages`)는 `lib.rs`·
+  `tauri.conf.json` 이관 때 함께.
+- 원문 오타 "브라우저은"(`msg.app.aggregate.hideBrowserTitle`)은 바이트 일치 원칙으로 보존 — 따로 고친다.
+- 스캐너(e2e 66)는 정규식 리터럴을 모른다 — 이관 에이전트들이 정규식 속 따옴표를 `"`로 쓰고 주석 몇 줄에
+  `i18n-ok`를 달아 피했다. 동작은 같다.
+
