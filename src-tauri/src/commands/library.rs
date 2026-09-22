@@ -15,6 +15,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, WebviewWindow};
 
 use crate::error::{ErrorCode, IpcError};
+use crate::i18n::text_files;
 
 const LIBRARY_FILE: &str = "image-library.json";
 const LIBRARY_KEY: &str = "library";
@@ -45,13 +46,13 @@ fn parse_library(json: &str) -> Result<serde_json::Value, IpcError> {
     if json.len() > MAX_BYTES {
         return Err(IpcError::new(
             ErrorCode::Io,
-            "이미지 라이브러리가 너무 큽니다 (8MB 초과)",
+            text_files::image_library_too_large_8mb(),
         ));
     }
     serde_json::from_str(json).map_err(|e| {
         IpcError::new(
             ErrorCode::Io,
-            format!("이미지 라이브러리 형식이 올바르지 않습니다: {e}"),
+            text_files::image_library_invalid_format(e),
         )
     })
 }
@@ -72,7 +73,7 @@ pub fn image_library_set(
     json: String,
 ) -> Result<(), IpcError> {
     let value = parse_library(&json)?;
-    crate::state::save_json(&app, LIBRARY_FILE, LIBRARY_KEY, &value, "이미지 라이브러리")?;
+    crate::state::save_json(&app, LIBRARY_FILE, LIBRARY_KEY, &value, text_files::image_library_label())?;
     // 실패해도 저장은 이미 끝났다 — 알림 실패로 저장을 되돌리면 상태가 더 나빠진다.
     let _ = app.emit(
         "image-library://changed",

@@ -100,7 +100,7 @@ mod imp {
         let mut pt = POINT { x: 0, y: 0 };
         // SAFETY: 우리 스택의 POINT 하나를 넘긴다.
         if unsafe { GetCursorPos(&mut pt) } == 0 {
-            return Err(IpcError::new(ErrorCode::Io, "커서 위치를 읽지 못했습니다"));
+            return Err(IpcError::new(ErrorCode::Io, crate::i18n::text_system::capture_cursor_pos_failed()));
         }
         // SAFETY: 반환 핸들은 소유하지 않는 모니터 핸들(해제 불필요).
         let mon = unsafe { MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST) };
@@ -108,7 +108,7 @@ mod imp {
         mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
         // SAFETY: cbSize를 규격대로 채운 뒤 우리 스택 구조체를 넘긴다.
         if unsafe { GetMonitorInfoW(mon, &mut mi) } == 0 {
-            return Err(IpcError::new(ErrorCode::Io, "모니터 정보를 읽지 못했습니다"));
+            return Err(IpcError::new(ErrorCode::Io, crate::i18n::text_system::capture_monitor_info_failed()));
         }
         let r = mi.rcMonitor;
         Ok((r.left, r.top, r.right - r.left, r.bottom - r.top))
@@ -123,7 +123,7 @@ mod imp {
     /// 저 플래그는 느린 데다 일부 구성에서 화면이 한 번 깜빡인다.
     pub fn grab(x: i32, y: i32, w: i32, h: i32) -> Result<Vec<u8>, IpcError> {
         if w <= 0 || h <= 0 {
-            return Err(IpcError::new(ErrorCode::Io, "캡쳐 크기가 올바르지 않습니다"));
+            return Err(IpcError::new(ErrorCode::Io, crate::i18n::text_system::capture_invalid_size()));
         }
         let px = (w as usize) * (h as usize) * 4;
         let mut buf = vec![0u8; px];
@@ -133,7 +133,7 @@ mod imp {
         let ok = unsafe {
             let screen = GetDC(std::ptr::null_mut());
             if screen.is_null() {
-                return Err(IpcError::new(ErrorCode::Io, "화면 DC를 얻지 못했습니다"));
+                return Err(IpcError::new(ErrorCode::Io, crate::i18n::text_system::capture_screen_dc_failed()));
             }
             let mem = CreateCompatibleDC(screen);
             let bmp = CreateCompatibleBitmap(screen, w, h);
@@ -179,7 +179,7 @@ mod imp {
         };
 
         if !ok {
-            return Err(IpcError::new(ErrorCode::Io, "화면을 읽지 못했습니다"));
+            return Err(IpcError::new(ErrorCode::Io, crate::i18n::text_system::capture_screen_read_failed()));
         }
         Ok(buf)
     }
@@ -190,10 +190,7 @@ mod imp {
     use super::*;
 
     fn unsupported<T>() -> Result<T, IpcError> {
-        Err(IpcError::new(
-            ErrorCode::Io,
-            "화면 캡쳐는 아직 Windows에서만 지원합니다",
-        ))
+        Err(IpcError::new(ErrorCode::Io, crate::i18n::text_system::capture_windows_only()))
     }
     pub fn cursor_monitor() -> Result<(i32, i32, i32, i32), IpcError> {
         unsupported()
@@ -234,7 +231,7 @@ fn preview_data_url(bgra: &[u8], w: u32, h: u32) -> Result<String, IpcError> {
     let step = (w.max(h).div_ceil(PREVIEW_MAX_EDGE)).max(1);
     let (ow, oh) = (w / step, h / step);
     if ow == 0 || oh == 0 {
-        return Err(IpcError::new(ErrorCode::Io, "프리뷰 크기가 0입니다"));
+        return Err(IpcError::new(ErrorCode::Io, crate::i18n::text_system::capture_preview_size_zero()));
     }
 
     // 미리 채운 버퍼에 인덱스로 쓴다. `push`로 바이트마다 용량을 확인하면 800만 픽셀 × 3에서
@@ -268,7 +265,7 @@ fn preview_data_url(bgra: &[u8], w: u32, h: u32) -> Result<String, IpcError> {
     let mut out = Vec::new();
     let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 85);
     enc.encode(&rgb, ow, oh, image::ExtendedColorType::Rgb8)
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("프리뷰 인코딩 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, crate::i18n::text_system::capture_preview_encode_failed(e)))?;
     Ok(format!("data:image/jpeg;base64,{}", B64.encode(&out)))
 }
 
@@ -281,10 +278,7 @@ fn crop_rgba(s: &Session, r: RectPx) -> Result<(Vec<u8>, u32, u32), IpcError> {
     // checked_add — 프론트가 보낸 값이므로 x+w가 u32를 넘겨 감싸면 경계 검사가 통과해 버린다.
     let within = |a: u32, len: u32, max: u32| a.checked_add(len).is_some_and(|e| e <= max);
     if w == 0 || h == 0 || !within(x, w, s.w) || !within(y, h, s.h) {
-        return Err(IpcError::new(
-            ErrorCode::Io,
-            "선택 영역이 화면 범위를 벗어났습니다",
-        ));
+        return Err(IpcError::new(ErrorCode::Io, crate::i18n::text_system::capture_selection_out_of_bounds()));
     }
     let mut out = Vec::with_capacity((w as usize) * (h as usize) * 4);
     for row in 0..h {
@@ -306,12 +300,9 @@ fn take_session(id: &str) -> Result<Session, IpcError> {
     // id가 다르면 **건드리지 않는다** — 늦게 도착한 이전 세션의 확정이 새 세션을 뺏으면
     // 방금 찍은 화면이 조용히 사라진다.
     if cur.as_ref().is_some_and(|s| s.id == id) {
-        return Ok(cur.take().expect("바로 위에서 확인했다"));
+        return Ok(cur.take().expect("바로 위에서 확인했다")); // i18n-ok: expect 메시지(내부용)
     }
-    Err(IpcError::new(
-        ErrorCode::NotFound,
-        "캡쳐 세션이 만료되었습니다",
-    ))
+    Err(IpcError::new(ErrorCode::NotFound, crate::i18n::text_system::capture_session_expired()))
 }
 
 /// TTL 감시 — 오버레이가 비정상 종료해도 14.7MB가 영구 잔류하지 않게 한다.
@@ -460,12 +451,12 @@ fn trigger_inner(app: &AppHandle) -> Result<(), IpcError> {
             Err(e) => log::error!("[capture] 오버레이 준비 실패: {e}"),
         }
     })
-    .map_err(|e| IpcError::new(ErrorCode::Io, format!("메인 스레드 예약 실패: {e}")))?;
+    .map_err(|e| IpcError::new(ErrorCode::Io, crate::i18n::text_system::capture_main_thread_schedule_failed(e)))?;
 
     arm_show_fallback(app.clone(), id);
 
     log::info!(
-        "[capture] {mw}x{mh} @({mx},{my}) 캡쳐 {}ms · 프리뷰까지 {}ms",
+        "[capture] {mw}x{mh} @({mx},{my}) 캡쳐 {}ms · 프리뷰까지 {}ms", // i18n-ok: 로그
         t_grab.as_millis(),
         t_ready.as_millis()
     );
@@ -516,7 +507,7 @@ pub fn capture_to_clipboard(app: AppHandle, id: String, rect: RectPx) -> Result<
         let s = cur
             .as_ref()
             .filter(|s| s.id == id)
-            .ok_or_else(|| IpcError::new(ErrorCode::NotFound, "캡쳐 세션이 만료되었습니다"))?;
+            .ok_or_else(|| IpcError::new(ErrorCode::NotFound, crate::i18n::text_system::capture_session_expired()))?;
         let (rgba, w, h) = crop_rgba(s, rect)?; // 실패해도 세션은 그대로 남는다
         (rgba, w, h, s.born.elapsed())
     };
@@ -542,10 +533,7 @@ pub fn capture_to_clipboard(app: AppHandle, id: String, rect: RectPx) -> Result<
     if let Some(e) = last {
         // 세션은 살려 둔다(위 주석) — 사용자가 Enter를 다시 누르면 같은 그림을 다시 시도한다.
         log::warn!("[capture] 클립보드 복사 실패(8회 재시도): {e}");
-        return Err(IpcError::new(
-            ErrorCode::Io,
-            "다른 프로그램이 클립보드를 쓰고 있습니다 — 잠시 후 다시 시도하세요",
-        ));
+        return Err(IpcError::new(ErrorCode::Io, crate::i18n::text_system::capture_clipboard_busy()));
     }
 
     // 여기까지 왔으면 결과물이 클립보드에 있다 — 이제 원본(최대 33MB)을 놓는다.

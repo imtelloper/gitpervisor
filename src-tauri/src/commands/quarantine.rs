@@ -175,13 +175,13 @@ pub fn clear_quarantine(paths: Vec<String>) -> Result<(), crate::error::IpcError
             .args(["-d", "com.apple.quarantine"])
             .arg(p)
             .output()
-            .map_err(|e| IpcError::new(ErrorCode::Io, format!("xattr 실행 실패: {e}")))?;
+            .map_err(|e| IpcError::new(ErrorCode::Io, crate::i18n::text_tools::quarantine_xattr_spawn_failed(&e)))?;
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
             if !stderr.contains("No such xattr") && !stderr.trim().is_empty() {
                 return Err(IpcError::new(
                     ErrorCode::Io,
-                    format!("격리 해제 실패 ({}): {}", p, stderr.trim()),
+                    crate::i18n::text_tools::quarantine_clear_failed(p, stderr.trim()),
                 ));
             }
         }

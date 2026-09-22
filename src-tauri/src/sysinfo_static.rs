@@ -303,22 +303,22 @@ async fn run_capture(program: &str, args: &[&str], timeout_secs: u64) -> Result<
 
     let child = cmd
         .spawn()
-        .map_err(|e| format!("{program} 실행 실패: {e}"))?;
+        .map_err(|e| crate::i18n::text_system::sysinfo_program_spawn_failed(program, e))?;
     let pid = child.id();
 
     let out = tokio::time::timeout(Duration::from_secs(timeout_secs), child.wait_with_output())
         .await
         .map_err(|_| {
             kill_group(pid);
-            format!("{program} 시간 초과 ({timeout_secs}초)")
+            crate::i18n::text_system::sysinfo_program_timed_out(program, timeout_secs)
         })?
-        .map_err(|e| format!("{program} 출력 수집 실패: {e}"))?;
+        .map_err(|e| crate::i18n::text_system::sysinfo_program_output_failed(program, e))?;
 
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     if stdout.trim().is_empty() {
         let err = String::from_utf8_lossy(&out.stderr);
         let head: String = err.trim().chars().take(160).collect();
-        return Err(format!("{program} 출력 없음 ({head})"));
+        return Err(crate::i18n::text_system::sysinfo_program_no_output(program, &head));
     }
     Ok(stdout)
 }
@@ -423,9 +423,9 @@ $cim = {
   param($key, $cls, $props, $one)
   try {
     $r = @(Get-CimInstance $cls -OperationTimeoutSec 8 -ErrorAction Stop | Select-Object $props)
-    # 대입은 반드시 분기 **안에서** 한다. `$d[$key] = if (..) {..} else { $r }`로 쓰면 if 문의
-    # 출력이 파이프라인을 타면서 **원소 1개짜리 배열이 스칼라로 풀려** JSON이 [..] 대신 {..}가
-    # 되고, Rust 쪽 Vec 역직렬화가 통째로 실패한다(메모리 모듈 1개·소켓 1개 머신에서 실측).
+    # 대입은 반드시 분기 **안에서** 한다. `$d[$key] = if (..) {..} else { $r }`로 쓰면 if 문의 i18n-ok: PowerShell 주석
+    # 출력이 파이프라인을 타면서 **원소 1개짜리 배열이 스칼라로 풀려** JSON이 [..] 대신 {..}가 i18n-ok: PowerShell 주석
+    # 되고, Rust 쪽 Vec 역직렬화가 통째로 실패한다(메모리 모듈 1개·소켓 1개 머신에서 실측). i18n-ok: PowerShell 주석
     if ($one) { $d[$key] = $r[0] } else { $d[$key] = $r }
   } catch { $d.errors["CIM $cls"] = $_.Exception.Message }
 }
@@ -450,7 +450,7 @@ $d.gpu = @(Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968
       }
     }
   })
-if ($d.gpu.Count -eq 0) { $d.errors['GPU 레지스트리'] = '표시 어댑터 항목 없음(접근 거부 가능)' }
+if ($d.gpu.Count -eq 0) { $d.errors['GPU 레지스트리'] = '표시 어댑터 항목 없음(접근 거부 가능)' } # i18n-ok: PowerShell 스크립트가 만드는 사유(외부 프로그램 문자열)
 $d | ConvertTo-Json -Compress -Depth 4
 "#;
 
@@ -489,7 +489,7 @@ async fn fill_windows(info: &mut SystemInfo, notes: &mut Vec<String>) {
 
     match serde_json::from_str::<CimRoot>(&raw) {
         Ok(cim) => apply_cim(info, &cim, notes),
-        Err(e) => notes.push(format!("CIM: JSON 해석 실패 ({e})")),
+        Err(e) => notes.push(crate::i18n::text_system::sysinfo_json_parse_failed("CIM", e)),
     }
 }
 
@@ -679,7 +679,8 @@ fn apply_cim(info: &mut SystemInfo, cim: &CimRoot, notes: &mut Vec<String>) {
         .filter_map(|m| {
             let capacity_bytes = num(&m.capacity)?;
             Some(MemoryModule {
-                slot: non_empty(m.device_locator.clone()).unwrap_or_else(|| "모듈".to_string()),
+                slot: non_empty(m.device_locator.clone())
+                    .unwrap_or_else(|| crate::i18n::text_system::sysinfo_memory_module_slot_fallback().to_string()),
                 capacity_bytes,
                 speed_mhz: num(&m.speed).map(|v| v as u32),
                 manufacturer: non_empty(m.manufacturer.clone()),
@@ -800,7 +801,7 @@ async fn fill_linux(info: &mut SystemInfo, notes: &mut Vec<String>) {
     {
         info.board = Some(board);
     } else {
-        notes.push("DMI: /sys/class/dmi/id를 읽지 못했습니다".to_string());
+        notes.push(crate::i18n::text_system::sysinfo_dmi_unreadable().to_string());
     }
 
     // GPU 목록 — lspci의 VGA/3D 행이 기본, nvidia-smi/amdgpu sysfs가 있으면 상세를 덧댄다.
@@ -815,7 +816,9 @@ async fn fill_linux(info: &mut SystemInfo, notes: &mut Vec<String>) {
                     continue;
                 }
                 // -mm 은 따옴표로 필드를 나눈다: slot "class" "vendor" "device" ...
-                let fields: Vec<&str> = line.split('"').skip(1).step_by(2).collect();
+                // '\u{22}' = 큰따옴표. 문자 그대로 쓰면 scripts/i18n-remaining-rs.py 의 문자열 추적이
+                // 여기서 어긋나 파일 뒷부분 주석을 전부 문자열로 오인한다.
+                let fields: Vec<&str> = line.split('\u{22}').skip(1).step_by(2).collect();
                 let name = match (fields.get(1), fields.get(2)) {
                     (Some(vendor), Some(device)) => format!("{vendor} {device}"),
                     _ => continue,
@@ -993,7 +996,7 @@ async fn fill_macos(info: &mut SystemInfo, notes: &mut Vec<String>) {
     {
         Ok(out) => match serde_json::from_str::<serde_json::Value>(&out) {
             Ok(v) => apply_system_profiler(info, &v),
-            Err(e) => notes.push(format!("system_profiler: JSON 해석 실패 ({e})")),
+            Err(e) => notes.push(crate::i18n::text_system::sysinfo_json_parse_failed("system_profiler", e)),
         },
         Err(e) => notes.push(format!("system_profiler: {e}")),
     }
@@ -1050,7 +1053,8 @@ fn apply_system_profiler(info: &mut SystemInfo, v: &serde_json::Value) {
                 continue;
             };
             info.memory.modules.push(MemoryModule {
-                slot: s("_name").unwrap_or_else(|| "모듈".to_string()),
+                slot: s("_name")
+                    .unwrap_or_else(|| crate::i18n::text_system::sysinfo_memory_module_slot_fallback().to_string()),
                 capacity_bytes,
                 speed_mhz: s("dimm_speed")
                     .and_then(|v| v.split_whitespace().next().and_then(|n| n.parse().ok())),

@@ -11,6 +11,7 @@ use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager};
 
 use crate::error::{ErrorCode, IpcError};
+use crate::i18n::text_tools;
 
 // 서버 버전 pin — scripts/fetch-lsp.mjs SERVERS와 동기 유지(§4).
 const BASEDPYRIGHT_VERSION: &str = "1.39.9";
@@ -78,12 +79,12 @@ pub fn resolve(
     let lsp_root = app
         .path()
         .app_local_data_dir()
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("앱 데이터 경로 오류: {e}")))?
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_tools::lsp_app_data_path_error(&e)))?
         .join("lsp");
     let not_found = || {
         IpcError::new(
             ErrorCode::ToolNotFound,
-            "언어 서버가 설치되지 않았습니다 — 설정에서 언어 서버 다운로드 후 다시 시도하세요".to_string(),
+            text_tools::lsp_server_not_installed(),
         )
     };
     // py/ts/php는 node 위에서 도는 js 서버, cpp(clangd) 등 네이티브는 node가 필요 없다.
@@ -92,7 +93,7 @@ pub fn resolve(
         resolve_node(app).ok_or_else(|| {
             IpcError::new(
                 ErrorCode::ToolNotFound,
-                "node를 찾지 못했습니다 — 설정에서 언어 서버 다운로드 또는 Node.js 설치".to_string(),
+                text_tools::lsp_node_not_found(),
             )
         })?
     } else {
@@ -179,7 +180,7 @@ pub fn resolve(
             let program = find_path_server(bin).ok_or_else(|| {
                 IpcError::new(
                     ErrorCode::ToolNotFound,
-                    format!("{bin}을(를) 찾지 못했습니다 — 설치: {hint}"),
+                    text_tools::lsp_path_server_not_found(bin, hint),
                 )
             })?;
             Ok(ResolvedServer {
@@ -192,7 +193,7 @@ pub fn resolve(
         }
         other => Err(IpcError::new(
             ErrorCode::ToolNotFound,
-            format!("지원하지 않는 LSP 언어: {other}"),
+            text_tools::lsp_unsupported_language(other),
         )),
     }
 }
@@ -229,7 +230,7 @@ fn path_server_for(lang: &str) -> Option<(&'static str, Vec<String>, &'static st
         "java" => Some((
             "jdtls",
             vec![], // jdtls 런처가 JRE·launcher jar·config/data를 자체 처리(stdio 기본). JRE 21+ 필요.
-            "brew install jdtls (또는 mason/패키지 매니저)",
+            text_tools::lsp_jdtls_install_hint(),
         )),
         _ => None,
     }
@@ -515,14 +516,14 @@ pub async fn ensure_installed(
     let lsp_root = app
         .path()
         .app_local_data_dir()
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("앱 데이터 경로 오류: {e}")))?
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_tools::lsp_app_data_path_error(&e)))?
         .join("lsp");
     std::fs::create_dir_all(&lsp_root).ok();
 
     let client = reqwest::Client::builder()
         .user_agent("gitpervisor-lsp")
         .build()
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("HTTP 클라이언트 오류: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_tools::lsp_http_client_error(&e)))?;
 
     // 네이티브 서버(node 불필요) — cpp=clangd, rust=rust-analyzer. GitHub 바이너리 다운로드.
     if let Some(server) = native_server_for(lang) {
@@ -609,12 +610,12 @@ async fn download_and_install(
         .get(pkg.tarball)
         .send()
         .await
-        .map_err(|e| io(format!("다운로드 실패: {e}")))?
+        .map_err(|e| io(text_tools::lsp_download_failed(&e)))?
         .error_for_status()
-        .map_err(|e| io(format!("다운로드 상태 오류: {e}")))?
+        .map_err(|e| io(text_tools::lsp_download_status_error(&e)))?
         .bytes()
         .await
-        .map_err(|e| io(format!("본문 수신 실패: {e}")))?;
+        .map_err(|e| io(text_tools::lsp_download_body_failed(&e)))?;
 
     // 무결성 — pin된 sha512(base64)와 대조. 불일치는 폐기(공급망 방어).
     let mut hasher = Sha512::new();
@@ -622,28 +623,28 @@ async fn download_and_install(
     let actual = base64::engine::general_purpose::STANDARD.encode(hasher.finalize());
     let expected = pkg.integrity.strip_prefix("sha512-").unwrap_or("");
     if actual != expected {
-        return Err(io(format!("{name} 무결성 검증 실패 — 다운로드 변조 의심")));
+        return Err(io(text_tools::lsp_integrity_check_failed(name)));
     }
 
     // temp에 tgz 해제 후 rename(원자 설치 — 해제 중 크래시가 손상본을 설치됨으로 오판 안 하게).
     let temp = lsp_root.join(format!(".tmp-{name}-{}", pkg.version));
     std::fs::remove_dir_all(&temp).ok();
-    std::fs::create_dir_all(&temp).map_err(|e| io(format!("temp 생성 실패: {e}")))?;
+    std::fs::create_dir_all(&temp).map_err(|e| io(text_tools::lsp_temp_dir_create_failed(&e)))?;
     // npm tgz = gzip(tar). flate2로 gunzip → tar 해제. 최상위 package/ 로 풀린다.
     let mut buf = Vec::new();
     flate2::read::GzDecoder::new(&bytes[..])
         .read_to_end(&mut buf)
-        .map_err(|e| io(format!("gunzip 실패: {e}")))?;
+        .map_err(|e| io(text_tools::lsp_gunzip_failed(&e)))?;
     tar::Archive::new(&buf[..])
         .unpack(&temp)
-        .map_err(|e| io(format!("tar 해제 실패: {e}")))?;
+        .map_err(|e| io(text_tools::lsp_tar_extract_failed(&e)))?;
 
     let dest = lsp_root.join(format!("{name}-{}", pkg.version));
     std::fs::remove_dir_all(&dest).ok();
     std::fs::rename(temp.join("package"), &dest)
-        .map_err(|e| io(format!("설치 이동 실패: {e}")))?;
+        .map_err(|e| io(text_tools::lsp_install_move_failed(&e)))?;
     std::fs::remove_dir_all(&temp).ok();
-    std::fs::write(dest.join(".ok"), pkg.version).map_err(|e| io(format!("마커 쓰기 실패: {e}")))?;
+    std::fs::write(dest.join(".ok"), pkg.version).map_err(|e| io(text_tools::lsp_marker_write_failed(&e)))?;
     Ok(())
 }
 
@@ -708,46 +709,46 @@ async fn ensure_node(
         .get(format!("{base}/{file}"))
         .send()
         .await
-        .map_err(|e| io(format!("node 다운로드 실패: {e}")))?
+        .map_err(|e| io(text_tools::lsp_named_download_failed("node", &e)))?
         .error_for_status()
-        .map_err(|e| io(format!("node 상태 오류: {e}")))?
+        .map_err(|e| io(text_tools::lsp_named_download_status_error("node", &e)))?
         .bytes()
         .await
-        .map_err(|e| io(format!("node 본문 수신 실패: {e}")))?;
+        .map_err(|e| io(text_tools::lsp_named_download_body_failed("node", &e)))?;
 
     // 무결성 — SHASUMS256.txt에서 파일의 sha256(hex)를 찾아 대조.
     let shasums = client
         .get(format!("{base}/SHASUMS256.txt"))
         .send()
         .await
-        .map_err(|e| io(format!("SHASUMS 다운로드 실패: {e}")))?
+        .map_err(|e| io(text_tools::lsp_shasums_download_failed(&e)))?
         .text()
         .await
-        .map_err(|e| io(format!("SHASUMS 수신 실패: {e}")))?;
+        .map_err(|e| io(text_tools::lsp_shasums_receive_failed(&e)))?;
     let expected = parse_shasums(&shasums, &file)
-        .ok_or_else(|| io("SHASUMS에 node 파일 해시 없음".to_string()))?;
+        .ok_or_else(|| io(text_tools::lsp_shasums_missing_node_hash().to_string()))?;
     if sha256_hex(&bytes) != expected {
-        return Err(io("node 무결성 검증 실패 — 다운로드 변조 의심".to_string()));
+        return Err(io(text_tools::lsp_integrity_check_failed("node")));
     }
 
     // temp 해제 → inner 디렉토리를 node-<ver>로 rename(원자 설치).
     let temp = lsp_root.join(format!(".tmp-node-{NODE_VERSION}"));
     std::fs::remove_dir_all(&temp).ok();
-    std::fs::create_dir_all(&temp).map_err(|e| io(format!("temp 생성 실패: {e}")))?;
+    std::fs::create_dir_all(&temp).map_err(|e| io(text_tools::lsp_temp_dir_create_failed(&e)))?;
     if cfg!(windows) {
         extract_zip(&bytes, &temp)?;
     } else {
         let mut buf = Vec::new();
         flate2::read::GzDecoder::new(&bytes[..])
             .read_to_end(&mut buf)
-            .map_err(|e| io(format!("gunzip 실패: {e}")))?;
+            .map_err(|e| io(text_tools::lsp_gunzip_failed(&e)))?;
         tar::Archive::new(&buf[..])
             .unpack(&temp)
-            .map_err(|e| io(format!("tar 해제 실패: {e}")))?;
+            .map_err(|e| io(text_tools::lsp_tar_extract_failed(&e)))?;
     }
     let dest = lsp_root.join(format!("node-{NODE_VERSION}"));
     std::fs::remove_dir_all(&dest).ok();
-    std::fs::rename(temp.join(&inner), &dest).map_err(|e| io(format!("node 설치 이동 실패: {e}")))?;
+    std::fs::rename(temp.join(&inner), &dest).map_err(|e| io(text_tools::lsp_named_install_move_failed("node", &e)))?;
     std::fs::remove_dir_all(&temp).ok();
     let _ = on_progress.send("{\"name\":\"node\",\"phase\":\"done\"}".to_string());
     Ok(dest.join(exe_rel))
@@ -765,30 +766,30 @@ async fn ensure_native(
         return Ok(());
     }
     let io = |e: String| IpcError::new(ErrorCode::Io, e);
-    let spec = native_spec(name).ok_or_else(|| io(format!("알 수 없는 네이티브 서버: {name}")))?;
+    let spec = native_spec(name).ok_or_else(|| io(text_tools::lsp_unknown_native_server(name)))?;
 
     let _ = on_progress.send(format!("{{\"name\":\"{name}\",\"phase\":\"download\"}}"));
     let bytes = client
         .get(&spec.url)
         .send()
         .await
-        .map_err(|e| io(format!("{name} 다운로드 실패: {e}")))?
+        .map_err(|e| io(text_tools::lsp_named_download_failed(name, &e)))?
         .error_for_status()
-        .map_err(|e| io(format!("{name} 상태 오류: {e}")))?
+        .map_err(|e| io(text_tools::lsp_named_download_status_error(name, &e)))?
         .bytes()
         .await
-        .map_err(|e| io(format!("{name} 본문 수신 실패: {e}")))?;
+        .map_err(|e| io(text_tools::lsp_named_download_body_failed(name, &e)))?;
 
     if let Some(expected) = spec.sha256 {
         if sha256_hex(&bytes) != expected {
-            return Err(io(format!("{name} 무결성 검증 실패 — 다운로드 변조 의심")));
+            return Err(io(text_tools::lsp_integrity_check_failed(name)));
         }
     }
 
     let dest = lsp_root.join(format!("{}-{}", spec.name, spec.version));
     let temp = lsp_root.join(format!(".tmp-{}-{}", spec.name, spec.version));
     std::fs::remove_dir_all(&temp).ok();
-    std::fs::create_dir_all(&temp).map_err(|e| io(format!("temp 생성 실패: {e}")))?;
+    std::fs::create_dir_all(&temp).map_err(|e| io(text_tools::lsp_temp_dir_create_failed(&e)))?;
     std::fs::remove_dir_all(&dest).ok();
 
     match spec.kind {
@@ -797,10 +798,10 @@ async fn ensure_native(
             let mut out = Vec::new();
             flate2::read::GzDecoder::new(&bytes[..])
                 .read_to_end(&mut out)
-                .map_err(|e| io(format!("gunzip 실패: {e}")))?;
-            std::fs::create_dir_all(&dest).map_err(|e| io(format!("dest 생성 실패: {e}")))?;
+                .map_err(|e| io(text_tools::lsp_gunzip_failed(&e)))?;
+            std::fs::create_dir_all(&dest).map_err(|e| io(text_tools::lsp_dest_dir_create_failed(&e)))?;
             std::fs::write(dest.join(&spec.exe_rel), &out)
-                .map_err(|e| io(format!("바이너리 쓰기 실패: {e}")))?;
+                .map_err(|e| io(text_tools::lsp_binary_write_failed(&e)))?;
         }
         ArchiveKind::Zip | ArchiveKind::TarGz | ArchiveKind::TarXz => {
             match spec.kind {
@@ -809,17 +810,17 @@ async fn ensure_native(
                     let mut buf = Vec::new();
                     flate2::read::GzDecoder::new(&bytes[..])
                         .read_to_end(&mut buf)
-                        .map_err(|e| io(format!("gunzip 실패: {e}")))?;
+                        .map_err(|e| io(text_tools::lsp_gunzip_failed(&e)))?;
                     tar::Archive::new(&buf[..])
                         .unpack(&temp)
-                        .map_err(|e| io(format!("tar 해제 실패: {e}")))?;
+                        .map_err(|e| io(text_tools::lsp_tar_extract_failed(&e)))?;
                 }
                 _ => {
                     // TarXz(zls unix) — in-process xz 디코더가 없어 시스템 tar로 해제.
                     // 유닉스 tar는 .tar.xz를 투명 처리한다(Windows는 zls가 zip 자산이라 미도달).
                     let arc = lsp_root.join(format!(".tmp-{}-arc.tar.xz", spec.name));
                     std::fs::write(&arc, &bytes)
-                        .map_err(|e| io(format!("아카이브 쓰기 실패: {e}")))?;
+                        .map_err(|e| io(text_tools::lsp_archive_write_failed(&e)))?;
                     let ok = std::process::Command::new("tar")
                         .arg("-xf")
                         .arg(&arc)
@@ -830,7 +831,7 @@ async fn ensure_native(
                         .unwrap_or(false);
                     std::fs::remove_file(&arc).ok();
                     if !ok {
-                        return Err(io(format!("{name} tar.xz 해제 실패 — 시스템 tar 필요")));
+                        return Err(io(text_tools::lsp_tar_xz_extract_failed(name)));
                     }
                 }
             }
@@ -839,7 +840,7 @@ async fn ensure_native(
                 Some(inner) => temp.join(inner),
                 None => temp.clone(),
             };
-            std::fs::rename(&src, &dest).map_err(|e| io(format!("{name} 설치 이동 실패: {e}")))?;
+            std::fs::rename(&src, &dest).map_err(|e| io(text_tools::lsp_named_install_move_failed(name, &e)))?;
         }
     }
     std::fs::remove_dir_all(&temp).ok();
@@ -855,7 +856,7 @@ async fn ensure_native(
             let _ = std::fs::set_permissions(&bin, perm);
         }
     }
-    std::fs::write(dest.join(".ok"), spec.version).map_err(|e| io(format!("마커 쓰기 실패: {e}")))?;
+    std::fs::write(dest.join(".ok"), spec.version).map_err(|e| io(text_tools::lsp_marker_write_failed(&e)))?;
     let _ = on_progress.send(format!("{{\"name\":\"{name}\",\"phase\":\"done\"}}"));
     Ok(())
 }
@@ -863,10 +864,10 @@ async fn ensure_native(
 fn extract_zip(bytes: &[u8], dest: &Path) -> Result<(), IpcError> {
     let cursor = std::io::Cursor::new(bytes);
     let mut archive = zip::ZipArchive::new(cursor)
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("zip 열기 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_tools::lsp_zip_open_failed(&e)))?;
     archive
         .extract(dest)
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("zip 해제 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_tools::lsp_zip_extract_failed(&e)))?;
     Ok(())
 }
 

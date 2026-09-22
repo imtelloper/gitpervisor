@@ -17,6 +17,7 @@ use tauri::ipc::Channel;
 use tauri::State;
 
 use crate::error::{ErrorCode, IpcError};
+use crate::i18n::text_files;
 use crate::state::AppState;
 
 /// arena 노드 수 상한 — 병리적 볼륨(수천만 폴더)에서 메모리로 죽지 않고 정직하게 중단한다.
@@ -578,9 +579,7 @@ fn process_dir(shared: &Shared, (idx, path): (u32, PathBuf), top: &mut TopHeap) 
         if nodes.len() + subdirs.len() > NODE_CAP {
             let mut fatal = shared.fatal.lock().unwrap_or_else(|e| e.into_inner());
             if fatal.is_none() {
-                *fatal = Some(format!(
-                    "폴더가 {NODE_CAP}개를 넘습니다 — 더 좁은 폴더를 스캔하세요"
-                ));
+                *fatal = Some(text_files::disk_scan_node_cap_exceeded(NODE_CAP));
             }
             shared.cancel.store(true, Ordering::Relaxed);
             return;
@@ -658,7 +657,7 @@ fn run_scan_with(
     n_workers: usize,
 ) -> Result<ScanResult, String> {
     // 루트 접근 검증 — 여기서 실패하면 스캔 자체가 성립하지 않는다(Error).
-    std::fs::read_dir(&root).map_err(|e| format!("폴더를 열 수 없습니다: {e}"))?;
+    std::fs::read_dir(&root).map_err(text_files::disk_scan_root_open_failed)?;
     let root_modified = std::fs::metadata(&root)
         .ok()
         .and_then(|m| m.modified().ok())
@@ -745,7 +744,7 @@ pub fn disk_scan_start(
     if !root.is_dir() {
         return Err(IpcError::new(
             ErrorCode::Io,
-            format!("폴더가 아니거나 접근할 수 없습니다: {path}"),
+            text_files::disk_scan_not_a_folder(&path),
         ));
     }
 
@@ -755,7 +754,7 @@ pub fn disk_scan_start(
         if s.phase == ScanPhase::Scanning {
             return Err(IpcError::new(
                 ErrorCode::OpInProgress,
-                "이미 스캔이 진행 중입니다 — 중지 후 다시 시도하세요",
+                text_files::disk_scan_already_running(),
             ));
         }
         let epoch = s.epoch + 1;
@@ -848,7 +847,7 @@ fn find_node(nodes: &[DirNode], rel: &str) -> Result<usize, IpcError> {
             .map(|&c| c as usize)
             .find(|&c| nodes[c].name == comp)
             .ok_or_else(|| {
-                IpcError::new(ErrorCode::Io, "스캔 결과에 없는 폴더입니다 — 다시 스캔하세요")
+                IpcError::new(ErrorCode::Io, text_files::disk_scan_folder_not_in_result())
             })?;
     }
     Ok(idx)
@@ -861,7 +860,7 @@ pub fn disk_children(state: State<'_, AppState>, rel: String) -> Result<DirListi
     // 캐시 트리 탐색은 이름 매칭이라 본질적으로 탈출이 없지만, 파일 read_dir이
     // root.join(rel)을 쓰므로 ".." 탈출을 명시적으로 막는다.
     if rel.split(['/', '\\']).any(|c| c == "..") {
-        return Err(IpcError::new(ErrorCode::Io, "잘못된 경로입니다"));
+        return Err(IpcError::new(ErrorCode::Io, text_files::invalid_path()));
     }
 
     let (abs, bytes, mut dirs) = {
@@ -871,7 +870,7 @@ pub fn disk_children(state: State<'_, AppState>, rel: String) -> Result<DirListi
             _ => {
                 return Err(IpcError::new(
                     ErrorCode::Io,
-                    "완료된 스캔이 없습니다 — 먼저 스캔하세요",
+                    text_files::disk_scan_no_completed_scan(),
                 ))
             }
         };
@@ -935,7 +934,7 @@ pub fn disk_top_files(state: State<'_, AppState>, limit: u32) -> Result<Vec<TopF
         }
         _ => Err(IpcError::new(
             ErrorCode::Io,
-            "완료된 스캔이 없습니다 — 먼저 스캔하세요",
+            text_files::disk_scan_no_completed_scan(),
         )),
     }
 }
@@ -1005,7 +1004,7 @@ pub fn disk_treemap(
     depth: u32,
 ) -> Result<TreemapNode, IpcError> {
     if rel.split(['/', '\\']).any(|c| c == "..") {
-        return Err(IpcError::new(ErrorCode::Io, "잘못된 경로입니다"));
+        return Err(IpcError::new(ErrorCode::Io, text_files::invalid_path()));
     }
     let s = state.disk_scan.lock().unwrap_or_else(|e| e.into_inner());
     let result = match (&s.phase, &s.result) {
@@ -1013,7 +1012,7 @@ pub fn disk_treemap(
         _ => {
             return Err(IpcError::new(
                 ErrorCode::Io,
-                "완료된 스캔이 없습니다 — 먼저 스캔하세요",
+                text_files::disk_scan_no_completed_scan(),
             ))
         }
     };

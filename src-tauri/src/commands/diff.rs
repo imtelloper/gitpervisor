@@ -63,14 +63,14 @@ async fn read_capped(path: &Path) -> Result<Blob, IpcError> {
         Err(e) => {
             return Err(IpcError::new(
                 ErrorCode::Io,
-                format!("파일 정보 조회 실패: {e}"),
+                crate::i18n::text_db::diff_file_metadata_failed(e),
             ))
         }
     }
     match tokio::fs::read(path).await {
         Ok(b) => Ok(Blob::Bytes(b)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Blob::Missing),
-        Err(e) => Err(IpcError::new(ErrorCode::Io, format!("파일 읽기 실패: {e}"))),
+        Err(e) => Err(IpcError::new(ErrorCode::Io, crate::i18n::text_db::diff_file_read_failed(e))),
     }
 }
 
@@ -175,7 +175,7 @@ async fn commit_diff(
 ) -> Result<FileDiff, IpcError> {
     validate_rel_path(&path)?;
     if !runner::is_valid_sha(&sha) {
-        return Err(IpcError::new(ErrorCode::GitError, "잘못된 커밋 해시입니다"));
+        return Err(IpcError::new(ErrorCode::GitError, crate::i18n::text_db::diff_invalid_commit_hash()));
     }
     let old_bytes = content_at(repo, &format!("{sha}^:{path}")).await?;
     let new_bytes = content_at(repo, &format!("{sha}:{path}")).await?;
@@ -257,7 +257,7 @@ fn validate_rel_path(path: &str) -> Result<(), IpcError> {
             )
         })
     {
-        return Err(IpcError::new(ErrorCode::Io, "잘못된 파일 경로입니다"));
+        return Err(IpcError::new(ErrorCode::Io, crate::i18n::text_db::diff_invalid_file_path()));
     }
     Ok(())
 }
@@ -314,7 +314,7 @@ pub async fn read_file_base64(
         if m.len() > MAX_IMAGE_BYTES as u64 {
             return Err(IpcError::new(
                 ErrorCode::Io,
-                "파일이 너무 큽니다 (25MB 초과)",
+                crate::i18n::text_db::diff_image_file_too_large(),
             ));
         }
         // 읽기 **전** 메타로 찍는다. 읽은 뒤에 찍으면 읽는 동안의 변경을 스탬프가 흡수해
@@ -323,11 +323,11 @@ pub async fn read_file_base64(
     }
     let bytes = tokio::fs::read(&full)
         .await
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("파일 읽기 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, crate::i18n::text_db::diff_file_read_failed(e)))?;
     if bytes.len() > MAX_IMAGE_BYTES {
         return Err(IpcError::new(
             ErrorCode::Io,
-            "파일이 너무 큽니다 (25MB 초과)",
+            crate::i18n::text_db::diff_image_file_too_large(),
         ));
     }
     Ok(FileBytes {

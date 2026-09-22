@@ -7,6 +7,7 @@ use crate::git::parse_log::{
 };
 use crate::git::runner;
 use crate::git::types::{Branches, Commit, CommitDetail};
+use crate::i18n::text_git_net;
 use crate::state::AppState;
 
 /// 로그 출력 포맷 — 필드는 US(0x1f), 커밋은 `-z`(NUL)로 구분 (parse_log와 한 쌍).
@@ -44,7 +45,7 @@ pub async fn get_log(
         if err.contains("does not have any commits") || err.contains("bad default revision") {
             return Ok(Vec::new());
         }
-        return Err(IpcError::git("git log 실패", out.stderr));
+        return Err(IpcError::git(text_git_net::git_log_failed(), out.stderr));
     }
     Ok(parse_log(&out.stdout))
 }
@@ -100,7 +101,7 @@ pub async fn get_commit_detail(
 ) -> Result<CommitDetail, IpcError> {
     let repo = project_path(&state, &project_id)?;
     if !runner::is_valid_sha(&sha) {
-        return Err(IpcError::new(ErrorCode::GitError, "잘못된 커밋 해시입니다"));
+        return Err(IpcError::new(ErrorCode::GitError, text_git_net::invalid_commit_hash()));
     }
 
     let meta_out = runner::run_git(
@@ -110,12 +111,12 @@ pub async fn get_commit_detail(
     )
     .await?;
     if meta_out.code != 0 {
-        return Err(IpcError::git("커밋을 찾을 수 없습니다", meta_out.stderr));
+        return Err(IpcError::git(text_git_net::commit_not_found(), meta_out.stderr));
     }
     let commit = parse_log(&meta_out.stdout)
         .into_iter()
         .next()
-        .ok_or_else(|| IpcError::new(ErrorCode::GitError, "커밋 메타 파싱 실패"))?;
+        .ok_or_else(|| IpcError::new(ErrorCode::GitError, text_git_net::commit_meta_parse_failed()))?;
 
     let files_out = runner::run_git(
         Some(&repo),

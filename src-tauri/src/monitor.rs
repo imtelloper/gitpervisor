@@ -625,10 +625,7 @@ pub async fn kill_processes(
     pids: Vec<u32>,
 ) -> Result<KillOutcome, IpcError> {
     if pids.is_empty() {
-        return Err(IpcError::new(
-            ErrorCode::Io,
-            "종료할 프로세스가 없습니다",
-        ));
+        return Err(IpcError::new(ErrorCode::Io, crate::i18n::text_system::kill_processes_empty()));
     }
     // 앱 자신·앱 번들 안 프로세스 제외는 kill_begin이 exe 경로를 보고 판정한다(skipped).
     // 락 스코프를 블록으로 명시한다 — MutexGuard가 await를 넘어가면 future가 Send가 아니게 되고

@@ -14,6 +14,7 @@ use super::diff::MAX_IMAGE_BYTES;
 use super::projects::project_path;
 use super::tree::resolve_in_repo;
 use crate::error::{ErrorCode, IpcError};
+use crate::i18n::text_git_net;
 use crate::state::AppState;
 
 /// 디코드·×2 버퍼의 상한(50MP RGBA = 200MB). macOS·Linux 엔진에는 치수 한계가 없어
@@ -25,9 +26,6 @@ const OCR_MAX_PIXELS: u64 = 50_000_000;
 /// 실측(설계 §3.4): 13px 다크 스크린샷은 ×2로 CER 0.27→0.10으로 좋아지지만 **16px 밝은 산문은
 /// 0.053→0.112로 되레 나빠진다.** 14~15px 구간은 미실측이라 실기에서 조정할 자리다.
 const UPSCALE_MAX_GLYPH_PX: f32 = 14.0;
-
-/// 확대 재인식 경고 — 상한을 숨기지 않기 위해 사용자에게 그대로 보인다(설계 R1).
-const UPSCALED_WARNING: &str = "글자가 작아 2배 확대해 다시 읽음";
 
 /// 인식된 상자 — **원본 이미지 px, 좌상단 원점**. 뷰어가 `<img>`와 같은 transform을 준 형제 div에
 /// 그대로 얹으므로 좌표 변환 코드가 프론트에 없다.
@@ -215,16 +213,15 @@ fn parse_tsv(tsv: &str) -> Vec<OcrLine> {
 // ════════════════════════════ 공용 파이프라인 ════════════════════════════
 
 fn join_err(e: tokio::task::JoinError) -> IpcError {
-    IpcError::new(ErrorCode::Io, format!("글자 추출 작업이 중단됐습니다: {e}"))
+    IpcError::new(ErrorCode::Io, text_git_net::ocr_job_interrupted(e))
 }
 
 fn decode_err(e: image::ImageError) -> IpcError {
     match e {
-        image::ImageError::Unsupported(_) => IpcError::new(
-            ErrorCode::Io,
-            "OCR이 지원하지 않는 형식입니다 (png·jpeg·gif·webp·bmp)",
-        ),
-        e => IpcError::new(ErrorCode::Io, format!("이미지 디코드 실패: {e}")),
+        image::ImageError::Unsupported(_) => {
+            IpcError::new(ErrorCode::Io, text_git_net::ocr_unsupported_format())
+        }
+        e => IpcError::new(ErrorCode::Io, text_git_net::ocr_image_decode_failed(e)),
     }
 }
 
@@ -233,15 +230,12 @@ fn decode_err(e: image::ImageError) -> IpcError {
 fn decode_rgba(bytes: &[u8]) -> Result<image::RgbaImage, IpcError> {
     let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("이미지 형식 판별 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_git_net::ocr_image_format_detect_failed(e)))?;
     let (w, h) = reader.into_dimensions().map_err(decode_err)?;
     if (w as u64) * (h as u64) > OCR_MAX_PIXELS {
         return Err(IpcError::new(
             ErrorCode::Io,
-            format!(
-                "이미지가 너무 큽니다 — {w}×{h}px (OCR 상한 {}MP)",
-                OCR_MAX_PIXELS / 1_000_000
-            ),
+            text_git_net::ocr_image_too_large(w, h, OCR_MAX_PIXELS / 1_000_000),
         ));
     }
     Ok(image::load_from_memory(bytes)
@@ -262,7 +256,7 @@ fn encode_png(img: &image::RgbaImage) -> Result<Vec<u8>, IpcError> {
             img.height(),
             image::ExtendedColorType::Rgba8,
         )
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("PNG 인코딩 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_git_net::ocr_png_encode_failed(e)))?;
     Ok(png)
 }
 
@@ -297,7 +291,8 @@ pub(crate) async fn recognize_two_pass(img: image::RgbaImage) -> Result<OcrResul
                 h: line.r#box.h / 2.0,
             };
         }
-        second.warnings.push(UPSCALED_WARNING.to_string());
+        // 확대 재인식 경고 — 상한을 숨기지 않기 위해 사용자에게 그대로 보인다(설계 R1).
+        second.warnings.push(text_git_net::ocr_upscaled_warning().to_string());
         second
     } else {
         first
@@ -334,7 +329,7 @@ fn windows_recognize(img: &image::RgbaImage) -> Result<EnginePass, IpcError> {
     use windows::Security::Cryptography::CryptographicBuffer;
 
     fn win_err(e: windows::core::Error) -> IpcError {
-        IpcError::new(ErrorCode::Io, format!("Windows OCR 실패: {e}"))
+        IpcError::new(ErrorCode::Io, text_git_net::ocr_windows_failed(e))
     }
 
     let lang = Language::CreateLanguage(&HSTRING::from("ko-KR")).map_err(win_err)?;
@@ -342,8 +337,7 @@ fn windows_recognize(img: &image::RgbaImage) -> Result<EnginePass, IpcError> {
     if !OcrEngine::IsLanguageSupported(&lang).map_err(win_err)? {
         return Err(IpcError::new(
             ErrorCode::ToolNotFound,
-            "한국어 OCR 팩이 없습니다 — 설정 › 시간 및 언어 › 언어 및 지역 › 언어 추가 › 한국어를 \
-             설치하세요 (케이퍼빌리티 Language.OCR~~~ko-KR~0.0.1.0)",
+            text_git_net::ocr_windows_korean_pack_missing(),
         ));
     }
     let engine = OcrEngine::TryCreateFromLanguage(&lang).map_err(win_err)?;
@@ -355,9 +349,8 @@ fn windows_recognize(img: &image::RgbaImage) -> Result<EnginePass, IpcError> {
     let mut warnings = Vec::new();
     let shrunk = if w > limit || h > limit {
         let scale = limit as f32 / w.max(h) as f32;
-        warnings.push(format!(
-            "엔진 한계로 {}% 축소함",
-            ((1.0 - scale) * 100.0).round() as i32
+        warnings.push(text_git_net::ocr_engine_downscaled(
+            ((1.0 - scale) * 100.0).round() as i32,
         ));
         Some(image::imageops::resize(
             img,
@@ -483,7 +476,7 @@ fn vision_recognize(png: &[u8], width: f32, height: f32) -> Result<EnginePass, I
     if !at_least_13 {
         return Err(IpcError::new(
             ErrorCode::ToolNotFound,
-            "한국어 인식은 macOS 13 이상이 필요합니다",
+            text_git_net::ocr_macos_13_required(),
         ));
     }
 
@@ -493,17 +486,14 @@ fn vision_recognize(png: &[u8], width: f32, height: f32) -> Result<EnginePass, I
 
     // 2차 가드 — 13+에서만 안전하게 부를 수 있다. 여기까지 왔으면 위 검사가 통과한 것이다.
     let supported = unsafe { request.supportedRecognitionLanguagesAndReturnError() }
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("Vision 언어 목록 조회 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_git_net::ocr_vision_languages_failed(e)))?;
     // `to_vec`로 받는다 — `iter()`는 objc2-foundation의 `NSEnumerator` 피처를 요구하는데,
     // 이 짧은 목록 하나 때문에 피처를 늘릴 이유가 없다.
     let tags: Vec<String> = supported.to_vec().iter().map(|s| s.to_string()).collect();
     if !tags.iter().any(|t| t == "ko-KR") {
         return Err(IpcError::new(
             ErrorCode::ToolNotFound,
-            format!(
-                "이 macOS의 Vision에 한국어가 없습니다 (지원: {})",
-                tags.join(", ")
-            ),
+            text_git_net::ocr_vision_korean_missing(&tags.join(", ")),
         ));
     }
     let wanted = NSArray::from_retained_slice(&[
@@ -521,7 +511,7 @@ fn vision_recognize(png: &[u8], width: f32, height: f32) -> Result<EnginePass, I
     let request_ref: &VNRequest = &request;
     handler
         .performRequests_error(&NSArray::from_slice(&[request_ref]))
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("Vision 인식 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_git_net::ocr_vision_failed(e)))?;
 
     let mut lines = Vec::new();
     let mut glyph_heights = Vec::new();
@@ -582,9 +572,7 @@ async fn tesseract_recognize(png: &[u8]) -> Result<EnginePass, IpcError> {
     let Some(path) = find_on_path("tesseract") else {
         return Err(IpcError::new(
             ErrorCode::ToolNotFound,
-            "tesseract가 없습니다 — Debian/Ubuntu: sudo apt install tesseract-ocr tesseract-ocr-kor · \
-             Fedora: sudo dnf install tesseract tesseract-langpack-kor · \
-             Arch: sudo pacman -S tesseract tesseract-data-kor",
+            text_git_net::ocr_tesseract_missing(),
         ));
     };
     let bin = ToolBin {
@@ -605,18 +593,16 @@ async fn tesseract_recognize(png: &[u8]) -> Result<EnginePass, IpcError> {
         if out.stderr.contains("Error opening data file") {
             return Err(IpcError::new(
                 ErrorCode::ToolNotFound,
-                "tesseract 한국어 데이터(kor)가 없습니다 — Debian/Ubuntu: sudo apt install \
-                 tesseract-ocr-kor · Fedora: sudo dnf install tesseract-langpack-kor · \
-                 Arch: sudo pacman -S tesseract-data-kor",
+                text_git_net::ocr_tesseract_korean_data_missing(),
             ));
         }
         return Err(IpcError::new(
             ErrorCode::Io,
-            format!("tesseract 실패 (종료 코드 {}): {}", out.code, out.stderr.trim()),
+            text_git_net::ocr_tesseract_failed(out.code, out.stderr.trim()),
         ));
     }
     let tsv = String::from_utf8(out.stdout).map_err(|_| {
-        IpcError::new(ErrorCode::Io, "tesseract 출력이 UTF-8이 아닙니다")
+        IpcError::new(ErrorCode::Io, text_git_net::ocr_tesseract_output_not_utf8())
     })?;
     let lines = parse_tsv(&tsv);
     let glyph_heights = lines.iter().map(|l| l.r#box.h).collect();
@@ -637,7 +623,7 @@ async fn tesseract_recognize(png: &[u8]) -> Result<EnginePass, IpcError> {
 async fn engine_pass(_img: std::sync::Arc<image::RgbaImage>) -> Result<EnginePass, IpcError> {
     Err(IpcError::new(
         ErrorCode::ToolNotFound,
-        "이 운영체제에는 쓸 수 있는 내장 OCR 엔진이 없습니다",
+        text_git_net::ocr_no_builtin_engine(),
     ))
 }
 
@@ -656,16 +642,16 @@ pub async fn ocr_image(
     // 크기를 먼저 본다 — 읽고 나서 거절하면 거대 파일도 일단 메모리에 올렸다가 버린다.
     let meta = tokio::fs::metadata(&full)
         .await
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("{rel_path} 정보 읽기 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_git_net::ocr_file_stat_failed(&rel_path, e)))?;
     if meta.len() > MAX_IMAGE_BYTES as u64 {
         return Err(IpcError::new(
             ErrorCode::Io,
-            "파일이 너무 큽니다 (25MB 초과)",
+            text_git_net::ocr_file_too_large(),
         ));
     }
     let bytes = tokio::fs::read(&full)
         .await
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("{rel_path} 읽기 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_git_net::ocr_file_read_failed(&rel_path, e)))?;
     let img = tokio::task::spawn_blocking(move || decode_rgba(&bytes))
         .await
         .map_err(join_err)??;
@@ -697,7 +683,7 @@ mod tests {
             languages: vec!["ko-KR".to_string()],
             lines: vec![line("릴리스", 1.0, 2.0)],
             text: "릴리스".to_string(),
-            warnings: vec![UPSCALED_WARNING.to_string()],
+            warnings: vec![text_git_net::ocr_upscaled_warning().to_string()],
         })
         .expect("OcrResult 직렬화");
         assert_eq!(json["engine"], "windows_ocr");

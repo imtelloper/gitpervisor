@@ -15,6 +15,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 use crate::error::{ErrorCode, IpcError};
+use crate::i18n::text_tools;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tool {
@@ -304,20 +305,20 @@ pub async fn run_tool_stdin(
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW (tokio Command inherent)
     let mut child = cmd
         .spawn()
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("도구 실행 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_tools::tool_spawn_failed(&e)))?;
 
     // stdin write → drop(EOF). run_git_with_stdin과 동일.
     if let Some(mut si) = child.stdin.take() {
         si.write_all(stdin)
             .await
-            .map_err(|e| IpcError::new(ErrorCode::Io, format!("stdin 쓰기 실패: {e}")))?;
+            .map_err(|e| IpcError::new(ErrorCode::Io, text_tools::tool_stdin_write_failed(&e)))?;
         drop(si);
     }
 
     let out = tokio::time::timeout(Duration::from_secs(timeout_secs), child.wait_with_output())
         .await
-        .map_err(|_| IpcError::new(ErrorCode::Timeout, "도구 실행 시간 초과".to_string()))?
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("도구 출력 수집 실패: {e}")))?;
+        .map_err(|_| IpcError::new(ErrorCode::Timeout, text_tools::tool_timed_out()))?
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_tools::tool_output_collect_failed(&e)))?;
 
     Ok(ToolOutput {
         code: out.status.code().unwrap_or(-1),

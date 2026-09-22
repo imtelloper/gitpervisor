@@ -167,7 +167,7 @@ pub fn load_connections(app: &AppHandle) -> Vec<DbConnection> {
 }
 
 fn save_connections(app: &AppHandle, conns: &[DbConnection]) -> Result<(), IpcError> {
-    crate::state::save_json(app, CONN_FILE, CONN_KEY, &conns, "연결")
+    crate::state::save_json(app, CONN_FILE, CONN_KEY, &conns, crate::i18n::text_db::db_connections_save_label())
 }
 
 // ---- 키체인 ----
@@ -176,10 +176,10 @@ fn keyring_entry(conn_id: &str) -> Option<keyring::Entry> {
 }
 fn store_password(conn_id: &str, password: &str) -> Result<(), IpcError> {
     let entry =
-        keyring_entry(conn_id).ok_or_else(|| err("키체인 접근 실패 — 비밀번호를 저장할 수 없습니다"))?;
+        keyring_entry(conn_id).ok_or_else(|| err(crate::i18n::text_db::db_keychain_unavailable()))?;
     entry
         .set_password(password)
-        .map_err(|e| err(format!("비밀번호 저장 실패: {e}")))
+        .map_err(|e| err(crate::i18n::text_db::db_password_save_failed(e)))
 }
 fn read_password(conn_id: &str) -> Option<String> {
     keyring_entry(conn_id).and_then(|e| e.get_password().ok())
@@ -258,7 +258,7 @@ pub async fn db_connect(state: State<'_, DbState>, id: String) -> Result<(), Ipc
         .iter()
         .find(|c| c.id == id)
         .cloned()
-        .ok_or_else(|| IpcError::new(ErrorCode::NotFound, "연결을 찾을 수 없습니다"))?;
+        .ok_or_else(|| IpcError::new(ErrorCode::NotFound, crate::i18n::text_db::db_connection_not_found()))?;
 
     let password = read_password(&conn.id);
     let client = match conn.engine {
@@ -268,7 +268,7 @@ pub async fn db_connect(state: State<'_, DbState>, id: String) -> Result<(), Ipc
             c.database("admin")
                 .run_command(doc! { "ping": 1 })
                 .await
-                .map_err(|e| err(format!("연결 실패: {e}")))?;
+                .map_err(|e| err(crate::i18n::text_db::db_connect_failed(e)))?;
             DbClient::Mongo(c)
         }
         DbEngine::Mssql => {
@@ -282,7 +282,7 @@ pub async fn db_connect(state: State<'_, DbState>, id: String) -> Result<(), Ipc
             sqlx::query("SELECT 1")
                 .fetch_optional(&pool)
                 .await
-                .map_err(|e| err(format!("연결 확인 실패: {e}")))?;
+                .map_err(|e| err(crate::i18n::text_db::db_connect_check_failed(e)))?;
             DbClient::Sql(pool, conn.engine)
         }
         DbEngine::Redis => {
@@ -291,7 +291,7 @@ pub async fn db_connect(state: State<'_, DbState>, id: String) -> Result<(), Ipc
             redis::cmd("PING")
                 .query_async::<String>(&mut cm)
                 .await
-                .map_err(|e| err(format!("연결 확인 실패(PING): {e}")))?;
+                .map_err(|e| err(crate::i18n::text_db::db_connect_ping_failed(e)))?;
             DbClient::Redis(cm)
         }
     };
@@ -314,7 +314,7 @@ pub async fn db_databases(
         DbClient::Mongo(c) => c
             .list_database_names()
             .await
-            .map_err(|e| err(format!("DB 목록 조회 실패: {e}"))),
+            .map_err(|e| err(crate::i18n::text_db::db_list_databases_failed(e))),
         DbClient::Mssql(c) => mssql_databases(&c).await,
         DbClient::Sql(pool, engine) => sql_databases(&pool, engine).await,
         DbClient::Redis(mut cm) => redis_databases(&mut cm).await,
@@ -332,7 +332,7 @@ pub async fn db_tables(
             .database(&database)
             .list_collection_names()
             .await
-            .map_err(|e| err(format!("컬렉션 목록 조회 실패: {e}"))),
+            .map_err(|e| err(crate::i18n::text_db::db_list_collections_failed(e))),
         DbClient::Mssql(c) => mssql_tables(&c, &database).await,
         DbClient::Sql(pool, engine) => sql_tables(&pool, engine, &database).await,
         DbClient::Redis(mut cm) => redis_tables(&mut cm, &database).await,
@@ -380,8 +380,8 @@ pub async fn db_table_meta(
     match client_of(&state, &id)? {
         DbClient::Mssql(c) => mssql_table_meta(&c, &database, &table).await,
         DbClient::Sql(pool, engine) => sql_table_meta(&pool, engine, &table).await,
-        DbClient::Mongo(_) => Err(err("컬럼/키/인덱스는 SQL 엔진만 지원합니다")),
-        DbClient::Redis(_) => Err(err("Redis는 컬럼/키/인덱스 메타가 없습니다")),
+        DbClient::Mongo(_) => Err(err(crate::i18n::text_db::db_table_meta_sql_only())),
+        DbClient::Redis(_) => Err(err(crate::i18n::text_db::db_table_meta_redis_unsupported())),
     }
 }
 
@@ -396,8 +396,8 @@ pub async fn db_explain(
     match client_of(&state, &id)? {
         DbClient::Mssql(c) => mssql_explain(&c, &database, &query).await,
         DbClient::Sql(pool, engine) => sql_explain(&pool, engine, &query).await,
-        DbClient::Mongo(_) => Err(err("실행 계획은 SQL 엔진만 지원합니다")),
-        DbClient::Redis(_) => Err(err("Redis는 실행 계획을 지원하지 않습니다")),
+        DbClient::Mongo(_) => Err(err(crate::i18n::text_db::db_explain_sql_only())),
+        DbClient::Redis(_) => Err(err(crate::i18n::text_db::db_explain_redis_unsupported())),
     }
 }
 
@@ -428,10 +428,10 @@ pub async fn db_update_cell(
         .map(|c| c.read_only)
         .unwrap_or(false);
     if read_only {
-        return Err(err("읽기 전용 연결입니다 — 편집하려면 연결 설정에서 해제하세요"));
+        return Err(err(crate::i18n::text_db::db_read_only_edit_blocked()));
     }
     if pk.is_empty() {
-        return Err(err("기본 키가 없어 안전하게 편집할 수 없습니다"));
+        return Err(err(crate::i18n::text_db::db_edit_needs_primary_key()));
     }
     match client_of(&state, &id)? {
         DbClient::Mssql(c) => {
@@ -440,8 +440,8 @@ pub async fn db_update_cell(
         DbClient::Sql(pool, engine) => {
             sql_update_cell(&pool, engine, &table, &pk, &set_col, &set_value).await
         }
-        DbClient::Mongo(_) => Err(err("셀 편집은 SQL 엔진만 지원합니다")),
-        DbClient::Redis(_) => Err(err("Redis는 그리드 편집을 지원하지 않습니다 — 쿼리 콘솔을 쓰세요")),
+        DbClient::Mongo(_) => Err(err(crate::i18n::text_db::db_cell_edit_sql_only())),
+        DbClient::Redis(_) => Err(err(crate::i18n::text_db::db_cell_edit_redis_unsupported())),
     }
 }
 
@@ -455,16 +455,16 @@ pub async fn db_delete_row(
     pk: Vec<PkCell>,
 ) -> Result<(), IpcError> {
     if read_only_of(&state, &id) {
-        return Err(err("읽기 전용 연결입니다 — 삭제하려면 연결 설정에서 해제하세요"));
+        return Err(err(crate::i18n::text_db::db_read_only_delete_blocked()));
     }
     if pk.is_empty() {
-        return Err(err("기본 키가 없어 안전하게 삭제할 수 없습니다"));
+        return Err(err(crate::i18n::text_db::db_delete_needs_primary_key()));
     }
     match client_of(&state, &id)? {
         DbClient::Mssql(c) => mssql_delete_row(&c, &database, &table, &pk).await,
         DbClient::Sql(pool, engine) => sql_delete_row(&pool, engine, &table, &pk).await,
-        DbClient::Mongo(_) => Err(err("행 삭제는 SQL 엔진만 지원합니다")),
-        DbClient::Redis(_) => Err(err("Redis는 그리드 삭제를 지원하지 않습니다 — DEL 명령을 쓰세요")),
+        DbClient::Mongo(_) => Err(err(crate::i18n::text_db::db_row_delete_sql_only())),
+        DbClient::Redis(_) => Err(err(crate::i18n::text_db::db_row_delete_redis_unsupported())),
     }
 }
 
@@ -478,16 +478,16 @@ pub async fn db_insert_row(
     values: Vec<PkCell>,
 ) -> Result<(), IpcError> {
     if read_only_of(&state, &id) {
-        return Err(err("읽기 전용 연결입니다 — 삽입하려면 연결 설정에서 해제하세요"));
+        return Err(err(crate::i18n::text_db::db_read_only_insert_blocked()));
     }
     if values.is_empty() {
-        return Err(err("입력할 값이 없습니다"));
+        return Err(err(crate::i18n::text_db::db_insert_no_values()));
     }
     match client_of(&state, &id)? {
         DbClient::Mssql(c) => mssql_insert_row(&c, &database, &table, &values).await,
         DbClient::Sql(pool, engine) => sql_insert_row(&pool, engine, &table, &values).await,
-        DbClient::Mongo(_) => Err(err("행 삽입은 SQL 엔진만 지원합니다")),
-        DbClient::Redis(_) => Err(err("Redis는 그리드 삽입을 지원하지 않습니다 — SET/HSET 명령을 쓰세요")),
+        DbClient::Mongo(_) => Err(err(crate::i18n::text_db::db_row_insert_sql_only())),
+        DbClient::Redis(_) => Err(err(crate::i18n::text_db::db_row_insert_redis_unsupported())),
     }
 }
 
@@ -511,7 +511,7 @@ pub async fn db_procedures(
         DbClient::Mssql(c) => mssql_procedures(&c, &database).await,
         // PG/MySQL/SQLite 프로시저 탐색은 v1 범위 밖 — 빈 목록(테이블/쿼리 기능엔 영향 없음).
         DbClient::Sql(_, _) | DbClient::Redis(_) => Ok(Vec::new()),
-        DbClient::Mongo(_) => Err(err("저장 프로시저는 SQL 엔진만 지원합니다")),
+        DbClient::Mongo(_) => Err(err(crate::i18n::text_db::db_procedures_sql_only())),
     }
 }
 
@@ -526,7 +526,7 @@ pub async fn db_proc_params(
     match client_of(&state, &id)? {
         DbClient::Mssql(c) => mssql_proc_params(&c, &database, &proc).await,
         DbClient::Sql(_, _) | DbClient::Redis(_) => Ok(Vec::new()),
-        DbClient::Mongo(_) => Err(err("저장 프로시저는 SQL 엔진만 지원합니다")),
+        DbClient::Mongo(_) => Err(err(crate::i18n::text_db::db_procedures_sql_only())),
     }
 }
 
@@ -548,7 +548,7 @@ fn client_of(state: &State<'_, DbState>, id: &str) -> Result<DbClient, IpcError>
         .unwrap_or_else(|e| e.into_inner())
         .get(id)
         .cloned()
-        .ok_or_else(|| IpcError::new(ErrorCode::NotFound, "연결되어 있지 않습니다 — 먼저 연결하세요"))
+        .ok_or_else(|| IpcError::new(ErrorCode::NotFound, crate::i18n::text_db::db_not_connected()))
 }
 
 // ---- Mongo 드라이버 ----
@@ -576,7 +576,7 @@ async fn build_mongo_client(
     // 원시 드라이버 에러는 연결 URI(비밀번호 포함)를 에코할 수 있어 고정 문구로 대체(로그 유출 방지).
     Client::with_uri_str(&uri)
         .await
-        .map_err(|_| err("연결 문자열이 올바르지 않습니다 (호스트·옵션 확인)".to_string()))
+        .map_err(|_| err(crate::i18n::text_db::db_invalid_connection_string()))
 }
 
 /// userinfo용 퍼센트 인코딩 (unreserved 외 인코딩)
@@ -618,9 +618,7 @@ async fn build_mssql_client(
         }
         #[cfg(not(windows))]
         {
-            return Err(err(
-                "Windows 통합 인증(SSPI)은 Windows에서만 지원됩니다 — 사용자명/비밀번호로 로그인하세요",
-            ));
+            return Err(err(crate::i18n::text_db::db_mssql_integrated_auth_windows_only()));
         }
     } else {
         config.authentication(AuthMethod::sql_server(
@@ -642,11 +640,11 @@ async fn build_mssql_client(
     }
     let tcp = TcpStream::connect(config.get_addr())
         .await
-        .map_err(|e| err(format!("TCP 연결 실패: {e}")))?;
+        .map_err(|e| err(crate::i18n::text_db::db_tcp_connect_failed(e)))?;
     tcp.set_nodelay(true).ok();
     tiberius::Client::connect(config, tcp.compat_write())
         .await
-        .map_err(|e| err(format!("SQL Server 연결/인증 실패: {e}")))
+        .map_err(|e| err(crate::i18n::text_db::db_mssql_connect_failed(e)))
 }
 
 async fn mssql_databases(
@@ -656,10 +654,10 @@ async fn mssql_databases(
     let rows = client
         .simple_query("SELECT name FROM sys.databases ORDER BY name")
         .await
-        .map_err(|e| err(format!("DB 목록 조회 실패: {e}")))?
+        .map_err(|e| err(crate::i18n::text_db::db_list_databases_failed(e)))?
         .into_first_result()
         .await
-        .map_err(|e| err(format!("DB 목록 수집 실패: {e}")))?;
+        .map_err(|e| err(crate::i18n::text_db::db_collect_databases_failed(e)))?;
     Ok(rows
         .iter()
         .filter_map(|r| r.try_get::<&str, _>(0).ok().flatten().map(str::to_string))
@@ -680,10 +678,10 @@ async fn mssql_tables(
     let rows = client
         .simple_query(q)
         .await
-        .map_err(|e| err(format!("테이블 목록 조회 실패: {e}")))?
+        .map_err(|e| err(crate::i18n::text_db::db_list_tables_failed(e)))?
         .into_first_result()
         .await
-        .map_err(|e| err(format!("테이블 목록 수집 실패: {e}")))?;
+        .map_err(|e| err(crate::i18n::text_db::db_collect_tables_failed(e)))?;
     Ok(rows
         .iter()
         .filter_map(|r| r.try_get::<&str, _>(0).ok().flatten().map(str::to_string))
@@ -698,9 +696,7 @@ async fn mssql_query(
     read_only: bool,
 ) -> Result<DbResult, IpcError> {
     if read_only && is_write_sql(query) {
-        return Err(err(
-            "읽기 전용 연결입니다 — 쓰기/DDL 문은 차단됩니다 (연결 편집에서 해제 가능)",
-        ));
+        return Err(err(crate::i18n::text_db::db_read_only_sql_write_blocked()));
     }
     let mut batch = String::new();
     if !database.trim().is_empty() {
@@ -712,14 +708,14 @@ async fn mssql_query(
     let mut stream = client
         .simple_query(batch)
         .await
-        .map_err(|e| err(format!("쿼리 실패: {e}")))?;
+        .map_err(|e| err(crate::i18n::text_db::db_query_failed(e)))?;
 
     let mut cols: Vec<String> = Vec::new();
     let mut rows: Vec<Vec<Json>> = Vec::new();
     while let Some(item) = stream
         .try_next()
         .await
-        .map_err(|e| err(format!("결과 수집 실패: {e}")))?
+        .map_err(|e| err(crate::i18n::text_db::db_collect_results_failed(e)))?
     {
         match item {
             QueryItem::Metadata(_) => {}
@@ -772,7 +768,7 @@ fn bytes_to_hex_cell(v: &[u8]) -> String {
         s.push(HEX[(b & 0x0f) as usize] as char);
     }
     if v.len() > shown {
-        s.push_str(&format!(" …(전체 {}바이트 중 {}바이트만 표시)", v.len(), shown));
+        s.push_str(&crate::i18n::text_db::db_blob_cell_truncated(v.len(), shown));
     }
     s
 }
@@ -811,14 +807,14 @@ async fn run_explain_inner(client: &mut MssqlClient, query: &str) -> Result<Stri
     let rows = client
         .simple_query(query)
         .await
-        .map_err(|e| err(format!("계획 생성 실패: {e}")))?
+        .map_err(|e| err(crate::i18n::text_db::db_plan_build_failed(e)))?
         .into_first_result()
         .await
-        .map_err(|e| err(format!("계획 수집 실패: {e}")))?;
+        .map_err(|e| err(crate::i18n::text_db::db_plan_collect_failed(e)))?;
     rows.first()
         .and_then(|r| r.try_get::<&str, _>(0).ok().flatten())
         .map(str::to_string)
-        .ok_or_else(|| err("실행 계획을 받지 못했습니다"))
+        .ok_or_else(|| err(crate::i18n::text_db::db_plan_missing()))
 }
 
 /// JSON 값 → 타입에 맞는 SQL 리터럴(주입 안전: 숫자는 검증, 문자열은 '' 이스케이프).
@@ -836,7 +832,7 @@ fn sql_literal(v: &Json, data_type: &str) -> Result<String, IpcError> {
                 "0".to_string()
             }
         }
-        _ => return Err(err("지원하지 않는 값 형식입니다")),
+        _ => return Err(err(crate::i18n::text_db::db_unsupported_value_type())),
     };
     match data_type.to_ascii_lowercase().as_str() {
         "bit" => {
@@ -849,13 +845,13 @@ fn sql_literal(v: &Json, data_type: &str) -> Result<String, IpcError> {
         "int" | "bigint" | "smallint" | "tinyint" => {
             s.trim()
                 .parse::<i64>()
-                .map_err(|_| err(format!("정수가 아닙니다: {s}")))?;
+                .map_err(|_| err(crate::i18n::text_db::db_not_an_integer(&s)))?;
             Ok(s.trim().to_string())
         }
         "decimal" | "numeric" | "float" | "real" | "money" | "smallmoney" => {
             s.trim()
                 .parse::<f64>()
-                .map_err(|_| err(format!("숫자가 아닙니다: {s}")))?;
+                .map_err(|_| err(crate::i18n::text_db::db_not_a_number(&s)))?;
             Ok(s.trim().to_string())
         }
         "uniqueidentifier" => Ok(format!(
@@ -935,11 +931,11 @@ async fn mssql_update_cell(
     let res = client
         .execute(sql, &[])
         .await
-        .map_err(|e| err(format!("업데이트 실패: {e}")))?;
+        .map_err(|e| err(crate::i18n::text_db::db_update_failed(e)))?;
     match res.total() {
-        0 => Err(err("일치하는 행이 없습니다 (이미 변경됐거나 삭제됨)")),
+        0 => Err(err(crate::i18n::text_db::db_update_no_matching_row())),
         1 => Ok(()),
-        n => Err(err(format!("{n}개 행이 영향받음 — PK가 유일하지 않습니다(취소)"))),
+        n => Err(err(crate::i18n::text_db::db_update_pk_not_unique(n))),
     }
 }
 
@@ -972,11 +968,11 @@ async fn mssql_delete_row(
     let res = client
         .execute(sql, &[])
         .await
-        .map_err(|e| err(format!("삭제 실패: {e}")))?;
+        .map_err(|e| err(crate::i18n::text_db::db_delete_failed(e)))?;
     match res.total() {
-        0 => Err(err("일치하는 행이 없습니다 (이미 삭제됨)")),
+        0 => Err(err(crate::i18n::text_db::db_delete_no_matching_row())),
         1 => Ok(()),
-        n => Err(err(format!("{n}개 행이 영향받음 — 취소"))),
+        n => Err(err(crate::i18n::text_db::db_delete_multiple_rows(n))),
     }
 }
 
@@ -1007,9 +1003,9 @@ async fn mssql_insert_row(
     let res = client
         .execute(sql, &[])
         .await
-        .map_err(|e| err(format!("삽입 실패: {e}")))?;
+        .map_err(|e| err(crate::i18n::text_db::db_insert_failed(e)))?;
     if res.total() == 0 {
-        return Err(err("삽입되지 않았습니다"));
+        return Err(err(crate::i18n::text_db::db_insert_nothing_inserted()));
     }
     Ok(())
 }
@@ -1022,7 +1018,7 @@ async fn mssql_procedures(
     client
         .simple_query(format!("USE [{}]", database.replace(']', "]]")))
         .await
-        .map_err(|e| err(format!("DB 전환 실패: {e}")))?
+        .map_err(|e| err(crate::i18n::text_db::db_switch_database_failed(e)))?
         .into_results()
         .await
         .ok();
@@ -1060,7 +1056,7 @@ async fn mssql_proc_params(
     client
         .simple_query(format!("USE [{}]", database.replace(']', "]]")))
         .await
-        .map_err(|e| err(format!("DB 전환 실패: {e}")))?
+        .map_err(|e| err(crate::i18n::text_db::db_switch_database_failed(e)))?
         .into_results()
         .await
         .ok();
@@ -1097,7 +1093,7 @@ async fn mssql_explain(
         client
             .simple_query(format!("USE [{}]", database.replace(']', "]]")))
             .await
-            .map_err(|e| err(format!("DB 전환 실패: {e}")))?
+            .map_err(|e| err(crate::i18n::text_db::db_switch_database_failed(e)))?
             .into_results()
             .await
             .ok();
@@ -1105,7 +1101,7 @@ async fn mssql_explain(
     client
         .simple_query("SET SHOWPLAN_XML ON")
         .await
-        .map_err(|e| err(format!("SHOWPLAN 설정 실패: {e}")))?
+        .map_err(|e| err(crate::i18n::text_db::db_showplan_enable_failed(e)))?
         .into_results()
         .await
         .ok();
@@ -1130,10 +1126,10 @@ async fn run_rows(client: &mut MssqlClient, sql: &str) -> Result<Vec<tiberius::R
     client
         .simple_query(sql)
         .await
-        .map_err(|e| err(format!("메타 조회 실패: {e}")))?
+        .map_err(|e| err(crate::i18n::text_db::db_meta_query_failed(e)))?
         .into_first_result()
         .await
-        .map_err(|e| err(format!("메타 수집 실패: {e}")))
+        .map_err(|e| err(crate::i18n::text_db::db_meta_collect_failed(e)))
 }
 
 /// SQL Server 컬럼 타입 표기 (varchar(50)·nvarchar(MAX)·decimal(18,2) 등).
@@ -1222,7 +1218,7 @@ async fn mssql_table_meta(
     client
         .simple_query(format!("USE [{db_br}]"))
         .await
-        .map_err(|e| err(format!("DB 전환 실패: {e}")))?
+        .map_err(|e| err(crate::i18n::text_db::db_switch_database_failed(e)))?
         .into_results()
         .await
         .ok();
@@ -1391,7 +1387,7 @@ async fn build_sql_client(
                 .as_deref()
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
-                .ok_or_else(|| err("SQLite는 데이터베이스 파일 경로가 필요합니다"))?;
+                .ok_or_else(|| err(crate::i18n::text_db::db_sqlite_path_required()))?;
             let mode = if conn.read_only { "ro" } else { "rwc" };
             // 역슬래시→슬래시(SQLite 수용). scheme은 `sqlite:`(단일) — `//`는 authority라 `C:`가
             // 호스트로 잘못 잡힌다.
@@ -1435,14 +1431,14 @@ async fn build_sql_client(
             }
             url
         }
-        _ => return Err(err("내부 오류: SQL 엔진이 아닙니다")),
+        _ => return Err(err(crate::i18n::text_db::db_internal_not_sql_engine())),
     };
     sqlx::any::AnyPoolOptions::new()
         .max_connections(4)
         .acquire_timeout(std::time::Duration::from_secs(15))
         .connect(&url)
         .await
-        .map_err(|e| err(format!("연결 실패: {e}")))
+        .map_err(|e| err(crate::i18n::text_db::db_connect_failed(e)))
 }
 
 /// AnyRow의 i번째 셀 → JSON. 기본형 우선(정수→실수→불리언→문자열→blob), 미지원은 NULL.
@@ -1503,12 +1499,12 @@ async fn sql_databases(pool: &sqlx::AnyPool, engine: DbEngine) -> Result<Vec<Str
         }
         DbEngine::Mysql => "SHOW DATABASES",
         DbEngine::Sqlite => return Ok(vec!["main".to_string()]),
-        _ => return Err(err("내부 오류")),
+        _ => return Err(err(crate::i18n::text_db::db_internal_error())),
     };
     let rows = sqlx::query(sql)
         .fetch_all(pool)
         .await
-        .map_err(|e| err(format!("DB 목록 조회 실패: {e}")))?;
+        .map_err(|e| err(crate::i18n::text_db::db_list_databases_failed(e)))?;
     Ok(rows
         .iter()
         .filter_map(|r| r.try_get::<String, _>(0).ok())
@@ -1541,9 +1537,9 @@ async fn sql_tables(
         )
         .fetch_all(pool)
         .await,
-        _ => return Err(err("내부 오류")),
+        _ => return Err(err(crate::i18n::text_db::db_internal_error())),
     }
-    .map_err(|e| err(format!("테이블 목록 조회 실패: {e}")))?;
+    .map_err(|e| err(crate::i18n::text_db::db_list_tables_failed(e)))?;
     Ok(rows
         .iter()
         .filter_map(|r| r.try_get::<String, _>(0).ok())
@@ -1558,9 +1554,7 @@ async fn sql_query(
     read_only: bool,
 ) -> Result<DbResult, IpcError> {
     if read_only && is_write_sql(query) {
-        return Err(err(
-            "읽기 전용 연결입니다 — 쓰기/DDL 문은 차단됩니다 (연결 편집에서 해제 가능)",
-        ));
+        return Err(err(crate::i18n::text_db::db_read_only_sql_write_blocked()));
     }
     // 스트림으로 limit행까지만 적재(거대 결과 메모리 폭발 방지). 조기 종료는 sqlx가 연결을 정리.
     let mut stream = sqlx::query(query).fetch(pool);
@@ -1568,7 +1562,7 @@ async fn sql_query(
     while let Some(row) = stream
         .try_next()
         .await
-        .map_err(|e| err(format!("쿼리 실패: {e}")))?
+        .map_err(|e| err(crate::i18n::text_db::db_query_failed(e)))?
     {
         if (rows.len() as i64) < limit {
             rows.push(row);
@@ -1587,12 +1581,12 @@ async fn sql_explain(
     let sql = match engine {
         DbEngine::Sqlite => format!("EXPLAIN QUERY PLAN {query}"),
         DbEngine::Postgres | DbEngine::Mysql => format!("EXPLAIN {query}"),
-        _ => return Err(err("내부 오류")),
+        _ => return Err(err(crate::i18n::text_db::db_internal_error())),
     };
     let rows = sqlx::query(&sql)
         .fetch_all(pool)
         .await
-        .map_err(|e| err(format!("실행 계획 실패: {e}")))?;
+        .map_err(|e| err(crate::i18n::text_db::db_explain_failed(e)))?;
     let mut out = String::new();
     for r in &rows {
         let parts: Vec<String> = (0..r.columns().len())
@@ -1688,11 +1682,11 @@ async fn sql_update_cell(
     let res = q
         .execute(pool)
         .await
-        .map_err(|e| err(format!("업데이트 실패: {e}")))?;
+        .map_err(|e| err(crate::i18n::text_db::db_update_failed(e)))?;
     match res.rows_affected() {
-        0 => Err(err("일치하는 행이 없습니다 (이미 변경됐거나 삭제됨)")),
+        0 => Err(err(crate::i18n::text_db::db_update_no_matching_row())),
         1 => Ok(()),
-        m => Err(err(format!("{m}개 행이 영향받음 — PK가 유일하지 않습니다(취소)"))),
+        m => Err(err(crate::i18n::text_db::db_update_pk_not_unique(m))),
     }
 }
 
@@ -1730,11 +1724,11 @@ async fn sql_delete_row(
     let res = q
         .execute(pool)
         .await
-        .map_err(|e| err(format!("삭제 실패: {e}")))?;
+        .map_err(|e| err(crate::i18n::text_db::db_delete_failed(e)))?;
     match res.rows_affected() {
-        0 => Err(err("일치하는 행이 없습니다 (이미 삭제됨)")),
+        0 => Err(err(crate::i18n::text_db::db_delete_no_matching_row())),
         1 => Ok(()),
-        m => Err(err(format!("{m}개 행이 영향받음 — 취소"))),
+        m => Err(err(crate::i18n::text_db::db_delete_multiple_rows(m))),
     }
 }
 
@@ -1759,9 +1753,9 @@ async fn sql_insert_row(
     let res = q
         .execute(pool)
         .await
-        .map_err(|e| err(format!("삽입 실패: {e}")))?;
+        .map_err(|e| err(crate::i18n::text_db::db_insert_failed(e)))?;
     if res.rows_affected() == 0 {
-        return Err(err("삽입되지 않았습니다"));
+        return Err(err(crate::i18n::text_db::db_insert_nothing_inserted()));
     }
     Ok(())
 }
@@ -1776,7 +1770,7 @@ async fn sql_table_meta(
         DbEngine::Sqlite => sqlite_table_meta(pool, table).await,
         DbEngine::Postgres => pg_table_meta(pool, table).await,
         DbEngine::Mysql => mysql_table_meta(pool, table).await,
-        _ => Err(err("내부 오류")),
+        _ => Err(err(crate::i18n::text_db::db_internal_error())),
     }
 }
 
@@ -1787,7 +1781,7 @@ async fn sqlite_table_meta(pool: &sqlx::AnyPool, table: &str) -> Result<TableMet
     let col_rows = sqlx::query(&format!("PRAGMA table_info({qname})"))
         .fetch_all(pool)
         .await
-        .map_err(|e| err(format!("컬럼 조회 실패: {e}")))?;
+        .map_err(|e| err(crate::i18n::text_db::db_columns_query_failed(e)))?;
     let mut columns = Vec::new();
     let mut pk_cols: Vec<(i64, String)> = Vec::new();
     for r in &col_rows {
@@ -1902,7 +1896,7 @@ async fn pg_table_meta(pool: &sqlx::AnyPool, table: &str) -> Result<TableMeta, I
     .bind(name)
     .fetch_all(pool)
     .await
-    .map_err(|e| err(format!("컬럼 조회 실패: {e}")))?;
+    .map_err(|e| err(crate::i18n::text_db::db_columns_query_failed(e)))?;
 
     let pk_rows = sqlx::query(
         "SELECT kcu.column_name::text FROM information_schema.table_constraints tc \
@@ -2033,7 +2027,7 @@ async fn mysql_table_meta(pool: &sqlx::AnyPool, table: &str) -> Result<TableMeta
     .bind(name)
     .fetch_all(pool)
     .await
-    .map_err(|e| err(format!("컬럼 조회 실패: {e}")))?;
+    .map_err(|e| err(crate::i18n::text_db::db_columns_query_failed(e)))?;
 
     let mut columns = Vec::new();
     let mut pk_cols: Vec<String> = Vec::new();
@@ -2179,10 +2173,10 @@ async fn build_redis_client(
     url.push_str(&dbnum.to_string());
     // 원시 드라이버 에러는 연결 URL(비밀번호 포함)을 에코할 수 있어 고정 문구로 대체(로그 유출 방지).
     let client =
-        redis::Client::open(url).map_err(|_| err("연결 문자열이 올바르지 않습니다 (호스트·옵션 확인)".to_string()))?;
+        redis::Client::open(url).map_err(|_| err(crate::i18n::text_db::db_invalid_connection_string()))?;
     redis::aio::ConnectionManager::new(client)
         .await
-        .map_err(|e| err(format!("연결 실패: {e}")))
+        .map_err(|e| err(crate::i18n::text_db::db_connect_failed(e)))
 }
 
 type Cm = redis::aio::ConnectionManager;
@@ -2221,7 +2215,7 @@ async fn redis_select(cm: &mut Cm, database: &str) -> Result<(), IpcError> {
         .arg(db)
         .query_async::<()>(cm)
         .await
-        .map_err(|e| err(format!("DB 선택 실패: {e}")))
+        .map_err(|e| err(crate::i18n::text_db::db_redis_select_failed(e)))
 }
 
 async fn redis_tables(cm: &mut Cm, database: &str) -> Result<Vec<String>, IpcError> {
@@ -2236,7 +2230,7 @@ async fn redis_tables(cm: &mut Cm, database: &str) -> Result<Vec<String>, IpcErr
             .arg(300)
             .query_async(cm)
             .await
-            .map_err(|e| err(format!("키 조회 실패: {e}")))?;
+            .map_err(|e| err(crate::i18n::text_db::db_redis_scan_keys_failed(e)))?;
         keys.extend(batch);
         cursor = next;
         if cursor == 0 || keys.len() >= CAP {
@@ -2258,7 +2252,7 @@ async fn redis_query(
     redis_select(cm, database).await?;
     let tokens = tokenize_redis(query)?;
     if tokens.is_empty() {
-        return Err(err("명령을 입력하세요 (예: GET key, HGETALL key)"));
+        return Err(err(crate::i18n::text_db::db_redis_command_required()));
     }
     // 단일 토큰이고 알려진 명령이 아니면 → 키 미리보기(타입 자동 감지).
     if tokens.len() == 1 && !is_known_redis_cmd(&tokens[0]) {
@@ -2266,13 +2260,11 @@ async fn redis_query(
     }
     let upper = tokens[0].to_ascii_uppercase();
     if read_only && is_write_redis(&upper) {
-        return Err(err(
-            "읽기 전용 연결입니다 — 쓰기 명령은 차단됩니다 (연결 편집에서 해제 가능)",
-        ));
+        return Err(err(crate::i18n::text_db::db_read_only_redis_write_blocked()));
     }
     // SELECT/SWAPDB 등 연결 상태를 바꾸는 명령은 탐색기 일관성을 위해 막는다(트리에서 DB 선택).
     if matches!(upper.as_str(), "SELECT" | "SWAPDB") {
-        return Err(err("DB 전환은 왼쪽 트리에서 선택하세요"));
+        return Err(err(crate::i18n::text_db::db_redis_select_use_tree()));
     }
     let mut cmd = redis::cmd(&tokens[0]);
     for a in &tokens[1..] {
@@ -2281,7 +2273,7 @@ async fn redis_query(
     let v: redis::Value = cmd
         .query_async(cm)
         .await
-        .map_err(|e| err(format!("명령 실패: {e}")))?;
+        .map_err(|e| err(crate::i18n::text_db::db_redis_command_failed(e)))?;
     Ok(redis_value_to_result(v, limit))
 }
 
@@ -2293,8 +2285,8 @@ async fn redis_key_preview(cm: &mut Cm, key: &str, limit: i64) -> Result<DbResul
         .arg(key)
         .query_async(cm)
         .await
-        .map_err(|e| err(format!("TYPE 실패: {e}")))?;
-    let e = |x: redis::RedisError| err(format!("읽기 실패: {x}"));
+        .map_err(|e| err(crate::i18n::text_db::db_redis_type_failed(e)))?;
+    let e = |x: redis::RedisError| err(crate::i18n::text_db::db_redis_read_failed(x));
     match ty.as_str() {
         "string" => {
             let v: Option<String> = redis::cmd("GET").arg(key).query_async(cm).await.map_err(e)?;
@@ -2349,7 +2341,7 @@ async fn redis_key_preview(cm: &mut Cm, key: &str, limit: i64) -> Result<DbResul
         "none" => Ok(redis_one("value", Json::Null)), // 키 없음
         other => Ok(redis_one(
             "info",
-            json!(format!("({other}) 타입 미리보기 미지원 — 쿼리 콘솔에서 명령을 입력하세요")),
+            json!(crate::i18n::text_db::db_redis_type_preview_unsupported(other)),
         )),
     }
 }
@@ -2443,7 +2435,7 @@ fn tokenize_redis(s: &str) -> Result<Vec<String>, IpcError> {
         }
     }
     if in_q {
-        return Err(err("따옴표가 닫히지 않았습니다"));
+        return Err(err(crate::i18n::text_db::db_redis_unclosed_quote()));
     }
     if started {
         toks.push(cur);
@@ -2632,18 +2624,18 @@ async fn mongo_query(
             .find(filter)
             .limit(limit)
             .await
-            .map_err(|e| err(format!("쿼리 실패: {e}")))?
+            .map_err(|e| err(crate::i18n::text_db::db_query_failed(e)))?
             .try_collect()
             .await
-            .map_err(|e| err(format!("결과 수집 실패: {e}")))?,
+            .map_err(|e| err(crate::i18n::text_db::db_collect_results_failed(e)))?,
         MongoOp::Aggregate(mut pipeline) => {
             pipeline.push(doc! { "$limit": limit });
             coll.aggregate(pipeline)
                 .await
-                .map_err(|e| err(format!("쿼리 실패: {e}")))?
+                .map_err(|e| err(crate::i18n::text_db::db_query_failed(e)))?
                 .try_collect()
                 .await
-                .map_err(|e| err(format!("결과 수집 실패: {e}")))?
+                .map_err(|e| err(crate::i18n::text_db::db_collect_results_failed(e)))?
         }
     };
     Ok(docs_to_result(docs))
@@ -2653,20 +2645,18 @@ fn parse_mongo(query: &str) -> Result<ParsedMongo, IpcError> {
     let q = query.trim().trim_end_matches(';').trim();
     let collection = extract_get_collection(q)
         .or_else(|| extract_db_dot(q))
-        .ok_or_else(|| {
-            err("컬렉션을 찾지 못함 — 예: db.getCollection(\"이름\").find({})")
-        })?;
+        .ok_or_else(|| err(crate::i18n::text_db::db_mongo_collection_missing()))?;
 
     if let Some(arg) = extract_call(q, "aggregate") {
         let v: Json = if arg.trim().is_empty() {
             serde_json::json!([])
         } else {
             serde_json::from_str(&normalize_mongo(&arg))
-                .map_err(|e| err(format!("aggregate 인자 JSON 오류: {e}")))?
+                .map_err(|e| err(crate::i18n::text_db::db_mongo_aggregate_json_invalid(e)))?
         };
         let pipeline = v
             .as_array()
-            .ok_or_else(|| err("aggregate 인자는 배열이어야 합니다"))?
+            .ok_or_else(|| err(crate::i18n::text_db::db_mongo_aggregate_not_array()))?
             .iter()
             .map(json_to_doc)
             .collect();
@@ -2679,7 +2669,7 @@ fn parse_mongo(query: &str) -> Result<ParsedMongo, IpcError> {
             Document::new()
         } else {
             let v: Json = serde_json::from_str(&normalize_mongo(&arg))
-                .map_err(|e| err(format!("find 필터 JSON 오류: {e}")))?;
+                .map_err(|e| err(crate::i18n::text_db::db_mongo_find_json_invalid(e)))?;
             json_to_doc(&v)
         };
         Ok(ParsedMongo {
@@ -2687,9 +2677,7 @@ fn parse_mongo(query: &str) -> Result<ParsedMongo, IpcError> {
             op: MongoOp::Find(filter),
         })
     } else {
-        Err(err(
-            "지원 형식: db.getCollection(\"이름\").find({...}) 또는 .aggregate([...])",
-        ))
+        Err(err(crate::i18n::text_db::db_mongo_unsupported_query()))
     }
 }
 
@@ -2911,15 +2899,11 @@ fn guard_ops(op: &MongoOp, read_only: bool) -> Result<(), IpcError> {
     const JS: &[&str] = &["$where", "$function", "$accumulator"];
     let check = |d: &Document| -> Result<(), IpcError> {
         if let Some(found) = doc_find_op(d, WRITE) {
-            return Err(err(format!(
-                "쓰기 연산 '{found}'는 읽기 전용 뷰어에서 차단됩니다"
-            )));
+            return Err(err(crate::i18n::text_db::db_mongo_write_op_blocked(&found)));
         }
         if read_only {
             if let Some(found) = doc_find_op(d, JS) {
-                return Err(err(format!(
-                    "서버측 JS '{found}'는 읽기 전용 연결에서 차단됩니다"
-                )));
+                return Err(err(crate::i18n::text_db::db_mongo_server_js_blocked(&found)));
             }
         }
         Ok(())

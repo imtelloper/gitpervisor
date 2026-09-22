@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::error::{ErrorCode, IpcError};
+use crate::i18n::text_git_net;
 use crate::state::AppState;
 
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
@@ -203,16 +204,16 @@ pub async fn http_request(
 ) -> Result<HttpResponse, IpcError> {
     // 1) scheme allowlist (§10.5) — file:/tauri:/data: 등 거부.
     let parsed = Url::parse(req.url.trim())
-        .map_err(|e| IpcError::new(ErrorCode::InvalidUrl, format!("잘못된 URL: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::InvalidUrl, text_git_net::invalid_url(e)))?;
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err(IpcError::new(
             ErrorCode::InvalidUrl,
-            format!("지원하지 않는 스킴입니다: {} (http/https만 허용)", parsed.scheme()),
+            text_git_net::http_unsupported_scheme(parsed.scheme()),
         ));
     }
 
     let method = Method::from_bytes(req.method.trim().as_bytes())
-        .map_err(|e| IpcError::new(ErrorCode::InvalidUrl, format!("잘못된 메서드: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::InvalidUrl, text_git_net::http_invalid_method(e)))?;
 
     let timeout = Duration::from_millis(req.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
     let max_body = req.max_body_bytes.unwrap_or(DEFAULT_MAX_BODY_BYTES);
@@ -239,14 +240,14 @@ pub async fn http_request(
         let reg = state
             .http
             .lock()
-            .map_err(|_| IpcError::new(ErrorCode::Network, "내부 레지스트리 잠금 실패"))?;
+            .map_err(|_| IpcError::new(ErrorCode::Network, text_git_net::http_registry_lock_failed()))?;
         Arc::clone(&reg.inflight)
     };
     let (abort_handle, abort_reg) = AbortHandle::new_pair();
     {
         let mut map = inflight
             .lock()
-            .map_err(|_| IpcError::new(ErrorCode::Network, "내부 레지스트리 잠금 실패"))?;
+            .map_err(|_| IpcError::new(ErrorCode::Network, text_git_net::http_registry_lock_failed()))?;
         map.insert(request_id.clone(), abort_handle);
     }
     let _guard = InflightGuard {
@@ -260,7 +261,7 @@ pub async fn http_request(
     let send_fut = async {
         let resp = tokio::time::timeout(timeout, builder.send())
             .await
-            .map_err(|_| IpcError::new(ErrorCode::Timeout, "요청이 시간 초과되었습니다"))?
+            .map_err(|_| IpcError::new(ErrorCode::Timeout, text_git_net::http_request_timed_out()))?
             .map_err(classify_err)?;
         Ok::<reqwest::Response, IpcError>(resp)
     };
@@ -268,7 +269,7 @@ pub async fn http_request(
     let resp = match Abortable::new(send_fut, abort_reg).await {
         Ok(inner) => inner?,
         Err(Aborted) => {
-            return Err(IpcError::new(ErrorCode::Cancelled, "요청이 취소되었습니다"))
+            return Err(IpcError::new(ErrorCode::Cancelled, text_git_net::http_request_cancelled()))
         }
     };
 
@@ -366,7 +367,7 @@ pub fn http_cancel(state: State<'_, AppState>, request_id: String) -> Result<(),
         let reg = state
             .http
             .lock()
-            .map_err(|_| IpcError::new(ErrorCode::Network, "내부 레지스트리 잠금 실패"))?;
+            .map_err(|_| IpcError::new(ErrorCode::Network, text_git_net::http_registry_lock_failed()))?;
         Arc::clone(&reg.inflight)
     };
     if let Ok(mut map) = inflight.lock() {
@@ -434,7 +435,7 @@ fn build_client(
 
     builder
         .build()
-        .map_err(|e| IpcError::new(ErrorCode::Network, format!("HTTP 클라이언트 생성 실패: {e}")))
+        .map_err(|e| IpcError::new(ErrorCode::Network, text_git_net::http_client_build_failed(e)))
 }
 
 #[derive(Debug)]
@@ -498,7 +499,7 @@ async fn apply_body(
                 .map(|kv| (kv.key, kv.value))
                 .collect();
             let encoded = serde_urlencoded::to_string(&pairs)
-                .map_err(|e| IpcError::new(ErrorCode::Io, format!("폼 인코딩 실패: {e}")))?;
+                .map_err(|e| IpcError::new(ErrorCode::Io, text_git_net::http_form_encode_failed(e)))?;
             let mut b = builder.body(encoded);
             if !has_ct {
                 b = b.header(CONTENT_TYPE, "application/x-www-form-urlencoded");
@@ -525,7 +526,7 @@ async fn apply_body(
                     if let Some(ct) = p.content_type {
                         part = part
                             .mime_str(&ct)
-                            .map_err(|e| IpcError::new(ErrorCode::Io, format!("MIME 파싱 실패: {e}")))?;
+                            .map_err(|e| IpcError::new(ErrorCode::Io, text_git_net::http_mime_parse_failed(e)))?;
                     }
                     form = form.part(p.field, part);
                 } else {
@@ -543,7 +544,7 @@ async fn apply_body(
                 read_upload_file(&path).await?
             } else if let Some(b64) = base64 {
                 B64.decode(b64.trim())
-                    .map_err(|e| IpcError::new(ErrorCode::Io, format!("base64 디코드 실패: {e}")))?
+                    .map_err(|e| IpcError::new(ErrorCode::Io, text_git_net::http_base64_decode_failed(e)))?
             } else {
                 Vec::new()
             };
@@ -562,20 +563,16 @@ async fn apply_body(
 async fn read_upload_file(path: &str) -> Result<Vec<u8>, IpcError> {
     let meta = tokio::fs::metadata(path)
         .await
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("파일 열기 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_git_net::http_upload_open_failed(e)))?;
     if meta.len() > MAX_UPLOAD_FILE_BYTES {
         return Err(IpcError::new(
             ErrorCode::Io,
-            format!(
-                "업로드 파일이 너무 큽니다 ({} bytes, 상한 {} bytes)",
-                meta.len(),
-                MAX_UPLOAD_FILE_BYTES
-            ),
+            text_git_net::http_upload_too_large(meta.len(), MAX_UPLOAD_FILE_BYTES),
         ));
     }
     tokio::fs::read(path)
         .await
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("파일 읽기 실패: {e}")))
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_git_net::http_upload_read_failed(e)))
 }
 
 // ===== 타이밍 사전 프로빙 (근사) =====
@@ -727,14 +724,12 @@ fn classify_err(e: reqwest::Error) -> IpcError {
     };
 
     let message = match code {
-        ErrorCode::Timeout => "요청이 시간 초과되었습니다".to_string(),
-        ErrorCode::TlsError => "TLS 인증서 검증 실패 — 검증 토글 또는 인증서 확인".to_string(),
-        ErrorCode::DnsFailure => "호스트를 찾을 수 없습니다".to_string(),
-        ErrorCode::ConnectionRefused => {
-            "연결이 거부되었습니다 — 서버/포트 확인".to_string()
-        }
-        ErrorCode::Io => "응답 본문 처리 실패".to_string(),
-        _ => "네트워크 오류".to_string(),
+        ErrorCode::Timeout => text_git_net::http_request_timed_out().to_string(),
+        ErrorCode::TlsError => text_git_net::http_tls_verify_failed().to_string(),
+        ErrorCode::DnsFailure => text_git_net::http_host_not_found().to_string(),
+        ErrorCode::ConnectionRefused => text_git_net::http_connection_refused().to_string(),
+        ErrorCode::Io => text_git_net::http_response_body_failed().to_string(),
+        _ => text_git_net::http_network_error().to_string(),
     };
 
     IpcError {

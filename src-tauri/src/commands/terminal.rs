@@ -12,6 +12,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use super::projects::project_path;
 use crate::error::{ErrorCode, IpcError};
 use crate::health::Level;
+use crate::i18n::text_git_net;
 use crate::state::AppState;
 
 mod shell;
@@ -261,7 +262,7 @@ pub fn term_open(
     if !path.is_dir() {
         return Err(IpcError::new(
             ErrorCode::NotFound,
-            "프로젝트 경로를 찾을 수 없습니다",
+            text_git_net::project_path_not_found(),
         ));
     }
 
@@ -290,10 +291,10 @@ pub fn term_open(
 
     let mut reader = master
         .try_clone_reader()
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("PTY 리더 생성 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_git_net::pty_reader_create_failed(e)))?;
     let writer = master
         .take_writer()
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("PTY 라이터 생성 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_git_net::pty_writer_create_failed(e)))?;
 
     let pid = i32::try_from(child.process_id().unwrap_or(0)).unwrap_or(0);
     // 새 셸·ConPTY 호스트를 30초 주기 스윕까지 Normal로 두지 않는다(process_priority 머리 주석).
@@ -480,9 +481,9 @@ pub fn term_open(
     log::info!(
         "ConPTY: {}",
         if conpty == Some("bundled") {
-            "사이드로드 확인"
+            "사이드로드 확인" // i18n-ok: 로그
         } else {
-            "OS 내장"
+            "OS 내장" // i18n-ok: 로그
         }
     );
     Ok(TermOpened { conpty, shell })
@@ -502,12 +503,12 @@ pub fn term_write(
         terms
             .get(&term_id)
             .map(|s| Arc::clone(&s.writer))
-            .ok_or_else(|| IpcError::new(ErrorCode::NotFound, "터미널 세션을 찾을 수 없습니다"))?
+            .ok_or_else(|| IpcError::new(ErrorCode::NotFound, text_git_net::terminal_session_not_found()))?
     };
     let mut w = writer.lock().unwrap_or_else(|e| e.into_inner());
     w.write_all(data.as_bytes())
         .and_then(|_| w.flush())
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("터미널 입력 실패: {e}")))
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_git_net::terminal_write_failed(e)))
 }
 
 /// 살아있는 PTY의 출력 sink를 새 웹뷰 Channel로 교체 — 별도 OS 창(플로팅)이 기존 세션에 재연결.
@@ -521,7 +522,7 @@ pub fn term_attach(
     let terms = state.terminals.lock().unwrap_or_else(|e| e.into_inner());
     let session = terms
         .get(&term_id)
-        .ok_or_else(|| IpcError::new(ErrorCode::NotFound, "터미널 세션을 찾을 수 없습니다"))?;
+        .ok_or_else(|| IpcError::new(ErrorCode::NotFound, text_git_net::terminal_session_not_found()))?;
     *session.sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(on_data);
     Ok(())
 }
@@ -551,7 +552,7 @@ pub fn term_resize(
         terms
             .get(&term_id)
             .map(|s| Arc::clone(&s.master))
-            .ok_or_else(|| IpcError::new(ErrorCode::NotFound, "터미널 세션을 찾을 수 없습니다"))?
+            .ok_or_else(|| IpcError::new(ErrorCode::NotFound, text_git_net::terminal_session_not_found()))?
     };
     let m = master.lock().unwrap_or_else(|e| e.into_inner());
     m.resize(PtySize {
@@ -560,7 +561,7 @@ pub fn term_resize(
         pixel_width: 0,
         pixel_height: 0,
     })
-    .map_err(|e| IpcError::new(ErrorCode::Io, format!("터미널 리사이즈 실패: {e}")))
+    .map_err(|e| IpcError::new(ErrorCode::Io, text_git_net::terminal_resize_failed(e)))
 }
 
 /// 세션 종료 — child kill 후 레지스트리에서 제거(드롭이 writer·master를 닫는다).
@@ -829,7 +830,7 @@ pub fn term_paste() -> Result<Option<String>, String> {
         // 둘을 가르는 건 `IsClipboardFormatAvailable`이다 — OpenClipboard가 필요 없어 경합의
         // 영향을 받지 않는다. 형식이 없으면 그냥 빈 클립보드다(이미지도 파일도 아닌 무언가 포함).
         Err(_) if !raw::is_format_avail(formats::CF_UNICODETEXT) => Ok(None),
-        Err(e) => Err(format!("클립보드를 읽지 못했습니다 ({e})")),
+        Err(e) => Err(text_git_net::clipboard_read_failed(e)),
     }
 }
 
@@ -864,7 +865,7 @@ pub fn term_paste() -> Result<Option<String>, String> {
     match rx.recv_timeout(std::time::Duration::from_millis(TIMEOUT_MS)) {
         Ok(r) => r,
         // 소유자가 끝내 응답하지 않았다. 워커는 그대로 두고(다음 요청과 경쟁하지 않는다) 사유만 올린다.
-        Err(_) => Err("클립보드 소유자가 응답하지 않습니다".into()),
+        Err(_) => Err(text_git_net::clipboard_owner_not_responding().into()),
     }
 }
 
@@ -890,7 +891,7 @@ fn read_clipboard_unix() -> Result<Option<String>, String> {
     // Linux에서 여기가 Err면 흔히 `DISPLAY` 없는 세션이다 — 앱 수명 내내 재발하므로
     // 조용한 no-op이 아니라 사유로 올린다(clipboard.ts의 "플러그인 영구 실패"와 같은 함정).
     let mut cb = arboard::Clipboard::new()
-        .map_err(|e| format!("클립보드를 열지 못했습니다 ({e})"))?;
+        .map_err(|e| text_git_net::clipboard_open_failed(e))?;
     // Windows 구현과 같은 우선순위: 이미지(스크린샷) 먼저, 아니면 텍스트.
     if let Ok(img) = cb.get_image() {
         if let Some(path) = save_temp_png(&img) {
@@ -902,7 +903,7 @@ fn read_clipboard_unix() -> Result<Option<String>, String> {
         Ok(s) => Ok(Some(s)),
         // 요청한 형식이 없거나 클립보드가 비었다 — arboard가 둘을 한 변형으로 준다(common.rs:24).
         Err(arboard::Error::ContentNotAvailable) => Ok(None),
-        Err(e) => Err(format!("클립보드를 읽지 못했습니다 ({e})")),
+        Err(e) => Err(text_git_net::clipboard_read_failed(e)),
     }
 }
 
@@ -1032,7 +1033,7 @@ mod terminate_tests {
             )
             .stdout(std::process::Stdio::piped())
             .spawn()
-            .expect("setsid 실행 실패");
+            .expect("setsid 실행 실패"); // i18n-ok: 테스트
         // stdout에서 pid들을 읽는다(파이프가 열려 있으므로 논블로킹 대신 짧게 읽는다).
         std::thread::sleep(Duration::from_millis(300));
         let leader = out.id() as i32;
@@ -1049,16 +1050,16 @@ mod terminate_tests {
         let before = super::session_tree(leader);
         assert!(
             !before.is_empty(),
-            "테스트 전제 실패: 자손이 안 생겼다 (leader={leader})"
+            "테스트 전제 실패: 자손이 안 생겼다 (leader={leader})" // i18n-ok: 테스트
         );
 
         super::terminate_tree(leader);
 
-        assert!(wait_gone(leader, 2000), "세션 리더가 남았다");
+        assert!(wait_gone(leader, 2000), "세션 리더가 남았다"); // i18n-ok: 테스트
         for p in &before {
             assert!(
                 wait_gone(*p, 2000),
-                "자손 {p}가 살아남았다 — cgroup에 영구 잔류하는 누수 경로"
+                "자손 {p}가 살아남았다 — cgroup에 영구 잔류하는 누수 경로" // i18n-ok: 테스트
             );
         }
     }
@@ -1082,7 +1083,7 @@ mod terminate_tests {
         let pid = child.id() as i32;
         // wait 하지 않고 종료를 기다리면 좀비가 된다.
         std::thread::sleep(Duration::from_millis(200));
-        assert!(!alive_pid(pid), "좀비를 살아있다고 판정했다");
+        assert!(!alive_pid(pid), "좀비를 살아있다고 판정했다"); // i18n-ok: 테스트
         let _ = child.wait();
     }
 }

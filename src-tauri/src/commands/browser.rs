@@ -29,6 +29,7 @@ use tauri::{
 };
 
 use crate::error::{ErrorCode, IpcError};
+use crate::i18n::text_git_net;
 use crate::state::AppState;
 
 const LABEL_PREFIX: &str = "gpv-browser-";
@@ -87,11 +88,11 @@ fn id_of(label: &str) -> String {
 }
 
 fn map_err(e: tauri::Error) -> IpcError {
-    IpcError::new(ErrorCode::Io, format!("브라우저 오류: {e}"))
+    IpcError::new(ErrorCode::Io, text_git_net::browser_error(e))
 }
 
 fn parse_url(s: &str) -> Result<Url, IpcError> {
-    Url::parse(s).map_err(|e| IpcError::new(ErrorCode::Io, format!("잘못된 URL: {e}")))
+    Url::parse(s).map_err(|e| IpcError::new(ErrorCode::Io, text_git_net::invalid_url(e)))
 }
 
 /// 모든 브라우저 webview가 공유하는 분리된 데이터 폴더 — 특권 main webview의 쿠키/세션과 격리.
@@ -104,7 +105,7 @@ fn browser_data_dir(app: &AppHandle) -> Result<PathBuf, IpcError> {
         return Ok(dir.join("browser-session"));
     }
     let base = app.path().app_local_data_dir().map_err(|e| {
-        IpcError::new(ErrorCode::Io, format!("앱 데이터 폴더를 찾을 수 없습니다: {e}"))
+        IpcError::new(ErrorCode::Io, text_git_net::browser_app_data_dir_not_found(e))
     })?;
     Ok(base.join("browser-session"))
 }
@@ -192,13 +193,13 @@ fn escape_for_shell_handler(url: &str) -> String {
 pub(crate) fn open_external(url: &str) {
     let mut cmd = std::process::Command::new("open");
     cmd.arg(url);
-    let _ = super::open::spawn_launcher(cmd, "외부 브라우저");
+    let _ = super::open::spawn_launcher(cmd, "외부 브라우저"); // i18n-ok: 로그 라벨
 }
 #[cfg(all(unix, not(target_os = "macos")))]
 pub(crate) fn open_external(url: &str) {
     let mut cmd = std::process::Command::new("xdg-open");
     cmd.arg(url);
-    let _ = super::open::spawn_launcher(cmd, "외부 브라우저");
+    let _ = super::open::spawn_launcher(cmd, "외부 브라우저"); // i18n-ok: 로그 라벨
 }
 
 /// 문서 창(PDF 링크)이 OS로 넘겨도 되는 스킴 — http/https/mailto만. file:/javascript:/tauri: 등은
@@ -212,9 +213,9 @@ pub(crate) fn external_url_allowed(url: &Url) -> bool {
 #[tauri::command]
 pub fn open_external_url(url: String) -> Result<(), IpcError> {
     let parsed =
-        Url::parse(&url).map_err(|_| IpcError::new(ErrorCode::InvalidUrl, "잘못된 링크입니다"))?;
+        Url::parse(&url).map_err(|_| IpcError::new(ErrorCode::InvalidUrl, text_git_net::external_link_invalid()))?;
     if !external_url_allowed(&parsed) {
-        return Err(IpcError::new(ErrorCode::InvalidUrl, "허용되지 않는 링크입니다"));
+        return Err(IpcError::new(ErrorCode::InvalidUrl, text_git_net::external_link_not_allowed()));
     }
     open_external(parsed.as_str());
     Ok(())
@@ -285,7 +286,7 @@ fn build_popup_window(
     let mut builder = WebviewWindowBuilder::new(
         app,
         &label,
-        WebviewUrl::External(Url::parse("about:blank").expect("정적 URL")),
+        WebviewUrl::External(Url::parse("about:blank").expect("정적 URL")), // i18n-ok: expect(내부용)
     )
     .window_features(features)
     .on_navigation(navigation_gate)
@@ -341,7 +342,7 @@ pub async fn browser_open(
 
     let win = app
         .get_window("main")
-        .ok_or_else(|| IpcError::new(ErrorCode::NotFound, "메인 창을 찾을 수 없습니다"))?;
+        .ok_or_else(|| IpcError::new(ErrorCode::NotFound, text_git_net::browser_main_window_not_found()))?;
 
     // 프로필 지연 삭제가 예약돼 있으면 첫 webview 생성 전에 처리(파일 락 없는 유일한 시점).
     process_pending_clear(&app);
@@ -584,7 +585,7 @@ pub async fn browser_clear_data(
             // 지우니 marker를 남기고 성공 처리한다(다음 시작 시 확정 삭제).
             log::warn!("브라우저 프로필 즉시 삭제 실패({e}) — 다음 시작 시 지연 삭제 예약");
             std::fs::write(&marker, b"").map_err(|e2| {
-                IpcError::new(ErrorCode::Io, format!("지연 삭제 예약 실패: {e2}"))
+                IpcError::new(ErrorCode::Io, text_git_net::browser_profile_clear_schedule_failed(e2))
             })?;
             Ok(())
         }

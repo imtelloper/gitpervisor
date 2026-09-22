@@ -127,12 +127,12 @@ pub fn register(app: &AppHandle, project: &Project) {
         return;
     }
     log::info!(
-        "[watcher] {} 감시 {n}개 ({})",
+        "[watcher] {} 감시 {n}개 ({})", // i18n-ok: 로그
         project.path,
         if cfg!(target_os = "linux") {
-            "디렉토리별 비재귀"
+            "디렉토리별 비재귀" // i18n-ok: 로그
         } else {
-            "루트 재귀"
+            "루트 재귀" // i18n-ok: 로그
         }
     );
 
@@ -173,7 +173,7 @@ pub fn register(app: &AppHandle, project: &Project) {
                 }
                 if targets.len() > MAX_INCREMENTAL_WATCHES {
                     log::warn!(
-                        "[watcher] 새 디렉토리 {}개는 상한({})을 넘어 일부만 감시합니다",
+                        "[watcher] 새 디렉토리 {}개는 상한({})을 넘어 일부만 감시합니다", // i18n-ok: 로그
                         targets.len(),
                         MAX_INCREMENTAL_WATCHES
                     );

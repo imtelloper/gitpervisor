@@ -96,7 +96,7 @@ pub async fn search_in_project(
     // exit 1 = 무매치(정상). exit >1 = 오류(잘못된 정규식 등).
     if out.code > 1 {
         let msg = if out.stderr.trim().is_empty() {
-            "검색 실패".to_string()
+            crate::i18n::text_tools::search_failed().to_string()
         } else {
             out.stderr.trim().to_string()
         };

@@ -135,7 +135,7 @@ pub async fn llm_chat(
     {
         let mut g = state.llm_inflight.lock().unwrap_or_else(|e| e.into_inner());
         if g.is_some() {
-            return Err(IpcError::new(ErrorCode::Busy, "다른 AI 요청이 진행 중입니다"));
+            return Err(IpcError::new(ErrorCode::Busy, crate::i18n::text_db::llm_chat_busy()));
         }
         *g = Some((req.request_id.clone(), abort_handle));
     }
@@ -145,11 +145,11 @@ pub async fn llm_chat(
     };
 
     let work = run_chat(&app, state.inner(), &req, &on_token, &on_progress);
-    let cancelled = || IpcError::new(ErrorCode::Cancelled, "AI 요청을 취소했습니다");
+    let cancelled = || IpcError::new(ErrorCode::Cancelled, crate::i18n::text_db::llm_chat_cancelled());
     match tokio::time::timeout(REQUEST_TIMEOUT, Abortable::new(work, abort_reg)).await {
         Err(_) => Err(IpcError::new(
             ErrorCode::Timeout,
-            "AI 응답 시간 초과(10분) — 서버 상태를 확인하세요",
+            crate::i18n::text_db::llm_chat_timeout(),
         )),
         Ok(Err(_aborted)) => Err(cancelled()),
         Ok(Ok(r)) => r,
@@ -188,13 +188,13 @@ async fn run_chat(
         .json(&body)
         .send()
         .await
-        .map_err(|e| IpcError::new(ErrorCode::Network, format!("AI 요청 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Network, crate::i18n::text_db::llm_chat_request_failed(e)))?;
     if !resp.status().is_success() {
         let code = resp.status();
         let detail = resp.text().await.unwrap_or_default();
         return Err(IpcError::new(
             ErrorCode::Network,
-            format!("AI 서버 오류 {code}: {}", detail.chars().take(300).collect::<String>()),
+            crate::i18n::text_db::llm_chat_server_error(code, &detail.chars().take(300).collect::<String>()),
         ));
     }
 
@@ -203,7 +203,7 @@ async fn run_chat(
     while let Some(chunk) = resp
         .chunk()
         .await
-        .map_err(|e| IpcError::new(ErrorCode::Network, format!("응답 수신 실패: {e}")))?
+        .map_err(|e| IpcError::new(ErrorCode::Network, crate::i18n::text_db::llm_chat_receive_failed(e)))?
     {
         buf.extend_from_slice(&chunk);
         // 줄 단위로만 소비한다 — 청크 경계가 UTF-8/SSE 줄 한가운데를 자르는 게 정상이다.

@@ -26,7 +26,7 @@ fn secret_account(kind: &str) -> Result<&'static str, IpcError> {
     match kind {
         "slack" => Ok("slack-webhook"),
         "smtp" => Ok("smtp-password"),
-        _ => Err(err("알 수 없는 시크릿 종류입니다")),
+        _ => Err(err(crate::i18n::text_system::unknown_secret_kind())),
     }
 }
 
@@ -34,16 +34,16 @@ fn secret_account(kind: &str) -> Result<&'static str, IpcError> {
 #[tauri::command]
 pub fn notify_set_secret(kind: String, value: String) -> Result<(), IpcError> {
     let account = secret_account(&kind)?;
-    let entry = keyring_entry(account).ok_or_else(|| err("키체인 접근 실패"))?;
+    let entry = keyring_entry(account).ok_or_else(|| err(crate::i18n::text_system::keychain_access_failed()))?;
     if value.trim().is_empty() {
         match entry.delete_credential() {
             Ok(_) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(e) => Err(err(format!("시크릿 삭제 실패: {e}"))),
+            Err(e) => Err(err(crate::i18n::text_system::secret_delete_failed(e))),
         }
     } else {
         entry
             .set_password(value.trim())
-            .map_err(|e| err(format!("시크릿 저장 실패: {e}")))
+            .map_err(|e| err(crate::i18n::text_system::secret_save_failed(e)))
     }
 }
 
@@ -99,7 +99,7 @@ pub fn notify_os(
     #[cfg(not(windows))]
     {
         let _ = (app, title, body);
-        Err(err("이 플랫폼은 플러그인 알림을 사용합니다"))
+        Err(err(crate::i18n::text_system::notify_os_uses_plugin()))
     }
 }
 
@@ -160,7 +160,7 @@ mod win_toast {
         }
         toast
             .show()
-            .map_err(|e| err(format!("알림 표시 실패: {e}")))
+            .map_err(|e| err(crate::i18n::text_system::os_toast_show_failed(e)))
     }
 }
 
@@ -168,12 +168,12 @@ mod win_toast {
 #[tauri::command]
 pub async fn notify_test(state: State<'_, AppState>, channel: String) -> Result<(), IpcError> {
     let settings = state.settings.read().unwrap_or_else(|e| e.into_inner()).clone();
-    let title = "gitpervisor 테스트 알림";
-    let body = "외부 알림이 정상적으로 설정되었습니다.";
+    let title = crate::i18n::text_system::notify_test_title();
+    let body = crate::i18n::text_system::notify_test_body();
     match channel.as_str() {
         "slack" => send_slack(title, body).await,
         "smtp" => send_email(&settings, title, body).await,
-        _ => Err(err("알 수 없는 채널입니다")),
+        _ => Err(err(crate::i18n::text_system::notify_unknown_channel())),
     }
 }
 
@@ -181,7 +181,7 @@ pub async fn notify_test(state: State<'_, AppState>, channel: String) -> Result<
 async fn send_slack(title: &str, body: &str) -> Result<(), IpcError> {
     let url = get_secret("slack-webhook")
         .filter(|u| !u.trim().is_empty())
-        .ok_or_else(|| err("Slack 웹훅 URL이 설정되지 않았습니다"))?;
+        .ok_or_else(|| err(crate::i18n::text_system::slack_webhook_url_not_set()))?;
     let client = reqwest::Client::new();
     let payload = serde_json::json!({ "text": format!("*{title}*\n{body}") });
     let resp = client
@@ -190,9 +190,9 @@ async fn send_slack(title: &str, body: &str) -> Result<(), IpcError> {
         .timeout(std::time::Duration::from_secs(15))
         .send()
         .await
-        .map_err(|e| err(format!("전송 실패: {e}")))?;
+        .map_err(|e| err(crate::i18n::text_system::slack_send_failed(e)))?;
     if !resp.status().is_success() {
-        return Err(err(format!("Slack 응답 오류: {}", resp.status())));
+        return Err(err(crate::i18n::text_system::slack_response_error(resp.status())));
     }
     Ok(())
 }
@@ -208,27 +208,27 @@ async fn send_email(s: &Settings, title: &str, body: &str) -> Result<(), IpcErro
             .filter(|x| !x.is_empty())
             .map(str::to_string)
     };
-    let host = trimmed(&s.smtp_host).ok_or_else(|| err("SMTP 호스트가 비었습니다"))?;
-    let from = trimmed(&s.smtp_from).ok_or_else(|| err("보내는 주소(from)가 비었습니다"))?;
-    let to = trimmed(&s.smtp_to).ok_or_else(|| err("받는 주소(to)가 비었습니다"))?;
+    let host = trimmed(&s.smtp_host).ok_or_else(|| err(crate::i18n::text_system::smtp_host_empty()))?;
+    let from = trimmed(&s.smtp_from).ok_or_else(|| err(crate::i18n::text_system::smtp_from_empty()))?;
+    let to = trimmed(&s.smtp_to).ok_or_else(|| err(crate::i18n::text_system::smtp_to_empty()))?;
     let username = trimmed(&s.smtp_username).unwrap_or_else(|| from.clone());
     let password = get_secret("smtp-password").unwrap_or_default();
 
     let email = Message::builder()
-        .from(from.parse().map_err(|e| err(format!("from 주소 오류: {e}")))?)
-        .to(to.parse().map_err(|e| err(format!("to 주소 오류: {e}")))?)
+        .from(from.parse().map_err(|e| err(crate::i18n::text_system::smtp_from_address_invalid(e)))?)
+        .to(to.parse().map_err(|e| err(crate::i18n::text_system::smtp_to_address_invalid(e)))?)
         .subject(title)
         .body(body.to_string())
-        .map_err(|e| err(format!("메일 생성 실패: {e}")))?;
+        .map_err(|e| err(crate::i18n::text_system::email_build_failed(e)))?;
 
     let builder = if !s.smtp_tls {
         AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&host)
     } else if s.smtp_port == 465 {
         AsyncSmtpTransport::<Tokio1Executor>::relay(&host)
-            .map_err(|e| err(format!("SMTP TLS 설정 실패: {e}")))?
+            .map_err(|e| err(crate::i18n::text_system::smtp_tls_setup_failed(e)))?
     } else {
         AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&host)
-            .map_err(|e| err(format!("SMTP STARTTLS 설정 실패: {e}")))?
+            .map_err(|e| err(crate::i18n::text_system::smtp_starttls_setup_failed(e)))?
     };
     let mailer = builder
         .port(s.smtp_port)
@@ -237,6 +237,6 @@ async fn send_email(s: &Settings, title: &str, body: &str) -> Result<(), IpcErro
     mailer
         .send(email)
         .await
-        .map_err(|e| err(format!("메일 전송 실패: {e}")))?;
+        .map_err(|e| err(crate::i18n::text_system::email_send_failed(e)))?;
     Ok(())
 }

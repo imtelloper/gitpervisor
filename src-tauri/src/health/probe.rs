@@ -498,7 +498,8 @@ impl Probe {
     }
 }
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
+#[cfg(windows)]
 mod windows_tests {
     use super::*;
 

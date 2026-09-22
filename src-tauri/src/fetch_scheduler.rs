@@ -16,6 +16,7 @@ use tokio::sync::Semaphore;
 
 use crate::error::IpcError;
 use crate::git::runner;
+use crate::i18n::text_git_net;
 use crate::state::AppState;
 
 /// 틱은 짧게 — 매 틱마다 설정 주기 도달 여부만 판정해, 주기 변경이 재시작 없이 즉시 반영된다.
@@ -360,18 +361,18 @@ fn classify_fetch_error(stderr: &str) -> String {
         || lower.contains("permission denied")
         || lower.contains("access denied")
     {
-        "인증 실패 — credential manager / ssh-agent 설정을 확인하세요".to_string()
+        text_git_net::fetch_reason_auth_failed().to_string()
     } else if lower.contains("could not resolve host")
         || lower.contains("network is unreachable")
         || lower.contains("connection timed out")
         || lower.contains("failed to connect")
     {
-        "네트워크 연결 실패 — 인터넷/원격 호스트를 확인하세요".to_string()
+        text_git_net::sync_reason_network_failed().to_string()
     } else if lower.contains("couldn't find remote ref")
         || lower.contains("does not appear to be a git repository")
         || lower.contains("repository not found")
     {
-        "원격 저장소/브랜치를 찾을 수 없음 — 원격 URL을 확인하세요".to_string()
+        text_git_net::fetch_reason_remote_not_found().to_string()
     } else {
         // 분류 실패 시 stderr의 첫 error/fatal 라인(없으면 첫 비어있지 않은 라인)을 그대로.
         stderr
@@ -382,10 +383,10 @@ fn classify_fetch_error(stderr: &str) -> String {
                 !l.is_empty() && (lc.starts_with("error") || lc.starts_with("fatal"))
             })
             .or_else(|| stderr.lines().map(str::trim).find(|l| !l.is_empty()))
-            .unwrap_or("(상세 메시지 없음)")
+            .unwrap_or(text_git_net::git_stderr_no_detail())
             .to_string()
     };
-    format!("배경 fetch 실패: {reason}")
+    text_git_net::background_fetch_failed(&reason)
 }
 
 /// 연속 실패 백오프 대기시간(초) — 2^streak × 주기, 상한 30분(§3.5). streak=0이면 0.

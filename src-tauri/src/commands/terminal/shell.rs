@@ -17,6 +17,7 @@ use std::time::{Duration, Instant, SystemTime};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 
 use crate::error::{ErrorCode, IpcError};
+use crate::i18n::text_git_net;
 
 /// 셸 하나가 떠야 하는 시간. 정상 spawn은 수십~수백 ms다 — 넘기면 고장으로 보고 다음 후보로 간다.
 const SPAWN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -271,7 +272,7 @@ fn open_first(
         .collect();
     Err(IpcError::new(
         ErrorCode::Io,
-        format!("셸 실행 실패: {}", detail.join("; ")),
+        text_git_net::shell_launch_failed(&detail.join("; ")),
     ))
 }
 
@@ -282,14 +283,14 @@ fn precheck(program: &str, cache: Option<&FailureCache>, now: Instant) -> Result
     // 절대경로가 아닌 것은 PATH에서 못 찾은 설정값뿐이다 — portable-pty가 다시 찾으므로 그대로 시도한다.
     if path.is_absolute() {
         if !is_file_entry(path) {
-            return Err("파일 없음".to_string());
+            return Err(text_git_net::shell_reason_file_missing().to_string());
         }
         if let Some(why) = alias_problem(path) {
             return Err(why);
         }
     }
     match cache.and_then(|c| c.hit(&program.to_lowercase(), &fingerprint(path), now)) {
-        Some(why) => Err(format!("{why} (최근 실패)")),
+        Some(why) => Err(text_git_net::shell_reason_recent_failure(&why)),
         None => Ok(()),
     }
 }
@@ -310,9 +311,9 @@ fn alias_problem(path: &Path) -> Option<String> {
     let (pfn, target) = parse_appexeclink(&read_reparse_data(path)?)?;
     match judge_alias(&pfn, &target, &registered_packages(&pfn)?) {
         AliasVerdict::Ok => None,
-        AliasVerdict::NotInstalled => Some(format!("앱 실행 별칭의 패키지({pfn})가 설치돼 있지 않음")),
+        AliasVerdict::NotInstalled => Some(text_git_net::shell_reason_alias_package_not_installed(&pfn)),
         AliasVerdict::Stale { points_to } => {
-            Some(format!("앱 실행 별칭이 설치되지 않은 버전({points_to})을 가리킴"))
+            Some(text_git_net::shell_reason_alias_stale_version(&points_to))
         }
     }
 }
@@ -472,7 +473,7 @@ fn attempt(
     let why = match with_timeout(timeout, work, late) {
         Some(Ok(pty)) => return Ok(pty),
         Some(Err(e)) => return Err(short_reason(&e)),
-        None => format!("{}초 안에 시작되지 않음", timeout.as_secs()),
+        None => text_git_net::shell_reason_start_timed_out(timeout.as_secs()),
     };
     if spawning.load(Ordering::SeqCst) {
         cache.record(&key, fingerprint(Path::new(program)), &why, Instant::now());
@@ -498,7 +499,7 @@ fn spawn_in_pty(
 ) -> Result<Pty, String> {
     let pair = native_pty_system()
         .openpty(size)
-        .map_err(|e| format!("PTY 생성 실패: {e:#}"))?;
+        .map_err(|e| text_git_net::pty_create_failed(e))?;
     spawning.store(true, Ordering::SeqCst);
     let mut cmd = CommandBuilder::new(program);
     cmd.args(args);
@@ -582,11 +583,10 @@ fn fallback_notice(failed: &[(&Candidate, String)], chosen: &Candidate) -> Strin
     }
     let labels = uniq(failed.iter().map(|(c, _)| c.label()));
     let reasons = uniq(failed.iter().map(|(_, r)| r.clone()));
-    let msg = format!(
-        "[Gitpervisor] {} 를 열 수 없어 {} 로 대신 열었습니다 — {}",
-        labels.join(", "),
-        chosen.label(),
-        reasons.join("; ")
+    let msg = text_git_net::shell_fallback_notice(
+        &labels.join(", "),
+        &chosen.label(),
+        &reasons.join("; "),
     );
     if msg.chars().count() <= NOTICE_MAX {
         return msg;

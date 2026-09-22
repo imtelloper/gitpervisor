@@ -9,6 +9,7 @@ use crate::disk_scan::DiskScanState;
 use crate::error::{ErrorCode, IpcError};
 use crate::fetch_scheduler::RemoteFreshness;
 use crate::git::types::{Memo, Project, Settings};
+use crate::i18n::text_git_net;
 use crate::monitor::Monitor;
 use crate::watcher::RepoWatcher;
 
@@ -105,7 +106,7 @@ impl AppState {
         if !ops.insert(project_id.to_string()) {
             return Err(IpcError::new(
                 ErrorCode::OpInProgress,
-                "이미 진행 중인 git 작업이 있습니다 — 완료 후 다시 시도하세요",
+                text_git_net::git_op_in_progress(),
             ));
         }
         Ok(OpGuard {
@@ -165,7 +166,7 @@ pub fn data_root(app: &AppHandle) -> Option<PathBuf> {
                 // **조용히 기본 경로로 떨어지면 안 된다.** 샤드가 사용자 데이터에 쓰게 되고,
                 // 그 회차는 "왜 남의 프로젝트가 보이지"로만 보인다.
                 Err(e) => log::error!(
-                    "[state] GPV_DATA_DIR 을 만들지 못했습니다({e}) — 기본 경로로 돌아갑니다: {dir:?}"
+                    "[state] GPV_DATA_DIR 을 만들지 못했습니다({e}) — 기본 경로로 돌아갑니다: {dir:?}" // i18n-ok: 로그
                 ),
             }
         }
@@ -191,26 +192,26 @@ fn load_json_at<T: serde::de::DeserializeOwned>(path: &Path, key: &str) -> Optio
         let backup = path.with_extension("corrupt");
         let moved = std::fs::rename(path, &backup).is_ok();
         log::error!(
-            "[state] {} 를 읽지 못했습니다({why}). 기본값으로 시작합니다 — 원본 보관: {}",
+            "[state] {} 를 읽지 못했습니다({why}). 기본값으로 시작합니다 — 원본 보관: {}", // i18n-ok: 로그
             path.display(),
             if moved {
                 backup.display().to_string()
             } else {
-                "실패".into()
+                "실패".into() // i18n-ok: 로그
             },
         );
     };
 
     let Ok(mut map) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&text)
     else {
-        quarantine("JSON 파싱 실패");
+        quarantine("JSON 파싱 실패"); // i18n-ok: 로그(격리 사유)
         return None;
     };
     let value = map.remove(key)?; // 키 없음 = 아직 저장된 적 없음, 정상
     match serde_json::from_value(value) {
         Ok(v) => Some(v),
         Err(_) => {
-            quarantine("스키마 불일치");
+            quarantine("스키마 불일치"); // i18n-ok: 로그(격리 사유)
             None
         }
     }
@@ -256,8 +257,9 @@ pub(crate) fn save_json<T: serde::Serialize>(
     value: &T,
     what: &str,
 ) -> Result<(), IpcError> {
-    let fail = |e: String| IpcError::new(ErrorCode::Io, format!("{what} 저장 실패: {e}"));
-    let path = data_path(app, file).ok_or_else(|| fail("데이터 폴더를 찾을 수 없습니다".into()))?;
+    let fail = |e: String| IpcError::new(ErrorCode::Io, text_git_net::data_save_failed(what, e));
+    let path = data_path(app, file)
+        .ok_or_else(|| fail(text_git_net::data_folder_not_found().into()))?;
     save_json_at(&path, key, value).map_err(|e| fail(e.to_string()))
 }
 
@@ -266,7 +268,7 @@ pub fn load_projects(app: &AppHandle) -> Vec<Project> {
 }
 
 pub fn save_projects(app: &AppHandle, projects: &[Project]) -> Result<(), IpcError> {
-    save_json(app, STORE_FILE, STORE_KEY, &projects, "프로젝트 목록")
+    save_json(app, STORE_FILE, STORE_KEY, &projects, text_git_net::data_label_projects())
 }
 
 pub fn load_settings(app: &AppHandle) -> Settings {
@@ -293,7 +295,7 @@ pub fn load_settings(app: &AppHandle) -> Settings {
 }
 
 pub fn save_settings(app: &AppHandle, settings: &Settings) -> Result<(), IpcError> {
-    save_json(app, SETTINGS_FILE, SETTINGS_KEY, settings, "설정")
+    save_json(app, SETTINGS_FILE, SETTINGS_KEY, settings, text_git_net::data_label_settings())
 }
 
 pub fn load_notes(app: &AppHandle) -> Notes {
@@ -301,7 +303,7 @@ pub fn load_notes(app: &AppHandle) -> Notes {
 }
 
 pub fn save_notes(app: &AppHandle, notes: &Notes) -> Result<(), IpcError> {
-    save_json(app, NOTES_FILE, NOTES_KEY, notes, "메모")
+    save_json(app, NOTES_FILE, NOTES_KEY, notes, text_git_net::data_label_notes())
 }
 
 pub fn load_reports(app: &AppHandle) -> Reports {
@@ -309,7 +311,7 @@ pub fn load_reports(app: &AppHandle) -> Reports {
 }
 
 pub fn save_reports(app: &AppHandle, reports: &Reports) -> Result<(), IpcError> {
-    save_json(app, REPORTS_FILE, REPORTS_KEY, reports, "작업 요약")
+    save_json(app, REPORTS_FILE, REPORTS_KEY, reports, text_git_net::data_label_reports())
 }
 
 #[cfg(test)]

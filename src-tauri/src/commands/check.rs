@@ -1,5 +1,6 @@
 use crate::git::runner;
 use crate::git::types::GitCheck;
+use crate::i18n::text_git_net;
 
 /// 앱 시작 게이트: git 실행 파일 존재 여부와 버전을 확인한다.
 #[tauri::command]
@@ -9,7 +10,7 @@ pub async fn check_git() -> GitCheck {
             found: false,
             version: None,
             path: None,
-            reason: Some("PATH 및 표준 설치 경로에서 git을 찾지 못했습니다.".into()),
+            reason: Some(text_git_net::git_not_found_on_system().into()),
         };
     };
 
@@ -23,9 +24,9 @@ pub async fn check_git() -> GitCheck {
         Ok(out) => {
             let detail = out.stderr.trim();
             let reason = if detail.is_empty() {
-                format!("git --version 실행 실패 (exit {})", out.code)
+                text_git_net::git_version_check_failed(out.code)
             } else {
-                format!("git --version 실행 실패 (exit {}): {}", out.code, detail)
+                text_git_net::git_version_check_failed_with_detail(out.code, detail)
             };
             GitCheck {
                 found: false,
@@ -38,7 +39,7 @@ pub async fn check_git() -> GitCheck {
             found: false,
             version: None,
             path: Some(path.display().to_string()),
-            reason: Some(format!("git 실행 오류: {}", e.message)),
+            reason: Some(text_git_net::git_exec_error(&e.message)),
         },
     }
 }

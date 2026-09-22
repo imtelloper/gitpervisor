@@ -6,6 +6,7 @@ use tauri::State;
 
 use super::projects::project_path;
 use crate::error::{ErrorCode, IpcError};
+use crate::i18n::text_files;
 use crate::state::AppState;
 
 /// 프로젝트당 Rust 빌드 산출물(target) 용량.
@@ -147,7 +148,7 @@ pub async fn get_target_sizes(
         handles.into_iter().filter_map(|h| h.join().ok()).collect()
     })
     .await
-    .map_err(|e| IpcError::new(ErrorCode::Io, format!("용량 계산 실패: {e}")))
+    .map_err(|e| IpcError::new(ErrorCode::Io, text_files::size_calc_failed(e)))
 }
 
 /// 프로젝트 폴더 전체 용량(바이트) — 사이드바 표시용.
@@ -196,12 +197,12 @@ pub async fn get_project_sizes(
                     Some(_) => ProjectSize {
                         project_id: id,
                         bytes: 0,
-                        error: Some("경로를 찾을 수 없습니다".into()),
+                        error: Some(text_files::path_not_found().into()),
                     },
                     None => ProjectSize {
                         project_id: id,
                         bytes: 0,
-                        error: Some("프로젝트를 찾을 수 없습니다".into()),
+                        error: Some(crate::i18n::text_git_net::project_not_found().into()),
                     },
                 })
             })
@@ -209,7 +210,7 @@ pub async fn get_project_sizes(
         handles.into_iter().filter_map(|h| h.join().ok()).collect()
     })
     .await
-    .map_err(|e| IpcError::new(ErrorCode::Io, format!("용량 계산 실패: {e}")))
+    .map_err(|e| IpcError::new(ErrorCode::Io, text_files::size_calc_failed(e)))
 }
 
 /// 한 프로젝트의 cargo target 디렉토리를 통째로 삭제한다(= `cargo clean` 의미).
@@ -241,14 +242,14 @@ pub async fn clean_target(
         (freed, removed, total, last_err)
     })
     .await
-    .map_err(|e| IpcError::new(ErrorCode::Io, format!("청소 실패: {e}")))?;
+    .map_err(|e| IpcError::new(ErrorCode::Io, text_files::clean_failed(e)))?;
 
     // 대상이 있는데 하나도 못 지웠다면(빌드 중 파일 잠금 등) 오류로 표면화한다.
     if total > 0 && removed == 0 {
         return Err(IpcError::new(
             ErrorCode::Io,
             last_err.unwrap_or_else(|| {
-                "target 디렉토리를 삭제하지 못했습니다 (빌드/에디터가 사용 중일 수 있음)".into()
+                text_files::clean_target_delete_failed().into()
             }),
         ));
     }

@@ -139,17 +139,17 @@ fn log_process_failed(label: &str, args: &ICoreWebView2ProcessFailedEventArgs) {
                 };
                 (reason_name(r), code, desc)
             }
-            Err(_) => ("(구버전 런타임)", 0, String::new()),
+            Err(_) => ("(구버전 런타임)", 0, String::new()), // i18n-ok: 로그 전용
         };
         // 브라우저 프로세스가 죽으면 그 환경의 **모든 웹뷰가 통째로 무효**가 된다 —
         // 리로드로 살아나지 않는다. 자동 복구는 이번 범위 밖이라 안내만 남긴다.
         let hint = if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED {
-            " — 이 창의 웹뷰가 전부 무효가 됐습니다. 창을 다시 열어야 합니다."
+            " — 이 창의 웹뷰가 전부 무효가 됐습니다. 창을 다시 열어야 합니다." // i18n-ok: 로그 전용
         } else {
             ""
         };
         log::error!(
-            "[webview] 프로세스 실패 label={label} kind={} reason={reason} exit={exit} desc={desc}{hint}",
+            "[webview] 프로세스 실패 label={label} kind={} reason={reason} exit={exit} desc={desc}{hint}", // i18n-ok: 로그
             kind_name(kind)
         );
     }
@@ -181,7 +181,7 @@ fn kind_name(k: COREWEBVIEW2_PROCESS_FAILED_KIND) -> &'static str {
         other => {
             // 새 런타임이 추가한 kind — 숫자라도 남겨야 조사할 수 있다.
             log::debug!("[webview] 미확인 ProcessFailedKind={}", other.0);
-            "(미확인)"
+            "(미확인)" // i18n-ok: 로그 전용
         }
     }
 }
@@ -197,7 +197,7 @@ fn reason_name(r: COREWEBVIEW2_PROCESS_FAILED_REASON) -> &'static str {
         // 이번 사건에서 찾던 바로 그 값 — 이게 찍히면 원인이 메모리라는 직접 증거다.
         COREWEBVIEW2_PROCESS_FAILED_REASON_OUT_OF_MEMORY => "OUT_OF_MEMORY",
         COREWEBVIEW2_PROCESS_FAILED_REASON_PROFILE_DELETED => "PROFILE_DELETED",
-        _ => "(미확인)",
+        _ => "(미확인)", // i18n-ok: 로그 전용
     }
 }
 
@@ -237,9 +237,9 @@ pub fn set_memory_target_low(app: &tauri::AppHandle, low: bool) {
         }
     }
     log::info!(
-        "[webview] 메모리 목표 {} 요청 — 창 {asked}개{}",
+        "[webview] 메모리 목표 {} 요청 — 창 {asked}개{}", // i18n-ok: 로그
         if low { "LOW" } else { "NORMAL" },
-        if kept_focused > 0 { format!(" (포커스 창 {kept_focused}개는 NORMAL 유지)") } else { String::new() }
+        if kept_focused > 0 { format!(" (포커스 창 {kept_focused}개는 NORMAL 유지)") } else { String::new() } // i18n-ok: 로그
     );
 }
 
@@ -285,7 +285,7 @@ fn set_window_target(win: &tauri::WebviewWindow, low: bool) -> bool {
                 Err(_) => {
                     if !CAST_WARNED.swap(true, Ordering::Relaxed) {
                         log::debug!(
-                            "[webview] ICoreWebView2_19 미지원 런타임 — 메모리 목표 조절 생략"
+                            "[webview] ICoreWebView2_19 미지원 런타임 — 메모리 목표 조절 생략" // i18n-ok: 로그
                         );
                     }
                 }

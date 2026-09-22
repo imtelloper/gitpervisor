@@ -356,7 +356,9 @@ function keepLastGoodStatuses(
   const prevById = new Map(prev.map((s) => [s.projectId, s]));
   const merged = next.map((s) => {
     const old = prevById.get(s.projectId);
-    if (s.error?.includes("시간 초과") && old && !old.error) return old;
+    // Rust 가 타임아웃 문구를 현재 언어로 만든다(text_git_net::git_timed_out) — 두 언어를 다 본다.
+    const timedOut = s.error?.includes("시간 초과") || s.error?.includes("timed out"); // i18n-ok: Rust 오류와 비교(표시 안 함)
+    if (timedOut && old && !old.error) return old;
     return s;
   });
   // **구조 공유를 되살린다.** `structuralSharing` 에 함수를 주면 react-query 는 기본

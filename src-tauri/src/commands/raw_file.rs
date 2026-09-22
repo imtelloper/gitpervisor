@@ -23,6 +23,7 @@ use super::diff::stamp_of;
 use super::projects::project_path;
 use super::tree::resolve_in_repo;
 use crate::error::{ErrorCode, IpcError};
+use crate::i18n::text_files;
 use crate::state::AppState;
 
 /// raw IPC 상한. base64 경로와 달리 문자열 사본이 없지만, 프론트에서 pdf.js 워커 사본과
@@ -30,7 +31,7 @@ use crate::state::AppState;
 const MAX_RAW_BYTES: u64 = 256 * 1024 * 1024;
 
 fn too_large() -> IpcError {
-    IpcError::new(ErrorCode::Io, "파일이 너무 큽니다 (256MB 초과)")
+    IpcError::new(ErrorCode::Io, text_files::raw_file_too_large_256mb())
 }
 
 /// 읽기 전 메타의 stamp. 파일이 아니거나 메타를 못 읽으면 None.
@@ -61,16 +62,16 @@ pub async fn read_file_raw(
     let target = resolve_in_repo(&repo, &rel_path)?;
     let meta = tokio::fs::metadata(&target)
         .await
-        .map_err(|_| IpcError::new(ErrorCode::NotFound, "파일을 찾을 수 없습니다"))?;
+        .map_err(|_| IpcError::new(ErrorCode::NotFound, text_files::file_not_found()))?;
     if !meta.is_file() {
-        return Err(IpcError::new(ErrorCode::Io, "파일이 아닙니다"));
+        return Err(IpcError::new(ErrorCode::Io, text_files::not_a_file()));
     }
     if meta.len() > MAX_RAW_BYTES {
         return Err(too_large());
     }
     let bytes = tokio::fs::read(&target)
         .await
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("파일 읽기 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_files::file_read_failed(e)))?;
     if bytes.len() as u64 > MAX_RAW_BYTES {
         return Err(too_large()); // 메타 이후 커진 경우의 백스톱
     }
@@ -97,24 +98,24 @@ pub(crate) struct RawWriteArgs {
 pub(crate) fn parse_write_headers(h: &tauri::http::HeaderMap) -> Result<RawWriteArgs, IpcError> {
     let bad = |m: &str| IpcError::new(ErrorCode::Io, format!("write_file_raw: {m}"));
     let get = |k: &str| h.get(k).and_then(|v| v.to_str().ok()).map(str::to_owned);
-    let project_id = get("x-gpv-project").ok_or_else(|| bad("x-gpv-project 헤더 누락"))?;
+    let project_id = get("x-gpv-project").ok_or_else(|| bad(text_files::raw_header_project_missing()))?;
     let rel_path = get("x-gpv-path-b64")
-        .ok_or_else(|| bad("x-gpv-path-b64 헤더 누락"))
-        .and_then(|b| B64.decode(b).map_err(|_| bad("경로 base64 디코딩 실패")))
-        .and_then(|v| String::from_utf8(v).map_err(|_| bad("경로가 UTF-8 이 아닙니다")))?;
+        .ok_or_else(|| bad(text_files::raw_header_path_missing()))
+        .and_then(|b| B64.decode(b).map_err(|_| bad(text_files::raw_header_path_base64_invalid())))
+        .and_then(|v| String::from_utf8(v).map_err(|_| bad(text_files::raw_header_path_not_utf8())))?;
     let mode = match get("x-gpv-mode").as_deref() {
         Some("append") => RawWriteMode::Append,
         Some("replace") => RawWriteMode::Replace,
-        _ => return Err(bad("x-gpv-mode 는 append | replace")),
+        _ => return Err(bad(text_files::raw_header_mode_invalid())),
     };
     let expected_stamp = get("x-gpv-expected-stamp").filter(|s| !s.is_empty());
     let base_len = match get("x-gpv-base-len") {
-        Some(s) => Some(s.parse::<u64>().map_err(|_| bad("x-gpv-base-len 이 숫자가 아닙니다"))?),
+        Some(s) => Some(s.parse::<u64>().map_err(|_| bad(text_files::raw_header_base_len_not_number()))?),
         None => None,
     };
     let overwrite = get("x-gpv-overwrite").as_deref() == Some("1");
     if mode == RawWriteMode::Append && (expected_stamp.is_none() || base_len.is_none()) {
-        return Err(bad("append 에는 x-gpv-expected-stamp 와 x-gpv-base-len 이 필요합니다"));
+        return Err(bad(text_files::raw_header_append_needs_stamp_and_len()));
     }
     Ok(RawWriteArgs { project_id, rel_path, mode, expected_stamp, base_len, overwrite })
 }
@@ -127,7 +128,7 @@ pub async fn write_file_raw(
 ) -> Result<Option<String>, IpcError> {
     let args = parse_write_headers(request.headers())?;
     let InvokeBody::Raw(body) = request.body() else {
-        return Err(IpcError::new(ErrorCode::Io, "write_file_raw: raw 본문이 필요합니다"));
+        return Err(IpcError::new(ErrorCode::Io, text_files::raw_body_required()));
     };
     if body.len() as u64 > MAX_RAW_BYTES {
         return Err(too_large());
@@ -137,19 +138,19 @@ pub async fn write_file_raw(
     let body = body.clone();
     tokio::task::spawn_blocking(move || write_raw_at(&target, &body, &args))
         .await
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("쓰기 작업 실패: {e}")))?
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_files::raw_write_task_failed(e)))?
 }
 
 fn conflict() -> IpcError {
-    IpcError::new(ErrorCode::Conflict, "이 파일이 편집을 시작한 뒤 외부에서 바뀌었습니다")
+    IpcError::new(ErrorCode::Conflict, text_files::file_changed_externally_since_edit())
 }
 
 fn io_err(e: std::io::Error) -> IpcError {
     // Windows: 32 = 공유 위반(다른 프로그램이 열고 있음). rename 이 여기서 가장 흔히 막힌다.
     if cfg!(windows) && e.raw_os_error() == Some(32) {
-        return IpcError::new(ErrorCode::Io, "다른 프로그램이 이 파일을 열고 있어 저장하지 못했습니다");
+        return IpcError::new(ErrorCode::Io, text_files::file_locked_by_other_program());
     }
-    IpcError::new(ErrorCode::Io, format!("파일 저장 실패: {e}"))
+    IpcError::new(ErrorCode::Io, text_files::file_save_failed(e))
 }
 
 fn tmp_path(target: &Path) -> PathBuf {
@@ -162,10 +163,10 @@ pub(crate) fn write_raw_at(target: &Path, body: &[u8], a: &RawWriteArgs) -> Resu
     let meta = fs::symlink_metadata(target).ok();
     if let Some(m) = &meta {
         if m.file_type().is_symlink() {
-            return Err(IpcError::new(ErrorCode::Io, "심볼릭 링크에는 쓸 수 없습니다"));
+            return Err(IpcError::new(ErrorCode::Io, text_files::cannot_write_symlink()));
         }
         if m.is_dir() {
-            return Err(IpcError::new(ErrorCode::Io, "디렉토리에는 쓸 수 없습니다"));
+            return Err(IpcError::new(ErrorCode::Io, text_files::cannot_write_directory()));
         }
     }
     // 대조 규칙: append 는 stamp(가능하면)·길이 **둘 다** 필수, replace 는 stamp 를 줬을 때만.
@@ -178,14 +179,14 @@ pub(crate) fn write_raw_at(target: &Path, body: &[u8], a: &RawWriteArgs) -> Resu
     };
     match a.mode {
         RawWriteMode::Append => {
-            let m = meta.as_ref().ok_or_else(|| IpcError::new(ErrorCode::NotFound, "대상 파일이 없습니다"))?;
+            let m = meta.as_ref().ok_or_else(|| IpcError::new(ErrorCode::NotFound, text_files::raw_target_file_missing()))?;
             if !matches(m) {
                 return Err(conflict());
             }
         }
         RawWriteMode::Replace => match &meta {
             Some(_) if !a.overwrite => {
-                return Err(IpcError::new(ErrorCode::AlreadyExists, "이미 같은 이름의 파일이 있습니다"))
+                return Err(IpcError::new(ErrorCode::AlreadyExists, text_files::file_same_name_exists()))
             }
             Some(m) if a.expected_stamp.is_some() && !matches(m) => return Err(conflict()),
             _ => {}

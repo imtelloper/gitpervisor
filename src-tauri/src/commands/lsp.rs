@@ -17,6 +17,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use super::projects::project_path;
 use crate::error::{ErrorCode, IpcError};
+use crate::i18n::text_tools;
 use crate::lsp::acquire;
 use crate::state::AppState;
 
@@ -103,7 +104,7 @@ pub async fn lsp_start(
 ) -> Result<LspServerInfo, IpcError> {
     tauri::async_runtime::spawn_blocking(move || start_blocking(app, project_id, lang, on_msg))
         .await
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("언어 서버 시작 작업 실패: {e}")))?
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_tools::lsp_start_task_failed(&e)))?
 }
 
 /// 앱 종료(`lsp_kill_all`)가 시작됐다 — 그 뒤에 끝난 시작은 등록하지 않는다(고아 서버 방지).
@@ -178,17 +179,17 @@ fn start_blocking(
     }
     let mut child = cmd
         .spawn()
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("언어 서버 실행 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_tools::lsp_spawn_failed(&e)))?;
     let pid = child.id(); // process_group(0)이라 이 값이 곧 그룹 id다(unix).
 
     let stdin = child
         .stdin
         .take()
-        .ok_or_else(|| IpcError::new(ErrorCode::Io, "stdin 연결 실패".to_string()))?;
+        .ok_or_else(|| IpcError::new(ErrorCode::Io, text_tools::lsp_stdin_attach_failed()))?;
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| IpcError::new(ErrorCode::Io, "stdout 연결 실패".to_string()))?;
+        .ok_or_else(|| IpcError::new(ErrorCode::Io, text_tools::lsp_stdout_attach_failed()))?;
     let stderr = child.stderr.take();
 
     let sink = Arc::new(Mutex::new(on_msg));
@@ -232,7 +233,7 @@ fn start_blocking(
             spawn_terminate(session);
             return Err(IpcError::new(
                 ErrorCode::NotFound,
-                format!("언어 서버를 띄우는 사이 프로젝트가 닫혔습니다: {project_id}"),
+                text_tools::lsp_project_closed_during_start(&project_id),
             ));
         }
         // 같은 키에 이미 세션이 있었다면(재부착 검사와 spawn 사이의 레이스) 그 놈도 정리 대상이다.
@@ -294,7 +295,7 @@ pub fn lsp_send(
     }
     let mut stdin = stdin.lock().unwrap_or_else(|e| e.into_inner());
     write_frame(&mut *stdin, &msg)
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("lsp stdin 쓰기 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_tools::lsp_stdin_write_failed(&e)))?;
     Ok(())
 }
 

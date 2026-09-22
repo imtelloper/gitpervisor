@@ -83,7 +83,7 @@ fn check_range(since: &str, until: &str) -> Result<(), IpcError> {
     }
     Err(IpcError::new(
         ErrorCode::GitError,
-        "기간은 YYYY-MM-DD 형식이어야 합니다",
+        crate::i18n::text_db::report_range_format_invalid(),
     ))
 }
 
@@ -185,7 +185,7 @@ pub async fn git_activity(
         if is_unborn(&out.stderr) {
             return Ok(Vec::new());
         }
-        return Err(IpcError::git("git log 실패", out.stderr));
+        return Err(IpcError::git(crate::i18n::text_db::report_git_log_failed(), out.stderr));
     }
     Ok(bucket_commit_dates(&out.stdout_str(), &since, &until))
 }
@@ -225,7 +225,7 @@ pub async fn commits_between(
         if is_unborn(&out.stderr) {
             return Ok(Vec::new());
         }
-        return Err(IpcError::git("git log 실패", out.stderr));
+        return Err(IpcError::git(crate::i18n::text_db::report_git_log_failed(), out.stderr));
     }
     // 커미터 필터가 흘려보낸 범위 밖 커밋을 **작성 날짜로** 잘라낸다 — 잔디(작성일 버킷)와
     // 카드(이 목록의 길이)가 같은 날에 다른 수를 보이면 안 된다.
@@ -358,7 +358,7 @@ pub async fn claude_prompts(
         NaiveDate::parse_from_str(&since, "%Y-%m-%d").ok(),
         NaiveDate::parse_from_str(&until, "%Y-%m-%d").ok(),
     ) else {
-        return Err(IpcError::new(ErrorCode::GitError, "잘못된 기간입니다"));
+        return Err(IpcError::new(ErrorCode::GitError, crate::i18n::text_db::report_range_invalid()));
     };
     let Some(dir) = home_dir().map(|h| {
         h.join(".claude")
@@ -367,13 +367,13 @@ pub async fn claude_prompts(
     }) else {
         return Err(IpcError::new(
             ErrorCode::NotFound,
-            "홈 디렉토리를 찾을 수 없습니다",
+            crate::i18n::text_db::report_home_dir_not_found(),
         ));
     };
     // 전사 전체 스캔은 수백 MB가 될 수 있다 — 블로킹 풀로 보낸다(logo.rs와 같은 이유).
     tokio::task::spawn_blocking(move || collect_prompts(&dir, since_d, until_d))
         .await
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("전사 스캔 실패: {e}")))
+        .map_err(|e| IpcError::new(ErrorCode::Io, crate::i18n::text_db::report_transcript_scan_failed(e)))
 }
 
 // ── 요약 저장(reports.json) ───────────────────────────────────────────────────

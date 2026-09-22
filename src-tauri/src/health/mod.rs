@@ -131,11 +131,13 @@ const T_SWAP_PCT: [f32; 3] = if cfg!(windows) {
 /// 같은 자리(`Sample::swap_used_pct`)가 플랫폼마다 다른 것을 담는다 — 리눅스는 스왑 사용률,
 /// Windows는 커밋 차지다. 역할은 같다: 여기가 마르면 할당이 실패하기 시작하는 최종 방어선.
 /// 사용자에게 보이는 문구까지 같으면 오해하므로 이름만 갈라 쓴다.
-const SWAP_LABEL: &str = if cfg!(windows) {
-    "커밋 사용"
-} else {
-    "스왑 사용"
-};
+fn swap_label() -> &'static str {
+    if cfg!(windows) {
+        crate::i18n::text_system::health_commit_usage_label()
+    } else {
+        crate::i18n::text_system::health_swap_usage_label()
+    }
+}
 
 /// 승격에 필요한 연속 충족 횟수. 위험은 짧게 잡는다 — oomd가 20초에 죽이므로
 /// 6초(위험 시 500ms 주기면 1.5초) 안에 판정해야 저장할 시간이 남는다.
@@ -236,17 +238,14 @@ fn assess(s: &Sample) -> (Level, Level, Vec<String>) {
     consider(
         lv,
         true,
-        format!(
-            "메모리 압박 {:.0}% (OS 종료 기준 {:.0}%)",
-            s.anchor_full_avg10, s.kill_threshold
-        ),
+        crate::i18n::text_system::health_reason_memory_pressure(s.anchor_full_avg10, s.kill_threshold),
     );
 
     let lv = rate(s.anchor_some_avg10, T_SOME, true);
     consider(
         lv,
         true,
-        format!("메모리 지연 {:.0}%", s.anchor_some_avg10),
+        crate::i18n::text_system::health_reason_memory_stall(s.anchor_some_avg10),
     );
 
     let lv = rate(s.scope_mem_pct, T_MEM_PCT, true);
@@ -257,19 +256,14 @@ fn assess(s: &Sample) -> (Level, Level, Vec<String>) {
         lv,
         false,
         if s.scope_core_bytes > 0 {
-            format!(
-                "앱 메모리 {:.1}GB (시스템의 {:.0}%; 앱 자체 {:.1}GB, 터미널 프로그램 {:.1}GB)",
+            crate::i18n::text_system::health_reason_app_memory_split(
                 gb(s.scope_mem_bytes),
                 s.scope_mem_pct,
                 gb(s.scope_core_bytes),
                 gb(s.scope_mem_bytes.saturating_sub(s.scope_core_bytes)),
             )
         } else {
-            format!(
-                "앱 메모리 {:.1}GB (시스템의 {:.0}%)",
-                gb(s.scope_mem_bytes),
-                s.scope_mem_pct
-            )
+            crate::i18n::text_system::health_reason_app_memory(gb(s.scope_mem_bytes), s.scope_mem_pct)
         },
     );
 
@@ -283,17 +277,14 @@ fn assess(s: &Sample) -> (Level, Level, Vec<String>) {
     consider(
         lv,
         false,
-        format!(
-            "앱에 딸린 프로세스 {}개 (주의 기준 {}개)",
-            s.scope_procs, T_PROCS[0]
-        ),
+        crate::i18n::text_system::health_reason_app_processes(s.scope_procs, T_PROCS[0]),
     );
 
     let lv = rate(s.mem_available_pct, T_AVAIL_PCT, false);
     consider(
         lv,
         true,
-        format!("시스템 여유 메모리 {:.0}%", s.mem_available_pct),
+        crate::i18n::text_system::health_reason_system_free_memory(s.mem_available_pct),
     );
 
     // 스왑은 **단독으로는 위험 신호가 되지 못한다.** oomd의 스왑 경로는 "메모리 사용률과
@@ -307,10 +298,7 @@ fn assess(s: &Sample) -> (Level, Level, Vec<String>) {
         consider(
             lv,
             true,
-            format!(
-                "{SWAP_LABEL} {:.0}% (여유 메모리 {:.0}%)",
-                s.swap_used_pct, s.mem_available_pct
-            ),
+            crate::i18n::text_system::health_reason_swap(swap_label(), s.swap_used_pct, s.mem_available_pct),
         );
     }
 
@@ -324,10 +312,7 @@ fn assess(s: &Sample) -> (Level, Level, Vec<String>) {
         consider(
             lv,
             true,
-            format!(
-                "메모리 회수 부담의 {:.0}%가 이 앱 — 종료 대상 1순위입니다",
-                s.victim_share * 100.0
-            ),
+            crate::i18n::text_system::health_reason_oom_victim(s.victim_share * 100.0),
         );
     }
 
@@ -476,7 +461,7 @@ fn watchdog_tick(
     // 그 전제 위에 서 있다.
     if let Some(mem) = mem_transition {
         log::info!(
-            "[health] 메모리 레벨 {} → {}",
+            "[health] 메모리 레벨 {} → {}", // i18n-ok: 로그
             prev_mem.as_str(),
             mem.as_str()
         );

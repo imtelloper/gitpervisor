@@ -25,6 +25,7 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::error::{ErrorCode, IpcError};
 use crate::git::types::FavoriteFolder;
+use crate::i18n::text_files;
 use crate::state::AppState;
 
 /// 라이트박스 원본 한도 — `read_file_base64`(diff.rs)와 같은 이유·같은 값이다.
@@ -81,7 +82,7 @@ fn allowed(state: &State<'_, AppState>, path: &str) -> Result<PathBuf, IpcError>
 /// 키가 바뀌지 않는다.
 fn contained(target: &Path, roots: &[String]) -> Result<PathBuf, IpcError> {
     let target = std::fs::canonicalize(target)
-        .map_err(|e| IpcError::new(ErrorCode::NotFound, format!("경로를 찾을 수 없습니다: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::NotFound, text_files::fav_path_not_found(e)))?;
     for r in roots {
         // 루트도 canonicalize 한다 — 등록된 문자열이 심링크나 8.3 단축 경로일 수 있다.
         if let Ok(root) = std::fs::canonicalize(r) {
@@ -92,7 +93,7 @@ fn contained(target: &Path, roots: &[String]) -> Result<PathBuf, IpcError> {
     }
     Err(IpcError::new(
         ErrorCode::Io,
-        "즐겨찾기에 등록되지 않은 폴더입니다",
+        text_files::fav_folder_not_registered(),
     ))
 }
 
@@ -140,7 +141,7 @@ fn mtime_ms(meta: &std::fs::Metadata) -> u64 {
 pub fn fav_list(state: State<'_, AppState>, path: String) -> Result<Vec<FavEntry>, IpcError> {
     let dir = allowed(&state, &path)?;
     let rd = std::fs::read_dir(&dir)
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("폴더를 읽지 못했습니다: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_files::fav_folder_read_failed(e)))?;
     let mut out = Vec::new();
     for entry in rd.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
@@ -197,12 +198,12 @@ pub async fn fav_thumb(
     if !EDGES.contains(&edge) {
         return Err(IpcError::new(
             ErrorCode::Io,
-            "지원하지 않는 썸네일 크기입니다",
+            text_files::fav_thumb_size_unsupported(),
         ));
     }
     let file = allowed(&state, &path)?;
     let meta = std::fs::metadata(&file)
-        .map_err(|e| IpcError::new(ErrorCode::NotFound, format!("파일을 읽지 못했습니다: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::NotFound, text_files::could_not_read_file(e)))?;
 
     let mut h = Sha256::new();
     h.update(file.to_string_lossy().as_bytes());
@@ -253,13 +254,13 @@ async fn in_decode_slot<T: Send + 'static>(
     let permit = DECODE_SLOTS
         .acquire()
         .await
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("썸네일 대기 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_files::fav_thumb_wait_failed(e)))?;
     tauri::async_runtime::spawn_blocking(move || {
         let _permit = permit;
         work()
     })
     .await
-    .map_err(|e| IpcError::new(ErrorCode::Io, format!("썸네일 작업 실패: {e}")))
+    .map_err(|e| IpcError::new(ErrorCode::Io, text_files::fav_thumb_task_failed(e)))
 }
 
 /// 파일 하나를 `edge` 안에 들어가게 줄여 JPEG q80 바이트로 만든다(blocking — 호출부가 풀에서 돌린다).
@@ -269,11 +270,11 @@ async fn in_decode_slot<T: Send + 'static>(
 /// 문장으로 알린다.
 fn decode_thumb(file: &Path, edge: u32) -> Result<Vec<u8>, IpcError> {
     let open_err =
-        |e: String| IpcError::new(ErrorCode::Io, format!("이미지를 열지 못했습니다: {e}"));
+        |e: String| IpcError::new(ErrorCode::Io, text_files::fav_image_open_failed(e));
     let too_big = |what: String| {
         IpcError::new(
             ErrorCode::Io,
-            format!("이미지가 너무 큽니다 ({what}) — 기본 앱으로 열어 보세요"),
+            text_files::fav_thumb_image_too_large(what),
         )
     };
     // 입력 크기는 `Limits` 가 못 막는다 — image 0.25 는 `decode()` 에서 디코더를 먼저 만들고 그 뒤에
@@ -283,7 +284,7 @@ fn decode_thumb(file: &Path, edge: u32) -> Result<Vec<u8>, IpcError> {
         .map_err(|e| open_err(e.to_string()))?
         .len();
     if len > MAX_DECODE_ALLOC {
-        return Err(too_big(format!("파일 {} MiB", len >> 20)));
+        return Err(too_big(text_files::fav_thumb_file_size_mib(len >> 20)));
     }
     let mut reader = image::ImageReader::open(file)
         .and_then(|r| r.with_guessed_format())
@@ -304,7 +305,7 @@ fn decode_thumb(file: &Path, edge: u32) -> Result<Vec<u8>, IpcError> {
     let mut buf = Vec::new();
     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut std::io::Cursor::new(&mut buf), 80)
         .encode_image(&img)
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("썸네일 인코딩 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_files::fav_thumb_encode_failed(e)))?;
     Ok(buf)
 }
 
@@ -373,15 +374,15 @@ pub struct FavBytes {
 pub fn fav_read(state: State<'_, AppState>, path: String) -> Result<FavBytes, IpcError> {
     let file = allowed(&state, &path)?;
     let meta = std::fs::metadata(&file)
-        .map_err(|e| IpcError::new(ErrorCode::NotFound, format!("파일을 읽지 못했습니다: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::NotFound, text_files::could_not_read_file(e)))?;
     if meta.len() > MAX_READ_BYTES {
         return Err(IpcError::new(
             ErrorCode::Io,
-            "파일이 너무 큽니다 (25MB 초과) — 기본 앱으로 열어 보세요",
+            text_files::fav_read_too_large_25mb(),
         ));
     }
     let bytes = std::fs::read(&file)
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("파일을 읽지 못했습니다: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_files::could_not_read_file(e)))?;
     Ok(FavBytes {
         mime: mime_of(&file).to_string(),
         base64: B64.encode(&bytes),
@@ -441,7 +442,7 @@ pub fn fav_open(state: State<'_, AppState>, path: String, how: String) -> Result
 pub fn fav_delete(state: State<'_, AppState>, path: String) -> Result<(), IpcError> {
     let p = allowed(&state, &path)?;
     trash::delete(&p)
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("휴지통으로 보내지 못했습니다: {e}")))
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_files::fav_trash_failed(e)))
 }
 
 /// `fav_open` 의 분기 — 프로세스를 띄우지 않고 테스트할 수 있게 떼어 냈다.
@@ -477,9 +478,9 @@ pub fn fav_presets() -> Vec<FavoriteFolder> {
             }
         }
     };
-    push("스크린샷", screenshots_dir());
-    push("다운로드", downloads_dir());
-    push("바탕화면", desktop_dir());
+    push(text_files::fav_preset_screenshots(), screenshots_dir());
+    push(text_files::fav_preset_downloads(), downloads_dir());
+    push(text_files::fav_preset_desktop(), desktop_dir());
     out
 }
 

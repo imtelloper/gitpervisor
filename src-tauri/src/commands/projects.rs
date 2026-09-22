@@ -5,6 +5,7 @@ use tauri::{AppHandle, State};
 use crate::error::{ErrorCode, IpcError};
 use crate::git::runner;
 use crate::git::types::Project;
+use crate::i18n::text_files;
 use crate::state::{self, AppState};
 
 /// 프로젝트 id → 저장소 경로.
@@ -30,7 +31,7 @@ fn lookup_path(state: &State<'_, AppState>, project_id: &str) -> Result<PathBuf,
         .iter()
         .find(|p| p.id == project_id)
         .map(|p| PathBuf::from(&p.path))
-        .ok_or_else(|| IpcError::new(ErrorCode::NotFound, "프로젝트를 찾을 수 없습니다"))
+        .ok_or_else(|| IpcError::new(ErrorCode::NotFound, crate::i18n::text_git_net::project_not_found()))
 }
 
 /// 중첩 저장소 경로 해석 + 컨테인먼트 가드. rel은 우리 자신의 git status 출력에서 오지만,
@@ -50,7 +51,7 @@ fn resolve_nested(base: &Path, rel: &str) -> Result<PathBuf, IpcError> {
     {
         return Err(IpcError::new(
             ErrorCode::NotFound,
-            "잘못된 중첩 저장소 경로입니다",
+            text_files::nested_repo_path_invalid(),
         ));
     }
     let joined = base.join(relp);
@@ -63,7 +64,7 @@ fn resolve_nested(base: &Path, rel: &str) -> Result<PathBuf, IpcError> {
             } else {
                 Err(IpcError::new(
                     ErrorCode::NotFound,
-                    "저장소 경계를 벗어난 경로입니다",
+                    text_files::nested_repo_path_escapes(),
                 ))
             }
         }
@@ -87,7 +88,7 @@ async fn normalize_project_dir(path: &str) -> Result<(String, String), IpcError>
     if !dir.is_dir() {
         return Err(IpcError::new(
             ErrorCode::NotFound,
-            format!("폴더를 찾을 수 없습니다: {path}"),
+            text_files::project_folder_not_found(path),
         ));
     }
     let target = match runner::run_git(
@@ -101,7 +102,7 @@ async fn normalize_project_dir(path: &str) -> Result<(String, String), IpcError>
         _ => dir.clone(),
     };
     let canonical = dunce::canonicalize(&target)
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("경로 정규화 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_files::path_normalize_failed(e)))?;
     let canonical_str = canonical.display().to_string();
     let name = canonical
         .file_name()
@@ -126,7 +127,7 @@ pub async fn add_project(
         {
             return Err(IpcError::new(
                 ErrorCode::DuplicateProject,
-                format!("이미 등록된 프로젝트입니다: {canonical_str}"),
+                text_files::project_already_registered(&canonical_str),
             ));
         }
         let order = projects.iter().map(|p| p.order + 1).max().unwrap_or(0);
@@ -170,12 +171,12 @@ pub async fn create_project_folder(
         || trimmed == ".."
         || trimmed.contains("..")
     {
-        return Err(IpcError::new(ErrorCode::Io, "잘못된 폴더 이름입니다"));
+        return Err(IpcError::new(ErrorCode::Io, text_files::invalid_folder_name()));
     }
     // 2) 부모 디렉토리 존재 확인.
     let parent = PathBuf::from(&parent_dir);
     if !parent.is_dir() {
-        return Err(IpcError::new(ErrorCode::NotFound, "부모 폴더를 찾을 수 없습니다"));
+        return Err(IpcError::new(ErrorCode::NotFound, text_files::parent_folder_not_found()));
     }
     let dir = parent.join(trimmed);
     // 3) 폴더 생성(create_new 시맨틱 — 이미 있으면 AlreadyExists).
@@ -184,21 +185,21 @@ pub async fn create_project_folder(
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             return Err(IpcError::new(
                 ErrorCode::AlreadyExists,
-                "같은 이름의 폴더가 이미 있습니다",
+                text_files::folder_same_name_exists(),
             ));
         }
-        Err(e) => return Err(IpcError::new(ErrorCode::Io, format!("폴더 생성 실패: {e}"))),
+        Err(e) => return Err(IpcError::new(ErrorCode::Io, text_files::folder_create_failed(e))),
     }
     // 4) 선택적 git init.
     if git_init {
         let out = runner::run_git(Some(&dir), &["init"], runner::ACTION_TIMEOUT_SECS).await?;
         if out.code != 0 {
-            return Err(IpcError::git("git init 실패".to_string(), out.stderr));
+            return Err(IpcError::git(text_files::git_init_failed(), out.stderr));
         }
     }
     // 5) 절대경로 반환(프론트가 add_project로 넘김).
     let canonical = dunce::canonicalize(&dir)
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("경로 정규화 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_files::path_normalize_failed(e)))?;
     Ok(canonical.display().to_string())
 }
 
@@ -221,13 +222,13 @@ pub async fn update_project_path(
         {
             return Err(IpcError::new(
                 ErrorCode::DuplicateProject,
-                format!("이미 등록된 프로젝트입니다: {canonical_str}"),
+                text_files::project_already_registered(&canonical_str),
             ));
         }
         let Some(p) = projects.iter_mut().find(|p| p.id == id) else {
             return Err(IpcError::new(
                 ErrorCode::NotFound,
-                "프로젝트를 찾을 수 없습니다",
+                crate::i18n::text_git_net::project_not_found(),
             ));
         };
         p.path = canonical_str;
@@ -287,7 +288,7 @@ pub fn remove_project(
         if projects.len() == before {
             return Err(IpcError::new(
                 ErrorCode::NotFound,
-                "프로젝트를 찾을 수 없습니다",
+                crate::i18n::text_git_net::project_not_found(),
             ));
         }
         path

@@ -44,13 +44,14 @@ use uuid::Uuid;
 use crate::commands::projects::project_path;
 use crate::commands::tree::resolve_in_repo;
 use crate::error::{ErrorCode, IpcError};
+use crate::i18n::text_tools;
 use crate::state::AppState;
 
 /// URL 경로 세그먼트에서 인코딩할 문자 — 비예약(unreserved) 밖은 전부. `/`?`#`&공백·한글 포함.
 /// (RFC 3986 unreserved = ALPHA / DIGIT / `-` `.` `_` `~`)
 const PATH_SEG: &AsciiSet = &CONTROLS
     .add(b' ')
-    .add(b'"')
+    .add(b'\x22') // 큰따옴표 — 리터럴로 쓰면 scripts/i18n-remaining-rs.py가 문자열 시작으로 읽어 이후 판정이 뒤집힌다
     .add(b'#')
     .add(b'%')
     .add(b'/')
@@ -136,25 +137,25 @@ pub fn preview_local_url(
     // 마지막 컴포넌트가 심볼릭 링크로 레포 밖을 가리키는 경우까지 막는다(읽기판 방어).
     let target = resolve_in_repo(&repo, &rel_path)?;
     let target = dunce::canonicalize(&target)
-        .map_err(|_| IpcError::new(ErrorCode::NotFound, "파일을 찾을 수 없습니다"))?;
+        .map_err(|_| IpcError::new(ErrorCode::NotFound, text_tools::preview_file_not_found()))?;
     let repo_canon = dunce::canonicalize(&repo)
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("레포 경로 확인 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_tools::preview_repo_path_check_failed(&e)))?;
     if !target.starts_with(&repo_canon) {
-        return Err(IpcError::new(ErrorCode::Io, "레포 밖 경로입니다"));
+        return Err(IpcError::new(ErrorCode::Io, text_tools::preview_path_outside_repo()));
     }
     if !target.is_file() {
-        return Err(IpcError::new(ErrorCode::NotFound, "파일을 찾을 수 없습니다"));
+        return Err(IpcError::new(ErrorCode::NotFound, text_tools::preview_file_not_found()));
     }
 
     // 서빙 루트 = 파일의 상위 폴더(이미 정규화됨). 파일은 그 루트의 최상위에 위치한다.
     let base = target
         .parent()
-        .ok_or_else(|| IpcError::new(ErrorCode::Io, "상위 폴더를 찾을 수 없습니다"))?
+        .ok_or_else(|| IpcError::new(ErrorCode::Io, text_tools::preview_parent_folder_not_found()))?
         .to_path_buf();
     let file_name = target
         .file_name()
         .and_then(|s| s.to_str())
-        .ok_or_else(|| IpcError::new(ErrorCode::Io, "파일 이름을 읽을 수 없습니다"))?
+        .ok_or_else(|| IpcError::new(ErrorCode::Io, text_tools::preview_file_name_unreadable()))?
         .to_string();
 
     let (port, token) = ensure_server(&state, &base)?;
@@ -204,14 +205,14 @@ pub(crate) fn ensure_server(state: &AppState, base: &Path) -> Result<(u16, Strin
 /// (`alive=false`)와 유휴 종료를 함께 처리할 수 있다. 유휴 시 비용은 초당 4회 WouldBlock뿐이다.
 fn start_server(base: PathBuf, token: String) -> Result<ServerEntry, IpcError> {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("프리뷰 서버 시작 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_tools::preview_server_start_failed(&e)))?;
     let port = listener
         .local_addr()
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("포트 확인 실패: {e}")))?
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_tools::preview_port_check_failed(&e)))?
         .port();
     listener
         .set_nonblocking(true)
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("논블로킹 설정 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_tools::preview_nonblocking_failed(&e)))?;
 
     let alive = Arc::new(AtomicBool::new(true));
     let last_hit = Arc::new(AtomicU64::new(0));
@@ -277,7 +278,7 @@ fn start_server(base: PathBuf, token: String) -> Result<ServerEntry, IpcError> {
                 }
             }
         })
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("프리뷰 스레드 생성 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_tools::preview_thread_spawn_failed(&e)))?;
 
     Ok(ServerEntry { port, token, alive, last_hit, started })
 }

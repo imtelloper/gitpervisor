@@ -46,6 +46,7 @@ use uuid::Uuid;
 use super::projects::project_path;
 use super::tree::resolve_in_repo;
 use crate::error::{ErrorCode, IpcError};
+use crate::i18n::text_tools;
 use crate::state::AppState;
 
 /// 세그먼트 길이. 짧을수록 탐색 응답이 빠르지만 호출당 고정비(프로세스 기동 + 앞선 키프레임까지
@@ -239,13 +240,13 @@ fn ensure_segment(sess: &Arc<HlsSession>, n: u32) -> Result<PathBuf, String> {
                 .unwrap_or_else(|e| e.into_inner());
             st = g;
             if timeout.timed_out() {
-                return Err(format!("세그먼트 {n} 대기 시간 초과"));
+                return Err(format!("세그먼트 {n} 대기 시간 초과")); // i18n-ok: 로그 전용(Route::Failed → preview.rs log::warn)
             }
         }
         return match &*st {
             SegState::Ready => Ok(out),
             SegState::Failed(e) => Err(e.clone()),
-            SegState::Running => Err("세그먼트 상태 불명".into()),
+            SegState::Running => Err("세그먼트 상태 불명".into()), // i18n-ok: 로그 전용(Route::Failed → preview.rs log::warn)
         };
     }
 
@@ -375,26 +376,26 @@ fn transcode_segment(sess: &HlsSession, n: u32, out: &Path) -> Result<(), String
 
     let child = cmd
         .spawn()
-        .map_err(|e| format!("ffmpeg 실행 실패: {e}"))?;
+        .map_err(|e| format!("ffmpeg 실행 실패: {e}"))?; // i18n-ok: 로그 전용(Route::Failed → preview.rs log::warn)
     let pid = child.id();
     children().lock().unwrap_or_else(|e| e.into_inner()).insert(pid);
     let out_res = child.wait_with_output();
     children().lock().unwrap_or_else(|e| e.into_inner()).remove(&pid);
 
-    let done = out_res.map_err(|e| format!("ffmpeg 대기 실패: {e}"))?;
+    let done = out_res.map_err(|e| format!("ffmpeg 대기 실패: {e}"))?; // i18n-ok: 로그 전용(Route::Failed → preview.rs log::warn)
     if !done.status.success() {
         let _ = std::fs::remove_file(&part);
         let err = String::from_utf8_lossy(&done.stderr);
         return Err(format!(
-            "세그먼트 {n} 인코딩 실패: {}",
-            err.lines().last().unwrap_or("(출력 없음)")
+            "세그먼트 {n} 인코딩 실패: {}", // i18n-ok: 로그 전용(Route::Failed → preview.rs log::warn)
+            err.lines().last().unwrap_or("(출력 없음)") // i18n-ok: 로그 전용
         ));
     }
     if std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0) == 0 {
         let _ = std::fs::remove_file(&part);
-        return Err(format!("세그먼트 {n}이 비어 있습니다"));
+        return Err(format!("세그먼트 {n}이 비어 있습니다")); // i18n-ok: 로그 전용(Route::Failed → preview.rs log::warn)
     }
-    std::fs::rename(&part, out).map_err(|e| format!("세그먼트 {n} 확정 실패: {e}"))?;
+    std::fs::rename(&part, out).map_err(|e| format!("세그먼트 {n} 확정 실패: {e}"))?; // i18n-ok: 로그 전용(Route::Failed → preview.rs log::warn)
     Ok(())
 }
 
@@ -661,12 +662,12 @@ pub async fn video_hls_url(
     let repo = project_path(&state, &project_id)?;
     let src = resolve_in_repo(&repo, &rel_path)?;
     let src = dunce::canonicalize(&src)
-        .map_err(|_| IpcError::new(ErrorCode::NotFound, "파일을 찾을 수 없습니다"))?;
+        .map_err(|_| IpcError::new(ErrorCode::NotFound, text_tools::preview_file_not_found()))?;
     if !src.is_file() {
-        return Err(IpcError::new(ErrorCode::NotFound, "파일을 찾을 수 없습니다"));
+        return Err(IpcError::new(ErrorCode::NotFound, text_tools::preview_file_not_found()));
     }
     let meta_fs = std::fs::metadata(&src)
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("파일 정보를 읽지 못했습니다: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_tools::hls_file_metadata_failed(&e)))?;
     let key = format!(
         "{}|{}|{}",
         src.display(),
@@ -683,14 +684,14 @@ pub async fn video_hls_url(
     let probe = bin.ffprobe.clone().ok_or_else(|| {
         IpcError::new(
             ErrorCode::ToolNotFound,
-            "ffprobe를 찾을 수 없습니다 — ffmpeg와 같은 폴더에 있어야 합니다",
+            text_tools::hls_ffprobe_not_found(),
         )
     })?;
 
     // 서빙은 미디어 파일의 상위 폴더 서버가 맡는다 — 토큰·유휴 종료를 프리뷰와 공유한다.
     let base = src
         .parent()
-        .ok_or_else(|| IpcError::new(ErrorCode::Io, "상위 폴더를 찾을 수 없습니다"))?
+        .ok_or_else(|| IpcError::new(ErrorCode::Io, text_tools::preview_parent_folder_not_found()))?
         .to_path_buf();
     let (port, token) = super::preview::ensure_server(state.inner(), &base)?;
 
@@ -709,7 +710,7 @@ pub async fn video_hls_url(
     if !meta.has_video || meta.duration_ms == 0 {
         return Err(IpcError::new(
             ErrorCode::Io,
-            "동영상 스트림을 찾지 못했습니다 — 변환할 수 없는 파일입니다",
+            text_tools::hls_no_video_stream(),
         ));
     }
 
@@ -719,7 +720,7 @@ pub async fn video_hls_url(
     let sid = Uuid::new_v4().simple().to_string();
     let dir = cache_root(&app).join(&sid);
     std::fs::create_dir_all(&dir)
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("캐시 폴더 생성 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_tools::hls_cache_dir_create_failed(&e)))?;
 
     let seg_count = ((meta.duration_ms as f64 / 1000.0) / SEG_SECS).ceil().max(1.0) as u32;
     let sess = Arc::new(HlsSession {
@@ -746,7 +747,7 @@ pub async fn video_hls_url(
     // 방금 넣은 세션은 last_hit이 가장 새것이라 자기 자신이 쫓겨나지 않는다.
     prune_sessions();
     log::info!(
-        "[hls] 세션 {} — {}x{} {:.2}fps {}kbps · {}조각 · {}",
+        "[hls] 세션 {} — {}x{} {:.2}fps {}kbps · {}조각 · {}", // i18n-ok: 로그(log::info! 여러 줄)
         &sess.sid[..8],
         dims.0,
         dims.1,

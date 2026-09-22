@@ -55,10 +55,10 @@ pub struct PrevSession {
     pub crashed: bool,
     /// "oom" | "panic" | "crash" | "power" | "reboot" | "unknown" | "clean"
     pub verdict: String,
-    /// 사용자에게 보여줄 한국어 진단 문구.
+    /// 사용자에게 보여줄 진단 문구(판정 시점의 UI 언어).
     pub message: String,
     pub record: Option<SessionRecord>,
-    /// Windows 이벤트 로그에서 건진 상관 이벤트(이미 한국어 한 줄로 포맷됨).
+    /// Windows 이벤트 로그에서 건진 상관 이벤트(이미 UI 언어 한 줄로 포맷됨).
     /// 앱 로그에 아무것도 없는 종료(할당 실패 abort·강제 종료·전원 차단)의 유일한 외부 근거다.
     pub os_events: Vec<String>,
 }
@@ -100,7 +100,7 @@ pub fn begin(log_dir: &Path, version: &str) {
         // 사후 분석용으로 보관 — prune_logs가 지우지 않도록 보존 목록에 있다.
         let _ = std::fs::rename(&current, log_dir.join(PREVIOUS));
         log::warn!(
-            "[health] 지난 실행 비정상 종료 감지: {} — {}",
+            "[health] 지난 실행 비정상 종료 감지: {} — {}", // i18n-ok: 로그
             verdict.verdict,
             verdict.message
         );
@@ -130,27 +130,27 @@ fn oom_message(s: &Sample) -> String {
     // 죽인 주체가 다르다 — 리눅스는 oomd/OOM 킬러가 골라 죽이고, Windows는 그런 주체 없이
     // 할당 실패·렌더러 크래시로 무너진다. 단정 문구를 플랫폼에 맞춘다.
     let head = if cfg!(windows) {
-        "메모리가 부족해 종료된 것으로 보입니다."
+        crate::i18n::text_system::prev_session_oom_head_windows()
     } else {
-        "메모리 부족으로 OS가 앱을 강제 종료한 것으로 보입니다."
+        crate::i18n::text_system::prev_session_oom_head_os_killed()
     };
     let mut bits: Vec<String> = Vec::new();
     if s.scope_procs > 0 {
-        bits.push(format!("앱에 딸린 프로세스 {}개", s.scope_procs));
+        bits.push(crate::i18n::text_system::prev_session_bit_scope_procs(s.scope_procs));
     }
     if s.anchor_full_avg10 > 0.0 {
-        bits.push(format!("메모리 압박 {:.0}%", s.anchor_full_avg10));
+        bits.push(crate::i18n::text_system::prev_session_bit_memory_pressure(s.anchor_full_avg10));
     }
     if s.available {
-        bits.push(format!("여유 메모리 {:.0}%", s.mem_available_pct));
+        bits.push(crate::i18n::text_system::prev_session_bit_free_memory(s.mem_available_pct));
     }
     if s.swap_used_pct > 0.0 {
-        bits.push(format!("{} {:.0}%", super::SWAP_LABEL, s.swap_used_pct));
+        bits.push(format!("{} {:.0}%", super::swap_label(), s.swap_used_pct));
     }
     let base = if bits.is_empty() {
         head.to_string()
     } else {
-        format!("{head} 종료 직전 {}.", bits.join(", "))
+        crate::i18n::text_system::prev_session_oom_with_bits(head, &bits.join(", "))
     };
     match top_summary(&s.top) {
         Some(t) => format!("{base} {t}."),
@@ -183,14 +183,14 @@ fn top_summary(top: &[TopProc]) -> Option<String> {
         .map(|(name, bytes, count)| {
             let gb = *bytes as f32 / 1_073_741_824.0;
             if *count > 1 {
-                format!("{name} {gb:.1}GB({count}개)")
+                crate::i18n::text_system::prev_session_top_group_entry(name, gb, *count)
             } else {
                 format!("{name} {gb:.1}GB")
             }
         })
         .collect::<Vec<_>>()
         .join(" · ");
-    Some(format!("종료 직전 가장 큰 프로세스: {listed}"))
+    Some(crate::i18n::text_system::prev_session_top_procs(&listed))
 }
 
 /// 할당 실패 표식을 읽고 밀어낸다 — 지난 세션의 것인지는 mtime으로 가른다.
@@ -280,33 +280,27 @@ fn classify(
     let (verdict, message) = if let Some(bytes) = alloc_fail {
         (
             "oom",
-            format!(
-                "메모리 할당 실패로 앱이 종료됐습니다(요청 {bytes}바이트). \
-                 더 이상 메모리를 확보할 수 없어 OS가 프로세스를 중단시켰습니다."
-            ),
+            crate::i18n::text_system::prev_session_alloc_failed(bytes),
         )
     } else if panicked {
         (
             "panic",
-            "앱 내부 오류(패닉)로 종료된 것으로 보입니다. 진단 로그를 확인해 주세요.".to_string(),
+            crate::i18n::text_system::prev_session_panic().to_string(),
         )
     } else if let Some(e) = crash_ev {
         (
             "crash",
-            format!("앱이 크래시로 종료됐습니다. {}", e.text),
+            crate::i18n::text_system::prev_session_crash(&e.text),
         )
     } else if let Some(e) = power_ev {
         (
             "power",
-            format!(
-                "시스템이 예기치 않게 종료·재부팅됐습니다 — 앱 문제가 아닐 수 있습니다. {}",
-                e.text
-            ),
+            crate::i18n::text_system::prev_session_power(&e.text),
         )
     } else if let Some(e) = reboot_ev {
         (
             "reboot",
-            format!("Windows 종료·재시작 요청으로 앱이 함께 종료됐습니다. {}", e.text),
+            crate::i18n::text_system::prev_session_windows_restart(&e.text),
         )
     } else if pressured || !exhaust.is_empty() {
         let mut m = oom_message(&rec.last);
@@ -318,7 +312,7 @@ fn classify(
     } else {
         (
             "unknown",
-            "원인을 특정하지 못했습니다(전원 차단·세션 종료 등일 수 있습니다).".to_string(),
+            crate::i18n::text_system::prev_session_unknown().to_string(),
         )
     };
     PrevSession {

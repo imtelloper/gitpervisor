@@ -25,7 +25,7 @@ const READ_CAP: u64 = 2 * 1024 * 1024;
 fn log_dir(app: &AppHandle) -> Result<PathBuf, IpcError> {
     app.path()
         .app_log_dir()
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("로그 폴더 경로 확인 실패: {e}")))
+        .map_err(|e| IpcError::new(ErrorCode::Io, crate::i18n::text_system::log_dir_resolve_failed(e)))
 }
 
 /// 로그 폴더를 OS 파일 탐색기로 연다(설정 "로그 폴더 열기").
@@ -88,10 +88,7 @@ pub fn clear_crash_log(app: AppHandle) -> Result<(), IpcError> {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => {
-                return Err(IpcError::new(
-                    ErrorCode::Io,
-                    format!("크래시 로그 삭제 실패: {e}"),
-                ))
+                return Err(IpcError::new(ErrorCode::Io, crate::i18n::text_system::crash_log_delete_failed(e)))
             }
         }
     }
@@ -162,23 +159,23 @@ fn open_dir(dir: &Path) -> Result<(), IpcError> {
     // explorer는 성공해도 비정상 종료코드를 반환할 수 있어 spawn 성공 여부만 본다.
     let mut cmd = Command::new("explorer");
     cmd.arg(dir);
-    spawn_launcher(cmd, "로그 폴더").map_err(open_err)
+    spawn_launcher(cmd, "로그 폴더").map_err(open_err) // i18n-ok: 런처 로그 라벨
 }
 
 #[cfg(target_os = "macos")]
 fn open_dir(dir: &Path) -> Result<(), IpcError> {
     let mut cmd = Command::new("open");
     cmd.arg(dir);
-    spawn_launcher(cmd, "로그 폴더").map_err(open_err)
+    spawn_launcher(cmd, "로그 폴더").map_err(open_err) // i18n-ok: 런처 로그 라벨
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
 fn open_dir(dir: &Path) -> Result<(), IpcError> {
     let mut cmd = Command::new("xdg-open");
     cmd.arg(dir);
-    spawn_launcher(cmd, "로그 폴더").map_err(open_err)
+    spawn_launcher(cmd, "로그 폴더").map_err(open_err) // i18n-ok: 런처 로그 라벨
 }
 
 fn open_err(e: std::io::Error) -> IpcError {
-    IpcError::new(ErrorCode::Io, format!("폴더 열기 실패: {e}"))
+    IpcError::new(ErrorCode::Io, crate::i18n::text_system::log_folder_open_failed(e))
 }

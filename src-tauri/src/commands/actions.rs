@@ -5,6 +5,7 @@ use tauri::State;
 use super::projects::project_path;
 use crate::error::{ErrorCode, IpcError};
 use crate::git::runner;
+use crate::i18n::text_git_net;
 use crate::state::AppState;
 
 #[tauri::command]
@@ -66,7 +67,7 @@ async fn run_action(repo: &Path, base: &[&str], paths: &[String]) -> Result<(), 
     let out = runner::run_git(Some(repo), &args, runner::ACTION_TIMEOUT_SECS).await?;
     if out.code != 0 {
         return Err(IpcError::git(
-            format!("git {} 실패", base.join(" ")),
+            text_git_net::git_command_failed(&base.join(" ")),
             out.stderr,
         ));
     }
@@ -108,7 +109,7 @@ pub(crate) async fn commit_core(repo: &Path, message: &str, amend: bool) -> Resu
     if message.trim().is_empty() {
         return Err(IpcError::new(
             ErrorCode::GitError,
-            "커밋 메시지가 비어 있습니다",
+            text_git_net::commit_message_empty(),
         ));
     }
 
@@ -123,7 +124,7 @@ pub(crate) async fn commit_core(repo: &Path, message: &str, amend: bool) -> Resu
     if out.code != 0 {
         // "nothing to commit" 등은 stdout으로 나온다 — 둘 다 합쳐 전달
         let detail = format!("{}\n{}", out.stdout_str().trim(), out.stderr.trim());
-        return Err(IpcError::git("git commit 실패", detail.trim().to_string()));
+        return Err(IpcError::git(text_git_net::git_commit_failed(), detail.trim().to_string()));
     }
     Ok(())
 }

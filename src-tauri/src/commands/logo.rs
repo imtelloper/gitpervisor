@@ -19,6 +19,7 @@ use super::projects::project_path;
 use super::tree::resolve_in_repo;
 use crate::error::{ErrorCode, IpcError};
 use crate::git::types::Project;
+use crate::i18n::text_files;
 use crate::state::{self, AppState};
 
 /// 사이드바 로고 1건. `source`는 툴팁에 그대로 보여 줄 출처다 —
@@ -302,7 +303,7 @@ pub async fn set_project_logo(
         if read_manual_logo(&repo, rel).is_none() {
             return Err(IpcError::new(
                 ErrorCode::Io,
-                "로고로 쓸 수 없는 파일 — png/jpeg는 4MiB, 그 외 형식은 200KiB까지",
+                text_files::logo_file_unusable(),
             ));
         }
     }
@@ -312,7 +313,7 @@ pub async fn set_project_logo(
         let Some(p) = projects.iter_mut().find(|p| p.id == id) else {
             return Err(IpcError::new(
                 ErrorCode::NotFound,
-                "프로젝트를 찾을 수 없습니다",
+                crate::i18n::text_git_net::project_not_found(),
             ));
         };
         p.logo = rel_path;

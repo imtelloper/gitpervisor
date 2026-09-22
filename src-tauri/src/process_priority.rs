@@ -102,7 +102,7 @@ pub(crate) fn raise(pids: &[u32]) {
                 && !WARNED.swap(true, Ordering::Relaxed)
             {
                 log::warn!(
-                    "[priority] AboveNormal 설정 실패 pid={pid}: {}",
+                    "[priority] AboveNormal 설정 실패 pid={pid}: {}", // i18n-ok: 로그
                     std::io::Error::last_os_error()
                 );
             }

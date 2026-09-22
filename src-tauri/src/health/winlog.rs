@@ -33,11 +33,11 @@ pub struct OsEvent {
     /// (gitpervisor.exe)을 쓰고 이 저장소는 나란히 띄우는 게 기본 워크플로다(CLAUDE.md) —
     /// 이벤트 로그는 머신 전역이라 exe 이름만으로는 절대 가를 수 없다.
     pub pid: Option<u32>,
-    /// 사용자에게 그대로 보여줄 한국어 한 줄.
+    /// 사용자에게 그대로 보여줄 한 줄(파싱 시점의 UI 언어).
     pub text: String,
 }
 
-/// 사건 시각 주변의 Application/System 이벤트를 조회해 한국어 한 줄들로 돌려준다.
+/// 사건 시각 주변의 Application/System 이벤트를 조회해 UI 언어 한 줄들로 돌려준다.
 /// Windows가 아니면 항상 빈 목록.
 #[cfg(not(windows))]
 pub fn query_around(_updated_at: DateTime<Local>) -> Vec<OsEvent> {
@@ -225,11 +225,11 @@ fn exception_note(code: &str) -> &'static str {
         .to_ascii_lowercase()
         .as_str()
     {
-        "c0000409" => "abort/fastfail(Rust 할당 실패 포함)",
+        "c0000409" => crate::i18n::text_system::winlog_exception_abort_fastfail(),
         "e0000008" => "Chromium OOM",
-        "c0000005" => "접근 위반",
-        "80000003" => "중단점(Chromium CHECK)",
-        "c00000fd" => "스택 오버플로",
+        "c0000005" => crate::i18n::text_system::winlog_exception_access_violation(),
+        "80000003" => crate::i18n::text_system::winlog_exception_breakpoint(),
+        "c00000fd" => crate::i18n::text_system::winlog_exception_stack_overflow(),
         _ => "",
     }
 }
@@ -252,6 +252,9 @@ fn stamp(at: Option<DateTime<Utc>>) -> String {
 }
 
 /// wevtutil `/f:xml` 출력을 이벤트 목록으로. 관심 없는 이벤트(남의 앱 크래시 등)는 버린다.
+// 비-Windows에선 query_around가 부르지 않지만 파서 테스트는 모든 타깃에서 돈다. allow가 이 함수를
+// 살아 있는 뿌리로 만들어, 여기서만 부르는 i18n 문구 함수까지 dead_code 경고가 번지지 않게 한다.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn parse(xml: &str) -> Vec<OsEvent> {
     let mut out = Vec::new();
     for chunk in xml.split("</Event>") {
@@ -279,9 +282,9 @@ pub fn parse(xml: &str) -> Vec<OsEvent> {
                 let code = code.trim().trim_start_matches("0x").to_string();
                 let note = exception_note(&code);
                 let head = if is_webview(&exe) {
-                    "WebView2 프로세스 크래시(1000)"
+                    crate::i18n::text_system::winlog_webview2_crash_head()
                 } else {
-                    "앱 크래시(1000)"
+                    crate::i18n::text_system::winlog_app_crash_head()
                 };
                 let note = if note.is_empty() {
                     String::new()
@@ -290,7 +293,7 @@ pub fn parse(xml: &str) -> Vec<OsEvent> {
                 };
                 (
                     is_ours(&exe),
-                    format!("{head} {exe} 예외 코드 0x{code}{note}{when}"),
+                    crate::i18n::text_system::winlog_app_error_event(head, &exe, &code, &note, &when),
                 )
             }
             // Windows Error Reporting — P1=exe, EventName=버킷 종류(APPCRASH 등).
@@ -302,7 +305,7 @@ pub fn parse(xml: &str) -> Vec<OsEvent> {
                 let kind = named(&d, "EventName");
                 (
                     is_ours(&exe),
-                    format!("오류 보고(WER 1001) {exe} {kind}{when}").replace("  ", " "),
+                    crate::i18n::text_system::winlog_wer_event(&exe, &kind, &when).replace("  ", " "),
                 )
             }
             // Application Hang — [0]=exe.
@@ -313,40 +316,40 @@ pub fn parse(xml: &str) -> Vec<OsEvent> {
                 }
                 (
                     is_ours(&exe),
-                    format!("응답 없음으로 종료(1002) {exe}{when}"),
+                    crate::i18n::text_system::winlog_hang_event(&exe, &when),
                 )
             }
             6008 => (
                 false,
-                format!("시스템이 예기치 않게 종료됨(6008){when}"),
+                crate::i18n::text_system::winlog_unexpected_shutdown_event(&when),
             ),
             41 => {
                 let bug = named(&d, "BugcheckCode");
                 let note = if bug.trim() == "0" {
-                    " (0이면 전원 차단·강제 리셋)"
+                    crate::i18n::text_system::winlog_bugcheck_zero_note()
                 } else {
-                    " (블루스크린)"
+                    crate::i18n::text_system::winlog_bugcheck_bluescreen_note()
                 };
                 (
                     false,
-                    format!("커널 전원 이벤트(41) BugcheckCode={bug}{note}{when}"),
+                    crate::i18n::text_system::winlog_kernel_power_event(&bug, note, &when),
                 )
             }
             1074 => {
                 let who = named(&d, "param1");
                 let reason = named(&d, "param3");
                 let reason = readable(&reason)
-                    .map(|r| format!(" 사유 {r}"))
+                    .map(crate::i18n::text_system::winlog_shutdown_reason)
                     .unwrap_or_default();
                 (
                     false,
-                    format!("종료/재부팅 요청(1074) {who}{reason}{when}"),
+                    crate::i18n::text_system::winlog_shutdown_request_event(&who, &reason, &when),
                 )
             }
             // Resource-Exhaustion-Detector — 커밋 한도 고갈. 상위 소비 프로세스가 함께 실린다.
             2004 => (
                 false,
-                format!("커밋 한도 고갈(2004): 상위 소비 {}{when}", top_consumers(chunk)),
+                crate::i18n::text_system::winlog_commit_exhausted_event(&top_consumers(chunk), &when),
             ),
             _ => continue,
         };
@@ -369,7 +372,7 @@ pub fn parse(xml: &str) -> Vec<OsEvent> {
 /// 2004의 `<ProcessInfo><Process_N><Name>…<CommitCharge>…` 에서 상위 소비자 3개.
 fn top_consumers(chunk: &str) -> String {
     let Some(i) = chunk.find("<ProcessInfo>") else {
-        return "정보 없음".into();
+        return crate::i18n::text_system::winlog_no_info().into();
     };
     let block = &chunk[i..];
     let mut items: Vec<(String, u64)> = Vec::new();
@@ -384,7 +387,7 @@ fn top_consumers(chunk: &str) -> String {
         }
     }
     if items.is_empty() {
-        return "정보 없음".into();
+        return crate::i18n::text_system::winlog_no_info().into();
     }
     items.sort_by(|a, b| b.1.cmp(&a.1));
     items

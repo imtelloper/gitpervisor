@@ -8,6 +8,7 @@ use tauri::State;
 use super::projects::project_path;
 use super::tree::resolve_in_repo;
 use crate::error::{ErrorCode, IpcError};
+use crate::i18n::text_tools;
 use crate::state::AppState;
 use crate::tools::runner::{self, Tool, ToolBin};
 
@@ -56,7 +57,7 @@ pub async fn format_source(
     content: String,
 ) -> Result<FormatResult, IpcError> {
     if content.len() > MAX_FORMAT_BYTES {
-        return Err(IpcError::new(ErrorCode::Io, "파일이 너무 커서 포맷할 수 없습니다"));
+        return Err(IpcError::new(ErrorCode::Io, text_tools::format_file_too_large()));
     }
     let repo = project_path(&state, &project_id)?;
     // 경로 컨테인먼트 검증(traversal 차단) — 내용은 stdin, 경로는 도구 언어 힌트로만 쓴다.
@@ -83,7 +84,7 @@ pub async fn format_source(
         let name = if tool == Tool::Ruff { "ruff" } else { "biome" };
         IpcError::new(
             ErrorCode::ToolNotFound,
-            format!("{name}이(가) 설치되어 있지 않습니다 — 설정에서 경로를 지정하거나 설치하세요"),
+            text_tools::formatter_not_installed(name),
         )
     })?;
 
@@ -104,7 +105,7 @@ pub async fn format_source(
     let out = runner::run_tool_stdin(&bin, &arg_refs, content.as_bytes(), Some(&repo), 10).await?;
     if out.code != 0 {
         let msg = if out.stderr.trim().is_empty() {
-            "포맷 실패".to_string()
+            text_tools::format_failed().to_string()
         } else {
             out.stderr.trim().to_string()
         };

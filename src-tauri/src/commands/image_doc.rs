@@ -24,6 +24,7 @@ use super::diff::{mime_of, stamp_of};
 use super::projects::project_path;
 use super::tree::validate_rel_file;
 use crate::error::{ErrorCode, IpcError};
+use crate::i18n::text_files;
 use crate::state::AppState;
 
 /// 사이드카 1개의 상한 — 에셋 base64 16MB + 문서 본문. 에셋 획득 시점에 프론트가 이미 16MB로
@@ -72,7 +73,7 @@ fn kind_suffix(kind: &str) -> Result<&'static str, IpcError> {
     match kind {
         "doc" => Ok("json"),
         "snapshots" => Ok("snapshots.json"),
-        _ => Err(IpcError::new(ErrorCode::Io, "알 수 없는 문서 종류입니다")),
+        _ => Err(IpcError::new(ErrorCode::Io, text_files::image_doc_kind_unknown())),
     }
 }
 
@@ -91,7 +92,7 @@ fn doc_path(
     // `app_data_dir()` 를 직접 부르지 않는다 — e2e 샤딩의 `GPV_DATA_DIR` 오버라이드를 타야
     // 샤드마다 사이드카가 갈린다(`state::data_root` 주석).
     let dir = crate::state::data_root(app).ok_or_else(|| {
-        IpcError::new(ErrorCode::Io, "데이터 폴더를 찾을 수 없습니다".to_string())
+        IpcError::new(ErrorCode::Io, crate::i18n::text_git_net::data_folder_not_found())
     })?;
     let key = doc_key(project_id, rel_path);
     Ok(dir.join("image-docs").join(format!("{key}.{suffix}")))
@@ -124,7 +125,7 @@ fn write_doc_at(path: &Path, json: &str, expected_stamp: Option<&str>) -> Result
     if json.len() > MAX_DOC_BYTES {
         return Err(IpcError::new(
             ErrorCode::Io,
-            "편집 문서가 너무 큽니다 (32MB 초과)",
+            text_files::image_doc_too_large_32mb(),
         ));
     }
     if let (Some(want), Ok(meta)) = (expected_stamp, std::fs::metadata(path)) {
@@ -134,13 +135,13 @@ fn write_doc_at(path: &Path, json: &str, expected_stamp: Option<&str>) -> Result
             if now != want {
                 return Err(IpcError::new(
                     ErrorCode::Conflict,
-                    "이 이미지의 편집 문서를 다른 창이 먼저 저장했습니다",
+                    text_files::image_doc_saved_by_other_window(),
                 ));
             }
         }
     }
     crate::state::save_bytes_at(path, json.as_bytes())
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("편집 문서 저장 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_files::image_doc_save_failed(e)))?;
     Ok(std::fs::metadata(path)
         .ok()
         .as_ref()
@@ -197,10 +198,10 @@ pub async fn image_doc_move(
         let dst = doc_path(&app, &project_id, &to, kind)?;
         if let Some(dir) = dst.parent() {
             std::fs::create_dir_all(dir)
-                .map_err(|e| IpcError::new(ErrorCode::Io, format!("편집 문서 이동 실패: {e}")))?;
+                .map_err(|e| IpcError::new(ErrorCode::Io, text_files::image_doc_move_failed(e)))?;
         }
         std::fs::rename(&src, &dst)
-            .map_err(|e| IpcError::new(ErrorCode::Io, format!("편집 문서 이동 실패: {e}")))?;
+            .map_err(|e| IpcError::new(ErrorCode::Io, text_files::image_doc_move_failed(e)))?;
     }
     Ok(())
 }
@@ -220,7 +221,7 @@ pub async fn image_doc_delete(
             continue;
         }
         std::fs::remove_file(&path)
-            .map_err(|e| IpcError::new(ErrorCode::Io, format!("편집 문서 삭제 실패: {e}")))?;
+            .map_err(|e| IpcError::new(ErrorCode::Io, text_files::image_doc_delete_failed(e)))?;
     }
     Ok(())
 }
@@ -236,9 +237,9 @@ pub async fn asset_pick_file(app: AppHandle) -> Result<Option<AssetBytes>, IpcEr
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
-        .set_title("이미지 선택")
+        .set_title(text_files::asset_pick_dialog_title())
         .add_filter(
-            "이미지",
+            text_files::asset_pick_filter_images(),
             &[
                 "png", "jpg", "jpeg", "gif", "webp", "bmp", "avif", "tif", "tiff", "svg",
             ],
@@ -248,34 +249,34 @@ pub async fn asset_pick_file(app: AppHandle) -> Result<Option<AssetBytes>, IpcEr
         });
     let picked = rx
         .await
-        .map_err(|_| IpcError::new(ErrorCode::Io, "파일 선택 창이 응답하지 않았습니다"))?;
+        .map_err(|_| IpcError::new(ErrorCode::Io, text_files::file_dialog_no_response()))?;
     let Some(file) = picked else {
         return Ok(None); // 사용자가 취소 — 정상
     };
     let path = file
         .into_path()
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("파일 경로를 읽지 못했습니다: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_files::file_path_read_failed(e)))?;
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     let mime = mime_of(&name);
     if !mime.starts_with("image/") {
         return Err(IpcError::new(
             ErrorCode::Io,
-            "이미지 파일이 아닙니다 (png·jpg·gif·webp·bmp·avif·tiff·svg)",
+            text_files::asset_not_an_image(),
         ));
     }
     // 크기를 먼저 본다 — 읽고 나서 거절하면 거대 파일도 일단 메모리에 올렸다가 버린다.
     let meta = tokio::fs::metadata(&path)
         .await
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("파일을 읽지 못했습니다: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_files::could_not_read_file(e)))?;
     if meta.len() > MAX_ASSET_BYTES {
         return Err(IpcError::new(
             ErrorCode::Io,
-            "이미지가 너무 큽니다 (16MB 초과)",
+            text_files::asset_image_too_large_16mb(),
         ));
     }
     let bytes = tokio::fs::read(&path)
         .await
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("파일을 읽지 못했습니다: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_files::could_not_read_file(e)))?;
     Ok(Some(AssetBytes {
         mime,
         base64: B64.encode(&bytes),

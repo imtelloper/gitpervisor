@@ -12,6 +12,7 @@ use super::projects::project_path;
 use crate::error::{ErrorCode, IpcError};
 use crate::git::runner;
 use crate::git::types::DirEntry;
+use crate::i18n::text_files;
 use crate::state::AppState;
 use crate::text::encoding::{self, EncodeError};
 
@@ -87,10 +88,10 @@ pub async fn write_file(
     // 최종 경로 메타는 링크를 따라가지 않고 본다 — 기존 심볼릭/정션으로 레포 밖에 쓰지 못하게.
     if let Ok(meta) = tokio::fs::symlink_metadata(&target).await {
         if meta.file_type().is_symlink() {
-            return Err(IpcError::new(ErrorCode::Io, "심볼릭 링크에는 쓸 수 없습니다"));
+            return Err(IpcError::new(ErrorCode::Io, text_files::cannot_write_symlink()));
         }
         if meta.is_dir() {
-            return Err(IpcError::new(ErrorCode::Io, "디렉토리에는 쓸 수 없습니다"));
+            return Err(IpcError::new(ErrorCode::Io, text_files::cannot_write_directory()));
         }
     }
     // 바이트를 **먼저 다 만든 뒤** 쓴다 — 인코딩 실패가 반쯤 쓰인 파일을 남기지 않게.
@@ -100,10 +101,10 @@ pub async fn write_file(
             match e {
                 EncodeError::Unmappable(chars) => IpcError::new(
                     ErrorCode::Unmappable,
-                    format!("{label} 인코딩으로 표현할 수 없는 문자가 있습니다: {chars}"),
+                    text_files::encoding_unmappable_chars(label, &chars),
                 ),
                 EncodeError::Unknown => {
-                    IpcError::new(ErrorCode::Io, format!("알 수 없는 인코딩입니다: {label}"))
+                    IpcError::new(ErrorCode::Io, text_files::encoding_unknown(label))
                 }
             }
         })?,
@@ -120,17 +121,12 @@ pub async fn write_file(
 /// dev 빌드와 설치본은 별개 exe 라 허용 목록에 각각 등록해야 한다.
 fn write_io_err(e: std::io::Error) -> IpcError {
     if e.kind() != std::io::ErrorKind::PermissionDenied {
-        return IpcError::new(ErrorCode::Io, format!("파일 저장 실패: {e}"));
+        return IpcError::new(ErrorCode::Io, text_files::file_save_failed(e));
     }
     let hint = if cfg!(windows) {
-        concat!(
-            "파일 저장 실패: 액세스가 거부되었습니다. Windows '제어된 폴더 액세스'",
-            "(랜섬웨어 방지)가 차단했을 수 있습니다 — 문서·사진·비디오·바탕 화면이 기본 보호 대상입니다. ",
-            "Windows 보안 › 랜섬웨어 방지에서 이 앱을 허용하거나 파일을 보호 폴더 밖으로 옮기세요. ",
-            "(읽기 전용 파일이거나 다른 프로그램이 열고 있어도 같은 오류가 납니다.)",
-        )
+        text_files::file_save_denied_controlled_folder_access()
     } else {
-        "파일 저장 실패: 권한이 없습니다. 파일·상위 폴더의 쓰기 권한을 확인하세요."
+        text_files::file_save_permission_denied()
     };
     IpcError::new(ErrorCode::Io, hint)
 }
@@ -149,12 +145,12 @@ pub async fn create_dir(
     if target.exists() {
         return Err(IpcError::new(
             ErrorCode::AlreadyExists,
-            "같은 이름이 이미 있습니다",
+            text_files::name_already_exists(),
         ));
     }
     tokio::fs::create_dir(&target)
         .await
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("폴더 생성 실패: {e}")))
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_files::folder_create_failed(e)))
 }
 
 /// 새 파일 생성 — `rel_path`는 레포 루트 기준 상대 경로(만들 파일 자신, 확장자 포함).
@@ -178,9 +174,9 @@ pub async fn create_file(
         Ok(_) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(IpcError::new(
             ErrorCode::AlreadyExists,
-            "같은 이름이 이미 있습니다",
+            text_files::name_already_exists(),
         )),
-        Err(e) => Err(IpcError::new(ErrorCode::Io, format!("파일 생성 실패: {e}"))),
+        Err(e) => Err(IpcError::new(ErrorCode::Io, text_files::file_create_failed(e))),
     }
 }
 
@@ -199,14 +195,14 @@ pub async fn delete_path(
     // 링크를 따라가지 않는 메타데이터 — 링크된 디렉토리를 remove_dir_all로 따라 들어가지 않게.
     let meta = match tokio::fs::symlink_metadata(&target).await {
         Ok(m) => m,
-        Err(_) => return Err(IpcError::new(ErrorCode::NotFound, "대상을 찾을 수 없습니다")),
+        Err(_) => return Err(IpcError::new(ErrorCode::NotFound, text_files::target_not_found())),
     };
     let result = if meta.is_dir() {
         tokio::fs::remove_dir_all(&target).await
     } else {
         tokio::fs::remove_file(&target).await
     };
-    result.map_err(|e| IpcError::new(ErrorCode::Io, format!("삭제 실패: {e}")))
+    result.map_err(|e| IpcError::new(ErrorCode::Io, text_files::delete_failed(e)))
 }
 
 /// 파일/폴더 이름 바꾸기 — **같은 상위 디렉토리 안에서 이름만** 바꾼다(다른 폴더로의 이동이 아니다).
@@ -225,11 +221,11 @@ pub async fn rename_path(
     if new_name.contains('/') || new_name.contains('\\') {
         return Err(IpcError::new(
             ErrorCode::Io,
-            "이름에 경로 구분자를 쓸 수 없습니다",
+            text_files::name_has_path_separator(),
         ));
     }
     if new_name.is_empty() || new_name == "." || new_name == ".." {
-        return Err(IpcError::new(ErrorCode::Io, "잘못된 이름입니다"));
+        return Err(IpcError::new(ErrorCode::Io, text_files::invalid_name()));
     }
     // 상위 디렉토리는 그대로 두고 마지막 컴포넌트만 교체한다(마지막 '/' 없으면 루트 바로 아래).
     let (parent, old_name) = match rel_path.rfind('/') {
@@ -241,7 +237,7 @@ pub async fn rename_path(
     let to = resolve_in_repo(&repo, &new_rel)?;
     // 존재 판정은 링크를 따라가지 않는다 — 심볼릭 링크 자체도 이름 변경 대상이다.
     if tokio::fs::symlink_metadata(&from).await.is_err() {
-        return Err(IpcError::new(ErrorCode::NotFound, "대상을 찾을 수 없습니다"));
+        return Err(IpcError::new(ErrorCode::NotFound, text_files::target_not_found()));
     }
     // 이름이 그대로면 파일시스템을 건드리지 않는다(대소문자까지 동일한 경우).
     if from == to {
@@ -251,7 +247,7 @@ pub async fn rename_path(
     // 들어오면(`a\b.txt`) Windows에서 컴포넌트가 갈라져 parent 추출이 어긋나고 실제로 폴더를
     // 넘어간다. 조용히 옮기느니 거부한다.
     if from.parent() != to.parent() {
-        return Err(IpcError::new(ErrorCode::Io, "잘못된 경로입니다"));
+        return Err(IpcError::new(ErrorCode::Io, text_files::invalid_path()));
     }
     if tokio::fs::symlink_metadata(&to).await.is_ok() {
         // 대소문자 무시 FS(Windows/macOS)에서는 여기서 "자기 자신"이 잡혀 정당한 대소문자
@@ -275,13 +271,13 @@ pub async fn rename_path(
         if exact || old_name.to_lowercase() != new_name.to_lowercase() {
             return Err(IpcError::new(
                 ErrorCode::AlreadyExists,
-                "같은 이름이 이미 있습니다",
+                text_files::name_already_exists(),
             ));
         }
     }
     tokio::fs::rename(&from, &to)
         .await
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("이름 변경 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_files::rename_failed(e)))?;
     Ok(new_rel)
 }
 
@@ -308,22 +304,22 @@ pub async fn move_path(
     if dest_dir == rel_path || dest_dir.starts_with(&format!("{rel_path}/")) {
         return Err(IpcError::new(
             ErrorCode::Io,
-            "폴더를 자기 자신 안으로 옮길 수 없습니다",
+            text_files::move_folder_into_itself(),
         ));
     }
     // 대상 폴더 검증 — 루트(빈 문자열)는 레포 자체. resolve_in_repo는 **상위까지만** 정규화하므로
     // 대상 폴더 자신이 레포 밖을 가리키는 심볼릭/정션일 수 있다 — 끝까지 정규화한 뒤 레포 안임을
     // 다시 단언한다(안 하면 그 링크 하나로 이동이 레포 밖 쓰기가 된다).
     let repo_canon = dunce::canonicalize(&repo)
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("레포 경로 확인 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_files::repo_path_check_failed(e)))?;
     let dest = if dest_dir.is_empty() {
         repo_canon.clone()
     } else {
         let d = resolve_in_repo(&repo, &dest_dir)?;
         let c = dunce::canonicalize(&d)
-            .map_err(|_| IpcError::new(ErrorCode::NotFound, "대상 폴더를 찾을 수 없습니다"))?;
+            .map_err(|_| IpcError::new(ErrorCode::NotFound, text_files::dest_folder_not_found()))?;
         if !c.starts_with(&repo_canon) {
-            return Err(IpcError::new(ErrorCode::Io, "레포 밖 경로입니다"));
+            return Err(IpcError::new(ErrorCode::Io, text_files::path_outside_repo()));
         }
         // 정규화 결과가 `.git` 아래로 떨어져도 거부 — 레포 안 심볼릭/정션이 `.git`(hooks 등)을
         // 가리키면 위 렉시컬 `.git` 검사(validate_rel_file)는 우회되고, 컨테인먼트 검사는
@@ -332,29 +328,29 @@ pub async fn move_path(
             r.components()
                 .any(|p| matches!(p, Component::Normal(os) if is_dotgit_component(os)))
         }) {
-            return Err(IpcError::new(ErrorCode::Io, "잘못된 경로입니다"));
+            return Err(IpcError::new(ErrorCode::Io, text_files::invalid_path()));
         }
         c
     };
     if !dest.is_dir() {
-        return Err(IpcError::new(ErrorCode::Io, "대상이 폴더가 아닙니다"));
+        return Err(IpcError::new(ErrorCode::Io, text_files::dest_not_a_folder()));
     }
     // 정규화 후 방어(심볼릭/정션으로 rel 접두 검사를 우회한 경우) — dest가 from 아래면 거부.
     if dest.starts_with(&from) {
         return Err(IpcError::new(
             ErrorCode::Io,
-            "폴더를 자기 자신 안으로 옮길 수 없습니다",
+            text_files::move_folder_into_itself(),
         ));
     }
     if tokio::fs::symlink_metadata(&from).await.is_err() {
-        return Err(IpcError::new(ErrorCode::NotFound, "대상을 찾을 수 없습니다"));
+        return Err(IpcError::new(ErrorCode::NotFound, text_files::target_not_found()));
     }
     let to = dest.join(name);
     // name이 단일 컴포넌트가 아니면 거부 — rel_path에 역슬래시가 섞여 오면(`a\b.txt`)
     // Windows에서 join이 컴포넌트를 갈라 반환 경로와 실제 디스크 위치가 어긋난다.
     // rename_path와 같은 이유로 조용히 옮기느니 거부한다(Linux의 `\` 포함 파일명은 안 갈라져 통과).
     if to.parent() != Some(dest.as_path()) {
-        return Err(IpcError::new(ErrorCode::Io, "잘못된 경로입니다"));
+        return Err(IpcError::new(ErrorCode::Io, text_files::invalid_path()));
     }
     // 같은 폴더로의 이동은 no-op — 드래그를 제자리에 놓은 경우다.
     if from == to {
@@ -364,12 +360,12 @@ pub async fn move_path(
     if tokio::fs::symlink_metadata(&to).await.is_ok() {
         return Err(IpcError::new(
             ErrorCode::AlreadyExists,
-            "대상 폴더에 같은 이름이 이미 있습니다",
+            text_files::dest_folder_name_already_exists(),
         ));
     }
     tokio::fs::rename(&from, &to)
         .await
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("이동 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_files::move_failed(e)))?;
     Ok(join_rel(&dest_dir, name))
 }
 
@@ -402,10 +398,10 @@ pub async fn write_file_bytes(
     // 최종 경로 메타는 링크를 따라가지 않고 본다 — 기존 심볼릭/정션으로 레포 밖에 쓰지 못하게.
     if let Ok(meta) = tokio::fs::symlink_metadata(&target).await {
         if meta.file_type().is_symlink() {
-            return Err(IpcError::new(ErrorCode::Io, "심볼릭 링크에는 쓸 수 없습니다"));
+            return Err(IpcError::new(ErrorCode::Io, text_files::cannot_write_symlink()));
         }
         if meta.is_dir() {
-            return Err(IpcError::new(ErrorCode::Io, "디렉토리에는 쓸 수 없습니다"));
+            return Err(IpcError::new(ErrorCode::Io, text_files::cannot_write_directory()));
         }
         // 이미 뜬 메타를 그대로 쓴다 — 검사 때문에 파일을 되읽지 않는다.
         if let Some(want) = expected_stamp.as_deref() {
@@ -413,7 +409,7 @@ pub async fn write_file_bytes(
                 Some(now) if now != want => {
                     return Err(IpcError::new(
                         ErrorCode::Conflict,
-                        "이 파일이 편집을 시작한 뒤 외부에서 바뀌었습니다",
+                        text_files::file_changed_externally_since_edit(),
                     ));
                 }
                 // 메타에서 mtime 을 못 얻는 플랫폼/파일시스템 — 검사를 포기하고 통과시킨다.
@@ -426,16 +422,16 @@ pub async fn write_file_bytes(
     if !overwrite && target.exists() {
         return Err(IpcError::new(
             ErrorCode::AlreadyExists,
-            "이미 같은 이름의 파일이 있습니다",
+            text_files::file_same_name_exists(),
         ));
     }
     let bytes = B64
         .decode(base64.as_bytes())
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("이미지 디코딩 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_files::image_bytes_decode_failed(e)))?;
     // base64 IPC 전송 상한 — 과대 파일로 WebView가 멈추지 않게 (이미지 변환·저장 전제).
     const MAX_WRITE_BYTES: usize = 64 * 1024 * 1024;
     if bytes.len() > MAX_WRITE_BYTES {
-        return Err(IpcError::new(ErrorCode::Io, "파일이 너무 큽니다 (64MB 초과)"));
+        return Err(IpcError::new(ErrorCode::Io, text_files::write_bytes_too_large_64mb()));
     }
     tokio::fs::write(&target, bytes).await.map_err(write_io_err)?;
     Ok(tokio::fs::metadata(&target)
@@ -487,7 +483,7 @@ pub async fn list_project_roots(
         futures::stream::iter(targets)
             .map(|(id, path)| async move {
                 let Some(p) = path else {
-                    return (id, None, Err("프로젝트 경로를 찾을 수 없습니다".to_string()));
+                    return (id, None, Err(crate::i18n::text_git_net::project_path_not_found().to_string()));
                 };
                 let r = match tokio::time::timeout(
                     Duration::from_secs(15),
@@ -497,7 +493,7 @@ pub async fn list_project_roots(
                 {
                     Ok(Ok(items)) => Ok(items),
                     Ok(Err(e)) => Err(e.message),
-                    Err(_) => Err("루트 읽기 시간 초과".to_string()),
+                    Err(_) => Err(text_files::project_root_read_timeout().to_string()),
                 };
                 (id, Some(p), r)
             })
@@ -570,7 +566,7 @@ pub async fn list_repo_files(
                     project_id: id,
                     files: Vec::new(),
                     truncated: false,
-                    error: Some("프로젝트 경로를 찾을 수 없습니다".to_string()),
+                    error: Some(crate::i18n::text_git_net::project_path_not_found().to_string()),
                 };
             };
             match runner::run_git(
@@ -633,11 +629,11 @@ async fn read_dir_raw(repo: &Path, rel_path: &str) -> Result<Vec<(String, bool)>
         if !dir.is_dir() {
             return Err(IpcError::new(
                 ErrorCode::NotFound,
-                "디렉토리를 찾을 수 없습니다",
+                text_files::directory_not_found(),
             ));
         }
         let read = std::fs::read_dir(&dir)
-            .map_err(|e| IpcError::new(ErrorCode::Io, format!("디렉토리 읽기 실패: {e}")))?;
+            .map_err(|e| IpcError::new(ErrorCode::Io, text_files::directory_read_failed(e)))?;
         let mut items: Vec<(String, bool)> = Vec::new(); // (name, is_dir)
         for entry in read.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
@@ -648,7 +644,7 @@ async fn read_dir_raw(repo: &Path, rel_path: &str) -> Result<Vec<(String, bool)>
         Ok(items)
     })
     .await
-    .map_err(|e| IpcError::new(ErrorCode::Io, format!("디렉토리 읽기 작업 실패: {e}")))?
+    .map_err(|e| IpcError::new(ErrorCode::Io, text_files::directory_read_task_failed(e)))?
 }
 
 /// (name, is_dir) 목록을 ignore 캐시로 디밍 판정해 정렬된 DirEntry로 만든다.
@@ -925,7 +921,7 @@ fn validate_rel_dir(rel: &str) -> Result<(), IpcError> {
             )
         })
     {
-        return Err(IpcError::new(ErrorCode::Io, "잘못된 경로입니다"));
+        return Err(IpcError::new(ErrorCode::Io, text_files::invalid_path()));
     }
     Ok(())
 }
@@ -1801,7 +1797,7 @@ pub(crate) fn validate_rel_file(rel: &str) -> Result<(), IpcError> {
             _ => false,
         })
     {
-        return Err(IpcError::new(ErrorCode::Io, "잘못된 경로입니다"));
+        return Err(IpcError::new(ErrorCode::Io, text_files::invalid_path()));
     }
     Ok(())
 }
@@ -1814,17 +1810,17 @@ pub(crate) fn resolve_in_repo(repo: &Path, rel: &str) -> Result<PathBuf, IpcErro
     let target = repo.join(rel);
     let parent = target
         .parent()
-        .ok_or_else(|| IpcError::new(ErrorCode::NotFound, "상위 디렉토리를 찾을 수 없습니다"))?;
+        .ok_or_else(|| IpcError::new(ErrorCode::NotFound, text_files::parent_directory_not_found()))?;
     let parent_canon = dunce::canonicalize(parent)
-        .map_err(|_| IpcError::new(ErrorCode::NotFound, "상위 디렉토리를 찾을 수 없습니다"))?;
+        .map_err(|_| IpcError::new(ErrorCode::NotFound, text_files::parent_directory_not_found()))?;
     let repo_canon = dunce::canonicalize(repo)
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("레포 경로 확인 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_files::repo_path_check_failed(e)))?;
     if !parent_canon.starts_with(&repo_canon) {
-        return Err(IpcError::new(ErrorCode::Io, "레포 밖 경로입니다"));
+        return Err(IpcError::new(ErrorCode::Io, text_files::path_outside_repo()));
     }
     let name = target
         .file_name()
-        .ok_or_else(|| IpcError::new(ErrorCode::Io, "잘못된 경로입니다"))?;
+        .ok_or_else(|| IpcError::new(ErrorCode::Io, text_files::invalid_path()))?;
     Ok(parent_canon.join(name))
 }
 

@@ -6,6 +6,7 @@ use crate::error::IpcError;
 use crate::git::parse_status::parse_porcelain_v2;
 use crate::git::runner;
 use crate::git::types::{RepoOpState, RepoStatus};
+use crate::i18n::text_git_net;
 use crate::state::AppState;
 
 /// 전 프로젝트 상태를 단일 invoke로 일괄 조회한다.
@@ -33,7 +34,7 @@ pub async fn get_statuses(
 
     let futures = targets.into_iter().map(|(id, path)| async move {
         match path {
-            None => vec![RepoStatus::with_error(&id, "프로젝트를 찾을 수 없습니다")],
+            None => vec![RepoStatus::with_error(&id, text_git_net::project_not_found())],
             Some(path) => statuses_for_project(&id, &path).await,
         }
     });
@@ -136,7 +137,7 @@ fn count_changes(s: &RepoStatus) -> u32 {
 /// 한 레포의 상태 조회. 실패는 RepoStatus.error로 표현한다 (사이드바 회색 상태).
 async fn status_of(project_id: &str, path: &Path) -> RepoStatus {
     if !path.is_dir() {
-        return RepoStatus::with_error(project_id, "프로젝트 경로를 찾을 수 없습니다");
+        return RepoStatus::with_error(project_id, text_git_net::project_path_not_found());
     }
 
     let out = match runner::run_git(
@@ -155,7 +156,7 @@ async fn status_of(project_id: &str, path: &Path) -> RepoStatus {
     if out.code != 0 {
         return RepoStatus::with_error(
             project_id,
-            format!("git status 실패: {}", out.stderr.trim()),
+            text_git_net::git_status_failed(out.stderr.trim()),
         );
     }
 

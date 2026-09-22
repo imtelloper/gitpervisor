@@ -981,6 +981,9 @@ pub fn run() {
             // "갑자기 꺼짐" 조기경보 — 이전 세션이 비정상 종료였는지 먼저 판정하고(하트비트
             // 센티널), 이번 세션의 감시를 시작한다. systemd-oomd는 SIGKILL이라 종료 훅이
             // 돌지 않으므로 살아있는 동안 미리 적어 두는 것 말고는 진단할 방법이 없다.
+            // 지난 세션 안내 문구(health/session.rs)가 여기서 만들어진다 — 그 전에 UI 언어를 정해 둔다.
+            // 프런트도 첫 화면 전에 `ui_language_resolved`를 묻는데, IPC는 setup이 끝난 뒤에야 처리된다.
+            i18n::apply_setting(&state::load_settings(app.handle()).ui_language);
             health::begin_session(app.handle(), env!("CARGO_PKG_VERSION"));
             health::spawn_watchdog(
                 app.handle().clone(),
@@ -1038,9 +1041,6 @@ pub fn run() {
 
             let projects = state::load_projects(app.handle());
             let settings = state::load_settings(app.handle());
-            // setup 안에서 건다 — 프런트는 첫 화면을 그리기 전에 `ui_language_resolved`를 묻는데, IPC는
-            // setup이 끝난 뒤에야 처리되므로 창이 먼저 떴어도 그 첫 질문은 이 값을 본다.
-            i18n::apply_setting(&settings.ui_language);
             let notes = state::load_notes(app.handle());
             let reports = state::load_reports(app.handle());
             // 저장된 git 경로를 부팅 시 적용 (이후 set_settings로 갱신)

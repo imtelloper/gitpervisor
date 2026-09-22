@@ -5,6 +5,7 @@ use std::time::Duration;
 use tokio::process::Command;
 
 use crate::error::{ErrorCode, IpcError};
+use crate::i18n::text_git_net;
 
 pub const READ_TIMEOUT_SECS: u64 = 10;
 /// git status 전용 — 거대한 레포에서 AI CLI 등이 격렬히 파일을 바꾸면 status가
@@ -124,7 +125,7 @@ pub async fn run_git_env(
     let git = git_path().ok_or_else(|| {
         IpcError::new(
             ErrorCode::GitNotFound,
-            "git 실행 파일을 찾을 수 없습니다 (PATH 또는 Git 설치 확인)",
+            text_git_net::git_executable_not_found(),
         )
     })?;
 
@@ -156,7 +157,7 @@ pub async fn run_git_env(
 
     let child = cmd
         .spawn()
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("git 실행 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_git_net::git_spawn_failed(e)))?;
     let pid = child.id();
 
     // 타임아웃 시 future drop → kill_on_drop이 **직계** 프로세스를 정리하고,
@@ -167,13 +168,10 @@ pub async fn run_git_env(
             kill_group(pid);
             IpcError::new(
                 ErrorCode::Timeout,
-                format!(
-                    "git {} 시간 초과 ({timeout_secs}초)",
-                    args.first().unwrap_or(&"")
-                ),
+                text_git_net::git_timed_out(args.first().unwrap_or(&""), timeout_secs),
             )
         })?
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("git 출력 수집 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_git_net::git_output_collect_failed(e)))?;
 
     if let Some(t0) = started {
         // 인자 전문을 찍는다 — 어떤 하위 명령이 느린지가 핵심이고, 인자는 배열이라 비밀이 섞이지 않는다.
@@ -203,7 +201,7 @@ pub async fn run_git_with_stdin(
     let git = git_path().ok_or_else(|| {
         IpcError::new(
             ErrorCode::GitNotFound,
-            "git 실행 파일을 찾을 수 없습니다 (PATH 또는 Git 설치 확인)",
+            text_git_net::git_executable_not_found(),
         )
     })?;
 
@@ -226,7 +224,7 @@ pub async fn run_git_with_stdin(
 
     let mut child = cmd
         .spawn()
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("git 실행 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_git_net::git_spawn_failed(e)))?;
 
     let pid = child.id();
     let mut stdin = child.stdin.take().expect("stdin piped");
@@ -245,13 +243,10 @@ pub async fn run_git_with_stdin(
         kill_group(pid);
         IpcError::new(
             ErrorCode::Timeout,
-            format!(
-                "git {} 시간 초과 ({timeout_secs}초)",
-                args.first().unwrap_or(&"")
-            ),
+            text_git_net::git_timed_out(args.first().unwrap_or(&""), timeout_secs),
         )
     })?
-    .map_err(|e| IpcError::new(ErrorCode::Io, format!("git 출력 수집 실패: {e}")))?;
+    .map_err(|e| IpcError::new(ErrorCode::Io, text_git_net::git_output_collect_failed(e)))?;
 
     Ok(GitOutput {
         code: out.status.code().unwrap_or(-1),
@@ -271,7 +266,7 @@ pub async fn run_git_streaming(
     let git = git_path().ok_or_else(|| {
         IpcError::new(
             ErrorCode::GitNotFound,
-            "git 실행 파일을 찾을 수 없습니다 (PATH 또는 Git 설치 확인)",
+            text_git_net::git_executable_not_found(),
         )
     })?;
 
@@ -292,7 +287,7 @@ pub async fn run_git_streaming(
 
     let mut child = cmd
         .spawn()
-        .map_err(|e| IpcError::new(ErrorCode::Io, format!("git 실행 실패: {e}")))?;
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_git_net::git_spawn_failed(e)))?;
 
     let pid = child.id();
     let stderr = child.stderr.take().expect("stderr piped");
@@ -325,15 +320,12 @@ pub async fn run_git_streaming(
             kill_group(pid);
             IpcError::new(
                 ErrorCode::Timeout,
-                format!(
-                    "git {} 시간 초과 ({timeout_secs}초)",
-                    args.first().unwrap_or(&"")
-                ),
+                text_git_net::git_timed_out(args.first().unwrap_or(&""), timeout_secs),
             )
         })?;
 
     let status =
-        status.map_err(|e| IpcError::new(ErrorCode::Io, format!("git 종료 대기 실패: {e}")))?;
+        status.map_err(|e| IpcError::new(ErrorCode::Io, text_git_net::git_wait_failed(e)))?;
 
     Ok(GitOutput {
         code: status.code().unwrap_or(-1),

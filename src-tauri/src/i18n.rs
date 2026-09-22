@@ -7,6 +7,13 @@
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
+// 도메인별 사용자 노출 문구(함수 하나 = 문구 하나). 새 도메인은 여기 한 줄.
+pub mod text_db;
+pub mod text_files;
+pub mod text_tools;
+pub mod text_system;
+pub mod text_git_net;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lang {
     Ko,
@@ -153,5 +160,153 @@ mod tests {
         assert_eq!(tag_from_env(env(&[("LANG", "C.UTF-8")])), Some("en".into()));
         assert_eq!(tag_from_env(env(&[("LANG", "POSIX")])), Some("en".into()));
         assert_eq!(tag_from_env(env(&[])), None);
+    }
+
+    /// 주석을 공백으로 바꾼다(줄 수 보존). 일반·바이트·원시(`r"…"`, `r#"…"#`) 문자열과 `'"'` 문자 리터럴은
+    /// 그대로 건너뛴다 — 안쪽 따옴표를 문자열 끝으로 읽으면 뒤쪽 주석/문자열 판정이 통째로 뒤집힌다.
+    fn strip_rust_comments(src: &str) -> String {
+        let b: Vec<char> = src.chars().collect();
+        let n = b.len();
+        let mut out = String::with_capacity(src.len());
+        let blank = |out: &mut String, s: &[char]| {
+            for &c in s {
+                out.push(if c == '\n' { '\n' } else { ' ' });
+            }
+        };
+        let mut i = 0;
+        while i < n {
+            let c = b[i];
+            if c == '/' && i + 1 < n && b[i + 1] == '/' {
+                let end = (i..n).find(|&j| b[j] == '\n').unwrap_or(n);
+                blank(&mut out, &b[i..end]);
+                i = end;
+            } else if c == '/' && i + 1 < n && b[i + 1] == '*' {
+                let end = (i + 2..n.saturating_sub(1))
+                    .find(|&j| b[j] == '*' && b[j + 1] == '/')
+                    .map_or(n, |j| j + 2);
+                blank(&mut out, &b[i..end]);
+                i = end;
+            } else if c == 'r' && i + 1 < n && (b[i + 1] == '"' || b[i + 1] == '#')
+                && (i == 0 || !(b[i - 1].is_alphanumeric() || b[i - 1] == '_'))
+            {
+                // 원시 문자열: r, 해시 k개, " … " 해시 k개
+                let mut j = i + 1;
+                let mut hashes = 0;
+                while j < n && b[j] == '#' {
+                    hashes += 1;
+                    j += 1;
+                }
+                if j < n && b[j] == '"' {
+                    let mut k = j + 1;
+                    let end = loop {
+                        if k >= n {
+                            break n;
+                        }
+                        if b[k] == '"' && (k + 1..=k + hashes).all(|h| h < n && b[h] == '#') {
+                            break k + 1 + hashes;
+                        }
+                        k += 1;
+                    };
+                    out.extend(&b[i..end]);
+                    i = end;
+                } else {
+                    out.push(c);
+                    i += 1;
+                }
+            } else if c == '\'' && i + 2 < n && b[i + 1] == '"' && b[i + 2] == '\'' {
+                out.extend(&b[i..i + 3]);
+                i += 3;
+            } else if c == '\'' && i + 3 < n && b[i + 1] == '\\' && b[i + 2] == '"' && b[i + 3] == '\'' {
+                out.extend(&b[i..i + 4]);
+                i += 4;
+            } else if c == '"' {
+                let mut j = i + 1;
+                while j < n && b[j] != '"' {
+                    j += if b[j] == '\\' { 2 } else { 1 };
+                }
+                let end = (j + 1).min(n);
+                out.extend(&b[i..end]);
+                i = end;
+            } else {
+                out.push(c);
+                i += 1;
+            }
+        }
+        out
+    }
+
+    /// 한 파일의 사용자 노출 한글 줄 수 — `#[cfg(test)]` 이후·로그 매크로·줄 끝 `// i18n-ok:`는 뺀다.
+    fn user_facing_korean_lines(src: &str) -> usize {
+        let body = src.find("#[cfg(test)]").map_or(src, |at| &src[..at]);
+        let raw: Vec<&str> = body.lines().collect();
+        strip_rust_comments(body)
+            .lines()
+            .enumerate()
+            .filter(|(idx, line)| {
+                line.chars().any(|c| ('\u{AC00}'..='\u{D7A3}').contains(&c))
+                    && !["log::info!", "log::warn!", "log::error!", "log::debug!", "log::trace!", "eprintln!", "println!"]
+                        .iter()
+                        .any(|m| line.contains(m))
+                    && !raw.get(*idx).is_some_and(|r| r.contains("i18n-ok:"))
+            })
+            .count()
+    }
+
+    /// 사용자에게 보이는 한국어는 `i18n/` 모듈에만 둔다(DOCS/i18n-design.md §4.4·§5.2). 아직 이관 안 된 파일은
+    /// `src-tauri/i18n-legacy-rs.json` 목록 — 목록 밖 파일에 한글이 생기면, 또 한글이 사라진 파일이 목록에
+    /// 남아 있으면 실패한다(목록은 줄어들기만). 프런트의 e2e 66 과 같은 규칙이다.
+    #[test]
+    fn user_facing_korean_lives_in_i18n_modules() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let doc: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(root.join("i18n-legacy-rs.json")).expect("i18n-legacy-rs.json"),
+        )
+        .expect("i18n-legacy-rs.json 파싱");
+        let legacy: std::collections::BTreeSet<String> = doc["files"]
+            .as_object()
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default();
+
+        let mut found = std::collections::BTreeSet::new();
+        let mut stack = vec![root.join("src")];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).expect("src 읽기").flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                let rel = path.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
+                // 문구의 집: 판정 모듈과 도메인 문구 모듈
+                if rel == "src/i18n.rs" || rel.starts_with("src/i18n/") {
+                    continue;
+                }
+                let src = std::fs::read_to_string(&path).unwrap_or_default();
+                if user_facing_korean_lines(&src) > 0 {
+                    found.insert(rel);
+                }
+            }
+        }
+        let added: Vec<_> = found.difference(&legacy).collect();
+        let cleared: Vec<_> = legacy.difference(&found).collect();
+        assert!(
+            added.is_empty(),
+            "사용자 노출 한국어가 i18n 모듈 밖에 새로 생겼다 — crate::i18n::text_*에 함수로 옮겨라: {added:?}"
+        );
+        assert!(cleared.is_empty(), "이관 끝난 파일을 i18n-legacy-rs.json 에서 지워라: {cleared:?}");
+    }
+
+    #[test]
+    fn strip_rust_comments_keeps_strings_and_raw_strings() {
+        let src = "let a = \"// 문자열\"; // 주석 한글\nlet b = r#\"원시 \"따옴표\" 안\"#; /* 블록 한글 */ let c = '\"';\n";
+        let s = strip_rust_comments(src);
+        assert!(s.contains("\"// 문자열\""));
+        assert!(!s.contains("주석 한글"));
+        assert!(s.contains("원시 \"따옴표\" 안"));
+        assert!(!s.contains("블록 한글"));
+        assert_eq!(s.lines().count(), src.lines().count());
     }
 }

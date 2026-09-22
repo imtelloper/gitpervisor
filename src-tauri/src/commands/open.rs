@@ -7,6 +7,7 @@ use tauri::State;
 use super::projects::project_path;
 use super::tree::resolve_in_repo;
 use crate::error::{ErrorCode, IpcError};
+use crate::i18n::text_tools;
 use crate::state::AppState;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -325,7 +326,7 @@ pub fn open_in(
     if !path.is_dir() {
         return Err(IpcError::new(
             ErrorCode::NotFound,
-            "프로젝트 경로를 찾을 수 없습니다",
+            text_tools::open_in_project_path_not_found(),
         ));
     }
     match target {
@@ -334,8 +335,10 @@ pub fn open_in(
     }
 }
 
-fn spawn_err(what: &str, e: std::io::Error) -> IpcError {
-    IpcError::new(ErrorCode::Io, format!("{what} 열기 실패: {e}"))
+// 문구는 대상마다 한 문장짜리 함수다 — "{대상} 열기 실패"처럼 조각을 이으면 번역할 수 없다.
+// spawn_launcher에 넘기는 "탐색기"·"터미널"·"실행"은 로그 라벨이라 번역하지 않는다.
+fn spawn_err(message: fn(&dyn std::fmt::Display) -> String, e: std::io::Error) -> IpcError {
+    IpcError::new(ErrorCode::Io, message(&e))
 }
 
 /// 임의 파일을 탐색기에서 "폴더 열고 그 파일 선택"으로 연다 (리소스 모니터 → 파일 위치 열기).
@@ -344,7 +347,7 @@ fn spawn_err(what: &str, e: std::io::Error) -> IpcError {
 pub fn reveal_path(path: String) -> Result<(), IpcError> {
     let p = Path::new(&path);
     if !p.exists() {
-        return Err(IpcError::new(ErrorCode::NotFound, "경로를 찾을 수 없습니다"));
+        return Err(IpcError::new(ErrorCode::NotFound, text_tools::reveal_path_not_found()));
     }
     reveal(p)
 }
@@ -354,14 +357,14 @@ pub(crate) fn reveal(path: &Path) -> Result<(), IpcError> {
     // explorer /select,<path> — 폴더를 열고 그 파일을 선택 표시한다.
     let mut cmd = Command::new("explorer");
     cmd.arg(format!("/select,{}", path.display()));
-    spawn_launcher(cmd, "탐색기").map_err(|e| spawn_err("탐색기", e))
+    spawn_launcher(cmd, "탐색기").map_err(|e| spawn_err(text_tools::open_explorer_failed, e)) // i18n-ok: 로그 라벨
 }
 
 #[cfg(target_os = "macos")]
 pub(crate) fn reveal(path: &Path) -> Result<(), IpcError> {
     let mut cmd = Command::new("open");
     cmd.args(["-R"]).arg(path);
-    spawn_launcher(cmd, "탐색기").map_err(|e| spawn_err("탐색기", e))
+    spawn_launcher(cmd, "탐색기").map_err(|e| spawn_err(text_tools::open_explorer_failed, e)) // i18n-ok: 로그 라벨
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -370,7 +373,7 @@ pub(crate) fn reveal(path: &Path) -> Result<(), IpcError> {
     let dir = path.parent().unwrap_or(path);
     let mut cmd = Command::new("xdg-open");
     cmd.arg(dir);
-    spawn_launcher(cmd, "탐색기").map_err(|e| spawn_err("탐색기", e))
+    spawn_launcher(cmd, "탐색기").map_err(|e| spawn_err(text_tools::open_explorer_failed, e)) // i18n-ok: 로그 라벨
 }
 
 /// 파일트리에서 실행 파일을 더블클릭 → OS 기본 실행기로 띄운다(탐색기 더블클릭과 동일).
@@ -389,14 +392,14 @@ pub fn run_executable(
         if meta.file_type().is_symlink() {
             return Err(IpcError::new(
                 ErrorCode::Io,
-                "심볼릭 링크는 실행할 수 없습니다",
+                text_tools::run_executable_symlink_rejected(),
             ));
         }
     }
     if !target.is_file() {
         return Err(IpcError::new(
             ErrorCode::NotFound,
-            "실행 파일을 찾을 수 없습니다",
+            text_tools::run_executable_not_found(),
         ));
     }
     run_file(&target)
@@ -433,7 +436,7 @@ pub(crate) fn run_file(target: &Path) -> Result<(), IpcError> {
     if (h as isize) <= 32 {
         return Err(IpcError::new(
             ErrorCode::Io,
-            format!("실행 실패 (코드 {})", h as isize),
+            text_tools::run_file_shell_execute_failed(h as isize),
         ));
     }
     Ok(())
@@ -444,7 +447,7 @@ pub(crate) fn run_file(target: &Path) -> Result<(), IpcError> {
     // open 은 .app 번들·확장자 핸들러로 실행한다.
     let mut cmd = Command::new("open");
     cmd.arg(target);
-    spawn_launcher(cmd, "실행").map_err(|e| spawn_err("실행", e))
+    spawn_launcher(cmd, "실행").map_err(|e| spawn_err(text_tools::run_file_launch_failed, e)) // i18n-ok: 로그 라벨
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -455,12 +458,12 @@ pub(crate) fn run_file(target: &Path) -> Result<(), IpcError> {
     // resolve_program이 PATH·실행권한을 사전 확인한다) 이 폴백 분기의 의미가 그대로 보존된다.
     let mut direct = Command::new(target);
     direct.current_dir(dir);
-    if spawn_launcher(direct, "실행").is_ok() {
+    if spawn_launcher(direct, "실행").is_ok() { // i18n-ok: 로그 라벨
         return Ok(());
     }
     let mut fallback = Command::new("xdg-open");
     fallback.arg(target);
-    spawn_launcher(fallback, "실행").map_err(|e| spawn_err("실행", e))
+    spawn_launcher(fallback, "실행").map_err(|e| spawn_err(text_tools::run_file_launch_failed, e)) // i18n-ok: 로그 라벨
 }
 
 #[cfg(windows)]
@@ -468,7 +471,7 @@ pub(crate) fn open_explorer(path: &Path) -> Result<(), IpcError> {
     // explorer는 성공해도 비정상 종료코드를 반환할 수 있어 spawn 성공 여부만 본다.
     let mut cmd = Command::new("explorer");
     cmd.arg(path);
-    spawn_launcher(cmd, "탐색기").map_err(|e| spawn_err("탐색기", e))
+    spawn_launcher(cmd, "탐색기").map_err(|e| spawn_err(text_tools::open_explorer_failed, e)) // i18n-ok: 로그 라벨
 }
 
 #[cfg(windows)]
@@ -479,7 +482,7 @@ fn open_terminal(path: &Path) -> Result<(), IpcError> {
     // Windows Terminal 우선, 없으면 새 cmd 창으로 폴백.
     let mut wt = Command::new("wt");
     wt.arg("-d").arg(path);
-    if spawn_launcher(wt, "터미널").is_ok() {
+    if spawn_launcher(wt, "터미널").is_ok() { // i18n-ok: 로그 라벨
         return Ok(());
     }
     // `start "" cmd` 는 별도 콘솔 창을 띄운다 — 런처 cmd 자체의 깜빡임은 CREATE_NO_WINDOW로 숨긴다.
@@ -487,28 +490,28 @@ fn open_terminal(path: &Path) -> Result<(), IpcError> {
     cmd.args(["/C", "start", "", "cmd"])
         .current_dir(path)
         .creation_flags(CREATE_NO_WINDOW);
-    spawn_launcher(cmd, "터미널").map_err(|e| spawn_err("터미널", e))
+    spawn_launcher(cmd, "터미널").map_err(|e| spawn_err(text_tools::open_terminal_failed, e)) // i18n-ok: 로그 라벨
 }
 
 #[cfg(target_os = "macos")]
 pub(crate) fn open_explorer(path: &Path) -> Result<(), IpcError> {
     let mut cmd = Command::new("open");
     cmd.arg(path);
-    spawn_launcher(cmd, "탐색기").map_err(|e| spawn_err("탐색기", e))
+    spawn_launcher(cmd, "탐색기").map_err(|e| spawn_err(text_tools::open_explorer_failed, e)) // i18n-ok: 로그 라벨
 }
 
 #[cfg(target_os = "macos")]
 fn open_terminal(path: &Path) -> Result<(), IpcError> {
     let mut cmd = Command::new("open");
     cmd.args(["-a", "Terminal"]).arg(path);
-    spawn_launcher(cmd, "터미널").map_err(|e| spawn_err("터미널", e))
+    spawn_launcher(cmd, "터미널").map_err(|e| spawn_err(text_tools::open_terminal_failed, e)) // i18n-ok: 로그 라벨
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
 pub(crate) fn open_explorer(path: &Path) -> Result<(), IpcError> {
     let mut cmd = Command::new("xdg-open");
     cmd.arg(path);
-    spawn_launcher(cmd, "탐색기").map_err(|e| spawn_err("탐색기", e))
+    spawn_launcher(cmd, "탐색기").map_err(|e| spawn_err(text_tools::open_explorer_failed, e)) // i18n-ok: 로그 라벨
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -518,7 +521,7 @@ fn open_terminal(path: &Path) -> Result<(), IpcError> {
     // 앱 scope에 얹힌다(2026-08-01 사건의 구조적 지뢰, 사후조치 문서 §2 판정).
     let mut cmd = Command::new("x-terminal-emulator");
     cmd.current_dir(path);
-    spawn_launcher(cmd, "터미널").map_err(|e| spawn_err("터미널", e))
+    spawn_launcher(cmd, "터미널").map_err(|e| spawn_err(text_tools::open_terminal_failed, e)) // i18n-ok: 로그 라벨
 }
 
 /// 런처 헬퍼의 인자 처리 회귀 테스트.
@@ -544,10 +547,10 @@ mod launcher_tests {
         let args = vec![os(evil)];
         let argv = systemd_run_argv(Path::new("/usr/bin/xdg-open"), &args, None, &[]);
 
-        let dash = argv.iter().position(|a| a == "--").expect("-- 구분자 필요");
+        let dash = argv.iter().position(|a| a == "--").expect("-- 구분자 필요"); // i18n-ok: 테스트
         assert_eq!(argv[dash + 1], os("/usr/bin/xdg-open"));
-        assert_eq!(argv[dash + 2], os(evil), "인자는 원문 그대로여야 한다");
-        assert_eq!(argv.len(), dash + 3, "`--` 뒤에 잉여 인자가 붙으면 안 된다");
+        assert_eq!(argv[dash + 2], os(evil), "인자는 원문 그대로여야 한다"); // i18n-ok: 테스트
+        assert_eq!(argv.len(), dash + 3, "`--` 뒤에 잉여 인자가 붙으면 안 된다"); // i18n-ok: 테스트
         // 셸 조립의 흔적(한 원소에 프로그램+인자가 합쳐진 형태)이 없어야 한다.
         let joined = OsString::from(format!("/usr/bin/xdg-open {evil}"));
         assert!(argv.iter().all(|a| a != &joined));
@@ -559,7 +562,7 @@ mod launcher_tests {
         assert!(argv.iter().any(|a| a == "--scope"));
         assert!(
             !argv.iter().any(|a| a.to_string_lossy().starts_with("--service-type")),
-            "service 유닛으로 되돌아가면 띄운 프로그램이 즉시 죽는다"
+            "service 유닛으로 되돌아가면 띄운 프로그램이 즉시 죽는다" // i18n-ok: 테스트
         );
     }
 
@@ -606,7 +609,7 @@ mod launcher_tests {
     /// PATH 탐색: 이름은 절대경로로 확정되고, 없는 이름은 None(→ 위임 포기, 직접 spawn).
     #[test]
     fn resolve_program_finds_path_binary() {
-        let sh = resolve_program(std::ffi::OsStr::new("sh")).expect("sh는 PATH에 있어야 한다");
+        let sh = resolve_program(std::ffi::OsStr::new("sh")).expect("sh는 PATH에 있어야 한다"); // i18n-ok: 테스트
         assert!(sh.is_absolute());
         assert!(sh.ends_with("sh"));
         assert!(resolve_program(std::ffi::OsStr::new("gpv-no-such-binary-xyz")).is_none());
@@ -616,7 +619,7 @@ mod launcher_tests {
     #[test]
     fn resolve_program_rejects_non_executable() {
         let p = std::env::temp_dir().join(format!("gpv-launch-test-{}", std::process::id()));
-        std::fs::write(&p, b"#!/bin/sh\n").expect("임시 파일 생성");
+        std::fs::write(&p, b"#!/bin/sh\n").expect("임시 파일 생성"); // i18n-ok: 테스트
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
         assert!(resolve_program(p.as_os_str()).is_none());
 
@@ -636,13 +639,13 @@ mod launcher_tests {
     #[test]
     fn spawn_launcher_leaves_no_zombie() {
         let mut cmd = Command::new("true");
-        assert!(spawn_launcher(cmd, "테스트").is_ok());
+        assert!(spawn_launcher(cmd, "테스트").is_ok()); // i18n-ok: 테스트
         // 리퍼 스레드가 wait할 시간을 준다. 좀비가 남았다면 /proc/self/task/*/children 에
         // 잡히지만, 여기서는 "실행이 성공하고 패닉 없이 끝난다"까지만 확정한다.
         std::thread::sleep(std::time::Duration::from_millis(200));
 
         // 없는 프로그램은 반드시 Err — 위임이 무성 성공으로 삼키면 안 된다.
         cmd = Command::new("gpv-no-such-binary-xyz");
-        assert!(spawn_launcher(cmd, "테스트").is_err());
+        assert!(spawn_launcher(cmd, "테스트").is_err()); // i18n-ok: 테스트
     }
 }
