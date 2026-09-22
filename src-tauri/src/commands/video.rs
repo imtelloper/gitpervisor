@@ -1391,11 +1391,16 @@ struct FfmpegSpec {
 
 fn ffmpeg_spec() -> Option<FfmpegSpec> {
     if cfg!(all(windows, target_arch = "x86_64")) {
-        // gyan.dev essentials — 버전 고정 URL은 불변. ffmpeg/ffprobe 포함, ~111MB.
+        // gyan.dev essentials — ffmpeg/ffprobe 포함, ~111MB. "버전 고정 URL은 불변"이라 믿었지만 9.0.2가 나오자
+        // gyan.dev/packages 의 9.0.1이 404가 됐다(2026-09-22 실측) — 새 Windows 사용자가 ffmpeg를 못 받고 있었다.
+        // 같은 파일(sha256 동일)이 gyan 공식 GitHub 미러에 태그별로 남으므로 그쪽을 먼저 시도한다.
         Some(FfmpegSpec {
             version: "9.0.1",
             artifacts: &[FfArtifact {
-                urls: &["https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.1-essentials_build.zip"],
+                urls: &[
+                    "https://github.com/GyanD/codexffmpeg/releases/download/9.0.1/ffmpeg-9.0.1-essentials_build.zip",
+                    "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.1-essentials_build.zip",
+                ],
                 sha256: "fec81ae03971d9dd4be3ebe02e263bd2ec1d789483f931bdba5f5715e65da2e9",
                 kind: FfArchive::Zip,
             }],
