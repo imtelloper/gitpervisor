@@ -294,6 +294,14 @@ rm -f installers/Gitpervisor_<이전버전>*
   값이 같아도 `resyncTerminalSizeImpl`로 강제로 다시 보낸다. 회귀 체크는 e2e 14 `#2b`
   (셸에게 `$Host.UI.RawUI.WindowSize.Width`를 직접 물어 진짜 ConPTY 폭을 확인한다).
 
+- **크기 통보를 한 번만 놓쳐도 PTY는 옛 크기에 영구히 박제된다** — `onResize`는 `fit()`이 크기를
+  **바꿀 때만** 뜨므로 되돌릴 계기가 없다. 2026-09-23 실사례: 분리 창은 950×1028인데 PTY는 분리
+  시점 900×600(37행) 그대로라, Claude Code TUI가 창 위쪽 37행에만 그려진 채 하루를 갔다. 놓치는
+  경로가 여럿이라(가려진 창의 ResizeObserver 지연·최소화 중 크기 변경·절전 복귀) 원인을 하나씩
+  막는 대신 코어가 자가 복구한다 — 리사이즈가 멎고 250ms 뒤, 그리고 창이 다시 보일 때 마지막
+  크기를 한 번 더 보낸다(`lib/terminal.ts`의 `scheduleSizeResync`). 같은 크기 재통보는 사실상
+  공짜다(실측: 크기가 바뀌면 재그리기 2.2KB, 같으면 0.1KB 유휴 잡음뿐). 회귀 체크는 e2e 13.
+
 - **PTY를 종료할 때는 셸 PID 하나만 죽이면 안 된다.** 셸의 job들은 다른 프로세스 그룹에 있고,
   `setsid`로 갈라진 자손은 killpg로도 안 닿는다. `terminate_tree()`가 세션 스캔 + ppid 폐포로
   전부 거둔다. 같은 위 사건의 주범이었다.

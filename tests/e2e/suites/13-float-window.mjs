@@ -82,6 +82,7 @@ export async function run({ cdp, report: r, fix, port }) {
   const TID_R = "gpv-e2e-redock"; // redock — 창이 죽어도 PTY 생존
   const TID_N = "gpv-e2e-noredock"; // 회귀 가드 — 미등록이면 기존대로 PTY 종료
   const TID_H = "gpv-e2e-float-hist"; // 히스토리 마스터 토글·토스트 호스트
+  const TID_S = "gpv-e2e-float-size"; // PTY 크기 자가 복구
   const opened = new Set(); // finally 정리용(실패로 빠져나가도 창을 남기지 않는다)
   let redockTabId = null;
 
@@ -410,6 +411,91 @@ export async function run({ cdp, report: r, fix, port }) {
         `term_project=${J(last?.r ?? null)}`,
       );
     }
+    // ── PTY 크기 자가 복구 (2026-09-23 실사례) ──
+    //
+    // 분리 창의 PTY 크기는 `fit()`이 xterm 크기를 **바꿀 때만** 갱신된다(onResize → term_resize).
+    // 그 한 번을 놓치면 되돌릴 경로가 없어 PTY가 옛 크기에 박제된다 — 실제로 창은 950×1028인데
+    // PTY는 분리 시점 900×600(37행) 그대로라 Claude Code TUI가 창 위쪽 37행에만 그려진 채 하루를
+    // 갔다. 놓치는 경로는 여럿이라(가려진 창의 ResizeObserver 지연·최소화 중 크기 변경·절전 복귀)
+    // 원인을 하나씩 막는 대신 코어가 **마지막 크기를 한 번 더 보낸다**(lib/terminal.ts).
+    //
+    // 관측은 **셸에게 직접 묻는다** — IPC 호출을 세는 것으로는 PTY가 실제로 그 크기가 됐음을
+    // 증명하지 못한다(스위트 14 #2b와 같은 이유). 축소가 실제로 먹었다는 전제를 먼저 단언해
+    // "복구됐다"가 공허해지지 않게 한다.
+    const openS = await openPty(TID_S);
+    if (r.check("term_open: 크기 복구용 PTY 생성", openS.ok, openS.code || "")) {
+      const fsz = await openFloat(TID_S);
+      const fcdp = fsz.label ? await attachFloat(fsz.label) : null;
+      if (!fcdp)
+        r.skip(
+          "분리 창 PTY 크기 자가 복구",
+          fsz.label ? "플로팅 페이지 CDP 연결 실패" : "창 미발견",
+        );
+      else {
+        try {
+          const probe = await fcdp.eval(
+            `(async()=>{
+              const inv = (c, a) => window.__TAURI_INTERNALS__.invoke(c, a);
+              let inst = null;
+              for (let i = 0; i < 40 && !inst; i++) {
+                inst = window.__gpv?.term?.get(${J(TID_S)}) ?? null;
+                if (!inst) await new Promise((r) => setTimeout(r, 250));
+              }
+              if (!inst) return { skip: "이 창에 xterm 인스턴스가 아직 없다" };
+              const read = () => { const b = inst.term.buffer.active; let s = "";
+                for (let i = Math.max(0, b.length - 60); i < b.length; i++)
+                  s += (b.getLine(i)?.translateToString(true) ?? "") + "\\n";
+                return s; };
+              // 정규식을 조립하지 않는다(스위트 14 #2b 주석) — 태그 뒤 숫자는 손으로 판다.
+              const grab = (tag) => { const s = read(), key = tag + ":"; let out = null, i = -1;
+                while ((i = s.indexOf(key, i + 1)) >= 0) {
+                  const rest = s.slice(i + key.length), e = rest.indexOf(":");
+                  if (e > 0) { const p = rest.slice(0, e).split("x");
+                    const w = Number(p[0]), h = Number(p[1]);
+                    if (w > 0 && h > 0) out = { w, h }; } }
+                return out; };
+              const ask = async (tag) => {
+                try {
+                  await inv("term_write", { termId: inst.id,
+                    data: 'Write-Host "' + tag + ':$($Host.UI.RawUI.WindowSize.Width)x$($Host.UI.RawUI.WindowSize.Height):"\\r' });
+                } catch (e) { return null; }
+                for (let i = 0; i < 36; i++) { const v = grab(tag); if (v) return v;
+                  await new Promise((r) => setTimeout(r, 250)); }
+                return null;
+              };
+              const before = await ask("GPVF0");
+              if (!before) return { skip: "셸이 크기를 보고하지 않는다(비-PowerShell 또는 미준비)" };
+              // 크기 변화를 놓친 상태를 그대로 만든다 — PTY만 줄이고 xterm 은 그대로 둔다.
+              await inv("term_resize", { termId: inst.id, cols: 40, rows: 10 });
+              const stale = await ask("GPVF1");
+              // 복구 지점: 창이 다시 보이는 순간(사용자가 창을 클릭·복원하는 그 동작).
+              window.dispatchEvent(new Event("focus"));
+              let after = await ask("GPVF2");
+              for (let i = 0; i < 6 && (after?.w !== inst.term.cols || after?.h !== inst.term.rows); i++) {
+                await new Promise((r) => setTimeout(r, 500));
+                after = await ask("GPVF2" + i); // 태그를 바꾼다 — 같은 태그면 grab 이 옛 답을 집는다
+              }
+              return { want: { w: inst.term.cols, h: inst.term.rows }, before, stale, after };
+            })()`,
+          );
+          if (probe?.skip) r.skip("분리 창 PTY 크기 자가 복구", probe.skip);
+          else {
+            r.check(
+              "전제: PTY 축소가 실제로 먹는다(40x10)",
+              probe?.stale?.w === 40 && probe?.stale?.h === 10,
+              `40x10 기대 · 실제 ${J(probe?.stale ?? null)}`,
+            );
+            r.check(
+              "창이 다시 보이면 PTY 크기가 그 창 xterm 크기로 돌아온다",
+              probe?.after?.w === probe?.want?.w && probe?.after?.h === probe?.want?.h,
+              `xterm ${J(probe?.want)} · 분리 직후 ${J(probe?.before)} → 축소 ${J(probe?.stale)} → 복구 ${J(probe?.after)}`,
+            );
+          }
+        } finally {
+          fcdp.close();
+        }
+      }
+    }
   } finally {
     // 잔여 창/탭/세션 정리 — 다음 실행·사용자 화면에 흔적 안 남기기(이미 정리됐어도 무해).
     for (const label of opened) await closeLabel(label);
@@ -418,6 +504,6 @@ export async function run({ cdp, report: r, fix, port }) {
         .eval(`window.__gpv?.terminals?.getState().closeTab(${J(redockTabId)})`)
         .catch(() => {});
     await sleep(300);
-    for (const id of [TID, TID_R, TID_N, TID_H]) await cdp.try("term_close", { termId: id });
+    for (const id of [TID, TID_R, TID_N, TID_H, TID_S]) await cdp.try("term_close", { termId: id });
   }
 }

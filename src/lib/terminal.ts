@@ -150,6 +150,7 @@ export async function createTerminal(opts: {
   /** 명시하면 그대로 따른다. 생략하면 "살아있는 세션이 있으면 attach, 없으면 open"으로 자동 판정. */
   attach?: boolean;
 }): Promise<TermInstance> {
+  ensureSizeResyncOnVisible();
   const existing = registry.get(opts.id);
   if (existing) return existing;
   // 이 창의 레지스트리에 없다 = 여기서 처음 그린다. 이때 같은 id의 PTY가 다른 창(모아보기
@@ -331,6 +332,9 @@ export function attachTerminal(id: string, container: HTMLElement) {
     } catch {
       /* 컨테이너가 아직 0크기일 수 있다 — 다음 ResizeObserver가 보정 */
     }
+    // 살아 있는 PTY를 이어받는 경우(창 분리·재도킹) 크기가 이미 xterm과 같아 `fit()`이 아무것도
+    // 바꾸지 않을 수 있다 — 그러면 `onResize`가 안 떠서 PTY는 저쪽 창 크기로 남는다.
+    scheduleSizeResync(id);
   });
 }
 
@@ -343,6 +347,57 @@ export function fitTerminal(id: string) {
   } catch {
     /* noop */
   }
+  scheduleSizeResync(id);
+}
+
+/** 리사이즈가 멎었다고 보는 간격 — 드래그 중 매 프레임 보내지 않으려고 뒤로 민다. */
+const SIZE_RESYNC_SETTLE_MS = 250;
+const pendingSizeResync = new Map<string, number>();
+
+/**
+ * 크기 변화가 멎은 뒤 xterm의 현재 크기를 PTY에 **값이 같아도** 다시 보낸다.
+ *
+ * `fit()`이 크기를 바꿀 때만 `onResize`가 뜨고 그때만 `term_resize`가 나간다 — 그 한 번을 놓치면
+ * PTY는 옛 크기에 **영구히 박제**된다. 스스로 고쳐지는 경로가 없어서, 분리된 창의 TUI(Claude Code)가
+ * 창 위쪽 일부에만 그려진 채로 하루를 갔다(2026-09-23 실사례: 창은 950×1028인데 PTY는 분리 시점의
+ * 900×600 = 37행 그대로였다). 놓치는 경로는 여럿이다 — 창이 가려지거나 최소화된 동안의 크기 변화는
+ * ResizeObserver 콜백이 "렌더 갱신" 단계에서 오므로 늦거나 합쳐지고, 절전 복귀·모니터 구성 변경도
+ * 같은 자리를 지난다. 그래서 원인을 하나씩 막는 대신 **마지막 크기를 한 번 더 보내** 자가 복구한다.
+ */
+function scheduleSizeResync(id: string): void {
+  const prev = pendingSizeResync.get(id);
+  if (prev !== undefined) clearTimeout(prev);
+  pendingSizeResync.set(
+    id,
+    window.setTimeout(() => {
+      pendingSizeResync.delete(id);
+      // 그 사이 사라졌으면 할 일이 없다(resyncTerminalSizeImpl도 레지스트리를 다시 확인한다).
+      if (!registry.has(id)) return;
+      void import("./terminal-engine").then((m) => m.resyncTerminalSizeImpl(id));
+    }, SIZE_RESYNC_SETTLE_MS),
+  );
+}
+
+/**
+ * 이 창이 다시 보일 때 붙어 있는 터미널을 전부 재측정·재통보한다.
+ *
+ * 최소화·가려짐 동안 창 크기가 바뀌면 그 창은 렌더를 멈춰 `fit()`이 돌지 않는다 — 다시 보이는
+ * 순간이 유일하게 확실한 복구 지점이다. `createTerminal`이 창마다 한 번 등록한다.
+ */
+let visibilityResyncReady = false;
+export function ensureSizeResyncOnVisible(): void {
+  if (visibilityResyncReady) return;
+  visibilityResyncReady = true;
+  const refitAll = () => {
+    for (const inst of registry.values()) {
+      if (inst.status !== "live" || !inst.host.isConnected) continue;
+      fitTerminal(inst.id); // fit이 크기를 바꾸면 onResize가, 아니면 위 resync가 보낸다
+    }
+  };
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) refitAll();
+  });
+  window.addEventListener("focus", refitAll);
 }
 
 /**
