@@ -118,14 +118,21 @@ export async function run({ cdp, report: r }) {
 
     // 싱글턴 — 재호출은 새 창을 만들지 않고 set_focus()만 하고 성공해야 한다
     // (생성을 다시 시도하면 동일 라벨 충돌로 빌드 실패 로그가 남는다).
+    //
+    // 판정은 **라벨 집합이 그대로인가**로 한다. 예전엔 `ls.filter(l => l === label).length === 1`
+    // 이었는데, Tauri 라벨은 애초에 유일해서 그 값은 항상 0 아니면 1이다 — 재호출이 다른 id로 창을
+    // 하나 더 띄워도 초록이었다(결함이 있어도 통과하는 단언). gitpervisor-6b 가 48 ⑩·60 ⑤에서 같은
+    // 관용구를 찾아 알려 줘서 여기도 고쳤다(2026-09-23).
     if (has) {
+      const before = await labels();
       const again = await cdp.try("open_sysmon_window", { origin });
       await sleep(500);
       const ls = await labels();
+      const added = Array.isArray(ls) && Array.isArray(before) ? ls.filter((l) => !before.includes(l)) : ["목록 조회 실패"];
       r.check(
-        "싱글턴: 재호출 성공 + sysmon 창 유지",
-        again.ok && Array.isArray(ls) && ls.filter((l) => l === label).length === 1,
-        Array.isArray(ls) ? ls.join(",") : String(ls),
+        "싱글턴: 재호출 성공 + sysmon 창 유지 · 새 창 0개",
+        again.ok && Array.isArray(ls) && ls.includes(label) && added.length === 0,
+        `${Array.isArray(ls) ? ls.join(",") : String(ls)}${added.length ? ` · 새로 생김: ${added.join(",")}` : ""}`,
       );
 
       // close() → 소멸 폴링 (Destroyed 훅은 main/float-* 외 no-op — 정리 코드 불필요)

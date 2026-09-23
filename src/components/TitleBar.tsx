@@ -52,13 +52,6 @@ export function TitleBar() {
       data-tauri-drag-region
       className="relative flex h-8 shrink-0 cursor-default items-center border-b border-edge bg-panel pl-3 select-none"
     >
-      {/* 중앙: 선택 프로젝트명 (정중앙, 표시 전용) */}
-      {selected && (
-        <span className="pointer-events-none absolute left-1/2 max-w-[28%] -translate-x-1/2 truncate text-xs font-medium text-fg-muted">
-          {selected.name}
-        </span>
-      )}
-
       {/* 좌: 브랜드 */}
       <div data-tauri-drag-region className="flex items-center gap-1.5">
         <img
@@ -72,8 +65,23 @@ export function TitleBar() {
         </span>
       </div>
 
-      {/* 가운데: 드래그 영역 */}
-      <div data-tauri-drag-region className="h-full flex-1" />
+      {/* 가운데: 드래그 영역 + 선택 프로젝트명(표시 전용).
+          이름은 **이 빈칸 안에서** 가운데 정렬한다 — 예전엔 창 정중앙에 absolute로 띄워서, 창을 조금만
+          줄이면 오른쪽 버튼 줄(모아보기·폴더·리포트…)이 그 자리까지 자라 글자가 겹쳤다(사용자 제보
+          2026-09-23). 흐름 안에 두면 남은 폭만큼만 차지하고 모자라면 말줄임표가 된다 — 겹칠 수가 없다. */}
+      <div
+        data-tauri-drag-region
+        className="flex h-full min-w-0 flex-1 items-center justify-center px-2"
+      >
+        {selected && (
+          <span
+            data-gpv="titlebar-project"
+            className="pointer-events-none truncate text-xs font-medium text-fg-muted"
+          >
+            {selected.name}
+          </span>
+        )}
+      </div>
 
       {/* 우: 모아보기 토글 + 작업 리포트 + 전체 프롬프트 히스토리 + 메모장 + 시스템 모니터 */}
       <AggregateButton />

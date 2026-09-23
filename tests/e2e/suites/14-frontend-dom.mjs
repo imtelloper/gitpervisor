@@ -1497,6 +1497,88 @@ export async function run({ cdp, report: r, fix }) {
       r.check("Log 핸들 드래그 → 높이 증가", dragged && h1 > h0, `${h0}→${h1}`);
       r.check("Log 높이 localStorage 영속", lsH === h1, `ls=${lsH}`);
     }
+
+    // ── #14 타이틀바가 좁은 창에서 겹치지 않는다 (사용자 제보 2026-09-23) ──
+    //
+    // 예전엔 프로젝트명이 **창 정중앙에 absolute**로 떠 있어서, 창을 조금만 줄이면 오른쪽 버튼 줄이
+    // 그 자리까지 자라 글자가 겹쳤다. 지금은 브랜드와 버튼 사이 빈칸 안에 흐름으로 들어가 구조적으로
+    // 겹칠 수 없고, 리소스 지표 4개(약 230px)는 1280px 미만에서 하나로 접힌다.
+    //
+    // 폭은 **CDP 뷰포트 오버라이드**로 바꾼다 — 사용자의 실제 창은 건드리지 않는다. 오버라이드가
+    // 남으면 뒤 스위트가 통째로 엉뚱한 폭에서 돌므로 반드시 finally 에서 해제한다.
+    const titleGeom = `(()=>{
+      const h = document.querySelector("header");
+      const name = h?.querySelector('[data-gpv="titlebar-project"]');
+      const vis = (el) => !!el && el.getClientRects().length > 0;
+      const rect = (el) => { const b = el.getBoundingClientRect(); return { l: Math.round(b.left), r: Math.round(b.right) }; };
+      const n = vis(name) ? rect(name) : null;
+      const hit = n ? [...h.querySelectorAll("button")].filter(vis)
+        .filter((b) => { const x = rect(b); return x.l < n.r && x.r > n.l; })
+        .map((b) => (b.getAttribute("title") || b.textContent || "").trim().slice(0, 16)) : [];
+      return { win: window.innerWidth, name: n, text: name?.textContent ?? null, overlaps: hit,
+               full: vis(h?.querySelector('[data-gpv="sysmon-metrics"]')),
+               compact: vis(h?.querySelector('[data-gpv="sysmon-compact"]')) };
+    })()`;
+    const setWidth = (w) =>
+      cdp._send("Emulation.setDeviceMetricsOverride", {
+        width: w,
+        height: 900,
+        deviceScaleFactor: 1,
+        mobile: false,
+      });
+    // **긴 이름으로 잰다** — 사용자가 겪은 상황이 긴 이름이라서다. 캐시의 이름만 잠시 바꾸고 되돌린다.
+    //
+    // 반증(옛 레이아웃 = 창 정중앙 absolute 로 되돌려 실측): **820 에서 빨갛다**("즐겨찾기 폴더"·
+    // "작업 리포트" 버튼과 겹침). 1600·1100 은 옛 코드도 통과하는데, e2e 앱은 사용자 앱보다 타이틀바
+    // 버튼이 적어(터미널이 없으면 모아보기 버튼이 없다) 여백이 그만큼 크기 때문이다 — 그래서 이 묶음의
+    // 회귀 감지는 820 케이스가 진다. 짧은 이름("repo")만으로는 그조차 못 잡는다.
+    const LONG_NAME = "nqvm-web-frontend-workspace-very-long";
+    await cdp.eval(`(()=>{ const qc = window.__gpv.queryClient;
+      const ps = qc.getQueryData(["projects"]); const sel = window.__gpv.ui.getState().selectedProjectId;
+      if (!Array.isArray(ps) || !sel) return false;
+      qc.setQueryData(["projects"], ps.map((p) => (p.id === sel ? { ...p, name: ${J(LONG_NAME)} } : p)));
+      return true; })()`);
+    await sleep(300);
+    try {
+      await setWidth(1600);
+      await sleep(400);
+      const wide = await cdp.eval(titleGeom);
+      r.check(
+        "#14a 넓은 창(1600): 지표 4개를 펼치고 프로젝트명과 겹치지 않는다",
+        wide?.full === true && wide?.compact === false && (wide?.overlaps?.length ?? 1) === 0,
+        J(wide),
+      );
+
+      await setWidth(1100);
+      await sleep(400);
+      const narrow = await cdp.eval(titleGeom);
+      r.check(
+        "#14b 좁은 창(1100): 지표가 하나로 접힌다",
+        narrow?.full === false && narrow?.compact === true,
+        J(narrow),
+      );
+      r.check(
+        "#14c 좁은 창(1100): 프로젝트명이 어떤 타이틀바 버튼과도 겹치지 않는다",
+        (narrow?.overlaps?.length ?? 1) === 0,
+        J(narrow),
+      );
+
+      await setWidth(820);
+      await sleep(400);
+      const tiny = await cdp.eval(titleGeom);
+      r.check(
+        "#14d 더 좁은 창(820): 이름은 줄어들 뿐 겹치지 않는다",
+        (tiny?.overlaps?.length ?? 1) === 0 && tiny?.compact === true,
+        J(tiny),
+      );
+    } finally {
+      await cdp._send("Emulation.clearDeviceMetricsOverride", {}).catch(() => {});
+      // 이름은 캐시만 건드렸다 — 서버 값으로 되돌린다(뒤 스위트가 진짜 이름을 본다).
+      await cdp
+        .eval(`window.__gpv.queryClient.invalidateQueries({ queryKey: ["projects"] })`)
+        .catch(() => {});
+      await sleep(300);
+    }
   } finally {
     // #12가 켠 프로젝트 색 토글 원복(사용자 설정이라 반드시 — localStorage에 남는다).
     if (origProjectColors === "0")
