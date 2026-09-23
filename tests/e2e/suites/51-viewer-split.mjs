@@ -605,6 +605,47 @@ export async function run({ cdp, report: r, fix }) {
       `click=${closedSolo} ${J(solo)}`,
     );
 
+    // ── ⑩ 탭이 많을 때 한 번에 닫기 (사용자 요청 2026-09-23) ──────────────────
+    // 탭을 하나씩 X 로 닫는 것 말고 **한 번에** 닫는 길이 없었다. 바 오른쪽 끝의 고정 버튼과
+    // 우클릭 메뉴 두 곳에 넣었고, 여기서는 버튼을 실제로 눌러 그 패널 탭이 0이 되는지 본다.
+    // 버튼은 탭이 2개 이상일 때만 뜬다(1개면 그냥 X 와 같다) — 그 조건도 함께 단언한다.
+    for (const f of ["src/all-1.txt", "src/all-2.txt", "src/all-3.txt"]) fix.writeFile(f, f);
+    for (const f of ["src/all-1.txt", "src/all-2.txt", "src/all-3.txt"]) await openFile(f);
+    const before10 = await poll(() => paneTabs(PANE_A), (v) => (v || []).length === 3, 20, 250);
+    const closeAllBtn = () =>
+      cdp.eval(`(()=>{
+        const host = document.querySelector('[data-viewer-pane=' + JSON.stringify(${J(PANE_A)}) + ']');
+        const b = host && host.querySelector('[data-gpv="viewer-tabs-close-all"]');
+        return b ? { visible: b.getClientRects().length > 0, title: b.getAttribute('title') } : null;
+      })()`);
+    const btn3 = await closeAllBtn();
+    r.check(
+      "⑩ 탭 3개 → 바 오른쪽에 [모두 닫기] 버튼이 보인다",
+      (before10 || []).length === 3 && btn3?.visible === true,
+      `탭=${J(before10)} 버튼=${J(btn3)}`,
+    );
+
+    const clicked10 = await cdp.eval(`(()=>{
+      const host = document.querySelector('[data-viewer-pane=' + JSON.stringify(${J(PANE_A)}) + ']');
+      const b = host && host.querySelector('[data-gpv="viewer-tabs-close-all"]');
+      if (!b) return 'none';
+      b.click();
+      return 'ok';
+    })()`);
+    const after10 = await poll(() => paneTabs(PANE_A), (v) => (v || []).length === 0, 20, 250);
+    r.check(
+      "⑩ [모두 닫기] 한 번에 그 패널 탭이 전부 닫힌다",
+      clicked10 === "ok" && (after10 || []).length === 0,
+      `click=${clicked10} 남은탭=${J(after10)}`,
+    );
+
+    // 탭 하나만 있을 때는 버튼이 없다 — "모두"가 곧 "그 하나"라 줄만 차지한다.
+    await openFile("src/all-1.txt");
+    await poll(() => paneTabs(PANE_A), (v) => (v || []).length === 1, 20, 250);
+    const btn1 = await closeAllBtn();
+    r.check("⑩ 탭이 하나면 [모두 닫기] 버튼은 없다", btn1 === null, J(btn1));
+    await closeTabIn(PANE_A, "src/all-1.txt");
+
     // ── 회귀: Ctrl 단축키 게이트가 Alt 조합을 막는다(AltGr = Ctrl+Alt) ────────
     // 실측 재현된 버그: `Ctrl+Alt+Shift+K`가 push 흐름(업스트림 설정 확인창)을 띄웠다.
     // Windows에서 AltGr은 ctrlKey+altKey로 오므로 `@`·`\`·`|`를 치면 커밋·push가 오발한다.

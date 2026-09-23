@@ -242,6 +242,8 @@ const ko = {
     closeTab: "탭 닫기",
     close: "닫기",
     closeOthers: "다른 탭 닫기",
+    closeAll: "모두 닫기",
+    closeAllTitle: (n: number) => `열린 탭 ${fmtInt(n)}개 모두 닫기`,
     openInNewWindow: "새 창으로 열기",
   },
   viewerTab: {
@@ -496,6 +498,8 @@ export const gitText = defineText(ko, {
       closeTab: "Close tab",
       close: "Close",
       closeOthers: "Close other tabs",
+      closeAll: "Close all",
+      closeAllTitle: (n) => `Close all ${fmtInt(n)} open tabs`,
       openInNewWindow: "Open in new window",
     },
     viewerTab: {

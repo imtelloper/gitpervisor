@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ExternalLink, X, XSquare } from "lucide-react";
+import { ExternalLink, ListX, X, XSquare } from "lucide-react";
 
 import { useMessages } from "../../i18n/ui-language";
 import { openDocWindow } from "../../lib/floating";
@@ -43,6 +43,10 @@ export function ViewerFileTabs({ projectId, paneId }: { projectId: string; paneI
     const ui = useUi.getState();
     ui.setViewerActivePane(paneId);
     ui.selectDiff(t.target, t.repoId);
+  };
+  /** 이 패널·이 프로젝트의 탭 전부 닫기. 분할 중이면 마지막 탭에서 패널도 닫힌다(closeViewerTab 계약). */
+  const closeAll = () => {
+    for (const t of tabs) closeViewerTab(t.key, paneId);
   };
   const activeKey =
     activeDiff && tabs.length > 0
@@ -122,6 +126,19 @@ export function ViewerFileTabs({ projectId, paneId }: { projectId: string; paneI
             </div>
           );
         })}
+        {tabs.length > 1 && (
+          // 탭이 많을 때가 이 버튼이 필요한 때고, 그때는 바가 가로로 넘친다 — `sticky right-0`로
+          // 스크롤과 무관하게 오른쪽 끝에 남는다(배경을 깔아 탭이 밑으로 지나가게).
+          <button
+            data-gpv="viewer-tabs-close-all"
+            onClick={closeAll}
+            title={msg.git.viewerTabs.closeAllTitle(tabs.length)}
+            className="sticky right-0 ml-auto flex shrink-0 items-center gap-1 self-center rounded bg-panel px-1.5 py-1 text-[11px] text-fg-dim shadow-[-8px_0_8px_-6px_rgba(0,0,0,0.5)] hover:bg-raised hover:text-fg"
+          >
+            <ListX size={12} className="shrink-0" />
+            {msg.git.viewerTabs.closeAll}
+          </button>
+        )}
       </div>
 
       {menu && (
@@ -138,7 +155,8 @@ export function ViewerFileTabs({ projectId, paneId }: { projectId: string; paneI
             className="fixed min-w-44 rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl"
             style={{
               left: Math.min(menu.x, window.innerWidth - 200),
-              top: Math.min(menu.y, window.innerHeight - 110),
+              // 항목 4개 × 31.5 + 패딩·테두리 ≈ 135 — 항목이 늘면 이 값도 같이 올린다(안 그러면 아래에서 잘린다).
+              top: Math.min(menu.y, window.innerHeight - 140),
             }}
             onClick={(e) => e.stopPropagation()}
           >
@@ -162,6 +180,16 @@ export function ViewerFileTabs({ projectId, paneId }: { projectId: string; paneI
             >
               <XSquare size={14} className="shrink-0" />
               {msg.git.viewerTabs.closeOthers}
+            </button>
+            <button
+              className={menuItemCls}
+              onClick={() => {
+                closeAll();
+                setMenu(null);
+              }}
+            >
+              <ListX size={14} className="shrink-0" />
+              {msg.git.viewerTabs.closeAll}
             </button>
             <button
               className={menuItemCls}
