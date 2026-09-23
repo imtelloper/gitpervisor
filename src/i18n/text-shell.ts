@@ -95,7 +95,6 @@ const ko = {
     openTerminalTitle: "이 프로젝트 경로에서 터미널 열기 (Ctrl+`)",
     dbExplorerTitle: "DB 탐색기 (탭)",
     refreshAllTitle: "모든 프로젝트 상태 새로고침 (F5)",
-    settingsTitle: "설정",
   },
   projectItem: {
     agentWorkingTitle: "Claude Code 작업 중…",
@@ -134,6 +133,7 @@ const ko = {
     colorsOnTitle: "프로젝트 색 구분 켜기",
     sortOffTitle: "변경 우선 정렬 끄기 (등록 순서로)",
     sortOnTitle: "변경/활동 있는 프로젝트 먼저 보기",
+    settingsTitle: "설정",
     emptyTitle: "아직 프로젝트가 없습니다.",
     // 빈 상태 안내는 [+]·[새 폴더] 아이콘 사이에 끼는 조각이다 — 조각마다 앞뒤 공백까지 포함한다.
     emptyHintBeforeAddIcon: "위 ",
@@ -244,7 +244,6 @@ export const shellText = defineText(ko, {
       openTerminalTitle: "Open terminal in this project (Ctrl+`)",
       dbExplorerTitle: "DB explorer (tab)",
       refreshAllTitle: "Refresh all project status (F5)",
-      settingsTitle: "Settings",
     },
     projectItem: {
       agentWorkingTitle: "Claude Code working…",
@@ -282,6 +281,7 @@ export const shellText = defineText(ko, {
       colorsOnTitle: "Turn on project colors",
       sortOffTitle: "Turn off change-first sorting (back to the order added)",
       sortOnTitle: "Show projects with changes or activity first",
+      settingsTitle: "Settings",
       emptyTitle: "No projects yet.",
       emptyHintBeforeAddIcon: "Add an existing folder with ",
       emptyHintBetweenIcons: " above, or create a new one with ",

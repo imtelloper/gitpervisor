@@ -10,7 +10,6 @@ import {
   Loader2,
   RefreshCcw,
   RefreshCw,
-  Settings as SettingsIcon,
   SquareTerminal,
   StickyNote,
   Trash2,
@@ -248,14 +247,6 @@ export function Toolbar({ project }: { project: Project }) {
         className="rounded p-1.5 text-fg-muted hover:bg-raised hover:text-fg"
       >
         <RefreshCw size={15} className={isFetching ? "animate-spin" : ""} />
-      </button>
-
-      <button
-        title={msg.shell.toolbar.settingsTitle}
-        onClick={() => useUi.getState().setSettingsOpen(true)}
-        className="rounded p-1.5 text-fg-muted hover:bg-raised hover:text-fg"
-      >
-        <SettingsIcon size={15} />
       </button>
     </header>
   );

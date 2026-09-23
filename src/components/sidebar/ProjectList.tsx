@@ -14,6 +14,7 @@ import {
   Palette,
   Plus,
   RefreshCw,
+  Settings as SettingsIcon,
   StickyNote,
   Terminal,
   Trash2,
@@ -464,6 +465,19 @@ export function ProjectList() {
             {msg.shell.projectList.emptyHintAfterCreateIcon}
           </div>
         )}
+      </div>
+
+      {/* 설정은 사이드바 바닥에 둔다 — 툴바는 프로젝트를 고른 화면에만 뜨지만 여기는 모아보기·리포트·
+          프로젝트 0개에서도 그대로 있다. */}
+      <div className="flex shrink-0 items-center border-t border-edge px-2 py-1.5">
+        <button
+          onClick={() => useUi.getState().setSettingsOpen(true)}
+          title={msg.shell.projectList.settingsTitle}
+          aria-label={msg.shell.projectList.settingsTitle}
+          className="rounded p-1.5 text-fg-dim hover:bg-raised hover:text-fg"
+        >
+          <SettingsIcon size={15} />
+        </button>
       </div>
 
       {menu && (
