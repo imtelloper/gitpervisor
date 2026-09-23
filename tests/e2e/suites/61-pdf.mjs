@@ -49,7 +49,12 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSyn
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { connectLabel } from "../lib/cdp.mjs";
+import {
+  connectDocWindowProd,
+  connectLabel,
+  docWindowsBefore,
+  newDocWindow,
+} from "../lib/cdp.mjs";
 
 export const name =
   "PDF M1 읽기 뷰어 (첫 페이지·diff 0 · 한글 검색 · 링크 · 외부 재기록 · 암호 · 200쪽 캔버스 · CSP/JPX)";
@@ -512,6 +517,7 @@ async function devMode({ cdp, r, fix, cdpPort }) {
   const origTab = await cdp.eval(
     `(() => { const t = window.__gpv.terminals.getState().activeTab; return t[${J(pid)}] || null; })()`,
   );
+  // [라벨, docId] 쌍 — 라벨에서 docId 를 자를 수 없다(풀 창은 `float-pool-N`, 태스크 73).
   const docLabels = [];
 
   try {
@@ -1006,7 +1012,7 @@ async function devMode({ cdp, r, fix, cdpPort }) {
       })()`)
       .catch(() => {});
     await cdp.eval(UNSPY).catch(() => {});
-    for (const label of docLabels) await closeDoc(cdp, label);
+    for (const [label, docId] of docLabels) await closeDoc(cdp, label, docId);
     await cdp
       .eval(`(() => {
         const p = JSON.parse(${J(snap)});
@@ -1848,16 +1854,13 @@ async function docBlock({ cdp, r, pid, cdpPort, CONTROL, docLabels }) {
       `(async () => { try { const m = await import(${J(WIN_API)}); return (await m.getAllWebviewWindows()).map((w) => w.label); } catch (e) { return []; } })()`,
     );
   const openDoc = async (path) => {
-    const before = (await labels()) || [];
+    const before = await docWindowsBefore(cdp);
     await cdp.eval(`window.__gpv.openDocWindow(${J(pid)}, ${J(path)})`); // size 생략 — 호출부 기본 경로
-    const label = await poll(
-      async () => ((await labels()) || []).find((l) => l.startsWith("doc-") && !before.includes(l)) ?? null,
-      (v) => !!v,
-      20,
-      500,
-    );
-    if (label) docLabels.push(label);
-    return label;
+    // 라벨 접두사로 찾지 않는다 — 프리워밍 풀에서 나온 창은 `float-pool-N` 이고 호출 전부터
+    // `/json` 에 있다(lib/cdp.mjs newDocWindow).
+    const opened = await newDocWindow(cdp, before);
+    if (opened?.label) docLabels.push([opened.label, opened.docId]);
+    return opened?.label ?? null;
   };
   const queryDiff = (c, path) =>
     c.eval(`(() => {
@@ -1869,7 +1872,7 @@ async function docBlock({ cdp, r, pid, cdpPort, CONTROL, docLabels }) {
 
   const p = P.links;
   const label = await openDoc(p);
-  if (!r.check("(C3) links.pdf 문서 창(doc-*) 생성", !!label, label || "미발견")) return;
+  if (!r.check("(C3) links.pdf 문서 창 생성", !!label, label || "미발견")) return;
   let dc = null;
   try {
     dc = await connectLabel(label, { port: cdpPort }).catch((e) => {
@@ -2110,17 +2113,19 @@ async function docBlock({ cdp, r, pid, cdpPort, CONTROL, docLabels }) {
       await dc.eval(UNSPY).catch(() => {});
       dc.close();
     }
-    await closeDoc(cdp, label);
+    await closeDoc(cdp, label, undefined);
   }
 }
 
-/** 문서 창 닫기 + localStorage(gp:doc-windows) 기록 제거 — dev·prod 공용(label 로 닫는 창 플러그인 커맨드). */
-async function closeDoc(cdp, label) {
+/** 문서 창 닫기 + localStorage(gp:doc-windows) 기록 제거 — dev·prod 공용(label 로 닫는 창 플러그인 커맨드).
+ *  `docId` 는 호출부가 들고 있어야 한다 — 라벨에서 자를 수 없다(풀 창은 `float-pool-N`, 태스크 73). */
+async function closeDoc(cdp, label, docId) {
   if (!label) return;
   await cdp.try("plugin:window|close", { label }, { timeoutMs: 5000 });
+  if (!docId) return;
   await cdp
     .eval(
-      `(() => { try { const k = 'gp:doc-windows'; const v = JSON.parse(localStorage.getItem(k) || '{}'); delete v[${J(label.slice("doc-".length))}]; localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { return false; } })()`,
+      `(() => { try { const k = 'gp:doc-windows'; const v = JSON.parse(localStorage.getItem(k) || '{}'); delete v[${J(docId)}]; localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { return false; } })()`,
     )
     .catch(() => {});
 }
@@ -2183,8 +2188,6 @@ async function prodMode({ cdp, r, fix, cdpPort }) {
       { path: P.jpx, tag: "jpx" },
     ]) {
       const id = randomBytes(16).toString("hex");
-      const label = `doc-${id}`;
-      labels.push(label);
       // openDocWindow 와 같은 두 단계 — 대상은 localStorage, 창은 Rust 커맨드.
       await cdp.eval(`(() => {
         const k = 'gp:doc-windows';
@@ -2199,12 +2202,13 @@ async function prodMode({ cdp, r, fix, cdpPort }) {
         origin,
         size: [1180, 860],
       });
-      if (!r.check(`(C7) ${doc.tag}: open_doc_window`, inv.ok, inv.ok ? label : `${inv.code} ${inv.message}`)) continue;
-      const dc = await connectLabel(label, { port: cdpPort }).catch((e) => {
-        r.check(`(C7) ${doc.tag}: 문서 창 CDP 연결`, false, e.message);
-        return null;
-      });
-      if (!dc) continue;
+      if (!r.check(`(C7) ${doc.tag}: open_doc_window`, inv.ok, inv.ok ? id : `${inv.code} ${inv.message}`)) continue;
+      // **라벨을 조립해 붙을 수 없다**(태스크 73) — 풀에서 나오면 `float-pool-N` 이다. prod 창에는
+      // Tauri API 모듈 경로가 없으므로 라벨+DOM 으로 찾는 prod 전용 헬퍼를 쓴다.
+      const found = await connectDocWindowProd({ port: cdpPort, exclude: labels.map((x) => x[0]) });
+      if (!r.check(`(C7) ${doc.tag}: 문서 창 CDP 연결`, !!found, found ? found.label : "문서 창을 못 찾음")) continue;
+      const dc = found.cdp;
+      labels.push([found.label, id]);
       try {
         await dc.eval(HELPERS);
         const loaded = await poll(() => evalA(dc, `return A.loaded(${J(doc.path)}, 1);`), (v) => v === true, 60, 500);
@@ -2261,7 +2265,7 @@ async function prodMode({ cdp, r, fix, cdpPort }) {
       }
     }
   } finally {
-    for (const label of labels) await closeDoc(cdp, label);
+    for (const [label, docId] of labels) await closeDoc(cdp, label, docId);
     try {
       rmSync(join(fix.repo, DIR), { recursive: true, force: true, maxRetries: 3 });
     } catch {

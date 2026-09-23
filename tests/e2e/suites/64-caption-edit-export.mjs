@@ -28,7 +28,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
-import { connectLabel } from "../lib/cdp.mjs";
+import { connectLabel, docWindowsBefore, forgetDocTarget, newDocWindow } from "../lib/cdp.mjs";
 
 export const name = "대본 편집·편집본 내보내기 (caption_doc_save 주입 → 패널 편집 → 컷·무음 → 편집본 mp4·SRT)";
 
@@ -207,6 +207,8 @@ export async function run({ cdp, report: r, fix, port }) {
   const srcAbs = join(fix.repo, SRC);
   const created = [SRC, OUT_MP4, OUT_SRT, OUT_SOFT, OUT_BURN, OUT_DUAL, OUT_TR];
   let dLabel = null;
+  // 창 대상(`gp:doc-windows`)의 키 — 라벨에서 자를 수 없다(풀 창은 `float-pool-N`).
+  let dDocId = null;
   let d = null;
   try {
     // ── 0. 픽스처 — 10초 320×240@30 h264 + 440Hz aac(33과 같은 합성, 키프레임 1초) ──
@@ -269,17 +271,13 @@ export async function run({ cdp, report: r, fix, port }) {
     r.check("① 낡은 base_rev 저장 → CONFLICT", !conflict.ok && conflict.code === "CONFLICT", `${conflict.code} ${conflict.message ?? ""}`);
 
     // ── ② doc 창 · 대본 패널 ──
-    const before = await cdp.eval(
-      `(async()=>{ const m=await import(${J(WIN_API)}); return (await m.getAllWebviewWindows()).map(w=>w.label); })()`,
-    );
+    // 라벨 접두사로 찾지 않는다 — 프리워밍 풀에서 나온 창은 `float-pool-N` 이고 호출 전부터
+    // 존재한다(lib/cdp.mjs newDocWindow, 태스크 73).
+    const before = await docWindowsBefore(cdp);
     await cdp.eval(`window.__gpv.openDocWindow(${J(pid)}, ${J(SRC)}, { size: [1280, 900] })`);
-    for (let i = 0; i < 40 && !dLabel; i++) {
-      await sleep(500);
-      const now = await cdp.eval(
-        `(async()=>{ const m=await import(${J(WIN_API)}); return (await m.getAllWebviewWindows()).map(w=>w.label); })()`,
-      );
-      dLabel = now.find((l) => l.startsWith("doc-") && !before.includes(l)) ?? null;
-    }
+    const openedDoc = await newDocWindow(cdp, before, { tries: 40 });
+    dLabel = openedDoc?.label ?? null;
+    dDocId = openedDoc?.docId ?? null;
     if (!r.check("② 영상 doc 창 생성", !!dLabel, dLabel || "미발견")) return;
     d = await connectLabel(dLabel, { port: cdpPort });
     const key = `${pid}\n${SRC}`;
@@ -1069,10 +1067,8 @@ export async function run({ cdp, report: r, fix, port }) {
       await cdp
         .eval(`(async()=>{ const m=await import(${J(WIN_API)}); for (const w of await m.getAllWebviewWindows()) if (w.label===${J(dLabel)}) await w.close(); return true; })()`)
         .catch(() => {});
-      // 닫힌 doc 창이 남긴 대상 기록(34 forgetDoc과 같은 정리)
-      await cdp
-        .eval(`(()=>{ try{ const k='gp:doc-windows'; const v=JSON.parse(localStorage.getItem(k)||'{}'); delete v[${J(dLabel.slice("doc-".length))}]; localStorage.setItem(k, JSON.stringify(v)); }catch(e){} return true; })()`)
-        .catch(() => {});
+      // 닫힌 doc 창이 남긴 대상 기록 정리(lib/cdp.mjs forgetDocTarget)
+      await forgetDocTarget(cdp, dDocId);
     }
     await cdp.eval(`window.__gpv.ui.setState({ toasts: [] })`).catch(() => {});
     for (const rel of created) {

@@ -15,7 +15,7 @@
 //
 // 회귀: 사이드바 `FileTreePanel`(variant 기본값 "panel")의 행 클릭은 지금까지대로 중앙 뷰어로
 // 간다 — 훅(`onActivate`)을 넣으면서 기본 경로가 바뀌지 않았는지 본다.
-import { connectLabel } from "../lib/cdp.mjs";
+import { connectLabel, docWindowsBefore, newDocWindow } from "../lib/cdp.mjs";
 
 export const name =
   "파일 트리 모달 (그 탭의 프로젝트 · 전역 불변 · 문서 창 라우팅 · 점유 계약 · 배경/Esc 닫기)";
@@ -220,7 +220,7 @@ export async function run({ cdp, report: r, fix, port }) {
     // ── ② ③ 파일 클릭 → 전역 불변 + 문서 창 ─────────────────────────────────
     // 모아보기가 켜진 채로 누른다 — selectDiff 경로였다면 여기서 모아보기가 **닫힌다**.
     const beforeKeys = arr(await docKeys());
-    const beforeLabels = arr(await labels());
+    const beforeLabels = await docWindowsBefore(cdp);
     const g0 = await globals();
     const clicked = await cdp.eval(`(()=>{
       const m = ${MODAL};
@@ -249,15 +249,10 @@ export async function run({ cdp, report: r, fix, port }) {
       !!record && record.projectId === fix.projectId && record.path === "README.md",
       `record=${J(record)} 기대projectId=${fix.projectId}`,
     );
-    docLabel = await poll(
-      async () =>
-        arr(await labels()).find((l) => l.startsWith("doc-") && !beforeLabels.includes(l)) ??
-        null,
-      (v) => !!v,
-      20,
-      500,
-    );
-    r.check("모달에서 파일 활성화 → doc-* 창이 실제로 뜬다", !!docLabel, docLabel || "미발견");
+    // 라벨 접두사로 찾지 않는다 — 프리워밍 풀에서 나온 창은 `float-pool-N` 이고 호출 전부터
+    // 존재한다(lib/cdp.mjs newDocWindow).
+    docLabel = (await newDocWindow(cdp, beforeLabels))?.label ?? null;
+    r.check("모달에서 파일 활성화 → 문서 창이 실제로 뜬다", !!docLabel, docLabel || "미발견");
 
     await sleep(500);
     const g1 = await globals();

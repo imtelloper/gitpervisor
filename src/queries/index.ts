@@ -33,7 +33,9 @@ import { useTerminals } from "../stores/terminals";
 import { useTreeState } from "../stores/treeState";
 import { useUi } from "../stores/ui";
 
-const LOG_PAGE_SIZE = 200;
+/** 커밋 로그 한 페이지 크기. **export 인 이유**: 문서 창(main.tsx)이 렌더 전에 같은 인자로
+ *  프리페치한다 — 값이 어긋나면 `useLog` 가 캐시를 못 쓰고 조용히 한 번 더 읽는다. */
+export const LOG_PAGE_SIZE = 200;
 
 /** DiffTarget을 안정적인 쿼리 키 문자열로 직렬화 (mode별로 구분). */
 function diffTargetKey(t: DiffTarget): string {

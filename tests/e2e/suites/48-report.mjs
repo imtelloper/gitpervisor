@@ -21,7 +21,7 @@
 //      채팅도 같은 지침, 그리고 [프롬프트] 편집 패널 왕복(저장 → 설정 반영, 기본값으로 저장 → null).
 //   ⑨ 종합 카드 [AI에게 묻기] → 우측 채팅. [요약으로 저장] 게이트가 `## ` 유무와 일치하고,
 //      저장하면 **카드 본문이 그 답변으로 바뀐다**(스트리밍 잔여가 가리지 않는다).
-//   ⑩ [리포트] 우클릭 → "새 창으로 열기" → `doc-report` 싱글턴, 메인 뷰는 닫힌다.
+//   ⑩ [리포트] 우클릭 → "새 창으로 열기" → 리포트 창 싱글턴(id `report` 고정), 메인 뷰는 닫힌다.
 //   ⑪ 원시 `report_set`/`report_delete` → `report://changed` 로 메인 창 캐시가 따라 움직인다.
 //   ⑫ 모아보기 중 [리포트] → 헤더에 리포트 탭 + 리포트가 그리드를 덮는다. 탭 클릭·버튼은 앞/뒤 전환, X 는 닫기.
 //
@@ -30,6 +30,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync }
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { docWindowsBefore, newDocWindow } from "../lib/cdp.mjs";
 import { git } from "../lib/git-fixture.mjs";
 
 export const name = "작업 리포트 (잔디 · 전사 프롬프트 · 기간 요약)";
@@ -107,6 +108,9 @@ export async function run({ cdp, report: r }) {
   let prevScope;
   let prevChat;
   /** ⑧b 가 덮기 전의 설정 `reportPrompt` — undefined 면 아직 안 건드린 것. finally 에서 되돌린다. */
+  // ⑩ 의 리포트 창 라벨. **`doc-report` 로 가정하면 안 된다** — 프리워밍 풀에서 나오면
+  // `float-pool-N` 이다(태스크 73). 닫기·중복 판정이 이 값을 쓴다.
+  let reportWinLabel = null;
   let prevReportPrompt;
 
   try {
@@ -802,25 +806,31 @@ export async function run({ cdp, report: r }) {
       rightClicked === true && menuShown === true,
       J(rightClicked),
     );
+    const beforeDocs = await docWindowsBefore(cdp);
     await cdp.eval(`document.querySelector('[data-gpv="report-open-window"]').click()`);
-    const opened = await until(
-      async () => (arr(await labels()).includes("doc-report") ? true : null),
-      20000,
-    );
-    r.check("⑩ doc-report OS 창 생성", opened === true, J(arr(await labels())));
+    const openedWin = await newDocWindow(cdp, beforeDocs, { tries: 40 });
+    reportWinLabel = openedWin?.label ?? null;
+    r.check("⑩ 리포트 문서 창 생성", !!reportWinLabel, `${reportWinLabel} / ${J(arr(await labels()))}`);
     const mainClosed = await until(
       async () => ((await cdp.eval(`window.__gpv.ui.getState().reportOpen`)) === false ? true : null),
       5000,
     );
     r.check("⑩ 메인 리포트 뷰는 닫힌다(공간 회수)", mainClosed === true);
-    // 싱글턴 — 라벨이 고정이라 Rust 가 포커스만 준다.
+    // 싱글턴 — 고정 id(`report`)라 두 번째 호출은 기존 창에 포커스만 준다(라벨이든 풀 장부든).
+    // **라벨 개수로 세면 안 된다**(Tauri 라벨은 유일해 언제나 1이다) — 이 호출로 **새로 보이게
+    // 된 문서 창**의 집합을 센다(태스크 73).
     await cdp.eval(`window.__gpv.openReportWindow()`);
     await sleep(2000);
-    const dupes = arr(await labels()).filter((l) => l === "doc-report").length;
-    r.check("⑩ 한 번 더 열어도 doc-report 는 1개(싱글턴)", dupes === 1, `${dupes}`);
+    const nowDocs = await docWindowsBefore(cdp);
+    const extraDocs = nowDocs.visible.filter((l) => !beforeDocs.visible.includes(l));
+    r.check(
+      "⑩ 한 번 더 열어도 리포트 창은 1개(싱글턴)",
+      extraDocs.length === 1 && extraDocs[0] === reportWinLabel,
+      J(extraDocs),
+    );
     await cdp
       .eval(
-        `(async()=>{ try{ const m=await import(${J(WIN_API)}); for(const w of await m.getAllWebviewWindows()){ if(w.label==="doc-report") await w.close(); } return true; }catch(e){ return false; } })()`,
+        `(async()=>{ try{ const m=await import(${J(WIN_API)}); for(const w of await m.getAllWebviewWindows()){ if(w.label===${J(reportWinLabel)}) await w.close(); } return true; }catch(e){ return false; } })()`,
       )
       .catch(() => {});
 
@@ -925,11 +935,15 @@ export async function run({ cdp, report: r }) {
       console.error("전사 정리 경고:", e.message);
     }
     // ⑩ 의 별도 창이 남아 있으면 다음 스위트의 창 열거가 어긋난다.
-    await cdp
-      .eval(
-        `(async()=>{ try{ const m=await import(${J(WIN_API)}); for(const w of await m.getAllWebviewWindows()){ if(w.label==="doc-report") await w.close(); } return true; }catch(e){ return false; } })()`,
-      )
-      .catch(() => {});
+    // 라벨 후보는 둘이다 — 직접 생성 경로의 `doc-report` 와 풀 claim 경로의 `float-pool-N`.
+    for (const l of ["doc-report", reportWinLabel]) {
+      if (!l) continue;
+      await cdp
+        .eval(
+          `(async()=>{ try{ const m=await import(${J(WIN_API)}); for(const w of await m.getAllWebviewWindows()){ if(w.label===${J(l)}) await w.close(); } return true; }catch(e){ return false; } })()`,
+        )
+        .catch(() => {});
+    }
     for (const k of [generatedKey, combinedKey, syncKey]) {
       if (k) await cdp.try("report_delete", { key: k });
     }

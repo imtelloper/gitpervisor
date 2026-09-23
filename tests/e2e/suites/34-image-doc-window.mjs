@@ -15,7 +15,12 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { connectLabel } from "../lib/cdp.mjs";
+import {
+  connectLabel,
+  docWindowsBefore,
+  forgetDocTarget,
+  newDocWindow,
+} from "../lib/cdp.mjs";
 
 export const name =
   "이미지·영상 문서 창 (openDocWindow → doc-* 창 편집기·저장 반영 / 뷰어 탭 우클릭 메뉴)";
@@ -234,6 +239,8 @@ export async function run({ cdp, report: r, fix, port }) {
     );
 
   let docLabel = null;
+  // 창 대상(`gp:doc-windows`)의 키. 라벨에서 자를 수 없다 — 풀에서 나온 창은 `float-pool-N` 이다.
+  let docId = null;
   let dcdp = null;
 
   try {
@@ -258,7 +265,7 @@ export async function run({ cdp, report: r, fix, port }) {
     // ── ① doc 창 열기 ──────────────────────────────────────────────────────
     // 이미지 더블클릭이 부르는 것과 **같은 호출**이다(FileTreePanel onDouble → openDocWindow).
     // 더블클릭 자체는 트리 행 DOM에 의존해 취약하므로 계약(호출)을 직접 구동한다.
-    const before = arr(await labels());
+    const before = await docWindowsBefore(cdp);
     // 사이드카에 남은 편집 문서를 먼저 지운다 — 태스크 41 자동 복원이 이 스위트의
     // "새로 연 편집기는 비어 있다" 전제를 깬다(직전 회차가 남긴 문서가 되살아난다).
     // (편집기가 닫혀 있어 __gpv.imageDocs 훅이 없다 — 커맨드를 직접 부른다.)
@@ -266,14 +273,11 @@ export async function run({ cdp, report: r, fix, port }) {
     await cdp.eval(
       `window.__gpv.openDocWindow(${J(fix.projectId)}, ${J(SRC)}, { size: [1180, 860] })`,
     );
-    docLabel = await poll(
-      async () =>
-        arr(await labels()).find((l) => l.startsWith("doc-") && !before.includes(l)) ?? null,
-      (v) => !!v,
-      20,
-      500,
-    );
-    if (!r.check("openDocWindow: doc-* OS 창 생성됨", !!docLabel, docLabel || "미발견")) return;
+    const openedDoc = await newDocWindow(cdp, before);
+    docLabel = openedDoc?.label ?? null;
+    docId = openedDoc?.docId ?? null;
+    if (!r.check("openDocWindow: 문서 창 생성됨(직접 생성 `doc-*` 또는 프리워밍 풀 claim)", !!docLabel, docLabel || "미발견"))
+      return;
 
     dcdp = await connectLabel(docLabel, { port: cdpPort }).catch((e) => {
       r.check("doc 창 CDP 연결", false, e.message);
@@ -432,12 +436,7 @@ export async function run({ cdp, report: r, fix, port }) {
     if (docLabel) {
       await closeLabel(docLabel);
       // 창 대상 기록(localStorage `gp:doc-windows`)은 창이 닫혀도 남는다 — 이 실행분만 지운다.
-      await cdp
-        .eval(
-          `(()=>{ try{ const k='gp:doc-windows'; const v=JSON.parse(localStorage.getItem(k)||'{}');
-             delete v[${J(docLabel.slice("doc-".length))}]; localStorage.setItem(k, JSON.stringify(v)); return true; }catch(e){ return false; } })()`,
-        )
-        .catch(() => {});
+      await forgetDocTarget(cdp, docId);
     }
     await cdp
       .eval(`window.__gpv.queryClient.removeQueries({ queryKey: ${J(["file-image", fix.projectId])} })`)
@@ -452,15 +451,6 @@ export async function run({ cdp, report: r, fix, port }) {
     await sleep(300);
   }
 }
-
-/** 닫힌 doc 창이 localStorage(`gp:doc-windows`)에 남긴 대상 기록 제거 — 이 실행분만. */
-const forgetDoc = (cdp, label) =>
-  cdp
-    .eval(
-      `(()=>{ try{ const k='gp:doc-windows'; const v=JSON.parse(localStorage.getItem(k)||'{}');
-         delete v[${J(label.slice("doc-".length))}]; localStorage.setItem(k, JSON.stringify(v)); return true; }catch(e){ return false; } })()`,
-    )
-    .catch(() => {});
 
 /**
  * 태스크 35 §2.1~2.2 — 영상도 이미지와 **같은 경로**로 별도 창에서 열리고, 그 창에서 한
@@ -497,21 +487,18 @@ async function videoDocBlock({ cdp, r, fix, cdpPort, arr, labels, closeLabel, po
   }
 
   let vLabel = null;
+  let vDocId = null;
   let vcdp = null;
   try {
-    const before = arr(await labels());
+    const before = await docWindowsBefore(cdp);
     // 파일트리 더블클릭이 부르는 것과 **같은 호출**(FileTreePanel onDouble → isVideo 분기).
     await cdp.eval(
       `window.__gpv.openDocWindow(${J(fix.projectId)}, ${J(SRC)}, { size: [1180, 860] })`,
     );
-    vLabel = await poll(
-      async () =>
-        arr(await labels()).find((l) => l.startsWith("doc-") && !before.includes(l)) ?? null,
-      (v) => !!v,
-      20,
-      500,
-    );
-    if (!r.check("영상 openDocWindow: doc-* OS 창 생성됨", !!vLabel, vLabel || "미발견")) return;
+    const openedVideo = await newDocWindow(cdp, before);
+    vLabel = openedVideo?.label ?? null;
+    vDocId = openedVideo?.docId ?? null;
+    if (!r.check("영상 openDocWindow: 문서 창 생성됨", !!vLabel, vLabel || "미발견")) return;
 
     vcdp = await connectLabel(vLabel, { port: cdpPort }).catch((e) => {
       r.check("영상 doc 창 CDP 연결", false, e.message);
@@ -672,7 +659,7 @@ async function videoDocBlock({ cdp, r, fix, cdpPort, arr, labels, closeLabel, po
     if (vcdp) vcdp.close();
     if (vLabel) {
       await closeLabel(vLabel);
-      await forgetDoc(cdp, vLabel);
+      await forgetDocTarget(cdp, vDocId);
     }
     await cdp.eval(`window.__gpv.ui.setState({ toasts: [] })`).catch(() => {});
     for (const rel of [SRC, OUT]) {
@@ -725,7 +712,9 @@ async function tabMenuBlock({ cdp, r, fix, cdpPort, arr, labels, closeLabel, pol
     })()`);
 
   let newDoc = null;
+  let newDocId = null;
   let nestedDoc = null;
+  let nestedDocId = null;
   let embDirPath = null; // 중첩 저장소 픽스처 — 창을 닫은 **뒤**에 지운다(정리 단계에서)
   const origSel = await cdp.eval(`window.__gpv.ui.getState().selectedProjectId`);
   try {
@@ -771,16 +760,12 @@ async function tabMenuBlock({ cdp, r, fix, cdpPort, arr, labels, closeLabel, pol
     if (opened !== "ok") return;
 
     // 새 창으로 열기 — doc 창 라벨이 하나 늘어난다.
-    const before = arr(await labels());
+    const before = await docWindowsBefore(cdp);
     await clickItem("새 창으로 열기");
-    newDoc = await poll(
-      async () =>
-        arr(await labels()).find((l) => l.startsWith("doc-") && !before.includes(l)) ?? null,
-      (v) => !!v,
-      20,
-      500,
-    );
-    r.check("메뉴 '새 창으로 열기' → doc-* 창 생성", !!newDoc, newDoc || "미발견");
+    const openedMenu = await newDocWindow(cdp, before);
+    newDoc = openedMenu?.label ?? null;
+    newDocId = openedMenu?.docId ?? null;
+    r.check("메뉴 '새 창으로 열기' → 문서 창 생성", !!newDoc, newDoc || "미발견");
     const closedAfterOpen = await poll(menuItems, (v) => Array.isArray(v) && v.length === 0, 10, 200);
     r.check("메뉴 항목 클릭 후 메뉴가 닫힌다", Array.isArray(closedAfterOpen) && closedAfterOpen.length === 0);
 
@@ -822,22 +807,18 @@ async function tabMenuBlock({ cdp, r, fix, cdpPort, arr, labels, closeLabel, pol
       250,
     );
     if (r.check("중첩 저장소 파일이 탭에 열린다(repoId = 합성 id)", embTab === embId, `repoId=${embTab}`)) {
-      const beforeEmb = arr(await labels());
+      const beforeEmb = await docWindowsBefore(cdp);
       await openMenu("README.md");
       await poll(menuItems, (v) => Array.isArray(v) && v.length >= 3, 20, 200);
       await clickItem("새 창으로 열기");
-      nestedDoc = await poll(
-        async () =>
-          arr(await labels()).find((l) => l.startsWith("doc-") && !beforeEmb.includes(l)) ?? null,
-        (v) => !!v,
-        20,
-        500,
-      );
+      const openedNested = await newDocWindow(cdp, beforeEmb);
+      nestedDoc = openedNested?.label ?? null;
+      nestedDocId = openedNested?.docId ?? null;
       let text = null;
       let recorded = null;
       if (nestedDoc) {
         recorded = await cdp.eval(
-          `(()=>{ const v = JSON.parse(localStorage.getItem("gp:doc-windows") || "{}"); const e = v[${J(nestedDoc.slice(4))}]; return e ? e.projectId : null; })()`,
+          `(()=>{ const v = JSON.parse(localStorage.getItem("gp:doc-windows") || "{}"); const e = v[${J(nestedDocId)}]; return e ? e.projectId : null; })()`,
         );
         const ncdp = await connectLabel(nestedDoc, { port: cdpPort }).catch(() => null);
         if (ncdp) {
@@ -863,10 +844,13 @@ async function tabMenuBlock({ cdp, r, fix, cdpPort, arr, labels, closeLabel, pol
         `window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`,
       )
       .catch(() => {});
-    for (const l of [newDoc, nestedDoc]) {
+    for (const [l, id] of [
+      [newDoc, newDocId],
+      [nestedDoc, nestedDocId],
+    ]) {
       if (!l) continue;
       await closeLabel(l);
-      await forgetDoc(cdp, l);
+      await forgetDocTarget(cdp, id);
     }
     // 중첩 저장소는 **이 블록이 만든 것**이라 여기서 지운다 — 남기면 러너 teardown 의
     // "픽스처 디렉토리 삭제됨"이 그 .git 때문에 빨개진다(정리 실패가 다음 회차까지 번진다).

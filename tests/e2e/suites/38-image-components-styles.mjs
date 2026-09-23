@@ -31,7 +31,12 @@
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
-import { connectLabel } from "../lib/cdp.mjs";
+import {
+  connectLabel,
+  docWindowsBefore,
+  forgetDocTarget,
+  newDocWindow,
+} from "../lib/cdp.mjs";
 
 export const name =
   "이미지 스타일·컴포넌트 (앱 전역 라이브러리·창 간 동기 / 스타일 재동기·자동 분리 / 인스턴스 재정의·마스터 갱신·분리)";
@@ -593,6 +598,8 @@ export async function run({ cdp, report: r, fix, port }) {
   let snap0 = null;
   let baseLib = null; // 되돌릴 기준선(사용자 라이브러리 − `e2e:` 잔해)
   let docLabel = null;
+  // 창 대상(`gp:doc-windows`)의 키 — 라벨에서 자를 수 없다(풀 창은 `float-pool-N`).
+  let docId = null;
   let dcdp = null;
 
   const arr = (v) => (Array.isArray(v) ? v : []);
@@ -658,16 +665,15 @@ export async function run({ cdp, report: r, fix, port }) {
     baseLib = ready ? stripE2e(ready) : null;
     if (!r.check("라이브러리 스토어 로드됨(기준선 확보)", !!baseLib)) return;
 
-    const before = arr(await labels());
+    const before = await docWindowsBefore(cdp);
     await cdp.eval(
       `window.__gpv.openDocWindow(${J(fix.projectId)}, ${J(SRC)}, { size: [900, 700] })`,
     );
-    docLabel = await poll(
-      async () => arr(await labels()).find((l) => l.startsWith("doc-") && !before.includes(l)) ?? null,
-      (v) => !!v,
-      20,
-      500,
-    );
+    // 라벨 접두사로 찾지 않는다 — 풀에서 나온 창은 `float-pool-N` 이고 호출 전부터 있다
+    // (lib/cdp.mjs newDocWindow).
+    const openedDoc = await newDocWindow(cdp, before);
+    docLabel = openedDoc?.label ?? null;
+    docId = openedDoc?.docId ?? null;
     if (docLabel) {
       dcdp = await connectLabel(docLabel, { port: cdpPort }).catch(() => null);
     }
@@ -1480,12 +1486,7 @@ export async function run({ cdp, report: r, fix, port }) {
         )
         .catch(() => {});
       // 닫힌 doc 창이 localStorage(`gp:doc-windows`)에 남긴 대상 기록 제거(34 와 같은 규칙).
-      await cdp
-        .eval(
-          `(()=>{ try{ const k='gp:doc-windows'; const v=JSON.parse(localStorage.getItem(k)||'{}');
-             delete v[${J(docLabel.slice("doc-".length))}]; localStorage.setItem(k, JSON.stringify(v)); return true; }catch(e){ return false; } })()`,
-        )
-        .catch(() => {});
+      await forgetDocTarget(cdp, docId);
     }
     if (snap0 !== null) {
       await cdp

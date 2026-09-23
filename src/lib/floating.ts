@@ -22,13 +22,14 @@ export function openFloatingWindow(paneId: string, _projectId: string) {
   });
 }
 
-/** 플로팅 창 풀 프리워밍 — 분리 클릭 시 창 생성·번들 로드를 기다리지 않게 숨김 창을 미리
- *  만들어 둔다. 메인 창 부트 후 유휴 시점에 1회 호출(비어 있을 때만 실제 생성). */
+/** 보조 창 풀 프리워밍 — 클릭 시 창 생성·번들 로드를 기다리지 않게 숨김 창을 미리 만들어 둔다.
+ *  터미널 분리 창과 문서 창이 **같은 풀 하나**를 쓴다(lib.rs 의 FloatPool 주석 — 숨김 창 1개가
+ *  렌더러 273MB다). 메인 창 부트 후 유휴 시점에 1회 호출(비어 있을 때만 실제 생성). */
 export function warmFloatingWindowPool() {
   void invoke("float_pool_warm", { origin: window.location.origin }).catch(() => {});
 }
 
-/** 풀 창 자신이 claim 리스너 무장 후 호출 — 준비 신고(핸드셰이크). FloatingTerminal 전용. */
+/** 풀 창 자신이 claim 리스너 무장 후 호출 — 준비 신고(핸드셰이크). main.tsx 의 풀 셸 전용. */
 export function floatPoolReady() {
   void invoke("float_pool_ready").catch(() => {});
 }
@@ -79,13 +80,24 @@ export interface DocTarget {
  * ImageView 는 DiffViewer 를 관통해야 prop 이 닿는다. `IS_FLOAT_UI`(stores/ui.ts)·
  * `IS_AGGREGATE_WINDOW`(stores/terminals.ts) 와 같은 패턴이다.
  */
-export const IS_DOC_WINDOW = (() => {
+export let IS_DOC_WINDOW = (() => {
   try {
     return getCurrentWebviewWindow().label.startsWith("doc-");
   } catch {
     return false;
   }
 })();
+
+/**
+ * 프리워밍 풀에서 나온 문서 창을 표시한다(태스크 73) — 그 창의 라벨은 `float-pool-N`이라
+ * 위 판정이 놓친다. `let` + 이 세터인 이유: 라벨만으로는 claim 전에 알 수 없고(풀 창은 무엇이
+ * 될지 모른 채 부트한다), 읽는 쪽(ImageView·ImageEditor·ReportCard·ReportChat)은 전부 **렌더
+ * 시점에** 읽는 lazy 청크라 ES 모듈 라이브 바인딩으로 새 값을 본다.
+ * main.tsx 의 풀 셸이 DocWindow 를 렌더하기 **전에** 부른다.
+ */
+export function markDocWindow(): void {
+  IS_DOC_WINDOW = true;
+}
 
 function readDocs(): Record<string, DocTarget> {
   try {

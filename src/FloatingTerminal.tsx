@@ -1,7 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { isMod } from "./lib/platform";
-import { emit, listen } from "@tauri-apps/api/event";
-import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Undo2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -12,7 +11,6 @@ import { FloatTitleBar } from "./components/FloatTitleBar";
 import { currentMessages, useMessages } from "./i18n/ui-language";
 import { PaneTreeRoot } from "./components/workspace/PaneTree";
 import { PromptHistoryButton } from "./components/workspace/TermSessionControls";
-import { floatPoolReady } from "./lib/floating";
 import { ipc } from "./lib/ipc";
 import {
   createTerminal,
@@ -30,40 +28,13 @@ const FONT = 13;
  * 재연결한 뒤, 그 위에 자체 분할 트리(우클릭 분할 메뉴 + Ctrl+Shift+D/E 분할 + Ctrl+W 닫기)를
  * 올린다. 플로팅 창의 useTerminals 스토어는 메인과 독립이다(영속 안 함 — stores/terminals IS_FLOAT).
  *
- * paneId=null은 **프리워밍 풀 창**(라벨 float-pool-*) — 숨긴 채 부트를 끝내 두고 분리 클릭 시
- * claim 이벤트로 paneId를 배정받아 그때 attach한다(창 생성·번들 로드 시간이 0이 되는 경로).
+ * paneId는 라벨(`float-<paneId>`)에서 오거나, 프리워밍 풀 창이면 claim 이벤트로 배정된 값이다 —
+ * 어느 쪽이든 **마운트 시점엔 이미 정해져 있다**(claim 대기는 main.tsx 의 풀 셸이 맡는다).
  */
-export function FloatingTerminal({ paneId: fixedPaneId }: { paneId: string | null }) {
-  const [paneId, setPaneId] = useState(fixedPaneId);
+export function FloatingTerminal({ paneId }: { paneId: string }) {
   const [tabId, setTabId] = useState<string | null>(null);
   const [projectId, setProjectId] = useState("");
   const { data: settings } = useSettings();
-
-  // 풀 모드 — claim(paneId 배정)을 기다린다. 리스너를 **먼저** 무장하고 ready를 신고해야
-  // 이벤트가 유실되지 않는다(핸드셰이크). 브로드캐스트라 라벨로 내 것만 거른다.
-  useEffect(() => {
-    if (fixedPaneId) return;
-    // 대기 중에 터미널 엔진 청크(xterm 포함)를 선로딩 — claim 후 첫 createTerminal이
-    // dynamic import를 기다리지 않는다(분리 클릭 → 표시까지의 꼬리 비용 제거).
-    void import("./lib/terminal-engine");
-    const myLabel = getCurrentWebviewWindow().label;
-    let unlisten: (() => void) | undefined;
-    let cancelled = false;
-    void listen<{ label: string; paneId: string }>("float://claim", (e) => {
-      if (e.payload.label === myLabel) setPaneId(e.payload.paneId);
-    }).then((un) => {
-      if (cancelled) {
-        un();
-        return;
-      }
-      unlisten = un;
-      floatPoolReady();
-    });
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, [fixedPaneId]);
 
   // 이 창에도 저장된 테마 적용 — 로드 전엔 main.tsx의 localStorage 선적용 값이 유지된다.
   // (창이 열린 뒤 메인 창에서 바꾼 테마의 실시간 브로드캐스트는 후속 — 창이 단명이라 저빈도)
@@ -74,7 +45,6 @@ export function FloatingTerminal({ paneId: fixedPaneId }: { paneId: string | nul
   }, [settings?.theme]);
 
   useEffect(() => {
-    if (!paneId) return; // 풀 창 — claim 전엔 attach할 대상이 없다
     let cancelled = false;
     void (async () => {
       const pid = (await ipc.termProject(paneId).catch(() => null)) ?? "";
@@ -112,8 +82,8 @@ export function FloatingTerminal({ paneId: fixedPaneId }: { paneId: string | nul
     };
   }, [paneId]);
 
-  // tabId는 paneId 효과 안에서만 세팅되므로 둘은 함께 있거나 함께 없다 — 타입 좁히기용 동시 검사.
-  if (!tabId || !paneId) return <div className="h-screen w-screen bg-base" />;
+  // attach(termProject → createTerminal)가 끝나기 전 — 빈 바탕만 둔다.
+  if (!tabId) return <div className="h-screen w-screen bg-base" />;
   return <FloatWorkspace tabId={tabId} projectId={projectId} ownPaneId={paneId} />;
 }
 

@@ -584,3 +584,16 @@ e2e 실측(부분 실행 05·14·29·44·45·46·48·49, RAM 44%): **처음 22 f
 | # | 태스크 | 문서 | 규모 | 핵심 판단 | 주요 위험 |
 |---|--------|------|------|-----------|-----------|
 | 72 | 영상 플레이어 "대본" 토글 → 자동 자막(STT) · 대본 편집(자막 줄 수정 ↔ 단어 컷 분리) · 무음 줄이기 · SRT/VTT · 편집본/번인 mp4 · 번역 2단 | [72-video-auto-subtitle-editor.md](72-video-auto-subtitle-editor.md) | **L** | **엔진은 whisper.cpp `whisper-cli` 별도 프로세스, 빌드 `b5130` 고정**(v1.9.4 태그엔 자산 0개) — turbo-q5_0 CPU+VAD가 한국어 TTS 34초를 무오류(RTF 0.40). FFmpeg whisper 필터는 우리 빌드에 없고 청크 경계에서 문장을 잃으며, whisper-rs는 `abort()`로 앱을 죽여 기각. 획득은 `llm/acquire.rs` 재사용(+설치 스모크), 잡은 `video_export` 레지스트리 그대로. **비파괴 `CaptionDoc`(앱 데이터)**: 토큰 `cut`·전역 `silenceKeepMs`에서 Rust `caption_plan`이 keep 목록을 계산하는 단일 구현, `video_export`에 다중 구간(trim/concat). 자막 미리보기는 DOM 오버레이(CSP·CORS 유지), 번인은 ffmpeg cwd + 상수 `subs.ass`로 필터 문자열에 경로·텍스트를 넣지 않는다. contentEditable 금지(컨테이너 단축키가 안 거른다) | **macOS 공식 CLI 없음**(P1은 brew 발견·안내) · VCOMP140(클린 Windows)·glibc 2.34 미확인 · VAD 켤 때 토큰 시각이 VAD 타임라인(P0 실측) · 한국어 근거가 TTS뿐 · libass·한글 폰트·필터 스크립트 플래그 미확인 · CPU 부하와 태스크 71 |
+
+## 16. 문서 창(git log 등) 뜨는 속도 — 프리워밍 풀을 문서 창에도 (73) — 2026-09-23
+
+> 근거: CDP 실측 2026-09-23 — `open_doc_window` → 커밋 목록 완료 **878ms**(프로덕션 번들) / 1026ms(dev)인데
+> `get_log` IPC는 46~96ms다. 비용은 **새 웹뷰 창의 앱 부팅**이다.
+> **문서 상태: 구현·검증 완료(2026-09-23, 미커밋)** — 상세 [73-doc-window-prewarm.md](73-doc-window-prewarm.md).
+> 검증: **클릭→커밋 목록 962ms → 440ms(중앙값, dev·부하 없음)** · 변이(풀 분기 끔)에서 신규 단언만 빨강 ·
+> `cargo test --lib` 385/0 · `tsc --noEmit` 0 · 스위트 34·38·45·48·50·60·64·68 초록 ·
+> **전체 샤드 ALL GREEN 1614/0/17 (222s)**.
+
+| # | 태스크 | 문서 | 규모 | 핵심 판단 | 주요 위험 |
+|---|--------|------|------|-----------|-----------|
+| 73 | `open_doc_window`가 기존 `FLOAT_POOL`(숨김 창 1개)을 claim해 즉시 show + 로그 창 첫 페이지 프리페치 | [73-doc-window-prewarm.md](73-doc-window-prewarm.md) | **S** | **풀을 하나 더 만들지 않는다** — 숨김 창 1개가 렌더러 273MB라, 배정 장부를 `PoolClaim::{Float(paneId), Doc{docId}}`로 갈라 **한 풀이 두 종류를 받는다**. 라벨은 `float-pool-` 그대로(그 접두사에 기대는 분기가 여럿) — 대신 Destroyed 훅이 `pty_pane_id()`가 Some일 때만 PTY를 죽이고, 라벨 싱글턴이 하던 문서 중복 방지는 `claims` 조회(`pool_label_for_doc`)가 대신한다. 프론트는 `main.tsx`의 **풀 셸**이 두 claim을 무장한 뒤 ready를 신고하고 배정에 따라 트리를 고른다(라벨 경로와 **같은 함수** — 갈라 두면 풀 경로만 프리페치가 빠진다). 프리페치는 `useLog`와 같은 키·`LOG_PAGE_SIZE`, 브랜치는 제외(로그 **창**은 `BranchesPane`을 안 그린다) | **e2e 탐지 관용구가 통째로 못 쓰게 된다**(9개 스위트 — 고쳤다) — 프리워밍 창은 클릭 전부터 `/json`에 있어 그 탐지가 성립하지 않는다(스위트 13이 터미널 쪽에서 이미 "새로 보이게 된 창"으로 풀었다). 영향 34·38·45·48·50·60·61·64·68 · 풀 크기 1이라 연달아 열면 두 번째는 폴백 · 터미널 분리와 풀 하나를 나눠 쓴다 · `markDocWindow()`는 `export let` 재대입(모듈 최상위 복사 금지) |

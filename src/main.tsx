@@ -1,4 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import React from "react";
 import ReactDOM from "react-dom/client";
@@ -18,6 +19,8 @@ import { watchAggregateWindow } from "./lib/aggregate-window";
 import { armEngagementTracking } from "./lib/engagement";
 import {
   docTarget,
+  floatPoolReady,
+  markDocWindow,
   openDocWindow,
   openLogWindow,
   openReportWindow,
@@ -26,7 +29,7 @@ import {
 import { ipc } from "./lib/ipc";
 import { opensInOwnViewer } from "./lib/language-map";
 import { buildMessages, chatMessages, scopeKey } from "./lib/report";
-import { keys } from "./queries";
+import { keys, LOG_PAGE_SIZE } from "./queries";
 import {
   getTerminal,
   installTerminalCopyFallback,
@@ -215,6 +218,67 @@ const docId = label.startsWith("doc-") ? label.slice("doc-".length) : null;
 // 여기서 달아야 파일을 여는 그 클릭을 놓치지 않는다 — VideoPlayer는 지연 로드다.
 armEngagementTracking(label !== "main" && label !== "");
 
+/**
+ * 문서 창 한 채의 렌더 트리 — 라벨 `doc-<id>` 창과 **프리워밍 풀에서 나온 창**(라벨
+ * `float-pool-N`, 태스크 73)이 같은 구성을 쓰게 한 곳에 모은다. 갈라 두면 풀 경로만 캐시·
+ * 프리페치가 빠져 "빠르지만 느린 창"이 된다.
+ */
+function docWindowTree(id: string) {
+  // 뷰어가 settings·diff 쿼리를 쓰므로 자체 QueryClient로 감싼다.
+  const docQc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // e2e 61 — 문서 창 diff 0 단언용. 이름을 queryClient로 두면 34가 메인 창으로 오판한다.
+  if (import.meta.env.DEV) {
+    const g = (window as unknown as { __gpv?: Record<string, unknown> }).__gpv;
+    if (g) g.docQueryClient = docQc;
+  }
+  // **읽기를 렌더보다 먼저 건다.** 뷰어 컴포넌트는 lazy라 청크를 받아 오는 동안 아무 일도
+  // 안 하는데, 그 시간에 IPC를 태우면 마운트 시점엔 대개 캐시에 이미 있다. 뷰어가 쓰는 것과
+  // **같은 키·같은 인자**여야 하므로 queries의 keys·LOG_PAGE_SIZE를 그대로 쓴다(어긋나면
+  // 조용히 두 번 읽는다).
+  const t = docTarget(id);
+  const logProjectId = t?.log;
+  if (logProjectId) {
+    // git 로그 창 — 첫 페이지 커밋 목록. `useLog`(useInfiniteQuery, CommitList)와 같은 키·
+    // 같은 limit·skip 이어야 캐시가 그대로 쓰인다. 브랜치는 프리페치하지 않는다: 이 창은
+    // `BranchesPane`을 그리지 않아(LogWindow.tsx — Git 모달의 LogPanel 전용) 쓰이지 않는다.
+    void docQc.prefetchInfiniteQuery({
+      queryKey: keys.log(logProjectId),
+      queryFn: () => ipc.getLog(logProjectId, { limit: LOG_PAGE_SIZE, skip: 0 }),
+      initialPageParam: 0,
+    });
+  } else if (t && !t.folder && !t.report && !opensInOwnViewer(t.path)) {
+    // 폴더 창(태스크 66)·리포트 창(67)은 프로젝트 상대경로 diff 를 읽지 않는다 — projectId 가
+    // 빈 문자열이라 여기서 걸러 두지 않으면 뜰 때마다 실패할 게 뻔한 IPC 를 한 번씩 태운다.
+    // 자기 뷰어로 여는 파일(PDF·이미지 등)은 diff를 쓰지 않는다 — git spawn 0회.
+    const target = { mode: "file", path: t.path } as const;
+    void docQc.prefetchQuery({
+      queryKey: keys.diff(t.projectId, target),
+      queryFn: () => ipc.getDiff(t.projectId, target),
+      staleTime: Infinity,
+    });
+  }
+  return (
+    <QueryClientProvider client={docQc}>
+      <ErrorBoundary>
+        <DocWindow docId={id} />
+      </ErrorBoundary>
+    </QueryClientProvider>
+  );
+}
+
+/** 플로팅 터미널 창 한 채의 렌더 트리 — 라벨 `float-<paneId>` 창과 풀 claim 이 같이 쓴다. */
+function floatWindowTree(paneId: string) {
+  // 플로팅 창도 QueryClientProvider로 감싼다 — 분할 패널 컴포넌트가 쿼리를 쓰더라도 안전하게.
+  const floatQc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return (
+    <QueryClientProvider client={floatQc}>
+      <ErrorBoundary>
+        <FloatingTerminal paneId={paneId} />
+      </ErrorBoundary>
+    </QueryClientProvider>
+  );
+}
+
 if (label === "aggregate") {
   // 터미널 모아보기 전용 창 — 메인의 살아있는 PTY에 재연결해 보여주는 "터미널 벽".
   const aggQc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -230,39 +294,7 @@ if (label === "aggregate") {
     </React.StrictMode>,
   );
 } else if (docId) {
-  // 파일 뷰어 창 — 뷰어가 settings·diff 쿼리를 쓰므로 자체 QueryClient로 감싼다.
-  const docQc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  // e2e 61 — 문서 창 diff 0 단언용. 이름을 queryClient로 두면 34가 메인 창으로 오판한다.
-  if (import.meta.env.DEV) {
-    const g = (window as unknown as { __gpv?: Record<string, unknown> }).__gpv;
-    if (g) g.docQueryClient = docQc;
-  }
-  // **파일 읽기를 렌더보다 먼저 건다.** 뷰어 컴포넌트는 lazy라 청크를 받아 오는 동안 아무 일도
-  // 안 하는데, 그 시간에 IPC를 태우면 마운트 시점엔 대개 캐시에 이미 있다. 뷰어가 쓰는 것과
-  // **같은 키**여야 하므로 queries.keys를 그대로 쓴다(키가 어긋나면 조용히 두 번 읽는다).
-  {
-    const t = docTarget(docId);
-    // 폴더 창(태스크 66)·리포트 창(67)은 프로젝트 상대경로 diff 를 읽지 않는다 — projectId 가
-    // 빈 문자열이라 여기서 걸러 두지 않으면 뜰 때마다 실패할 게 뻔한 IPC 를 한 번씩 태운다.
-    // 자기 뷰어로 여는 파일(PDF·이미지 등)은 diff를 쓰지 않는다 — git spawn 0회.
-    if (t && !t.folder && !t.report && !t.log && !opensInOwnViewer(t.path)) {
-      const target = { mode: "file", path: t.path } as const;
-      void docQc.prefetchQuery({
-        queryKey: keys.diff(t.projectId, target),
-        queryFn: () => ipc.getDiff(t.projectId, target),
-        staleTime: Infinity,
-      });
-    }
-  }
-  renderAfterUiLanguage(
-    <React.StrictMode>
-      <QueryClientProvider client={docQc}>
-        <ErrorBoundary>
-          <DocWindow docId={docId} />
-        </ErrorBoundary>
-      </QueryClientProvider>
-    </React.StrictMode>,
-  );
+  renderAfterUiLanguage(<React.StrictMode>{docWindowTree(docId)}</React.StrictMode>);
 } else if (label === "capture") {
   // 화면 캡쳐 오버레이 — 프리즈 프레임 위에서 영역만 고른다. 쿼리·이벤트 부트스트랩을 태우지
   // 않는다: 이 창은 상시 살아 있으면서 숨었다 나타나므로, 여기서 구독을 열면 캡쳐를 안 쓰는
@@ -286,19 +318,39 @@ if (label === "aggregate") {
       </QueryClientProvider>
     </React.StrictMode>,
   );
-} else if (floatPaneId || isFloatPool) {
-  // 플로팅 창도 QueryClientProvider로 감싼다 — 분할 패널 컴포넌트가 쿼리를 쓰더라도 안전하게.
-  // 풀 창(paneId=null)은 FloatingTerminal이 claim 이벤트를 기다렸다가 배정받아 attach한다.
-  const floatQc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  renderAfterUiLanguage(
-    <React.StrictMode>
-      <QueryClientProvider client={floatQc}>
-        <ErrorBoundary>
-          <FloatingTerminal paneId={floatPaneId} />
-        </ErrorBoundary>
-      </QueryClientProvider>
-    </React.StrictMode>,
-  );
+} else if (floatPaneId) {
+  renderAfterUiLanguage(<React.StrictMode>{floatWindowTree(floatPaneId)}</React.StrictMode>);
+} else if (isFloatPool) {
+  // 프리워밍 풀 창 — **무엇이 될지 모른 채** 부트를 끝내 두고 claim 을 기다린다(터미널 분리 창
+  // 또는 문서 창, lib.rs FloatPool). 리스너를 **둘 다 무장한 뒤** ready 를 신고해야 이벤트가
+  // 유실되지 않는다(핸드셰이크 — 신고가 먼저면 Rust 가 이미 emit 했을 수 있다).
+  //
+  // 여기서 하는 이유(FloatingTerminal 안이 아니라): 배정 결과에 따라 QueryClient 구성과
+  // 프리페치가 갈리므로 창 갈래를 고르는 이 파일이 맡는다.
+  renderAfterUiLanguage(<div className="h-screen w-screen bg-base" />);
+  // 대기 중에 터미널 엔진 청크(xterm)를 선로딩 — claim 후 첫 createTerminal 이 dynamic import 를
+  // 기다리지 않는다. **문서 창 쪽은 선로딩하지 않는다**: 둘 다 당기면 숨김 창 하나가 xterm +
+  // Monaco(~3MB)를 통째로 물고 있게 되는데(풀 창 1개가 이미 렌더러 273MB다), 정작 이 태스크가
+  // 겨냥한 git log 창은 Monaco 를 쓰지 않는다 — 커밋 목록은 순수 DOM 이고 Monaco 는 파일을
+  // 고른 뒤에야 필요하다. 파일 뷰어로 배정되면 그때 lazy 청크를 받는다(기존 동작과 같다).
+  void import("./lib/terminal-engine");
+  let claimed = false;
+  const claim = (tree: React.ReactNode) => {
+    if (claimed) return; // 브로드캐스트가 두 번 와도 QueryClient·프리페치를 두 벌 만들지 않는다
+    claimed = true;
+    renderAfterUiLanguage(<React.StrictMode>{tree}</React.StrictMode>);
+  };
+  void Promise.all([
+    listen<{ label: string; paneId: string }>("float://claim", (e) => {
+      if (e.payload.label === label) claim(floatWindowTree(e.payload.paneId));
+    }),
+    listen<{ label: string; docId: string }>("doc://claim", (e) => {
+      if (e.payload.label !== label) return;
+      // 라벨이 `doc-`로 시작하지 않으므로 문서 창임을 명시적으로 알린다(lib/floating.ts).
+      markDocWindow();
+      claim(docWindowTree(e.payload.docId));
+    }),
+  ]).then(() => floatPoolReady());
 } else {
   const queryClient = new QueryClient({
     defaultOptions: {

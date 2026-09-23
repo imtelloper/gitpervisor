@@ -287,7 +287,8 @@ async fn open_float_window(
     let claimed = {
         let mut pool = FLOAT_POOL.lock().unwrap_or_else(|e| e.into_inner());
         pool.ready.pop().map(|label| {
-            pool.claims.insert(label.clone(), pane_id.clone());
+            pool.claims
+                .insert(label.clone(), PoolClaim::Float(pane_id.clone()));
             label
         })
     };
@@ -335,15 +336,56 @@ async fn open_float_window(
     Ok(())
 }
 
-// ── 플로팅 터미널 프리워밍 풀 ──
-// 분리 클릭 → 새 창이 쓸 수 있기까지의 시간은 WebView2 창 생성 + 번들 로드 + React 부트가
-// 지배한다(attach 자체는 sink 교체라 ms급). 그래서 숨김 창 1개를 미리 만들어 두고, 분리 시
-// paneId만 이벤트로 배정해 즉시 show 한다. claim 직후 다음 창을 백그라운드로 보충한다.
-// 라벨은 `float-pool-<seq>` — `float-`로 시작하므로 is_secondary_window(종료 정리)에 자동
-// 포함되고, Destroyed 훅에서는 **풀 분기가 float 분기보다 먼저** 걸린다(claims로 PTY 식별).
+// ── 보조 창 프리워밍 풀 ──
+// 클릭 → 새 창이 쓸 수 있기까지의 시간은 WebView2 창 생성 + 번들 로드 + React 부트가 지배한다
+// (터미널 attach 는 sink 교체라 ms급, git log 는 IPC 46~96ms — 둘 다 범인이 아니다). 그래서
+// 숨김 창 1개를 미리 만들어 두고, 열 때 무엇이 될지만 이벤트로 배정해 즉시 show 한다.
+// claim 직후 다음 창을 백그라운드로 보충한다.
+//
+// **풀 하나가 두 종류를 받는다** — 터미널 분리 창(`open_float_window`)과 문서 창
+// (`open_doc_window`: 파일 뷰어·폴더·리포트·git log). 숨김 창 1개가 WebView2 렌더러 1벌
+// (실측 273MB)이라 종류마다 풀을 두면 그 값을 두 번 낸다(태스크 73).
+//
+// 라벨은 `float-pool-<seq>` 그대로다 — 문서 창까지 받게 됐어도 **바꾸지 않는다**:
+// `float-` 접두사에 기대는 분기가 여럿이고(is_secondary_window·종료 정리·retitle_aux_windows)
+// e2e 도 그 이름으로 창을 고른다. `is_secondary_window`(종료 정리)에 자동 포함되고,
+// Destroyed 훅에서는 **풀 분기가 float 분기보다 먼저** 걸린다(claims로 무엇이었는지 식별).
 
 /// 풀 창 라벨 접두사. FLOAT_LABEL_PREFIX로도 시작하므로 분기 순서가 중요하다(위 주석).
 const FLOAT_POOL_PREFIX: &str = "float-pool-";
+
+/// 풀 창이 무엇으로 배정됐는가 — 같은 숨김 창 하나가 터미널 분리 창과 문서 창 둘 다에 쓰인다.
+/// **Destroyed 훅이 PTY를 죽여야 하는지가 여기서 갈린다**(문서 창엔 죽일 PTY가 없다).
+#[derive(Clone)]
+enum PoolClaim {
+    /// 터미널 분리 창 — 값은 paneId. 창이 닫히면 그 PTY를 종료한다.
+    Float(String),
+    /// 문서 창 — 값은 docId(프론트가 localStorage 에 적어 둔 대상의 키).
+    /// 같은 문서를 두 창으로 열지 않게 조회에도 쓴다(라벨 `doc-<id>`가 하던 싱글턴 역할).
+    Doc { doc_id: String },
+}
+
+impl PoolClaim {
+    /// 이 창이 닫힐 때 종료해야 하는 PTY paneId — 문서 창은 None.
+    fn pty_pane_id(&self) -> Option<&str> {
+        match self {
+            Self::Float(pane_id) => Some(pane_id),
+            Self::Doc { .. } => None,
+        }
+    }
+}
+
+/// 이미 그 문서를 띄운 풀 창의 라벨. 라벨이 `doc-<id>`가 아니게 되면서 Tauri 의 "라벨이 같으면
+/// 기존 창" 싱글턴을 못 쓰므로, 문서 중복 방지를 여기서 대신 본다(open_doc_window).
+fn pool_label_for_doc(
+    claims: &std::collections::HashMap<String, PoolClaim>,
+    doc_id: &str,
+) -> Option<String> {
+    claims
+        .iter()
+        .find(|(_, c)| matches!(c, PoolClaim::Doc { doc_id: d } if d == doc_id))
+        .map(|(label, _)| label.clone())
+}
 
 #[derive(Default)]
 struct FloatPool {
@@ -351,8 +393,9 @@ struct FloatPool {
     ready: Vec<String>,
     /// 생성 지시됐지만 아직 ready 신고 전인 창 수 — 중복 프리워밍 방지.
     pending: usize,
-    /// claim된 라벨 → paneId. Destroyed에서 PTY 정리, 리로드 시 claim 재전송에 쓴다.
-    claims: std::collections::HashMap<String, String>,
+    /// claim된 라벨 → 배정 내용. Destroyed에서 PTY 정리, 리로드 시 claim 재전송,
+    /// 문서 창 중복 방지에 쓴다.
+    claims: std::collections::HashMap<String, PoolClaim>,
     seq: u64,
 }
 
@@ -365,6 +408,14 @@ static FLOAT_POOL: std::sync::LazyLock<std::sync::Mutex<FloatPool>> =
 struct FloatClaim {
     label: String,
     pane_id: String,
+}
+
+/// 문서 창 claim 페이로드 — FloatClaim 과 같은 규칙(브로드캐스트 + 라벨 필터).
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DocClaim {
+    label: String,
+    doc_id: String,
 }
 
 /// 숨김 풀 창 1개를 만든다(open_float_window와 같은 검증된 레시피 + visible(false)).
@@ -395,6 +446,11 @@ fn spawn_float_pool_window(app: &tauri::AppHandle, url: tauri::Url) {
             // 핵심 — 숨긴 채 번들 로드·React 부트까지 끝내 두고 claim 때 show만 한다.
             .visible(false)
             .decorations(false)
+            // 문서 창으로 배정될 수도 있으므로 open_doc_window 와 **같은** 설정이어야 한다:
+            // Windows(WebView2)에서 이게 켜져 있으면 OS 핸들러가 웹뷰 안의 HTML5 drag&drop 을
+            // 가로채 이미지 편집기의 에셋 드롭이 죽는다(ImageEditor `onStageDrop`). 터미널 창은
+            // OS 파일 드롭을 쓰지 않으므로 잃는 것이 없다.
+            .disable_drag_drop_handler()
             .background_color(tauri::window::Color(30, 31, 34, 255))
             .gpv_webview_env()
             .build();
@@ -451,7 +507,8 @@ async fn float_pool_warm(app: tauri::AppHandle, origin: String) -> Result<(), St
 }
 
 /// 풀 창 프론트가 claim 리스너를 무장한 뒤 호출(핸드셰이크 — 이벤트 유실 방지).
-/// 이미 claim된 창의 재신고(vite 리로드)면 배정된 paneId로 claim을 재전송해 되살린다.
+/// 이미 claim된 창의 재신고(vite 리로드)면 배정 내용으로 claim을 재전송해 되살린다 —
+/// 터미널이었으면 `float://claim`, 문서였으면 `doc://claim`이다(리로드 후 빈 창이 되지 않게).
 #[tauri::command(async)]
 fn float_pool_ready(app: tauri::AppHandle, window: tauri::Window) {
     let label = window.label().to_string();
@@ -460,8 +517,8 @@ fn float_pool_ready(app: tauri::AppHandle, window: tauri::Window) {
     }
     let reclaim = {
         let mut pool = FLOAT_POOL.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(pane_id) = pool.claims.get(&label).cloned() {
-            Some(pane_id)
+        if let Some(claim) = pool.claims.get(&label).cloned() {
+            Some(claim)
         } else {
             if !pool.ready.contains(&label) {
                 pool.ready.push(label.clone());
@@ -470,9 +527,16 @@ fn float_pool_ready(app: tauri::AppHandle, window: tauri::Window) {
             None
         }
     };
-    if let Some(pane_id) = reclaim {
-        let _ = app.emit("float://claim", FloatClaim { label, pane_id });
-        return;
+    match reclaim {
+        Some(PoolClaim::Float(pane_id)) => {
+            let _ = app.emit("float://claim", FloatClaim { label, pane_id });
+            return;
+        }
+        Some(PoolClaim::Doc { doc_id }) => {
+            let _ = app.emit("doc://claim", DocClaim { label, doc_id });
+            return;
+        }
+        None => {}
     }
     // 미claim 창인데 그새 경보가 올라갔다면(drain 시점에 pending이던 창) 바로 회수한다.
     // 여기서 안 막으면 Warn이 유지되는 동안 재drain이 없어 렌더러 1벌이 그대로 남는다.
@@ -586,8 +650,10 @@ async fn open_aggregate_window(app: tauri::AppHandle, origin: String) -> Result<
 
 /// 파일 하나를 별도 OS 창으로 띄운다(파일트리 우클릭 → 새 창으로 열기).
 ///
-/// **라벨이 `float-`로 시작하면 안 된다** — Destroyed 핸들러의 float 분기가 그 라벨을 PTY
-/// paneId로 보고 세션을 종료시킨다. `doc-` 접두사를 쓴다(그 외 라벨은 no-op).
+/// **직접 만드는 창의 라벨이 `float-`로 시작하면 안 된다** — Destroyed 핸들러의 float 분기가 그
+/// 라벨을 PTY paneId로 보고 세션을 종료시킨다. `doc-` 접두사를 쓴다(그 외 라벨은 no-op).
+/// 프리워밍 풀에서 꺼낸 창은 라벨이 `float-pool-N`인데 그건 안전하다 — 풀 분기가 먼저 걸리고
+/// 거기서 `PoolClaim::Doc`은 PTY를 건드리지 않는다(태스크 73).
 ///
 /// 무엇을 띄울지는 **라벨의 id로만** 전달한다. 파일 경로를 라벨에 넣을 수는 없다 — Tauri 창
 /// 라벨은 문자 집합이 제한적이라 공백·한글·`.`이 든 경로가 통과하지 못한다. 실제 대상
@@ -615,12 +681,81 @@ async fn open_doc_window(
         focus_window(&win);
         return Ok(());
     }
+    // 풀에서 꺼낸 창은 라벨이 `float-pool-N`이라 위의 라벨 싱글턴에 걸리지 않는다 — 같은 문서를
+    // 두 창으로 열지 않게 배정 장부를 직접 본다(claims). 이걸 빼면 폴더·리포트·로그 창이
+    // 누를 때마다 하나씩 늘어난다(lib/floating.ts 의 결정적 id 주석).
+    //
+    // **중복 조회와 풀 꺼내기는 한 락 안에서 한다.** 나눠 잡으면 같은 문서를 연타했을 때 두 호출이
+    // 모두 "없음"을 보고 각각 창을 가져가 창이 둘 뜬다 — 라벨로 열던 시절엔 Tauri 가 같은 라벨
+    // 생성을 거절해 막아 주던 자리다(풀 라벨은 매번 달라서 그 보호가 없다).
+    let (already, claimed) = {
+        let mut pool = FLOAT_POOL.lock().unwrap_or_else(|e| e.into_inner());
+        match pool_label_for_doc(&pool.claims, &doc_id) {
+            Some(open_label) => (Some(open_label), None),
+            None => {
+                let label = pool.ready.pop();
+                if let Some(l) = &label {
+                    pool.claims.insert(
+                        l.clone(),
+                        PoolClaim::Doc {
+                            doc_id: doc_id.clone(),
+                        },
+                    );
+                }
+                (None, label)
+            }
+        }
+    };
+    if let Some(open_label) = already {
+        if let Some(win) = app.get_webview_window(&open_label) {
+            focus_window(&win);
+            return Ok(());
+        }
+        // 창이 사라진 배정이 남아 있었다 — 장부를 정리하고 새로 연다.
+        FLOAT_POOL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .claims
+            .remove(&open_label);
+    }
     let url = tauri::Url::parse(&origin).map_err(|e| i18n::text_system::window_origin_invalid(e))?;
     // 프론트가 준 크기는 **클램프**한다 — 화면보다 큰 창은 타이틀바(커스텀)가 화면 밖으로 나가
     // 움직일 수도 닫을 수도 없는 창이 된다. 기본은 텍스트 뷰어에 맞춘 900×760이고,
     // 이미지처럼 넓은 편집 UI가 들어가는 대상만 프론트가 더 큰 값을 넘긴다(태스크 30 §3.2).
     let (w, h) = size.unwrap_or((900.0, 760.0));
     let (w, h) = (w.clamp(420.0, 3000.0), h.clamp(300.0, 3000.0));
+
+    // 위에서 이미 꺼내 배정해 둔 풀 창(있으면) — 창 생성·번들 로드·React 부트가 끝나 있으므로
+    // docId를 이벤트로 넘기고 제목·크기를 입혀 보여주는 것으로 끝난다. 없으면(앱 시작 직후·연타·
+    // 메모리 경보 중) 아래 직접 생성 경로 — 기존과 동일 동작.
+    if let Some(pool_label) = claimed {
+        if let Some(win) = app.get_webview_window(&pool_label) {
+            let _ = app.emit(
+                "doc://claim",
+                DocClaim {
+                    label: pool_label,
+                    doc_id,
+                },
+            );
+            let _ = win.set_title(&title);
+            // 풀 창은 터미널 크기(900×600 · 최소 360×240)로 만들어졌다 — 문서 창 계약으로 되돌린다.
+            let _ = win.set_min_size(Some(tauri::LogicalSize::new(420.0, 300.0)));
+            let _ = win.set_size(tauri::LogicalSize::new(w, h));
+            let _ = win.center();
+            let _ = win.show();
+            focus_window(&win);
+            // 다음 창에 대비해 풀을 보충한다(백그라운드 — 이번 열기 속도와 무관).
+            spawn_float_pool_window(&app, url);
+            return Ok(());
+        }
+        // 창이 사라져 있었다(웹뷰 크래시 등) — claim을 되돌리고 직접 생성으로 진행.
+        FLOAT_POOL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .claims
+            .remove(&pool_label);
+    }
+
     let app2 = app.clone();
     app.run_on_main_thread(move || {
         let r = WebviewWindowBuilder::new(&app2, &label, WebviewUrl::External(url))
@@ -718,8 +853,21 @@ const DOC_LABEL_PREFIX: &str = "doc-";
 /// UI 언어가 바뀌면 떠 있는 보조 창의 제목을 새 언어로 다시 쓴다 — 제목은 창을 만들 때 한 번만 받는다
 /// (DOCS/i18n-design.md §4.4). 문서 창(`doc-`)의 제목은 프론트가 준 파일 이름이라 언어와 무관하다.
 pub(crate) fn retitle_aux_windows(app: &tauri::AppHandle) {
+    let doc_pool_labels: Vec<String> = {
+        let pool = FLOAT_POOL.lock().unwrap_or_else(|e| e.into_inner());
+        pool.claims
+            .iter()
+            .filter(|(_, c)| matches!(c, PoolClaim::Doc { .. }))
+            .map(|(l, _)| l.clone())
+            .collect()
+    };
     for (label, win) in app.webview_windows() {
-        // `float-pool-` 도 `float-` 로 시작한다 — 둘 다 터미널 창이다.
+        // 문서로 배정된 풀 창은 건너뛴다 — 라벨이 `float-`로 시작해도 제목은 프론트가 준 파일
+        // 이름이라 언어와 무관하다(그냥 두면 UI 언어를 바꾸는 순간 "터미널"로 덮인다).
+        if doc_pool_labels.contains(&label) {
+            continue;
+        }
+        // `float-pool-` 도 `float-` 로 시작한다 — 터미널로 배정된 풀 창은 터미널 창이다.
         let title = if label.starts_with(FLOAT_LABEL_PREFIX) {
             i18n::text_system::window_title_terminal()
         } else if label == "sysmon" {
@@ -1323,8 +1471,9 @@ pub fn run() {
                     // 순서·재진입 방지는 shutdown_children 한 곳에 모여 있다.
                     shutdown_children(window.app_handle());
                 } else if label.starts_with(FLOAT_POOL_PREFIX) {
-                    // 풀 창 — claim됐으면 배정된 PTY만 종료, 미claim(숨김 대기 중 소멸)이면
-                    // 목록 정리만. **float 분기보다 먼저** 와야 한다(라벨이 float-로도 시작).
+                    // 풀 창 — 터미널로 배정됐으면 그 PTY만 종료, 문서 창으로 배정됐거나
+                    // 미claim(숨김 대기 중 소멸)이면 목록 정리만(문서 창엔 죽일 PTY가 없다).
+                    // **float 분기보다 먼저** 와야 한다(라벨이 float-로도 시작).
                     shutdown_step("float-pool-close", || {
                         let claimed = {
                             let mut pool =
@@ -1332,9 +1481,11 @@ pub fn run() {
                             pool.ready.retain(|l| l != label);
                             pool.claims.remove(label)
                         };
-                        if let Some(pane_id) = claimed {
+                        if let Some(pane_id) =
+                            claimed.as_ref().and_then(PoolClaim::pty_pane_id)
+                        {
                             if let Some(state) = window.try_state::<AppState>() {
-                                close_unless_redocking(state.inner(), &pane_id);
+                                close_unless_redocking(state.inner(), pane_id);
                             }
                         }
                     });
@@ -1459,6 +1610,56 @@ mod tests {
         );
         assert!(!"aggregate".starts_with(FLOAT_LABEL_PREFIX));
         assert!(!"sysmon".starts_with(FLOAT_LABEL_PREFIX));
+    }
+
+    /// 풀 창 하나가 두 종류를 받는다(태스크 73) — **문서 창을 닫을 때 PTY를 죽이면 안 된다.**
+    /// 라벨이 `float-pool-`(→`float-`)로 시작하므로, 배정 내용을 안 보면 Destroyed 훅이 docId를
+    /// paneId로 착각해 엉뚱한 세션을 종료시킬 자리다.
+    #[test]
+    fn pool_claim_closes_pty_only_for_terminal_windows() {
+        assert_eq!(
+            PoolClaim::Float("pane-a".into()).pty_pane_id(),
+            Some("pane-a")
+        );
+        assert_eq!(
+            PoolClaim::Doc {
+                doc_id: "abc123".into()
+            }
+            .pty_pane_id(),
+            None,
+            "문서 창엔 죽일 PTY가 없다"
+        );
+    }
+
+    /// 문서 창 싱글턴 — 라벨이 `doc-<id>`가 아니게 되면서 Tauri 의 라벨 싱글턴을 못 쓰므로
+    /// 배정 장부로 본다. 이게 없으면 폴더·리포트·로그 창이 누를 때마다 하나씩 늘어난다.
+    #[test]
+    fn pool_doc_claim_is_singleton_per_doc() {
+        let mut claims = std::collections::HashMap::new();
+        claims.insert(
+            "float-pool-1".to_string(),
+            PoolClaim::Float("pane-a".into()),
+        );
+        claims.insert(
+            "float-pool-2".to_string(),
+            PoolClaim::Doc {
+                doc_id: "report".into(),
+            },
+        );
+        assert_eq!(
+            pool_label_for_doc(&claims, "report").as_deref(),
+            Some("float-pool-2")
+        );
+        assert_eq!(
+            pool_label_for_doc(&claims, "other"),
+            None,
+            "다른 문서는 새 창을 얻는다"
+        );
+        assert_eq!(
+            pool_label_for_doc(&claims, "pane-a"),
+            None,
+            "터미널 배정을 docId로 잘못 집으면 분리 창에 문서를 덮어쓴다"
+        );
     }
 
     /// 되돌리기 우회는 **1회성**이다. 등록이 남으면 그 뒤 진짜로 닫은 플로팅 창의 PTY가

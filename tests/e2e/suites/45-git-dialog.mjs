@@ -11,7 +11,7 @@
 // 픽스처의 추적 파일 `src/app.txt`를 한 줄 고쳐 미커밋 변경 1개를 만든다(03-status-changes 관례).
 export const name = "Git 변경·로그 모달 (모달 로컬 선택 · 전역 불변 · 모아보기 유지 · 헤더 버튼·Esc)";
 
-import { connectLabel } from "../lib/cdp.mjs";
+import { connectLabel, docWindowsBefore, newDocWindow } from "../lib/cdp.mjs";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const J = JSON.stringify;
@@ -293,13 +293,36 @@ export async function run({ cdp, report: r, fix, port }) {
       cdp.eval(
         `(async()=>{ try{ const m=await import(${J(WIN_API)}); return (await m.getAllWebviewWindows()).map(w=>w.label); }catch(e){ return ['ERR:'+String(e.message||e)]; } })()`,
       );
-    const before = arr(await labels());
-    await cdp.eval(`window.__gpv.openLogWindow(${J(fix.projectId)}, "e2e-log")`);
-    const logLabel = await poll(
-      async () => arr(await labels()).find((l) => l.startsWith("doc-") && !before.includes(l)) ?? null,
+    // 프리워밍 풀을 먼저 채운다(태스크 73) — 문서 창이 **그 숨김 창을** 가져가는지 보려면
+    // 어느 라벨을 기다리는지 알아야 한다. warm 은 풀이 비었을 때만 실제로 만든다(멱등).
+    const hiddenPool = () =>
+      cdp.eval(
+        `(async()=>{ try{ const m=await import(${J(WIN_API)}); const out=[];
+           for(const w of await m.getAllWebviewWindows())
+             if(w.label.startsWith("float-pool-") && !(await w.isVisible())) out.push(w.label);
+           return out; }catch(e){ return []; } })()`,
+      );
+    const origin = await cdp.eval(`window.location.origin`);
+    await cdp.try("float_pool_warm", { origin });
+    const warmLabel = await poll(
+      async () => arr(await hiddenPool())[0] ?? null,
       (v) => !!v,
       24,
       500,
+    );
+
+    const before = await docWindowsBefore(cdp);
+    await cdp.eval(`window.__gpv.openLogWindow(${J(fix.projectId)}, "e2e-log")`);
+    // 라벨 접두사로 찾지 않는다 — 풀에서 나온 창은 `float-pool-N` 이고 호출 전부터 존재한다
+    // (lib/cdp.mjs newDocWindow 주석).
+    const opened = await newDocWindow(cdp, before);
+    const logLabel = opened?.label ?? null;
+    // **풀 claim 경로가 실제로 쓰였다** — 숨겨져 있던 그 라벨이 곧 이 문서 창이어야 한다.
+    // 풀 분기를 끄면 라벨이 `doc-<id>` 가 돼 여기서 빨개진다.
+    r.check(
+      "풀 claim(태스크 73) — 프리워밍된 숨김 창이 **그대로** git log 창이 된다(창 부팅 비용 0)",
+      !!warmLabel && logLabel === warmLabel,
+      `프리워밍=${warmLabel} 열린창=${logLabel}`,
     );
     let inWindow = null;
     if (logLabel) {
@@ -325,16 +348,22 @@ export async function run({ cdp, report: r, fix, port }) {
       }
     }
     // 싱글턴 — 같은 프로젝트를 다시 열면 창이 늘지 않는다(Rust 가 포커스만 준다).
+    //
+    // **라벨 개수로 세면 안 된다.** Tauri 라벨은 유일해서 `labels().filter(l => l === logLabel)`
+    // 은 언제나 0 또는 1이다 — 싱글턴이 깨져 `doc-<다른 id>` 창이 하나 더 떠도 초록이었다
+    // (태스크 73에서 발견). 그래서 **이 호출로 새로 보이게 된 문서 창의 집합**을 센다.
     await cdp.eval(`window.__gpv.openLogWindow(${J(fix.projectId)}, "e2e-log")`);
     await sleep(1500);
-    const dupes = arr(await labels()).filter((l) => l === logLabel).length;
+    const nowVisible = await docWindowsBefore(cdp);
+    const extra = nowVisible.visible.filter((l) => !before.visible.includes(l));
     r.check(
-      "사이드바 계약 — openLogWindow → doc-* 창이 **그 프로젝트의** 로그를 읽는다 · 다시 열어도 1개(싱글턴)",
+      "사이드바 계약 — 문서 창이 **그 프로젝트의** 로그를 읽는다 · 다시 열어도 1개(싱글턴)",
       !!logLabel &&
         Array.isArray(inWindow?.log) &&
         inWindow.log.some((k) => k.includes(fix.projectId)) &&
-        dupes === 1,
-      `label=${logLabel} 창안=${J(inWindow)} 중복=${dupes}`,
+        extra.length === 1 &&
+        extra[0] === logLabel,
+      `label=${logLabel} 창안=${J(inWindow)} 새로보인문서창=${J(extra)}`,
     );
     if (logLabel)
       await cdp

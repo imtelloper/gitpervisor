@@ -304,3 +304,125 @@ export async function connectLabel(label, { port } = {}) {
     `라벨 "${label}" 인 창의 CDP 페이지를 찾지 못했습니다(20회 재시도, 포트 [${ports.join(", ")}]).`,
   );
 }
+
+// ── 문서 창 탐지 (태스크 73 — 프리워밍 풀) ────────────────────────────────────────
+// `open_doc_window` 는 프리워밍 풀(lib.rs FLOAT_POOL)에 대기 창이 있으면 그것을 claim 해 show
+// 한다. 그래서 문서 창의 라벨은 `doc-<id>` 가 **아닐 수 있고**(`float-pool-N`), 더 중요하게는
+// **호출 전부터 `/json` 에 있다**(숨김 창). 예전 관용구
+//   labels().find(l => l.startsWith("doc-") && !before.includes(l))
+// 는 그래서 아무것도 못 찾는다 — 새 라벨로 잡히는 것은 claim 직후 채워지는 **보충 창**(숨김)뿐이다.
+//
+// 판정을 "새로 **보이게 된** 창"으로 바꾼다(스위트 13 openFloat 가 터미널 쪽에서 쓰는 것과 같은
+// 방식). 직접 생성 경로는 새 라벨 + 보임, 풀 경로는 기존 라벨 + 새로 보임, 보충 창은 새 라벨 +
+// 숨김이라 셋이 정확히 갈린다.
+//
+// **한계**: 같은 대기 구간에 터미널 분리(float claim)가 끼면 그 창도 "새로 보이게 된 풀 창"이라
+// 후보에 든다. 문서 창 스위트는 그 둘을 같이 하지 않으므로 좁히지 않았다 — 하게 되면 라벨이
+// `doc-` 인지, 또는 그 창의 DOM 을 물어 가려야 한다.
+
+const DOC_WINDOW_LABELS_EXPR = (onlyVisible) => `(async()=>{ try{
+  const m = await import("/node_modules/@tauri-apps/api/webviewWindow.js");
+  const out = [];
+  for (const w of await m.getAllWebviewWindows()) {
+    if (!(w.label.startsWith("doc-") || w.label.startsWith("float-pool-"))) continue;
+    if (${onlyVisible ? "!(await w.isVisible())" : "false"}) continue;
+    out.push(w.label);
+  }
+  return out; }catch(e){ return []; } })()`;
+
+const DOC_KEYS_EXPR = `(()=>{ try{ return Object.keys(JSON.parse(localStorage.getItem("gp:doc-windows")||"{}")); }catch(e){ return []; } })()`;
+
+/**
+ * 문서 창을 여는 호출 **직전**에 찍는다 — `newDocWindow()` 와 짝으로 쓴다.
+ * `cdp` 는 메인 창 연결이어야 한다(`gp:doc-windows` 는 같은 origin 의 localStorage).
+ */
+export async function docWindowsBefore(cdp) {
+  const asArr = (v) => (Array.isArray(v) ? v : []);
+  return {
+    all: asArr(await cdp.eval(DOC_WINDOW_LABELS_EXPR(false)).catch(() => [])),
+    visible: asArr(await cdp.eval(DOC_WINDOW_LABELS_EXPR(true)).catch(() => [])),
+    keys: asArr(await cdp.eval(DOC_KEYS_EXPR).catch(() => [])),
+  };
+}
+
+/**
+ * 방금 열린 문서 창을 찾는다. 반환 `{ label, docId, pooled }` — 못 찾으면 null.
+ *
+ * `docId` 는 `gp:doc-windows` 의 **새 키**다(창 정리 때 그 항목을 지우는 데 쓴다). 라벨에서
+ * 잘라 쓸 수 없다: 풀 경로의 라벨은 `float-pool-N` 이다. 결정적 id 를 쓰는 창(리포트 `report`,
+ * 폴더·로그 `fnv16(...)`)은 그 키가 **이미 있어서** 새 키가 없으므로 null 이 나온다 — 그 경우
+ * 호출부가 자기가 아는 id 를 쓴다.
+ */
+export async function newDocWindow(cdp, before, { tries = 24, ms = 500 } = {}) {
+  const asArr = (v) => (Array.isArray(v) ? v : []);
+  for (let i = 0; i < tries; i++) {
+    const vis = asArr(await cdp.eval(DOC_WINDOW_LABELS_EXPR(true)).catch(() => []));
+    const label = vis.find((l) => !before.visible.includes(l));
+    if (label) {
+      const keys = asArr(await cdp.eval(DOC_KEYS_EXPR).catch(() => []));
+      const fresh = keys.filter((k) => !before.keys.includes(k));
+      return {
+        label,
+        docId: fresh.length === 1 ? fresh[0] : null,
+        pooled: label.startsWith("float-pool-"),
+      };
+    }
+    await new Promise((res) => setTimeout(res, ms));
+  }
+  return null;
+}
+
+/** 닫힌 문서 창이 `gp:doc-windows` 에 남긴 대상 기록 제거 — 이 실행분만. */
+export async function forgetDocTarget(cdp, docId) {
+  if (!docId) return false;
+  return await cdp
+    .eval(
+      `(()=>{ try{ const k='gp:doc-windows'; const v=JSON.parse(localStorage.getItem(k)||'{}');
+         delete v[${JSON.stringify(docId)}]; localStorage.setItem(k, JSON.stringify(v)); return true; }catch(e){ return false; } })()`,
+    )
+    .catch(() => false);
+}
+
+/**
+ * prod 번들에서 문서 창을 찾아 붙는다 — `/node_modules/@tauri-apps/api/...` 가 **없는** 창용.
+ *
+ * `newDocWindow()` 는 Tauri API 모듈을 동적 import 해 `isVisible()` 을 묻는데, 설치본/prod
+ * 번들에는 그 경로가 서빙되지 않는다. 여기서는 `/json` 의 **모든 페이지**에 붙어
+ * (a) 라벨이 문서 창 후보인지(`doc-*` 또는 풀 `float-pool-*`) (b) 그 창이 실제로 문서를 그리는지
+ * (커스텀 타이틀바가 있는지 — 미claim 풀 창은 빈 바탕 `div` 뿐이다)로 가른다.
+ *
+ * `exclude` 에 이미 쓰고 있는 라벨을 넘긴다(창을 여러 개 띄우는 호출부). 반환은 `{ cdp, label }`,
+ * 못 찾으면 null.
+ */
+export async function connectDocWindowProd({ port, exclude = [], tries = 40, ms = 500 } = {}) {
+  const explicit = port || Number(process.env.GPV_E2E_PORT) || null;
+  const ports = explicit ? [explicit] : SCAN_PORTS;
+  const PROBE = `(() => { try { return JSON.stringify({
+    label: ${LABEL_EXPR} || null,
+    doc: !!document.querySelector('header,[class*="titlebar"]') }); } catch (e) { return null; } })()`;
+  for (let attempt = 0; attempt < tries; attempt++) {
+    for (const p of ports) {
+      const list = await listTargets(p);
+      if (!list) continue;
+      for (const page of list.filter((t) => t.type === "page")) {
+        const c = await attach(page);
+        if (!c) continue;
+        const raw = await c.eval(PROBE).catch(() => null);
+        const st = raw ? JSON.parse(raw) : null;
+        const label = st?.label ?? null;
+        const candidate =
+          !!label &&
+          (label.startsWith("doc-") || label.startsWith("float-pool-")) &&
+          !exclude.includes(label);
+        if (candidate && st.doc) {
+          c.pageUrl = page.url;
+          c.cdpPort = p;
+          return { cdp: c, label };
+        }
+        c.close();
+      }
+    }
+    await new Promise((res) => setTimeout(res, ms));
+  }
+  return null;
+}

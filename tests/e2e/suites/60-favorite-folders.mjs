@@ -29,7 +29,7 @@ import { existsSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { connectLabel } from "../lib/cdp.mjs";
+import { connectLabel, docWindowsBefore, newDocWindow } from "../lib/cdp.mjs";
 
 export const name =
   "즐겨찾기 폴더 창 (백엔드 게이트 · 종류 분류 · 썸네일 크기 고정 · 창 라우팅 · 경로 복사 · 갱신 뒤 선택·썸네일·라이트박스 유지)";
@@ -201,17 +201,25 @@ export async function run({ cdp, report: r }) {
       `버튼=${J(opened)} 항목=${item}`,
     );
 
-    label = `doc-${folderWindowId(root)}`;
+    // **라벨을 미리 조립할 수 없다**(태스크 73) — 프리워밍 풀에서 나온 창은 `float-pool-N` 이다.
+    // 결정적인 것은 라벨이 아니라 **창 대상의 키**(`gp:doc-windows` 의 `folderWindowId(root)`)이고,
+    // 싱글턴은 그 키로 걸린다. 그래서 창은 "새로 보이게 된 문서 창"으로 찾고, 결정적 id 는
+    // localStorage 기록으로 따로 단언한다.
+    const beforeDocs = await docWindowsBefore(cdp);
     await cdp.eval(
       `(()=>{ const b = Array.from(document.querySelectorAll('button')).find(x => (x.textContent||'').trim() === 'e2e 즐겨찾기'); if (b) b.click(); return !!b; })()`,
     );
-
-    win = await connectLabel(label, { port: cdp.cdpPort }).catch(() => null);
+    label = (await newDocWindow(cdp, beforeDocs))?.label ?? null;
+    const folderKey = folderWindowId(root);
+    const folderRecord = await cdp.eval(
+      `(()=>{ try{ return JSON.parse(localStorage.getItem('gp:doc-windows')||'{}')[${J(folderKey)}] || null; }catch(e){ return null; } })()`,
+    );
+    win = label ? await connectLabel(label, { port: cdp.cdpPort }).catch(() => null) : null;
     if (
       !r.check(
-        "⑤ 항목 클릭 → 폴더 창이 뜬다(라벨은 경로에서 결정적으로 나온다)",
-        !!win,
-        `label=${label}`,
+        "⑤ 항목 클릭 → 폴더 창이 뜬다(창 id 는 경로에서 결정적으로 나온다)",
+        !!win && !!folderRecord && folderRecord.folder === root,
+        `label=${label} id=${folderKey} 기록=${J(folderRecord)}`,
       )
     ) {
       return;
@@ -233,12 +241,15 @@ export async function run({ cdp, report: r }) {
     );
 
     // 같은 항목을 다시 눌러도 창은 하나 — Rust 의 싱글턴 분기(open_doc_window)가 걸린다.
-    // **라벨을 직접 센다.** "페이지가 있으면 1" 같은 대리 지표는 창이 둘이어도 통과한다.
+    // **라벨 개수로 세면 안 된다**: Tauri 라벨은 유일해서 `filter(l => l === label).length` 는
+    // 언제나 0/1 이고, 창이 하나 더 떠도(새 라벨) 1 이 나온다. 이 호출로 **새로 보이게 된
+    // 문서 창**의 수를 센다(태스크 73).
     const countLabel = async () => {
       const ls = await labels();
       // 열거 자체가 실패했으면 0 이 아니라 -1 — 단언이 그 자리에서 깨져야 한다.
       if (ls.some((l) => String(l).startsWith("ERR:"))) return -1;
-      return ls.filter((l) => l === label).length;
+      const now = await docWindowsBefore(cdp);
+      return now.visible.filter((l) => !beforeDocs.visible.includes(l)).length;
     };
     const before2 = await countLabel();
     await cdp.eval(`(()=>{
