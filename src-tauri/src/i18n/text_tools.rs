@@ -313,13 +313,6 @@ pub fn preview_port_check_failed(err: &dyn Display) -> String {
     }
 }
 
-pub fn preview_nonblocking_failed(err: &dyn Display) -> String {
-    match lang() {
-        Lang::Ko => format!("논블로킹 설정 실패: {err}"),
-        Lang::En => format!("Failed to set non-blocking mode: {err}"),
-    }
-}
-
 pub fn preview_thread_spawn_failed(err: &dyn Display) -> String {
     match lang() {
         Lang::Ko => format!("프리뷰 스레드 생성 실패: {err}"),

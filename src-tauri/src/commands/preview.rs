@@ -67,8 +67,9 @@ const PATH_SEG: &AsciiSet = &CONTROLS
 
 /// 유휴 종료까지의 시간 — 프리뷰를 열어 두고 코드를 고치는 왕복을 견디는 최소치.
 const IDLE_SECS: u64 = 600;
-/// accept 폴링 주기 — 논블로킹 accept가 WouldBlock일 때 쉬는 시간(폐기·유휴 판정 주기이기도 하다).
-const POLL: Duration = Duration::from_millis(250);
+/// 폐기·유휴 판정 주기 — 감시 스레드가 이 간격으로 깨어 본다. accept 지연과는 무관하다
+/// (accept는 블로킹이다 — start_server 주석).
+const JANITOR_TICK: Duration = Duration::from_secs(2);
 
 /// 한 폴더를 서빙하는 루프백 서버 한 대.
 pub struct ServerEntry {
@@ -200,9 +201,14 @@ pub(crate) fn ensure_server(state: &AppState, base: &Path) -> Result<(u16, Strin
 
 /// base 폴더를 루트로 하는 루프백 서버를 띄운다.
 ///
-/// accept 루프는 **논블로킹 + 폴링**이다. 블로킹 `accept()`는 깨울 방법이 없어 서버가 프로세스
-/// 종료까지 살아남았는데(프로젝트를 제거해도 계속 서빙), 폴링으로 바꾸면 같은 루프에서 폐기
-/// (`alive=false`)와 유휴 종료를 함께 처리할 수 있다. 유휴 시 비용은 초당 4회 WouldBlock뿐이다.
+/// accept는 **블로킹**이다. 예전에는 논블로킹 + 250ms 폴링이었는데, 커넥션 하나가 그 주기만큼을
+/// 그냥 기다렸다 — 미디어는 keep-alive 없이 Range 요청마다 새 커넥션을 열기 때문에 재생 시작도
+/// 탐색도 통째로 느려졌다(2026-09-23 실측: 64KB Range 왕복 중앙값 130ms, 파일 읽기는 1ms 미만).
+///
+/// 블로킹 accept를 쓰면서도 폐기(`alive=false`)·유휴 종료를 처리하려고 감시 스레드를 하나 둔다:
+/// 그 스레드가 `JANITOR_TICK`마다 판정하고, 접어야 할 때 `alive`를 내린 뒤 **자기 포트로 커넥션을
+/// 하나 던져** accept를 깨운다. 폐기된 서버가 그 사이 파일을 내주는 일은 없다 — `handle_conn`이
+/// 시작에서 `alive`를 보고 503을 돌려준다.
 fn start_server(base: PathBuf, token: String) -> Result<ServerEntry, IpcError> {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
         .map_err(|e| IpcError::new(ErrorCode::Io, text_tools::preview_server_start_failed(&e)))?;
@@ -210,10 +216,6 @@ fn start_server(base: PathBuf, token: String) -> Result<ServerEntry, IpcError> {
         .local_addr()
         .map_err(|e| IpcError::new(ErrorCode::Io, text_tools::preview_port_check_failed(&e)))?
         .port();
-    listener
-        .set_nonblocking(true)
-        .map_err(|e| IpcError::new(ErrorCode::Io, text_tools::preview_nonblocking_failed(&e)))?;
-
     let alive = Arc::new(AtomicBool::new(true));
     let last_hit = Arc::new(AtomicU64::new(0));
     let (t_alive, t_hit) = (alive.clone(), last_hit.clone());
@@ -222,20 +224,38 @@ fn start_server(base: PathBuf, token: String) -> Result<ServerEntry, IpcError> {
     // last_hit을 갱신할 수 있어야 한다.
     let started = Instant::now();
 
+    // 폐기·유휴 감시 — 판정이 서면 alive를 내리고 자기 포트로 연결해 accept를 깨운다.
+    {
+        let (j_alive, j_hit) = (alive.clone(), last_hit.clone());
+        std::thread::Builder::new()
+            .name("html-preview-idle".into())
+            .spawn(move || loop {
+                std::thread::sleep(JANITOR_TICK);
+                let idle = started
+                    .elapsed()
+                    .as_secs()
+                    .saturating_sub(j_hit.load(Ordering::Relaxed));
+                // 폐기됐거나(프로젝트 제거) 유휴 임계를 넘었다 — 둘 다 "이 서버는 끝"이다.
+                if j_alive.load(Ordering::Relaxed) && idle <= IDLE_SECS {
+                    continue;
+                }
+                j_alive.store(false, Ordering::Relaxed);
+                // 깨우기 커넥션. acceptor가 alive=false를 보고 그냥 접는다(핸들러도 안 띄운다).
+                let _ = TcpStream::connect(("127.0.0.1", port));
+                return;
+            })
+            .map_err(|e| IpcError::new(ErrorCode::Io, text_tools::preview_thread_spawn_failed(&e)))?;
+    }
+
     std::thread::Builder::new()
         .name("html-preview".into())
         .spawn(move || {
             loop {
-                if !t_alive.load(Ordering::Relaxed) {
-                    return; // 폐기됨(프로젝트 제거) — 리스너가 drop되며 포트가 해제된다
-                }
                 match listener.accept() {
                     Ok((stream, _)) => {
-                        // ⚠️ accept된 스트림은 플랫폼에 따라 논블로킹을 상속한다. handle_conn은
-                        // 타임아웃 있는 블로킹 I/O를 전제하므로 반드시 되돌린다 — 안 하면
-                        // 요청 파싱이 WouldBlock으로 즉시 실패한다.
-                        if stream.set_nonblocking(false).is_err() {
-                            continue;
+                        // 폐기·유휴로 접는 길 — 감시 스레드가 깨우려고 던진 커넥션이 여기로 온다.
+                        if !t_alive.load(Ordering::Relaxed) {
+                            return; // 리스너가 drop되며 포트가 해제된다
                         }
                         t_hit.store(started.elapsed().as_secs(), Ordering::Relaxed);
                         let base = base.clone();
@@ -248,21 +268,6 @@ fn start_server(base: PathBuf, token: String) -> Result<ServerEntry, IpcError> {
                             .spawn(move || {
                                 let _ = handle_conn(stream, &base, &token, port, &al, &hit, started);
                             });
-                    }
-                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        // 대기 중인 커넥션 없음 — 쉬면서 폐기·유휴를 판정한다.
-                        // (sleep 없이 continue하면 CPU를 태우는 바쁜 루프가 된다.)
-                        std::thread::sleep(POLL);
-                        let idle = started
-                            .elapsed()
-                            .as_secs()
-                            .saturating_sub(t_hit.load(Ordering::Relaxed));
-                        if idle > IDLE_SECS {
-                            // 탭을 닫았든 사용자가 떠났든 요청이 끊긴 것은 같다 — 한 조건으로 덮는다.
-                            // 레지스트리 엔트리는 남지만 alive=false라 다음 mint가 새로 띄운다.
-                            t_alive.store(false, Ordering::Relaxed);
-                            return;
-                        }
                     }
                     Err(e) => {
                         // 리스너가 못 쓰게 됨(fd 고갈·커널 오류 등) — 스레드를 접는다.
