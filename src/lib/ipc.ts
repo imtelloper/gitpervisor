@@ -1362,6 +1362,10 @@ export const ipc = {
   // 이동 — 이름 그대로 다른 폴더로(트리 드래그 앤 드롭). destDir 빈 문자열 = 루트.
   movePath: (projectId: string, relPath: string, destDir: string) =>
     callMutating<string>("move_path", { projectId, relPath, destDir }),
+  // callMutating 인 이유: Windows 는 드롭될 때까지 응답이 안 온다 — `call` 의 8초 타임아웃 재시도가
+  // 끼면 사용자가 끌고 있는 도중에 드래그가 한 번 더 시작된다.
+  startOsFileDrag: (projectId: string, relPaths: string[]) =>
+    callMutating<boolean>("start_os_file_drag", { projectId, relPaths }),
   // 이미지 변환·편집 저장 — base64 바이트를 디스크에 쓴다. overwrite=false면 기존 파일 충돌 시
   // ALREADY_EXISTS 오류(프론트가 덮어쓰기 확인). 큰 이미지 대비 타임아웃 넉넉히.
   // expectedStamp 를 주면 읽은 뒤 파일이 바뀌었는지 대조해 CONFLICT 로 거절한다(생략 = 종전 동작).

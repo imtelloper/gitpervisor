@@ -369,6 +369,92 @@ pub async fn move_path(
     Ok(join_rel(&dest_dir, name))
 }
 
+/// 파일 트리 → 앱 밖(메일 첨부·탐색기 등)으로 OS 네이티브 드래그. 트리의 포인터 드래그가 패널을
+/// 벗어나는 순간 프런트가 부른다 — 왼쪽 버튼이 **아직 눌려 있어야** OS 가 드래그를 이어받는다.
+///
+/// 복사만 허용한다(`DragMode::Copy`) — 대상이 탐색기여도 원본은 옮겨지지 않는다. 경로는
+/// `resolve_in_repo` 를 통과한 것만 넘긴다: 안 그러면 웹뷰가 임의 경로로 이 커맨드를 불러
+/// 레포 밖 파일을 앱 밖으로 내보내는 통로가 된다. 드래그를 실제로 시작했으면 `true`.
+#[tauri::command(async)]
+pub async fn start_os_file_drag(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    state: State<'_, AppState>,
+    project_id: String,
+    rel_paths: Vec<String>,
+) -> Result<bool, IpcError> {
+    let repo = project_path(&state, &project_id)?;
+    let mut files = Vec::with_capacity(rel_paths.len());
+    for rel in &rel_paths {
+        let p = resolve_in_repo(&repo, rel)?;
+        if tokio::fs::symlink_metadata(&p).await.is_err() {
+            return Err(IpcError::new(ErrorCode::NotFound, text_files::target_not_found()));
+        }
+        files.push(p);
+    }
+    if files.is_empty() {
+        return Ok(false);
+    }
+    let (tx, rx) = tokio::sync::oneshot::channel::<Result<bool, String>>();
+    app.run_on_main_thread(move || {
+        // Windows 의 DoDragDrop 은 드롭될 때까지 이 스레드를 붙잡는 모달 루프다(그 사이에도 메시지는
+        // 돌아 창은 안 멈춘다). 크레이트 안에 unwrap 이 있어(셸 데이터 객체 생성 실패 등) 메인 이벤트
+        // 루프에서 패닉이 새면 프로세스가 통째로 abort 한다 — 여기서 가둔다.
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // 버튼이 이미 놓였으면 시작하지 않는다. DoDragDrop 은 그 상태로 시작하면 다음 마우스 이동까지
+            // 기다렸다가 **그때 커서 밑 창**에 떨어뜨린다 — 패널 밖으로 휙 끌고 바로 놓은 경우다.
+            // 2026-09-23 합성 입력(CDP) 검증에서 실제로 그렇게 걸려 앱 메인 스레드가 붙잡혀 있었다.
+            #[cfg(windows)]
+            if !primary_button_down() {
+                log::info!("[os-drag] 버튼이 이미 놓여 있어 시작하지 않음");
+                return Ok(false);
+            }
+            // macOS 구현은 이미지가 없으면 패닉한다(NSImage expect) — 앱 아이콘을 넘긴다.
+            let icon = drag::Image::Raw(include_bytes!("../../icons/32x32.png").to_vec());
+            // tauri-plugin-drag 와 같은 분기 — Linux 는 GTK 창을, 나머지는 raw 핸들을 받는다.
+            #[cfg(target_os = "linux")]
+            let target = window.gtk_window().map_err(|e| e.to_string())?;
+            #[cfg(not(target_os = "linux"))]
+            let target = window;
+            drag::start_drag(
+                &target,
+                drag::DragItem::Files(files),
+                icon,
+                |_, _| {},
+                drag::Options::default(),
+            )
+            .map(|()| true)
+            .map_err(|e| e.to_string())
+        }))
+        .unwrap_or_else(|_| Err("panic".to_string()));
+        let _ = tx.send(r);
+    })
+    .map_err(|e| IpcError::new(ErrorCode::Io, text_files::os_drag_failed(e)))?;
+    match rx.await {
+        Ok(Ok(started)) => Ok(started),
+        Ok(Err(e)) => Err(IpcError::new(ErrorCode::Io, text_files::os_drag_failed(e))),
+        Err(_) => Err(IpcError::new(
+            ErrorCode::Io,
+            text_files::os_drag_failed("main thread dropped the request"),
+        )),
+    }
+}
+
+/// 물리 주 버튼이 눌려 있는가. GetAsyncKeyState 는 논리가 아니라 **물리** 버튼을 보므로 좌우를 바꾼
+/// 설정이면 오른쪽 버튼을 본다.
+#[cfg(windows)]
+fn primary_button_down() -> bool {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_SWAPBUTTON};
+    let vk = if unsafe { GetSystemMetrics(SM_SWAPBUTTON) } != 0 {
+        VK_RBUTTON
+    } else {
+        VK_LBUTTON
+    };
+    let state = unsafe { GetAsyncKeyState(i32::from(vk)) };
+    state < 0
+}
+
 /// 바이너리 파일 쓰기 — base64 바이트를 디스크에 쓴다(이미지 변환·편집 저장용).
 /// 새 파일 생성을 허용하되(상위 디렉토리는 존재해야 함), 기존 디렉토리에는 쓰지 않는다.
 /// 경로 탈출(빈 경로·절대경로·`..`·`.git`)을 막는다.

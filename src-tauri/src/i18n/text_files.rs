@@ -157,6 +157,13 @@ pub fn path_outside_repo() -> &'static str {
     }
 }
 
+pub fn os_drag_failed(err: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("앱 밖으로 끌기 실패: {err}"),
+        Lang::En => format!("Failed to drag out of the app: {err}"),
+    }
+}
+
 pub fn dest_not_a_folder() -> &'static str {
     match lang() {
         Lang::Ko => "대상이 폴더가 아닙니다",

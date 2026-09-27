@@ -636,7 +636,9 @@ export function FileTreePanel({
   //
   // 규칙: 행(파일·폴더)을 5px 이상 끌면 드래그 시작. 폴더 행 = 그 폴더로, 파일 행 = 그 파일의
   // 폴더로, 빈 영역 = 루트로 떨어뜨린다. 멀티선택된 파일을 끌면 선택 전체가 함께 간다.
+  // 패널 밖으로 나가면 OS 드래그(복사)로 넘어가 앱 밖에 파일로 떨어진다.
   const ghostRef = useRef<DragGhostHandle>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{
     path: string;
     isDir: boolean;
@@ -723,6 +725,21 @@ export function FileTreePanel({
             ? [...treeSel]
             : [st.path];
         document.body.style.userSelect = "none"; // 드래그 중 텍스트 선택 방지
+      }
+      // 패널 밖으로 나가면 OS 드래그로 넘긴다 — 메일 첨부·탐색기처럼 앱 밖이 대상이다. 창이 아니라
+      // 패널 경계인 이유: 창을 최대화하고 브라우저 창을 그 위에 띄워 두면 커서가 남의 창 위에 있어도
+      // 좌표는 여전히 우리 창 안이다. 버튼이 눌린 채여야 OS 가 이어받으므로 pointerup 이 아니라 여기다.
+      const pr = panelRef.current?.getBoundingClientRect();
+      if (
+        pr &&
+        (ev.clientX < pr.left || ev.clientX > pr.right || ev.clientY < pr.top || ev.clientY > pr.bottom)
+      ) {
+        const { paths } = st;
+        st.cleanup();
+        ipc
+          .startOsFileDrag(projectId, paths)
+          .catch((err) => pushToast("error", errorMessage(err)));
+        return;
       }
       const cont = treeRef.current;
       const el = document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null;
@@ -1144,6 +1161,7 @@ export function FileTreePanel({
 
   return (
     <div
+      ref={panelRef}
       style={modal ? undefined : { width }}
       className={`relative flex h-full flex-col bg-panel ${
         modal ? "w-full min-w-0" : "shrink-0 border-r border-edge"

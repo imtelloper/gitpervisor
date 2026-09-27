@@ -345,6 +345,39 @@ export async function run({ cdp, report: r, fix }) {
     mvMissing.code || "(ok?)",
   );
 
+  // ── start_os_file_drag (트리 → 앱 밖 OS 드래그) ──
+  // 버튼이 안 눌린 채 OS 드래그가 시작되면 다음 마우스 이동 때 **실제 커서 밑 창**에 파일이 떨어진다.
+  // Windows 는 커맨드가 물리 버튼을 보고 거르지만(아래 마지막 단언), macOS·Linux 에는 그 가드가 없으므로
+  // 그 OS 에서는 유효 경로로 부르지 마라. 경로 검증 단언은 전부 드래그 전에 거절된다.
+  const D = (relPaths) => ({ projectId: fix.projectId, relPaths });
+  const dragEsc = await cdp.try("start_os_file_drag", D(["../escape.txt"]));
+  r.check("start_os_file_drag: '..' 경로 거부", !dragEsc.ok && dragEsc.code === "IO", dragEsc.code || "(ok?)");
+  const dragGit = await cdp.try("start_os_file_drag", D([".git/config"]));
+  r.check("start_os_file_drag: .git 경로 거부", !dragGit.ok, dragGit.code || "(ok?)");
+  const dragMissing = await cdp.try("start_os_file_drag", D(["__missing_xyz__"]));
+  r.check(
+    "start_os_file_drag: 없는 파일 → NOT_FOUND",
+    !dragMissing.ok && dragMissing.code === "NOT_FOUND",
+    dragMissing.code || "(ok?)",
+  );
+  // 유효 경로가 앞에 있어도 하나라도 틀리면 드래그 없이 통째로 거절 — 일부만 내보내지 않는다.
+  const dragMixed = await cdp.try("start_os_file_drag", D(["e2e-move/a.txt", "../escape.txt"]));
+  r.check(
+    "start_os_file_drag: 섞인 목록 통째 거부",
+    !dragMixed.ok && dragMixed.code === "IO" && has("e2e-move/a.txt"),
+    dragMixed.code || "(ok?)",
+  );
+  if (process.platform === "win32") {
+    // 러너는 마우스를 누르지 않는다 — 가드가 빠지면 이 호출이 앱 메인 스레드를 붙잡고 다음 마우스 이동 때
+    // 사용자 커서 밑에 a.txt 를 떨어뜨린다(2026-09-23 실제로 그렇게 걸렸다).
+    const dragNoButton = await cdp.try("start_os_file_drag", D(["e2e-move/a.txt"]), { timeoutMs: 5000 });
+    r.check(
+      "start_os_file_drag: 버튼이 안 눌려 있으면 시작 안 함(false)",
+      dragNoButton.ok && dragNoButton.r === false,
+      dragNoButton.ok ? `→ ${dragNoButton.r}` : dragNoButton.code,
+    );
+  }
+
   // 폴더 이동 — 하위 파일이 함께 따라온다.
   await cdp.try("create_file", P("e2e-move/sub/deep.txt"));
   const mvDir = await cdp.try("move_path", { ...P("e2e-move/sub"), destDir: "" });

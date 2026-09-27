@@ -1285,6 +1285,7 @@ pub fn run() {
             commands::delete_path,
             commands::rename_path,
             commands::move_path,
+            commands::start_os_file_drag,
             commands::write_file_bytes,
             commands::file_stamp,
             commands::read_file_raw,

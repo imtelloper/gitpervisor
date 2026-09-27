@@ -119,6 +119,18 @@ installMacCopyInterceptor();
 // 터미널 밖 포커스에서 Ctrl+C 눌러도 선택된 터미널 내용이 복사되게 하는 전역 폴백.
 installTerminalCopyFallback();
 
+// 앱 밖에서 끌어온 파일(탐색기, 또는 파일 트리에서 OS 드래그로 넘겼다가 도로 창에 놓은 것)을 아무도 안
+// 받으면 막는다. 창들이 OS 드롭 핸들러를 끄고 있어 wry 가 AllowExternalDrop 을 기본값(켜짐)으로 두므로
+// (webview2/mod.rs), 그 드롭은 브라우저 기본 동작 — 그 파일로 페이지 이동 — 에 맡겨진다. 파일을 받는
+// 곳은 스스로 preventDefault 하므로 버블 끝에서 남은 것만 거른다. dropEffect "none" 이 금지 커서를 띄운다.
+for (const type of ["dragover", "drop"] as const) {
+  window.addEventListener(type, (e) => {
+    if (e.defaultPrevented || !e.dataTransfer?.types.includes("Files")) return;
+    e.preventDefault();
+    if (type === "dragover") e.dataTransfer.dropEffect = "none";
+  });
+}
+
 // E2E·디버그용 — dev 빌드에서만 핵심 스토어를 노출한다(프론트 기능 e2e가 상태를 구동/단언).
 // release 빌드에는 포함되지 않는다(import.meta.env.DEV).
 if (import.meta.env.DEV) {
