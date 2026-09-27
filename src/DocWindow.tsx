@@ -59,7 +59,11 @@ export function DocWindow({ docId }: { docId: string }) {
   if (target?.folder) {
     return (
       <Suspense fallback={<Loading />}>
-        <FolderWindow root={target.folder} />
+        <FolderWindow
+          root={target.folder}
+          start={target.start}
+          projectId={target.projectId || undefined}
+        />
       </Suspense>
     );
   }

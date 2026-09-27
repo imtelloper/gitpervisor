@@ -40,7 +40,7 @@ import {
   type ImgFormat,
   loadImage,
 } from "../../lib/image-codec";
-import { openDocWindow } from "../../lib/floating";
+import { openDocWindow, openFolderWindow } from "../../lib/floating";
 import { errorMessage, ipc, isIpcError } from "../../lib/ipc";
 import type { ChangeKind, DirEntry, FileChange, RepoStatus } from "../../lib/ipc";
 import { isHtml, isImage, isVideo } from "../../lib/language-map";
@@ -1284,7 +1284,11 @@ export function FileTreePanel({
                 onClick={() => {
                   // 이 트리가 보고 있는 저장소 id를 넘긴다 — 임베디드 저장소 파일이 바깥 레포
                   // 기준으로 해석되지 않게(이미지 편집과 같은 이유).
-                  openDocWindow(projectId, menu.path);
+                  // 폴더는 파일 뷰어가 못 읽는다(os error 5) — 폴더 창(썸네일·목록·탐색)으로 연다.
+                  if (menu.isDir) {
+                    if (projectPath)
+                      openFolderWindow(absOf(menu.path), { id: projectId, root: projectPath });
+                  } else openDocWindow(projectId, menu.path);
                   setMenu(null);
                 }}
               />

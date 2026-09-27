@@ -1750,7 +1750,7 @@ fn finalize_doc(raw: Vec<String>) -> Option<String> {
 /// 한 경로 컴포넌트가 Windows 정규화 후 `.git` 으로 귀결되는지 — CVE-2019-1352/1353 류 우회 차단.
 /// Win32 는 컴포넌트 끝의 '.'·' ' 를 떼고 ADS(`:`) 이후를 무시하므로 `.git.`·`.git `·
 /// `.git::$INDEX_ALLOCATION` 가 실제 `.git` 으로 해석된다. 8.3 단축명 `git~1` 류도 막는다.
-fn is_dotgit_component(os: &OsStr) -> bool {
+pub(crate) fn is_dotgit_component(os: &OsStr) -> bool {
     let s = os.to_string_lossy();
     let s = s.split(':').next().unwrap_or(""); // ADS 제거
     let s = s.trim_end_matches(|c| c == '.' || c == ' '); // 끝의 점·공백 제거

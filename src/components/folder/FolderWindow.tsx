@@ -21,6 +21,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Messages } from "../../i18n/messages";
 import { currentMessages, useMessages } from "../../i18n/ui-language";
 import { copyText } from "../../lib/clipboard";
+import { openDocWindow } from "../../lib/floating";
 import { ipc, type FavEntry } from "../../lib/ipc";
 import { useUi } from "../../stores/ui";
 import { EmptyState } from "../common/EmptyState";
@@ -39,8 +40,19 @@ import { modLabel } from "../../lib/platform";
  * 원본 이미지를 목록에 그리지 않는다. 이 앱엔 asset protocol 이 없어 이미지가 base64 로 IPC 를
  * 타므로(`tauri.conf.json` csp), 스크린샷 수백 장을 원본으로 보내면 창이 그대로 죽는다.
  * 그래서 백엔드가 캐시된 썸네일(JPEG)을 주고, 그것도 **화면에 보이는 칸만** 요청한다.
+ *
+ * 파일 트리의 폴더 "새 창으로 열기"도 이 창이다(`projectId` 가 있을 때). 그때 `root` 는 프로젝트
+ * 루트, `start` 는 누른 폴더이고, 이미지 밖의 파일은 OS 기본 앱 대신 앱의 뷰어 창으로 연다.
  */
-export default function FolderWindow({ root }: { root: string }) {
+export default function FolderWindow({
+  root,
+  start,
+  projectId,
+}: {
+  root: string;
+  start?: string;
+  projectId?: string;
+}) {
   const msg = useMessages();
   const SEP = root.includes("\\") ? "\\" : "/";
   const join = useCallback(
@@ -48,7 +60,7 @@ export default function FolderWindow({ root }: { root: string }) {
     [SEP],
   );
 
-  const [dir, setDir] = useState(root);
+  const [dir, setDir] = useState(start ?? root);
   const [entries, setEntries] = useState<FavEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState(() => readView(root));
@@ -163,13 +175,23 @@ export default function FolderWindow({ root }: { root: string }) {
         setLightbox(e.name);
         return;
       }
+      if (projectId) {
+        // 트리가 넘기는 것과 같은 레포 상대경로(`/` 구분) — 트리 더블클릭처럼 동영상은 넓게 연다.
+        const rel = join(dir, e.name)
+          .slice(root.replace(/[\\/]+$/, "").length)
+          .split(/[\\/]/)
+          .filter(Boolean)
+          .join("/");
+        openDocWindow(projectId, rel, e.kind === "video" ? { size: [1180, 860] } : undefined);
+        return;
+      }
       void ipc.favOpen(join(dir, e.name), "default").catch((err) =>
         useUi
           .getState()
           .pushToast("error", currentMessages().folder.window.openFailedWithReason(errText(err))),
       );
     },
-    [dir, images, join],
+    [dir, images, join, projectId, root],
   );
 
   const goUp = useCallback(() => {

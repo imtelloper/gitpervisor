@@ -58,6 +58,13 @@ export interface DocTarget {
    */
   folder?: string;
   /**
+   * 폴더 창이 처음 보여 줄 폴더(절대경로). 없으면 `folder` 자신. 파일 트리에서 연 폴더 창은
+   * `folder` 가 **프로젝트 루트**이고 이것이 누른 폴더라, 브레드크럼으로 루트까지 올라갈 수 있다.
+   * 이때 `projectId` 가 채워져 있고, 창 안에서 파일을 열면 앱의 뷰어 창으로 연다.
+   * 위 필드들과 같은 이유로 **옵셔널이어야 한다**.
+   */
+  start?: string;
+  /**
    * 있으면 이 창은 파일도 폴더도 아닌 **작업 리포트 뷰**를 띄운다(태스크 67).
    * `projectId` 는 빈 문자열이고 `path` 는 창 안 제목용 문자열이다.
    * `edit`·`folder` 와 같은 이유로 **옵셔널이어야 한다** — 이 필드 이전에 적힌 항목이 남아 있다.
@@ -182,11 +189,16 @@ export function fnv16(s: string): string {
  * 파일 뷰어 창(`doc-*`)의 인프라를 그대로 탄다 — 새 라벨도, 새 캡처빌리티도, 새 창 커맨드도
  * 필요 없다. 차이는 localStorage 에 적는 항목에 `folder` 가 있다는 것뿐이고, `DocWindow` 가
  * 그걸 보고 뷰어 대신 `FolderWindow` 를 그린다.
+ *
+ * `project` 를 주면 파일 트리의 폴더를 여는 것이다 — 창의 루트는 프로젝트 루트, 처음 보이는 곳은
+ * `path` 이고, 파일은 OS 기본 앱이 아니라 앱의 뷰어 창으로 연다.
  */
-export function openFolderWindow(path: string): void {
+export function openFolderWindow(path: string, project?: { id: string; root: string }): void {
   const id = fnv16(path);
   const docs = readDocs();
-  docs[id] = { projectId: "", path, folder: path };
+  docs[id] = project
+    ? { projectId: project.id, path, folder: project.root, start: path }
+    : { projectId: "", path, folder: path };
   const keys = Object.keys(docs);
   const kept =
     keys.length > DOC_MAX

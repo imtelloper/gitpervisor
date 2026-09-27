@@ -4,8 +4,9 @@
 //!
 //! **이 파일의 커맨드만 절대경로를 받는다.** 나머지 파일 커맨드(`tree.rs`·`diff.rs`)는 전부
 //! `project_id` + 레포 상대경로라 "어디까지 읽어도 되는가"가 프로젝트 목록으로 이미 정해져 있다.
-//! 여기는 그 울타리가 없으므로 스스로 정한다 — 답은 `Settings.favorite_folders` 이고,
-//! **사용자가 명시적으로 등록한 폴더의 하위만** 허용한다(`allowed`). 그 판정은 반드시
+//! 여기는 그 울타리가 없으므로 스스로 정한다 — 답은 `Settings.favorite_folders` 와 등록된
+//! 프로젝트 루트이고(파일 트리의 폴더 "새 창으로 열기"가 같은 창을 쓴다), **사용자가 명시적으로
+//! 등록한 폴더의 하위만** 허용한다(`allowed`). 그 판정은 반드시
 //! canonicalize 뒤에 한다: `..` 와 심볼릭/정션 링크로 루트 밖을 가리키는 경로가 문자열 비교만으로는
 //! 통과하기 때문이다.
 //!
@@ -59,7 +60,7 @@ const TMP_MAX_AGE: Duration = Duration::from_secs(60 * 60);
 /// 아래 커맨드 넷은 전부 첫 줄에서 이것을 부른다. 하나라도 빠뜨리면 그 커맨드가 파일시스템
 /// 전체를 읽는 통로가 된다 — 프론트를 믿고 검사를 생략하지 마라.
 fn allowed(state: &State<'_, AppState>, path: &str) -> Result<PathBuf, IpcError> {
-    let roots: Vec<String> = state
+    let favs: Vec<String> = state
         .settings
         .read()
         .unwrap_or_else(|e| e.into_inner())
@@ -67,7 +68,31 @@ fn allowed(state: &State<'_, AppState>, path: &str) -> Result<PathBuf, IpcError>
         .iter()
         .map(|f| f.path.clone())
         .collect();
-    contained(Path::new(path), &roots)
+    let projects: Vec<String> = state
+        .projects
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .map(|p| p.path.clone())
+        .collect();
+    allowed_in(Path::new(path), &favs, &projects)
+}
+
+/// 즐겨찾기 루트, 또는 **등록된 프로젝트 루트** 안인가 — 파일 트리의 폴더 "새 창으로 열기"가 이 창을
+/// 쓴다. 프로젝트는 사용자가 명시적으로 등록한 폴더라 즐겨찾기와 같은 신뢰 수준이다(트리 커맨드도 그
+/// 안을 전부 읽고 지운다). 다만 프로젝트 아래에서는 `.git` 을 거부한다 — `tree.rs` 파일 커맨드와 같은
+/// 규칙이다: `fav_delete` 가 저장소를 깨뜨리고 `fav_open` 이 훅을 건드리는 통로가 되면 안 된다.
+fn allowed_in(target: &Path, favs: &[String], projects: &[String]) -> Result<PathBuf, IpcError> {
+    if let Ok(p) = contained(target, favs) {
+        return Ok(p);
+    }
+    let p = contained(target, projects)?;
+    if p.components().any(
+        |c| matches!(c, std::path::Component::Normal(os) if super::tree::is_dotgit_component(os)),
+    ) {
+        return Err(IpcError::new(ErrorCode::Io, text_files::invalid_path()));
+    }
+    Ok(p)
 }
 
 /// `allowed` 의 판정 본체 — `State` 없이 테스트할 수 있게 떼어 냈다.
@@ -707,6 +732,33 @@ mod tests {
             contained(&root.join("nope"), &roots).unwrap_err().code,
             ErrorCode::NotFound
         );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 프로젝트 루트도 허용하되 그 아래 `.git` 은 거부한다. 즐겨찾기 판정은 그대로다.
+    #[test]
+    fn allowed_in_accepts_project_roots_but_not_dotgit() {
+        let base = scratch("allowed-in");
+        let proj = base.join("proj");
+        let file = proj.join("data").join("shot.png");
+        let hook = proj.join(".git").join("hooks").join("pre-commit");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"x").unwrap();
+        std::fs::write(&hook, b"x").unwrap();
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let projects = vec![proj.to_string_lossy().to_string()];
+
+        assert!(allowed_in(&file, &[], &projects).is_ok(), "프로젝트 안 파일");
+        assert!(allowed_in(&proj, &[], &projects).is_ok(), "프로젝트 루트 자신");
+        assert!(allowed_in(&hook, &[], &projects).is_err(), ".git 아래는 거부");
+        assert!(allowed_in(&proj.join(".git"), &[], &projects).is_err(), ".git 자신도 거부");
+        assert!(allowed_in(&outside, &[], &projects).is_err(), "프로젝트 밖");
+        assert!(allowed_in(&file, &[], &[]).is_err(), "어디에도 등록 안 됨");
+        // 즐겨찾기로 등록된 곳은 종전 그대로(.git 규칙은 프로젝트 판정에만 붙는다).
+        let favs = vec![base.to_string_lossy().to_string()];
+        assert!(allowed_in(&outside, &favs, &projects).is_ok(), "즐겨찾기 안");
         let _ = std::fs::remove_dir_all(&base);
     }
 
