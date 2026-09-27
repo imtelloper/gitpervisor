@@ -1,5 +1,6 @@
 import {
   CalendarDays,
+  Bot,
   CircleCheck,
   Columns3,
   ExternalLink,
@@ -29,14 +30,15 @@ import { isMac, modLabel } from "../lib/platform";
 import { NO_COLOR, useProjectColors, type ProjColor } from "../lib/project-color";
 import {
   attachTerminal,
-  CLAUDE_LAUNCH,
   createTerminal,
   detachTerminalKeepPty,
   fitTerminal,
+  type InitialInput,
   queueInitialInput,
   snapshotSelection,
   unmountTerminalView,
 } from "../lib/terminal";
+import { agentOf, runWithAgent, type TerminalAgent } from "../lib/agent-launch";
 import { translateRequest } from "../lib/translate";
 import {
   FavoritesButton,
@@ -182,6 +184,8 @@ export function AggregateTerminals() {
   const colors = useProjectColors();
   const { data: settings } = useSettings();
   const fontSize = settings?.terminalFontSize ?? 13;
+  // 우클릭 "새 터미널 열기"(종류를 고르지 않는 곳)는 설정 "새 터미널 시작"을 따른다(lib/agent-launch.ts).
+  const startAgent = agentOf(settings?.terminalStartAgent);
   const terminals = useTerminals((s) => s.terminals);
   const openTerminal = useTerminals((s) => s.openTerminal);
   const closePane = useTerminals((s) => s.closePane);
@@ -339,15 +343,18 @@ export function AggregateTerminals() {
   // 새 터미널 생성 + 즉시 그리드 편입. initedRef 선행 — 터미널 0개에서 첫 생성 시
   // 초기 자동선택 효과가 뒤늦게 selected를 덮어쓰는 경합 차단. 스토어 갱신은 동기라
   // 신규 paneId만 selected에 넣으면 셀 마운트→PTY spawn→attach는 기존 경로로 완결된다.
-  const addTerminal = (projectId: string, claude?: boolean) => {
+  const addTerminal = (projectId: string, initialInput?: InitialInput) => {
     initedRef.current = true;
     const { paneId } = openTerminal(projectId);
-    // 셸이 뜨면 `claude`를 넣어 Claude Code 세션으로 들어간다. 별도 창에서도 paneId는 이 창이
+    // 셸이 뜨면 `claude`/`opencode`를 넣어 에이전트 세션으로 들어간다. 별도 창에서도 paneId는 이 창이
     // 만들므로(위임은 id를 그대로 싣는다) 예약 키가 맞고, 실제 소비는 term_open을 잡은 창이 한다.
-    if (claude) queueInitialInput(paneId, CLAUDE_LAUNCH);
+    if (initialInput) queueInitialInput(paneId, initialInput);
     setSelected((prev) => new Set(prev).add(paneId));
     setZoomed(null); // 확대 중이었다면 해제 — 새 셀이 보이지 않으면 생성 실패로 오인한다
   };
+  // 에이전트 세션 셀 — OpenCode는 준비(첫 사용이면 안내·다운로드)가 끝난 뒤에 셀을 연다.
+  const addAgentTerminal = (projectId: string, agent: TerminalAgent | null) =>
+    runWithAgent(agent, (input) => addTerminal(projectId, input));
 
   // 새 브라우저(독립 탭) 생성 + 즉시 그리드 편입 — URL은 셀 안 주소창에서 입력한다.
   const addBrowser = (projectId: string) => {
@@ -918,7 +925,12 @@ export function AggregateTerminals() {
               <MenuRow
                 icon={<TerminalIcon size={13} />}
                 label={msg.app.aggregate.newTerminalIn(groupMenu.name)}
-                onClick={() => addTerminal(cells[0].projectId)}
+                onClick={() => addAgentTerminal(cells[0].projectId, startAgent)}
+              />
+              <MenuRow
+                icon={<Bot size={13} />}
+                label={msg.app.aggregate.openCodeSessionIn(groupMenu.name)}
+                onClick={() => addAgentTerminal(cells[0].projectId, "opencode")}
               />
               {/* 묶음 단위 닫기 — 종류가 섞이므로 "터미널/브라우저"가 아니라 "탭"으로 부른다.
                   닫을 수 있는 셀이 없으면(별도 창 + 독립 브라우저 탭뿐) 항목 자체를 뺀다. */}
@@ -1005,7 +1017,8 @@ export function AggregateTerminals() {
           // 별도 창의 변경은 스토어가 메인에 위임한다(stores/terminals.ts terminals://cmd) —
           // 새 터미널·Float·닫기가 여기서도 그대로 동작한다. 예외는 **독립 브라우저 탭 닫기**뿐:
           // closeBrowserTab은 위임 경로가 없는 메인 전용이라 별도 창에선 항목을 빼 둔다.
-          onNewTerminal={() => addTerminal(chipMenu.cell.projectId)}
+          onNewTerminal={() => addAgentTerminal(chipMenu.cell.projectId, startAgent)}
+          onNewOpenCode={() => addAgentTerminal(chipMenu.cell.projectId, "opencode")}
           onFloat={
             chipMenu.cell.kind === "terminal" && chipMenu.cell.tabId != null
               ? () => floatPane(chipMenu.cell.tabId!, chipMenu.cell.id)
@@ -1055,6 +1068,7 @@ function ChipMenu({
   onTogglePrompt,
   onTranslate,
   onNewTerminal,
+  onNewOpenCode,
   onFloat,
   onCloseCell,
 }: {
@@ -1073,6 +1087,8 @@ function ChipMenu({
   /** 선택이 있는 표시 중 터미널 셀에만 넘어온다(태스크 61). */
   onTranslate?: () => void;
   onNewTerminal?: () => void;
+  /** 같은 프로젝트에 OpenCode 세션 셀 — `onNewTerminal`이 있을 때만 의미가 있다. */
+  onNewOpenCode?: () => void;
   onFloat?: () => void;
   onCloseCell?: () => void;
 }) {
@@ -1105,15 +1121,15 @@ function ChipMenu({
       className="fixed z-50 min-w-52 rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl"
       style={{
         left: Math.min(x, window.innerWidth - 220),
-        // 하단 클램프 = 메뉴 실높이. 헤더 24.5 + 항목 6 × 31.5 + 구분선 2 × 8.67 + 패딩·테두리 9.3
-        // ≈ 240 → 8 단위 올림(PaneMenu와 같은 규칙). max(0, …)은 창이 메뉴보다 낮을 때 top이
+        // 하단 클램프 = 메뉴 실높이. 헤더 24.5 + 항목 7 × 31.5 + 구분선 2 × 8.67 + 패딩·테두리 9.3
+        // ≈ 271 → 8 단위 올림(PaneMenu와 같은 규칙). OpenCode 세션 항목이 붙어 6 → 7항목. max(0, …)은 창이 메뉴보다 낮을 때 top이
         // 음수가 되어 위쪽 항목이 잘리는 것을 막는다(별도 창은 창 크기 제한이 낮다).
         // ponytail: 항목이 또 늘면 ref 실측으로. 번역 항목(선택이 있을 때만)은 32px을 더 잡는다.
         top: Math.max(
           0,
           Math.min(
             y,
-            window.innerHeight - (onTranslate ? 280 : 248) - clipboardHeight,
+            window.innerHeight - (onTranslate ? 312 : 280) - clipboardHeight,
           ),
         ),
       }}
@@ -1164,6 +1180,13 @@ function ChipMenu({
           icon={<TerminalIcon size={14} />}
           label={msg.app.aggregate.newTerminalIn(cell.projName)}
           onClick={run(onNewTerminal)}
+        />
+      )}
+      {onNewOpenCode && (
+        <MenuItem
+          icon={<Bot size={14} />}
+          label={msg.app.aggregate.openCodeSessionIn(cell.projName)}
+          onClick={run(onNewOpenCode)}
         />
       )}
       {onFloat && (
@@ -1258,9 +1281,9 @@ function Chip({
   );
 }
 
-/** "+" 메뉴가 만들 수 있는 것 — 그리드 셀 종류 + "초기 입력만 다른" Claude Code 세션 터미널.
+/** "+" 메뉴가 만들 수 있는 것 — 그리드 셀 종류 + "초기 입력만 다른" 에이전트 세션 터미널.
  *  라벨은 메뉴 행과 프로젝트 선택 머리말 두 곳이 같은 문구를 써야 해서 한 곳에 모은다. */
-type NewCellKind = PaneKind | "claude";
+type NewCellKind = PaneKind | "claude" | "opencode";
 function newCellLabel(kind: NewCellKind, msg: Messages): string {
   switch (kind) {
     case "terminal":
@@ -1269,10 +1292,12 @@ function newCellLabel(kind: NewCellKind, msg: Messages): string {
       return msg.app.aggregate.newCellBrowser;
     case "claude":
       return msg.app.aggregate.newCellClaude;
+    case "opencode":
+      return msg.app.aggregate.newCellOpenCode;
   }
 }
 
-/** 새 셀 추가 — "+" 하나로 종류(터미널 / Claude Code 세션 터미널 / 브라우저)를 고르고,
+/** 새 셀 추가 — "+" 하나로 종류(터미널 / Claude Code·OpenCode 세션 터미널 / 브라우저)를 고르고,
  *  프로젝트가 여러 개면 이어서 고른다.
  *  탭 스트립의 NewTabControls와 같은 방식으로 통일했다(버튼 두 개는 무엇을 하는지 구분이 안 됐다).
  *  API 클라이언트는 그리드가 지원하는 셀 종류가 아니라 여기 메뉴엔 없다.
@@ -1288,7 +1313,7 @@ function NewCellButton({
   onCreateBrowser,
 }: {
   projects: Project[] | undefined;
-  onCreateTerminal: (projectId: string, claude?: boolean) => void;
+  onCreateTerminal: (projectId: string, initialInput?: InitialInput) => void;
   onCreateBrowser?: (projectId: string) => void;
 }) {
   const msg = useMessages();
@@ -1314,7 +1339,8 @@ function NewCellButton({
   };
   const create = (k: NewCellKind, projectId: string) => {
     if (k === "browser") onCreateBrowser?.(projectId);
-    else onCreateTerminal(projectId, k === "claude");
+    // 이 메뉴는 종류를 **고르는** 곳이라 기본값을 따르지 않는다 — "새 터미널"은 셸이다.
+    else runWithAgent(k === "terminal" ? null : k, (input) => onCreateTerminal(projectId, input));
     close();
   };
   // 종류 선택 → 프로젝트가 하나뿐이면 바로 만들고, 여러 개면 프로젝트 목록으로 넘어간다.
@@ -1369,6 +1395,11 @@ function NewCellButton({
                   icon={<Sparkles size={14} />}
                   label={newCellLabel("claude", msg)}
                   onClick={() => pickKind("claude")}
+                />
+                <MenuRow
+                  icon={<Bot size={14} />}
+                  label={newCellLabel("opencode", msg)}
+                  onClick={() => pickKind("opencode")}
                 />
                 {/* 별도 창은 브라우저를 위임해도 이 창 그리드에 안 뜬다 — 그 창에선 항목을 뺀다. */}
                 {onCreateBrowser && (

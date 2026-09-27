@@ -74,6 +74,27 @@ const ko = {
     period: "일간·주간·월간",
     projectPrefix: '여러 프로젝트를 한 카드로 요약할 때만 "[프로젝트명] ", 하나면 빈칸',
   },
+  // lib/opencode.ts — 관리형 OpenCode 첫 실행 안내·다운로드 진행.
+  openCode: {
+    firstRunTitle: "OpenCode 처음 실행",
+    firstRunMessage: (mb: number) =>
+      `오픈소스 코딩 에이전트 OpenCode를 한 번 내려받습니다(약 ${mb}MB). ` +
+      "로그인 없이 OpenCode의 무료 모델로 바로 쓸 수 있지만, 작업 중인 코드가 외부 모델 서버로 " +
+      "전송되고 일부 무료 모델은 입력을 학습에 사용할 수 있습니다. 민감한 코드라면 OpenCode 안에서 " +
+      "/connect 로 다른 모델을 연결해 쓰세요.",
+    firstRunMessageLocal: (mb: number) =>
+      `오픈소스 코딩 에이전트 OpenCode를 한 번 내려받습니다(약 ${mb}MB). ` +
+      "모델은 설정 › AI의 로컬 모델을 쓰므로 작업 중인 코드가 밖으로 나가지 않습니다. " +
+      "첫 요청은 모델을 올리느라 수십 초 걸릴 수 있습니다.",
+    firstRunConfirm: "내려받고 시작",
+    statusFailed: (err: string) => `OpenCode 상태 확인 실패: ${err}`,
+    unsupportedPlatform: "이 플랫폼용 OpenCode 공식 빌드가 없습니다",
+    downloading: "OpenCode 내려받는 중…",
+    downloadingPercent: (percent: number) => `OpenCode 내려받는 중… ${percent}%`,
+    verifying: "OpenCode 무결성 확인 중…",
+    installing: "OpenCode 설치 중…",
+    prepareFailed: (err: string) => `OpenCode 준비 실패: ${err}`,
+  },
   terminal: {
     connectFailed: (err: string) => `[터미널 연결 실패] ${err}`,
     pasteFailed: (reason: string) => `붙여넣기에 실패했습니다 — ${reason}`,
@@ -190,6 +211,26 @@ export const libText = defineText(ko, {
       language: "Output language (Settings › AI) — Korean or English",
       period: "Daily, weekly or monthly",
       projectPrefix: 'Only when one card summarizes several projects: "[project name] "; otherwise empty',
+    },
+    openCode: {
+      firstRunTitle: "First OpenCode launch",
+      firstRunMessage: (mb) =>
+        `This downloads OpenCode, an open-source coding agent, once (about ${mb} MB). ` +
+        "It works right away with OpenCode's free models and no sign-in, but the code you work on is sent " +
+        "to external model servers and some free models may use your input for training. For sensitive " +
+        "code, connect another model with /connect inside OpenCode.",
+      firstRunMessageLocal: (mb) =>
+        `This downloads OpenCode, an open-source coding agent, once (about ${mb} MB). ` +
+        "It uses the local model from Settings › AI, so the code you work on stays on this machine. " +
+        "The first request can take tens of seconds while the model loads.",
+      firstRunConfirm: "Download and start",
+      statusFailed: (err) => `Failed to check OpenCode: ${err}`,
+      unsupportedPlatform: "No official OpenCode build for this platform",
+      downloading: "Downloading OpenCode…",
+      downloadingPercent: (percent) => `Downloading OpenCode… ${percent}%`,
+      verifying: "Verifying OpenCode…",
+      installing: "Installing OpenCode…",
+      prepareFailed: (err) => `Failed to prepare OpenCode: ${err}`,
     },
     terminal: {
       connectFailed: (err) => `[Terminal connection failed] ${err}`,

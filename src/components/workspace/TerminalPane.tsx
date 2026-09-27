@@ -1,4 +1,5 @@
 import {
+  Bot,
   ClipboardPaste,
   Copy,
   ExternalLink,
@@ -16,6 +17,7 @@ import { useEffect, useRef, useState } from "react";
 
 import type { Messages } from "../../i18n/messages";
 import { useMessages } from "../../i18n/ui-language";
+import { splitPaneWith, useStartAgent } from "../../lib/agent-launch";
 import { isMac } from "../../lib/platform";
 import {
   attachTerminal,
@@ -193,6 +195,8 @@ function PaneMenu({
   // 메뉴가 **열린 순간**의 선택(태스크 61) — 선택이 없으면 비활성이 아니라 항목 자체가 없다.
   // 마우스 추적 중이면 라이브 선택은 우클릭 자체에 지워진 뒤라 스태시로 내려간다(snapshotSelection).
   const [selection] = useState(() => snapshotSelection(paneId));
+  // 일반 분할 항목은 설정 "새 터미널 시작"을 따른다(lib/agent-launch.ts).
+  const agent = useStartAgent();
 
   useEffect(() => {
     const close = () => onClose();
@@ -215,13 +219,14 @@ function PaneMenu({
       className="fixed z-50 min-w-52 rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl"
       style={{
         left: Math.min(x, window.innerWidth - 220),
-        // 하단 클램프 = 메뉴 실높이. 항목 13 × 31.5 + 구분선 3 × 8.67 + 패딩·테두리 9.3 ≈ 445 → 8 단위 올림.
+        // 하단 클램프 = 메뉴 실높이. 항목 15 × 31.5 + 구분선 3 × 8.67 + 패딩·테두리 9.3 ≈ 508 → 8 단위 올림.
+        // (OpenCode 분할 두 줄이 붙어 13 → 15항목, 448 → 512.)
         // 240은 분할·그리드 항목이 붙기 전 값이 그대로 남아 창 아래 절반에서 메뉴가 잘리고 있었다.
         // max(0, …)은 창이 메뉴보다 낮을 때 — 플로팅 창은 min_inner_size 360×240이라 448px보다
         // 낮을 수 있고, 그러면 top이 음수가 되어 위쪽 항목(복사·붙여넣기)이 화면 밖으로 잘린다.
         // ponytail: 상수 클램프 — 항목이 또 늘면 ref 실측(useLayoutEffect)으로 바꾼다.
         // 번역 항목(선택이 있을 때만)이 한 줄 더 붙으므로 그때는 32px을 더 잡는다.
-        top: Math.max(0, Math.min(y, window.innerHeight - (selection ? 480 : 448))),
+        top: Math.max(0, Math.min(y, window.innerHeight - (selection ? 544 : 512))),
       }}
       onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
@@ -239,23 +244,34 @@ function PaneMenu({
         icon={<SplitSquareHorizontal size={14} />}
         label={msg.git.paneMenu.splitRight}
         hint={`${modLabel}+Shift+D`}
-        onClick={run(() => ts.splitPane(tabId, paneId, "row", false))}
+        onClick={run(() => splitPaneWith(tabId, paneId, "row", false, agent))}
       />
       <MenuItem
         icon={<SplitSquareHorizontal size={14} />}
         label={msg.git.paneMenu.splitLeft}
-        onClick={run(() => ts.splitPane(tabId, paneId, "row", true))}
+        onClick={run(() => splitPaneWith(tabId, paneId, "row", true, agent))}
       />
       <MenuItem
         icon={<SplitSquareVertical size={14} />}
         label={msg.git.paneMenu.splitDown}
         hint={`${modLabel}+Shift+E`}
-        onClick={run(() => ts.splitPane(tabId, paneId, "col", false))}
+        onClick={run(() => splitPaneWith(tabId, paneId, "col", false, agent))}
       />
       <MenuItem
         icon={<SplitSquareVertical size={14} />}
         label={msg.git.paneMenu.splitUp}
-        onClick={run(() => ts.splitPane(tabId, paneId, "col", true))}
+        onClick={run(() => splitPaneWith(tabId, paneId, "col", true, agent))}
+      />
+      {/* 기본값과 무관하게 새 칸에 OpenCode를 띄운다(앱이 받아 둔 실행 파일 — lib/opencode.ts). */}
+      <MenuItem
+        icon={<Bot size={14} />}
+        label={msg.git.paneMenu.openCodeSplitRight}
+        onClick={run(() => splitPaneWith(tabId, paneId, "row", false, "opencode"))}
+      />
+      <MenuItem
+        icon={<Bot size={14} />}
+        label={msg.git.paneMenu.openCodeSplitDown}
+        onClick={run(() => splitPaneWith(tabId, paneId, "col", false, "opencode"))}
       />
       <div className="my-1 border-t border-edge" />
       <MenuItem

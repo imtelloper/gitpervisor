@@ -261,6 +261,10 @@ export interface Settings {
   theme: ThemeId; // 내장 6종 또는 사용자 정의 `custom-…`(정의는 localStorage — 태스크 29)
   terminalShell: string | null; // null/빈값 = 자동(pwsh→powershell→cmd / $SHELL)
   terminalFontSize: number;
+  /** 종류를 고르지 않고 여는 새 터미널이 띄울 에이전트 — "" = 셸만 (lib/agent-launch.ts) */
+  terminalStartAgent: "" | "claude" | "opencode";
+  /** OpenCode가 처음 고를 모델 — "local"은 설정 › AI의 로컬 모델(llm/relay.rs 중계) */
+  opencodeModel: "free" | "local";
   notifyMode: NotifyMode;
   // ---- AI 완료 외부 알림 (Slack 웹훅 / SMTP email) ----
   // 시크릿(웹훅 URL·SMTP 비번)은 여기 두지 않고 OS 키링에 저장한다(notifySetSecret).
@@ -1866,6 +1870,24 @@ export const ipc = {
   setProjectLogo: (id: string, relPath: string | null) =>
     callMutating<Project>("set_project_logo", { id, relPath }),
 
+  // ---- 관리형 OpenCode (commands/opencode.rs) — "OpenCode 세션으로 새 터미널" ----
+  opencodeStatus: () =>
+    call<OpencodeStatus>("opencode_status", {}, { attempts: 1, timeoutMs: 8_000 }),
+  // 미설치면 수십 MB를 받는다 — 클릭으로만(첫 다운로드 전 안내·확인은 lib/opencode.ts). 재시도 금지.
+  opencodeEnsure: (onProgress?: (p: LlmProgress) => void) => {
+    const ch = new Channel<string>();
+    if (onProgress) {
+      ch.onmessage = (raw) => {
+        try {
+          onProgress(JSON.parse(raw) as LlmProgress);
+        } catch {
+          /* 형식 오류 무시 */
+        }
+      };
+    }
+    return invoke<OpencodeLaunch>("opencode_ensure", { onProgress: ch });
+  },
+
   // ---- 로컬 LLM (llm/*.rs, 태스크 59) ----
   // 대화는 src/lib/llm.ts의 chat()만 쓴다(60·61의 유일한 계약) — 여기 것은 그 아래 계층이다.
   // Channel은 **호출마다 새로** 만든다. 재사용하면 인덱스 카운터가 어긋나 출력이 무증상으로
@@ -1991,6 +2013,22 @@ export const ipc = {
 // ---- 로컬 LLM 타입 (llm/acquire.rs · chat.rs, 태스크 59) ----
 
 /** 다운로드 진행 — ffmpeg/LSP와 같은 형식(SettingsDialog의 phase 매핑을 재사용한다). */
+export interface OpencodeStatus {
+  supported: boolean;
+  installed: boolean;
+  version: string;
+  downloadSize: number;
+  /** 설정이 로컬 모델을 기본으로 고르는가 — 첫 실행 안내 문구가 달라진다 */
+  localModel: boolean;
+}
+
+export interface OpencodeLaunch {
+  exe: string;
+  /** `OPENCODE_CONFIG`로 넘길 gitpervisor 설정 파일 */
+  config: string;
+}
+
+/** 관리형 다운로드 진행 — 로컬 LLM·OpenCode 공용(`llm/acquire.rs` send_progress). */
 export interface LlmProgress {
   name: string; // "runtime" | "runtime-cpu" | 모델 id
   phase: "download" | "verify" | "extract" | "done" | "error";

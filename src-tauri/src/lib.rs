@@ -1351,6 +1351,8 @@ pub fn run() {
             commands::browser_clear_data,
             commands::http_request,
             commands::http_cancel,
+            commands::opencode_status,
+            commands::opencode_ensure,
             commands::video_tool_status,
             commands::video_tool_ensure,
             commands::video_probe,

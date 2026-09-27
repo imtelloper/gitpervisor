@@ -231,6 +231,12 @@ pub struct Settings {
     /// 임베디드 터미널 셸 (null/빈값 = 자동: pwsh→powershell→cmd / $SHELL)
     pub terminal_shell: Option<String>,
     pub terminal_font_size: u32,
+    /// 종류를 고르지 않고 여는 새 터미널(단축키·분할·우클릭 "새 터미널")이 띄울 에이전트:
+    /// "" (셸만) | "claude" | "opencode". 모르는 값은 프론트가 셸로 본다(lib/agent-launch.ts).
+    pub terminal_start_agent: String,
+    /// OpenCode가 처음 고를 모델: "free"(OpenCode 무료 클라우드 모델) | "local"(설정 › AI의 로컬 모델 —
+    /// `llm/relay.rs` 중계로 붙는다). 어느 쪽이든 OpenCode 안에서 `/models`로 바꿀 수 있다.
+    pub opencode_model: String,
     /// AI 작업 완료 알림 모드: "off" | "project-inactive" | "terminal" | "always"
     pub notify_mode: String,
     // ---- AI 완료 외부 알림 (Slack 웹훅 / SMTP email) ----
@@ -318,6 +324,8 @@ impl Default for Settings {
             theme: "darcula".to_string(),
             terminal_shell: None,
             terminal_font_size: 13,
+            terminal_start_agent: String::new(),
+            opencode_model: "free".to_string(),
             notify_mode: "project-inactive".to_string(),
             slack_enabled: false,
             email_enabled: false,

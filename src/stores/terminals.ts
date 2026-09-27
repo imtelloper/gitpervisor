@@ -171,7 +171,7 @@ interface TerminalsState {
     dir: SplitDir,
     newFirst: boolean,
     content?: PaneKind,
-  ) => void;
+  ) => string; // 새 패널 id — 에이전트 초기 입력 예약용(lib/agent-launch.ts)
   /** 활성 패널을 기준으로 탭 레이아웃을 N개(2/4/8) 터미널 그리드로 한 번에 구성 */
   splitGrid: (tabId: string, paneId: string, count: number) => void;
   /** 패널을 트리에서 떼어 별도 OS 창으로 띄운다(PTY 유지 — 새 창이 term_attach로 이어받음) */
@@ -342,6 +342,7 @@ export const useTerminals = create<TerminalsState>((set, get) => ({
       ),
       paneStatus: { ...s.paneStatus, [newPaneId]: "live" },
     }));
+    return newPaneId;
   },
 
   splitGrid: (tabId, paneId, count) => {

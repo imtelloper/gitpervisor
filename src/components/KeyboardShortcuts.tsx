@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 
+import { openTerminalWith, splitPaneWith, useStartAgent } from "../lib/agent-launch";
 import { openAggregateWindow } from "../lib/aggregate-window";
 import { isMod } from "../lib/platform";
 import { usePushFlow, useRefreshAll, useSyncOp } from "../queries";
@@ -48,6 +49,10 @@ export function KeyboardShortcuts({ projectId }: { projectId: string }) {
   // 보임). ref로 최신 projectId를 참조해 항상 현재 선택 프로젝트에 적용한다.
   const pidRef = useRef(projectId);
   pidRef.current = projectId;
+  // 단축키로 새로 여는 터미널은 설정 "새 터미널 시작"을 따른다 — 같은 이유로 ref로 최신값을 본다.
+  const startAgent = useStartAgent();
+  const agentRef = useRef(startAgent);
+  agentRef.current = startAgent;
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -94,7 +99,7 @@ export function KeyboardShortcuts({ projectId }: { projectId: string }) {
         }
         const terms = ts.terminals.filter((t) => t.projectId === pid);
         if (terms.length) ts.setActiveTab(pid, terms[terms.length - 1].id);
-        else ts.openTerminal(pid);
+        else openTerminalWith(pid, agentRef.current);
         return;
       }
       // 아래 분기들은 전부 **mod(+Shift) 전용**이다 — Alt가 눌린 조합은 여기서 통째로 막는다.
@@ -130,11 +135,11 @@ export function KeyboardShortcuts({ projectId }: { projectId: string }) {
         }
         if (!tab) {
           // 터미널이 하나도 없으면: d/e는 새 터미널을 열어준다(닫기는 대상 없음 → 무시).
-          if (k !== "w") ts.openTerminal(pid);
+          if (k !== "w") openTerminalWith(pid, agentRef.current);
           return;
         }
-        if (k === "d") ts.splitPane(tab.id, tab.activePaneId, "row", false);
-        else if (k === "e") ts.splitPane(tab.id, tab.activePaneId, "col", false);
+        if (k === "d") splitPaneWith(tab.id, tab.activePaneId, "row", false, agentRef.current);
+        else if (k === "e") splitPaneWith(tab.id, tab.activePaneId, "col", false, agentRef.current);
         else ts.closePane(tab.id, tab.activePaneId);
         return;
       }

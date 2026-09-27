@@ -488,3 +488,35 @@ pub fn search_failed() -> &'static str {
         Lang::En => "Search failed",
     }
 }
+
+// ── commands/opencode.rs — 관리형 OpenCode ──────────────────────────────────
+// 다운로드·해제·설치 이동 같은 공통 단계는 `text_db::llm_*`(관리형 다운로드 공용 문구)를 그대로 쓴다.
+
+pub fn opencode_unsupported_platform() -> &'static str {
+    match lang() {
+        Lang::Ko => "이 플랫폼용 OpenCode 공식 빌드가 없습니다",
+        Lang::En => "No official OpenCode build for this platform",
+    }
+}
+
+pub fn opencode_exe_missing(exe: &str) -> String {
+    match lang() {
+        Lang::Ko => format!("OpenCode 아카이브에 {exe}가 없습니다"),
+        Lang::En => format!("{exe} is missing from the OpenCode archive"),
+    }
+}
+
+#[cfg_attr(windows, allow(dead_code))]
+pub fn opencode_chmod_failed(path: &str, err: &dyn Display) -> String {
+    match lang() {
+        Lang::Ko => format!("OpenCode 실행 권한 설정 실패 ({path}): {err}"),
+        Lang::En => format!("Failed to make OpenCode executable ({path}): {err}"),
+    }
+}
+
+pub fn opencode_config_write_failed(path: &str, err: &dyn Display) -> String {
+    match lang() {
+        Lang::Ko => format!("OpenCode 설정 파일 쓰기 실패 ({path}): {err}"),
+        Lang::En => format!("Failed to write OpenCode config ({path}): {err}"),
+    }
+}

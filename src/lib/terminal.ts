@@ -174,9 +174,40 @@ async function sessionExists(termId: string): Promise<boolean> {
   }
 }
 
-/** 새 터미널이 뜨자마자 PTY에 넣을 입력 — 지금은 Claude Code 세션 띄우기 하나뿐.
- *  `\r`이 Enter다(키 입력과 같은 경로라 셸 종류를 안 탄다). */
+/** 새 터미널이 뜨자마자 PTY에 넣을 입력 — 지금은 Claude Code 세션 띄우기.
+ *  `\r`이 Enter다(키 입력과 같은 경로라 셸 종류를 안 탄다). 미설치면 셸이 not found를 찍고 끝난다. */
 export const CLAUDE_LAUNCH = "claude\r";
+
+/** 절대경로 실행 파일 + 환경변수로 띄울 초기 명령(관리형 OpenCode — lib/opencode.ts).
+ *  맨 문자열과 달리 **셸 문법이 셸마다 다르다**(따옴표·환경변수 설정). 어떤 셸이 뜰지는 term_open의
+ *  폴백이 정하므로, 예약 시점이 아니라 open 응답의 `shell`을 보고 `formatLaunch`가 만든다. */
+export interface LaunchSpec {
+  exe: string;
+  env: Record<string, string>;
+}
+export type InitialInput = string | LaunchSpec;
+
+/** 셸 종류별 한 줄 명령. 경로에 공백이 있다(macOS `Application Support`) — 반드시 따옴표로 감싼다.
+ *  - pwsh/powershell: 따옴표 문자열만 쓰면 **문자열 값을 출력**할 뿐이라 `&`가 필요하다. `'`는 `''`.
+ *  - cmd: `set "K=V"` 형태여야 값 끝의 공백이 섞이지 않는다. 경로엔 `"`가 올 수 없다.
+ *  - 그 외(zsh·bash·sh·fish ≥3.1): `K='V' 'exe'` — 이 명령에만 적용되고 셸 환경은 그대로다. */
+export function formatLaunch(spec: LaunchSpec, shell: string): string {
+  const base = (shell.split(/[\\/]/).pop() ?? "").toLowerCase().replace(/\.exe$/, "");
+  const env = Object.entries(spec.env);
+  if (base === "pwsh" || base === "powershell") {
+    // split/join — 정규식 리터럴 속 따옴표는 다국어 가드 스캐너(e2e 66)가 문자열 시작으로 읽는다.
+    const q = (s: string) => `'${s.split("'").join("''")}'`;
+    const sets = env.map(([k, v]) => `$env:${k}=${q(v)}; `).join("");
+    return `${sets}& ${q(spec.exe)}\r`;
+  }
+  if (base === "cmd") {
+    const sets = env.map(([k, v]) => `set "${k}=${v}" && `).join("");
+    return `${sets}"${spec.exe}"\r`;
+  }
+  const q = (s: string) => `'${s.split("'").join("'\\''")}'`;
+  const sets = env.map(([k, v]) => `${k}=${q(v)} `).join("");
+  return `${sets}${q(spec.exe)}\r`;
+}
 
 /** 예약된 초기 입력 — `paneId → {명령, 예약시각}`.
  *
@@ -190,7 +221,7 @@ export const CLAUDE_LAUNCH = "claude\r";
  *  claude를 또 띄운다. 예약 시각으로 그 부수효과를 잘라낸다. */
 const INITIAL_KEY = "gp:term-initial-input";
 const INITIAL_TTL_MS = 60_000;
-type InitialInputs = Record<string, { data: string; at: number }>;
+type InitialInputs = Record<string, { data: InitialInput; at: number }>;
 
 function readInitialInputs(): InitialInputs {
   try {
@@ -211,7 +242,7 @@ function writeInitialInputs(all: InitialInputs): void {
 
 /** paneId가 처음 열릴 때 PTY에 보낼 입력을 예약한다. `openTerminal` 직후 같은 틱에 부른다
  *  (pane 마운트는 다음 커밋이라 예약이 항상 먼저 저장된다). */
-export function queueInitialInput(paneId: string, data: string): void {
+export function queueInitialInput(paneId: string, data: InitialInput): void {
   const now = Date.now();
   // 소비되지 않은 만료 예약은 함께 버린다 — 위임 실패 등으로 영영 안 열리는 pane의 항목이
   // 쌓이지 않게(이 함수 말고는 남의 키를 지울 사람이 없다).
@@ -225,7 +256,7 @@ export function queueInitialInput(paneId: string, data: string): void {
 }
 
 /** 예약을 꺼내며 지운다(1회성). 만료됐으면 지우기만 하고 null. */
-export function takeInitialInput(paneId: string): string | null {
+export function takeInitialInput(paneId: string): InitialInput | null {
   const all = readInitialInputs();
   const item = all[paneId];
   if (!item) return null;

@@ -99,7 +99,7 @@ export function ProjectList() {
     [statuses],
   );
 
-  // 터미널의 Claude Code 작업중/완료 상태를 주기 스캔(1회 마운트)
+  // 터미널의 AI 에이전트(Claude Code·OpenCode) 작업중/완료 상태를 주기 스캔(1회 마운트)
   useAgentScanner();
 
   const [menu, setMenu] = useState<MenuState | null>(null);

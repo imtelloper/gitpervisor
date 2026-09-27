@@ -64,7 +64,29 @@ export const useAgentActivity = create<AgentActivityStore>((set) => ({
 //  - v2.1.x: "Perambulating… (19m 42s · ↓ 65.9k tokens)" — esc 문구 없이 경과시간 + 토큰 카운터(↑/↓)
 // 둘 중 하나라도 보이면 작업 중. 토큰 카운터(화살표+숫자+tokens)는 idle 상태엔 없어 신뢰 마커.
 // 사라지면 직전 턴이 끝난 것으로 본다(완료).
-const WORKING_RE = /esc to interrupt|[↑↓]\s?[\d.,]+\s?k?\s?tokens/i;
+const CLAUDE_WORKING_RE = /esc to interrupt|[↑↓]\s?[\d.,]+\s?k?\s?tokens/i;
+// OpenCode는 세션이 idle이 아닐 때만 프롬프트 아래에 "esc interrupt"를 그리고, esc를 한 번 누르면
+// "esc again to interrupt"로 바뀐다(opencode v1.18 packages/tui/src/component/prompt/index.tsx).
+// Claude의 "esc to interrupt"와는 겹치지 않는다. 홈 화면 팁은 "to stop the AI mid-response"라 안 걸린다.
+const OPENCODE_WORKING_RE = /esc (?:again to )?interrupt/i;
+
+export type AgentKind = "claude" | "opencode";
+
+function workingAgent(screen: string): AgentKind | null {
+  if (CLAUDE_WORKING_RE.test(screen)) return "claude";
+  if (OPENCODE_WORKING_RE.test(screen)) return "opencode";
+  return null;
+}
+
+/** 마지막으로 작업 중이던 에이전트 — 키는 `p:<projectId>` / `t:<paneId>`(agent-notify의 알림 키).
+ *  완료 알림이 Claude 트랜스크립트를 읽을지 정한다: OpenCode 턴에 그걸 읽으면 같은 프로젝트의
+ *  **지난 Claude 세션** 메시지가 본문에 실린다. 한 프로젝트에 둘이 함께 돌면 opencode가 이긴다
+ *  (엉뚱한 본문보다 기본 문구가 낫다). */
+const lastKind = new Map<string, AgentKind>();
+
+export function lastAgentKind(key: string): AgentKind | undefined {
+  return lastKind.get(key);
+}
 
 // 현재 화면(뷰포트)에 그려진 모든 줄을 읽는다. Claude Code는 "esc to interrupt"를 입력
 // 커서 '아래' 푸터(plan mode 줄 등)에 그리기도 해서 커서 위쪽만 보면 놓친다. 또 새 터미널은
@@ -88,12 +110,19 @@ export function scanAgents() {
   if (typeof document !== "undefined" && document.hidden) return;
   const byProject = new Map<string, boolean>();
   const byTerminal = new Map<string, boolean>();
+  const kindByProject = new Map<string, AgentKind>();
   for (const t of listTerminals()) {
     if (t.status !== "live") continue;
-    const isWorking = WORKING_RE.test(visibleScreen(t.term));
+    const kind = workingAgent(visibleScreen(t.term));
+    const isWorking = kind !== null;
     byTerminal.set(t.id, isWorking); // t.id = paneId
     byProject.set(t.projectId, (byProject.get(t.projectId) ?? false) || isWorking);
+    if (kind) {
+      lastKind.set(`t:${t.id}`, kind);
+      if (kindByProject.get(t.projectId) !== "opencode") kindByProject.set(t.projectId, kind);
+    }
   }
+  for (const [pid, kind] of kindByProject) lastKind.set(`p:${pid}`, kind);
   useAgentActivity.getState().applyScan(byProject, byTerminal);
 }
 

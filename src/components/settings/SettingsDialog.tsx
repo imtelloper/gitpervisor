@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useMessages } from "../../i18n/ui-language";
 import type { NotifySecret, Settings, ThemeId } from "../../lib/ipc";
+import { agentOf } from "../../lib/agent-launch";
 import { errorMessage, ipc } from "../../lib/ipc";
 import { refreshTerminalThemes } from "../../lib/terminal";
 import { useProjects, useSetSettings, useSettings } from "../../queries";
@@ -36,6 +37,8 @@ function buildCleaned(f: Settings): Settings {
     diffFontSize: Math.min(24, Math.max(10, Math.floor(f.diffFontSize || 13))),
     terminalShell: f.terminalShell && f.terminalShell.trim() ? f.terminalShell.trim() : null,
     terminalFontSize: Math.min(24, Math.max(10, Math.floor(f.terminalFontSize || 13))),
+    terminalStartAgent: agentOf(f.terminalStartAgent) ?? "",
+    opencodeModel: f.opencodeModel === "local" ? "local" : "free",
     smtpHost: f.smtpHost?.trim() || null,
     smtpPort: Math.min(65535, Math.max(1, Math.floor(f.smtpPort || 587))),
     smtpUsername: f.smtpUsername?.trim() || null,

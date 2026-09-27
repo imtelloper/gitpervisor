@@ -33,6 +33,10 @@ const REAPER_INTERVAL: Duration = Duration::from_secs(60);
 const LOG_TAIL: usize = 50;
 /// 이 시간 안에 프로세스가 죽으면 "기동 자체가 안 된 것"으로 보고 Windows CPU 폴백을 검토한다.
 const EARLY_DEATH: Duration = Duration::from_secs(20);
+/// 코딩 에이전트(OpenCode — `llm/relay.rs`)가 요구하는 최소 컨텍스트. 첫 요청의 시스템 프롬프트 + 도구
+/// 정의만 12,473 토큰이었다(2026-09-28 실측, opencode 1.18.32 · Qwen3 4B) — 기본 8K로는 첫 턴부터 넘친다.
+/// 설정 상한(32768)과 같은 값이라 사실상 "상한으로 띄운다"는 뜻이다.
+pub const AGENT_MIN_CTX: u32 = 32768;
 
 /// 살아있는 llama-server 세션. 하나만 존재한다(`AppState.llm`).
 pub struct LlmSession {
@@ -43,6 +47,8 @@ pub struct LlmSession {
     api_key: String,
     /// 이 세션이 물고 있는 카탈로그 모델 id(또는 "custom").
     model: String,
+    /// 기동 시 `-c` 값. 더 큰 컨텍스트를 원하는 호출(에이전트)이 오면 다시 띄운다(`can_reuse`).
+    ctx: u32,
     last_activity: Arc<Mutex<Instant>>,
     ready: AtomicBool,
     terminated: AtomicBool,
@@ -215,6 +221,44 @@ fn resolve_model(
     Ok((model_id, path, size))
 }
 
+/// 로컬 모델을 **띄우지 않고** 쓸 수 있는지만 본다 — 에이전트(OpenCode)를 로컬 모델로 열기 전에
+/// "모델 없음"을 바로 알리기 위해서다(안 보면 OpenCode 첫 요청에서야 중계가 실패를 돌려준다).
+/// 돌려주는 값은 OpenCode 모델 목록에 보일 이름이다.
+pub fn local_model_label(app: &AppHandle, state: &AppState) -> Result<String, IpcError> {
+    let (provider, ext_url, ext_model, backend) = {
+        let s = state.settings.read().unwrap_or_else(|e| e.into_inner());
+        (
+            s.llm_provider.clone(),
+            s.llm_external_url.clone(),
+            s.llm_external_model.clone(),
+            s.llm_backend.clone(),
+        )
+    };
+    if provider == "external" {
+        ext_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|u| !u.is_empty())
+            .ok_or_else(|| IpcError::new(ErrorCode::NotFound, text_db::llm_external_url_empty()))?;
+        return Ok(ext_model
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(|| "default".to_string()));
+    }
+    let art = acquire::spec_for_backend(&backend).ok_or_else(|| {
+        IpcError::new(ErrorCode::ToolNotFound, text_db::llm_runtime_unsupported_platform())
+    })?;
+    acquire::installed_server(app, &art)
+        .ok_or_else(|| IpcError::new(ErrorCode::ToolNotFound, text_db::llm_runtime_not_installed()))?;
+    let (model_id, path, _) = resolve_model(app, state, None)?;
+    Ok(match acquire::model_spec(&model_id) {
+        Some(spec) => spec.label.to_string(),
+        None => path
+            .file_stem()
+            .map_or_else(|| model_id.clone(), |n| n.to_string_lossy().into_owned()),
+    })
+}
+
 /// 모델 로드 상한 — GB당 30초 + 30초(HDD 고려, §3.3).
 fn load_timeout(model_bytes: u64) -> Duration {
     let gb = (model_bytes as f64 / (1024.0 * 1024.0 * 1024.0)).ceil().max(1.0) as u64;
@@ -378,6 +422,23 @@ pub async fn ensure_server(
     on_progress: &Channel<String>,
     want_model: Option<&str>,
 ) -> Result<Endpoint, IpcError> {
+    ensure_server_ctx(app, state, on_progress, want_model, 0).await
+}
+
+/// 떠 있는 세션을 그대로 쓸 수 있는가 — 같은 모델이고 컨텍스트가 요구 이상이어야 한다.
+/// 더 **큰** 세션은 재사용한다: 에이전트가 32K로 띄워 둔 서버를 번역(8K)이 그대로 쓰게.
+fn can_reuse(session_model: &str, session_ctx: u32, want_model: &str, want_ctx: u32) -> bool {
+    session_model == want_model && session_ctx >= want_ctx
+}
+
+/// `ensure_server` + 최소 컨텍스트. 설정 컨텍스트보다 `min_ctx`가 크면 그 값으로 띄운다(에이전트용).
+pub async fn ensure_server_ctx(
+    app: &AppHandle,
+    state: &AppState,
+    on_progress: &Channel<String>,
+    want_model: Option<&str>,
+    min_ctx: u32,
+) -> Result<Endpoint, IpcError> {
     let (provider, ext_url, ext_model, ext_key, gpu_layers, ctx, backend) = {
         let s = state.settings.read().unwrap_or_else(|e| e.into_inner());
         (
@@ -408,12 +469,13 @@ pub async fn ensure_server(
     }
 
     let (model_id, model_path, model_size) = resolve_model(app, state, want_model)?;
+    let ctx = ctx.max(min_ctx).clamp(2048, 32768);
 
-    // 재사용 — 같은 모델로 살아 있으면 그대로. 락은 판정 동안만 짧게 잡는다.
+    // 재사용 — 같은 모델·충분한 컨텍스트로 살아 있으면 그대로. 락은 판정 동안만 짧게 잡는다.
     {
         let guard = state.llm.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(s) = guard.as_ref() {
-            if s.model == model_id && s.alive() && s.ready.load(Ordering::SeqCst) {
+            if can_reuse(&s.model, s.ctx, &model_id, ctx) && s.alive() && s.ready.load(Ordering::SeqCst) {
                 s.touch();
                 return Ok(Endpoint {
                     base: format!("http://127.0.0.1:{}", s.port),
@@ -435,7 +497,6 @@ pub async fn ensure_server(
     let exe = acquire::installed_server(app, &art)
         .ok_or_else(|| IpcError::new(ErrorCode::ToolNotFound, text_db::llm_runtime_not_installed()))?;
     let threads = physical_threads();
-    let ctx = ctx.clamp(2048, 32768);
 
     match start_and_wait(state, &exe, &model_path, &model_id, gpu_layers, ctx, threads, model_size, on_progress).await {
         Ok(ep) => Ok(ep),
@@ -501,6 +562,7 @@ async fn start_and_wait(
         port,
         api_key: api_key.clone(),
         model: model_id.to_string(),
+        ctx,
         last_activity: Arc::new(Mutex::new(Instant::now())),
         ready: AtomicBool::new(false),
         terminated: AtomicBool::new(false),
@@ -617,6 +679,16 @@ mod tests {
         assert_eq!(load_timeout(0), Duration::from_secs(60)); // 최소 1GB 취급
         assert_eq!(load_timeout(5 * gb / 2), Duration::from_secs(30 + 3 * 30)); // 2.5GB → 3GB
         assert!(load_timeout(5 * gb) > load_timeout(5 * gb / 2));
+    }
+
+    /// 에이전트가 32K로 띄운 세션은 번역(8K)이 그대로 쓰고, 8K 세션은 에이전트가 쓰지 않는다
+    /// (그대로 쓰면 첫 요청 12K 토큰이 컨텍스트를 넘어 실패한다).
+    #[test]
+    fn reuse_requires_same_model_and_enough_context() {
+        assert!(can_reuse("qwen3-4b-q4", 32768, "qwen3-4b-q4", 8192));
+        assert!(can_reuse("qwen3-4b-q4", 32768, "qwen3-4b-q4", AGENT_MIN_CTX));
+        assert!(!can_reuse("qwen3-4b-q4", 8192, "qwen3-4b-q4", AGENT_MIN_CTX));
+        assert!(!can_reuse("qwen3-4b-q4", 32768, "gemma4-12b-qat-q4", 8192));
     }
 
     /// 살아 있는 서버는 절대 폴백 대상이 아니다(느린 로드 ≠ Vulkan 부재).

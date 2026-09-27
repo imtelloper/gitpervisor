@@ -19,6 +19,7 @@ import {
   attachOutputChannel,
   copyTerminalText,
   ensureExitListener,
+  formatLaunch,
   pasteIntoTerminal,
   registry,
   takeInitialInput,
@@ -967,8 +968,16 @@ export function createTerminalImpl(opts: {
       clearTimeout(timer);
       // 실패한 open에는 보내지 않는다 — 세션이 없어 쓰기는 버려지고 프롬프트 기록에 유령
       // 항목만 남는다(실패 배너 writeln 자체가 파싱을 유발해 여기까지 온다).
+      // 관리형 실행(LaunchSpec)은 **실제로 뜬 셸**의 문법으로 만든다 — term_open이 폴백으로
+      // 다른 셸을 골랐을 수 있어 예약 시점엔 알 수 없다(lib/terminal.ts formatLaunch).
       void startCmd.then(
-        () => ptyWrite(opts.id, initial),
+        (opened) =>
+          ptyWrite(
+            opts.id,
+            typeof initial === "string"
+              ? initial
+              : formatLaunch(initial, (opened as { shell?: string } | null)?.shell ?? ""),
+          ),
         () => {},
       );
     };

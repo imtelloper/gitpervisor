@@ -259,7 +259,9 @@ export interface UiState {
     message: string,
     action?: Toast["action"],
     opts?: ToastOptions,
-  ) => void;
+  ) => number;
+  /** 떠 있는 토스트의 문구만 바꾼다(다운로드 진행률 등). 이미 닫혔으면 아무것도 안 한다. */
+  updateToast: (id: number, message: string) => void;
   dismissToast: (id: number) => void;
   askConfirm: (req: ConfirmRequest) => void;
   closeConfirm: () => void;
@@ -909,7 +911,14 @@ export const useUi = create<UiState>((set) => ({
     // 사용자가 X로 닫을 때까지 남는 알림(새 버전 안내 등).
     const ms = opts?.durationMs === undefined ? 6000 : opts.durationMs;
     if (ms != null) setTimeout(() => useUi.getState().dismissToast(id), ms);
+    return id;
   },
+  updateToast: (id, message) =>
+    set((s) =>
+      s.toasts.some((t) => t.id === id)
+        ? { toasts: s.toasts.map((t) => (t.id === id ? { ...t, message } : t)) }
+        : s,
+    ),
   dismissToast: (id) =>
     set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
   askConfirm: (req) => set({ confirm: req }),

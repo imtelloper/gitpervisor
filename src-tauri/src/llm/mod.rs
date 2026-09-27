@@ -5,6 +5,7 @@
 // 앞뒤라 한 폴더에 모아 두는 편이 읽기 쉽다).
 pub mod acquire;
 pub mod chat;
+pub mod relay;
 pub mod server;
 
 // 커맨드는 재노출하지 않는다 — `#[tauri::command]`가 만드는 숨은 `__cmd__*` 매크로는 이름을

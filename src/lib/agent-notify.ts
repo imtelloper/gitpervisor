@@ -7,7 +7,11 @@ import { useEffect, useRef } from "react";
 
 import { currentMessages } from "../i18n/ui-language";
 import { useProjects, useSettings } from "../queries";
-import { useAgentActivity, type AgentState } from "../stores/agentActivity";
+import {
+  lastAgentKind,
+  useAgentActivity,
+  type AgentState,
+} from "../stores/agentActivity";
 import { ipc, type Project, type Settings } from "./ipc";
 import { listTerminals } from "./terminal";
 
@@ -49,7 +53,7 @@ async function fire(title: string, body: string) {
 }
 
 /**
- * AI(터미널 Claude) 작업 완료 시 OS 알림. 완료는 agentActivity의 working→done 엣지로 감지한다.
+ * AI(터미널 Claude Code·OpenCode) 작업 완료 시 OS 알림. 완료는 agentActivity의 working→done 엣지로 감지한다.
  * 모드(settings.notifyMode):
  *  - off: 알림 안 함
  *  - project-inactive: 프로젝트 단위, 창이 비활성(비포커스)일 때만 (기본)
@@ -107,7 +111,8 @@ export function useAgentNotifications() {
     const title = currentMessages().lib.agentNotify.doneTitle(projectName(pid));
     let body = fallback;
     const path = projectPath(pid);
-    if (path) {
+    // 트랜스크립트는 Claude Code 것뿐이다 — OpenCode 턴이면 기본 문구로 둔다(lastAgentKind 주석).
+    if (path && lastAgentKind(key) !== "opencode") {
       try {
         const msg = await ipc.lastAgentMessage(path);
         if (msg && msg.trim()) body = msg.trim();

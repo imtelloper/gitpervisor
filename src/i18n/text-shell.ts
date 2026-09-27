@@ -97,10 +97,10 @@ const ko = {
     refreshAllTitle: "모든 프로젝트 상태 새로고침 (F5)",
   },
   projectItem: {
-    agentWorkingTitle: "Claude Code 작업 중…",
-    agentWorkingLabel: "Claude Code 작업 중",
-    agentDoneTitle: "Claude Code 작업 완료 — 확인하세요",
-    agentDoneLabel: "Claude Code 작업 완료",
+    agentWorkingTitle: "AI 작업 중…",
+    agentWorkingLabel: "AI 작업 중",
+    agentDoneTitle: "AI 작업 완료 — 확인하세요",
+    agentDoneLabel: "AI 작업 완료",
     hasNote: "메모 있음",
     removeTitle: "프로젝트 제거 (레포는 삭제되지 않음)",
     behindTitle: (behind: number, lastFetch: string | null) =>
@@ -246,10 +246,10 @@ export const shellText = defineText(ko, {
       refreshAllTitle: "Refresh all project status (F5)",
     },
     projectItem: {
-      agentWorkingTitle: "Claude Code working…",
-      agentWorkingLabel: "Claude Code working",
-      agentDoneTitle: "Claude Code finished — take a look",
-      agentDoneLabel: "Claude Code finished",
+      agentWorkingTitle: "AI working…",
+      agentWorkingLabel: "AI working",
+      agentDoneTitle: "AI finished — take a look",
+      agentDoneLabel: "AI finished",
       hasNote: "Has notes",
       removeTitle: "Remove project (the repository is not deleted)",
       behindTitle: (behind, lastFetch) =>

@@ -5,12 +5,14 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Undo2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import { ConfirmHost } from "./components/common/ConfirmDialog";
 import { Toasts } from "./components/common/Toast";
 import { TranslateHost } from "./components/common/TranslateCard";
 import { FloatTitleBar } from "./components/FloatTitleBar";
 import { currentMessages, useMessages } from "./i18n/ui-language";
 import { PaneTreeRoot } from "./components/workspace/PaneTree";
 import { PromptHistoryButton } from "./components/workspace/TermSessionControls";
+import { splitPaneWith, useStartAgent } from "./lib/agent-launch";
 import { ipc } from "./lib/ipc";
 import {
   createTerminal,
@@ -104,6 +106,10 @@ function FloatWorkspace({
   const [title, setTitle] = useState<string | null>(null);
   // 되돌리기 진행 중 — 연타하면 같은 pane에 openTerminal 명령이 두 번 나가 메인에 빈 탭이 생긴다.
   const redocking = useRef(false);
+  // 분할 단축키는 tabId로만 재등록되므로 설정 "새 터미널 시작"은 ref로 최신값을 본다.
+  const startAgent = useStartAgent();
+  const agentRef = useRef(startAgent);
+  agentRef.current = startAgent;
 
   // 타이틀에 프로젝트명 표시
   useEffect(() => {
@@ -127,8 +133,10 @@ function FloatWorkspace({
       const t = ts.terminals.find((x) => x.id === tabId);
       if (!t) return;
       e.preventDefault();
-      if (k === "d") ts.splitPane(t.id, t.activePaneId, "row", false);
-      else if (k === "e") ts.splitPane(t.id, t.activePaneId, "col", false);
+      // 분할로 새로 뜨는 칸은 설정 "새 터미널 시작"을 따른다(lib/agent-launch.ts).
+      const agent = agentRef.current;
+      if (k === "d") splitPaneWith(t.id, t.activePaneId, "row", false, agent);
+      else if (k === "e") splitPaneWith(t.id, t.activePaneId, "col", false, agent);
       else ts.closePane(t.id, t.activePaneId);
     };
     window.addEventListener("keydown", onKey);
@@ -209,7 +217,9 @@ function FloatWorkspace({
       </div>
       {/* 컬럼 항목 복사 토스트가 이 창에서만 무음이었다 — 스토어는 창마다 별개라(웹뷰 = 별도 JS
           컨텍스트) 메인 창의 호스트가 여기 대신 그려 주지 않는다(AggregateWindow와 같은 이유).
-          확인 모달은 이 창에 askConfirm 경로가 없어 달지 않는다. */}
+          확인 모달도 단다 — 이 창의 분할·우클릭에서 OpenCode를 처음 띄우면 다운로드 안내(askConfirm)가
+          뜨는데, 호스트가 없으면 보이지 않는 확인창에 막혀 아무 일도 일어나지 않는다(lib/opencode.ts). */}
+      <ConfirmHost />
       <Toasts />
       {/* PaneMenu가 이 창에서도 열린다 — '선택 영역 번역' 카드는 그 창 안에 떠야 한다(태스크 61). */}
       <TranslateHost />

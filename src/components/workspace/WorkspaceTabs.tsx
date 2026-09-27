@@ -1,4 +1,5 @@
 import {
+  Bot,
   Database,
   ExternalLink,
   FileText,
@@ -12,6 +13,7 @@ import {
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 
 import { useMessages } from "../../i18n/ui-language";
+import { openTerminalWith } from "../../lib/agent-launch";
 import { CLAUDE_LAUNCH, queueInitialInput } from "../../lib/terminal";
 import { useSettings } from "../../queries";
 import { useAgentActivity } from "../../stores/agentActivity";
@@ -166,6 +168,9 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
             const { paneId } = openTerminal(projectId);
             queueInitialInput(paneId, CLAUDE_LAUNCH);
           }}
+          // 앱이 받아 둔 OpenCode를 띄운다(첫 사용이면 안내·다운로드 — lib/agent-launch.ts).
+          // 이 메뉴는 종류를 고르는 곳이라 "새 터미널"은 설정 기본값과 무관하게 셸이다.
+          onNewOpenCode={() => openTerminalWith(projectId, "opencode")}
           onNewBrowser={() => openBrowser(projectId)}
           onNewApiClient={() => openApiClient(projectId)}
         />
@@ -289,11 +294,13 @@ function TabMenu({
 function NewTabControls({
   onNewTerminal,
   onNewClaude,
+  onNewOpenCode,
   onNewBrowser,
   onNewApiClient,
 }: {
   onNewTerminal: () => void;
   onNewClaude: () => void;
+  onNewOpenCode: () => void;
   onNewBrowser: () => void;
   onNewApiClient: () => void;
 }) {
@@ -345,6 +352,15 @@ function NewTabControls({
               label={msg.git.workspaceTabs.newClaudeTerminal}
               onClick={() => {
                 onNewClaude();
+                setMenu(null);
+              }}
+            />
+            {/* 앱이 관리하는 OpenCode — 설치 없이 무료 모델로 바로 쓴다(lib/opencode.ts). */}
+            <MenuItem
+              icon={<Bot size={14} />}
+              label={msg.git.workspaceTabs.newOpenCodeTerminal}
+              onClick={() => {
+                onNewOpenCode();
                 setMenu(null);
               }}
             />

@@ -1002,3 +1002,19 @@ pub fn llm_runtime_not_installed() -> &'static str {
         Lang::En => "AI runtime is not installed — download it in Settings › AI",
     }
 }
+
+// ── llm/relay.rs — OpenCode용 로컬 모델 중계 ────────────────────────────────
+
+pub fn llm_relay_start_failed(e: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("로컬 모델 중계 서버를 시작하지 못했습니다: {e}"),
+        Lang::En => format!("Failed to start the local model relay: {e}"),
+    }
+}
+
+pub fn llm_relay_upstream_failed(e: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("로컬 모델 서버에 요청하지 못했습니다: {e}"),
+        Lang::En => format!("Request to the local model server failed: {e}"),
+    }
+}

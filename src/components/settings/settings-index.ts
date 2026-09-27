@@ -85,6 +85,8 @@ export const SETTINGS_INDEX: SettingIndexEntry[] = [
   // 터미널
   { category: "terminal", key: "terminalShell" },
   { category: "terminal", key: "terminalFontSize" },
+  { category: "terminal", key: "terminalStartAgent" },
+  { category: "terminal", key: "opencodeModel" },
   // 알림
   { category: "notify", key: "notifyMode" },
   { category: "notify", key: "slackEnabled" },

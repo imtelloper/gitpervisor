@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 
 import { useMessages } from "../../i18n/ui-language";
+import { splitPaneWith, useStartAgent } from "../../lib/agent-launch";
 import { useBrowsers } from "../../stores/browser";
 import { type PaneKind, useTerminals } from "../../stores/terminals";
 
@@ -25,7 +26,9 @@ export function PaneControls({
   content: PaneKind;
 }) {
   const msg = useMessages();
-  const splitPane = useTerminals((s) => s.splitPane);
+  // 분할로 새로 뜨는 터미널은 설정 "새 터미널 시작"을 따른다(lib/agent-launch.ts). 웹→터미널 전환은
+  // 따르지 않는다 — 같은 paneId의 살아 있는 PTY를 다시 붙이는 경우라 예약이 소비되지 않고 남는다.
+  const agent = useStartAgent();
   const setPaneContent = useTerminals((s) => s.setPaneContent);
   const closePane = useTerminals((s) => s.closePane);
   const toggleMaximize = useTerminals((s) => s.toggleMaximize);
@@ -58,13 +61,13 @@ export function PaneControls({
       </TBtn>
       <TBtn
         title={msg.git.paneMenu.splitRight}
-        onClick={() => splitPane(tabId, paneId, "row", false)}
+        onClick={() => splitPaneWith(tabId, paneId, "row", false, agent)}
       >
         <SplitSquareHorizontal size={13} />
       </TBtn>
       <TBtn
         title={msg.git.paneMenu.splitDown}
-        onClick={() => splitPane(tabId, paneId, "col", false)}
+        onClick={() => splitPaneWith(tabId, paneId, "col", false, agent)}
       >
         <SplitSquareVertical size={13} />
       </TBtn>
