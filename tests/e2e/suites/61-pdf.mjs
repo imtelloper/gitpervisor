@@ -1294,14 +1294,21 @@ async function reloadBlock({ cdp, r, fix, pid, put, F, t0, open, gone, CONTROL }
   // 재로드는 annotationEditorMode DISABLE 을 풀면 안 된다 — pdf.js setDocument 는 기존 문서가 있으면 모드를 NONE 으로
   // 되돌려 AnnotationEditorUIManager(window keydown · document dragover/drop 리스너)를 만든다. 그러면 이미지 dragover 를
   // 막고, drop 하면 STAMP 모드로 들어가 창 안 textarea 의 Backspace·Ctrl+A 를 막는다. drop 은 쏘지 않는다(상태 변경).
+  // 막힘 여부는 **document 단계에서** 읽는다 — pdf.js 편집기 리스너가 document 에 붙고(pdf.mjs #addDragAndDropListeners),
+  // 그 뒤 window 에는 앱의 전역 파일 드롭 가드(main.tsx)가 아무도 안 받은 파일 dragover 를 막는다. 끝난 뒤의
+  // ev.defaultPrevented 는 그 가드 때문에 늘 true 다. 여기서 늦게 붙인 document 리스너는 pdf.js 뒤·가드 앞에 돈다.
   const ed = await evalA(
     cdp,
     `const h = A.handle(${J(p)}); if (!h) return null;
      const lp = h.viewer()._layerProperties;
      const dt = new DataTransfer(); dt.items.add(new File([new Uint8Array(8)], 'gpv61.png', { type: 'image/png' }));
      const ev = new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt });
+     let atDocument = null;
+     const rec = (e) => { atDocument = e.defaultPrevented; };
+     document.addEventListener('dragover', rec);
      A.scroll(${J(p)}).dispatchEvent(ev);
-     return { key: !!lp && 'annotationEditorUIManager' in lp, ui: lp ? lp.annotationEditorUIManager != null : null, layers: h.root.querySelectorAll('.annotationEditorLayer').length, dragPrevented: ev.defaultPrevented, reload: h.state().reloadCount };`,
+     document.removeEventListener('dragover', rec);
+     return { key: !!lp && 'annotationEditorUIManager' in lp, ui: lp ? lp.annotationEditorUIManager != null : null, layers: h.root.querySelectorAll('.annotationEditorLayer').length, dragPrevented: atDocument, reload: h.state().reloadCount };`,
   );
   r.check(
     "(C4 부가) 제자리 재로드 뒤에도 편집 UI 없음 — annotationEditorUIManager null · .annotationEditorLayer 0 · 이미지 dragover 를 막지 않는다 · 전제: 재로드가 일어났고(reloadCount+1) 접근자 키가 있다",
