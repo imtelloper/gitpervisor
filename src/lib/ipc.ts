@@ -1246,6 +1246,8 @@ export const ipc = {
   // 플로팅 창이 floated PTY의 프로젝트 id를 조회 — 새 분할 패널을 같은 프로젝트로 연다.
   termProject: (termId: string) =>
     call<string | null>("term_project", { termId }),
+  // 이 PTY가 실제로 띄운 셸 — 열린 터미널에 에이전트를 띄울 때 셸별 명령 문법을 고른다.
+  termShell: (termId: string) => call<string>("term_shell", { termId }),
   // 이미지 미리보기 — 워크트리 파일을 base64로. 큰 파일 대비 타임아웃 넉넉히, 재시도 없음.
   readFileBase64: (projectId: string, relPath: string) =>
     call<FileBytes>(

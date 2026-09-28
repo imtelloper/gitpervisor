@@ -5,11 +5,13 @@
 // (termThemes/promptHistory)라 어디서 그리든 같은 세션 = 같은 상태다. 마스터 토글만 창의
 // 모든 세션을 대상으로 하며, 메인 타이틀바와 모아보기 별도 창 헤더가 함께 쓴다.
 import {
+  Bot,
   Check,
   FolderTree,
   GitBranch,
   History,
   Palette,
+  Sparkles,
   Trash2,
   X,
 } from "lucide-react";
@@ -17,6 +19,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { fmtTime } from "../../i18n/format-locale";
 import { useMessages } from "../../i18n/ui-language";
+import { launchAgentInTerminal, type TerminalAgent } from "../../lib/agent-launch";
 import { copyText } from "../../lib/clipboard";
 import { relativeTime } from "../../lib/format";
 import { TERM_SCHEMES } from "../../lib/term-color-schemes";
@@ -137,6 +140,77 @@ export function ThemeButton({ termId }: { termId: string }) {
                 )}
               </button>
             ))}
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
+/**
+ * 이 터미널에 AI 세션(Claude Code·OpenCode)을 띄운다 — 지금 셸 프롬프트에 실행 줄을 입력한다
+ * (lib/agent-launch.ts `launchAgentInTerminal`). 뭔가 돌고 있는 터미널이면 그 프로그램에 입력이 가니
+ * 셸 프롬프트에서 누르는 버튼이다. 메뉴 배치는 ThemeButton과 같은 fixed + 백드롭(헤더가 overflow-hidden).
+ */
+export function AgentLaunchButton({ termId }: { termId: string }) {
+  const msg = useMessages();
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const [menu, setMenu] = useState<{ right: number; top?: number; bottom?: number } | null>(null);
+  useOccludesWebview(!!menu);
+
+  useEffect(() => {
+    if (!menu) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setMenu(null);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [menu]);
+
+  const open = () => {
+    const r = btnRef.current?.getBoundingClientRect();
+    if (!r) return;
+    const right = Math.max(8, window.innerWidth - r.right);
+    // 두 줄(≈64px)이라 아래 여유가 모자랄 때만 위로 뒤집는다.
+    setMenu(
+      window.innerHeight - r.bottom > 80
+        ? { right, top: r.bottom + 4 }
+        : { right, bottom: window.innerHeight - r.top + 4 },
+    );
+  };
+  const pick = (agent: TerminalAgent) => {
+    setMenu(null);
+    void launchAgentInTerminal(termId, agent);
+  };
+  const row = (agent: TerminalAgent, icon: React.ReactNode, label: string) => (
+    <button
+      onClick={() => pick(agent)}
+      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-fg-muted hover:bg-raised hover:text-fg"
+    >
+      <span className="shrink-0 text-fg-dim">{icon}</span>
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+    </button>
+  );
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        onClick={() => (menu ? setMenu(null) : open())}
+        title={msg.git.termSession.agentLaunchTitle}
+        className={`shrink-0 rounded p-0.5 ${
+          menu ? "bg-raised text-accent" : "text-fg-dim hover:bg-raised hover:text-fg"
+        }`}
+      >
+        <Bot size={12} />
+      </button>
+      {menu && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setMenu(null)} />
+          <div
+            className="fixed z-50 min-w-[180px] rounded-md border border-edge bg-panel py-1 text-[12px] shadow-xl"
+            style={{ right: menu.right, top: menu.top, bottom: menu.bottom }}
+          >
+            {row("claude", <Sparkles size={12} />, msg.git.termSession.agentLaunchClaude)}
+            {row("opencode", <Bot size={12} />, msg.git.termSession.agentLaunchOpenCode)}
           </div>
         </>
       )}

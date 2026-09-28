@@ -12,6 +12,7 @@ import { BrowserPane } from "./BrowserPane";
 import { PaneControls } from "./PaneControls";
 import { SplitView } from "./SplitView";
 import {
+  AgentLaunchButton,
   FileTreeButton,
   GitDialogButton,
   PromptLogButton,
@@ -149,6 +150,7 @@ function LeafView({
         fontSize={fontSize}
         controls={
           <>
+            <AgentLaunchButton termId={leaf.paneId} />
             <ThemeButton termId={leaf.paneId} />
             <PromptLogButton termId={leaf.paneId} />
             <GitDialogButton projectId={tab.projectId} />

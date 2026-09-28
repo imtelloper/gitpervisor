@@ -1,8 +1,16 @@
 import { useSettings } from "../queries";
 import { useTerminals } from "../stores/terminals";
+import { useUi } from "../stores/ui";
+import { errorMessage, ipc } from "./ipc";
 import { prepareOpenCode } from "./opencode";
 import type { SplitDir } from "./pane-tree";
-import { CLAUDE_LAUNCH, type InitialInput, queueInitialInput } from "./terminal";
+import {
+  CLAUDE_LAUNCH,
+  formatLaunch,
+  getTerminal,
+  type InitialInput,
+  queueInitialInput,
+} from "./terminal";
 
 // 새 터미널을 에이전트 세션으로 띄우는 공용 경로 — 터미널을 새로 만드는 곳은 전부 이걸 거친다.
 //  - 종류를 **고르는** 곳("+" 메뉴·"OpenCode로 분할" 등)은 그 종류를 넘긴다.
@@ -36,6 +44,25 @@ export function runWithAgent(
   void prepareOpenCode().then((spec) => {
     if (spec) open(spec);
   });
+}
+
+/** 이미 열린 터미널에 에이전트를 띄운다(헤더의 에이전트 버튼) — 지금 프롬프트에 실행 줄을 입력한다.
+ *  `term.input`이라 키 입력과 같은 경로(onData → ptyWrite)를 타 순서·프롬프트 기록이 그대로다.
+ *  OpenCode 줄은 셸마다 문법이 달라 이 PTY가 **실제로 띄운 셸**을 백엔드에 묻는다 — 별도 창은
+ *  attach라 open 응답의 셸을 모른다. */
+export async function launchAgentInTerminal(termId: string, agent: TerminalAgent): Promise<void> {
+  let line = CLAUDE_LAUNCH;
+  if (agent === "opencode") {
+    const spec = await prepareOpenCode();
+    if (!spec) return; // 취소·실패 — prepareOpenCode가 이미 알렸다
+    try {
+      line = formatLaunch(spec, await ipc.termShell(termId));
+    } catch (e) {
+      useUi.getState().pushToast("error", errorMessage(e));
+      return;
+    }
+  }
+  getTerminal(termId)?.term.input(line);
 }
 
 /** 새 터미널 탭. */

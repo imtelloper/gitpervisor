@@ -1326,6 +1326,7 @@ pub fn run() {
             commands::term_open,
             commands::term_attach,
             commands::term_project,
+            commands::term_shell,
             commands::term_write,
             commands::term_resize,
             commands::term_close,

@@ -62,6 +62,7 @@ import { ReportView } from "./report/ReportView";
 import { ProjectLogo } from "./common/ProjectLogo";
 import { BrowserPane } from "./workspace/BrowserPane";
 import {
+  AgentLaunchButton,
   FileTreeButton,
   GitDialogButton,
   PromptHistoryButton,
@@ -1543,6 +1544,7 @@ function AggregateCell({
           <span className="font-medium text-fg">{meta.projName}</span>
           <span className="text-fg-dim"> · {meta.title}</span>
         </span>
+        <AgentLaunchButton termId={meta.id} />
         <ThemeButton termId={meta.id} />
         <PromptLogButton termId={meta.id} />
         <GitDialogButton projectId={meta.projectId} />

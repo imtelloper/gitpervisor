@@ -226,6 +226,9 @@ const ko = {
       `입력한 프롬프트 ${count}개 — 클릭하면 우측 목록을 ${open ? "닫습니다" : "엽니다"}`,
     gitDialogTitle: "Git 변경·로그 보기",
     fileTreeTitle: "파일 트리 보기",
+    agentLaunchTitle: "이 터미널에서 AI 세션 시작 — Claude Code · OpenCode",
+    agentLaunchClaude: "Claude Code 세션 시작",
+    agentLaunchOpenCode: "OpenCode 세션 시작",
     collapseAllPromptListsTitle:
       "전체 프롬프트 목록 접기 — 이 창의 모든 터미널 우측의 입력 목록을 닫습니다",
     expandAllPromptListsTitle:
@@ -484,6 +487,9 @@ export const gitText = defineText(ko, {
         `${count} ${plural(count, "prompt", "prompts")} entered — click to ${open ? "close" : "open"} the list on the right`,
       gitDialogTitle: "View Git changes and log",
       fileTreeTitle: "View file tree",
+      agentLaunchTitle: "Start an AI session in this terminal — Claude Code · OpenCode",
+      agentLaunchClaude: "Start Claude Code session",
+      agentLaunchOpenCode: "Start OpenCode session",
       collapseAllPromptListsTitle:
         "Collapse all prompt lists — closes the input list beside every terminal in this window",
       expandAllPromptListsTitle:

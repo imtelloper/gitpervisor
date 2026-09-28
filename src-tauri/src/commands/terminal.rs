@@ -226,6 +226,9 @@ pub struct TerminalSession {
     sink: Arc<Mutex<Option<Channel<Response>>>>,
     /// 이 PTY가 속한 프로젝트 — 플로팅 창이 이 값으로 새 분할 패널의 cwd를 잡는다.
     project_id: String,
+    /// 실제로 띄운 셸 프로그램(shell.rs 폴백 결과) — 이미 열린 터미널에 에이전트를 띄울 때 셸별
+    /// 명령 문법을 고른다(`term_shell`). 별도 창은 attach라 open 응답을 못 받으므로 여기 둔다.
+    shell: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -456,6 +459,7 @@ pub fn term_open(
         closed,
         sink,
         project_id,
+        shell: shell.clone(),
     };
     // 같은 id의 옛 세션이 남아있으면(비정상 경로) 먼저 억제+kill 후 교체한다.
     // 락은 insert까지만 — 종료는 락 밖에서(최대 300ms 소요, 전역 락을 물고 있으면 UI가 멈춘다).
@@ -536,6 +540,19 @@ pub fn term_project(state: State<'_, AppState>, term_id: String) -> Option<Strin
         .unwrap_or_else(|e| e.into_inner())
         .get(&term_id)
         .map(|s| s.project_id.clone())
+}
+
+/// 살아있는 PTY의 셸 프로그램 — 헤더의 에이전트 버튼이 이 셸 문법으로 실행 줄을 만든다
+/// (lib/terminal.ts `formatLaunch`).
+#[tauri::command(async)]
+pub fn term_shell(state: State<'_, AppState>, term_id: String) -> Result<String, IpcError> {
+    state
+        .terminals
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&term_id)
+        .map(|s| s.shell.clone())
+        .ok_or_else(|| IpcError::new(ErrorCode::NotFound, text_git_net::terminal_session_not_found()))
 }
 
 /// ConPTY 리사이즈 — xterm fit 결과(cols/rows)를 반영.
