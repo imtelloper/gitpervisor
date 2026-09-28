@@ -36,6 +36,7 @@ import {
   Save,
   UnfoldVertical,
   Wand2,
+  WrapText,
 } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -201,6 +202,20 @@ const DIFF_OPTIONS = {
   hover: { delay: 150 },
 } as const;
 
+/** 자동 줄 바꿈 토글 — Monaco 우클릭 메뉴(뷰어 패널 밖의 문서 창·Git 모달은 Monaco 메뉴를 쓴다)와
+ *  Alt+Z(VS Code와 같은 키). 값은 전역 한 개(useUi.viewerWordWrap)라 모든 뷰어가 같이 바뀐다.
+ *  1회 등록이라 라벨은 마운트 시점 언어로 만든다(gp.save와 같은 이유). */
+function addWordWrapAction(editor: monaco.editor.IStandaloneCodeEditor): monaco.IDisposable {
+  return editor.addAction({
+    id: "gp.wordWrap",
+    label: currentMessages().git.diff.wordWrapAction,
+    keybindings: [monaco.KeyMod.Alt | monaco.KeyCode.KeyZ],
+    contextMenuGroupId: "navigation",
+    contextMenuOrder: 99,
+    run: () => useUi.getState().toggleViewerWordWrap(),
+  });
+}
+
 /** 에디터의 현재 선택 텍스트(없으면 ""). 번역 액션·pane 메뉴가 같은 값을 본다. */
 function selectedText(editor: monaco.editor.ICodeEditor): string {
   const sel = editor.getSelection();
@@ -249,6 +264,9 @@ export default function DiffViewer({
   const monacoTheme = ensureMonacoTheme(settings?.theme);
   const collapseUnchanged = useUi((s) => s.diffCollapseUnchanged);
   const toggleDiffCollapse = useUi((s) => s.toggleDiffCollapse);
+  const wordWrap = useUi((s) => s.viewerWordWrap);
+  const wrapMode: "on" | "off" = wordWrap ? "on" : "off";
+  const toggleWordWrap = useUi((s) => s.toggleViewerWordWrap);
   const selectDiff = useUi((s) => s.selectDiff);
   const pushToast = useUi((s) => s.pushToast);
 
@@ -269,8 +287,9 @@ export default function DiffViewer({
       contextmenu: !suppressContextMenu,
       fontSize: settings?.diffFontSize ?? 13,
       hideUnchangedRegions: { enabled: collapseUnchanged },
+      wordWrap: wrapMode,
     }),
-    [settings?.diffFontSize, collapseUnchanged, suppressContextMenu],
+    [settings?.diffFontSize, collapseUnchanged, suppressContextMenu, wrapMode],
   );
   const isFileView = target.mode === "file";
   // 이미지 파일은 모드와 무관하게 워크트리 파일을 이미지로 렌더(텍스트 diff 대신).
@@ -304,8 +323,9 @@ export default function DiffViewer({
       contextmenu: !suppressContextMenu,
       readOnly: !editable,
       fontSize: settings?.diffFontSize ?? 13,
+      wordWrap: wrapMode,
     }),
-    [settings?.diffFontSize, editable, suppressContextMenu],
+    [settings?.diffFontSize, editable, suppressContextMenu, wrapMode],
   );
 
   const path = target.path;
@@ -640,6 +660,7 @@ export default function DiffViewer({
         keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS],
         run: () => saveRef.current(),
       }),
+      addWordWrapAction(editor),
     ];
     // 우클릭 → "선택 영역 번역"(태스크 61). Monaco 컨텍스트 메뉴는 네이티브 DOM이라 항목 클릭
     // 시점엔 마우스 좌표가 없다 — 메뉴를 연 그 이벤트에서 미리 잡아 카드 위치로 쓴다.
@@ -726,6 +747,8 @@ export default function DiffViewer({
     if (selectionRef)
       selectionRef.current = () =>
         selectedText(editor.getModifiedEditor()) || selectedText(editor.getOriginalEditor());
+    const wrapActions = [editor.getOriginalEditor(), editor.getModifiedEditor()].map(addWordWrapAction);
+    editor.onDidDispose(() => wrapActions.forEach((d) => d.dispose()));
     editor.onDidUpdateDiff(() => {
       const want = collapseRef.current;
       editor.updateOptions({ hideUnchangedRegions: { enabled: !want } });
@@ -827,6 +850,18 @@ export default function DiffViewer({
             ) : (
               <FoldVertical size={14} />
             )}
+          </button>
+        )}
+        {/* Monaco로 글자를 보는 화면에서만 — 이미지·미디어·Office·PDF·마크다운 미리보기엔 의미가 없다. */}
+        {!isImageView && !isMediaView && !isOfficeView && !isPdfView && !(isMarkdown && !mdRaw) && (
+          <button
+            onClick={toggleWordWrap}
+            title={wordWrap ? msg.git.diff.wordWrapOffTitle : msg.git.diff.wordWrapOnTitle}
+            className={`shrink-0 rounded p-1 hover:bg-raised ${
+              wordWrap ? "bg-raised text-accent" : "text-fg-dim hover:text-fg"
+            }`}
+          >
+            <WrapText size={14} />
           </button>
         )}
         <span className="shrink-0 text-[11px] text-fg-dim">

@@ -1,9 +1,11 @@
 import {
+  Check,
   Languages,
   Maximize2,
   Minimize2,
   SplitSquareHorizontal,
   SplitSquareVertical,
+  WrapText,
   X,
 } from "lucide-react";
 import { useEffect } from "react";
@@ -44,6 +46,8 @@ export function ViewerPaneMenu({
   const closePane = useUi((s) => s.closeViewerPane);
   const toggleMaximize = useUi((s) => s.toggleViewerMaximize);
   const openTranslate = useUi((s) => s.openTranslate);
+  const wordWrap = useUi((s) => s.viewerWordWrap);
+  const toggleWordWrap = useUi((s) => s.toggleViewerWordWrap);
 
   useEffect(() => {
     const close = () => onClose();
@@ -68,10 +72,10 @@ export function ViewerPaneMenu({
       className="fixed z-50 min-w-52 rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl"
       style={{
         left: Math.min(x, window.innerWidth - 220),
-        // 하단 클램프 = 메뉴 실높이. 항목 6 × 31.5 + 구분선 8.67 + 패딩·테두리 9.3 ≈ 207 → 216.
+        // 하단 클램프 = 메뉴 실높이. 항목 7 × 31.5 + 구분선 2 × 8.67 + 패딩·테두리 9.3 ≈ 247 → 256.
         // (TerminalPane PaneMenu와 같은 방식 — 항목이 늘면 이 상수도 같이 올린다.)
         // 번역 항목은 선택이 있을 때만 붙는다 — 그때는 한 줄 + 구분선만큼(≈40) 더 잡는다.
-        top: Math.max(0, Math.min(y, window.innerHeight - (selection ? 256 : 216))),
+        top: Math.max(0, Math.min(y, window.innerHeight - (selection ? 296 : 256))),
       }}
       onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
@@ -86,6 +90,14 @@ export function ViewerPaneMenu({
           <div className="my-1 border-t border-edge" />
         </>
       )}
+      {/* 값은 모든 뷰어 공통 하나(useUi.viewerWordWrap) — 헤더 버튼·Alt+Z와 같은 토글. */}
+      <MenuItem
+        icon={wordWrap ? <Check size={14} className="text-accent" /> : <WrapText size={14} />}
+        label={msg.git.paneMenu.wordWrap}
+        hint="Alt+Z"
+        onClick={run(toggleWordWrap)}
+      />
+      <div className="my-1 border-t border-edge" />
       {/* 상한(VIEWER_MAX_PANES)에서는 분할 항목을 비활성으로 보인다 — Monaco는 인스턴스당
           비용이 크다. pointer-events-none이라 title 툴팁은 안 뜬다(그래서 달지 않는다). */}
       <div className={full ? "pointer-events-none opacity-40" : ""}>

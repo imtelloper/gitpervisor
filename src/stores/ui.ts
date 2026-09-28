@@ -185,6 +185,8 @@ export interface UiState {
   memoOpen: boolean;
   /** diff 뷰어: 변경 없는 영역 접기 (기본 접기, 끄면 전체 펼침) */
   diffCollapseUnchanged: boolean;
+  /** 코드·텍스트 뷰어 자동 줄 바꿈 (localStorage 영속 — 모든 뷰어 공통 한 값) */
+  viewerWordWrap: boolean;
   /** 파일 트리 패널 표시 여부 (localStorage 영속) */
   fileTreeOpen: boolean;
   /** PROJECTS: 변경/활동 있는 프로젝트를 위로 정렬 (localStorage 영속) */
@@ -253,6 +255,7 @@ export interface UiState {
   setSymbolSearchOpen: (open: boolean) => void;
   setMemoOpen: (open: boolean) => void;
   toggleDiffCollapse: () => void;
+  toggleViewerWordWrap: () => void;
   toggleFileTree: () => void;
   toggleProjectSort: () => void;
   toggleProjectColors: () => void;
@@ -575,6 +578,7 @@ export const useUi = create<UiState>((set) => ({
   symbolSearchOpen: false,
   memoOpen: false,
   diffCollapseUnchanged: true,
+  viewerWordWrap: localStorage.getItem("gp:viewer-word-wrap") === "1",
   // 파일 트리는 기본 열림 — 사용자가 명시적으로 닫은 경우("0")만 닫힌 채 복원
   fileTreeOpen: localStorage.getItem("gp:filetree-open") !== "0",
   projectSortByChanges: localStorage.getItem("gp:project-sort-changes") === "1",
@@ -894,6 +898,12 @@ export const useUi = create<UiState>((set) => ({
   setMemoOpen: (open) => set({ memoOpen: open }),
   toggleDiffCollapse: () =>
     set((s) => ({ diffCollapseUnchanged: !s.diffCollapseUnchanged })),
+  toggleViewerWordWrap: () =>
+    set((s) => {
+      const v = !s.viewerWordWrap;
+      localStorage.setItem("gp:viewer-word-wrap", v ? "1" : "0");
+      return { viewerWordWrap: v };
+    }),
   toggleFileTree: () =>
     set((s) => {
       const v = !s.fileTreeOpen;
