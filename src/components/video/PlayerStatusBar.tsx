@@ -1,4 +1,4 @@
-// 플레이어 하단 상태 바 — 좌: 상태 점 + 라벨, 중: 라벨·값 쌍, 우: 단축키 칩, 끝: 확대율.
+// 플레이어 하단 상태 바 — 좌: 상태 점 + 라벨, 중: 라벨·값 쌍, 우: 단축키 칩, 끝: 확대율(동영상만).
 // 표시 전용이라 값 계산은 전부 부모 몫이다(문자열로 받는다).
 import { memo } from "react";
 
@@ -39,8 +39,8 @@ export const PlayerStatusBar = memo(function PlayerStatusBar({
   status: { text: string; tone: Tone };
   items: StatusItem[];
   shortcuts: StatusShortcut[];
-  /** 타임라인 확대율(%) — 140 → "확대 140%". */
-  zoomPct: number;
+  /** 타임라인 확대율(%) — 140 → "확대 140%". 타임라인이 없는 플레이어(오디오)는 안 준다 — 칸을 그리지 않는다. */
+  zoomPct?: number;
 }) {
   const msg = useMessages();
   return (
@@ -68,7 +68,9 @@ export const PlayerStatusBar = memo(function PlayerStatusBar({
         </span>
       ))}
 
-      <span className="shrink-0 whitespace-nowrap">{msg.media.playerStatusBar.zoom(Math.round(zoomPct))}</span>
+      {zoomPct != null && (
+        <span className="shrink-0 whitespace-nowrap">{msg.media.playerStatusBar.zoom(Math.round(zoomPct))}</span>
+      )}
     </div>
   );
 });

@@ -128,14 +128,6 @@ const ko = {
     copied: "복사됨",
     copyAll: "전체 복사",
   },
-  mediaView: {
-    prepareFailed: "미디어를 준비하지 못했습니다",
-    unplayableTitle: "이 형식은 재생할 수 없습니다",
-    unplayableDesc:
-      "현재 플랫폼의 웹뷰가 이 코덱을 지원하지 않습니다. 파일 자체는 정상일 수 있습니다.",
-    preparing: "미디어 준비 중…",
-    openDefaultAppTitle: "시스템 기본 앱으로 열기",
-  },
   gitDialog: {
     tabChanges: "변경",
     tabLog: "로그",
@@ -388,14 +380,6 @@ export const gitText = defineText(ko, {
       copyAllTitle: "Copy all — copies the Markdown source, not the rendered view",
       copied: "Copied",
       copyAll: "Copy all",
-    },
-    mediaView: {
-      prepareFailed: "Couldn't prepare media",
-      unplayableTitle: "Can't play this format",
-      unplayableDesc:
-        "This platform's webview doesn't support this codec. The file itself may be fine.",
-      preparing: "Preparing media…",
-      openDefaultAppTitle: "Open in system default app",
     },
     gitDialog: {
       tabChanges: "Changes",

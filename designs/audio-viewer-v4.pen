@@ -1,0 +1,4836 @@
+{
+  "version": "2.17",
+  "children": [
+    {
+      "type": "frame",
+      "id": "RUgI6",
+      "x": 0,
+      "y": 0,
+      "name": "Audio Viewer",
+      "clip": true,
+      "width": 1728,
+      "height": 1080,
+      "fill": "$bg-app",
+      "layout": "vertical",
+      "children": [
+        {
+          "type": "frame",
+          "id": "eNgIE",
+          "name": "Titlebar",
+          "width": "fill_container",
+          "height": 32,
+          "fill": "$bg-app",
+          "gap": 8,
+          "padding": [
+            0,
+            0,
+            0,
+            12
+          ],
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "path",
+              "id": "S1mFte",
+              "name": "App Logo",
+              "geometry": "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z m0 3.5a6.5 6.5 0 1 1 0 13 6.5 6.5 0 0 1 0-13z m0 4a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z",
+              "viewBox": [
+                0,
+                0,
+                24,
+                24
+              ],
+              "fill": "$accent",
+              "width": 15,
+              "height": 15
+            },
+            {
+              "type": "text",
+              "id": "qujiU",
+              "name": "Filename",
+              "fill": "$text-hi",
+              "content": "Midnight Drive.mp3",
+              "fontFamily": "$font",
+              "fontSize": 13,
+              "fontWeight": "600"
+            },
+            {
+              "type": "frame",
+              "id": "C5ZxI",
+              "name": "Kind Badge",
+              "fill": "$bg-elev",
+              "cornerRadius": 4,
+              "padding": [
+                2,
+                7
+              ],
+              "children": [
+                {
+                  "type": "text",
+                  "id": "M0nCXA",
+                  "name": "Badge Label",
+                  "fill": "$text-dim",
+                  "content": "파일",
+                  "fontFamily": "$font",
+                  "fontSize": 11,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "glEeZ",
+              "name": "Spacer",
+              "width": "fill_container",
+              "height": 1
+            },
+            {
+              "type": "frame",
+              "id": "Z6aeL",
+              "name": "Window Controls",
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "lTzGP",
+                  "name": "Minimize",
+                  "width": 46,
+                  "height": 32,
+                  "justifyContent": "center",
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "path",
+                      "id": "mmoQB",
+                      "name": "Minimize Icon",
+                      "geometry": "M5 12h14",
+                      "viewBox": [
+                        0,
+                        0,
+                        24,
+                        24
+                      ],
+                      "width": 16,
+                      "height": 16,
+                      "stroke": "$text",
+                      "strokeWidth": 1.3,
+                      "strokeLinejoin": "round",
+                      "strokeLinecap": "round"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "zP2lp",
+                  "name": "Maximize",
+                  "width": 46,
+                  "height": 32,
+                  "justifyContent": "center",
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "path",
+                      "id": "tISSN",
+                      "name": "Maximize Icon",
+                      "geometry": "M6.5 6.5h11v11h-11z",
+                      "viewBox": [
+                        0,
+                        0,
+                        24,
+                        24
+                      ],
+                      "width": 16,
+                      "height": 16,
+                      "stroke": "$text",
+                      "strokeWidth": 1.3,
+                      "strokeLinejoin": "round",
+                      "strokeLinecap": "round"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "MR6IG",
+                  "name": "Close",
+                  "width": 46,
+                  "height": 32,
+                  "justifyContent": "center",
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "path",
+                      "id": "Z0K5v",
+                      "name": "Close Icon",
+                      "geometry": "M6 6l12 12m0-12l-12 12",
+                      "viewBox": [
+                        0,
+                        0,
+                        24,
+                        24
+                      ],
+                      "width": 16,
+                      "height": 16,
+                      "stroke": "$text",
+                      "strokeWidth": 1.3,
+                      "strokeLinejoin": "round",
+                      "strokeLinecap": "round"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "gbZNn",
+          "name": "Path Bar",
+          "width": "fill_container",
+          "height": 30,
+          "fill": "$bg-app",
+          "padding": [
+            0,
+            16
+          ],
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "text",
+              "id": "UVVWx",
+              "name": "Path",
+              "fill": "$text",
+              "content": "music/neon-district/03 Midnight Drive.mp3",
+              "fontFamily": "$mono",
+              "fontSize": 12,
+              "fontWeight": "normal"
+            },
+            {
+              "type": "frame",
+              "id": "BLy3J",
+              "name": "Spacer",
+              "width": "fill_container",
+              "height": 1
+            },
+            {
+              "type": "text",
+              "id": "G1wmrI",
+              "name": "Kind",
+              "fill": "$text-dim",
+              "content": "오디오",
+              "fontFamily": "$font",
+              "fontSize": 12,
+              "fontWeight": "normal"
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "W9wKoj",
+          "name": "Meta Bar",
+          "width": "fill_container",
+          "height": 36,
+          "fill": "$bg-app",
+          "gap": 10,
+          "padding": [
+            0,
+            16
+          ],
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "text",
+              "id": "IRKTo",
+              "name": "Meta",
+              "fill": "$text-dim",
+              "content": "320 kbps · 44.1 kHz · 스테레오 · mp3 · 8.4 MB",
+              "fontFamily": "$mono",
+              "fontSize": 12,
+              "fontWeight": "normal"
+            },
+            {
+              "type": "frame",
+              "id": "CYj5Q",
+              "name": "Spacer",
+              "width": "fill_container",
+              "height": 1
+            },
+            {
+              "type": "frame",
+              "id": "t9Tq0",
+              "name": "Mode Tabs",
+              "gap": 4,
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "JXZwe",
+                  "name": "Tab 재생",
+                  "fill": "$bg-elev",
+                  "cornerRadius": 5,
+                  "gap": 6,
+                  "padding": [
+                    5,
+                    10
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "path",
+                      "id": "Z9AyH3",
+                      "name": "재생 Icon",
+                      "geometry": "M8 5v14l11-7z",
+                      "viewBox": [
+                        0,
+                        0,
+                        24,
+                        24
+                      ],
+                      "fill": "$accent",
+                      "width": 14,
+                      "height": 14
+                    },
+                    {
+                      "type": "text",
+                      "id": "tiJMQ",
+                      "name": "Tab Label",
+                      "fill": "$text-hi",
+                      "content": "재생",
+                      "fontFamily": "$font",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "qhdaq",
+                  "name": "Tab 외부 앱",
+                  "cornerRadius": 5,
+                  "gap": 6,
+                  "padding": [
+                    5,
+                    10
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "path",
+                      "id": "P7HWdH",
+                      "name": "외부 앱 Icon",
+                      "geometry": "M14 4h6v6m0-6l-8 8m6 2v5a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1v-11a1 1 0 0 1 1-1h5",
+                      "viewBox": [
+                        0,
+                        0,
+                        24,
+                        24
+                      ],
+                      "width": 14,
+                      "height": 14,
+                      "stroke": "$text-dim",
+                      "strokeWidth": 1.4,
+                      "strokeLinejoin": "round",
+                      "strokeLinecap": "round"
+                    },
+                    {
+                      "type": "text",
+                      "id": "h3NS6O",
+                      "name": "Tab Label",
+                      "fill": "$text-dim",
+                      "content": "외부 앱",
+                      "fontFamily": "$font",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "SkFsa",
+          "name": "Body",
+          "width": "fill_container",
+          "height": "fill_container",
+          "children": [
+            {
+              "type": "frame",
+              "id": "PyW72",
+              "name": "Library Panel",
+              "clip": true,
+              "width": 260,
+              "height": "fill_container",
+              "fill": "$bg-panel",
+              "stroke": "$border-soft",
+              "strokeWidth": {
+                "right": 1
+              },
+              "layout": "vertical",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "Z0XRud",
+                  "name": "Library Header",
+                  "width": "fill_container",
+                  "height": 42,
+                  "gap": 8,
+                  "padding": [
+                    0,
+                    10,
+                    0,
+                    14
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "JS5gq",
+                      "name": "Library Title",
+                      "fill": "$text-hi",
+                      "content": "라이브러리",
+                      "fontFamily": "$font",
+                      "fontSize": 13,
+                      "fontWeight": "600"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "KcCLI",
+                      "name": "Spacer",
+                      "width": "fill_container",
+                      "height": 1
+                    },
+                    {
+                      "type": "frame",
+                      "id": "DVlIk",
+                      "name": "Collapse",
+                      "width": 24,
+                      "height": 24,
+                      "cornerRadius": 4,
+                      "justifyContent": "center",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "path",
+                          "id": "OX3MN",
+                          "name": "Collapse Icon",
+                          "geometry": "M13 6l-6 6 6 6m6-12l-6 6 6 6",
+                          "viewBox": [
+                            0,
+                            0,
+                            24,
+                            24
+                          ],
+                          "width": 15,
+                          "height": 15,
+                          "stroke": "$text-dim",
+                          "strokeWidth": 1.6,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "XpmRe",
+                  "name": "Search Row",
+                  "width": "fill_container",
+                  "padding": [
+                    0,
+                    12,
+                    10,
+                    12
+                  ],
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "DFfHW",
+                      "name": "Search",
+                      "width": "fill_container",
+                      "height": 32,
+                      "fill": "$bg-input",
+                      "cornerRadius": 6,
+                      "stroke": "$border",
+                      "strokeWidth": 1,
+                      "gap": 7,
+                      "padding": [
+                        0,
+                        9
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "path",
+                          "id": "KCiFi",
+                          "name": "Search Icon",
+                          "geometry": "M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14z m9 16l-4-4",
+                          "viewBox": [
+                            0,
+                            0,
+                            24,
+                            24
+                          ],
+                          "width": 14,
+                          "height": 14,
+                          "stroke": "$text-dim",
+                          "strokeWidth": 1.6,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "text",
+                          "id": "EugVg",
+                          "name": "Search Placeholder",
+                          "fill": "$text-dim",
+                          "content": "트랙 검색",
+                          "fontFamily": "$font",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "wCLbt",
+                  "name": "Folder Row",
+                  "width": "fill_container",
+                  "height": 28,
+                  "gap": 7,
+                  "padding": [
+                    0,
+                    14
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "path",
+                      "id": "Wclr4",
+                      "name": "Folder Icon",
+                      "geometry": "M3 6a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1h-16a1 1 0 0 1-1-1v-12z",
+                      "viewBox": [
+                        0,
+                        0,
+                        24,
+                        24
+                      ],
+                      "width": 14,
+                      "height": 14,
+                      "stroke": "$text-dim",
+                      "strokeWidth": 1.5,
+                      "strokeLinejoin": "round",
+                      "strokeLinecap": "round"
+                    },
+                    {
+                      "type": "text",
+                      "id": "kZDMF",
+                      "name": "Folder Name",
+                      "fill": "$text",
+                      "content": "neon-district",
+                      "fontFamily": "$mono",
+                      "fontSize": 11,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "sXqeW",
+                      "name": "Spacer",
+                      "width": "fill_container",
+                      "height": 1
+                    },
+                    {
+                      "type": "text",
+                      "id": "G3Q2kF",
+                      "name": "Folder Count",
+                      "fill": "$text-dim",
+                      "content": "9곡 · 38:12",
+                      "fontFamily": "$font",
+                      "fontSize": 11,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "ODKP5",
+                  "name": "Track List",
+                  "clip": true,
+                  "width": "fill_container",
+                  "height": "fill_container",
+                  "layout": "vertical",
+                  "gap": 1,
+                  "padding": [
+                    6,
+                    8
+                  ],
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "Nzdel",
+                      "name": "Track 01",
+                      "width": "fill_container",
+                      "height": 46,
+                      "cornerRadius": 6,
+                      "gap": 10,
+                      "padding": [
+                        0,
+                        10,
+                        0,
+                        8
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "oLTLd",
+                          "name": "Lead",
+                          "width": 18,
+                          "height": 18,
+                          "gap": 2,
+                          "justifyContent": "center",
+                          "alignItems": "end",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "z7qW5j",
+                              "name": "Number",
+                              "fill": "$text-dim",
+                              "content": "01",
+                              "fontFamily": "$mono",
+                              "fontSize": 11,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "dLqy7",
+                          "name": "Info",
+                          "width": "fill_container",
+                          "layout": "vertical",
+                          "gap": 2,
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "JdEcx",
+                              "name": "Title",
+                              "fill": "$text",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "Neon Rain",
+                              "fontFamily": "$font",
+                              "fontSize": 12.5,
+                              "fontWeight": "500"
+                            },
+                            {
+                              "type": "text",
+                              "id": "m7vmVE",
+                              "name": "Artist",
+                              "fill": "$text-dim",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "Kavinsky Ghost",
+                              "fontFamily": "$font",
+                              "fontSize": 11,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "HSnRZ",
+                          "name": "Duration",
+                          "fill": "$text-dim",
+                          "content": "3:58",
+                          "fontFamily": "$mono",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "qEMAJ",
+                      "name": "Track 02",
+                      "width": "fill_container",
+                      "height": 46,
+                      "cornerRadius": 6,
+                      "gap": 10,
+                      "padding": [
+                        0,
+                        10,
+                        0,
+                        8
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "l20PWW",
+                          "name": "Lead",
+                          "width": 18,
+                          "height": 18,
+                          "gap": 2,
+                          "justifyContent": "center",
+                          "alignItems": "end",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "BLXi0",
+                              "name": "Number",
+                              "fill": "$text-dim",
+                              "content": "02",
+                              "fontFamily": "$mono",
+                              "fontSize": 11,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "haWiV",
+                          "name": "Info",
+                          "width": "fill_container",
+                          "layout": "vertical",
+                          "gap": 2,
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "vfgTo",
+                              "name": "Title",
+                              "fill": "$text",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "Static Youth",
+                              "fontFamily": "$font",
+                              "fontSize": 12.5,
+                              "fontWeight": "500"
+                            },
+                            {
+                              "type": "text",
+                              "id": "g836yb",
+                              "name": "Artist",
+                              "fill": "$text-dim",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "Kavinsky Ghost",
+                              "fontFamily": "$font",
+                              "fontSize": 11,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "uAeDj",
+                          "name": "Duration",
+                          "fill": "$text-dim",
+                          "content": "4:21",
+                          "fontFamily": "$mono",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "adCvh",
+                      "name": "Track 03",
+                      "width": "fill_container",
+                      "height": 46,
+                      "fill": "$accent-soft",
+                      "cornerRadius": 6,
+                      "gap": 10,
+                      "padding": [
+                        0,
+                        10,
+                        0,
+                        8
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "Bh2Or",
+                          "name": "Lead",
+                          "width": 18,
+                          "height": 18,
+                          "gap": 2,
+                          "justifyContent": "center",
+                          "alignItems": "end",
+                          "children": [
+                            {
+                              "type": "rectangle",
+                              "cornerRadius": 1,
+                              "id": "s6v7k",
+                              "name": "Bar",
+                              "fill": "$accent",
+                              "width": 2,
+                              "height": 8
+                            },
+                            {
+                              "type": "rectangle",
+                              "cornerRadius": 1,
+                              "id": "XWO3T",
+                              "name": "Bar",
+                              "fill": "$accent",
+                              "width": 2,
+                              "height": 14
+                            },
+                            {
+                              "type": "rectangle",
+                              "cornerRadius": 1,
+                              "id": "bjFUE",
+                              "name": "Bar",
+                              "fill": "$accent",
+                              "width": 2,
+                              "height": 5
+                            },
+                            {
+                              "type": "rectangle",
+                              "cornerRadius": 1,
+                              "id": "LspD3",
+                              "name": "Bar",
+                              "fill": "$accent",
+                              "width": 2,
+                              "height": 11
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "lS8VG",
+                          "name": "Info",
+                          "width": "fill_container",
+                          "layout": "vertical",
+                          "gap": 2,
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "W93fP",
+                              "name": "Title",
+                              "fill": "$text-hi",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "Midnight Drive",
+                              "fontFamily": "$font",
+                              "fontSize": 12.5,
+                              "fontWeight": "600"
+                            },
+                            {
+                              "type": "text",
+                              "id": "m9QGuP",
+                              "name": "Artist",
+                              "fill": "$text-dim",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "Kavinsky Ghost",
+                              "fontFamily": "$font",
+                              "fontSize": 11,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "h1tI3m",
+                          "name": "Duration",
+                          "fill": "$text",
+                          "content": "3:42",
+                          "fontFamily": "$mono",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "hs2Ws",
+                      "name": "Track 04",
+                      "width": "fill_container",
+                      "height": 46,
+                      "cornerRadius": 6,
+                      "gap": 10,
+                      "padding": [
+                        0,
+                        10,
+                        0,
+                        8
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "YUi9C",
+                          "name": "Lead",
+                          "width": 18,
+                          "height": 18,
+                          "gap": 2,
+                          "justifyContent": "center",
+                          "alignItems": "end",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "BJhew",
+                              "name": "Number",
+                              "fill": "$text-dim",
+                              "content": "04",
+                              "fontFamily": "$mono",
+                              "fontSize": 11,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "BluR2",
+                          "name": "Info",
+                          "width": "fill_container",
+                          "layout": "vertical",
+                          "gap": 2,
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "x1uVob",
+                              "name": "Title",
+                              "fill": "$text",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "Glass Avenue",
+                              "fontFamily": "$font",
+                              "fontSize": 12.5,
+                              "fontWeight": "500"
+                            },
+                            {
+                              "type": "text",
+                              "id": "XAT64",
+                              "name": "Artist",
+                              "fill": "$text-dim",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "Kavinsky Ghost",
+                              "fontFamily": "$font",
+                              "fontSize": 11,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "RkVOh",
+                          "name": "Duration",
+                          "fill": "$text-dim",
+                          "content": "5:06",
+                          "fontFamily": "$mono",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "uEfQ8",
+                      "name": "Track 05",
+                      "width": "fill_container",
+                      "height": 46,
+                      "cornerRadius": 6,
+                      "gap": 10,
+                      "padding": [
+                        0,
+                        10,
+                        0,
+                        8
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "XnbWO",
+                          "name": "Lead",
+                          "width": 18,
+                          "height": 18,
+                          "gap": 2,
+                          "justifyContent": "center",
+                          "alignItems": "end",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "OPZ5T",
+                              "name": "Number",
+                              "fill": "$text-dim",
+                              "content": "05",
+                              "fontFamily": "$mono",
+                              "fontSize": 11,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "TLoTK",
+                          "name": "Info",
+                          "width": "fill_container",
+                          "layout": "vertical",
+                          "gap": 2,
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "G7Tm2T",
+                              "name": "Title",
+                              "fill": "$text",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "Afterimage",
+                              "fontFamily": "$font",
+                              "fontSize": 12.5,
+                              "fontWeight": "500"
+                            },
+                            {
+                              "type": "text",
+                              "id": "c69tO",
+                              "name": "Artist",
+                              "fill": "$text-dim",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "Lumen Void",
+                              "fontFamily": "$font",
+                              "fontSize": 11,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "kyysy",
+                          "name": "Duration",
+                          "fill": "$text-dim",
+                          "content": "4:14",
+                          "fontFamily": "$mono",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "CQ5Me",
+                      "name": "Track 06",
+                      "width": "fill_container",
+                      "height": 46,
+                      "cornerRadius": 6,
+                      "gap": 10,
+                      "padding": [
+                        0,
+                        10,
+                        0,
+                        8
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "nZedr",
+                          "name": "Lead",
+                          "width": 18,
+                          "height": 18,
+                          "gap": 2,
+                          "justifyContent": "center",
+                          "alignItems": "end",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "Pz5TG",
+                              "name": "Number",
+                              "fill": "$text-dim",
+                              "content": "06",
+                              "fontFamily": "$mono",
+                              "fontSize": 11,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "DFYIq",
+                          "name": "Info",
+                          "width": "fill_container",
+                          "layout": "vertical",
+                          "gap": 2,
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "AoZkN",
+                              "name": "Title",
+                              "fill": "$text",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "Slow Pulse",
+                              "fontFamily": "$font",
+                              "fontSize": 12.5,
+                              "fontWeight": "500"
+                            },
+                            {
+                              "type": "text",
+                              "id": "N3dEqu",
+                              "name": "Artist",
+                              "fill": "$text-dim",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "Lumen Void",
+                              "fontFamily": "$font",
+                              "fontSize": 11,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "EKZWH",
+                          "name": "Duration",
+                          "fill": "$text-dim",
+                          "content": "3:29",
+                          "fontFamily": "$mono",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "oZSos",
+                      "name": "Track 07",
+                      "width": "fill_container",
+                      "height": 46,
+                      "cornerRadius": 6,
+                      "gap": 10,
+                      "padding": [
+                        0,
+                        10,
+                        0,
+                        8
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "OdCgk",
+                          "name": "Lead",
+                          "width": 18,
+                          "height": 18,
+                          "gap": 2,
+                          "justifyContent": "center",
+                          "alignItems": "end",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "wGLgS",
+                              "name": "Number",
+                              "fill": "$text-dim",
+                              "content": "07",
+                              "fontFamily": "$mono",
+                              "fontSize": 11,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "UKvqt",
+                          "name": "Info",
+                          "width": "fill_container",
+                          "layout": "vertical",
+                          "gap": 2,
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "m7OhGG",
+                              "name": "Title",
+                              "fill": "$text",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "Chrome Heart",
+                              "fontFamily": "$font",
+                              "fontSize": 12.5,
+                              "fontWeight": "500"
+                            },
+                            {
+                              "type": "text",
+                              "id": "mH8L0",
+                              "name": "Artist",
+                              "fill": "$text-dim",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "Lumen Void",
+                              "fontFamily": "$font",
+                              "fontSize": 11,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "z0sbF",
+                          "name": "Duration",
+                          "fill": "$text-dim",
+                          "content": "4:47",
+                          "fontFamily": "$mono",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "Z79vV",
+                      "name": "Track 08",
+                      "width": "fill_container",
+                      "height": 46,
+                      "cornerRadius": 6,
+                      "gap": 10,
+                      "padding": [
+                        0,
+                        10,
+                        0,
+                        8
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "LcMiW",
+                          "name": "Lead",
+                          "width": 18,
+                          "height": 18,
+                          "gap": 2,
+                          "justifyContent": "center",
+                          "alignItems": "end",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "TEedP",
+                              "name": "Number",
+                              "fill": "$text-dim",
+                              "content": "08",
+                              "fontFamily": "$mono",
+                              "fontSize": 11,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "VvUgY",
+                          "name": "Info",
+                          "width": "fill_container",
+                          "layout": "vertical",
+                          "gap": 2,
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "RD7ie",
+                              "name": "Title",
+                              "fill": "$text",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "Paper Sky",
+                              "fontFamily": "$font",
+                              "fontSize": 12.5,
+                              "fontWeight": "500"
+                            },
+                            {
+                              "type": "text",
+                              "id": "Vq6fU",
+                              "name": "Artist",
+                              "fill": "$text-dim",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "Analog Fern",
+                              "fontFamily": "$font",
+                              "fontSize": 11,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "IVGUH",
+                          "name": "Duration",
+                          "fill": "$text-dim",
+                          "content": "4:02",
+                          "fontFamily": "$mono",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "q0bKeq",
+                      "name": "Track 09",
+                      "width": "fill_container",
+                      "height": 46,
+                      "cornerRadius": 6,
+                      "gap": 10,
+                      "padding": [
+                        0,
+                        10,
+                        0,
+                        8
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "r95qH2",
+                          "name": "Lead",
+                          "width": 18,
+                          "height": 18,
+                          "gap": 2,
+                          "justifyContent": "center",
+                          "alignItems": "end",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "MYHxH",
+                              "name": "Number",
+                              "fill": "$text-dim",
+                              "content": "09",
+                              "fontFamily": "$mono",
+                              "fontSize": 11,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "gFpU9",
+                          "name": "Info",
+                          "width": "fill_container",
+                          "layout": "vertical",
+                          "gap": 2,
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "QudxB",
+                              "name": "Title",
+                              "fill": "$text",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "Last Exit",
+                              "fontFamily": "$font",
+                              "fontSize": 12.5,
+                              "fontWeight": "500"
+                            },
+                            {
+                              "type": "text",
+                              "id": "QTYZx",
+                              "name": "Artist",
+                              "fill": "$text-dim",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "Analog Fern",
+                              "fontFamily": "$font",
+                              "fontSize": 11,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "XT6IJ",
+                          "name": "Duration",
+                          "fill": "$text-dim",
+                          "content": "4:33",
+                          "fontFamily": "$mono",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "ervOl",
+                  "name": "Library Footer",
+                  "width": "fill_container",
+                  "height": 44,
+                  "stroke": "$border-soft",
+                  "strokeWidth": {
+                    "top": 1
+                  },
+                  "padding": [
+                    0,
+                    12
+                  ],
+                  "justifyContent": "center",
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "v2PF2",
+                      "name": "Queue Button",
+                      "width": "fill_container",
+                      "height": 30,
+                      "fill": "$bg-elev",
+                      "cornerRadius": 6,
+                      "stroke": "$border",
+                      "strokeWidth": 1,
+                      "gap": 7,
+                      "justifyContent": "center",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "path",
+                          "id": "GkAuo",
+                          "name": "Queue Icon",
+                          "geometry": "M4 6h11m-11 6h11m-11 6h7m6-6v8l6-4z",
+                          "viewBox": [
+                            0,
+                            0,
+                            24,
+                            24
+                          ],
+                          "width": 14,
+                          "height": 14,
+                          "stroke": "$text",
+                          "strokeWidth": 1.5,
+                          "strokeLinejoin": "round",
+                          "strokeLinecap": "round"
+                        },
+                        {
+                          "type": "text",
+                          "id": "BOz1j",
+                          "name": "Queue Label",
+                          "fill": "$text-hi",
+                          "content": "폴더 전체 재생",
+                          "fontFamily": "$font",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "KMljh",
+              "name": "Stage",
+              "clip": true,
+              "width": "fill_container",
+              "height": "fill_container",
+              "fill": [
+                "$bg-app",
+                {
+                  "type": "gradient",
+                  "gradientType": "radial",
+                  "enabled": true,
+                  "opacity": 0.5,
+                  "rotation": 0,
+                  "size": {
+                    "width": 1.1,
+                    "height": 0.9
+                  },
+                  "colors": [
+                    {
+                      "color": "#3b82f633",
+                      "position": 0
+                    },
+                    {
+                      "color": "#0b0d1200",
+                      "position": 1
+                    }
+                  ],
+                  "center": {
+                    "x": 0.38,
+                    "y": 0.42
+                  }
+                }
+              ],
+              "layout": "vertical",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "p4EtD",
+                  "name": "Hero",
+                  "width": "fill_container",
+                  "height": "fill_container",
+                  "gap": 56,
+                  "padding": [
+                    0,
+                    60
+                  ],
+                  "justifyContent": "center",
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "o56Uzv",
+                      "name": "Art",
+                      "clip": true,
+                      "width": 380,
+                      "height": 380,
+                      "fill": {
+                        "type": "image",
+                        "enabled": true,
+                        "url": "images/generated-1790560750370.png",
+                        "mode": "fill"
+                      },
+                      "cornerRadius": 10,
+                      "effect": {
+                        "type": "shadow",
+                        "shadowType": "outer",
+                        "color": "#000000cc",
+                        "offset": {
+                          "x": 0,
+                          "y": 18
+                        },
+                        "blur": 48,
+                        "spread": -8
+                      }
+                    },
+                    {
+                      "type": "frame",
+                      "id": "uWxbm",
+                      "name": "Track Info",
+                      "width": 480,
+                      "layout": "vertical",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "RFnXC",
+                          "name": "Eyebrow",
+                          "fill": "$accent",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "지금 재생 중 · 3 / 9",
+                          "fontFamily": "$font",
+                          "fontSize": 11.5,
+                          "fontWeight": "600",
+                          "letterSpacing": 1.4
+                        },
+                        {
+                          "type": "frame",
+                          "id": "uH2A3",
+                          "name": "Gap A",
+                          "width": 1,
+                          "height": 14
+                        },
+                        {
+                          "type": "text",
+                          "id": "Q8Y8a",
+                          "name": "Title",
+                          "fill": "$text-hi",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Midnight Drive",
+                          "lineHeight": 1.1,
+                          "fontFamily": "$font",
+                          "fontSize": 46,
+                          "fontWeight": "700",
+                          "letterSpacing": -1
+                        },
+                        {
+                          "type": "frame",
+                          "id": "A3UgpO",
+                          "name": "Gap B",
+                          "width": 1,
+                          "height": 10
+                        },
+                        {
+                          "type": "text",
+                          "id": "YJJpl",
+                          "name": "Artist",
+                          "fill": "$text",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Kavinsky Ghost",
+                          "fontFamily": "$font",
+                          "fontSize": 17,
+                          "fontWeight": "500"
+                        },
+                        {
+                          "type": "frame",
+                          "id": "lT0Xd",
+                          "name": "Gap C",
+                          "width": 1,
+                          "height": 6
+                        },
+                        {
+                          "type": "text",
+                          "id": "dwAip",
+                          "name": "Album",
+                          "fill": "$text-dim",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Neon District · 2024",
+                          "fontFamily": "$font",
+                          "fontSize": 13.5,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "frame",
+                          "id": "xxyFu",
+                          "name": "Gap D",
+                          "width": 1,
+                          "height": 22
+                        },
+                        {
+                          "type": "frame",
+                          "id": "eeAQN",
+                          "name": "Chips",
+                          "gap": 7,
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "lh4Hk",
+                              "name": "Chip Synthwave",
+                              "fill": "$bg-elev",
+                              "cornerRadius": 999,
+                              "stroke": "$border",
+                              "strokeWidth": 1,
+                              "padding": [
+                                5,
+                                10
+                              ],
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "oRZgw",
+                                  "name": "Chip Label",
+                                  "fill": "$text",
+                                  "content": "Synthwave",
+                                  "fontFamily": "$font",
+                                  "fontSize": 11.5,
+                                  "fontWeight": "normal"
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "QXQFB",
+                          "name": "Gap E",
+                          "width": 1,
+                          "height": 26
+                        },
+                        {
+                          "type": "frame",
+                          "id": "yZWpC",
+                          "name": "Actions",
+                          "gap": 8,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "jSwUa",
+                              "name": "Action 파일 위치 열기",
+                              "fill": "$bg-elev",
+                              "cornerRadius": 7,
+                              "stroke": "$border",
+                              "strokeWidth": 1,
+                              "gap": 7,
+                              "padding": [
+                                8,
+                                14
+                              ],
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "path",
+                                  "id": "XGYya",
+                                  "name": "파일 위치 열기 Icon",
+                                  "geometry": "M3 6a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1h-16a1 1 0 0 1-1-1v-12z",
+                                  "viewBox": [
+                                    0,
+                                    0,
+                                    24,
+                                    24
+                                  ],
+                                  "width": 14,
+                                  "height": 14,
+                                  "stroke": "$text",
+                                  "strokeWidth": 1.5,
+                                  "strokeLinejoin": "round",
+                                  "strokeLinecap": "round"
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "V3wM1P",
+                                  "name": "Action Label",
+                                  "fill": "$text-hi",
+                                  "content": "파일 위치 열기",
+                                  "fontFamily": "$font",
+                                  "fontSize": 12.5,
+                                  "fontWeight": "normal"
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "HpwUe",
+                  "name": "Waveform",
+                  "width": "fill_container",
+                  "layout": "vertical",
+                  "gap": 10,
+                  "padding": [
+                    0,
+                    60,
+                    18,
+                    60
+                  ],
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "xZWN7",
+                      "name": "Bars",
+                      "width": "fill_container",
+                      "height": 280,
+                      "gap": 3,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "gSZk0",
+                          "name": "Bar 0",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 64
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "ojynm",
+                          "name": "Bar 1",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 137
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "G19X8",
+                          "name": "Bar 2",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 84
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "BRoBv",
+                          "name": "Bar 3",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 91
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "hxj7l",
+                          "name": "Bar 4",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 105
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "SuNft",
+                          "name": "Bar 5",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 105
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "JBeTx",
+                          "name": "Bar 6",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 172
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "cP0Wy",
+                          "name": "Bar 7",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 178
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "J1wuX",
+                          "name": "Bar 8",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 143
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "VhZFW",
+                          "name": "Bar 9",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 108
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "rMDp2",
+                          "name": "Bar 10",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 169
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "Ts6ov",
+                          "name": "Bar 11",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 134
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "gIuBi",
+                          "name": "Bar 12",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 169
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "hddxq",
+                          "name": "Bar 13",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 119
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "Mhjmj",
+                          "name": "Bar 14",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 199
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "s8rWCQ",
+                          "name": "Bar 15",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 151
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "wr5HJ",
+                          "name": "Bar 16",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 183
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "zhDoW",
+                          "name": "Bar 17",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 167
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "NnVB2",
+                          "name": "Bar 18",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 151
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "I399Q",
+                          "name": "Bar 19",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 175
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "OP4tc",
+                          "name": "Bar 20",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 196
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "uMOZo",
+                          "name": "Bar 21",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 181
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "vdJbV",
+                          "name": "Bar 22",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 134
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "X6djo",
+                          "name": "Bar 23",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 237
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "rBCTu",
+                          "name": "Bar 24",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 169
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "lVWas",
+                          "name": "Bar 25",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 140
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "D4cYh3",
+                          "name": "Bar 26",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 158
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "vpOQ7",
+                          "name": "Bar 27",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 172
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "tEmYl",
+                          "name": "Bar 28",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 196
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "R0f2n7",
+                          "name": "Bar 29",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 239
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "lKJi9",
+                          "name": "Bar 30",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 213
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "aaP3Q",
+                          "name": "Bar 31",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 204
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "jEIzi",
+                          "name": "Bar 32",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 161
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "d8whM",
+                          "name": "Bar 33",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 169
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "k6qJW",
+                          "name": "Bar 34",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 164
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "zwucr",
+                          "name": "Bar 35",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 164
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "aHCPz",
+                          "name": "Bar 36",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 263
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "kCkBy",
+                          "name": "Bar 37",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 178
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "WDR9H",
+                          "name": "Bar 38",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 199
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "zOwCt",
+                          "name": "Bar 39",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 204
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "o9A3Q",
+                          "name": "Bar 40",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 193
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "Ec6ti",
+                          "name": "Bar 41",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 202
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "d1rCd",
+                          "name": "Bar 42",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 239
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "jjU7C",
+                          "name": "Bar 43",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 218
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "FXxiO",
+                          "name": "Bar 44",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 210
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "DYiXv",
+                          "name": "Bar 45",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 245
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "FN7AL",
+                          "name": "Bar 46",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 167
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "H8xdDG",
+                          "name": "Bar 47",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 196
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "P3ravO",
+                          "name": "Bar 48",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 175
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "szTXx",
+                          "name": "Bar 49",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 259
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "Tg963",
+                          "name": "Bar 50",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 172
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "F07hMi",
+                          "name": "Bar 51",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 231
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "lz9em",
+                          "name": "Bar 52",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 245
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "prQep",
+                          "name": "Bar 53",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 272
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "z3L09",
+                          "name": "Bar 54",
+                          "fill": "$accent",
+                          "width": "fill_container",
+                          "height": 169
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "WZxMk",
+                          "name": "Bar 55",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 199
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "bqzJk",
+                          "name": "Bar 56",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 172
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "gQjFH",
+                          "name": "Bar 57",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 178
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "QkHnF",
+                          "name": "Bar 58",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 280
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "PQOf9",
+                          "name": "Bar 59",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 189
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "jrK05",
+                          "name": "Bar 60",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 253
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "Z9D2Z",
+                          "name": "Bar 61",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 164
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "yyeLD",
+                          "name": "Bar 62",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 169
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "NpKIn",
+                          "name": "Bar 63",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 167
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "G1uuE",
+                          "name": "Bar 64",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 204
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "UsoYk",
+                          "name": "Bar 65",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 253
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "SyC1Z",
+                          "name": "Bar 66",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 277
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "W6PJ9",
+                          "name": "Bar 67",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 186
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "B70qq",
+                          "name": "Bar 68",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 154
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "I0HGL",
+                          "name": "Bar 69",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 213
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "mqq5h",
+                          "name": "Bar 70",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 178
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "l4RDY",
+                          "name": "Bar 71",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 259
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "VLPYP",
+                          "name": "Bar 72",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 189
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "AbzPL",
+                          "name": "Bar 73",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 256
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "AOHxK",
+                          "name": "Bar 74",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 172
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "FFGFe",
+                          "name": "Bar 75",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 228
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "XwtsR",
+                          "name": "Bar 76",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 175
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "Q9dAsO",
+                          "name": "Bar 77",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 154
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "PEuWt",
+                          "name": "Bar 78",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 213
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "yK6pQ",
+                          "name": "Bar 79",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 251
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "tV5Rw",
+                          "name": "Bar 80",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 202
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "Ktr0O",
+                          "name": "Bar 81",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 164
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "VH5Au",
+                          "name": "Bar 82",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 263
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "IwsbL",
+                          "name": "Bar 83",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 199
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "GuJJQ",
+                          "name": "Bar 84",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 181
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "yx9Bb",
+                          "name": "Bar 85",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 178
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "aQ0BY",
+                          "name": "Bar 86",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 199
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "l39rgF",
+                          "name": "Bar 87",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 189
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "IDY8N",
+                          "name": "Bar 88",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 253
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "KwiGD",
+                          "name": "Bar 89",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 178
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "p0end6",
+                          "name": "Bar 90",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 186
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "uhowF",
+                          "name": "Bar 91",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 137
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "ZNMHu",
+                          "name": "Bar 92",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 172
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "b7lhzt",
+                          "name": "Bar 93",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 169
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "UO3My",
+                          "name": "Bar 94",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 143
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "PHDzv",
+                          "name": "Bar 95",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 237
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "JnhkT",
+                          "name": "Bar 96",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 181
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "QZRBa",
+                          "name": "Bar 97",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 158
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "Y9s5Kz",
+                          "name": "Bar 98",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 164
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "R1nqIr",
+                          "name": "Bar 99",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 143
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "H2L3Uw",
+                          "name": "Bar 100",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 172
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "sHrrz",
+                          "name": "Bar 101",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 221
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "cDZcx",
+                          "name": "Bar 102",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 158
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "ZQXPT",
+                          "name": "Bar 103",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 172
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "aJRRA",
+                          "name": "Bar 104",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 175
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "VSvU1",
+                          "name": "Bar 105",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 132
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "E44y9",
+                          "name": "Bar 106",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 116
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "HIxBa",
+                          "name": "Bar 107",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 111
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "J5krpb",
+                          "name": "Bar 108",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 193
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "q7oYw",
+                          "name": "Bar 109",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 134
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "ZXqcf",
+                          "name": "Bar 110",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 158
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "Uz6ay",
+                          "name": "Bar 111",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 140
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "M2qEv",
+                          "name": "Bar 112",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 164
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "W5eYiZ",
+                          "name": "Bar 113",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 116
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "x9Ro8",
+                          "name": "Bar 114",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 134
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "MH9SD",
+                          "name": "Bar 115",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 99
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "d9YAEt",
+                          "name": "Bar 116",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 105
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "EDIu0",
+                          "name": "Bar 117",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 137
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "zmtOB",
+                          "name": "Bar 118",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 94
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "GbYkK",
+                          "name": "Bar 119",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 94
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "H1YowZ",
+                          "name": "Bar 120",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 67
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "fXWkV",
+                          "name": "Bar 121",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 78
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "k8c27z",
+                          "name": "Bar 122",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 73
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "o1RWts",
+                          "name": "Bar 123",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 99
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "DpDpT",
+                          "name": "Bar 124",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 97
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "zrsBr",
+                          "name": "Bar 125",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 116
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "nG6ig",
+                          "name": "Bar 126",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 67
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "Dypbh",
+                          "name": "Bar 127",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 70
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "sK2R5",
+                          "name": "Bar 128",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 81
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "hpxMN",
+                          "name": "Bar 129",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 67
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "PY9vy",
+                          "name": "Bar 130",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 116
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1.5,
+                          "id": "rMc2A",
+                          "name": "Bar 131",
+                          "fill": "#2b3342",
+                          "width": "fill_container",
+                          "height": 97
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "kaU0O",
+                      "name": "Time Row",
+                      "width": "fill_container",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "Ty0Zv",
+                          "name": "Elapsed",
+                          "fill": "$text-hi",
+                          "content": "1:34",
+                          "fontFamily": "$mono",
+                          "fontSize": 13,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "frame",
+                          "id": "p71yO",
+                          "name": "Spacer",
+                          "width": "fill_container",
+                          "height": 1
+                        },
+                        {
+                          "type": "text",
+                          "id": "XGGN0",
+                          "name": "Remaining",
+                          "fill": "$text-dim",
+                          "content": "3:42",
+                          "fontFamily": "$mono",
+                          "fontSize": 13,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "LLCuq",
+                  "name": "Transport",
+                  "width": "fill_container",
+                  "height": 100,
+                  "fill": "$bg-panel",
+                  "stroke": "$border-soft",
+                  "strokeWidth": {
+                    "top": 1
+                  },
+                  "padding": [
+                    0,
+                    24
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "FQwOf",
+                      "name": "Transport Left",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 4,
+                      "padding": [
+                        0,
+                        0,
+                        0,
+                        10
+                      ],
+                      "justifyContent": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "R4QhsO",
+                          "name": "Next Up",
+                          "gap": 6,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "path",
+                              "id": "NOvEL",
+                              "name": "Next Up Icon",
+                              "geometry": "M5 6v12l8-6z m10 0h2v12h-2z",
+                              "viewBox": [
+                                0,
+                                0,
+                                24,
+                                24
+                              ],
+                              "fill": "$text-dim",
+                              "width": 12,
+                              "height": 12
+                            },
+                            {
+                              "type": "text",
+                              "id": "ygR53",
+                              "name": "Next Label",
+                              "fill": "$text-dim",
+                              "content": "다음 · Glass Avenue",
+                              "fontFamily": "$font",
+                              "fontSize": 11.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "sftTa",
+                      "name": "Transport Center",
+                      "gap": 10,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "oi4fx",
+                          "name": "Shuffle",
+                          "width": 38,
+                          "height": 38,
+                          "cornerRadius": 8,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "path",
+                              "id": "b0MS2r",
+                              "name": "Shuffle Icon",
+                              "geometry": "M17 4l3 3-3 3m0 4l3 3-3 3m-13-13h3.5l9 10h3.5m-16 0h3.5l2.6-2.9m9.9-7.1h-3.5l-2.6 2.9",
+                              "viewBox": [
+                                0,
+                                0,
+                                24,
+                                24
+                              ],
+                              "width": 18,
+                              "height": 18,
+                              "stroke": "$text-dim",
+                              "strokeWidth": 1.6,
+                              "strokeLinejoin": "round",
+                              "strokeLinecap": "round"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "yvB59",
+                          "name": "Previous",
+                          "width": 38,
+                          "height": 38,
+                          "cornerRadius": 8,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "path",
+                              "id": "XJ5m0",
+                              "name": "Previous Icon",
+                              "geometry": "M8 6v12l-1.5 0v-12z m11 0v12l-9.5-6z",
+                              "viewBox": [
+                                0,
+                                0,
+                                24,
+                                24
+                              ],
+                              "fill": "$text",
+                              "width": 18,
+                              "height": 18
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "BHokm",
+                          "name": "Back 10",
+                          "width": 38,
+                          "height": 38,
+                          "cornerRadius": 8,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "path",
+                              "id": "Pfhjd",
+                              "name": "Back 10 Icon",
+                              "geometry": "M12 5v-3l-5 4 5 4v-3a6 6 0 1 1-6 6h-2a8 8 0 1 0 8-8z",
+                              "viewBox": [
+                                0,
+                                0,
+                                24,
+                                24
+                              ],
+                              "fill": "$text",
+                              "width": 19,
+                              "height": 19
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "RraL1",
+                          "name": "Play",
+                          "width": 58,
+                          "height": 58,
+                          "fill": "$accent",
+                          "cornerRadius": 999,
+                          "effect": {
+                            "type": "shadow",
+                            "shadowType": "outer",
+                            "color": "#3b82f688",
+                            "offset": {
+                              "x": 0,
+                              "y": 6
+                            },
+                            "blur": 20,
+                            "spread": -4
+                          },
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "path",
+                              "id": "OBkTV",
+                              "name": "Pause Icon",
+                              "geometry": "M7 5h3.4v14h-3.4z m6.6 0h3.4v14h-3.4z",
+                              "viewBox": [
+                                0,
+                                0,
+                                24,
+                                24
+                              ],
+                              "fill": "#ffffff",
+                              "width": 24,
+                              "height": 24
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "DDPLX",
+                          "name": "Forward 10",
+                          "width": 38,
+                          "height": 38,
+                          "cornerRadius": 8,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "path",
+                              "id": "kg2pY",
+                              "name": "Forward 10 Icon",
+                              "geometry": "M12 5v-3l5 4-5 4v-3a6 6 0 1 0 6 6h2a8 8 0 1 1-8-8z",
+                              "viewBox": [
+                                0,
+                                0,
+                                24,
+                                24
+                              ],
+                              "fill": "$text",
+                              "width": 19,
+                              "height": 19
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "tBgZl",
+                          "name": "Next",
+                          "width": 38,
+                          "height": 38,
+                          "cornerRadius": 8,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "path",
+                              "id": "mRuY4",
+                              "name": "Next Icon",
+                              "geometry": "M16 6v12l1.5 0v-12z m-11 0v12l9.5-6z",
+                              "viewBox": [
+                                0,
+                                0,
+                                24,
+                                24
+                              ],
+                              "fill": "$text",
+                              "width": 18,
+                              "height": 18
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "LQuYG",
+                          "name": "Repeat",
+                          "width": 38,
+                          "height": 38,
+                          "fill": "$accent-soft",
+                          "cornerRadius": 8,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "path",
+                              "id": "TyTEE",
+                              "name": "Repeat Icon",
+                              "geometry": "M17 2l4 4-4 4m-10 12l-4-4 4-4m14-8h-13a5 5 0 0 0-5 5v1m0 6h13a5 5 0 0 0 5-5v-1",
+                              "viewBox": [
+                                0,
+                                0,
+                                24,
+                                24
+                              ],
+                              "width": 18,
+                              "height": 18,
+                              "stroke": "$accent",
+                              "strokeWidth": 1.6,
+                              "strokeLinejoin": "round",
+                              "strokeLinecap": "round"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "bE1me",
+                      "name": "Transport Right",
+                      "width": "fill_container",
+                      "gap": 10,
+                      "padding": [
+                        0,
+                        10,
+                        0,
+                        0
+                      ],
+                      "justifyContent": "end",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "oJNLv",
+                          "name": "Speed",
+                          "fill": "$bg-elev",
+                          "cornerRadius": 6,
+                          "stroke": "$border",
+                          "strokeWidth": 1,
+                          "padding": [
+                            6,
+                            11
+                          ],
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "z19XnF",
+                              "name": "Speed Label",
+                              "fill": "$text",
+                              "content": "1.0x",
+                              "fontFamily": "$mono",
+                              "fontSize": 12,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "lNf6j",
+                          "name": "Volume",
+                          "fill": "$bg-elev",
+                          "cornerRadius": 6,
+                          "stroke": "$border",
+                          "strokeWidth": 1,
+                          "gap": 9,
+                          "padding": [
+                            6,
+                            11,
+                            6,
+                            10
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "path",
+                              "id": "jXQue",
+                              "name": "Volume Icon",
+                              "geometry": "M4 9h3.5l4.5-4v14l-4.5-4h-3.5z m12 0.5a3.5 3.5 0 0 1 0 5m2.8-7.5a7 7 0 0 1 0 10",
+                              "viewBox": [
+                                0,
+                                0,
+                                24,
+                                24
+                              ],
+                              "width": 16,
+                              "height": 16,
+                              "stroke": "$text",
+                              "strokeWidth": 1.6,
+                              "strokeLinejoin": "round",
+                              "strokeLinecap": "round"
+                            },
+                            {
+                              "type": "frame",
+                              "id": "ieD1Q",
+                              "name": "Volume Track",
+                              "width": 84,
+                              "height": 4,
+                              "fill": "#2b3342",
+                              "cornerRadius": 999,
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "rectangle",
+                                  "cornerRadius": 999,
+                                  "id": "s8VsnL",
+                                  "name": "Volume Fill",
+                                  "fill": "$text",
+                                  "width": 60,
+                                  "height": 4
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "KVgPy",
+                          "name": "Lyrics Toggle",
+                          "width": 34,
+                          "height": 34,
+                          "fill": "$bg-elev",
+                          "cornerRadius": 7,
+                          "stroke": "$border",
+                          "strokeWidth": 1,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "path",
+                              "id": "nR107",
+                              "name": "Lyrics Icon",
+                              "geometry": "M9 18v-12l11-2v12m-11 2a3 3 0 1 1-3-3m14 1a3 3 0 1 1-3-3",
+                              "viewBox": [
+                                0,
+                                0,
+                                24,
+                                24
+                              ],
+                              "width": 16,
+                              "height": 16,
+                              "stroke": "$text-dim",
+                              "strokeWidth": 1.6,
+                              "strokeLinejoin": "round",
+                              "strokeLinecap": "round"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "nyQwB",
+                          "name": "Fullscreen",
+                          "width": 34,
+                          "height": 34,
+                          "fill": "$bg-elev",
+                          "cornerRadius": 7,
+                          "stroke": "$border",
+                          "strokeWidth": 1,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "path",
+                              "id": "zJHKC",
+                              "name": "Fullscreen Icon",
+                              "geometry": "M9 4h-5v5m11-5h5v5m-11 11h-5v-5m11 5h5v-5",
+                              "viewBox": [
+                                0,
+                                0,
+                                24,
+                                24
+                              ],
+                              "width": 16,
+                              "height": 16,
+                              "stroke": "$text-dim",
+                              "strokeWidth": 1.6,
+                              "strokeLinejoin": "round",
+                              "strokeLinecap": "round"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "x8IDr",
+              "name": "Inspector",
+              "clip": true,
+              "width": 44,
+              "height": "fill_container",
+              "fill": "$bg-panel",
+              "stroke": "$border-soft",
+              "strokeWidth": {
+                "left": 1
+              },
+              "layout": "vertical",
+              "padding": [
+                8,
+                0
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "D5WPJ",
+                  "name": "Expand Inspector",
+                  "width": 28,
+                  "height": 28,
+                  "fill": "$bg-elev",
+                  "cornerRadius": 5,
+                  "justifyContent": "center",
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "path",
+                      "id": "oLXfk",
+                      "name": "Expand Icon",
+                      "geometry": "M11 17l-5-5 5-5m7 10l-5-5 5-5",
+                      "viewBox": [
+                        0,
+                        0,
+                        24,
+                        24
+                      ],
+                      "width": 15,
+                      "height": 15,
+                      "stroke": "$text-dim",
+                      "strokeWidth": 1.6,
+                      "strokeLinejoin": "round",
+                      "strokeLinecap": "round"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "ygMPS",
+                  "x": 0,
+                  "y": 0,
+                  "name": "Inspector Tabs",
+                  "enabled": false,
+                  "width": "fill_container(340)",
+                  "height": 44,
+                  "stroke": "$border-soft",
+                  "strokeWidth": {
+                    "bottom": 1
+                  },
+                  "gap": 2,
+                  "padding": [
+                    0,
+                    10
+                  ],
+                  "alignItems": "end",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "qOqOE",
+                      "name": "Tab 태그",
+                      "stroke": "$accent",
+                      "strokeWidth": {
+                        "bottom": 2
+                      },
+                      "padding": [
+                        0,
+                        12,
+                        11,
+                        12
+                      ],
+                      "justifyContent": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "DJIAH",
+                          "name": "Tab Label",
+                          "fill": "$accent",
+                          "content": "태그",
+                          "fontFamily": "$font",
+                          "fontSize": 13,
+                          "fontWeight": "600"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "LUsFd",
+                      "name": "Tab 가사",
+                      "padding": [
+                        0,
+                        12,
+                        11,
+                        12
+                      ],
+                      "justifyContent": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "NknXI",
+                          "name": "Tab Label",
+                          "fill": "$text-dim",
+                          "content": "가사",
+                          "fontFamily": "$font",
+                          "fontSize": 13,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "OHRbY",
+                      "name": "Tab 자르기",
+                      "padding": [
+                        0,
+                        12,
+                        11,
+                        12
+                      ],
+                      "justifyContent": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "Eaq5w",
+                          "name": "Tab Label",
+                          "fill": "$text-dim",
+                          "content": "자르기",
+                          "fontFamily": "$font",
+                          "fontSize": 13,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "snTSu",
+                  "x": 0,
+                  "y": 44,
+                  "name": "Inspector Body",
+                  "enabled": false,
+                  "clip": true,
+                  "width": "fill_container(340)",
+                  "height": "fill_container(910)",
+                  "layout": "vertical",
+                  "padding": 18,
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "b3irG3",
+                      "name": "Section 태그",
+                      "fill": "$text-dim",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "태그",
+                      "fontFamily": "$font",
+                      "fontSize": 12,
+                      "fontWeight": "600",
+                      "letterSpacing": 0.6
+                    },
+                    {
+                      "type": "frame",
+                      "id": "S5pcp5",
+                      "name": "Gap",
+                      "width": 1,
+                      "height": 12
+                    },
+                    {
+                      "type": "frame",
+                      "id": "aLOhW",
+                      "name": "Field 제목",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 6,
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "h0UX2",
+                          "name": "Field Label",
+                          "fill": "$text",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "제목",
+                          "fontFamily": "$font",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "frame",
+                          "id": "QlhBb",
+                          "name": "Input",
+                          "width": "fill_container",
+                          "height": 34,
+                          "fill": "$bg-input",
+                          "cornerRadius": 6,
+                          "stroke": "$border",
+                          "strokeWidth": 1,
+                          "padding": [
+                            0,
+                            10
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "bN7bx",
+                              "name": "Input Value",
+                              "fill": "$text-hi",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "Midnight Drive",
+                              "fontFamily": "$font",
+                              "fontSize": 12.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "nJRBi",
+                      "name": "Gap",
+                      "width": 1,
+                      "height": 12
+                    },
+                    {
+                      "type": "frame",
+                      "id": "K8VIvE",
+                      "name": "Field 아티스트",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 6,
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "HKYlU",
+                          "name": "Field Label",
+                          "fill": "$text",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "아티스트",
+                          "fontFamily": "$font",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "frame",
+                          "id": "e19oRp",
+                          "name": "Input",
+                          "width": "fill_container",
+                          "height": 34,
+                          "fill": "$bg-input",
+                          "cornerRadius": 6,
+                          "stroke": "$border",
+                          "strokeWidth": 1,
+                          "padding": [
+                            0,
+                            10
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "hAxX9",
+                              "name": "Input Value",
+                              "fill": "$text-hi",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "Kavinsky Ghost",
+                              "fontFamily": "$font",
+                              "fontSize": 12.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "IIvs5",
+                      "name": "Gap",
+                      "width": 1,
+                      "height": 12
+                    },
+                    {
+                      "type": "frame",
+                      "id": "Whxyl",
+                      "name": "Field 앨범",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 6,
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "DMbxh",
+                          "name": "Field Label",
+                          "fill": "$text",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "앨범",
+                          "fontFamily": "$font",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "frame",
+                          "id": "vAN2u",
+                          "name": "Input",
+                          "width": "fill_container",
+                          "height": 34,
+                          "fill": "$bg-input",
+                          "cornerRadius": 6,
+                          "stroke": "$border",
+                          "strokeWidth": 1,
+                          "padding": [
+                            0,
+                            10
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "k1K93",
+                              "name": "Input Value",
+                              "fill": "$text-hi",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "Neon District",
+                              "fontFamily": "$font",
+                              "fontSize": 12.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "SNycN",
+                      "name": "Gap",
+                      "width": 1,
+                      "height": 12
+                    },
+                    {
+                      "type": "frame",
+                      "id": "Wux7A",
+                      "name": "Row Track Year",
+                      "width": "fill_container",
+                      "gap": 12,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "b6PRd",
+                          "name": "Field 트랙 번호",
+                          "width": "fill_container",
+                          "layout": "vertical",
+                          "gap": 6,
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "uOMKq",
+                              "name": "Field Label",
+                              "fill": "$text",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "트랙 번호",
+                              "fontFamily": "$font",
+                              "fontSize": 12,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "frame",
+                              "id": "e7aQP",
+                              "name": "Input",
+                              "width": "fill_container",
+                              "height": 34,
+                              "fill": "$bg-input",
+                              "cornerRadius": 6,
+                              "stroke": "$border",
+                              "strokeWidth": 1,
+                              "padding": [
+                                0,
+                                10
+                              ],
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "D69ty",
+                                  "name": "Input Value",
+                                  "fill": "$text-hi",
+                                  "textGrowth": "fixed-width",
+                                  "width": "fill_container",
+                                  "content": "3 / 9",
+                                  "fontFamily": "$mono",
+                                  "fontSize": 12.5,
+                                  "fontWeight": "normal"
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "hwJ3K",
+                          "name": "Field 발매 연도",
+                          "width": "fill_container",
+                          "layout": "vertical",
+                          "gap": 6,
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "UePWP",
+                              "name": "Field Label",
+                              "fill": "$text",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "발매 연도",
+                              "fontFamily": "$font",
+                              "fontSize": 12,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "frame",
+                              "id": "cQbOk",
+                              "name": "Input",
+                              "width": "fill_container",
+                              "height": 34,
+                              "fill": "$bg-input",
+                              "cornerRadius": 6,
+                              "stroke": "$border",
+                              "strokeWidth": 1,
+                              "padding": [
+                                0,
+                                10
+                              ],
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "xYLiW",
+                                  "name": "Input Value",
+                                  "fill": "$text-hi",
+                                  "textGrowth": "fixed-width",
+                                  "width": "fill_container",
+                                  "content": "2024",
+                                  "fontFamily": "$mono",
+                                  "fontSize": 12.5,
+                                  "fontWeight": "normal"
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "up3X2",
+                      "name": "Gap",
+                      "width": 1,
+                      "height": 12
+                    },
+                    {
+                      "type": "frame",
+                      "id": "r6Y4z6",
+                      "name": "Field 장르",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 6,
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "n1IylD",
+                          "name": "Field Label",
+                          "fill": "$text",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "장르",
+                          "fontFamily": "$font",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "frame",
+                          "id": "bi30W",
+                          "name": "Input",
+                          "width": "fill_container",
+                          "height": 34,
+                          "fill": "$bg-input",
+                          "cornerRadius": 6,
+                          "stroke": "$border",
+                          "strokeWidth": 1,
+                          "padding": [
+                            0,
+                            10
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "T3lzb",
+                              "name": "Input Value",
+                              "fill": "$text-hi",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "Synthwave",
+                              "fontFamily": "$font",
+                              "fontSize": 12.5,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "path",
+                              "id": "e39jll",
+                              "name": "Chevron",
+                              "geometry": "M6 9l6 6 6-6",
+                              "viewBox": [
+                                0,
+                                0,
+                                24,
+                                24
+                              ],
+                              "width": 14,
+                              "height": 14,
+                              "stroke": "$text-dim",
+                              "strokeWidth": 1.6,
+                              "strokeLinejoin": "round",
+                              "strokeLinecap": "round"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "e1x6D",
+                      "name": "Gap",
+                      "width": 1,
+                      "height": 22
+                    },
+                    {
+                      "type": "rectangle",
+                      "id": "wTrO8",
+                      "name": "Divider",
+                      "fill": "$border-soft",
+                      "width": "fill_container",
+                      "height": 1
+                    },
+                    {
+                      "type": "frame",
+                      "id": "LMPB5",
+                      "name": "Gap",
+                      "width": 1,
+                      "height": 18
+                    },
+                    {
+                      "type": "text",
+                      "id": "gf5UV",
+                      "name": "Section 오디오 분석",
+                      "fill": "$text-dim",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "오디오 분석",
+                      "fontFamily": "$font",
+                      "fontSize": 12,
+                      "fontWeight": "600",
+                      "letterSpacing": 0.6
+                    },
+                    {
+                      "type": "frame",
+                      "id": "QbDhT",
+                      "name": "Gap",
+                      "width": 1,
+                      "height": 12
+                    },
+                    {
+                      "type": "frame",
+                      "id": "s1YI1E",
+                      "name": "Stats",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 8,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "m6Wxaf",
+                          "name": "Stat Row",
+                          "width": "fill_container",
+                          "gap": 8,
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "X4rF0k",
+                              "name": "Stat 평균 라우드니스",
+                              "width": "fill_container",
+                              "fill": "$bg-elev",
+                              "cornerRadius": 7,
+                              "stroke": "$border-soft",
+                              "strokeWidth": 1,
+                              "layout": "vertical",
+                              "gap": 5,
+                              "padding": [
+                                10,
+                                11
+                              ],
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "Ttzu7",
+                                  "name": "Stat Label",
+                                  "fill": "$text-dim",
+                                  "textGrowth": "fixed-width",
+                                  "width": "fill_container",
+                                  "content": "평균 라우드니스",
+                                  "fontFamily": "$font",
+                                  "fontSize": 11,
+                                  "fontWeight": "normal"
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "DiqAw",
+                                  "name": "Stat Value",
+                                  "fill": "$text-hi",
+                                  "textGrowth": "fixed-width",
+                                  "width": "fill_container",
+                                  "content": "-9.2 LUFS",
+                                  "fontFamily": "$mono",
+                                  "fontSize": 13,
+                                  "fontWeight": "600"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "zBqN0",
+                              "name": "Stat 트루 피크",
+                              "width": "fill_container",
+                              "fill": "$bg-elev",
+                              "cornerRadius": 7,
+                              "stroke": "$border-soft",
+                              "strokeWidth": 1,
+                              "layout": "vertical",
+                              "gap": 5,
+                              "padding": [
+                                10,
+                                11
+                              ],
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "fxGpY",
+                                  "name": "Stat Label",
+                                  "fill": "$text-dim",
+                                  "textGrowth": "fixed-width",
+                                  "width": "fill_container",
+                                  "content": "트루 피크",
+                                  "fontFamily": "$font",
+                                  "fontSize": 11,
+                                  "fontWeight": "normal"
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "B544f3",
+                                  "name": "Stat Value",
+                                  "fill": "$text-hi",
+                                  "textGrowth": "fixed-width",
+                                  "width": "fill_container",
+                                  "content": "-0.8 dBTP",
+                                  "fontFamily": "$mono",
+                                  "fontSize": 13,
+                                  "fontWeight": "600"
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "B14mfu",
+                          "name": "Stat Row",
+                          "width": "fill_container",
+                          "gap": 8,
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "D57dS",
+                              "name": "Stat 샘플레이트",
+                              "width": "fill_container",
+                              "fill": "$bg-elev",
+                              "cornerRadius": 7,
+                              "stroke": "$border-soft",
+                              "strokeWidth": 1,
+                              "layout": "vertical",
+                              "gap": 5,
+                              "padding": [
+                                10,
+                                11
+                              ],
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "DY1oH",
+                                  "name": "Stat Label",
+                                  "fill": "$text-dim",
+                                  "textGrowth": "fixed-width",
+                                  "width": "fill_container",
+                                  "content": "샘플레이트",
+                                  "fontFamily": "$font",
+                                  "fontSize": 11,
+                                  "fontWeight": "normal"
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "DTWDs",
+                                  "name": "Stat Value",
+                                  "fill": "$text-hi",
+                                  "textGrowth": "fixed-width",
+                                  "width": "fill_container",
+                                  "content": "44.1 kHz",
+                                  "fontFamily": "$mono",
+                                  "fontSize": 13,
+                                  "fontWeight": "600"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "J9Ito",
+                              "name": "Stat 채널",
+                              "width": "fill_container",
+                              "fill": "$bg-elev",
+                              "cornerRadius": 7,
+                              "stroke": "$border-soft",
+                              "strokeWidth": 1,
+                              "layout": "vertical",
+                              "gap": 5,
+                              "padding": [
+                                10,
+                                11
+                              ],
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "t3FfP2",
+                                  "name": "Stat Label",
+                                  "fill": "$text-dim",
+                                  "textGrowth": "fixed-width",
+                                  "width": "fill_container",
+                                  "content": "채널",
+                                  "fontFamily": "$font",
+                                  "fontSize": 11,
+                                  "fontWeight": "normal"
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "d6gVwa",
+                                  "name": "Stat Value",
+                                  "fill": "$text-hi",
+                                  "textGrowth": "fixed-width",
+                                  "width": "fill_container",
+                                  "content": "스테레오",
+                                  "fontFamily": "$mono",
+                                  "fontSize": 13,
+                                  "fontWeight": "600"
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "RgA1P",
+                      "name": "Gap",
+                      "width": 1,
+                      "height": 22
+                    },
+                    {
+                      "type": "rectangle",
+                      "id": "V9wui",
+                      "name": "Divider 2",
+                      "fill": "$border-soft",
+                      "width": "fill_container",
+                      "height": 1
+                    },
+                    {
+                      "type": "frame",
+                      "id": "dDQSE",
+                      "name": "Gap",
+                      "width": 1,
+                      "height": 18
+                    },
+                    {
+                      "type": "text",
+                      "id": "B7Xhq",
+                      "name": "Section 구간 저장",
+                      "fill": "$text-dim",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "구간 저장",
+                      "fontFamily": "$font",
+                      "fontSize": 12,
+                      "fontWeight": "600",
+                      "letterSpacing": 0.6
+                    },
+                    {
+                      "type": "frame",
+                      "id": "lyhnT",
+                      "name": "Gap",
+                      "width": 1,
+                      "height": 12
+                    },
+                    {
+                      "type": "frame",
+                      "id": "gYTgk",
+                      "name": "Row In Out",
+                      "width": "fill_container",
+                      "gap": 12,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "lcm1f",
+                          "name": "Field 시작 (I)",
+                          "width": "fill_container",
+                          "layout": "vertical",
+                          "gap": 6,
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "wqDxM",
+                              "name": "Field Label",
+                              "fill": "$text",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "시작 (I)",
+                              "fontFamily": "$font",
+                              "fontSize": 12,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "frame",
+                              "id": "pj7U6",
+                              "name": "Input",
+                              "width": "fill_container",
+                              "height": 34,
+                              "fill": "$bg-input",
+                              "cornerRadius": 6,
+                              "stroke": "$border",
+                              "strokeWidth": 1,
+                              "padding": [
+                                0,
+                                10
+                              ],
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "z98bE1",
+                                  "name": "Input Value",
+                                  "fill": "$text-hi",
+                                  "textGrowth": "fixed-width",
+                                  "width": "fill_container",
+                                  "content": "0:00.0",
+                                  "fontFamily": "$mono",
+                                  "fontSize": 12.5,
+                                  "fontWeight": "normal"
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "T4zprJ",
+                          "name": "Field 끝 (O)",
+                          "width": "fill_container",
+                          "layout": "vertical",
+                          "gap": 6,
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "CCxHd",
+                              "name": "Field Label",
+                              "fill": "$text",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "끝 (O)",
+                              "fontFamily": "$font",
+                              "fontSize": 12,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "frame",
+                              "id": "Yjmv4",
+                              "name": "Input",
+                              "width": "fill_container",
+                              "height": 34,
+                              "fill": "$bg-input",
+                              "cornerRadius": 6,
+                              "stroke": "$border",
+                              "strokeWidth": 1,
+                              "padding": [
+                                0,
+                                10
+                              ],
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "ym4Ub",
+                                  "name": "Input Value",
+                                  "fill": "$text-hi",
+                                  "textGrowth": "fixed-width",
+                                  "width": "fill_container",
+                                  "content": "3:42.0",
+                                  "fontFamily": "$mono",
+                                  "fontSize": 12.5,
+                                  "fontWeight": "normal"
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "wbuOX",
+                      "name": "Gap",
+                      "width": 1,
+                      "height": 10
+                    },
+                    {
+                      "type": "text",
+                      "id": "NNqsQ",
+                      "name": "IO Hint",
+                      "fill": "$text-dim",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "I·O 키로 구간을 지정합니다. 무손실 잘라내기라 재인코딩하지 않습니다.",
+                      "lineHeight": 1.5,
+                      "fontFamily": "$font",
+                      "fontSize": 11.5,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "Sq5fb",
+                      "name": "Flex Spacer",
+                      "width": 1,
+                      "height": "fill_container"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "dDYTs",
+                      "name": "Summary",
+                      "width": "fill_container",
+                      "gap": 12,
+                      "padding": [
+                        0,
+                        2,
+                        14,
+                        2
+                      ],
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "zenXf",
+                          "name": "Sum 예상 용량",
+                          "width": "fill_container",
+                          "layout": "vertical",
+                          "gap": 4,
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "XEpYp",
+                              "name": "Sum Label",
+                              "fill": "$text-dim",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "예상 용량",
+                              "fontFamily": "$font",
+                              "fontSize": 11,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "text",
+                              "id": "vGKSx",
+                              "name": "Sum Value",
+                              "fill": "$text-hi",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "8.4 MB",
+                              "fontFamily": "$mono",
+                              "fontSize": 13,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "nTejr",
+                          "name": "Sum 출력 길이",
+                          "width": "fill_container",
+                          "layout": "vertical",
+                          "gap": 4,
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "RC9FO",
+                              "name": "Sum Label",
+                              "fill": "$text-dim",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "출력 길이",
+                              "fontFamily": "$font",
+                              "fontSize": 11,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "text",
+                              "id": "W6o7y",
+                              "name": "Sum Value",
+                              "fill": "$text-hi",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "3:42.0",
+                              "fontFamily": "$mono",
+                              "fontSize": 13,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "VZf9D",
+                      "name": "Inspector Actions",
+                      "width": "fill_container",
+                      "gap": 10,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "puCMY",
+                          "name": "Button 구간 저장",
+                          "width": "fill_container",
+                          "height": 38,
+                          "fill": "$bg-elev",
+                          "cornerRadius": 7,
+                          "stroke": "$border",
+                          "strokeWidth": 1,
+                          "gap": 7,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "path",
+                              "id": "b0SXkt",
+                              "name": "구간 저장 Icon",
+                              "geometry": "M6 4l12 14m0-14l-12 14m0.5 2a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z m11 0a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z",
+                              "viewBox": [
+                                0,
+                                0,
+                                24,
+                                24
+                              ],
+                              "width": 15,
+                              "height": 15,
+                              "stroke": "$text",
+                              "strokeWidth": 1.6,
+                              "strokeLinejoin": "round",
+                              "strokeLinecap": "round"
+                            },
+                            {
+                              "type": "text",
+                              "id": "csjgA",
+                              "name": "Button Label",
+                              "fill": "$text-hi",
+                              "content": "구간 저장",
+                              "fontFamily": "$font",
+                              "fontSize": 12.5,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "V39HV3",
+                          "name": "Button 태그 저장",
+                          "width": "fill_container",
+                          "height": 38,
+                          "fill": "$accent",
+                          "cornerRadius": 7,
+                          "stroke": "$accent",
+                          "strokeWidth": 1,
+                          "gap": 7,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "path",
+                              "id": "HWSQr",
+                              "name": "태그 저장 Icon",
+                              "geometry": "M5 5h11l3 3v11h-14z m3 0v5h7v-5m-7 14v-6h8v6",
+                              "viewBox": [
+                                0,
+                                0,
+                                24,
+                                24
+                              ],
+                              "width": 15,
+                              "height": 15,
+                              "stroke": "#ffffff",
+                              "strokeWidth": 1.6,
+                              "strokeLinejoin": "round",
+                              "strokeLinecap": "round"
+                            },
+                            {
+                              "type": "text",
+                              "id": "Q4QDS",
+                              "name": "Button Label",
+                              "fill": "#ffffff",
+                              "content": "태그 저장",
+                              "fontFamily": "$font",
+                              "fontSize": 12.5,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "Itx8Y",
+          "name": "Status Bar",
+          "width": "fill_container",
+          "height": 28,
+          "fill": "$bg-app",
+          "stroke": "$border-soft",
+          "strokeWidth": {
+            "top": 1
+          },
+          "gap": 14,
+          "padding": [
+            0,
+            14
+          ],
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "ellipse",
+              "id": "M4kAb",
+              "name": "Status Dot",
+              "fill": "$green",
+              "width": 7,
+              "height": 7
+            },
+            {
+              "type": "text",
+              "id": "JFf1S",
+              "name": "Status",
+              "fill": "$text",
+              "content": "재생 중",
+              "fontFamily": "$font",
+              "fontSize": 11,
+              "fontWeight": "normal"
+            },
+            {
+              "type": "text",
+              "id": "T4G50",
+              "name": "Codec",
+              "fill": "$text-dim",
+              "content": "코덱 mp3 · 320 kbps",
+              "fontFamily": "$font",
+              "fontSize": 11,
+              "fontWeight": "normal"
+            },
+            {
+              "type": "text",
+              "id": "FpPI8",
+              "name": "Count",
+              "fill": "$text-dim",
+              "content": "트랙 9개",
+              "fontFamily": "$font",
+              "fontSize": 11,
+              "fontWeight": "normal"
+            },
+            {
+              "type": "frame",
+              "id": "dQfec",
+              "name": "Spacer",
+              "width": "fill_container",
+              "height": 1
+            },
+            {
+              "type": "frame",
+              "id": "d35Ee",
+              "name": "Hint Space",
+              "gap": 5,
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "W9l24",
+                  "name": "Key",
+                  "fill": "$bg-elev",
+                  "cornerRadius": 3,
+                  "padding": [
+                    1,
+                    5
+                  ],
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "Jk89S",
+                      "name": "Key Label",
+                      "fill": "$text",
+                      "content": "Space",
+                      "fontFamily": "$font",
+                      "fontSize": 10,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "id": "FhPvy",
+                  "name": "Hint Label",
+                  "fill": "$text-dim",
+                  "content": "재생",
+                  "fontFamily": "$font",
+                  "fontSize": 10,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "httoQ",
+              "name": "Hint ← / →",
+              "gap": 5,
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "GjOFR",
+                  "name": "Key",
+                  "fill": "$bg-elev",
+                  "cornerRadius": 3,
+                  "padding": [
+                    1,
+                    5
+                  ],
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "SupyU",
+                      "name": "Key Label",
+                      "fill": "$text",
+                      "content": "← / →",
+                      "fontFamily": "$font",
+                      "fontSize": 10,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "id": "LRkXV",
+                  "name": "Hint Label",
+                  "fill": "$text-dim",
+                  "content": "10초",
+                  "fontFamily": "$font",
+                  "fontSize": 10,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "ZPTwP",
+              "name": "Hint N / P",
+              "gap": 5,
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "gB4ov",
+                  "name": "Key",
+                  "fill": "$bg-elev",
+                  "cornerRadius": 3,
+                  "padding": [
+                    1,
+                    5
+                  ],
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "TvfDW",
+                      "name": "Key Label",
+                      "fill": "$text",
+                      "content": "N / P",
+                      "fontFamily": "$font",
+                      "fontSize": 10,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "id": "BtFpr",
+                  "name": "Hint Label",
+                  "fill": "$text-dim",
+                  "content": "다음 · 이전",
+                  "fontFamily": "$font",
+                  "fontSize": 10,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "kt5le",
+              "name": "Hint L",
+              "gap": 5,
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "l8aOP",
+                  "name": "Key",
+                  "fill": "$bg-elev",
+                  "cornerRadius": 3,
+                  "padding": [
+                    1,
+                    5
+                  ],
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "H0setI",
+                      "name": "Key Label",
+                      "fill": "$text",
+                      "content": "L",
+                      "fontFamily": "$font",
+                      "fontSize": 10,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "id": "N1tRB",
+                  "name": "Hint Label",
+                  "fill": "$text-dim",
+                  "content": "반복",
+                  "fontFamily": "$font",
+                  "fontSize": 10,
+                  "fontWeight": "normal"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "variables": {
+    "bg-app": {
+      "type": "color",
+      "value": "#0b0d12"
+    },
+    "bg-panel": {
+      "type": "color",
+      "value": "#101319"
+    },
+    "bg-elev": {
+      "type": "color",
+      "value": "#161a22"
+    },
+    "bg-input": {
+      "type": "color",
+      "value": "#0e1117"
+    },
+    "border": {
+      "type": "color",
+      "value": "#232a36"
+    },
+    "border-soft": {
+      "type": "color",
+      "value": "#1a202a"
+    },
+    "text-hi": {
+      "type": "color",
+      "value": "#e8ebf1"
+    },
+    "text": {
+      "type": "color",
+      "value": "#a9b1c0"
+    },
+    "text-dim": {
+      "type": "color",
+      "value": "#69717f"
+    },
+    "accent": {
+      "type": "color",
+      "value": "#3b82f6"
+    },
+    "accent-soft": {
+      "type": "color",
+      "value": "#1b3557"
+    },
+    "green": {
+      "type": "color",
+      "value": "#22c55e"
+    },
+    "font": {
+      "type": "string",
+      "value": "Inter"
+    },
+    "mono": {
+      "type": "string",
+      "value": "JetBrains Mono"
+    }
+  },
+  "fileToken": "5371356a-69f7-48a8-98fc-3b2633c4fb34"
+}

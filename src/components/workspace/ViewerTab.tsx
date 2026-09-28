@@ -124,6 +124,11 @@ function ViewerLeafView({
     },
     [paneId],
   );
+  // 형제 파일로 넘기기(오디오 곡 전환) — openInPane과 달리 탭을 늘리지 않고, 활성 패널도 옮기지 않는다.
+  const replaceInPane = useCallback(
+    (target: DiffTarget) => useUi.getState().replaceDiffInPane(paneId, target),
+    [paneId],
+  );
 
   return (
     <div
@@ -155,6 +160,7 @@ function ViewerLeafView({
               projectId={entry.repoId ?? projectId}
               target={entry.target}
               onOpenFile={openInPane}
+              onReplaceFile={replaceInPane}
               suppressContextMenu
               selectionRef={selectionRef}
             />

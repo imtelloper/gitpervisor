@@ -1,4 +1,4 @@
-// 동영상 — 라이브러리 레일·자르기 오버레이·플레이어 상태 줄·플레이어·타임라인·내보내기 패널·프레임 저장·분할 저장.
+// 동영상·오디오 — 라이브러리 레일·자르기 오버레이·플레이어 상태 줄·플레이어·오디오 플레이어·타임라인·내보내기 패널·프레임 저장·분할 저장.
 
 import { defineText } from "./define-text";
 import { fmtInt, fmtNumber, plural } from "./format-locale";
@@ -268,6 +268,29 @@ const ko = {
       undo: "되돌리기",
       redo: "다시 실행",
     },
+  },
+  // 오디오 플레이어(폴더 플레이리스트) — 공통 문구(재생/일시정지·음소거·외부 앱·재생 실패)는 player를 같이 쓴다.
+  audioPlayer: {
+    searchTracks: "트랙 검색",
+    trackCount: (n: number) => `${fmtInt(n)}곡`,
+    playFolder: "폴더 전체 재생",
+    nowPlaying: (index: number, total: number) => `지금 재생 중 · ${fmtInt(index)} / ${fmtInt(total)}`,
+    revealInFolder: "파일 위치 열기",
+    coverAlt: "앨범 아트",
+    upNext: (name: string) => `다음 · ${name}`,
+    shuffleTitle: "셔플 (S)",
+    prevTitle: "이전 곡 (P)",
+    nextTitle: "다음 곡 (N)",
+    repeatTitle: { off: "반복 끔 (L)", all: "전체 반복 (L)", one: "한 곡 반복 (L)" },
+    rateTitle: "재생 배속 — 클릭하면 다음 배속 (-/=)",
+    volume: "볼륨",
+    seekLabel: "재생 위치",
+    channels: (n: number) => (n === 1 ? "모노" : n === 2 ? "스테레오" : `${fmtInt(n)}채널`),
+    statusPlaying: "재생 중",
+    statusPaused: "일시정지",
+    statusTracks: "트랙",
+    statusTrackCount: (n: number) => `${fmtInt(n)}개`,
+    shortcuts: { seek: "10초", nextPrev: "다음·이전", repeat: "반복" },
   },
   timeline: {
     rangeHint: (pendingStart: string | null) =>
@@ -572,6 +595,28 @@ export const mediaText = defineText(ko, {
         undo: "Undo",
         redo: "Redo",
       },
+    },
+    audioPlayer: {
+      searchTracks: "Search tracks",
+      trackCount: (n) => `${fmtInt(n)} ${plural(n, "track", "tracks")}`,
+      playFolder: "Play folder",
+      nowPlaying: (index, total) => `Now playing · ${fmtInt(index)} / ${fmtInt(total)}`,
+      revealInFolder: "Show in folder",
+      coverAlt: "Album art",
+      upNext: (name) => `Up next · ${name}`,
+      shuffleTitle: "Shuffle (S)",
+      prevTitle: "Previous track (P)",
+      nextTitle: "Next track (N)",
+      repeatTitle: { off: "Repeat off (L)", all: "Repeat all (L)", one: "Repeat one (L)" },
+      rateTitle: "Playback speed — click for the next speed (-/=)",
+      volume: "Volume",
+      seekLabel: "Playback position",
+      channels: (n) => (n === 1 ? "mono" : n === 2 ? "stereo" : `${fmtInt(n)} channels`),
+      statusPlaying: "Playing",
+      statusPaused: "Paused",
+      statusTracks: "Tracks",
+      statusTrackCount: (n) => fmtInt(n),
+      shortcuts: { seek: "10 s", nextPrev: "Next · previous", repeat: "Repeat" },
     },
     timeline: {
       rangeHint: (pendingStart) =>

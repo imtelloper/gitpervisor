@@ -213,6 +213,8 @@ export interface UiState {
    * 저장소 라우팅(repoId)은 현재 것을 그대로 쓴다 — 같은 폴더 안에서의 이동이기 때문.
    */
   replaceDiff: (target: DiffTarget) => void;
+  /** replaceDiff를 **지정한 패널**에 — 활성 패널은 옮기지 않는다(오디오 곡 끝 자동 넘김: replacePaneTarget 주석). */
+  replaceDiffInPane: (paneId: string, target: DiffTarget) => void;
   /**
    * 뷰어 파일 탭 닫기 — 그 패널이 보던 탭이면 이웃 탭으로 전환(없으면 선택 해제).
    * 분할 중에 패널의 마지막 탭을 닫으면 패널도 닫는다. paneId를 안 주면 활성 패널의 탭,
@@ -442,6 +444,38 @@ const writeActivePane = (s: UiState, target: DiffTarget | null, repoId: string |
   writePane(s, s.viewerActivePaneId, target, repoId);
 
 /**
+ * 패널이 보던 탭의 대상만 갈아 끼운다(탭 수 불변). 이미 열려 있던 대상으로 돌아가면 그 탭을 제거해
+ * 탭 바에 같은 파일이 둘 생기지 않게 한다. 그 패널에 대상이 없으면 아무것도 하지 않는다.
+ *
+ * 활성 패널을 옮기지 않는 이유: 오디오 곡 끝 자동 넘김은 사용자가 **다른 패널**에서 작업하는 중에도
+ * 일어난다 — 활성 패널 기준으로 바꾸면 그쪽 파일이 곡으로 갈아 끼워진다. 같은 이유로 프로젝트의
+ * "마지막 활성 파일"은 활성 패널일 때만 갱신한다.
+ */
+function replacePaneTarget(s: UiState, paneId: string, target: DiffTarget): Partial<UiState> {
+  const cur = s.viewerByPane[paneId] ?? null;
+  const repoId = cur?.repoId ?? null;
+  const outerId = s.selectedProjectId;
+  if (!outerId || !cur) return {};
+  const oldKey = viewerTabKey(cur.target, repoId, outerId);
+  const key = viewerTabKey(target, repoId, outerId);
+  const tab: ViewerFileTab = { key, paneId, outerId, repoId, target };
+  const i = s.viewerTabs.findIndex((t) => t.key === oldKey && t.paneId === paneId);
+  const dup = s.viewerTabs.findIndex((t) => t.key === key && t.paneId === paneId);
+  return {
+    ...writePane(s, paneId, target, repoId),
+    ...(paneId === s.viewerActivePaneId && {
+      activeDiffByProject: { ...s.activeDiffByProject, [outerId]: { target, repoId } },
+    }),
+    viewerTabs:
+      i < 0
+        ? [...s.viewerTabs, tab]
+        : s.viewerTabs
+            .map((t, j) => (j === i ? tab : t))
+            .filter((_, j) => !(dup >= 0 && dup !== i && j === dup)),
+  };
+}
+
+/**
  * 패널 하나를 트리에서 뗀다 — 패널 메뉴 "닫기"와 "마지막 탭 닫기"가 같이 쓴다. 마지막 한 칸이면 null.
  * 그 패널의 **현재 프로젝트** 탭은 함께 닫는다(탭 바가 패널 위에 붙어 있으니 같이 사라지는 게 보이는
  * 그대로다). 다른 프로젝트 탭은 지금 보이지도 않으므로 남는 활성 패널로 옮긴다 — 말없이 잃지 않게.
@@ -632,34 +666,8 @@ export const useUi = create<UiState>((set) => ({
             : [...s.viewerTabs, tab],
       };
     }),
-  // 활성 탭의 대상만 갈아 끼운다(탭 수 불변). 이미 열려 있던 대상으로 돌아가면 그 탭을 제거해
-  // 탭 바에 같은 파일이 둘 생기지 않게 한다. 활성 대상이 없으면 아무것도 하지 않는다.
-  replaceDiff: (target) =>
-    set((s) => {
-      const cur = selectActiveDiff(s);
-      const repoId = cur?.repoId ?? null;
-      const outerId = s.selectedProjectId;
-      if (!outerId || !cur) return {};
-      const oldKey = viewerTabKey(cur.target, repoId, outerId);
-      const key = viewerTabKey(target, repoId, outerId);
-      const paneId = s.viewerActivePaneId;
-      const tab: ViewerFileTab = { key, paneId, outerId, repoId, target };
-      const i = s.viewerTabs.findIndex((t) => t.key === oldKey && t.paneId === paneId);
-      const dup = s.viewerTabs.findIndex((t) => t.key === key && t.paneId === paneId);
-      return {
-        ...writeActivePane(s, target, repoId),
-        activeDiffByProject: {
-          ...s.activeDiffByProject,
-          [outerId]: { target, repoId },
-        },
-        viewerTabs:
-          i < 0
-            ? [...s.viewerTabs, tab]
-            : s.viewerTabs
-                .map((t, j) => (j === i ? tab : t))
-                .filter((_, j) => !(dup >= 0 && dup !== i && j === dup)),
-      };
-    }),
+  replaceDiff: (target) => set((s) => replacePaneTarget(s, s.viewerActivePaneId, target)),
+  replaceDiffInPane: (paneId, target) => set((s) => replacePaneTarget(s, paneId, target)),
   closeViewerTab: (key, paneId) =>
     set((s) => {
       const closing =

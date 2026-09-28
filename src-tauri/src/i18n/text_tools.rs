@@ -366,6 +366,13 @@ pub fn reveal_path_not_found() -> &'static str {
     }
 }
 
+pub fn reveal_in_repo_not_found(rel: &str) -> String {
+    match lang() {
+        Lang::Ko => format!("파일을 찾을 수 없습니다: {rel}"),
+        Lang::En => format!("File not found: {rel}"),
+    }
+}
+
 pub fn open_explorer_failed(err: &dyn Display) -> String {
     match lang() {
         Lang::Ko => format!("탐색기 열기 실패: {err}"),

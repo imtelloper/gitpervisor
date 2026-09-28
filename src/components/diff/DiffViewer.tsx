@@ -217,11 +217,17 @@ export default function DiffViewer({
   projectId,
   target,
   onOpenFile,
+  onReplaceFile,
   suppressContextMenu = false,
   selectionRef,
 }: {
   projectId: string;
   target: DiffTarget;
+  /**
+   * 보고 있는 파일을 형제 파일로 **갈아 끼운다**(탭 수 불변) — 오디오 곡 전환 전용. 곡마다 탭이
+   * 쌓이면 플레이리스트가 탭 바를 채운다. 안 주면 onOpenFile 경로(문서 창은 거기서 이미 제자리 교체다).
+   */
+  onReplaceFile?: (target: DiffTarget) => void;
   /**
    * 뷰어 안에서 **다른 파일을 열 때** 쓸 함수("편집" 버튼·정의 이동). 안 주면 전역 selectDiff —
    * 그건 뷰어 탭을 업서트하고 모아보기를 닫으므로, 모달 안 뷰어(Git 모달)는 자기 로컬 선택을
@@ -251,6 +257,10 @@ export default function DiffViewer({
   const openPath = useCallback(
     (p: string) => (onOpenFile ?? selectDiff)({ mode: "file", path: p }, projectId),
     [onOpenFile, selectDiff, projectId],
+  );
+  const replacePath = useCallback(
+    (p: string) => (onReplaceFile ? onReplaceFile({ mode: "file", path: p }) : openPath(p)),
+    [onReplaceFile, openPath],
   );
 
   const options = useMemo(
@@ -853,7 +863,12 @@ export default function DiffViewer({
         {isImageView ? (
           <ImageView projectId={projectId} path={path} />
         ) : isMediaView ? (
-          <MediaView projectId={projectId} path={path} onOpenPath={openPath} />
+          <MediaView
+            projectId={projectId}
+            path={path}
+            onOpenPath={openPath}
+            onReplacePath={replacePath}
+          />
         ) : isPdfView ? (
           // isLoading보다 앞이어야 한다 — keepPreviousData가 이전 파일 diff를 잔상으로 남긴다.
           <Suspense fallback={<EmptyState title={msg.git.diff.pdfViewerLoading} />}>

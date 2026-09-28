@@ -8,6 +8,7 @@ import { AggregateWindow } from "./AggregateWindow";
 import App from "./App";
 import { CaptureOverlay } from "./CaptureOverlay";
 import { DocWindow } from "./DocWindow";
+import { endedIndex, stepIndex } from "./components/audio/playlist";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { SysMonitorWindow } from "./components/sysmon/SysMonitorWindow";
 import { FloatingTerminal } from "./FloatingTerminal";
@@ -181,6 +182,8 @@ if (import.meta.env.DEV) {
       setCaptionTranslation,
     },
     captionDoc: useCaptionDoc,
+    // 오디오 플레이리스트 다음 곡 계산(순수) — e2e 69가 반복·셔플·감아 돌기 표를 잰다(planSegments와 같은 이유).
+    playlist: { stepIndex, endedIndex },
     promptHistory: usePromptHistory, // 호버 카드 e2e — 기록 생성·컬럼 열기·교체 시뮬레이션
     term: { get: getTerminal }, // 터미널 e2e — xterm 인스턴스·win32Input 플래그 관측
     customThemes: useCustomThemes, // 커스텀 테마 e2e — 정의 upsert/remove

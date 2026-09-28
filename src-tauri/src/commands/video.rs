@@ -362,6 +362,21 @@ pub struct VideoMeta {
     pub start_time_ms: i64,
     /// 오디오 트랙 목록(파일 순) — 자막을 만들 트랙 고르기(OBS 다중 트랙 녹화, 태스크 72 P3).
     pub audio_streams: Vec<AudioStreamInfo>,
+    /// 곡 태그(오디오 플레이어 히어로) — 없으면 각 칸 None.
+    pub tags: MediaTags,
+    /// ffprobe `format.size`.
+    pub size_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaTags {
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub date: Option<String>,
+    pub genre: Option<String>,
+    pub track: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -374,6 +389,23 @@ pub struct AudioStreamInfo {
     /// 컨테이너 태그 그대로(`kor`·`und` 등).
     pub language: Option<String>,
     pub title: Option<String>,
+    /// ffprobe는 문자열("44100")로 준다.
+    pub sample_rate: Option<u32>,
+}
+
+/// 태그 한 칸 — 키는 대소문자를 무시한다(FLAC Vorbis 주석은 `TITLE`). `format.tags`가 먼저, 없으면 첫 오디오
+/// 스트림의 `tags`(ogg/opus는 Vorbis 주석이 컨테이너가 아니라 스트림에 붙는다).
+fn probe_tag(format: &serde_json::Value, audio: Option<&serde_json::Value>, key: &str) -> Option<String> {
+    let find = |tags: &serde_json::Value| {
+        tags.as_object()?
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(key))
+            .and_then(|(_, v)| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    find(&format["tags"]).or_else(|| audio.and_then(|a| find(&a["tags"])))
 }
 
 /// "30000/1001" → 29.97. "0/0"(미상)은 None.
@@ -439,8 +471,20 @@ fn parse_probe(json: &str) -> Result<VideoMeta, IpcError> {
             channels: s["channels"].as_u64().map(|c| c as u32),
             language: text(&s["tags"]["language"]),
             title: text(&s["tags"]["title"]),
+            sample_rate: s["sample_rate"].as_str().and_then(|r| r.parse().ok()),
         })
         .collect();
+
+    let format = &v["format"];
+    let tag = |key: &str| probe_tag(format, audio, key);
+    let tags = MediaTags {
+        title: tag("title"),
+        artist: tag("artist"),
+        album: tag("album"),
+        date: tag("date"),
+        genre: tag("genre"),
+        track: tag("track"),
+    };
 
     Ok(VideoMeta {
         duration_ms,
@@ -455,6 +499,8 @@ fn parse_probe(json: &str) -> Result<VideoMeta, IpcError> {
         has_video: vs.is_some(),
         start_time_ms,
         audio_streams,
+        tags,
+        size_bytes: format["size"].as_str().and_then(|s| s.parse().ok()),
     })
 }
 
@@ -1740,6 +1786,46 @@ pub async fn video_waveform(
     Ok(reduce_peaks(&pcm, buckets as usize))
 }
 
+/// 내장 커버(첫 video 스트림 — mp3 APIC·flac PICTURE·m4a covr는 ffprobe에 attached_pic video로 보인다) 1프레임을
+/// 최대 600px mjpeg로 **파이프**에(필름스트립과 같은 이유 — 임시파일 없음). 콤마는 필터 구분자라 이스케이프한다.
+fn build_cover_art_args(src: &str) -> Vec<String> {
+    vec![
+        "-hide_banner".into(), "-nostdin".into(), "-v".into(), "error".into(),
+        "-i".into(), src.into(),
+        "-map".into(), "0:v:0".into(), "-frames:v".into(), "1".into(),
+        "-vf".into(), "scale=min(600\\,iw):min(600\\,ih):force_original_aspect_ratio=decrease".into(),
+        "-c:v".into(), "mjpeg".into(), "-q:v".into(), "3".into(),
+        "-f".into(), "image2pipe".into(), "pipe:1".into(),
+    ]
+}
+
+#[tauri::command(async)]
+pub async fn audio_cover_art(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    project_id: String,
+    rel_path: String,
+) -> Result<Option<String>, IpcError> {
+    let bin = find_ffmpeg(&app, state.inner())?;
+    let src = resolve_media(&state, &project_id, &rel_path)?;
+    let (code, jpeg, stderr) = run_capture_bytes(&bin.ffmpeg, &build_cover_art_args(&src), 30).await?;
+    if code != 0 || jpeg.is_empty() {
+        // 커버 없는 곡은 `-map 0:v:0`이 "matches no streams"로 죽는다 — **정상 파일의 정상 결과**다(video_waveform의
+        // 빈 벡터와 같은 이유: Err면 커버 없는 곡을 열 때마다 실패가 뜬다). None이 프론트의 "플레이스홀더" 계약이다.
+        if stderr.contains("matches no streams") || (code == 0 && jpeg.is_empty()) {
+            return Ok(None);
+        }
+        return Err(IpcError {
+            code: ErrorCode::Io,
+            message: text_video::audio_cover_art_failed(&rel_path, &last_error_line(&stderr)),
+            stderr: Some(stderr),
+        });
+    }
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&jpeg);
+    Ok(Some(format!("data:image/jpeg;base64,{b64}")))
+}
+
 // ══════════════════════════ ffmpeg 획득 (앱 내 다운로드) ══════════════════════════
 //
 // lsp/acquire.rs ensure_native의 파이프라인(다운로드→sha256→해제→.tmp+rename 원자 설치)에
@@ -2312,8 +2398,16 @@ mod tests {
                     channels: Some(2),
                     language: Some("kor".into()),
                     title: Some("데스크톱".into()),
+                    sample_rate: None,
                 },
-                AudioStreamInfo { index: 1, codec: Some("opus".into()), channels: Some(1), language: None, title: None },
+                AudioStreamInfo {
+                    index: 1,
+                    codec: Some("opus".into()),
+                    channels: Some(1),
+                    language: None,
+                    title: None,
+                    sample_rate: None,
+                },
             ]
         );
         assert_eq!(m.acodec.as_deref(), Some("aac"), "acodec은 첫 트랙 그대로");
@@ -3014,6 +3108,79 @@ mod tests {
           "avg_frame_rate":"0/0","r_frame_rate":"25/1"}],"format":{}}"#;
         assert_eq!(parse_probe(json).unwrap().fps, 25.0);
         assert_eq!(parse_probe(json).unwrap().start_time_ms, 0, "start_time 없음 = 0");
+    }
+
+    /// mp3 — ID3는 format.tags(소문자 키)에 온다 · 커버는 attached_pic video 스트림 · size·sample_rate는 문자열.
+    #[test]
+    fn parse_probe_reads_mp3_format_tags_size_and_sample_rate() {
+        let json = r#"{"streams":[
+            {"codec_type":"audio","codec_name":"mp3","channels":2,"sample_rate":"44100"},
+            {"codec_type":"video","codec_name":"mjpeg","width":600,"height":600,"disposition":{"attached_pic":1}}
+          ],"format":{"duration":"222.0","bit_rate":"320000","size":"8808038",
+            "tags":{"title":"Midnight Drive","artist":"Kavinsky Ghost","album":"Neon District","date":"2024","genre":"Synthwave","track":"3/9"}}}"#;
+        let m = parse_probe(json).unwrap();
+        assert_eq!(
+            m.tags,
+            MediaTags {
+                title: Some("Midnight Drive".into()),
+                artist: Some("Kavinsky Ghost".into()),
+                album: Some("Neon District".into()),
+                date: Some("2024".into()),
+                genre: Some("Synthwave".into()),
+                track: Some("3/9".into()),
+            }
+        );
+        assert_eq!(m.size_bytes, Some(8_808_038));
+        assert_eq!(m.audio_streams[0].sample_rate, Some(44_100));
+        assert!(m.has_video, "커버 = video 스트림 — 프론트는 이것으로 커버 요청 여부를 가른다");
+        let v = serde_json::to_value(&m).unwrap();
+        assert_eq!(v["sizeBytes"], 8_808_038, "TS 계약 camelCase");
+        assert_eq!(v["audioStreams"][0]["sampleRate"], 44_100);
+        assert_eq!(v["tags"]["title"], "Midnight Drive");
+    }
+
+    /// flac — Vorbis 주석 키가 대문자(`TITLE`)여도 읽는다 · 빈 값은 없는 것으로.
+    #[test]
+    fn parse_probe_reads_uppercase_flac_tags() {
+        let json = r#"{"streams":[{"codec_type":"audio","codec_name":"flac","channels":2,"sample_rate":"96000"}],
+          "format":{"duration":"10.0","tags":{"TITLE":"Glass Avenue","ARTIST":"Kavinsky Ghost","ALBUM":"  ","DATE":"2024-03-01"}}}"#;
+        let t = parse_probe(json).unwrap().tags;
+        assert_eq!(t.title.as_deref(), Some("Glass Avenue"));
+        assert_eq!(t.artist.as_deref(), Some("Kavinsky Ghost"));
+        assert_eq!(t.album, None, "공백뿐인 태그는 없는 것");
+        assert_eq!(t.date.as_deref(), Some("2024-03-01"));
+        assert_eq!(t.genre, None);
+    }
+
+    /// ogg/opus — Vorbis 주석이 **스트림** tags에 있다. format.tags에 있는 키는 그쪽이 이긴다.
+    #[test]
+    fn parse_probe_falls_back_to_audio_stream_tags() {
+        let json = r#"{"streams":[{"codec_type":"audio","codec_name":"vorbis","channels":1,"sample_rate":"48000",
+            "tags":{"title":"Slow Pulse","ARTIST":"Lumen Void","album":"stream album"}}],
+          "format":{"duration":"5.0","tags":{"album":"format album"}}}"#;
+        let m = parse_probe(json).unwrap();
+        assert_eq!(m.tags.title.as_deref(), Some("Slow Pulse"));
+        assert_eq!(m.tags.artist.as_deref(), Some("Lumen Void"));
+        assert_eq!(m.tags.album.as_deref(), Some("format album"));
+        assert_eq!(m.size_bytes, None, "format.size 없음");
+        assert!(!m.has_video);
+    }
+
+    /// 커버 아트 — 첫 video 스트림 1장 · 600px 상한(콤마 이스케이프 — 안 하면 필터 구분자로 쪼개진다) · mjpeg 파이프.
+    #[test]
+    fn cover_art_args_pipe_one_capped_jpeg() {
+        let a = build_cover_art_args("/r/music/a b.mp3");
+        let i_pos = a.iter().position(|x| x == "-i").unwrap();
+        assert_eq!(a[i_pos + 1], "/r/music/a b.mp3", "경로는 argv 원소 하나 그대로");
+        assert_eq!(a.iter().filter(|x| x.contains("a b.mp3")).count(), 1);
+        assert!(a.windows(2).any(|w| w[0] == "-map" && w[1] == "0:v:0"), "a={a:?}");
+        assert!(a.windows(2).any(|w| w[0] == "-frames:v" && w[1] == "1"));
+        let vf = value_after(&a, "-vf");
+        assert_eq!(vf, "scale=min(600\\,iw):min(600\\,ih):force_original_aspect_ratio=decrease");
+        assert!(i_pos < a.iter().position(|x| x == "-vf").unwrap(), "-i 뒤 출력 옵션");
+        assert!(a.windows(2).any(|w| w[0] == "-c:v" && w[1] == "mjpeg"));
+        assert!(a.windows(2).any(|w| w[0] == "-f" && w[1] == "image2pipe"));
+        assert_eq!(a.last().unwrap(), "pipe:1");
     }
 
     /// 필름스트립은 ffmpeg **1회·이미지 1장**이다 — fps는 cols/길이(초)로 구간을 등분하고,

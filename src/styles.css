@@ -468,6 +468,26 @@ textarea {
   }
 }
 
+/* 오디오 플레이어 현재 곡 이퀄라이저 — 재생 중에만 붙는 클래스(AudioTrackList). 모션 최소화면 멈춘 막대. */
+@keyframes eq-bounce {
+  0%,
+  100% {
+    transform: scaleY(0.35);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+.eq-bar {
+  transform-origin: bottom;
+  animation: eq-bounce 0.9s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .eq-bar {
+    animation: none;
+  }
+}
+
 /* 이미지 뷰어 배경 — 투명 PNG/SVG의 알파를 드러내는 체커보드.
  * 테마 추종: 바탕은 panel(darcula에서 기존 #2b2d31 ≈ panel #2b2d30), 격자선은 fg 파생 —
  * 흰색 5% 고정은 라이트 바탕에서 소실되지만 fg 파생은 어느 테마에서든 드러난다. */

@@ -630,13 +630,25 @@ export function useVideoFilmstrip(
   });
 }
 
-/** 내보내기로 덮어쓴 영상의 필름스트립·파형 무효화 — 둘 다 경로만 키이고 staleTime Infinity라 파일이 바뀌어도
+/** 내보내기로 덮어쓴 영상의 필름스트립·파형(·오디오 커버) 무효화 — 모두 경로만 키이고 staleTime Infinity라 파일이 바뀌어도
  *  스스로 다시 뽑지 않는다(태스크 72 §2.1). 쓴 경로로만 좁힌다: 넓게 지우면 열린 영상의 필름스트립(파일 전체
  *  디코드)을 내보낼 때마다 다시 뽑는다. */
 export function invalidateVideoMedia(qc: QueryClient, projectId: string, written: (relPath: string) => boolean) {
   const predicate = (q: Query) => written(String(q.queryKey[2]));
   void qc.invalidateQueries({ queryKey: ["video-filmstrip", projectId], predicate });
   void qc.invalidateQueries({ queryKey: ["video-waveform", projectId], predicate });
+  void qc.invalidateQueries({ queryKey: ["audio-cover", projectId], predicate });
+}
+
+/** 오디오 내장 커버(data URI) — 커버가 없으면 null(에러 아님). 커버 스트림이 있을 때만 켠다(ffmpeg 스폰). */
+export function useAudioCoverArt(projectId: string | null, path: string | null, enabled: boolean) {
+  return useQuery({
+    queryKey: ["audio-cover", projectId ?? "none", path ?? "none"],
+    queryFn: () => ipc.audioCoverArt(projectId!, path!),
+    enabled: enabled && !!projectId && !!path,
+    staleTime: Infinity,
+    retry: false,
+  });
 }
 
 /** 오디오 파형 피크 — 오디오 트랙이 없으면 빈 배열이 온다(에러 아님). */

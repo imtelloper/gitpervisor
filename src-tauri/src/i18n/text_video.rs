@@ -372,6 +372,13 @@ pub fn video_waveform_buckets_out_of_range() -> &'static str {
     }
 }
 
+pub fn audio_cover_art_failed(rel: &str, line: &str) -> String {
+    match lang() {
+        Lang::Ko => format!("앨범 아트를 읽지 못했습니다({rel}): {line}"),
+        Lang::En => format!("Couldn't read the album art ({rel}): {line}"),
+    }
+}
+
 // ── ffmpeg 획득(진행 채널의 message로 설정 화면에 보인다) ─────────────────────
 
 pub fn video_download_no_candidate_url() -> &'static str {

@@ -406,6 +406,18 @@ export interface VideoMeta {
   startTimeMs: number;
   /** 오디오 트랙 목록(파일 순) — 자막을 만들 트랙 고르기(OBS 다중 트랙 녹화). */
   audioStreams: VideoAudioStream[];
+  /** 곡 태그(오디오 플레이어) — format.tags 우선, 없으면 첫 오디오 스트림 tags. 키 대소문자 무시. */
+  tags: MediaTags;
+  sizeBytes: number | null;
+}
+
+export interface MediaTags {
+  title: string | null;
+  artist: string | null;
+  album: string | null;
+  date: string | null;
+  genre: string | null;
+  track: string | null;
 }
 
 export interface VideoAudioStream {
@@ -416,6 +428,7 @@ export interface VideoAudioStream {
   /** 컨테이너 태그 그대로(`kor`·`und` 등). */
   language: string | null;
   title: string | null;
+  sampleRate: number | null;
 }
 
 /** 내보내기 스펙 — copy(무손실, 키프레임 스냅)는 배속·크롭·화질과 양립 불가. */
@@ -1547,6 +1560,9 @@ export const ipc = {
       { projectId, relPath, buckets },
       { attempts: 1, timeoutMs: 120_000 },
     ),
+  // 오디오 내장 커버 → `data:image/jpeg;base64,…`, 커버가 없으면 null(에러 아님). 재시도 없음(프로세스 스폰).
+  audioCoverArt: (projectId: string, relPath: string) =>
+    call<string | null>("audio_cover_art", { projectId, relPath }, { attempts: 1, timeoutMs: 30_000 }),
   // 현재 프레임 PNG 캡처 — 캔버스 불가(루프백이 cross-origin이라 taint) → ffmpeg 경유.
   videoCaptureFrame: (
     projectId: string,
@@ -1719,6 +1735,9 @@ export const ipc = {
     call<DiskTreemapNode>("disk_treemap", { rel, depth }, { attempts: 1, timeoutMs: 20_000 }),
   // 파일 위치 열기 — 탐색기에서 폴더 열고 그 파일 선택(리소스 모니터).
   revealPath: (path: string) => callMutating<void>("reveal_path", { path }),
+  // 레포 안 파일의 위치 열기(오디오 플레이어) — 백엔드가 레포 밖 경로를 거절한다.
+  revealInRepo: (projectId: string, relPath: string) =>
+    callMutating<void>("reveal_in_repo", { projectId, relPath }),
 
   // ---- 화면 캡쳐 (commands/capture.rs · DOCS/screen-capture-design.md) ----
   // 단축키와 같은 동작을 IPC로도 연다(설정의 "지금 캡쳐"·e2e).

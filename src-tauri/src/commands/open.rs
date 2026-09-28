@@ -352,11 +352,37 @@ pub fn reveal_path(path: String) -> Result<(), IpcError> {
     reveal(p)
 }
 
+/// 레포 안 파일을 탐색기에서 선택해 연다(오디오 플레이어 → 파일 위치 열기). reveal_path와 달리 경로가 프론트에서
+/// 오므로 resolve_in_repo로 레포 안만 허용한다. 그쪽이 dunce 정규화라 Windows에서도 `\\?\` 없는 경로가 나온다 —
+/// `explorer /select,`에 `\\?\` 경로를 주면 선택 없이 바탕 화면을 연다(2026-09-28 실측).
+#[tauri::command(async)]
+pub fn reveal_in_repo(
+    state: State<'_, AppState>,
+    project_id: String,
+    rel_path: String,
+) -> Result<(), IpcError> {
+    let repo = project_path(&state, &project_id)?;
+    let target = resolve_in_repo(&repo, &rel_path)?;
+    if !target.exists() {
+        return Err(IpcError::new(
+            ErrorCode::NotFound,
+            text_tools::reveal_in_repo_not_found(&rel_path),
+        ));
+    }
+    reveal(&target)
+}
+
 #[cfg(windows)]
 pub(crate) fn reveal(path: &Path) -> Result<(), IpcError> {
+    use std::os::windows::process::CommandExt;
     // explorer /select,<path> — 폴더를 열고 그 파일을 선택 표시한다.
+    // `.arg()`로 넘기면 공백 있는 경로를 std가 통째로 `"/select,C:\a b\c.mp3"`로 감싸는데, explorer는 그 모양을
+    // 못 읽고 **선택 없이 문서 폴더**를 연다(2026-09-28 실측 — 곡 파일 이름엔 공백이 흔하다). 따옴표는 경로에만 둔다.
+    let mut arg = std::ffi::OsString::from("/select,\"");
+    arg.push(path.as_os_str());
+    arg.push("\"");
     let mut cmd = Command::new("explorer");
-    cmd.arg(format!("/select,{}", path.display()));
+    cmd.raw_arg(arg);
     spawn_launcher(cmd, "탐색기").map_err(|e| spawn_err(text_tools::open_explorer_failed, e)) // i18n-ok: 로그 라벨
 }
 

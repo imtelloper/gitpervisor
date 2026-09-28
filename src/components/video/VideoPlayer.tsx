@@ -1691,8 +1691,8 @@ function buildTicks(
 }
 
 /** 눈금 라벨용 시계 표기 — "0:05" / "1:23:45". decimals는 스텝 크기에 맞춘 소수 자릿수
- *  (0.1초 미만 스텝에서 한 자리면 이웃 라벨이 같은 값으로 찍힌다). */
-function fmtClock(sec: number, decimals: number): string {
+ *  (0.1초 미만 스텝에서 한 자리면 이웃 라벨이 같은 값으로 찍힌다). 오디오 플레이어도 초 단위 표기로 쓴다. */
+export function fmtClock(sec: number, decimals: number): string {
   const h = Math.floor(sec / 3600);
   const m = Math.floor((sec % 3600) / 60);
   const s = sec % 60;
@@ -2466,8 +2466,8 @@ function Timeline({
   );
 }
 
-/** 원형 스킵 버튼 — 회전 화살표 링 안에 이동량 라벨(5s/1m/10m). */
-function SkipBtn({
+/** 원형 스킵 버튼 — 회전 화살표 링 안에 이동량 라벨(5s/1m/10m). 오디오 플레이어(10s)도 쓴다. */
+export function SkipBtn({
   secs,
   label,
   onSkip,
