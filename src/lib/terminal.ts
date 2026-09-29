@@ -40,7 +40,7 @@ export interface TermInstance {
   channel?: Channel<ArrayBuffer>;
   /** WebGL 렌더러 획득/반납 — **보이는 터미널만** 컨텍스트를 쥐게 한다(태스크 69 §3).
    *  `attachTerminal`이 acquire, `unmountTerminalView`가 1.5초 뒤 release 한다. 둘 다 멱등이고,
-   *  WebKitGTK(Linux)에서는 no-op이다(그쪽은 WebGL을 아예 쓰지 않는다 — 엔진 주석). */
+   *  WebKit 웹뷰(Linux WebKitGTK·macOS WKWebView)에서는 no-op이다(WebGL을 아예 쓰지 않는다 — 엔진 주석). */
   acquireWebglRenderer: () => void;
   releaseWebglRenderer: () => void;
 }

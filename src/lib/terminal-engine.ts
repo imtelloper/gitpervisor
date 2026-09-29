@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { info as logInfo } from "@tauri-apps/plugin-log";
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
@@ -174,6 +175,8 @@ const isWebKitGtk = /Linux/.test(navigator.userAgent);
 // macOS WKWebView도 WebKit 계열이라 IME(한글 등) 조합 중 keydown으로 raw 자모가 PTY로
 // 흘러나가 조합이 깨진다("이거"→"ㅇ거"). compositionend로만 확정 문자열을 송출하도록 가로챈다.
 const isMacWebKit = /Mac/i.test(navigator.userAgent);
+// WebGL 렌더러를 아예 만들지 않는 웹뷰 — 둘 다 WebKit이지만 이유는 따로다(webglRendererControl 주석).
+const webglRendererDisabled = isWebKitGtk || isMacWebKit;
 
 // macOS 한글 IME 입력 미러링용 순수 헬퍼 (원인·설계: DOCS/TROUBLESHOOTING.md §3).
 // prev(미러) → next(목표 ta.value)로 가는 최소 PTY 델타: "코드포인트" 공통 접두 이후, prev의
@@ -310,6 +313,56 @@ export function terminalWebglStats(): {
   };
 }
 
+// ── 글리프 아틀라스가 **병합**되면 이 창의 WebGL 렌더러를 전부 새 아틀라스로 갈아 끼운다 ──
+//
+// addon-webgl 0.19의 아틀라스는 새 페이지를 뒤에 붙이기만 하는 동안은 멀쩡하다. 페이지가
+// `maxAtlasPages`(보통 16)에 닿아 병합(`_mergePages` + `_deletePage`)이 한 번 일어나면 그 뒤로
+// 글자가 조용히 사라지거나 엉뚱한 글자가 된다(2026-09-29 맥 설치본 — 분할 4개의 글자가 절반쯤
+// 비고 diff 초록 배경만 남았다. 배경은 RectangleRenderer, 글자는 아틀라스 텍스처다):
+//  - 텍스처 재업로드를 페이지별 `version` 비교로 정하는데, 병합이 페이지를 앞으로 당기면 같은
+//    인덱스에 **다른 페이지가 같은 version으로** 올 수 있다. 꽉 찬 페이지는 글리프 수가 거의 같아
+//    우연이 아니다. 그러면 옛 페이지 텍스처로 새 좌표를 읽는다 — 페이지가 다 차 있으면 영영.
+//  - 병합이 한 터미널의 모델 갱신 **도중에** 일어나면 그 프레임 앞쪽 셀은 옛 좌표를 쥔다.
+//  - 아틀라스는 설정이 같은 모든 터미널이 공유하고 한 번 만들어지면 줄지 않는다.
+// upstream은 0.20 베타에서 고쳤다(`AtlasPage.nextVersion`·`pageLayoutVersion`·`_evictAllPages`).
+// 그 전까지는 병합 신호(공개 이벤트 `onRemoveTextureAtlasCanvas` — 0.19에서는 병합만 쏜다)를 받으면
+// 모든 소유자를 놓고 다시 쥔다. 마지막 소유자가 놓이면 캐시가 아틀라스를 버리므로, 다시 쥘 때
+// 붙이기만 하는 새 아틀라스에서 출발한다. **0.20으로 올리면 이 가드를 걷어낸다.**
+//
+// macOS는 여기까지 오지 않는다 — WebGL을 아예 쓰지 않는다(webglRendererControl 주석).
+
+/** 지금 WebGL 애드온을 쥔 터미널의 drop/load. load 성공 시 넣고 drop에서 뺀다 —
+ *  닫힌 터미널이 여기 붙잡혀 xterm째로 새는 일이 없게(닫기 경로는 dispose 전에 반납한다). */
+const liveWebglRenderers = new Set<{ drop: (reclaim: boolean) => void; load: () => void }>();
+
+// 재생성 직후 **보이는 글리프만으로** 페이지가 다시 차면(터미널이 아주 많거나 글꼴이 아주 크면)
+// 병합 → 재생성이 프레임마다 돈다. 간격을 두고, 그 사이에 온 병합은 간격이 끝날 때 한 번에 거둔다.
+// 간격 동안은 병합된 아틀라스로 그리므로 짧을수록 좋다 — 터미널 4개에 고유 한글 4만여 자를 쉬지 않고
+// 쏟는 하네스(Chromium·실제 0.19 애드온)에서 옛 페이지 텍스처가 바인딩된 채 그린 프레임이
+// 가드 없음 590 · 10초 47 · 3초 1~4였고, 출력이 멎은 뒤 다시 그렸을 때 남는 것은 가드가 있으면 0이다
+// (2026-09-29 실측).
+const ATLAS_RECYCLE_MIN_INTERVAL_MS = 3_000;
+let atlasRecycleTimer = 0;
+let lastAtlasRecycleAt = -Infinity;
+
+function scheduleWebglAtlasRecycle(): void {
+  if (atlasRecycleTimer) return; // 병합 1회에 페이지 4개 × 소유자 수만큼 이벤트가 온다
+  // 병합은 어떤 터미널의 렌더 **도중에** 일어난다 — 그 자리에서 렌더러를 부수면 안 되니 태스크를 넘긴다.
+  const wait = Math.max(0, lastAtlasRecycleAt + ATLAS_RECYCLE_MIN_INTERVAL_MS - performance.now());
+  atlasRecycleTimer = window.setTimeout(recycleWebglRenderers, wait);
+}
+
+function recycleWebglRenderers(): void {
+  atlasRecycleTimer = 0;
+  lastAtlasRecycleAt = performance.now();
+  const all = [...liveWebglRenderers];
+  // **전부 먼저 놓는다.** 소유자가 하나라도 남으면 캐시가 옛 아틀라스를 살려 두고, 다시 쥐는
+  // 렌더러가 설정이 같다는 이유로 거기 도로 붙는다(addon-webgl CharAtlasCache.acquireTextureAtlas).
+  for (const r of all) r.drop(true);
+  for (const r of all) r.load();
+  void logInfo(`[term] WebGL 글리프 아틀라스 병합 감지 — 렌더러 ${all.length}개를 새 아틀라스로 재생성`);
+}
+
 /** host 안에서 WebGL2 컨텍스트를 쥐고 있는 캔버스의 gl. xterm의 2D 캔버스(커서·링크 레이어)는
  *  같은 인자에 null을 준다. **dispose 전에** 집어야 한다 — dispose가 캔버스를 떼어 버린다. */
 function webglContextOf(host: HTMLElement): WebGL2RenderingContext | null {
@@ -328,6 +381,12 @@ function webglContextOf(host: HTMLElement): WebGL2RenderingContext | null {
  * WebKitGTK(Linux)에서는 아예 만들지 않는다: 그 조합(특히 NVIDIA 프로프라이어터리 드라이버·
  * 소프트웨어 GL)에서 WebGL 컨텍스트가 웹뷰 렌더러 프로세스를 크래시시켜 화면 전체가 까맣게
  * 먹통이 된다(분할로 여럿 띄우면 더 잘 터진다).
+ *
+ * macOS(WKWebView)에서도 만들지 않는다: 2026-09-29 맥 설치본에서 분할 터미널 4개의 글자가 절반쯤
+ * 통째로 사라졌다 — 글리프 아틀라스 결함이다(위 "병합" 절). Retina는 글리프 면적이 4배라 병합이
+ * 훨씬 일찍 오고, 맥에서는 병합 가드를 WebKit에서 실측해 보지 못했다. DOM 렌더러는 아틀라스가
+ * 없어서 이 부류가 **원리적으로** 생기지 않는다. 대가는 대량 출력 때의 렌더 비용이다 — Linux가
+ * 이미 같은 경로로 돈다. 되돌리는 자리는 `webglRendererDisabled` 한 줄이다.
  */
 function webglRendererControl(term: Terminal, host: HTMLDivElement) {
   let addon: WebglAddon | null = null;
@@ -361,7 +420,9 @@ function webglRendererControl(term: Terminal, host: HTMLDivElement) {
     // dispose **뒤에** 잃게 한다. 순서가 뒤집히면 xterm의 손실 핸들러가 아직 살아 있어
     // 우리 재생성 로직(onLoss)을 건드린다. GC를 기다리지 않고 슬롯이 바로 비는 게 요점이다.
     gl?.getExtension("WEBGL_lose_context")?.loseContext();
+    liveWebglRenderers.delete(recycleHooks);
   };
+  const recycleHooks = { drop, load };
 
   // 서로를 부르므로(load → onLoss → load) 호이스팅되는 function 선언으로 둔다.
   function load(): void {
@@ -374,9 +435,11 @@ function webglRendererControl(term: Terminal, host: HTMLDivElement) {
     try {
       const next = new WebglAddon();
       next.onContextLoss(() => onLoss(next));
+      next.onRemoveTextureAtlasCanvas(() => scheduleWebglAtlasRecycle());
       term.loadAddon(next); // 컨텍스트 생성은 여기서 — 던지면 카운터를 올리지 않는다
       addon = next;
       liveWebglCount++;
+      liveWebglRenderers.add(recycleHooks);
       webglWaiting.delete(load);
       setDomFallback(false);
       term.refresh(0, term.rows - 1);
@@ -506,7 +569,7 @@ export function createTerminalImpl(opts: {
   // WebGL 렌더러는 **보이는 동안만** 쥔다(위 webglRendererControl 주석). 여기서는 컨트롤만
   // 만들고, 실제 획득은 코어의 attachTerminal이 host를 붙인 뒤에 한다 — loadAddon은 반드시
   // term.open() 이후라야 하는데 그 조건도 그때는 이미 만족돼 있다.
-  const webglControl = isWebKitGtk ? null : webglRendererControl(term, host);
+  const webglControl = webglRendererDisabled ? null : webglRendererControl(term, host);
 
   // 인스턴스는 여기서 만든다(레지스트리 등록은 아래 open 직전) — 아래 CSI/키 핸들러가
   // `win32Input`을 읽고 쓰려면 클로저에 인스턴스가 이미 있어야 한다.
