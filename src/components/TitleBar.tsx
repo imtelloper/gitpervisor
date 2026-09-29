@@ -28,12 +28,9 @@ import { PromptHistoryButton } from "./workspace/TermSessionControls";
 const appWindow = getCurrentWindow();
 const isMacOS = /Mac/i.test(navigator.userAgent);
 
-/** 커스텀 타이틀바 — 좌: 브랜드 / 중앙: 프로젝트명 / 우: 시스템 모니터 + 창 컨트롤. */
+/** 커스텀 타이틀바 — 좌: 브랜드 / 중앙: 편의 도구(모아보기·폴더·리포트·히스토리·메모장) / 우: 시스템 모니터 + 창 컨트롤. */
 export function TitleBar() {
   const msg = useMessages();
-  const { data: projects } = useProjects();
-  const selectedId = useUi((s) => s.selectedProjectId);
-  const selected = projects?.find((p) => p.id === selectedId) ?? null;
 
   // F11: 최대화 토글 (전역)
   useEffect(() => {
@@ -48,12 +45,17 @@ export function TitleBar() {
   }, []);
 
   return (
+    // 3칸 그리드(1fr | auto | 1fr) — 양옆이 같은 폭이라 도구 줄이 **창 정중앙**에 온다. absolute로 띄우지 않는
+    // 이유: 예전 프로젝트명이 그랬다가 창을 줄이면 버튼 줄이 그 자리까지 자라 글자가 겹쳤다(사용자 제보
+    // 2026-09-23). 1fr 트랙의 최소는 내용 폭(auto)이라 좁아지면 가운데가 옆으로 밀릴 뿐 겹치지 않는다 —
+    // 그래서 양옆 칸에 min-w-0을 주면 안 된다(내용보다 줄어들어 가운데로 넘친다).
     <header
       data-tauri-drag-region
-      className="relative flex h-8 shrink-0 cursor-default items-center border-b border-edge bg-panel pl-3 select-none"
+      className="relative grid h-8 shrink-0 cursor-default grid-cols-[1fr_auto_1fr] items-center border-b border-edge bg-panel select-none"
     >
-      {/* 좌: 브랜드 */}
-      <div data-tauri-drag-region className="flex items-center gap-1.5">
+      {/* 좌: 브랜드 (나머지 빈칸은 창 끌기 영역). 왼쪽 여백은 header가 아니라 이 칸에 — header에 주면 그리드가
+          그만큼 오른쪽으로 밀려 가운데 칸이 창 중심에서 어긋난다(6px, e2e #14a). */}
+      <div data-tauri-drag-region data-gpv="titlebar-left" className="flex h-full items-center gap-1.5 pl-3">
         <img
           src="/logo.png"
           alt=""
@@ -65,48 +67,36 @@ export function TitleBar() {
         </span>
       </div>
 
-      {/* 가운데: 드래그 영역 + 선택 프로젝트명(표시 전용).
-          이름은 **이 빈칸 안에서** 가운데 정렬한다 — 예전엔 창 정중앙에 absolute로 띄워서, 창을 조금만
-          줄이면 오른쪽 버튼 줄(모아보기·폴더·리포트…)이 그 자리까지 자라 글자가 겹쳤다(사용자 제보
-          2026-09-23). 흐름 안에 두면 남은 폭만큼만 차지하고 모자라면 말줄임표가 된다 — 겹칠 수가 없다. */}
-      <div
-        data-tauri-drag-region
-        className="flex h-full min-w-0 flex-1 items-center justify-center px-2"
-      >
-        {selected && (
-          <span
-            data-gpv="titlebar-project"
-            className="pointer-events-none truncate text-xs font-medium text-fg-muted"
-          >
-            {selected.name}
-          </span>
-        )}
+      {/* 가운데: 모아보기 토글 + 즐겨찾기 폴더 + 작업 리포트 + 전체 프롬프트 히스토리 + 메모장.
+          버튼마다 오른쪽 mr-2.5가 붙어 있어 같은 폭(pl-2.5)을 왼쪽에 줘야 버튼들이 정확히 가운데다. */}
+      <div data-gpv="titlebar-tools" className="flex h-full items-center pl-2.5">
+        <AggregateButton />
+        <FavoritesButton />
+        <ReportButton />
+        <PromptHistoryButton />
+        <GlobalMemoButton />
       </div>
 
-      {/* 우: 모아보기 토글 + 작업 리포트 + 전체 프롬프트 히스토리 + 메모장 + 시스템 모니터 */}
-      <AggregateButton />
-      <FavoritesButton />
-      <ReportButton />
-      <PromptHistoryButton />
-      <GlobalMemoButton />
-      <SysMonitor />
+      {/* 우: 시스템 모니터 + macOS 격리 도구 배지(차단 항목 있을 때만) + 창 컨트롤 */}
+      <div data-tauri-drag-region data-gpv="titlebar-right" className="flex h-full items-center justify-end">
+        <SysMonitor />
 
-      {/* 우: macOS 격리 도구 배지 (차단 항목 있을 때만) */}
-      {isMacOS && <QuarantineBadge />}
+        {isMacOS && <QuarantineBadge />}
 
-      {/* 우끝: 창 컨트롤 */}
-      <div className="ml-3 flex h-full">
-        <CtlButton onClick={() => void appWindow.minimize()} title={msg.app.windowControls.minimize}>
-          <Glyph>
-            <line x1="1" y1="5.5" x2="10" y2="5.5" />
-          </Glyph>
-        </CtlButton>
-        <MaxRestoreButton />
-        <CtlButton onClick={() => void appWindow.close()} title={msg.app.windowControls.close} danger>
-          <Glyph>
-            <path d="M1.5 1.5 L9.5 9.5 M9.5 1.5 L1.5 9.5" />
-          </Glyph>
-        </CtlButton>
+        {/* 우끝: 창 컨트롤 */}
+        <div className="ml-3 flex h-full">
+          <CtlButton onClick={() => void appWindow.minimize()} title={msg.app.windowControls.minimize}>
+            <Glyph>
+              <line x1="1" y1="5.5" x2="10" y2="5.5" />
+            </Glyph>
+          </CtlButton>
+          <MaxRestoreButton />
+          <CtlButton onClick={() => void appWindow.close()} title={msg.app.windowControls.close} danger>
+            <Glyph>
+              <path d="M1.5 1.5 L9.5 9.5 M9.5 1.5 L1.5 9.5" />
+            </Glyph>
+          </CtlButton>
+        </div>
       </div>
     </header>
   );
