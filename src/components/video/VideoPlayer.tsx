@@ -59,12 +59,14 @@ import type {
   CaptionStylePreset,
   RangeMs,
   VideoExportFinished,
+  VideoExportProgress,
   VideoExportSpec,
   VideoFilmstrip,
 } from "../../lib/ipc";
 import { errorMessage, ipc, isIpcError } from "../../lib/ipc";
 import {
   useDir,
+  useVideoContainerInfo,
   useVideoFilmstrip,
   useVideoProbe,
   useVideoToolStatus,
@@ -88,7 +90,8 @@ import { LibraryRail, type RailClip, type RailMedia } from "./LibraryRail";
 import { PlayerStatusBar } from "./PlayerStatusBar";
 import { ExportPanel } from "./ExportPanel";
 
-const RATES = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 4];
+// 16이 Chromium/WebView2 playbackRate 상한이다 — 넘기면 NotSupportedError로 대입이 거절된다.
+const RATES = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 4, 8, 16];
 
 /** 123.456초 → "2:03.4" (시간 단위는 필요할 때만).
  *  0.1초 단위로 먼저 반올림한 뒤 분해한다 — 초를 나중에 반올림하면 "1:60.0"이 나온다. */
@@ -714,6 +717,108 @@ export default function VideoPlayer({
     }
   };
 
+  // ── 빠른 재생용 사본 (조각 MP4 · 색인 없음 — video_container.rs) ──
+  // 프레임마다 moof 조각이 붙고 sidx·mfra가 없으면 웹뷰가 길이·탐색 색인을 만들려고 파일 전체를 훑는다
+  // (11GB 실파일에서 재생 시작까지 수십 초). 스트림 카피로 일반 mp4(+faststart)를 만들면 moov 하나로 끝난다.
+  // 종결 계약은 convertToMp4와 같다 — video://export-finished가 진실, invoke 완주는 보조, ref 가드로 한 번만.
+  const tf = msg.media.fastStart;
+  const container = useVideoContainerInfo(projectId, path, /\.(mp4|m4v|mov)$/i.test(path));
+  const [fastDismissed, setFastDismissed] = useState(false);
+  useEffect(() => setFastDismissed(false), [path]);
+  const fastRef = useRef<{ id: string; srcRel: string; outRel: string } | null>(null);
+  const [fastJob, setFastJob] = useState<{ id: string; srcRel: string; pct: number } | null>(null);
+  const pathRef = useRef(path);
+  pathRef.current = path;
+  const openCopy = useCallback(
+    (rel: string) => (onOpenPath ? onOpenPath(rel) : openDocWindow(projectId, rel, { size: [1180, 860] })),
+    [onOpenPath, projectId],
+  );
+  const finishFast = useCallback(
+    (jobId: string, ok: boolean) => {
+      const job = fastRef.current;
+      if (!job || job.id !== jobId) return;
+      fastRef.current = null;
+      setFastJob(null);
+      // 수 분짜리 잡이다 — 그사이 다른 파일로 옮겨 갔으면 끌고 오지 않는다(완료는 events.ts 토스트가 알린다).
+      if (ok && pathRef.current === job.srcRel) openCopy(job.outRel);
+    },
+    [openCopy],
+  );
+  const fastJobId = fastJob?.id ?? null;
+  useEffect(() => {
+    if (!fastJobId) return;
+    // listen()이 resolve되기 전에 정리가 먼저 돌 수 있다(ExportPanel과 같은 처리).
+    let disposed = false;
+    const unsubs: Array<() => void> = [];
+    const track = (p: Promise<() => void>) =>
+      void p.then((f) => {
+        if (disposed) f();
+        else unsubs.push(f);
+      });
+    track(
+      listen<VideoExportProgress>("video://export-progress", (e) => {
+        if (e.payload.jobId === fastJobId)
+          setFastJob((j) => (j && j.id === fastJobId ? { ...j, pct: e.payload.percent } : j));
+      }),
+    );
+    track(
+      listen<VideoExportFinished>("video://export-finished", (e) => finishFast(e.payload.jobId, e.payload.ok)),
+    );
+    return () => {
+      disposed = true;
+      unsubs.forEach((f) => f());
+    };
+  }, [fastJobId, finishFast]);
+
+  const makeFastCopy = async () => {
+    if (fastRef.current) return;
+    const slash = path.lastIndexOf("/");
+    const dir = slash >= 0 ? path.slice(0, slash + 1) : "";
+    const base = slash >= 0 ? path.slice(slash + 1) : path;
+    const dot = base.lastIndexOf(".");
+    const stem = dot > 0 ? base.slice(0, dot) : base;
+    const outRel = `${dir}${tf.fileName(stem)}`;
+    const id = crypto.randomUUID();
+    fastRef.current = { id, srcRel: path, outRel };
+    setFastJob({ id, srcRel: path, pct: 0 });
+    markLocalVideoJob(id); // 완료 토스트는 이 창에서만
+    try {
+      await ipc.videoExport(projectId, id, {
+        srcRel: path,
+        outRel,
+        overwrite: false,
+        range: null,
+        mode: "copy",
+        speed: null,
+        crop: null,
+        masks: null,
+        maskKind: "mosaic",
+        crf: null,
+        maxHeight: null,
+        removeAudio: false,
+        // 이런 파일은 probe가 시간 초과하기 일쑤다 — 0이면 Rust가 쓴 바이트 ÷ 원본 바이트로 진행률을 낸다.
+        durationMs: probe.data?.durationMs ?? 0,
+        hasAudio: probe.data?.hasAudio ?? true,
+      });
+      finishFast(id, true);
+    } catch (e) {
+      finishFast(id, false);
+      // AlreadyExists만 종결 이벤트가 없다(video.rs 계약) — 그 밖의 실패·취소 토스트는 events.ts가 띄운다.
+      if (isIpcError(e) && e.code === "ALREADY_EXISTS") {
+        // 내보내기는 tmp → rename이라 같은 이름이 있으면 완성된 사본이다 — 다시 만들지 않고 그걸 연다.
+        pushToast("info", tf.exists(tf.fileName(stem)));
+        openCopy(outRel);
+      }
+    }
+  };
+  const cancelFastCopy = () => {
+    if (fastJobId) void ipc.videoExportCancel(fastJobId).catch((e) => pushToast("error", errorMessage(e)));
+  };
+  const fastHere = fastJob && fastJob.srcRel === path ? fastJob : null;
+  // 도는 중엔 닫기를 무시한다 — 띠가 사라지면 취소할 곳도 사라진다.
+  const showFastStart =
+    !!container.data?.fragmented && !container.data.indexed && (!fastDismissed || !!fastHere);
+
   // ── 트랜스포트 ──
   const seekTo = (t: number) => {
     const el = videoRef.current;
@@ -1190,6 +1295,51 @@ export default function VideoPlayer({
           <ExternalLink size={12} /> {tp.externalApp}
         </button>
       </div>
+
+      {/* 조각 MP4 안내 — 헤더만 읽어 판정하므로 <video>가 아직 길이를 못 구한(느린 바로 그) 동안에도 뜬다. */}
+      {showFastStart && (
+        <div
+          data-gpv="fast-start-notice"
+          className="flex shrink-0 items-center gap-2 border-b border-warn/40 bg-warn/10 px-3 py-1.5 text-xs text-fg"
+        >
+          <FileWarning size={13} className="shrink-0 text-warn" />
+          <span className="min-w-0 flex-1">{tf.notice}</span>
+          {fastHere ? (
+            <>
+              <span className="flex shrink-0 items-center gap-1.5 font-mono tabular-nums text-fg-muted">
+                <Loader2 size={12} className="animate-spin" /> {tf.making(Math.floor(fastHere.pct))}
+              </span>
+              <button
+                data-gpv="fast-start-cancel"
+                onClick={cancelFastCopy}
+                className="shrink-0 rounded border border-edge px-2 py-0.5 hover:bg-raised"
+              >
+                {tf.cancel}
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                data-gpv="fast-start-make"
+                onClick={() => void makeFastCopy()}
+                disabled={!hasFfmpeg || !!fastJob}
+                title={!hasFfmpeg ? tf.needsFfmpeg : fastJob ? tf.busyOther : tf.makeTitle}
+                className="flex shrink-0 items-center gap-1.5 rounded border border-edge bg-panel px-2 py-0.5 hover:bg-raised disabled:opacity-40"
+              >
+                <FileVideo2 size={12} /> {tf.make}
+              </button>
+              <button
+                onClick={() => setFastDismissed(true)}
+                title={tf.dismiss}
+                aria-label={tf.dismiss}
+                className="shrink-0 rounded p-0.5 text-fg-dim hover:bg-raised hover:text-fg"
+              >
+                <X size={12} />
+              </button>
+            </>
+          )}
+        </div>
+      )}
 
       {/* 본문 — 좌 라이브러리 레일 | 중앙(스테이지+타임라인) | 우 인스펙터.
           레일과 인스펙터는 shrink-0 고정폭, 중앙만 min-w-0으로 줄어든다(안 그러면 필름스트립

@@ -1358,6 +1358,7 @@ pub fn run() {
             commands::video_tool_status,
             commands::video_tool_ensure,
             commands::video_probe,
+            commands::video_container_info,
             commands::video_hls_url,
             commands::video_export,
             commands::video_export_cancel,
@@ -1772,6 +1773,8 @@ mod tests {
             ("stt/acquire.rs", "stt_model_download"),
             ("stt/transcribe.rs", "stt_transcribe"),
             ("stt/subs.rs", "caption_export_subs"),
+            // 수 GB 영상의 박스 헤더 읽기 — 느린 디스크(외장·네트워크)에서 UI 스레드를 잡으면 안 된다.
+            ("commands/video_container.rs", "video_container_info"),
         ];
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         for (file, name) in HOT {

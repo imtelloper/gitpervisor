@@ -533,7 +533,7 @@ pub(crate) async fn probe_meta(probe: &Path, src: &str) -> Result<VideoMeta, Ipc
 }
 
 /// 레포 안 미디어 원본 해석 — 존재 확인까지. 프로브·필름스트립·파형이 공유한다.
-fn resolve_media(
+pub(crate) fn resolve_media(
     state: &State<'_, AppState>,
     project_id: &str,
     rel_path: &str,
@@ -1325,6 +1325,13 @@ async fn video_export_inner(
     // 진행률 리더(stdout `-progress pipe:1`) — % 정수 변화 시에만 emit(초당 수 회 수준).
     let stdout = child.stdout.take();
     let expected_us = expected_out_us(spec, cut);
+    // 길이를 모르는 전체 카피(probe가 시간 초과한 조각 fMP4의 빠른 재생용 사본)는 쓴 바이트 ÷ 원본 바이트로 센다.
+    // 크기를 못 읽으면 분모 0 — 종전처럼 0%에 머물 뿐 내보내기는 계속된다.
+    let src_bytes = if expected_us == 0 && spec.mode == "copy" {
+        std::fs::metadata(&src).map_or(0, |m| m.len())
+    } else {
+        0
+    };
     let (p_app, p_job, p_proj) = (app.clone(), job_id.to_string(), project_id.to_string());
     let progress_task = tauri::async_runtime::spawn(async move {
         let Some(stdout) = stdout else { return };
@@ -1332,14 +1339,18 @@ async fn video_export_inner(
         let mut lines = tokio::io::BufReader::new(stdout).lines();
         let mut last_pct: i64 = -1;
         let mut speed: Option<String> = None;
+        let mut written: u64 = 0;
         while let Ok(Some(line)) = lines.next_line().await {
             if let Some(s) = line.strip_prefix("speed=") {
                 speed = Some(s.trim().to_string());
+            } else if let Some(b) = super::video_container::parse_total_size(&line) {
+                // 블록마다 total_size=가 out_time_us=보다 먼저 온다 — 아래 계산이 이번 블록 값을 쓴다.
+                written = b;
             } else if let Some(us) = parse_out_time_us(&line) {
                 let pct = if expected_us > 0 {
                     ((us as f64) / (expected_us as f64) * 100.0).clamp(0.0, 100.0)
                 } else {
-                    0.0
+                    super::video_container::copy_progress_pct(written, src_bytes)
                 };
                 if pct as i64 != last_pct {
                     last_pct = pct as i64;

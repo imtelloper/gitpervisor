@@ -328,6 +328,21 @@ const ko = {
     overwriteFailed: "기존 파일을 덮어쓰지 못했습니다",
     splitFailed: "분할 실패",
   },
+  // 조각 MP4(색인 없음) 안내 띠 — 빠른 재생용 사본 만들기(video_container.rs · video_export copy).
+  fastStart: {
+    notice:
+      "프레임마다 조각나 있고 탐색 색인이 없는 영상입니다 — 재생기가 파일 전체를 훑어야 해서 재생 시작·탐색이 느립니다.",
+    make: "빠른 재생용 사본 만들기",
+    makeTitle:
+      "원본은 그대로 두고 같은 폴더에 색인이 앞에 있는 일반 mp4 사본을 만들어 엽니다 (재인코딩 없음 · 원본과 비슷한 크기)",
+    making: (pct: number) => `사본 만드는 중 ${fmtInt(pct)}%`,
+    cancel: "취소",
+    dismiss: "닫기",
+    needsFfmpeg: "사본을 만들려면 ffmpeg가 필요합니다 — 설정 › 코드 도구",
+    busyOther: "다른 영상의 사본을 만드는 중입니다",
+    fileName: (stem: string) => `${stem} (빠른 재생).mp4`,
+    exists: (name: string) => `${name} 사본이 이미 있어 그 파일을 엽니다`,
+  },
 };
 
 export const mediaText = defineText(ko, {
@@ -653,6 +668,20 @@ export const mediaText = defineText(ko, {
       mkdirFailed: (err) => `Couldn't create the split folder — ${err}`,
       overwriteFailed: "Couldn't overwrite the existing file",
       splitFailed: "Split failed",
+    },
+    fastStart: {
+      notice:
+        "This video is split into a fragment per frame with no seek index — the player has to scan the whole file, so starting and seeking are slow.",
+      make: "Make a fast-start copy",
+      makeTitle:
+        "Leaves the original alone and writes a regular mp4 copy with its index up front to the same folder, then opens it (no re-encoding · about the same size)",
+      making: (pct) => `Making copy ${fmtInt(pct)}%`,
+      cancel: "Cancel",
+      dismiss: "Dismiss",
+      needsFfmpeg: "Making a copy needs ffmpeg — Settings › Code tools",
+      busyOther: "Already making a copy of another video",
+      fileName: (stem) => `${stem} (fast start).mp4`,
+      exists: (name) => `${name} already exists — opening it`,
     },
   },
 });

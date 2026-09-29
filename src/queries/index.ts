@@ -601,6 +601,17 @@ export function useVideoProbe(projectId: string | null, path: string | null, ena
   });
 }
 
+/** 조각 MP4(색인 없음) 판정 — "빠른 재생용 사본" 안내 띠. ffmpeg 없이 헤더만 읽는다. */
+export function useVideoContainerInfo(projectId: string | null, path: string | null, enabled: boolean) {
+  return useQuery({
+    queryKey: ["video-container", projectId ?? "none", path ?? "none"],
+    queryFn: () => ipc.videoContainerInfo(projectId!, path!),
+    enabled: enabled && !!projectId && !!path,
+    staleTime: Infinity,
+    retry: false, // 실패는 안내 띠를 안 띄우는 것뿐이다 — 재생 자체와 무관
+  });
+}
+
 /** 프로젝트 로고 — 프로젝트당 한 번. 로고는 거의 안 바뀌므로 워처 무효화 대상이 아니다.
  *  실패해도 조용히 없는 것으로 둔다(사이드바에 토스트를 띄울 일이 아니다). */
 export function useProjectLogo(projectId: string | null) {

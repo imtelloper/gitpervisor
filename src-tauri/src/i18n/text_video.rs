@@ -78,6 +78,13 @@ pub fn video_file_not_found() -> &'static str {
     }
 }
 
+pub fn video_container_read_failed(path: &dyn Display, err: &dyn Display) -> String {
+    match lang() {
+        Lang::Ko => format!("영상 컨테이너 구조를 읽지 못했습니다({path}): {err}"),
+        Lang::En => format!("Couldn't read the video container structure ({path}): {err}"),
+    }
+}
+
 // ── 내보내기 스펙 검증 — video_export_spec_error가 나머지 사유를 감싼다 ────────
 
 pub fn video_export_spec_error(detail: &str) -> String {

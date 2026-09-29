@@ -431,6 +431,14 @@ export interface VideoAudioStream {
   sampleRate: number | null;
 }
 
+/** mp4 계열 최상위 박스 판정 — Rust `VideoContainerInfo`(video_container.rs). ftyp로 시작하지 않으면 둘 다 false. */
+export interface VideoContainerInfo {
+  /** 최상위에 moof가 있다(조각 MP4). */
+  fragmented: boolean;
+  /** 첫 moof 앞의 sidx 또는 꼬리 mfra가 있다 — 없으면 웹뷰가 파일 전체를 훑어야 재생·탐색이 시작된다. */
+  indexed: boolean;
+}
+
 /** 내보내기 스펙 — copy(무손실, 키프레임 스냅)는 배속·크롭·화질과 양립 불가. */
 export interface VideoExportSpec {
   srcRel: string;
@@ -1531,6 +1539,9 @@ export const ipc = {
   // ffprobe 메타데이터 — 프로세스 스폰이라 재시도 없음(이중 스폰 방지).
   videoProbe: (projectId: string, relPath: string) =>
     call<VideoMeta>("video_probe", { projectId, relPath }, { attempts: 1, timeoutMs: 20_000 }),
+  // 조각 MP4 판정 — 박스 헤더 몇 개와 꼬리 16바이트만 읽는다(파일 크기와 무관하게 즉시). 조회라 재시도해도 무해.
+  videoContainerInfo: (projectId: string, relPath: string) =>
+    call<VideoContainerInfo>("video_container_info", { projectId, relPath }),
   // 웹뷰가 못 푸는 코덱(AV1 등)을 H.264 HLS로 흘릴 재생목록 URL. 같은 파일이면 같은 세션을
   // 돌려주는 멱등 호출이라 keep-alive 핑으로도 쓴다(세션 유휴 시계 리셋 — hls.rs).
   // 최초 발급만 ffprobe 1회를 태우고 그 뒤 호출은 조회뿐이다.

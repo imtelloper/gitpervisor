@@ -30,6 +30,7 @@ mod sync;
 mod terminal;
 mod tree;
 mod video;
+mod video_container;
 
 pub use actions::*;
 pub use browser::*;
@@ -63,3 +64,4 @@ pub use sync::*;
 pub use terminal::*;
 pub use tree::*;
 pub use video::*;
+pub use video_container::*;
