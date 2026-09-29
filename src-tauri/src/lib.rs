@@ -1128,6 +1128,9 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        // 폴더 창 썸네일 — `<img src>` 로 바로 받는다(IPC·base64 를 타지 않는다). 토큰·허용 루트 검사는
+        // 처리기가 한다(commands/thumb_protocol.rs). CSP img-src 에 이 스킴이 있어야 뜬다.
+        .register_asynchronous_uri_scheme_protocol(commands::THUMB_SCHEME, commands::thumb_scheme_handler)
         .setup(|app| {
             // 크래시 로그 경로 확정(패닉 훅이 여기에 남긴다) + 시작 로그.
             if let Ok(dir) = app.path().app_log_dir() {
@@ -1334,7 +1337,7 @@ pub fn run() {
             commands::term_paste,
             commands::fav_presets,
             commands::fav_list,
-            commands::fav_thumb,
+            commands::fav_thumb_token,
             commands::fav_read,
             commands::fav_open,
             commands::fav_delete,

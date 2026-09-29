@@ -243,7 +243,7 @@ freedesktop 캐시), notify 감시, 창 간 드래그(별도 webview라 HTML5 Dn
 
 | # | 결함 | 수정 | 검사 |
 |---|---|---|---|
-| 1 | `fav_thumb`가 async 워커에서 한도 없이 디코드(창당 8개) — 초대형 이미지 몇 장이면 수 GiB, 다른 커맨드 정체 | blocking 풀 + 프로세스 전체 슬롯 3개 + 파일·치수·할당 한도(§3.2) | `decode_slots_cap_concurrency_at_three` · `decode_thumb_rejects_oversized_dimensions` · `decode_thumb_rejects_oversized_file_before_reading_it` |
+| 1 | `fav_thumb`가 async 워커에서 한도 없이 디코드(창당 8개) — 초대형 이미지 몇 장이면 수 GiB, 다른 커맨드 정체 | blocking 풀 + 프로세스 전체 슬롯 3개 + 파일·치수·할당 한도(§3.2) | `big_decode_slots_cap_concurrency_at_three` · `decode_thumb_rejects_oversized_dimensions` · `decode_thumb_rejects_oversized_file_before_reading_it` |
 | 2 | 확장자로만 디코더 선택 — 확장자가 틀린 이미지는 썸네일이 없다 | `with_guessed_format` | `decode_thumb_sniffs_content_not_extension` |
 | 3 | 캐시 비원자 쓰기 — 도중에 죽으면 잘린 JPEG를 계속 내준다 | 임시 파일 + rename | `write_atomic_replaces_instead_of_truncating`(하드링크로 제자리 쓰기를 가려낸다) |
 | 4 | 캐시 무한 증가 | 나이 기반 정리(30일 · 고아 임시 파일 1시간) | `prune_removes_only_stale_entries` |

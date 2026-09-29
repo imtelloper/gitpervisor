@@ -1,6 +1,6 @@
 // 태스크 66 — 즐겨찾기 폴더 창(스크린샷·다운로드 빠르게 보기).
 //
-// 지키는 계약 열셋:
+// 지키는 계약 열넷:
 //   ① **게이트가 백엔드에 있다.** 등록되지 않은 폴더는 `fav_list` 가 거부한다 — 프론트가 안 보내는
 //      것과 백엔드가 막는 것은 다르다. 그래서 UI 를 거치지 않고 **커맨드를 직접 invoke** 해서 잰다.
 //      이게 이 스위트의 핵심이다: 이 커맨드들만 절대경로를 받으므로, 게이트가 무너지면 파일시스템
@@ -8,26 +8,30 @@
 //   ② 루트 **밖**(상위 폴더)도 거부된다. canonicalize 후 prefix 검사라 `..` 로 못 빠져나간다.
 //   ③ `fav_list` 가 확장자로 종류를 가른다(image/video/dir/other) — 프론트의 아이콘·필터·라이트박스
 //      순서가 전부 이 값에 달려 있다.
-//   ④ 썸네일은 **128·192·320 셋만** 받는다. 열어 두면 캐시가 크기마다 한 벌씩 늘어난다.
+//   ④ 썸네일 스킴(`gpvthumb`, commands/thumb_protocol.rs)의 게이트 — 맞는 토큰·허용 루트 안·128/192/320
+//      이면 이미지가 뜨고, 토큰이 없거나 틀리면·루트 밖(`..` 로 빠져나가기 포함)이면·크기가 셋 밖이면 실패한다.
+//      앱 창의 `<img>` 로 직접 잰다 — 인앱 브라우저의 외부 페이지도 이 스킴을 부를 수 있어 토큰이 그 벽이다.
 //   ⑤ 타이틀바 [폴더] → 드롭다운 → 항목 클릭 → **별도 창**(`doc-<id>`)이 뜨고 그 폴더를 그린다.
 //      id 는 경로에서 **결정적으로** 나온다(같은 폴더 재클릭 = 새 창이 아니라 포커스).
 //   ⑥ 우클릭 → 경로 복사 → 클립보드에 **절대경로**.
 //   ⑦ 갱신이 더 최신 파일을 앞에 끼워도 **선택은 그 파일에 남는다**(이름으로 붙든다). 인덱스로 들면
 //      강조·Ctrl+C·Enter 가 말없이 옆 파일로 옮겨 간다 — 스크린샷 경로를 Claude 에 넘기는 그 동선이다.
-//   ⑧ 같은 이름으로 다시 쓴 파일은 **썸네일이 바뀐다**(키 = 이름|mtime|크기, 칸이 새로 마운트된다).
+//   ⑧ 같은 이름으로 다시 쓴 파일은 **썸네일이 바뀐다**(키 = 이름|mtime|크기, 칸이 새로 마운트돼 새 URL 을 받는다).
 //   ⑨ 라이트박스도 이름으로 붙든다 — 갱신 뒤에도 같은 파일, 그 파일이 지워지면 닫힌다.
-//   ⑩ 썸네일 크기를 바꾼 뒤 늦게 온 옛 크기 응답은 버려진다(세대). 응답을 일부러 붙잡아 경합을 만든다.
+//   ⑩ 썸네일 크기를 S→L 로 바꾸면 그려진 칸이 전부 320px 썸네일이다(스킴 URL 의 e=320, 실제로 뜬 그림 폭 320).
 //   ⑪ 툴바 "탐색기에서 이 폴더 열기"는 이 폴더 **자체**를 연다(`default`) — `reveal` 은 상위를 연다.
 //   ⑫ 반대로 **아직 고르지 않은** 강조는 맨 앞(최신)을 따라간다 — 새 스크린샷을 찍고 창을 클릭하면
 //      Ctrl+C 대상은 방금 찍은 것이다. ⑦ 의 "이름으로 붙들기"가 고르기 전부터 붙들면 안 된다.
 //   ⑬ 타이틀바 호버 미리보기 — 패널로 **가는 길에** 스친 항목이 패널을 갈아 끼우지 않는다(멈추면 바뀐다).
 //      이미지 더블클릭은 원본 라이트박스(드롭다운 위), 복사는 첫 클릭 한 번, Esc 는 라이트박스만 닫는다.
+//   ⑭ 가상 그리드 — 수백 장 폴더에서 DOM 에 그린 칸은 전체보다 훨씬 적고(전체 높이는 유지), 끝까지 스크롤하면
+//      마지막 칸이 보이고 썸네일이 뜨며, 키보드로 커서를 화면 밖까지 옮기면 스크롤이 따라간다.
 //
 // 픽스처는 이 스위트가 직접 만든다(공유 git 픽스처와 무관한 그냥 폴더다) — 끝나면 지우고
 // `favoriteFolders` 설정도 되돌린다.
-import { existsSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join, sep } from "node:path";
 
 import { connectLabel, docWindowsBefore, newDocWindow } from "../lib/cdp.mjs";
 
@@ -39,7 +43,8 @@ const J = JSON.stringify;
 /** 창 열거·닫기는 webviewWindow JS API 로 한다(스위트 13·50 과 같은 통로). */
 const WIN_API = "/node_modules/@tauri-apps/api/webviewWindow.js";
 
-/** 1×1 PNG — `fav_thumb` 이 실제로 디코딩할 수 있어야 하므로 유효한 파일이어야 한다. */
+/** 1×1 PNG — 썸네일 스킴이 실제로 디코딩할 수 있어야 하므로 유효한 파일이어야 한다. 썸네일은 edge 로
+ *  키워지므로(종전 규칙) 뜬 그림의 폭이 곧 요청한 edge 다 — ⑩ 이 그것으로 크기를 잰다. */
 const PNG_1X1 = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
   "base64",
@@ -76,6 +81,12 @@ export async function run({ cdp, report: r }) {
       await sleep(ms);
     }
     return v;
+  };
+
+  /** 썸네일 URL 의 `v` — 백엔드 `mtime_ms` 와 같은 값(ms 내림)·크기. */
+  const stampOf = (p) => {
+    const st = statSync(p);
+    return `${Math.floor(st.mtimeMs)}-${st.size}`;
   };
 
   /** 창 라벨 목록. **실패를 빈 배열로 돌려주면 안 된다** — 그러면 "창이 없다"로 읽혀
@@ -159,19 +170,57 @@ export async function run({ cdp, report: r }) {
       outside.ok ? "허용됨 — 상위로 빠져나간다" : `code=${outside.code}`,
     );
 
-    // ── ④ 썸네일: 허용 크기 셋만 ──
-    const thumb = await cdp.try("fav_thumb", { path: join(root, "a.png"), edge: 192 });
+    // ── ④ 썸네일 스킴의 게이트 ──
+    // 메인 창(앱 CSP 가 걸린 앱 페이지)에서 `new Image()` 로 직접 부른다 — 성공은 load, 거부(4xx)는 error.
+    // 맞는 요청이 먼저 load 여야 뒤의 error 들이 "스킴이 통째로 죽어서"가 아니라 "거부해서"로 읽힌다.
+    const tokenRes = await cdp.try("fav_thumb_token");
+    const token = tokenRes.ok ? String(tokenRes.r) : "";
+    const probe = (path, query) =>
+      cdp.eval(`(async () => {
+        const url = window.__TAURI_INTERNALS__.convertFileSrc(${J(path)}, "gpvthumb") + ${J(query)};
+        return await new Promise((res) => {
+          const img = new Image();
+          const t = setTimeout(() => res({ r: "timeout", url }), 15000);
+          img.onload = () => { clearTimeout(t); res({ r: "load", w: img.naturalWidth, url }); };
+          img.onerror = () => { clearTimeout(t); res({ r: "error", url }); };
+          img.src = url;
+        });
+      })()`);
+    const aPng = join(root, "a.png");
+    const q = (edge, t = token, p = aPng) => `?e=${edge}&t=${t}&v=${stampOf(p)}`;
+    const okThumb = await probe(aPng, q(192));
     r.check(
-      "④ fav_thumb(192) → data:image/jpeg 반환",
-      thumb.ok && String(thumb.r ?? "").startsWith("data:image/jpeg;base64,"),
-      thumb.ok ? String(thumb.r ?? "").slice(0, 32) : String(thumb.message).slice(0, 60),
+      "④ 스킴: 맞는 토큰·루트 안·192 → 이미지가 뜬다(1×1 이 192px 로)",
+      token.length >= 32 && okThumb?.r === "load" && okThumb.w === 192,
+      `토큰=${token.length}자 ${J(okThumb)}`,
     );
-    const badEdge = await cdp.try("fav_thumb", { path: join(root, "a.png"), edge: 256 });
+    const noTok = await probe(aPng, `?e=192&v=${stampOf(aPng)}`);
+    const badTok = await probe(aPng, q(192, token.slice(0, -1) + (token.endsWith("0") ? "1" : "0")));
     r.check(
-      "④ 허용 밖 크기(256)는 거부 — 캐시가 크기마다 한 벌씩 늘어나는 것을 막는다",
-      !badEdge.ok,
-      badEdge.ok ? "허용됨" : `code=${badEdge.code}`,
+      "④ 스킴: 토큰이 없거나 한 글자라도 틀리면 실패",
+      noTok?.r === "error" && badTok?.r === "error",
+      `없음=${noTok?.r} 틀림=${badTok?.r}`,
     );
+    const badEdge = await probe(aPng, q(256));
+    r.check(
+      "④ 스킴: 허용 밖 크기(256)는 실패 — 캐시가 크기마다 한 벌씩 늘어나는 것을 막는다",
+      badEdge?.r === "error",
+      J(badEdge),
+    );
+    {
+      const outsidePng = join(tmpdir(), `gpv-fav-outside-${Date.now()}.png`);
+      writeFileSync(outsidePng, PNG_1X1);
+      // path.join 은 `..` 를 접어 버린다 — 원시 문자열로 조립해 백엔드가 그대로 받게 한다.
+      const climb = [root, "..", basename(outsidePng)].join(sep);
+      const out1 = await probe(outsidePng, q(192, token, outsidePng));
+      const out2 = await probe(climb, q(192, token, outsidePng));
+      rmSync(outsidePng, { force: true });
+      r.check(
+        "④ 스킴: 허용 루트 밖 파일은 맞는 토큰이어도 실패 — 절대경로로도, 루트에서 `..` 로 올라가서도",
+        out1?.r === "error" && out2?.r === "error",
+        `절대=${out1?.r} 올라가기=${out2?.r}`,
+      );
+    }
 
     // ── ⑤ UI: 타이틀바 [폴더] → 드롭다운 → 창 ──
     // 설정 쿼리 캐시를 갱신해야 드롭다운이 방금 등록한 항목을 본다(원시 invoke 로 썼다).
@@ -352,10 +401,13 @@ export async function run({ cdp, report: r }) {
     const grid = () =>
       win.eval(`(()=>{
         const tiles = Array.from(document.querySelectorAll('button.flex-col[title]'));
+        const img = (b) => b.querySelector('img');
         return {
           order: tiles.map((b) => b.title),
           hl: tiles.filter((b) => b.classList.contains('border-accent')).map((b) => b.title),
-          src: Object.fromEntries(tiles.map((b) => [b.title, (b.querySelector('img') || {}).src || null])),
+          src: Object.fromEntries(tiles.map((b) => [b.title, (img(b) || {}).src || null])),
+          // 뜬 그림의 폭(아직 안 떴거나 실패면 0) — src 만 보면 "요청은 했다"까지만 잰다.
+          w: Object.fromEntries(tiles.map((b) => [b.title, img(b) && img(b).complete ? img(b).naturalWidth : 0])),
         };
       })()`);
     const tile = (n, ev) =>
@@ -397,26 +449,27 @@ export async function run({ cdp, report: r }) {
     // ── ⑧ 같은 이름으로 다시 쓴 파일은 썸네일이 바뀐다 ──
     // 이름만 키로 쓰면 asked 에 이미 있어 다시 요청하지 않고 map 의 옛 그림을 영영 쓴다. 두 PNG 는 바이트
     // 수가 같으므로(70) mtime 을 확실히 다르게 둔다 — 키 = 이름|mtime|크기.
-    const g8a = await poll(
-      grid,
-      (g) => String(g.src["c.png"] || "").startsWith("data:image/jpeg"),
-      40,
-      250,
-    );
+    // 스킴 URL 에 스탬프(v=mtime-크기)가 있다 — 다시 쓴 파일은 칸이 새로 마운트돼 **새 URL** 로 받는다. 같은 URL 이면
+    // 브라우저가 immutable 캐시에서 옛 그림을 그대로 쓴다(백엔드 캐시 키가 스탬프로 갈리는 것은 Rust 테스트
+    // `thumb_cache_key_changes_with_stamp_and_edge` 가 잰다).
+    const isThumb = (u) => /^(http:\/\/gpvthumb\.localhost\/|gpvthumb:\/\/localhost\/)/.test(String(u || ""));
+    const g8a = await poll(grid, (g) => isThumb(g.src["c.png"]) && g.w["c.png"] > 0, 40, 250);
     const src0 = g8a?.src?.["c.png"] || null;
     writeFileSync(join(root, "c.png"), PNG_BLUE);
     stamp(join(root, "c.png"), -48);
+    const v1 = stampOf(join(root, "c.png"));
     await toolbar("새로고침");
-    const g8 = await poll(grid, (g) => !!g.src["c.png"] && g.src["c.png"] !== src0, 40, 250);
+    const g8 = await poll(
+      grid,
+      (g) => !!g.src["c.png"] && g.src["c.png"] !== src0 && g.w["c.png"] > 0,
+      40,
+      250,
+    );
     const src1 = g8?.src?.["c.png"] || null;
     r.check(
-      "⑧ 같은 이름으로 다시 쓴 이미지 → 그리드 썸네일이 새 그림으로 바뀐다",
-      !!src0 &&
-        src0.startsWith("data:image/jpeg") &&
-        !!src1 &&
-        src1.startsWith("data:image/jpeg") &&
-        src1 !== src0,
-      `전=${src0 ? `${src0.length}자` : "없음"} 후=${src1 ? (src1 === src0 ? "그대로" : `${src1.length}자`) : "없음"}`,
+      "⑧ 썸네일은 스킴 URL 로 뜬다 · 같은 이름으로 다시 쓴 이미지 → 새 스탬프의 URL 로 다시 받아 뜬다",
+      isThumb(src0) && isThumb(src1) && src1 !== src0 && String(src1).includes(`v=${v1}`) && g8?.w?.["c.png"] > 0,
+      `전=${String(src0).slice(-40)} 후=${String(src1).slice(-40)} 새스탬프=${v1}`,
     );
 
     // ── ⑨ 라이트박스도 이름으로 붙든다 ──
@@ -460,78 +513,56 @@ export async function run({ cdp, report: r }) {
       .eval(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
       .catch(() => {});
 
-    // ── ⑩ 크기를 바꾼 뒤 늦게 도착한 옛 크기 썸네일은 버려진다(세대) ──
-    // 경합을 **만든다**: 128px 요청을 1.5초 붙잡은 채 S(128) → L(320). 320 이 먼저 그려지고 붙잡힌 128 이
-    // 뒤늦게 온다 — 세대 검사가 없으면 그 128 이 320 칸을 덮는다(키에 크기가 없으니 같은 칸이다).
-    // 스파이는 창의 `ipc.favThumb` 를 갈아 끼운다. `__TAURI_INTERNALS__.invoke` 는 non-writable 이라
-    // (스위트 14 #2b) 창이 **실제로 로드한** ipc 모듈을 import 해 같은 객체를 만진다(vite 가 ?t=… 를 붙인다).
-    const armed = await win
+    // ── ⑩ 크기를 S→L 로 바꾸면 그려진 칸이 전부 320px 썸네일이다 ──
+    // 1×1 PNG 는 edge 로 키워지므로 뜬 그림의 폭이 곧 요청한 크기다. S(128)에서 128 을 먼저 확인해야 L 의 320 이
+    // "원래 320 이었다"가 아니라 "바꿔서 320 이 됐다"로 읽힌다.
+    const pngsIn = (g) => (g?.order ?? []).filter((n) => n.endsWith(".png"));
+    const allAt = (g, w) => {
+      const drawn = pngsIn(g).filter((n) => g.w[n] > 0);
+      return drawn.length > 0 && drawn.every((n) => g.w[n] === w && String(g.src[n]).includes(`e=${w}&`));
+    };
+    await toolbar("작은 썸네일");
+    const g10s = await poll(grid, (g) => allAt(g, 128), 40, 250);
+    await toolbar("큰 썸네일");
+    const g10 = await poll(grid, (g) => allAt(g, 320), 40, 250);
+    const widths = (g) => J(Object.fromEntries(pngsIn(g).map((n) => [n, g?.w?.[n]])));
+    r.check(
+      "⑩ 썸네일 크기 S→L: 그려진 칸이 전부 128 이었다가 전부 320 이 된다(URL e=·실제 폭)",
+      allAt(g10s, 128) && allAt(g10, 320),
+      `S=${widths(g10s)} L=${widths(g10)}`,
+    );
+
+    // ── ⑪ 툴바 [탐색기에서 이 폴더 열기] → 이 폴더 자체(`default`) ──
+    // 진짜로 부르면 사용자 화면에 탐색기가 뜬다 — 창의 `ipc.favOpen` 을 **대신** 받아 인자만 적는다.
+    // `__TAURI_INTERNALS__.invoke` 는 non-writable 이라(스위트 14 #2b) 창이 **실제로 로드한** ipc 모듈을 import 해
+    // 같은 객체를 만진다(vite 가 ?t=… 를 붙인다). 먼저 [새로고침]이 그 객체의 `favList` 를 부르는지 봐서 이 창이 쓰는
+    // 그 ipc 라는 것을 증명한다 — 아니면 누르지 않는다(스파이가 빗나간 채 누르면 진짜 탐색기가 뜬다).
+    const opened11 = await win
       .eval(`(async()=>{
         const url = performance.getEntriesByType('resource').map((e) => e.name)
           .find((n) => n.includes('/src/lib/ipc.ts')) || '/src/lib/ipc.ts';
         const m = await import(url);
-        const st = (window.__favSpy = { m, thumb: m.ipc.favThumb, open: m.ipc.favOpen, held: 0, pending: 0 });
-        m.ipc.favThumb = (path, edge) => {
-          if (edge !== 128) return st.thumb(path, edge);
-          st.held++;
-          st.pending++;
-          return new Promise((r) => setTimeout(r, 1500))
-            .then(() => st.thumb(path, edge))
-            .finally(() => { st.pending--; });
-        };
-        return url;
-      })()`)
-      .catch((e) => `ERR:${e.message}`);
-    await toolbar("작은 썸네일");
-    const held = await poll(() => win.eval(`window.__favSpy.held`), (v) => v > 0, 30, 100);
-    await toolbar("큰 썸네일");
-    // 붙잡힌 128 이 전부 풀릴 때까지(옛 코드는 여기서 칸을 덮는다) + 그 렌더가 끝날 때까지.
-    const drained = await poll(() => win.eval(`window.__favSpy.pending`), (v) => v === 0, 40, 250);
-    await sleep(500);
-    // 기준 = 백엔드가 주는 320px 썸네일 그 자체(같은 캐시 키라 바이트가 같다). 화면 밖이라 아직 안
-    // 받은 칸(src 없음)은 허용하되, 그려진 칸은 전부 320 이어야 하고 적어도 하나는 그려져 있어야 한다.
-    const pngs = ((await grid().catch(() => null))?.order ?? []).filter((n) => n.endsWith(".png"));
-    const ref = {};
-    for (const n of pngs) {
-      const t = await cdp.try("fav_thumb", { path: join(root, n), edge: 320 });
-      ref[n] = t.ok ? t.r : null;
-    }
-    const g10 = await poll(
-      grid,
-      (g) =>
-        pngs.some((n) => g.src[n] && g.src[n] === ref[n]) &&
-        pngs.every((n) => !g.src[n] || g.src[n] === ref[n]),
-      20,
-      250,
-    );
-    const ok320 = pngs.filter((n) => g10?.src?.[n] && g10.src[n] === ref[n]);
-    const wrong = pngs.filter((n) => g10?.src?.[n] && g10.src[n] !== ref[n]);
-    r.check(
-      "⑩ 크기를 S→L 로 바꾼 뒤 늦게 온 128px 응답이 320px 칸을 덮지 않는다(세대 검사)",
-      held > 0 && drained === 0 && ok320.length > 0 && wrong.length === 0,
-      `스파이=${armed} 붙잡은128=${held} 남음=${drained} 320=${J(ok320)} 다른크기=${J(wrong)}`,
-    );
-    await win
-      .eval(`(()=>{ const s = window.__favSpy; if (s) s.m.ipc.favThumb = s.thumb; return true; })()`)
-      .catch(() => {});
-
-    // ── ⑪ 툴바 [탐색기에서 이 폴더 열기] → 이 폴더 자체(`default`) ──
-    // 진짜로 부르면 사용자 화면에 탐색기가 뜬다 — ⑩ 의 스파이로 `ipc.favOpen` 을 **대신** 받아 인자만 적는다.
-    // ⑩ 에서 스파이가 요청을 실제로 붙잡았어야(held>0) 이 창이 쓰는 그 ipc 객체라는 게 증명된다.
-    // 아니면 누르지 않는다 — 스파이가 빗나간 채 누르면 진짜 탐색기가 뜬다.
-    const opened11 = await win
-      .eval(`(()=>{
-        const s = window.__favSpy;
-        if (!s || !(s.held > 0)) return { err: '스파이가 이 창의 ipc 에 걸렸는지 확인 안 됨 — 누르지 않는다' };
+        const list = m.ipc.favList;
+        let listed = 0;
+        m.ipc.favList = (...a) => { listed++; return list(...a); };
+        try {
+          const rb = Array.from(document.querySelectorAll('button')).find((x) => (x.title || '').startsWith('새로고침'));
+          if (rb) rb.click();
+          await new Promise((r) => setTimeout(r, 300));
+        } finally {
+          m.ipc.favList = list;
+        }
+        if (!listed) return { err: '스파이가 이 창의 ipc 에 걸렸는지 확인 안 됨 — 누르지 않는다', url };
+        const open = m.ipc.favOpen;
         const calls = [];
-        s.m.ipc.favOpen = (path, how) => { calls.push({ path, how }); return Promise.resolve(); };
+        m.ipc.favOpen = (path, how) => { calls.push({ path, how }); return Promise.resolve(); };
         try {
           const b = Array.from(document.querySelectorAll('button')).find((x) => x.title === '탐색기에서 이 폴더 열기');
           if (!b) return { err: '버튼 없음' };
           b.click();
           return { calls };
         } finally {
-          s.m.ipc.favOpen = s.open;
+          m.ipc.favOpen = open;
         }
       })()`)
       .catch((e) => ({ err: e.message }));
@@ -566,6 +597,76 @@ export async function run({ cdp, report: r }) {
         J(g12?.hl) === J(["s2.png"]),
       `들어감=${entered} 전=${J(g12a?.hl)} 갱신뒤=${J(g12?.hl)} 순서=${J(g12?.order)}`,
     );
+
+    // ── ⑭ 가상 그리드: 수백 장 폴더 ──
+    // 600장(1×1 PNG)을 mtime 이 1초씩 오래되게 쓴다 — 기본 정렬(최신 먼저)에서 f000 이 맨 앞, f599 가 맨 끝이다.
+    // ⑩ 이후라 보기는 L(320) 이다. 창은 ⑫ 에서 하위폴더에 있으므로 Backspace 로 루트에 올라와 들어간다.
+    {
+      const many = join(root, "많음");
+      mkdirSync(many, { recursive: true });
+      const N14 = 600;
+      const now14 = Date.now();
+      const name14 = (i) => `f${String(i).padStart(3, "0")}.png`;
+      for (let i = 0; i < N14; i++) {
+        const f = join(many, name14(i));
+        writeFileSync(f, PNG_1X1);
+        const t = new Date(now14 - 3600e3 - i * 1000);
+        utimesSync(f, t, t);
+      }
+      const key14 = (k) =>
+        win.eval(`(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: ${J(k)}, bubbles: true })); return true; })()`);
+      await key14("Backspace");
+      const atRoot = await poll(grid, (g) => g.order.includes("많음"), 20, 250);
+      const entered14 = atRoot ? await tile("많음", "dblclick") : false;
+      const inMany = await poll(grid, (g) => g.order[0] === name14(0), 40, 250);
+      /** 스크롤 영역·칸 수·보이는 칸 — 칸 = `button.flex-col[title]`. */
+      const view14 = () =>
+        win.eval(`(() => {
+          const tiles = Array.from(document.querySelectorAll('button.flex-col[title]'));
+          const sc = tiles[0] && tiles[0].closest('.overflow-auto');
+          if (!sc) return null;
+          const R = sc.getBoundingClientRect();
+          const box = (b) => { const r = b.getBoundingClientRect(); return { top: r.top - R.top, bottom: r.bottom - R.top }; };
+          const inView = (b) => { const r = box(b); return r.top >= -1 && r.bottom <= R.height + 1; };
+          const img = (b) => b.querySelector('img');
+          const hl = tiles.find((b) => b.classList.contains('border-accent'));
+          return {
+            dom: tiles.length, top: sc.scrollTop, h: sc.clientHeight, sh: sc.scrollHeight,
+            names: tiles.map((b) => b.title),
+            hl: hl ? { name: hl.title, inView: inView(hl) } : null,
+            last: (() => { const b = tiles.find((x) => x.title === ${J(name14(N14 - 1))}); if (!b) return null;
+              const i = img(b); return { inView: inView(b), w: i && i.complete ? i.naturalWidth : 0, src: i ? i.src : null }; })(),
+          };
+        })()`);
+      const v0 = await view14();
+      r.check(
+        "⑭ 600장 폴더: DOM 에 그린 칸은 전체보다 훨씬 적다(보이는 행만) · 전체 높이는 600장 몫이다",
+        entered14 === true && !!inMany && !!v0 && v0.dom > 0 && v0.dom < 150 && v0.sh > 10 * v0.h,
+        `들어감=${entered14} 칸=${v0?.dom}/${N14} 높이=${v0?.sh}/${v0?.h}`,
+      );
+
+      await win.eval(`(() => { const t = document.querySelector('button.flex-col[title]'); const sc = t && t.closest('.overflow-auto'); if (sc) sc.scrollTop = sc.scrollHeight; return !!sc; })()`);
+      const vEnd = await poll(view14, (v) => v?.last?.inView === true && v.last.w > 0, 40, 250);
+      r.check(
+        "⑭ 끝까지 스크롤 → 마지막 칸(f599)이 화면 안에 그려지고 썸네일이 뜬다",
+        vEnd?.last?.inView === true && vEnd.last.w > 0 && isThumb(vEnd.last.src),
+        `마지막=${J(vEnd?.last)} 칸=${vEnd?.dom} scrollTop=${vEnd?.top}`,
+      );
+
+      // 맨 위로 돌아가 첫 칸을 고른 뒤 → 40칸 이동. 화면에는 한두 행(3열)만 보이므로 f040 은 화면 밖이다 —
+      // 따라가는 스크롤이 없으면 그 칸은 DOM 에조차 없다(가상 그리드).
+      await win.eval(`(() => { const t = document.querySelector('button.flex-col[title]'); const sc = t && t.closest('.overflow-auto'); if (sc) sc.scrollTop = 0; return true; })()`);
+      await poll(view14, (v) => v?.names?.includes(name14(0)), 20, 150);
+      const picked14 = await tile(name14(0));
+      const vPick = await poll(view14, (v) => v?.hl?.name === name14(0), 20, 150);
+      for (let i = 0; i < 40; i++) await key14("ArrowRight");
+      const vKey = await poll(view14, (v) => v?.hl?.name === name14(40) && v.hl.inView, 20, 250);
+      r.check(
+        "⑭ 키보드로 커서를 화면 밖(40칸 뒤)까지 옮기면 스크롤이 따라가 그 칸이 화면 안에 있다",
+        picked14 === true && vPick?.hl?.name === name14(0) && vKey?.hl?.name === name14(40) && vKey.hl.inView && vKey.top > 0,
+        `고름=${J(vPick?.hl)} 이동뒤=${J(vKey?.hl)} scrollTop=${vKey?.top}`,
+      );
+    }
 
     // ── ⑬ 타이틀바 미리보기: 패널로 가는 길에 스친 항목은 패널을 갈아 끼우지 않는다 ──
     // 2026-09-17 실사례: [스크린샷] 호버 → 패널로 대각선 이동 중 [다운로드] 줄을 스침 → 패널에 들어간 **뒤에**

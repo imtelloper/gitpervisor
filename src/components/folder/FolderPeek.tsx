@@ -12,23 +12,19 @@ import { createPortal } from "react-dom";
 
 import { useMessages } from "../../i18n/ui-language";
 import { copyText } from "../../lib/clipboard";
+import { favThumbUrl, useFavThumbToken } from "../../lib/fav-thumb";
 import { ipc, type FavEntry } from "../../lib/ipc";
 import { useUi } from "../../stores/ui";
 import { Lightbox } from "./Lightbox";
 
 /** 미리보기에 그릴 최대 개수 — **최신 순으로** 자른다. 패널이 스크롤되므로 한 화면에 들어갈
  *  필요는 없지만, 무제한이면 폴더가 수백 장일 때(실제 스크린샷 폴더가 225장) 썸네일 요청이
- *  그만큼 나간다. 더 보려면 창을 연다(거기는 '보이는 칸만' 요청하는 펌프가 있다). */
+ *  그만큼 나간다. 더 보려면 창을 연다(거기는 보이는 행만 그리는 가상 그리드다). */
 const MAX = 40;
 
 /** 썸네일 변 길이. 칸이 ≈200px 이라 192 도 살짝 모자라지만, 백엔드가 받는 값은 128·192·320
  *  셋뿐이고(캐시 폭주 방지) 320 은 40장이면 전송량이 4배가 된다 — object-cover 라 눈에 안 띈다. */
 const THUMB_EDGE = 192;
-
-/** 썸네일을 한 번에 몇 개씩 요청할지. 40장을 동시에 던지면 IPC 큐가 막혀 **목록 자체가** 늦게
- *  뜬다(썸네일은 나중에 채워져도 되지만 칸은 즉시 보여야 한다). FolderWindow 가 펌프를 두는
- *  것과 같은 이유이고, 거기는 수백 칸이라 '보이는 칸만'까지 간다. */
-const CONCURRENCY = 4;
 
 /**
  * 즐겨찾기 폴더 **호버 미리보기** — 최근 파일을 바로 펼치고, 클릭하면 **경로를 복사**한다.
@@ -53,7 +49,8 @@ export function FolderPeek({ path, onMouseEnter }: { path: string; onMouseEnter?
 
   const [files, setFiles] = useState<FavEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [thumbs, setThumbs] = useState<Record<string, string>>({});
+  // 썸네일은 스킴 URL 을 `<img>` 에 바로 건다(lib/fav-thumb.ts) — IPC 를 타지 않아 목록 요청과 줄을 서지 않는다.
+  const token = useFavThumbToken();
   const [menu, setMenu] = useState<{ x: number; y: number; name: string } | null>(
     null,
   );
@@ -83,7 +80,6 @@ export function FolderPeek({ path, onMouseEnter }: { path: string; onMouseEnter?
     let dead = false;
     setFiles(null);
     setError(null);
-    setThumbs({});
     setMenu(null);
     setLightbox(null);
     ipc
@@ -96,23 +92,6 @@ export function FolderPeek({ path, onMouseEnter }: { path: string; onMouseEnter?
           .sort((a, b) => b.mtimeMs - a.mtimeMs)
           .slice(0, MAX);
         setFiles(recent);
-        // 썸네일은 CONCURRENCY 개씩 흘려보낸다(위 상수 주석).
-        const queue = recent.filter(
-          (e) => e.kind === "image" || e.kind === "video",
-        );
-        let next = 0;
-        const pump = async () => {
-          while (!dead) {
-            const e = queue[next++];
-            if (!e) return;
-            const url = await ipc.favThumb(join(e.name), THUMB_EDGE).catch(
-              () => null, // 못 만드는 형식(svg·손상)은 아이콘으로 남는다 — 창과 같은 처리
-            );
-            if (dead) return;
-            if (url) setThumbs((m) => ({ ...m, [e.name]: url }));
-          }
-        };
-        for (let i = 0; i < CONCURRENCY; i++) void pump();
       })
       .catch((e) => {
         if (!dead) setError(e instanceof Error ? e.message : String(e));
@@ -231,19 +210,15 @@ export function FolderPeek({ path, onMouseEnter }: { path: string; onMouseEnter?
                 className="flex w-full min-w-0 flex-col items-stretch gap-1 rounded border border-edge/60 p-1 hover:border-accent hover:bg-raised"
               >
                 <span className="relative flex h-36 w-full items-center justify-center overflow-hidden rounded bg-base">
-                  {thumbs[e.name] ? (
-                    <img
-                      src={thumbs[e.name]}
-                      alt=""
-                      className="h-full w-full object-cover"
-                    />
-                  ) : e.kind === "video" ? (
-                    <Film size={22} className="text-fg-dim" />
-                  ) : e.kind === "image" ? (
-                    <ImageIcon size={22} className="text-fg-dim" />
-                  ) : (
-                    <FileText size={22} className="text-fg-dim" />
-                  )}
+                  <PeekThumb
+                    key={`${e.mtimeMs}-${e.size}`}
+                    kind={e.kind}
+                    url={
+                      token && e.kind === "image"
+                        ? favThumbUrl(join(e.name), e, THUMB_EDGE, token)
+                        : undefined
+                    }
+                  />
                   <span className="absolute inset-0 hidden items-center justify-center bg-base/70 group-hover/peek:flex">
                     <Copy size={20} className="text-accent" />
                   </span>
@@ -302,6 +277,33 @@ export function FolderPeek({ path, onMouseEnter }: { path: string; onMouseEnter?
         />
       )}
     </div>
+  );
+}
+
+/** 칸 썸네일 — 뜰 때까지(또는 못 만드는 형식이면 끝까지) 종류 아이콘. 칸은 이미 `relative` 다. */
+function PeekThumb({ kind, url }: { kind: FavEntry["kind"]; url: string | undefined }) {
+  const [load, setLoad] = useState<"wait" | "ok" | "fail">("wait");
+  return (
+    <>
+      {load !== "ok" &&
+        (kind === "video" ? (
+          <Film size={22} className="text-fg-dim" />
+        ) : kind === "image" ? (
+          <ImageIcon size={22} className="text-fg-dim" />
+        ) : (
+          <FileText size={22} className="text-fg-dim" />
+        ))}
+      {url && load !== "fail" && (
+        <img
+          src={url}
+          alt=""
+          decoding="async"
+          onLoad={() => setLoad("ok")}
+          onError={() => setLoad("fail")}
+          className={`absolute inset-0 h-full w-full object-cover ${load === "ok" ? "" : "invisible"}`}
+        />
+      )}
+    </>
   );
 }
 

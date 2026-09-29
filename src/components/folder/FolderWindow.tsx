@@ -16,11 +16,21 @@ import {
   Search,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type RefObject,
+} from "react";
 
 import type { Messages } from "../../i18n/messages";
 import { currentMessages, useMessages } from "../../i18n/ui-language";
 import { copyText } from "../../lib/clipboard";
+import { favThumbUrl, useFavThumbToken, type ThumbEdge } from "../../lib/fav-thumb";
 import { openDocWindow } from "../../lib/floating";
 import { ipc, type FavEntry } from "../../lib/ipc";
 import { useUi } from "../../stores/ui";
@@ -37,9 +47,9 @@ import { modLabel } from "../../lib/platform";
  * **프로젝트에 속하지 않는다** — 모든 경로가 절대경로이고, 백엔드가 `Settings.favoriteFolders`
  * 아래인지 매 호출마다 검사한다(commands/favorites.rs `allowed`).
  *
- * 원본 이미지를 목록에 그리지 않는다. 이 앱엔 asset protocol 이 없어 이미지가 base64 로 IPC 를
- * 타므로(`tauri.conf.json` csp), 스크린샷 수백 장을 원본으로 보내면 창이 그대로 죽는다.
- * 그래서 백엔드가 캐시된 썸네일(JPEG)을 주고, 그것도 **화면에 보이는 칸만** 요청한다.
+ * 원본 이미지를 목록에 그리지 않는다 — 백엔드가 캐시된 썸네일(JPEG)을 썸네일 전용 스킴으로 주고
+ * (`lib/fav-thumb.ts`), 그리드는 **화면에 보이는 행만** DOM 에 그린다(`GridView`). 3천 장 폴더에서
+ * 칸 전부를 그리면 첫 렌더와 스크롤이 통째로 멈췄다(tests/bench/folder-thumbs.mjs).
  *
  * 파일 트리의 폴더 "새 창으로 열기"도 이 창이다(`projectId` 가 있을 때). 그때 `root` 는 프로젝트
  * 루트, `start` 는 누른 폴더이고, 이미지 밖의 파일은 OS 기본 앱 대신 앱의 뷰어 창으로 연다.
@@ -74,6 +84,11 @@ export default function FolderWindow({
   const [menu, setMenu] = useState<{ x: number; y: number; entry: FavEntry } | null>(
     null,
   );
+  /** 목록 스크롤 영역 — 가상 그리드가 스크롤 위치·크기를 여기서 읽는다. */
+  const scrollRef = useRef<HTMLDivElement>(null);
+  /** 키보드로 커서를 옮길 때마다 늘린다 — 그리드가 커서를 화면 안으로 끌어온다. 클릭·갱신으로 커서
+   *  자리가 바뀔 때는 스크롤을 건드리지 않는다(새 스크린샷이 끼어 선택이 한 칸 밀려도 보던 자리 그대로). */
+  const [reveal, setReveal] = useState(0);
 
   useEffect(() => writeView(root, view), [root, view]);
 
@@ -277,6 +292,7 @@ export default function FolderWindow({
         const i = Math.max(0, Math.min(shown.length - 1, cursorOf(shown, s) + delta));
         return shown[i] ? { name: shown[i].name, index: i } : s;
       });
+      setReveal((n) => n + 1);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -319,7 +335,7 @@ export default function FolderWindow({
         count={shown.length}
       />
 
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto">
         {error ? (
           <EmptyState
             icon={FolderSearch}
@@ -353,6 +369,8 @@ export default function FolderWindow({
             join={join}
             edge={EDGE[view.mode]}
             cursor={cursor}
+            reveal={reveal}
+            scrollRef={scrollRef}
             onCursor={select}
             onOpen={openEntry}
             onMenu={(x, y, e) => setMenu({ x, y, entry: e })}
@@ -419,8 +437,7 @@ function modeTitle(msg: Messages, id: Mode): string {
       return msg.folder.window.modeList(modLabel);
   }
 }
-/** 썸네일 한 변 — 백엔드가 **이 셋만** 받는다(캐시 폭주 방지). */
-const EDGE: Record<Exclude<Mode, "list">, 128 | 192 | 320> = {
+const EDGE: Record<Exclude<Mode, "list">, ThumbEdge> = {
   "grid-s": 128,
   "grid-m": 192,
   "grid-l": 320,
@@ -606,12 +623,35 @@ function Toolbar({
 
 // ---- 그리드 -------------------------------------------------------------------------
 
+/** 칸 사이·가장자리 여백(px) — 예전 `gap-2 p-2` 그대로. */
+const GAP = 8;
+const PAD = 8;
+/** 칸 아래 이름 줄 높이(px). 가상 그리드는 행 높이가 고정이어야 스크롤 위치로 행을 계산한다. */
+const NAME_H = 24;
+/** 보이는 행 위아래로 더 그리는 행 — 휠 한 칸(≈100px)에 빈 행이 비치지 않게. */
+const OVERSCAN_ROWS = 2;
+/** 이보다 빠른 **연속** 스크롤(px/ms, 이벤트 간격 50ms 미만) 중에 새로 그려진 칸은 스크롤이
+ *  `FLING_SETTLE_MS` 동안 멎을 때까지 썸네일을 요청하지 않는다 — 스크롤바를 끌어 3천 장을 훑으면 지나간
+ *  칸마다 디코드가 나가 멈춘 자리의 썸네일이 그 뒤에 줄을 섰다(벤치 f: 옛 구조 2,980장 헛디코드). 휠·
+ *  PageDown 같은 **한 번씩의** 이동(이벤트 간격이 길다)에는 걸리지 않아 곧바로 뜬다. */
+const FLING_PX_PER_MS = 3;
+const FLING_SETTLE_MS = 120;
+
+/**
+ * 가상 그리드 — 보이는 행 ± `OVERSCAN_ROWS` 만 DOM 에 그리고 전체 높이는 바깥 상자가 잡는다.
+ *
+ * 열 수는 `repeat(auto-fill, minmax(edge, 1fr))` 와 같은 식으로 스크롤 영역 폭에서 직접 계산한다(창 크기가
+ * 바뀌면 ResizeObserver 가 다시 잰다). 클릭·더블클릭·우클릭은 칸마다 핸들러를 달지 않고 바깥에서 `data-i` 로
+ * 받는다 — 스크롤마다 새로 그려지는 칸이 `memo` 를 깨지 않게.
+ */
 function GridView({
   items,
   dir,
   join,
   edge,
   cursor,
+  reveal,
+  scrollRef,
   onCursor,
   onOpen,
   onMenu,
@@ -619,61 +659,200 @@ function GridView({
   items: FavEntry[];
   dir: string;
   join: (dir: string, name: string) => string;
-  edge: 128 | 192 | 320;
+  edge: ThumbEdge;
   cursor: number;
+  reveal: number;
+  scrollRef: RefObject<HTMLDivElement | null>;
   onCursor: (i: number) => void;
   onOpen: (e: FavEntry) => void;
   onMenu: (x: number, y: number, e: FavEntry) => void;
 }) {
-  const thumbs = useThumbs(dir, edge, join);
+  const token = useFavThumbToken();
+  const [box, setBox] = useState({ w: 0, h: 0 });
+  const [topRow, setTopRow] = useState(0);
+  const [settled, setSettled] = useState(true);
+
+  const tileH = edge + NAME_H + 2; // 테두리 위아래 1px
+  const rowH = tileH + GAP;
+  const cols = Math.max(1, Math.floor((box.w - 2 * PAD + GAP) / (edge + GAP)));
+  const rows = Math.ceil(items.length / cols);
+
+  useLayoutEffect(() => {
+    const sc = scrollRef.current;
+    if (!sc) return;
+    // 세로 스크롤바가 생기면 clientWidth 가 줄어 열 수가 바뀐다 — content box 를 보는 RO 가 그것도 잡는다.
+    const measure = () =>
+      setBox((b) =>
+        b.w === sc.clientWidth && b.h === sc.clientHeight ? b : { w: sc.clientWidth, h: sc.clientHeight },
+      );
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(sc);
+    return () => ro.disconnect();
+  }, [scrollRef]);
+
+  useEffect(() => {
+    const sc = scrollRef.current;
+    if (!sc) return;
+    let lastTop = sc.scrollTop;
+    let lastT = performance.now();
+    let timer: number | undefined;
+    const onScroll = () => {
+      const now = performance.now();
+      const dt = now - lastT;
+      if (dt < 50 && Math.abs(sc.scrollTop - lastTop) / Math.max(dt, 1) > FLING_PX_PER_MS) {
+        setSettled(false);
+        window.clearTimeout(timer);
+        timer = window.setTimeout(() => setSettled(true), FLING_SETTLE_MS);
+      }
+      lastT = now;
+      lastTop = sc.scrollTop;
+      // 같은 행이면 React 가 다시 그리지 않는다(같은 값 setState) — 스크롤 이벤트 대부분이 여기서 끝난다.
+      setTopRow(Math.max(0, Math.floor((sc.scrollTop - PAD) / rowH)));
+    };
+    onScroll(); // 크기(edge)가 바뀌면 같은 scrollTop 이라도 행이 다르다
+    sc.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      sc.removeEventListener("scroll", onScroll);
+      window.clearTimeout(timer);
+    };
+  }, [scrollRef, rowH]);
+
+  // 키보드로 옮긴 커서가 화면 밖이면 그 행이 보이게 스크롤한다(그 행은 지금 DOM 에 없을 수도 있다 — 계산으로).
+  useLayoutEffect(() => {
+    const sc = scrollRef.current;
+    if (!reveal || !sc) return;
+    const top = PAD + Math.floor(cursor / cols) * rowH;
+    if (top < sc.scrollTop) sc.scrollTop = top - PAD;
+    else if (top + tileH > sc.scrollTop + sc.clientHeight) sc.scrollTop = top + tileH + PAD - sc.clientHeight;
+    // reveal 이 바뀔 때만 — 클릭·갱신으로 커서가 움직일 때는 보던 자리를 지킨다(FolderWindow reveal 주석).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reveal]);
+
+  const first = Math.max(0, topRow - OVERSCAN_ROWS);
+  const last = Math.min(rows - 1, topRow + Math.ceil(box.h / rowH) + OVERSCAN_ROWS);
+  const start = first * cols;
+  const slice = items.slice(start, (last + 1) * cols);
+
+  const at = (ev: React.MouseEvent) => {
+    const el = ev.target instanceof Element ? ev.target.closest<HTMLElement>("[data-i]") : null;
+    const i = el ? Number(el.dataset.i) : -1;
+    return items[i] ? i : -1;
+  };
+
   return (
     <div
-      className="grid gap-2 p-2"
-      style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${edge}px, 1fr))` }}
+      className="relative"
+      style={{ height: rows ? PAD * 2 + rows * rowH - GAP : 0 }}
+      onClick={(ev) => {
+        const i = at(ev);
+        if (i >= 0) onCursor(i);
+      }}
+      onDoubleClick={(ev) => {
+        const i = at(ev);
+        if (i >= 0) onOpen(items[i]);
+      }}
+      onContextMenu={(ev) => {
+        const i = at(ev);
+        if (i < 0) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        onCursor(i);
+        onMenu(ev.clientX, ev.clientY, items[i]);
+      }}
     >
-      {items.map((e, i) => (
-        <button
-          // key 가 곧 썸네일 식별 키다 — 같은 이름으로 다시 쓴 파일은 칸이 **새로 마운트**돼야 새 키를
-          // 요청한다. IntersectionObserver 는 이미 관찰 중인 요소의 observe() 를 무시한다(첫 콜백이 없다).
-          key={thumbKey(e)}
-          ref={(el) => thumbs.observe(el, e)}
-          onClick={() => onCursor(i)}
-          onDoubleClick={() => onOpen(e)}
-          onContextMenu={(ev) => {
-            ev.preventDefault();
-            ev.stopPropagation();
-            onCursor(i);
-            onMenu(ev.clientX, ev.clientY, e);
-          }}
-          title={e.name}
-          // content-visibility: 화면 밖 칸은 레이아웃·페인트를 건너뛴다(수백 장에서 체감된다).
-          style={{ contentVisibility: "auto", containIntrinsicSize: `${edge + 26}px` }}
-          className={`flex flex-col overflow-hidden rounded border text-left ${
-            i === cursor ? "border-accent bg-raised" : "border-edge hover:bg-raised"
-          }`}
-        >
-          <div
-            className="flex items-center justify-center overflow-hidden bg-base"
-            style={{ height: edge }}
-          >
-            {e.isDir ? (
-              <Folder size={edge / 3} className="text-fg-dim" />
-            ) : thumbs.get(e) ? (
-              <img
-                src={thumbs.get(e)}
-                alt={e.name}
-                className="h-full w-full object-contain"
-              />
-            ) : (
-              <KindIcon kind={e.kind} size={edge / 4} />
-            )}
-          </div>
-          <div className="truncate px-1.5 py-1 text-[11px] text-fg-muted">{e.name}</div>
-        </button>
-      ))}
+      <div
+        className="absolute grid"
+        style={{
+          top: PAD + first * rowH,
+          left: PAD,
+          right: PAD,
+          gap: GAP,
+          gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+          gridAutoRows: tileH,
+        }}
+      >
+        {slice.map((e, k) => (
+          <Tile
+            // key 가 곧 썸네일 식별 키다 — 같은 이름으로 다시 쓴 파일은 칸이 **새로 마운트**돼 새 URL 을 받는다.
+            key={thumbKey(e)}
+            e={e}
+            i={start + k}
+            selected={start + k === cursor}
+            edge={edge}
+            url={
+              token && !e.isDir && e.kind === "image"
+                ? favThumbUrl(join(dir, e.name), e, edge, token)
+                : undefined
+            }
+            live={settled}
+          />
+        ))}
+      </div>
     </div>
   );
 }
+
+/** 그리드 한 칸. `live` 가 한 번이라도 참이었으면 썸네일을 건다 — 빠른 스크롤 중에 새로 그려진 칸은
+ *  멈출 때까지 기다리고, 이미 건 칸은 그 뒤 빠른 스크롤이 시작돼도 떼지 않는다. */
+const Tile = memo(function Tile({
+  e,
+  i,
+  selected,
+  edge,
+  url,
+  live,
+}: {
+  e: FavEntry;
+  i: number;
+  selected: boolean;
+  edge: ThumbEdge;
+  url: string | undefined;
+  live: boolean;
+}) {
+  const [armed, setArmed] = useState(live);
+  if (live && !armed) setArmed(true);
+  const [load, setLoad] = useState<"wait" | "ok" | "fail">("wait");
+  const src = armed && load !== "fail" ? url : undefined;
+  return (
+    <button
+      data-i={i}
+      title={e.name}
+      className={`flex flex-col overflow-hidden rounded border text-left ${
+        selected ? "border-accent bg-raised" : "border-edge hover:bg-raised"
+      }`}
+    >
+      <div
+        className="relative flex w-full shrink-0 items-center justify-center overflow-hidden bg-base"
+        style={{ height: edge }}
+      >
+        {e.isDir ? (
+          <Folder size={edge / 3} className="text-fg-dim" />
+        ) : (
+          load !== "ok" && <KindIcon kind={e.kind} size={edge / 4} />
+        )}
+        {src && (
+          // 뜰 때까지 숨겨 두고 아이콘을 보인다. 못 만드는 형식(svg·손상)은 4xx → onError → 아이콘 그대로.
+          <img
+            src={src}
+            alt={e.name}
+            decoding="async"
+            draggable={false}
+            onLoad={() => setLoad("ok")}
+            onError={() => setLoad("fail")}
+            className={`absolute inset-0 h-full w-full object-contain ${load === "ok" ? "" : "invisible"}`}
+          />
+        )}
+      </div>
+      <div
+        className="w-full truncate px-1.5 text-[11px] text-fg-muted"
+        style={{ height: NAME_H, lineHeight: `${NAME_H}px` }}
+      >
+        {e.name}
+      </div>
+    </button>
+  );
+});
 
 function KindIcon({ kind, size }: { kind: FavEntry["kind"]; size: number }) {
   const cls = "text-fg-dim";
@@ -693,92 +872,9 @@ function FileGlyph({ size }: { size: number }) {
   );
 }
 
-/** 썸네일 식별 키 — 이름|mtime|크기. **이름만으로 들면 안 된다:** 같은 이름으로 다시 쓴 파일(편집기로
- *  덮어쓴 스크린샷)이 옛 썸네일을 영영 쓴다. 백엔드 디스크 캐시 키도 같은 셋이다(favorites.rs `fav_thumb`). */
+/** 칸 식별 키 — 이름|mtime|크기. **이름만으로 들면 안 된다:** 같은 이름으로 다시 쓴 파일(편집기로
+ *  덮어쓴 스크린샷)의 칸이 옛 로딩 상태를 이어 쓴다. 썸네일 URL·백엔드 디스크 캐시 키도 같은 셋이다. */
 const thumbKey = (e: FavEntry) => `${e.name}|${e.mtimeMs}|${e.size}`;
-
-/**
- * 보이는 칸의 썸네일만 받아 온다.
- *
- * 전부 미리 받으면 스크린샷 폴더(수백 장)에서 IPC 가 그만큼 나가고 각 응답이 base64 문자열이다.
- * IntersectionObserver 로 화면에 들어온 것만, 동시 8개까지 요청한다. 키는 `thumbKey`.
- *
- * ponytail: 다시 쓴 파일의 옛 키 썸네일은 폴더를 옮기거나 크기를 바꿀 때까지 map 에 남는다(장당 수십 KB).
- * 커지면 목록 갱신 때 지금 목록의 키만 남기고 거른다.
- */
-function useThumbs(
-  dir: string,
-  edge: 128 | 192 | 320,
-  join: (dir: string, name: string) => string,
-) {
-  const [map, setMap] = useState<Record<string, string>>({});
-  const inflight = useRef(0);
-  const queue = useRef<{ key: string; path: string; edge: 128 | 192 | 320; gen: number }[]>([]);
-  const asked = useRef<Set<string>>(new Set());
-  /** 초기화 세대. 요청은 자기 세대를 들고 나가고, 돌아왔을 때 세대가 바뀌었으면 버린다 — 크기를 바꾼
-   *  직후 늦게 온 128px 응답이 320px 칸을 덮거나, 옛 폴더의 응답이 같은 키 칸에 앉지 않게. */
-  const gen = useRef(0);
-  const io = useRef<IntersectionObserver | null>(null);
-  const nodes = useRef(new Map<Element, FavEntry>());
-
-  // 폴더나 썸네일 크기가 바뀌면 처음부터 — 캐시 키가 달라진다. setMap({}) 은 매번 새 객체라 반드시
-  // 다시 그려지고, 그 렌더의 ref 콜백이 칸들을 **새** observer 에 다시 붙인다(아래 observe).
-  useEffect(() => {
-    gen.current++;
-    setMap({});
-    asked.current = new Set();
-    queue.current = [];
-  }, [dir, edge]);
-
-  // 요청이 자기 edge 를 들고 다니므로 pump 는 한 벌이면 된다. 렌더마다 edge 를 붙든 pump 였다면
-  // 크기를 바꾼 뒤 옛 요청의 finally 가 부른 **옛** pump 가 새 요청을 옛 크기로 내보낸다.
-  const pump = useCallback(() => {
-    while (inflight.current < 8 && queue.current.length) {
-      const job = queue.current.shift()!;
-      inflight.current++;
-      void ipc
-        .favThumb(job.path, job.edge)
-        .then((url) => {
-          if (job.gen === gen.current) setMap((m) => ({ ...m, [job.key]: url }));
-        })
-        .catch(() => {
-          /* 못 만드는 형식(svg·손상)은 아이콘으로 남는다 — 조용히 넘긴다 */
-        })
-        .finally(() => {
-          inflight.current--;
-          pump();
-        });
-    }
-  }, []);
-
-  useEffect(() => {
-    io.current = new IntersectionObserver(
-      (list) => {
-        for (const it of list) {
-          if (!it.isIntersecting) continue;
-          const e = nodes.current.get(it.target);
-          if (!e || e.isDir || e.kind !== "image") continue;
-          const key = thumbKey(e);
-          if (asked.current.has(key)) continue;
-          asked.current.add(key);
-          queue.current.push({ key, path: join(dir, e.name), edge, gen: gen.current });
-        }
-        pump();
-      },
-      { rootMargin: "200px" },
-    );
-    return () => io.current?.disconnect();
-  }, [dir, edge, pump, join]);
-
-  const observe = useCallback((el: Element | null, e: FavEntry) => {
-    if (!el || !io.current) return;
-    nodes.current.set(el, e);
-    io.current.observe(el);
-  }, []);
-
-  const get = useCallback((e: FavEntry) => map[thumbKey(e)], [map]);
-  return { observe, get };
-}
 
 // ---- 목록 ---------------------------------------------------------------------------
 

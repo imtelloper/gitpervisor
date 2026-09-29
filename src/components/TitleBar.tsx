@@ -129,7 +129,7 @@ export function FavoritesButton({ className }: { className?: string }) {
     if (peekTimer.current !== null) window.clearTimeout(peekTimer.current);
     peekTimer.current = null;
   };
-  /** 항목 위를 **스쳐 지나갈 때마다** favList/favThumb 가 나가지 않게 한 박자 쉰다.
+  /** 항목 위를 **스쳐 지나갈 때마다** favList·썸네일 요청이 나가지 않게 한 박자 쉰다.
    *  항목 위의 닫기(프리셋·폴더 추가 줄)도 같은 박자다 — 패널로 가는 길에 그 줄을 스치면 닫히면 안 된다.
    *  드롭다운 **밖으로** 나갈 때만 즉시 닫는다(컨테이너 onMouseLeave). */
   const showPeek = (p: string | null) => {

@@ -10,12 +10,15 @@
 //! canonicalize 뒤에 한다: `..` 와 심볼릭/정션 링크로 루트 밖을 가리키는 경로가 문자열 비교만으로는
 //! 통과하기 때문이다.
 //!
-//! 썸네일이 필수인 이유는 이 앱에 asset protocol 이 없다는 것이다(`tauri.conf.json` 의 csp —
-//! `img-src 'self' data: blob:`). 이미지는 base64 로 IPC 를 타므로, 스크린샷 폴더의 원본
-//! 수백 장을 그대로 보내면 창이 그 자리에서 죽는다.
+//! 썸네일이 필수인 이유는 이 앱에 원본 파일을 서빙하는 asset protocol 이 없다는 것이다. 목록
+//! 그리드는 여기서 만든 축소본만 받는다 — 전송은 썸네일 전용 스킴(`thumb_protocol.rs`)이 하고,
+//! 캐시·디코드는 이 파일의 `thumb_jpeg` 가 한다.
 
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
 
 use base64::engine::general_purpose::STANDARD as B64;
@@ -23,6 +26,7 @@ use base64::Engine as _;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, State};
+use tokio::sync::Semaphore;
 
 use crate::error::{ErrorCode, IpcError};
 use crate::git::types::FavoriteFolder;
@@ -34,7 +38,7 @@ const MAX_READ_BYTES: u64 = 25 * 1024 * 1024;
 
 /// 썸네일 한 변으로 허용하는 값. **셋만 받는다** — 프론트의 그리드 S/M/L 이고, 임의의 수를
 /// 받으면 캐시 디렉터리가 크기마다 한 벌씩 불어난다.
-const EDGES: [u32; 3] = [128, 192, 320];
+pub(crate) const EDGES: [u32; 3] = [128, 192, 320];
 
 /// 썸네일 디코드 한도 — 헤더만 부풀린 파일 하나가 수 GB 를 할당하게 두지 않는다.
 /// 8K 스크린샷(7680×4320 RGBA ≈ 127MiB)은 넉넉히 통과한다. `MAX_DECODE_ALLOC` 은 **입력 파일
@@ -43,10 +47,26 @@ const EDGES: [u32; 3] = [128, 192, 320];
 const MAX_DECODE_EDGE: u32 = 16384;
 const MAX_DECODE_ALLOC: u64 = 256 * 1024 * 1024;
 
-/// 프로세스 전체의 동시 디코드 상한. 프론트 큐는 **창마다** 8개라 창을 여럿 띄우면 곱해진다 —
-/// 디코드 하나가 수백 MiB(픽셀 버퍼 `MAX_DECODE_ALLOC` 에 JPEG 는 입력 전체까지)를 쥘 수 있으므로
-/// 여기서 끊는다.
-static DECODE_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(3);
+/// 큰 이미지의 프로세스 전체 동시 디코드 상한. 요청은 창 수·보이는 칸 수만큼 몰려온다 — 디코드
+/// 하나가 수백 MiB(픽셀 버퍼 `MAX_DECODE_ALLOC` 에 JPEG 는 입력 전체까지)를 쥘 수 있으므로 여기서 끊는다.
+static BIG_DECODE_SLOTS: Semaphore = Semaphore::const_new(3);
+
+/// 헤더 치수로 어림한 픽셀 버퍼(가로×세로×4)가 이 이하면 작은 이미지다 — 스크린샷·프레임 추출(670×1610
+/// ≈ 4MiB)이 거의 전부 여기 든다. 8개가 동시에 돌아도 0.5GiB 를 넘지 않는다.
+const SMALL_DECODE_ALLOC: u64 = 64 * 1024 * 1024;
+
+/// 작은 이미지는 코어 수만큼 병렬로 푼다(`small_slot_count`). 3천 장 폴더에서 3슬롯이 곧 처리량 상한이었다.
+fn small_decode_slots() -> &'static Semaphore {
+    static SLOTS: OnceLock<Semaphore> = OnceLock::new();
+    SLOTS.get_or_init(|| Semaphore::new(small_slot_count()))
+}
+
+/// 코어 하나는 UI·IPC 몫으로 남긴다. 아래로는 큰 이미지 슬롯(3)보다 적지 않게, 위로는 8.
+fn small_slot_count() -> usize {
+    std::thread::available_parallelism()
+        .map_or(3, |n| n.get().saturating_sub(1))
+        .clamp(3, 8)
+}
 
 /// 이보다 오래 다시 기록되지 않은 썸네일은 거둔다(`prune_thumb_cache`).
 const THUMB_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
@@ -57,9 +77,9 @@ const TMP_MAX_AGE: Duration = Duration::from_secs(60 * 60);
 
 /// 주어진 절대경로가 즐겨찾기 루트 **안**인지 확인하고, canonical 경로를 돌려준다.
 ///
-/// 아래 커맨드 넷은 전부 첫 줄에서 이것을 부른다. 하나라도 빠뜨리면 그 커맨드가 파일시스템
-/// 전체를 읽는 통로가 된다 — 프론트를 믿고 검사를 생략하지 마라.
-fn allowed(state: &State<'_, AppState>, path: &str) -> Result<PathBuf, IpcError> {
+/// 아래 커맨드들과 썸네일 스킴(`thumb_protocol.rs`)은 전부 첫 단계에서 이것을 부른다. 하나라도
+/// 빠뜨리면 그 통로가 파일시스템 전체를 읽는다 — 프론트를 믿고 검사를 생략하지 마라.
+pub(crate) fn allowed(state: &State<'_, AppState>, path: &str) -> Result<PathBuf, IpcError> {
     let favs: Vec<String> = state
         .settings
         .read()
@@ -82,7 +102,7 @@ fn allowed(state: &State<'_, AppState>, path: &str) -> Result<PathBuf, IpcError>
 /// 쓴다. 프로젝트는 사용자가 명시적으로 등록한 폴더라 즐겨찾기와 같은 신뢰 수준이다(트리 커맨드도 그
 /// 안을 전부 읽고 지운다). 다만 프로젝트 아래에서는 `.git` 을 거부한다 — `tree.rs` 파일 커맨드와 같은
 /// 규칙이다: `fav_delete` 가 저장소를 깨뜨리고 `fav_open` 이 훅을 건드리는 통로가 되면 안 된다.
-fn allowed_in(target: &Path, favs: &[String], projects: &[String]) -> Result<PathBuf, IpcError> {
+pub(super) fn allowed_in(target: &Path, favs: &[String], projects: &[String]) -> Result<PathBuf, IpcError> {
     if let Ok(p) = contained(target, favs) {
         return Ok(p);
     }
@@ -204,88 +224,132 @@ fn is_hidden(_entry: &std::fs::DirEntry) -> bool {
 
 // ---- 썸네일 -------------------------------------------------------------------------
 
-/// 축소본을 만들어 data URL(`image/jpeg`)로 돌려준다. 같은 (경로·mtime·크기·edge) 조합은
-/// 디스크 캐시에서 즉시 나온다 — 스크린샷 폴더를 다시 열 때 디코딩을 반복하지 않는다.
+/// 원본 파일의 스탬프 — `fav_list` 가 준 (mtime ms, 크기). 썸네일 URL 이 `v=` 로 들고 온다.
+pub(crate) type FileStamp = (u64, u64);
+
+/// 축소본 JPEG 바이트. 같은 (경로·스탬프·edge) 조합은 디스크 캐시에서 **파일 읽기 한 번**으로
+/// 나온다 — 메타데이터를 다시 묻지 않고 URL 의 스탬프로 키를 만든다(목록이 방금 읽은 값이다). 스탬프가
+/// 거짓이어도 허용 루트 안의 **그 파일** 썸네일이 나갈 뿐이다 — 경로 판정은 호출부의 `allowed` 가 한다.
 ///
-/// 디코드는 async 워커가 아니라 blocking 풀에서, 동시에 `DECODE_SLOTS` 개까지만 돈다 —
-/// 수백 ms 짜리 CPU 작업이 다른 IPC 를 막지 않게. 캐시 히트는 슬롯을 기다리지 않는다.
+/// 디스크 일은 전부 blocking 풀에서 돈다(async 워커를 잡지 않게). 디코드는 크기별 슬롯 안에서만
+/// (`decode_slots_for`) — 캐시 적중은 슬롯을 기다리지 않는다.
 ///
 /// ponytail: 캐시는 나이로만 거둔다 — 30일 넘게 다시 기록되지 않은 항목을 프로세스당 첫 호출 때
 /// 지운다(`prune_thumb_cache`). 항목당 수 KB 라 당장은 이걸로 충분하다. 한 달 안에 수만 장을 훑어
 /// 용량이 문제가 되면 총량 상한 + 오래된 순 삭제(LRU)로 올린다.
-#[tauri::command]
-pub async fn fav_thumb(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    path: String,
+pub(crate) async fn thumb_jpeg(
+    app: &AppHandle,
+    file: PathBuf,
+    stamp: FileStamp,
     edge: u32,
-) -> Result<String, IpcError> {
-    if !EDGES.contains(&edge) {
-        return Err(IpcError::new(
-            ErrorCode::Io,
-            text_files::fav_thumb_size_unsupported(),
-        ));
+) -> Result<Vec<u8>, IpcError> {
+    let cache = thumb_cache_dir(app)
+        .map(|d| d.join(format!("{}.jpg", thumb_cache_key(&file, stamp, edge))));
+    let hit_path = cache.clone();
+    // 읽기 실패는 전부 미스로 친다 — 대부분 "아직 없음"이고, 그 밖의 실패(잠금·권한)도 다시 만들면 된다.
+    let hit = run_blocking(move || hit_path.and_then(|p| std::fs::read(p).ok())).await?;
+    if let Some(bytes) = hit {
+        return Ok(bytes);
     }
-    let file = allowed(&state, &path)?;
-    let meta = std::fs::metadata(&file)
-        .map_err(|e| IpcError::new(ErrorCode::NotFound, text_files::could_not_read_file(e)))?;
-
-    let mut h = Sha256::new();
-    h.update(file.to_string_lossy().as_bytes());
-    h.update(format!("|{}|{}|{edge}", mtime_ms(&meta), meta.len()).as_bytes());
-    let key = format!("{:x}", h.finalize());
-
-    let thumbs = app.path().app_cache_dir().ok().map(|d| d.join("thumbs"));
-    static PRUNE: std::sync::Once = std::sync::Once::new();
-    if let Some(dir) = &thumbs {
-        // 기다리지 않는다 — 치우기가 첫 썸네일을 늦출 이유가 없다.
-        PRUNE.call_once(|| {
-            let dir = dir.clone();
-            tauri::async_runtime::spawn_blocking(move || {
-                let n = prune_thumb_cache(&dir, SystemTime::now());
-                if n > 0 {
-                    log::info!("썸네일 캐시 {n}개를 정리했습니다");
-                }
-            });
-        });
-    }
-    let cache = thumbs.map(|d| d.join(format!("{key}.jpg")));
-    if let Some(p) = &cache {
-        if let Ok(bytes) = std::fs::read(p) {
-            return Ok(data_url("image/jpeg", &bytes));
+    let probe = file.clone();
+    let slots = run_blocking(move || decode_slots_for(image_dims(&probe))).await?;
+    in_decode_slot(slots, move || {
+        let buf = decode_thumb(&file, edge)?;
+        // 캐시 기록 실패는 치명적이지 않다 — 다음번에 다시 만들 뿐이다.
+        if let Some(p) = &cache {
+            if let Some(parent) = p.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = write_atomic(p, &buf);
         }
-    }
-
-    let buf = in_decode_slot(move || decode_thumb(&file, edge)).await??;
-    // 캐시 기록 실패는 치명적이지 않다 — 다음번에 다시 만들 뿐이다. 수 KB 라 위의 캐시 읽기처럼
-    // 여기서 바로 쓴다(슬롯을 쥘 이유가 없다).
-    if let Some(p) = &cache {
-        if let Some(parent) = p.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = write_atomic(p, &buf);
-    }
-    Ok(data_url("image/jpeg", &buf))
+        Ok(buf)
+    })
+    .await?
 }
 
-/// `work` 를 디코드 슬롯 하나를 쥔 채 blocking 풀에서 돌린다.
+/// 캐시 키 — 정규 경로|mtime ms|크기|edge 의 sha256. **식을 바꾸면 기존 캐시가 통째로 무효가 된다**
+/// (`tests/bench/folder-thumbs.mjs` 도 같은 식으로 자기 픽스처 키만 지운다).
+fn thumb_cache_key(file: &Path, stamp: FileStamp, edge: u32) -> String {
+    let mut h = Sha256::new();
+    h.update(file.to_string_lossy().as_bytes());
+    h.update(format!("|{}|{}|{edge}", stamp.0, stamp.1).as_bytes());
+    format!("{:x}", h.finalize())
+}
+
+/// `app_cache_dir/thumbs` — 요청마다 OS 에 폴더 위치를 묻지 않게 한 번만 푼다. 첫 호출에 오래된
+/// 캐시를 치우러 보낸다(기다리지 않는다 — 치우기가 첫 썸네일을 늦출 이유가 없다).
+fn thumb_cache_dir(app: &AppHandle) -> Option<&'static Path> {
+    static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = match app.path().app_cache_dir() {
+            Ok(d) => d.join("thumbs"),
+            Err(e) => {
+                // 캐시 없이도 썸네일은 나간다 — 매번 디코드할 뿐이다.
+                log::warn!("[thumbs] 캐시 폴더를 알 수 없어 캐시 없이 동작합니다: {e}"); // i18n-ok: 로그
+                return None;
+            }
+        };
+        let prune = dir.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let n = prune_thumb_cache(&prune, SystemTime::now());
+            if n > 0 {
+                log::info!("썸네일 캐시 {n}개를 정리했습니다");
+            }
+        });
+        Some(dir)
+    })
+    .as_deref()
+}
+
+async fn run_blocking<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, IpcError> {
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_files::fav_thumb_task_failed(e)))
+}
+
+/// `work` 를 `slots` 의 슬롯 하나를 쥔 채 blocking 풀에서 돌린다.
 ///
-/// 슬롯은 blocking 작업 안으로 옮겨 쥔다 — 호출 쪽 future 가 먼저 사라져도 작업이 끝날 때까지
-/// 상한이 지켜진다. (`let _ = acquire()` 로 받으면 그 자리에서 놓아 상한이 사라진다.)
+/// 슬롯은 blocking 작업 안으로 옮겨 쥔다 — 호출 쪽 future 가 먼저 사라져도(창을 닫아 요청이 끊겨도)
+/// 작업이 끝날 때까지 상한이 지켜진다. (`let _ = acquire()` 로 받으면 그 자리에서 놓아 상한이 사라진다.)
 async fn in_decode_slot<T: Send + 'static>(
+    slots: &'static Semaphore,
     work: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, IpcError> {
     // 세마포어를 닫지 않으므로 acquire 는 실패하지 않는다.
-    let permit = DECODE_SLOTS
+    let permit = slots
         .acquire()
         .await
         .map_err(|e| IpcError::new(ErrorCode::Io, text_files::fav_thumb_wait_failed(e)))?;
-    tauri::async_runtime::spawn_blocking(move || {
+    run_blocking(move || {
         let _permit = permit;
         work()
     })
     .await
-    .map_err(|e| IpcError::new(ErrorCode::Io, text_files::fav_thumb_task_failed(e)))
+}
+
+/// 헤더 치수로 픽셀 버퍼를 어림해 슬롯을 고른다. 치수를 모르면 큰 쪽 — 모르는 것은 크다고 친다.
+fn decode_slots_for(dims: Option<(u32, u32)>) -> &'static Semaphore {
+    match dims {
+        Some((w, h)) if u64::from(w) * u64::from(h) * 4 <= SMALL_DECODE_ALLOC => small_decode_slots(),
+        _ => &BIG_DECODE_SLOTS,
+    }
+}
+
+/// 헤더만 읽어 치수를 낸다. 못 읽으면 None — 그 실패는 뒤따르는 `decode_thumb` 가 제 문장으로 알린다.
+///
+/// JPEG 는 image 를 거치지 않는다: image 의 JPEG 디코더(zune)는 치수만 물어도 생성자에서 **파일 전체를**
+/// 읽는다(`decode_thumb` 주석) — 슬롯을 고르기도 전에 큰 파일을 통째로 쥐게 된다.
+fn image_dims(file: &Path) -> Option<(u32, u32)> {
+    let reader = image::ImageReader::open(file).ok()?.with_guessed_format().ok()?;
+    if reader.format() == Some(image::ImageFormat::Jpeg) {
+        let mut d = jpeg_decoder::Decoder::new(BufReader::new(File::open(file).ok()?));
+        d.read_info().ok()?;
+        let info = d.info()?;
+        return Some((u32::from(info.width), u32::from(info.height)));
+    }
+    reader.into_dimensions().ok()
 }
 
 /// 파일 하나를 `edge` 안에 들어가게 줄여 JPEG q80 바이트로 만든다(blocking — 호출부가 풀에서 돌린다).
@@ -311,27 +375,66 @@ fn decode_thumb(file: &Path, edge: u32) -> Result<Vec<u8>, IpcError> {
     if len > MAX_DECODE_ALLOC {
         return Err(too_big(text_files::fav_thumb_file_size_mib(len >> 20)));
     }
-    let mut reader = image::ImageReader::open(file)
-        .and_then(|r| r.with_guessed_format())
-        .map_err(|e| open_err(e.to_string()))?;
-    // `Limits` 는 non_exhaustive — 기본값에서 필드만 바꾼다.
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(MAX_DECODE_EDGE);
-    limits.max_image_height = Some(MAX_DECODE_EDGE);
-    limits.max_alloc = Some(MAX_DECODE_ALLOC);
-    reader.limits(limits);
-    let img = reader
-        .decode()
-        .map_err(|e| match e {
-            image::ImageError::Limits(l) => too_big(l.to_string()),
-            e => open_err(e.to_string()),
-        })?
-        .thumbnail(edge, edge);
+    let img = match decode_jpeg_scaled(file, edge) {
+        Some(img) => img,
+        None => {
+            let mut reader = image::ImageReader::open(file)
+                .and_then(|r| r.with_guessed_format())
+                .map_err(|e| open_err(e.to_string()))?;
+            // `Limits` 는 non_exhaustive — 기본값에서 필드만 바꾼다.
+            let mut limits = image::Limits::default();
+            limits.max_image_width = Some(MAX_DECODE_EDGE);
+            limits.max_image_height = Some(MAX_DECODE_EDGE);
+            limits.max_alloc = Some(MAX_DECODE_ALLOC);
+            reader.limits(limits);
+            reader.decode().map_err(|e| match e {
+                image::ImageError::Limits(l) => too_big(l.to_string()),
+                e => open_err(e.to_string()),
+            })?
+        }
+    }
+    .thumbnail(edge, edge);
     let mut buf = Vec::new();
     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut std::io::Cursor::new(&mut buf), 80)
         .encode_image(&img)
         .map_err(|e| IpcError::new(ErrorCode::Io, text_files::fav_thumb_encode_failed(e)))?;
     Ok(buf)
+}
+
+/// JPEG 를 **IDCT 축소 디코드**로 필요한 해상도만 푼다 — 긴 변이 `edge` 이상이 되는 가장 작은 배율
+/// (1/8·1/4·1/2·1, `jpeg_decoder::Decoder::scale`). 결과는 호출부가 `thumbnail(edge, edge)` 로 마저 줄이므로
+/// "edge 안에 맞춤" 규칙은 전체 디코드와 같다. 670×1610 프레임을 192 로 줄일 때 1/8(84×202)만 풀면 된다
+/// — 실측(릴리스, 실제 프레임 300장) 장당 7.2ms → 3.3ms. image 가 쓰는 zune-jpeg 에는 축소 디코드가 없다.
+///
+/// None = 이 길로 못 푼다(JPEG 아님·CMYK·16비트·손상·한도 초과) — 호출부가 image 로 다시 열어 종전과 같은
+/// 결과·같은 오류 문장을 낸다. EXIF 방향은 종전(image `decode`)처럼 반영하지 않는다.
+fn decode_jpeg_scaled(file: &Path, edge: u32) -> Option<image::DynamicImage> {
+    let mut f = BufReader::new(File::open(file).ok()?);
+    // image 의 내용 스니핑과 같은 기준(FF D8 FF) — 읽지 않고 버퍼만 들여다본다.
+    if !f.fill_buf().ok()?.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return None;
+    }
+    let mut d = jpeg_decoder::Decoder::new(f);
+    d.set_max_decoding_buffer_size(usize::try_from(MAX_DECODE_ALLOC).ok()?);
+    d.read_info().ok()?;
+    let info = d.info()?;
+    if u32::from(info.width) > MAX_DECODE_EDGE || u32::from(info.height) > MAX_DECODE_EDGE {
+        return None; // 한도 위반 문장은 image 경로가 낸다(`Limits`)
+    }
+    let rgb = match info.pixel_format {
+        jpeg_decoder::PixelFormat::RGB24 => true,
+        jpeg_decoder::PixelFormat::L8 => false,
+        jpeg_decoder::PixelFormat::L16 | jpeg_decoder::PixelFormat::CMYK32 => return None,
+    };
+    let req = u16::try_from(edge).ok()?;
+    let (w, h) = d.scale(req, req).ok()?;
+    let px = d.decode().ok()?;
+    let (w, h) = (u32::from(w), u32::from(h));
+    if rgb {
+        image::RgbImage::from_raw(w, h, px).map(image::DynamicImage::ImageRgb8)
+    } else {
+        image::GrayImage::from_raw(w, h, px).map(image::DynamicImage::ImageLuma8)
+    }
 }
 
 /// `path` 를 원자적으로 쓴다 — 같은 폴더의 고유 임시 파일에 쓰고 rename 한다.
@@ -379,10 +482,6 @@ fn prune_thumb_cache(dir: &Path, now: SystemTime) -> usize {
         }
     }
     removed
-}
-
-fn data_url(mime: &str, bytes: &[u8]) -> String {
-    format!("data:{mime};base64,{}", B64.encode(bytes))
 }
 
 // ---- 원본 읽기 ----------------------------------------------------------------------
@@ -856,27 +955,111 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 디코드 슬롯은 프로세스 전체에서 3개다. 세마포어를 빼거나 슬롯을 즉시 놓으면 8개가 한꺼번에
-    /// 돌고(peak 8), blocking 풀을 거치지 않고 제자리에서 돌리면 이 테스트 스레드에서 하나씩 돈다(peak 1).
-    #[tokio::test]
-    async fn decode_slots_cap_concurrency_at_three() {
+    /// `slots` 로 `jobs` 개를 동시에 던졌을 때 한꺼번에 돈 최대 수.
+    async fn peak_concurrency(slots: &'static Semaphore, jobs: usize) -> usize {
         use std::sync::atomic::AtomicUsize;
         use std::sync::Arc;
         let live = Arc::new(AtomicUsize::new(0));
         let peak = Arc::new(AtomicUsize::new(0));
-        let jobs = (0..8).map(|_| {
+        let all = (0..jobs).map(|_| {
             let (live, peak) = (live.clone(), peak.clone());
-            in_decode_slot(move || {
+            in_decode_slot(slots, move || {
                 let n = live.fetch_add(1, Ordering::SeqCst) + 1;
                 peak.fetch_max(n, Ordering::SeqCst);
                 std::thread::sleep(Duration::from_millis(50));
                 live.fetch_sub(1, Ordering::SeqCst);
             })
         });
-        for r in futures::future::join_all(jobs).await {
+        for r in futures::future::join_all(all).await {
             r.unwrap();
         }
-        assert_eq!(peak.load(Ordering::SeqCst), 3);
+        peak.load(Ordering::SeqCst)
+    }
+
+    /// 큰 이미지 슬롯은 프로세스 전체에서 3개다. 세마포어를 빼거나 슬롯을 즉시 놓으면 16개가 한꺼번에
+    /// 돌고(peak 16), blocking 풀을 거치지 않고 제자리에서 돌리면 이 테스트 스레드에서 하나씩 돈다(peak 1).
+    #[tokio::test]
+    async fn big_decode_slots_cap_concurrency_at_three() {
+        assert_eq!(peak_concurrency(&BIG_DECODE_SLOTS, 16).await, 3);
+    }
+
+    /// 작은 이미지 슬롯은 따로 세고(큰 쪽 3에 묶이지 않는다) 코어 수만큼 병렬이다.
+    #[tokio::test]
+    async fn small_decode_slots_are_separate_and_wider() {
+        let n = small_slot_count();
+        assert!((3..=8).contains(&n), "작은 슬롯 수는 3~8: {n}");
+        assert_eq!(peak_concurrency(small_decode_slots(), 16).await, n);
+    }
+
+    /// 슬롯 선택: 헤더 치수 × 4 가 64MiB 이하면 작은 쪽, 넘거나 치수를 모르면 큰 쪽.
+    #[test]
+    fn decode_slots_split_by_estimated_pixel_buffer() {
+        let small = |d| std::ptr::eq(decode_slots_for(d), small_decode_slots());
+        assert!(small(Some((670, 1610))), "프레임 추출 한 장(4MiB)은 작은 이미지");
+        assert!(small(Some((4096, 4096))), "경계(정확히 64MiB)는 작은 쪽");
+        assert!(!small(Some((4096, 4097))), "64MiB 를 넘으면 큰 쪽");
+        assert!(!small(Some((16384, 16384))));
+        assert!(!small(None), "치수를 모르면 큰 쪽");
+    }
+
+    fn write_jpeg(path: &Path, img: image::DynamicImage) {
+        let mut bytes = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Jpeg)
+            .unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    /// 축소 디코드는 긴 변이 edge 이상인 가장 작은 배율로 풀고, 최종 썸네일은 전체 디코드와 같은 규칙
+    /// (edge 안에 맞춤·비율 유지)이다. 축소 디코드가 빠지면(전체 디코드) 첫 단언이 670×1610 으로 깨진다.
+    #[test]
+    fn scaled_jpeg_decode_keeps_the_edge_rule() {
+        let dir = scratch("scaled");
+        let frame = dir.join("frame.jpg");
+        write_jpeg(&frame, image::DynamicImage::new_rgb8(670, 1610));
+        for (edge, pre) in [(128, (84, 202)), (192, (84, 202)), (320, (168, 403))] {
+            let raw = decode_jpeg_scaled(&frame, edge).expect("RGB JPEG 는 축소 디코드 길을 탄다");
+            assert_eq!((raw.width(), raw.height()), pre, "edge {edge}: 1/8·1/4 중 긴 변이 edge 이상인 가장 작은 배율");
+            let full = image::open(&frame).unwrap().thumbnail(edge, edge);
+            let out = image::load_from_memory(&decode_thumb(&frame, edge).unwrap()).unwrap();
+            assert_eq!(out.height(), edge, "긴 변이 정확히 edge");
+            assert!(
+                out.width().abs_diff(full.width()) <= 1,
+                "짧은 변은 전체 디코드 결과와 1px 안: {} vs {}",
+                out.width(),
+                full.width()
+            );
+        }
+        // edge 보다 작은 JPEG 는 배율 1 — 전체 디코드와 똑같이 edge 로 키운다(종전 동작).
+        let tiny = dir.join("tiny.jpg");
+        write_jpeg(&tiny, image::DynamicImage::new_rgb8(100, 50));
+        assert_eq!(decode_jpeg_scaled(&tiny, 192).map(|i| (i.width(), i.height())), Some((100, 50)));
+        let out = image::load_from_memory(&decode_thumb(&tiny, 192).unwrap()).unwrap();
+        assert_eq!((out.width(), out.height()), (192, 96));
+        // 회색조도 같은 길 · JPEG 가 아니면 None(image 경로)
+        let gray = dir.join("gray.jpg");
+        write_jpeg(&gray, image::DynamicImage::new_luma8(640, 480));
+        assert_eq!(decode_jpeg_scaled(&gray, 128).map(|i| (i.width(), i.height())), Some((160, 120)));
+        let png = dir.join("p.png");
+        image::DynamicImage::new_rgb8(64, 64).save(&png).unwrap();
+        assert!(decode_jpeg_scaled(&png, 128).is_none());
+        assert_eq!(image_dims(&frame), Some((670, 1610)), "JPEG 치수는 헤더만으로");
+        assert_eq!(image_dims(&png), Some((64, 64)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 캐시 키는 경로·스탬프·edge 가 하나만 달라도 갈린다 — 같은 이름으로 다시 쓴 파일(스탬프가 바뀐다)이
+    /// 옛 썸네일을 받지 않는다. 식은 벤치(`tests/bench/folder-thumbs.mjs`)와 짝이라 값 자체도 고정한다.
+    #[test]
+    fn thumb_cache_key_changes_with_stamp_and_edge() {
+        let p = Path::new(r"C:\shots\a.png");
+        let k = thumb_cache_key(p, (1000, 70), 192);
+        assert_ne!(k, thumb_cache_key(p, (1001, 70), 192));
+        assert_ne!(k, thumb_cache_key(p, (1000, 71), 192));
+        assert_ne!(k, thumb_cache_key(p, (1000, 70), 128));
+        assert_ne!(k, thumb_cache_key(Path::new(r"C:\shots\b.png"), (1000, 70), 192));
+        let mut h = Sha256::new();
+        h.update(r"C:\shots\a.png|1000|70|192".as_bytes());
+        assert_eq!(k, format!("{:x}", h.finalize()));
     }
 
     #[test]

@@ -271,13 +271,6 @@ pub fn fav_folder_read_failed(err: impl Display) -> String {
     }
 }
 
-pub fn fav_thumb_size_unsupported() -> &'static str {
-    match lang() {
-        Lang::Ko => "지원하지 않는 썸네일 크기입니다",
-        Lang::En => "Unsupported thumbnail size",
-    }
-}
-
 /// "파일을 읽지 못했습니다" — `file_read_failed`("파일 읽기 실패")와 한국어가 달라 따로 둔다.
 pub fn could_not_read_file(err: impl Display) -> String {
     match lang() {

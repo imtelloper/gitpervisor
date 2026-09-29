@@ -84,6 +84,10 @@ trash = "5.2.9"
 # 트리에 가진 것과 같은 버전이라 추가 컴파일 비용이 없고, chardetng 은 파이어폭스 탐지기 포팅이다.
 encoding_rs = "0.8"
 chardetng = "0.1"
+# 폴더 창 썸네일의 JPEG **축소 디코드**(IDCT 1/2·1/4·1/8 — commands/favorites.rs `decode_jpeg_scaled`).
+# image 가 쓰는 zune-jpeg 에는 축소 디코드가 없어 670×1610 프레임 하나를 192px 로 줄이는 데도 전체를 푼다
+# (실측 장당 7.2ms → 3.3ms). 순수 Rust. rayon 기본 피처는 끈다 — 디코드 병렬은 슬롯이 이미 한다.
+jpeg-decoder = { version = "0.3", default-features = false }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # native-tls(tiberius/sqlx/lettre/redis)가 Linux에서 링크하는 시스템 openssl 대신 소스에서 빌드한다 —

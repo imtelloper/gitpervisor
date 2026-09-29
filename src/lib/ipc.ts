@@ -1347,9 +1347,9 @@ export const ipc = {
   /** OS별 스크린샷·다운로드·바탕화면 후보 중 **실제로 존재하는 것만**. */
   favPresets: () => call<FavoriteFolder[]>("fav_presets"),
   favList: (path: string) => call<FavEntry[]>("fav_list", { path }),
-  /** 썸네일 data URL(image/jpeg). `edge`는 128·192·320 셋 중 하나만 받는다(캐시 폭주 방지). */
-  favThumb: (path: string, edge: 128 | 192 | 320) =>
-    call<string>("fav_thumb", { path, edge }),
+  /** 썸네일 스킴(`gpvthumb`) URL 에 붙일 토큰 — 프로세스마다 하나. URL 은 `lib/fav-thumb.ts` 가 만든다
+   *  (썸네일 자체는 IPC 를 타지 않는다 — commands/thumb_protocol.rs). */
+  favThumbToken: () => call<string>("fav_thumb_token"),
   /** 라이트박스 원본 — 썸네일이 아니라 파일 그대로(크기 한도는 백엔드). */
   favRead: (path: string) => call<FileBytes>("fav_read", { path }),
   favOpen: (path: string, how: "default" | "reveal") =>
