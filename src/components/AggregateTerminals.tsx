@@ -140,6 +140,28 @@ function shapeFor(mode: AggregateLayout, n: number) {
   return { cols, rows, rowLens };
 }
 
+/** 저장된 순서(aggregateOrder)를 입힌다 — 순서에 있는 셀은 그 순서로, 없는 셀(새로 연 것)은 기본 순서
+ *  그대로 뒤에. Array#sort는 stable이라 순서에 없는 셀끼리는 프로젝트 이름순이 유지된다. */
+function applyCellOrder<T extends { id: string }>(cells: T[], order: readonly string[]): T[] {
+  if (order.length === 0) return cells;
+  const rank = new Map(order.map((id, i) => [id, i]));
+  const at = (c: T) => rank.get(c.id) ?? Number.POSITIVE_INFINITY;
+  return [...cells].sort((a, b) => at(a) - at(b));
+}
+
+/** 두 셀 자리를 바꾼 전체 순서 — 숨긴 셀도 목록에 남아 제자리를 지킨다. */
+function swapCellOrder(ids: readonly string[], a: string, b: string): string[] {
+  const i = ids.indexOf(a);
+  const j = ids.indexOf(b);
+  if (i < 0 || j < 0 || i === j) return [...ids];
+  const next = [...ids];
+  [next[i], next[j]] = [next[j], next[i]];
+  return next;
+}
+
+/** 셀 이동을 시작하는 끌기 거리(px) — 헤더를 그냥 누르거나 살짝 떨린 것은 이동이 아니다. */
+const MOVE_THRESHOLD = 4;
+
 /** hover 팝오버 지연 닫기 — 트리거→팝오버로 건너뛰는 4px 공백에서 닫히지 않게 ms 유예.
  *  묶음 칩 드롭다운과 자동배치 팝오버가 같은 로직을 쓴다. 언마운트 시 타이머 정리. */
 function useDelayedClose(close: () => void, ms = 150) {
@@ -201,6 +223,9 @@ export function AggregateTerminals() {
   // 드래그로 조절한 그리드 트랙(shape별 fr 배열) — ui 스토어에 영속돼 여닫아도 유지된다.
   const aggregateTracks = useUi((s) => s.aggregateTracks);
   const setAggregateTracks = useUi((s) => s.setAggregateTracks);
+  // 셀 순서 — 헤더를 끌어 다른 셀에 놓으면 자리를 바꾼다(startMove). 칩 바는 프로젝트 이름순 그대로 둔다.
+  const aggregateOrder = useUi((s) => s.aggregateOrder);
+  const setAggregateOrder = useUi((s) => s.setAggregateOrder);
   // 자동배치 모드(그리드 / 세로 컬럼) — localStorage 영속이라 재시작·별도 창에도 따라온다.
   const layout = useUi((s) => s.aggregateLayout);
   const setAggregateLayout = useUi((s) => s.setAggregateLayout);
@@ -397,7 +422,8 @@ export function AggregateTerminals() {
   );
   useOccludesWebview(!!chipMenu || !!groupMenu || !!layoutMenu);
 
-  const shown = all.filter((t) => selected.has(t.id));
+  const ordered = useMemo(() => applyCellOrder(all, aggregateOrder), [all, aggregateOrder]);
+  const shown = ordered.filter((t) => selected.has(t.id));
   // 렌더 기준 확대 대상 — 상태가 스테일해도(대상이 방금 닫힘·칩 해제) 이번 프레임부터 무시.
   const zoomedId = zoomed && shown.some((t) => t.id === zoomed) ? zoomed : null;
   // 스테일 상태 정리 — 안 지우면 같은 id가 칩으로 되돌아올 때 예고 없이 다시 확대된다.
@@ -521,6 +547,73 @@ export function AggregateTerminals() {
     document.body.style.userSelect = "none"; // 드래그 중 텍스트 선택 방지
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
+  };
+
+  // 셀 이동 — 헤더를 끄는 동안의 대상. over = 지금 포인터 아래 셀(놓으면 그 셀과 자리를 바꾼다).
+  const [moving, setMoving] = useState<{ id: string; over: string | null } | null>(null);
+  // 끄는 도중 셀이 생기거나 닫혀도 놓는 순간의 목록으로 바꾼다(pointerdown 시점 클로저는 낡는다).
+  const orderedRef = useRef(ordered);
+  orderedRef.current = ordered;
+  /**
+   * 헤더 pointerdown → MOVE_THRESHOLD 넘게 끌면 이동 시작, 놓은 자리의 셀과 순서를 맞바꾼다.
+   * 포인터를 헤더가 붙잡는다: 안 잡으면 xterm(마우스 추적 모드 TUI)이 이동 이벤트를 먹어 대상 판정이 끊긴다.
+   * 이동 중엔 브라우저 셀을 suspended로 숨긴다 — 네이티브 webview는 DOM 위에 떠서 그 자리의
+   * elementFromPoint가 셀을 못 찾는다(경계 드래그와 같은 이유). Esc·포인터 유실은 취소.
+   */
+  const startMove = (e: React.PointerEvent<HTMLElement>, id: string) => {
+    if (e.button !== 0 || zoomedId || n < 2) return;
+    // 헤더 안 버튼(확대·숨기기·닫기 등)은 자기 클릭이 우선이다.
+    if ((e.target as HTMLElement).closest("button, input, a")) return;
+    const header = e.currentTarget;
+    const pointerId = e.pointerId;
+    const sx = e.clientX;
+    const sy = e.clientY;
+    let started = false;
+    let done = false;
+    let over: string | null = null;
+    header.setPointerCapture(pointerId);
+    const cellAt = (x: number, y: number) =>
+      document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-agg-cell]")?.dataset.aggCell ?? null;
+    const onMove = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      if (!started) {
+        if (Math.hypot(ev.clientX - sx, ev.clientY - sy) < MOVE_THRESHOLD) return;
+        started = true;
+        document.body.style.userSelect = "none";
+        document.body.style.cursor = "grabbing";
+      }
+      const hit = cellAt(ev.clientX, ev.clientY);
+      over = hit && hit !== id ? hit : null;
+      setMoving({ id, over });
+    };
+    const finish = (commit: boolean) => {
+      if (done) return;
+      done = true;
+      header.removeEventListener("pointermove", onMove);
+      header.removeEventListener("pointerup", onUp);
+      header.removeEventListener("lostpointercapture", onLost);
+      window.removeEventListener("keydown", onKey, true);
+      if (header.hasPointerCapture(pointerId)) header.releasePointerCapture(pointerId);
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+      setMoving(null);
+      if (commit && started && over)
+        setAggregateOrder(swapCellOrder(orderedRef.current.map((c) => c.id), id, over));
+    };
+    const onUp = (ev: PointerEvent) => {
+      if (ev.pointerId === pointerId) finish(true);
+    };
+    const onLost = () => finish(false);
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key !== "Escape") return;
+      ev.preventDefault();
+      ev.stopPropagation(); // 모아보기 닫기 등 다른 Esc 처리로 새지 않게
+      finish(false);
+    };
+    header.addEventListener("pointermove", onMove);
+    header.addEventListener("pointerup", onUp);
+    header.addEventListener("lostpointercapture", onLost);
+    window.addEventListener("keydown", onKey, true);
   };
 
   return (
@@ -776,11 +869,15 @@ export function AggregateTerminals() {
                 return (
                   <div
                     key={t.id}
+                    // startMove가 포인터 아래 셀을 찾는 표식.
+                    data-agg-cell={t.id}
                     // 칩 호버 강조 — 어느 칩이 이 셀인지 짝을 보여준다(ring은 셀 밖으로 그려져
                     // xterm 크기를 건드리지 않는다 = 리핏 없음).
                     className={`absolute${isZoomed ? " z-30" : ""}${
                       zoomedId && !isZoomed ? " invisible" : ""
-                    }${hovered.has(t.id) ? " rounded ring-2 ring-accent" : ""}`}
+                    }${hovered.has(t.id) ? " rounded ring-2 ring-accent" : ""}${
+                      moving?.id === t.id ? " opacity-60" : ""
+                    }`}
                     style={style}
                     // 세션 셀 위 우클릭 = 칩 우클릭과 같은 메뉴(숨기기·확대·Float·닫기).
                     // 브라우저 셀의 주소창 등 입력 요소는 네이티브 편집 메뉴를 유지한다.
@@ -798,13 +895,14 @@ export function AggregateTerminals() {
                         // 열림 중엔 fixed 메뉴가 webview에 가려지지 않게 숨긴다.
                         // 다른 셀 확대 중에도 숨긴다 — 네이티브 webview는 DOM 위에 떠서
                         // invisible로는 확대된 터미널을 가리는 것을 못 막는다.
-                        suspended={resizing || (zoomedId !== null && !isZoomed)}
+                        suspended={resizing || !!moving || (zoomedId !== null && !isZoomed)}
                         // 칩 토글로 셀이 "크기 그대로 위치만" 밀리면 ResizeObserver가 못
                         // 잡는다 — 슬롯 좌표가 바뀔 때 bounds를 재동기화하게 한다.
                         layoutKey={`${n}:${r}:${c}`}
                         canRight={c < len - 1}
                         canBottom={r < rowsOfCells.length - 1}
                         onResizeStart={(e, axis) => startResize(e, r, c, axis)}
+                        onMoveStart={(e) => startMove(e, t.id)}
                         // 숨기기 = 상단 칩 선택 해제와 같다 — 브라우저는 그대로 살아 있다.
                         onHide={() => toggle(t.id)}
                         // 프로세스가 없으니 확인 없이 닫는다(워크스페이스 패널 X와 동일).
@@ -823,6 +921,7 @@ export function AggregateTerminals() {
                         canRight={!isZoomed && c < len - 1}
                         canBottom={!isZoomed && r < rowsOfCells.length - 1}
                         onResizeStart={(e, axis) => startResize(e, r, c, axis)}
+                        onMoveStart={(e) => startMove(e, t.id)}
                         // 숨기기 = 상단 칩 선택 해제와 같다 — 셸은 계속 돌아간다.
                         onHide={() => toggle(t.id)}
                         onClose={() =>
@@ -835,6 +934,10 @@ export function AggregateTerminals() {
                           })
                         }
                       />
+                    )}
+                    {/* 놓을 자리 표시 — 셀 위에 겹쳐 그려 xterm 크기를 건드리지 않는다(리핏 없음). */}
+                    {moving?.over === t.id && (
+                      <div className="pointer-events-none absolute inset-0 z-40 rounded bg-accent/15 ring-2 ring-accent" />
                     )}
                   </div>
                 );
@@ -1480,6 +1583,7 @@ function AggregateCell({
   canRight,
   canBottom,
   onResizeStart,
+  onMoveStart,
   onHide,
   onClose,
 }: {
@@ -1490,6 +1594,8 @@ function AggregateCell({
   canRight: boolean;
   canBottom: boolean;
   onResizeStart: (e: React.PointerEvent, axis: "x" | "y" | "both") => void;
+  /** 헤더를 끌어 셀 자리 바꾸기(AggregateTerminals startMove). */
+  onMoveStart: (e: React.PointerEvent<HTMLElement>) => void;
   onHide: () => void;
   onClose: () => void;
 }) {
@@ -1535,7 +1641,11 @@ function AggregateCell({
     >
       <div
         style={{ backgroundColor: meta.color.bg }}
-        className="flex h-6 shrink-0 items-center gap-1.5 border-b border-edge px-2 text-[11px] text-fg-muted"
+        onPointerDown={onMoveStart}
+        data-agg-cell-header
+        className={`flex h-6 shrink-0 items-center gap-1.5 border-b border-edge px-2 text-[11px] text-fg-muted ${
+          zoomed ? "" : "cursor-grab"
+        }`}
       >
         <StatusIcon status={status} />
         {/* h-6 헤더라 14px — 16px은 빡빡하다(태스크 54). */}
@@ -1596,6 +1706,7 @@ function BrowserCell({
   canRight,
   canBottom,
   onResizeStart,
+  onMoveStart,
   onHide,
   onClose,
 }: {
@@ -1605,6 +1716,7 @@ function BrowserCell({
   canRight: boolean;
   canBottom: boolean;
   onResizeStart: (e: React.PointerEvent, axis: "x" | "y" | "both") => void;
+  onMoveStart: (e: React.PointerEvent<HTMLElement>) => void;
   onHide: () => void;
   onClose: () => void;
 }) {
@@ -1619,7 +1731,9 @@ function BrowserCell({
     <div className="group/cell relative flex h-full w-full min-h-0 min-w-0 flex-col overflow-hidden rounded border border-edge">
       <div
         style={{ backgroundColor: meta.color.bg }}
-        className="flex h-6 shrink-0 items-center gap-1.5 border-b border-edge px-2 text-[11px] text-fg-muted"
+        onPointerDown={onMoveStart}
+        data-agg-cell-header
+        className="flex h-6 shrink-0 cursor-grab items-center gap-1.5 border-b border-edge px-2 text-[11px] text-fg-muted"
       >
         <Globe size={11} className="shrink-0 text-accent" />
         <ProjectLogo projectId={meta.projectId} size={14} />

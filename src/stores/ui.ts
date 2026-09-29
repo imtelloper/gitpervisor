@@ -154,6 +154,13 @@ export interface UiState {
    * 여닫아도 유지되게 localStorage 영속. fr은 상대값이라 창 크기가 변해도 비율 유지.
    */
   aggregateTracks: Record<string, { rows: number[]; cols: number[][] }>;
+  /**
+   * 모아보기 셀 순서 — 셀 헤더를 끌어 다른 셀에 놓으면 두 셀 자리를 바꾼다. 셀 id(paneId·브라우저 탭 id)는
+   * 레이아웃과 함께 영속되는 UUID라 재시작해도 이어진다. 목록에 없는 셀(새로 연 것)은 뒤에 붙는다.
+   * localStorage 영속 — 별도 창은 aggregateLayout과 같이 시작 시에만 맞춘다(아래 setAggregateLayout 주석).
+   */
+  aggregateOrder: string[];
+  setAggregateOrder: (ids: string[]) => void;
   /** 모아보기 칩 바에서 같은 프로젝트의 탭을 칩 하나로 묶어 표시 (localStorage 영속) */
   aggregateGroupTabs: boolean;
   toggleAggregateGroupTabs: () => void;
@@ -565,6 +572,14 @@ export const useUi = create<UiState>((set) => ({
       return {};
     }
   })(),
+  aggregateOrder: (() => {
+    try {
+      const p: unknown = JSON.parse(localStorage.getItem("gp:aggregate-order") || "null");
+      return Array.isArray(p) ? p.filter((v): v is string => typeof v === "string") : [];
+    } catch {
+      return []; // 손상된 값 — 기본 순서(프로젝트 이름순)로 돌아갈 뿐이다
+    }
+  })(),
   aggregateGroupTabs: localStorage.getItem("gp:aggregate-group-tabs") === "1",
   // 알 수 없는 값(없음·구버전)은 grid — 기존 동작이 기본이다.
   aggregateLayout:
@@ -877,6 +892,14 @@ export const useUi = create<UiState>((set) => ({
       }
       return { aggregateTracks: next };
     }),
+  setAggregateOrder: (ids) => {
+    try {
+      localStorage.setItem("gp:aggregate-order", JSON.stringify(ids));
+    } catch {
+      /* localStorage 불가 환경 — 이번 세션 순서만 유지된다 */
+    }
+    set({ aggregateOrder: ids });
+  },
   toggleAggregateGroupTabs: () =>
     set((s) => {
       const v = !s.aggregateGroupTabs;

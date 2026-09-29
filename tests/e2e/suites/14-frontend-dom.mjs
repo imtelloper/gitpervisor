@@ -1170,6 +1170,79 @@ export async function run({ cdp, report: r, fix }) {
       );
       r.check("메인 버튼 아이콘 = 현재 모드(Columns3)", iconNow === true);
       await cdp.eval(`window.__gpv.ui.getState().setAggregateLayout("grid")`);
+
+      // ── #11d-2 셀 헤더 끌기 → 두 셀 자리 맞바꾸기(순서 영속) ──
+      // 실제 포인터(CDP Input)로 끈다 — 합성 PointerEvent는 포인터 캡처·elementFromPoint 경로를 타지 않는다.
+      const origOrder = await cdp.eval(`localStorage.getItem('gp:aggregate-order')`);
+      const slots = () => cdp.eval(`(()=>{
+        const g = document.querySelector('[style*="grid-template-columns"]');
+        if (!g) return null;
+        return [...g.querySelectorAll(':scope > [data-agg-cell]')].map(el => {
+          const r = el.getBoundingClientRect();
+          const h = el.querySelector('[data-agg-cell-header] span.truncate')?.getBoundingClientRect();
+          return { id: el.dataset.aggCell, x: Math.round(r.left), y: Math.round(r.top),
+            cx: r.left + r.width / 2, cy: r.top + r.height / 2,
+            hx: h ? h.left + 8 : null, hy: h ? h.top + h.height / 2 : null };
+        });
+      })()`);
+      // 행이 다시 짜이는 중(방금 grid로 되돌림)이면 좌표가 흔들린다 — 두 번 연속 같을 때까지.
+      let before = null;
+      for (let i = 0, prev = ""; i < 12; i++) {
+        const v = await slots();
+        const key = J(v?.map((s) => [s.id, s.x, s.y]));
+        if (Array.isArray(v) && v.length >= 2 && v[0].hx != null && key === prev) {
+          before = v;
+          break;
+        }
+        prev = key;
+        await sleep(250);
+      }
+      if (!before) {
+        r.skip("셀 헤더 끌기로 자리 바꾸기", "그리드 셀 좌표를 못 읽음");
+      } else {
+        const [a, b] = before; // DOM 순서 = 표시 순서 — 첫째를 둘째 위에 놓는다
+        const mouse = (type, x, y, extra = {}) =>
+          cdp._send("Input.dispatchMouseEvent", { type, x, y, button: "none", buttons: 0, ...extra });
+        const held = { button: "left", buttons: 1 };
+        await mouse("mouseMoved", a.hx, a.hy);
+        await mouse("mousePressed", a.hx, a.hy, { ...held, clickCount: 1 });
+        for (let i = 1; i <= 8; i++)
+          await mouse("mouseMoved", a.hx + ((b.cx - a.hx) * i) / 8, a.hy + ((b.cy - a.hy) * i) / 8, held);
+        const mid = await cdp.eval(`(()=>{
+          const src = document.querySelector('[data-agg-cell=${J(a.id)}]');
+          const dst = document.querySelector('[data-agg-cell=${J(b.id)}]');
+          return { dim: !!src?.classList.contains('opacity-60'),
+            mark: !!dst?.querySelector(':scope > div.pointer-events-none.ring-2') };
+        })()`);
+        await mouse("mouseReleased", b.cx, b.cy, { ...held, clickCount: 1 });
+        r.check("셀 헤더 끌기 중: 끄는 셀 흐림 + 놓을 셀 강조", mid.dim && mid.mark, J(mid));
+        const after = await poll(
+          slots,
+          (v) => {
+            const na = v?.find((s) => s.id === a.id);
+            const nb = v?.find((s) => s.id === b.id);
+            return !!na && !!nb && na.x === b.x && na.y === b.y && nb.x === a.x && nb.y === a.y;
+          },
+          12,
+          250,
+        );
+        const na = after?.find((s) => s.id === a.id);
+        const nb = after?.find((s) => s.id === b.id);
+        r.check(
+          "헤더를 다른 셀에 놓으면 두 셀 자리가 바뀐다",
+          !!na && !!nb && na.x === b.x && na.y === b.y && nb.x === a.x && nb.y === a.y,
+          J({ a: [a.x, a.y], b: [b.x, b.y], nowA: na && [na.x, na.y], nowB: nb && [nb.x, nb.y] }),
+        );
+        const saved = JSON.parse((await cdp.eval(`localStorage.getItem('gp:aggregate-order')`)) || "[]");
+        r.check(
+          "셀 순서 localStorage 영속(놓은 셀이 앞)",
+          saved.includes(a.id) && saved.includes(b.id) && saved.indexOf(b.id) < saved.indexOf(a.id),
+          J({ a: a.id.slice(0, 8), b: b.id.slice(0, 8), idxA: saved.indexOf(a.id), idxB: saved.indexOf(b.id) }),
+        );
+        // 원복 — 사용자 순서를 이 스위트가 바꿔 두지 않게.
+        await cdp.eval(`window.__gpv.ui.getState().setAggregateOrder(${origOrder ?? "[]"})`);
+        if (origOrder == null) await cdp.eval(`localStorage.removeItem('gp:aggregate-order')`);
+      }
     }
 
     // ── #11e 묶음 칩 우클릭 → "'{프로젝트}' 탭 N개 모두 닫기" (태스크 53) ──
