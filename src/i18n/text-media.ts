@@ -318,6 +318,28 @@ const ko = {
     saved: (name: string) => `프레임 저장됨 — ${name}`,
     overwriteMessage: "같은 이름의 프레임 파일이 있습니다. 덮어쓸까요?",
   },
+  // 간격 프레임 추출(video.rs video_extract_frames) — 플레이어 헤더 버튼·팝오버.
+  frameExtract: {
+    buttonTitle: "간격마다 프레임 추출 — 1초·2초… 마다 한 장씩 영상 옆 새 폴더에 저장",
+    title: "프레임 추출",
+    interval: "간격",
+    seconds: "초",
+    preset: (sec: number) => `${sec}초`,
+    format: "형식",
+    estimate: (count: number) => `약 ${count}장`,
+    where: (folder: string) => `영상 옆에 새 폴더 '${folder}'를 만들어 저장합니다 (이미 있으면 _2, _3…)`,
+    naming: (example: string) => `파일 이름에 영상 시각(시h분m초s)이 들어갑니다 — 예: ${example}`,
+    start: "추출 시작",
+    intervalInvalid: "간격은 0.1초 ~ 3600초 사이로 입력하세요",
+    busyOther: "다른 영상의 프레임을 추출하는 중입니다",
+    running: (frames: number, expected: number, percent: number) =>
+      `${frames} / 약 ${expected}장 · ${percent}%`,
+    runningNoTotal: (frames: number) => `${frames}장 추출됨 — 영상 길이를 몰라 진행률은 표시하지 않습니다`,
+    cancel: "취소",
+    done: (count: number, folder: string) => `프레임 ${count}장 추출 완료 — ${folder}`,
+    openFolder: "폴더 열기",
+    cancelled: "프레임 추출을 취소했습니다",
+  },
   videoSplit: {
     overwriteMessage: (folder: string) =>
       `${folder} 폴더에 같은 이름의 분할 파일이 있습니다. 기존 분할 결과를 덮어쓸까요?`,
@@ -658,6 +680,26 @@ export const mediaText = defineText(ko, {
     frameCapture: {
       saved: (name) => `Frame saved — ${name}`,
       overwriteMessage: "A frame file with the same name already exists. Overwrite it?",
+    },
+    frameExtract: {
+      buttonTitle: "Extract frames at an interval — one every 1 s, 2 s… into a new folder next to the video",
+      title: "Extract frames",
+      interval: "Interval",
+      seconds: "s",
+      preset: (sec) => `${sec} s`,
+      format: "Format",
+      estimate: (count) => `About ${count} frames`,
+      where: (folder) => `Saved to a new folder '${folder}' next to the video (_2, _3… if it exists)`,
+      naming: (example) => `File names carry the video time (h/m/s) — e.g. ${example}`,
+      start: "Start extraction",
+      intervalInvalid: "Enter an interval between 0.1 and 3600 seconds",
+      busyOther: "Extracting frames from another video",
+      running: (frames, expected, percent) => `${frames} / about ${expected} · ${percent}%`,
+      runningNoTotal: (frames) => `${frames} frames extracted — video length unknown, so no percentage`,
+      cancel: "Cancel",
+      done: (count, folder) => `Extracted ${count} frames — ${folder}`,
+      openFolder: "Open folder",
+      cancelled: "Frame extraction cancelled",
     },
     videoSplit: {
       overwriteMessage: (folder) =>

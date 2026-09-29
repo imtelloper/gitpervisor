@@ -335,6 +335,48 @@ pub fn video_frame_not_found_at_position() -> &'static str {
     }
 }
 
+pub fn video_frames_interval_invalid(min: f64, max: f64) -> String {
+    match lang() {
+        Lang::Ko => format!("추출 간격은 {min}초 ~ {max}초 사이여야 합니다"),
+        Lang::En => format!("The extraction interval must be between {min} and {max} seconds"),
+    }
+}
+
+pub fn video_frames_temp_dir_failed(path: &dyn Display, err: &dyn Display) -> String {
+    match lang() {
+        Lang::Ko => format!("프레임을 담을 임시 폴더를 만들지 못했습니다({path}): {err}"),
+        Lang::En => format!("Couldn't create a temporary folder for the frames ({path}): {err}"),
+    }
+}
+
+pub fn video_frames_rename_failed(path: &dyn Display, err: &dyn Display) -> String {
+    match lang() {
+        Lang::Ko => format!("프레임 파일 이름을 시각으로 바꾸지 못했습니다({path}): {err}"),
+        Lang::En => format!("Couldn't rename a frame file to its timestamp ({path}): {err}"),
+    }
+}
+
+pub fn video_frames_none_extracted() -> &'static str {
+    match lang() {
+        Lang::Ko => "추출된 프레임이 없습니다 — 영상 스트림이 없거나 읽을 수 없는 파일입니다",
+        Lang::En => "No frames were extracted — the file has no readable video stream",
+    }
+}
+
+pub fn video_frames_folder_exhausted(base: &str) -> String {
+    match lang() {
+        Lang::Ko => format!("'{base}' 이름의 폴더가 너무 많습니다 — 기존 추출 폴더를 정리한 뒤 다시 시도하세요"),
+        Lang::En => format!("Too many folders named '{base}' — clean up earlier extractions and try again"),
+    }
+}
+
+pub fn video_frames_cancelled() -> &'static str {
+    match lang() {
+        Lang::Ko => "프레임 추출을 취소했습니다",
+        Lang::En => "Frame extraction cancelled",
+    }
+}
+
 pub fn video_output_move_failed(path: &dyn Display, err: &dyn Display) -> String {
     match lang() {
         Lang::Ko => format!("산출물 이동 실패({path}): {err}"),

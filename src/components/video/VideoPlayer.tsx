@@ -86,6 +86,7 @@ import { CaptionTrackBlocks, type CaptionTrackData } from "./captions/CaptionTra
 import { TranscriptPanel } from "./captions/TranscriptPanel";
 import { CropOverlay, type CropRect } from "./CropOverlay";
 import { captureFrame } from "./frameCapture";
+import { FrameExtractButton } from "./FrameExtractButton";
 import { LibraryRail, type RailClip, type RailMedia } from "./LibraryRail";
 import { PlayerStatusBar } from "./PlayerStatusBar";
 import { ExportPanel } from "./ExportPanel";
@@ -1287,6 +1288,7 @@ export default function VideoPlayer({
         >
           <Camera size={12} /> {tp.frame}
         </button>
+        <FrameExtractButton projectId={projectId} path={path} durationMs={duration * 1000} hasFfmpeg={hasFfmpeg} />
         <button
           onClick={openExternally}
           title={tp.openSystemTitle}

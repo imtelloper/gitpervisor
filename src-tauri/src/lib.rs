@@ -1363,6 +1363,7 @@ pub fn run() {
             commands::video_export,
             commands::video_export_cancel,
             commands::video_capture_frame,
+            commands::video_extract_frames,
             commands::video_filmstrip,
             commands::video_waveform,
             commands::audio_cover_art,

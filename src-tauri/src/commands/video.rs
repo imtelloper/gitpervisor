@@ -1627,6 +1627,355 @@ pub(crate) fn commit_tmp_output(tmp: &Path, out: &Path) -> Result<(), IpcError> 
     })
 }
 
+// ══════════════════════════ 간격 프레임 추출 ══════════════════════════
+
+/// 간격 추출 진행·종결. 종결도 채널로 보낸다 — 수 분짜리 invoke라 응답 유실(Windows)이면 프라미스만으론
+/// UI가 영영 "추출 중"에 남는다(video_export가 종결을 이벤트로도 보내는 것과 같은 이유). 프론트는 먼저 온 종결을 쓴다.
+#[derive(Clone, Serialize)]
+#[serde(tag = "phase", rename_all = "camelCase")]
+pub enum FramesEvent {
+    /// `expected` — 예상 장 수(길이를 모르면 0). 프론트가 시작 때 길이를 몰랐을 수 있어 백엔드가 알려 준다.
+    Progress { percent: f64, frames: u64, expected: u64 },
+    #[serde(rename_all = "camelCase")]
+    Done { out_rel: String, count: u64 },
+    Failed { message: String },
+    Cancelled,
+}
+
+#[derive(Clone, Copy, Deserialize, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum FramesFormat {
+    Jpg,
+    Png,
+}
+
+impl FramesFormat {
+    fn ext(self) -> &'static str {
+        match self {
+            FramesFormat::Jpg => "jpg",
+            FramesFormat::Png => "png",
+        }
+    }
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FramesDone {
+    out_rel: String,
+    count: u64,
+}
+
+const FRAMES_MIN_INTERVAL: f64 = 0.1;
+const FRAMES_MAX_INTERVAL: f64 = 3600.0;
+
+/// `<stem>_frames_<간격>s` — f64 Display라 2.0 → "2", 0.5 → "0.5".
+fn frames_folder_base(stem: &str, interval: f64) -> String {
+    format!("{stem}_frames_{interval}s")
+}
+
+/// 비어 있는 이름을 고른다(`base`, `base_2`, `base_3`…). 기존 폴더에 섞어 넣지 않는다 — 지난번 추출과
+/// 섞이면 어느 장이 어느 회차인지 모르고, 같은 이름이면 덮어써진다.
+fn free_dir_name(parent: &Path, base: &str) -> Option<PathBuf> {
+    std::iter::once(base.to_string())
+        .chain((2..1000).map(|n| format!("{base}_{n}")))
+        .map(|name| parent.join(name))
+        .find(|p| !p.exists())
+}
+
+/// 추출 번호 → `<stem>_01h23m45s.jpg`. fps 필터의 k번째 출력이 k×간격 초 지점이라 번호로 시각을 안다.
+/// `:`는 Windows 파일 이름에 못 쓴다. 간격이 소수면 밀리초까지 붙인다(`…01s500`) — 안 붙이면 0.5초 간격의
+/// 두 장이 같은 이름이 된다. 0 채움이라 이름순 = 시간순. stem을 넣는 이유: 여러 영상의 프레임을 한 폴더에
+/// 합쳐도(학습 데이터) 이름이 겹치지 않는다.
+fn frame_time_name(stem: &str, index: u64, interval: f64, ext: &str) -> String {
+    let ms = (index as f64 * interval * 1000.0).round() as u64;
+    let (h, m, s) = (ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60);
+    let frac = if interval.fract() == 0.0 { String::new() } else { format!("{:03}", ms % 1000) };
+    format!("{stem}_{h:02}h{m:02}m{s:02}s{frac}.{ext}")
+}
+
+/// ffmpeg가 쓴 `frame_000123.<ext>` → 123. 다른 이름은 None.
+fn parse_frame_index(name: &str, ext: &str) -> Option<u64> {
+    name.strip_prefix("frame_")?.strip_suffix(ext)?.strip_suffix('.')?.parse().ok()
+}
+
+/// ffmpeg는 번호 이름만 쓸 수 있다(image2 패턴) — 끝난 뒤 영상 시각 이름으로 바꾸고 장 수를 돌려준다.
+/// 목록을 먼저 다 읽고 바꾼다(열거 중에 이름을 바꾸면 Windows에서 바뀐 항목이 다시 나올 수 있다).
+fn name_frames_by_time(dir: &Path, stem: &str, interval: f64, format: FramesFormat) -> Result<u64, IpcError> {
+    let fail = |p: &Path, e: std::io::Error| {
+        IpcError::new(ErrorCode::Io, text_video::video_frames_rename_failed(&p.display(), &e))
+    };
+    let mut frames = Vec::new();
+    for entry in std::fs::read_dir(dir).map_err(|e| fail(dir, e))? {
+        let entry = entry.map_err(|e| fail(dir, e))?;
+        if let Some(i) = entry.file_name().to_str().and_then(|n| parse_frame_index(n, format.ext())) {
+            frames.push((entry.path(), i));
+        }
+    }
+    for (from, i) in &frames {
+        let to = dir.join(frame_time_name(stem, *i, interval, format.ext()));
+        std::fs::rename(from, &to).map_err(|e| fail(&to, e))?;
+    }
+    Ok(frames.len() as u64)
+}
+
+/// ffmpeg 한 번으로 전부 뽑는다 — `fps=1/간격`이 0, 간격, 2×간격… 에 가장 가까운 프레임을 고른다.
+/// `-start_number 0`이라 `frame_000123`은 123×간격 초 지점이다(name_frames_by_time이 시각 이름으로 바꾼다).
+/// `V:0`은 커버 아트(attached pic)를 뺀 영상 스트림 — frame_seek_secs와 같은 이유.
+/// `pattern`은 image2 패턴이라 경로의 `%`는 호출부가 `%%`로 이스케이프해 넘긴다.
+fn build_frames_args(src: &str, pattern: &str, interval: f64, format: FramesFormat) -> Vec<String> {
+    let mut args: Vec<String> = [
+        "-hide_banner", "-nostdin", "-loglevel", "error", "-progress", "pipe:1",
+        "-i", src, "-map", "0:V:0",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    args.extend(["-vf".into(), format!("fps={:.6}", 1.0 / interval), "-start_number".into(), "0".into()]);
+    if format == FramesFormat::Jpg {
+        args.extend(["-q:v".into(), "2".into()]); // 2 = mjpeg 최고 화질 쪽(1~31) — 학습 데이터용으로 뭉개지지 않게
+    }
+    args.extend(["-f".into(), "image2".into(), pattern.into()]);
+    args
+}
+
+/// 플레이어가 아직 길이를 모를 때 ffprobe로 잰다 — 조각 fMP4처럼 메타데이터가 늦게 오는 파일에서 시작하면 프론트가
+/// 0을 보낸다(2026-09-29 실사용: "37 / 약 0장 · 0%"). 못 재면 0 — 진행률·예상 장 수만 잃고 추출은 그대로 간다.
+async fn probe_duration_ms(probe: Option<&Path>, src: &Path) -> u64 {
+    let Some(probe) = probe else { return 0 };
+    let s = src.display().to_string();
+    match run_capture(probe, &["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", &s], 60).await {
+        Ok((0, out, _)) => out
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|d| d.is_finite() && *d > 0.0)
+            .map_or(0, |d| (d * 1000.0) as u64),
+        _ => 0,
+    }
+}
+
+/// 예상 장 수 — 0, 간격, 2×간격 … 중 길이 **미만**인 지점(끝 지점엔 프레임이 없다). stores/videoFrames.ts와 같은 식.
+fn expected_frames(duration_ms: u64, interval: f64) -> u64 {
+    if duration_ms == 0 {
+        return 0;
+    }
+    (duration_ms as f64 / 1000.0 / interval).ceil() as u64
+}
+
+/// `-progress` 블록의 `frame=N`(지금까지 쓴 장 수).
+fn parse_progress_frame(line: &str) -> Option<u64> {
+    line.strip_prefix("frame=")?.trim().parse().ok()
+}
+
+#[tauri::command(async)]
+#[allow(clippy::too_many_arguments)]
+pub async fn video_extract_frames(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    project_id: String,
+    job_id: String,
+    rel_path: String,
+    interval_secs: f64,
+    format: FramesFormat,
+    // 진행률 분모 — 프론트가 이미 probe 해 둔 길이. 0이면 퍼센트 없이 장 수만 간다.
+    duration_ms: u64,
+    on_progress: Channel<FramesEvent>,
+) -> Result<FramesDone, IpcError> {
+    let outcome = video_extract_frames_inner(
+        &app, &state, &project_id, &job_id, &rel_path, interval_secs, format, duration_ms, &on_progress,
+    )
+    .await;
+    let last = match &outcome {
+        Ok(d) => FramesEvent::Done { out_rel: d.out_rel.clone(), count: d.count },
+        Err(e) if e.code == ErrorCode::Cancelled => FramesEvent::Cancelled,
+        Err(e) => FramesEvent::Failed { message: e.message.clone() },
+    };
+    // 창이 닫혀 채널이 죽었으면 받을 쪽이 없다 — 결과는 invoke 반환으로도 간다.
+    let _ = on_progress.send(last);
+    outcome
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn video_extract_frames_inner(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    project_id: &str,
+    job_id: &str,
+    rel_path: &str,
+    interval: f64,
+    format: FramesFormat,
+    duration_ms: u64,
+    chan: &Channel<FramesEvent>,
+) -> Result<FramesDone, IpcError> {
+    if !interval.is_finite() || !(FRAMES_MIN_INTERVAL..=FRAMES_MAX_INTERVAL).contains(&interval) {
+        return Err(IpcError::new(
+            ErrorCode::Io,
+            text_video::video_frames_interval_invalid(FRAMES_MIN_INTERVAL, FRAMES_MAX_INTERVAL),
+        ));
+    }
+    let repo = project_path(state, project_id)?;
+    let bin = find_ffmpeg(app, state.inner())?;
+    let src = super::tree::resolve_in_repo(&repo, rel_path)?;
+    if !src.is_file() {
+        return Err(IpcError::new(ErrorCode::NotFound, text_video::video_source_not_found()));
+    }
+    let parent = src
+        .parent()
+        .ok_or_else(|| IpcError::new(ErrorCode::NotFound, text_video::video_source_not_found()))?
+        .to_path_buf();
+
+    // 취소 등록은 spawn 전 — video_export와 같은 이유(준비 중에 누른 취소도 select!가 받는다).
+    let jobs = {
+        let reg = state.video.lock().unwrap_or_else(|e| e.into_inner());
+        Arc::clone(&reg.jobs)
+    };
+    let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
+    jobs.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(job_id.to_string(), VideoJob { cancel: Some(cancel_tx), pid: None });
+    let _guard = JobGuard { jobs: Arc::clone(&jobs), job_id: job_id.to_string() };
+
+    // 임시 폴더에 다 쓴 뒤 이름을 바꿔 확정한다 — 취소·실패가 반쯤 찬 폴더를 남기지 않는다. 이름은 여기서 만든
+    // uuid다(프론트가 준 job_id를 경로에 넣지 않는다).
+    let tmp = parent.join(format!(".gpv-frames-{}.tmp", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir(&tmp)
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_video::video_frames_temp_dir_failed(&tmp.display(), &e)))?;
+    let duration_ms = if duration_ms > 0 { duration_ms } else { probe_duration_ms(bin.ffprobe.as_deref(), &src).await };
+    let ran = run_frames_ffmpeg(&bin.ffmpeg, &src, &tmp, interval, format, duration_ms, job_id, &jobs, &mut cancel_rx, chan).await;
+    if let Err(e) = ran {
+        std::fs::remove_dir_all(&tmp).ok(); // 정리 실패는 원래 오류를 가리지 않는다
+        return Err(e);
+    }
+    let stem = src.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let count = match name_frames_by_time(&tmp, &stem, interval, format) {
+        Ok(n) => n,
+        Err(e) => {
+            std::fs::remove_dir_all(&tmp).ok();
+            return Err(e);
+        }
+    };
+    if count == 0 {
+        std::fs::remove_dir_all(&tmp).ok();
+        return Err(IpcError::new(ErrorCode::Io, text_video::video_frames_none_extracted()));
+    }
+    // 최종 이름은 **끝난 뒤에** 고른다 — 추출하는 몇 분 사이에 같은 이름 폴더가 생겨도 덮지 않는다.
+    let base = frames_folder_base(&stem, interval);
+    let Some(out) = free_dir_name(&parent, &base) else {
+        std::fs::remove_dir_all(&tmp).ok();
+        return Err(IpcError::new(ErrorCode::AlreadyExists, text_video::video_frames_folder_exhausted(&base)));
+    };
+    std::fs::rename(&tmp, &out).map_err(|e| {
+        std::fs::remove_dir_all(&tmp).ok();
+        IpcError::new(ErrorCode::Io, text_video::video_output_move_failed(&out.display(), &e))
+    })?;
+    let name = out.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let out_rel = match rel_path.rfind('/') {
+        Some(i) => format!("{}/{name}", &rel_path[..i]),
+        None => name,
+    };
+    Ok(FramesDone { out_rel, count })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_frames_ffmpeg(
+    ffmpeg: &Path,
+    src: &Path,
+    tmp: &Path,
+    interval: f64,
+    format: FramesFormat,
+    duration_ms: u64,
+    job_id: &str,
+    jobs: &Arc<Mutex<HashMap<String, VideoJob>>>,
+    cancel_rx: &mut tokio::sync::oneshot::Receiver<()>,
+    chan: &Channel<FramesEvent>,
+) -> Result<(), IpcError> {
+    let pattern = format!(
+        "{}{}frame_%06d.{}",
+        tmp.display().to_string().replace('%', "%%"),
+        std::path::MAIN_SEPARATOR,
+        format.ext()
+    );
+    let args = build_frames_args(&src.display().to_string(), &pattern, interval, format);
+    let mut cmd = Command::new(ffmpeg);
+    cmd.args(&args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000);
+    #[cfg(unix)]
+    cmd.process_group(0);
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_video::video_ffmpeg_spawn_failed(&e)))?;
+    if let Some(pid) = child.id() {
+        if let Some(j) = jobs.lock().unwrap_or_else(|e| e.into_inner()).get_mut(job_id) {
+            j.pid = Some(pid);
+        }
+    }
+
+    // `-progress`는 블록마다 frame=·out_time_us=… 를 찍고 progress= 로 끝난다 — 블록당 한 번(≈0.5초) 보낸다.
+    let stdout = child.stdout.take();
+    let p_chan = chan.clone();
+    let expected = expected_frames(duration_ms, interval);
+    let progress_task = tauri::async_runtime::spawn(async move {
+        let Some(stdout) = stdout else { return };
+        use tokio::io::AsyncBufReadExt;
+        let mut lines = tokio::io::BufReader::new(stdout).lines();
+        let (mut frames, mut us) = (0u64, 0u64);
+        while let Ok(Some(line)) = lines.next_line().await {
+            if let Some(n) = parse_progress_frame(&line) {
+                frames = n;
+            } else if let Some(t) = parse_out_time_us(&line) {
+                us = t;
+            } else if line.starts_with("progress=") {
+                let percent = if duration_ms > 0 {
+                    (us as f64 / 1000.0 / duration_ms as f64 * 100.0).clamp(0.0, 100.0)
+                } else {
+                    0.0
+                };
+                let _ = p_chan.send(FramesEvent::Progress { percent, frames, expected });
+            }
+        }
+    });
+    let stderr = child.stderr.take();
+    let stderr_task = tauri::async_runtime::spawn(async move {
+        let Some(stderr) = stderr else { return String::new() };
+        use tokio::io::AsyncReadExt;
+        let mut buf = Vec::new();
+        let _ = tokio::io::BufReader::new(stderr).read_to_end(&mut buf).await;
+        let start = buf.len().saturating_sub(8 * 1024);
+        String::from_utf8_lossy(&buf[start..]).into_owned()
+    });
+
+    let mut cancelled = false;
+    let waited = tokio::select! {
+        s = child.wait() => s,
+        _ = cancel_rx => {
+            cancelled = true;
+            let _ = child.start_kill();
+            child.wait().await
+        }
+    };
+    let status = waited.map_err(|e| IpcError::new(ErrorCode::Io, text_video::video_ffmpeg_wait_failed(&e)))?;
+    let stderr_tail = stderr_task.await.unwrap_or_default();
+    let _ = progress_task.await;
+    if cancelled {
+        return Err(IpcError::new(ErrorCode::Cancelled, text_video::video_frames_cancelled()));
+    }
+    if !status.success() {
+        log::error!("[video] 프레임 추출 실패 job={job_id}\n  args: {args:?}\n  stderr(tail):\n{stderr_tail}");
+        let line = last_error_line(&stderr_tail);
+        return Err(IpcError {
+            code: ErrorCode::Io,
+            message: text_video::video_ffmpeg_failed(&line, &cfa_hint(&line, tmp)),
+            stderr: Some(stderr_tail),
+        });
+    }
+    Ok(())
+}
+
 // ══════════════════════════ 타임라인 필름스트립·파형 ══════════════════════════
 
 #[derive(Clone, Serialize)]
@@ -3260,5 +3609,107 @@ mod tests {
         assert_eq!(reduce_peaks(&[0, 0, 0, 0], 2), vec![0.0, 0.0]);
         // 오디오 없음(빈 PCM)은 빈 벡터 = 프론트의 "파형 없음" 계약.
         assert!(reduce_peaks(&[], 8).is_empty());
+    }
+
+    #[test]
+    fn frames_folder_and_free_name() {
+        assert_eq!(frames_folder_base("cam04_접힘검사_15", 2.0), "cam04_접힘검사_15_frames_2s");
+        assert_eq!(frames_folder_base("a", 0.5), "a_frames_0.5s");
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(free_dir_name(dir.path(), "a_frames_2s"), Some(dir.path().join("a_frames_2s")));
+        std::fs::create_dir(dir.path().join("a_frames_2s")).unwrap();
+        std::fs::create_dir(dir.path().join("a_frames_2s_2")).unwrap();
+        // 같은 이름의 **파일**도 비켜 간다 — 폴더로 rename 하면 덮이거나 실패한다.
+        std::fs::write(dir.path().join("a_frames_2s_3"), b"x").unwrap();
+        assert_eq!(free_dir_name(dir.path(), "a_frames_2s"), Some(dir.path().join("a_frames_2s_4")));
+    }
+
+    #[test]
+    fn frames_args_by_format() {
+        let jpg = build_frames_args("in.mp4", "out/frame_%06d.jpg", 2.0, FramesFormat::Jpg);
+        let at = |k: &str| jpg.iter().position(|a| a == k).map(|i| jpg[i + 1].as_str());
+        assert_eq!(at("-vf"), Some("fps=0.500000"));
+        assert_eq!(at("-start_number"), Some("0"));
+        assert_eq!(at("-map"), Some("0:V:0"));
+        assert_eq!(at("-q:v"), Some("2"));
+        assert_eq!(jpg.last().map(String::as_str), Some("out/frame_%06d.jpg"));
+        let png = build_frames_args("in.mp4", "o/frame_%06d.png", 0.5, FramesFormat::Png);
+        assert!(!png.iter().any(|a| a == "-q:v"), "PNG 는 무손실이라 화질 인자가 없다");
+        assert!(png.iter().any(|a| a == "fps=2.000000"));
+        assert_eq!(parse_progress_frame("frame=123"), Some(123));
+        assert_eq!(parse_progress_frame("fps=12.0"), None);
+        assert_eq!(expected_frames(10_000, 1.0), 10, "10초 영상 1초 간격 = 10장(실측)");
+        assert_eq!(expected_frames(6_854_500, 2.0), 3428);
+        assert_eq!(expected_frames(0, 2.0), 0);
+    }
+
+    #[test]
+    fn frame_names_carry_video_time() {
+        assert_eq!(frame_time_name("cam04", 0, 2.0, "jpg"), "cam04_00h00m00s.jpg");
+        assert_eq!(frame_time_name("cam04", 123, 2.0, "jpg"), "cam04_00h04m06s.jpg");
+        assert_eq!(frame_time_name("cam04", 1800, 2.0, "jpg"), "cam04_01h00m00s.jpg");
+        assert_eq!(frame_time_name("cam04", 3427, 2.0, "png"), "cam04_01h54m14s.png");
+        // 소수 간격은 밀리초까지 — 없으면 0.5초 간격의 1·2번이 둘 다 00s 가 된다.
+        assert_eq!(frame_time_name("a", 1, 0.5, "jpg"), "a_00h00m00s500.jpg");
+        assert_eq!(frame_time_name("a", 3, 0.1, "jpg"), "a_00h00m00s300.jpg");
+        assert_eq!(parse_frame_index("frame_000123.jpg", "jpg"), Some(123));
+        assert_eq!(parse_frame_index("frame_000123.png", "jpg"), None);
+        // stem 이 "frame" 인 영상 — 바꾼 이름을 다시 번호로 읽으면 안 된다.
+        assert_eq!(parse_frame_index("frame_00h00m02s.jpg", "jpg"), None);
+    }
+
+    /// 실제 ffmpeg(PATH)로 간격 추출 인자를 끝까지 돌린다 — 장 수·이름·시각(=번호×간격)과 `%` 든 경로.
+    /// `cargo test --lib frames_real_ffmpeg -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore = "PATH의 ffmpeg 필요"]
+    async fn frames_real_ffmpeg_extracts_one_per_interval() {
+        let ffmpeg = crate::tools::runner::find_on_path("ffmpeg").expect("ffmpeg");
+        let dir = std::env::temp_dir().join(format!("gpv-frames-{}", uuid::Uuid::new_v4().simple()));
+        // 폴더 이름의 % 는 image2 패턴으로 읽힌다 — 이스케이프가 빠지면 여기서 깨진다.
+        let out = dir.join("100% 한글");
+        std::fs::create_dir_all(&out).unwrap();
+        let src = dir.join("a.mp4").display().to_string();
+        // 30fps 10초, 프레임 N의 밝기 = 초(N/30)*20+20 — 뽑힌 장이 몇 초 지점인지 밝기로 안다.
+        let gen = [
+            "-v", "error", "-y", "-f", "lavfi",
+            "-i", "color=black:s=64x36:r=30:d=10,geq=lum='floor(N/30)*20+20':cb=128:cr=128",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", &src,
+        ];
+        assert_eq!(run_capture(&ffmpeg, &gen, 60).await.unwrap().0, 0);
+        for (format, interval, want) in [(FramesFormat::Jpg, 2.0, 5), (FramesFormat::Png, 1.0, 10)] {
+            for e in std::fs::read_dir(&out).unwrap().flatten() {
+                std::fs::remove_file(e.path()).unwrap();
+            }
+            let pattern = format!(
+                "{}{}frame_%06d.{}",
+                out.display().to_string().replace('%', "%%"),
+                std::path::MAIN_SEPARATOR,
+                format.ext()
+            );
+            let args = build_frames_args(&src, &pattern, interval, format);
+            let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+            let (code, _, err) = run_capture(&ffmpeg, &argv, 60).await.unwrap();
+            assert_eq!(code, 0, "{err}");
+            assert_eq!(name_frames_by_time(&out, "a", interval, format).unwrap(), want as u64);
+            let mut names: Vec<String> = std::fs::read_dir(&out)
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            assert_eq!(names.len(), want, "{format:?} {interval}s → {names:?}");
+            // 이름순 = 시간순이고, 이름의 시각이 실제 그 지점의 프레임이다 — 밝기(초*20+20)로 확인한다. JPEG·PNG 는 전체 범위(0~255)라
+            // 영상의 제한 범위(16~235) 값으로 되돌려 비교한다(Y 20 → 전체 범위 4.66). 오차는 JPEG 몫.
+            for (k, name) in names.iter().enumerate() {
+                assert_eq!(name, &frame_time_name("a", k as u64, interval, format.ext()));
+                let p = out.join(name).display().to_string();
+                let one = ["-v", "error", "-i", p.as_str(), "-vf", "format=gray,crop=1:1:10:10", "-f", "rawvideo", "-"];
+                let px = run_capture_bytes(&ffmpeg, &one, 30).await.unwrap().1[0] as f64;
+                let y = px * 219.0 / 255.0 + 16.0;
+                let secs = (k as f64 * interval).floor();
+                assert!((y - (secs * 20.0 + 20.0)).abs() <= 4.0, "{name}: 밝기 {y:.1} — {secs}초 지점이어야 한다");
+            }
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

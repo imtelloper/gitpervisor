@@ -498,6 +498,18 @@ export interface ProjectLogo {
   source: string;
 }
 
+/** 간격 프레임 추출 — Rust `FramesEvent`(video.rs). 종결(done/failed/cancelled)도 이 채널로 온다. */
+export type VideoFramesFormat = "jpg" | "png";
+export type VideoFramesEvent =
+  | { phase: "progress"; percent: number; frames: number; expected: number }
+  | { phase: "done"; outRel: string; count: number }
+  | { phase: "failed"; message: string }
+  | { phase: "cancelled" };
+export interface VideoFramesDone {
+  outRel: string;
+  count: number;
+}
+
 export interface VideoExportProgress {
   jobId: string;
   projectId: string;
@@ -1589,6 +1601,25 @@ export const ipc = {
       // 백엔드 상한 = ffprobe 5초 ×2 + ffmpeg 60초 — 먼저 끊으면 저장은 되는데 실패 토스트가 뜬다.
       75_000,
     ),
+  // 간격 프레임 추출 — 장시간 잡(1시간 영상이면 수 분). 채널은 **호출마다 새로**(같은 채널 재사용 금지).
+  // 취소는 videoExportCancel(jobId) — 같은 잡 레지스트리다. 재시도 절대 금지.
+  videoExtractFrames: (
+    projectId: string,
+    jobId: string,
+    relPath: string,
+    intervalSecs: number,
+    format: VideoFramesFormat,
+    durationMs: number,
+    onEvent: (e: VideoFramesEvent) => void,
+  ) => {
+    const onProgress = new Channel<VideoFramesEvent>();
+    onProgress.onmessage = onEvent;
+    return callMutating<VideoFramesDone>(
+      "video_extract_frames",
+      { projectId, jobId, relPath, intervalSecs, format, durationMs, onProgress },
+      6 * 60 * 60_000,
+    );
+  },
   // 린트 — 마커는 배경 장식이라 background lane, 재시도 없음(다음 트리거가 자기치유).
   // content 있으면 ruff는 stdin으로 저장 전 버퍼를 실시간 린트(on-type). biome는 디스크 파일.
   lintFile: (projectId: string, relPath: string, content?: string) =>
