@@ -3,6 +3,7 @@ import { isMod } from "../../lib/platform";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   ClipboardPaste,
+  Clock,
   Copy,
   ExternalLink,
   Film,
@@ -26,11 +27,19 @@ import {
   useState,
   type RefObject,
 } from "react";
+import { flushSync } from "react-dom";
 
 import type { Messages } from "../../i18n/messages";
 import { currentMessages, useMessages } from "../../i18n/ui-language";
 import { copyText } from "../../lib/clipboard";
-import { favThumbUrl, useFavThumbToken, type ThumbEdge } from "../../lib/fav-thumb";
+import {
+  favThumbUrl,
+  prefetchFavThumbs,
+  touchFavThumb,
+  useFavThumbState,
+  useFavThumbToken,
+  type ThumbEdge,
+} from "../../lib/fav-thumb";
 import { openDocWindow } from "../../lib/floating";
 import { ipc, type FavEntry } from "../../lib/ipc";
 import { useUi } from "../../stores/ui";
@@ -225,6 +234,13 @@ export default function FolderWindow({
     [dir, join],
   );
 
+  const copyVideoTime = useCallback((time: string) => {
+    void copyText(time).then((ok) => {
+      const t = currentMessages().folder;
+      useUi.getState().pushToast(ok ? "success" : "error", ok ? t.window.copyVideoTimeDone : t.copyFailed);
+    });
+  }, []);
+
   /** 메인 창의 활성 터미널에 경로를 넣는다 — 스크린샷을 Claude 프롬프트에 붙이는 그 동선.
    *  이 창엔 터미널이 없으므로 이벤트로 넘긴다(App.tsx 가 받는다). */
   const pastePath = useCallback(
@@ -385,6 +401,7 @@ export default function FolderWindow({
           entry={menu.entry}
           onClose={() => setMenu(null)}
           onCopyPath={() => copyPath(menu.entry)}
+          onCopyVideoTime={copyVideoTime}
           onPastePath={() => pastePath(menu.entry)}
           onOpen={() =>
             void ipc.favOpen(join(dir, menu.entry.name), "default").catch(() => {
@@ -628,17 +645,14 @@ const GAP = 8;
 const PAD = 8;
 /** 칸 아래 이름 줄 높이(px). 가상 그리드는 행 높이가 고정이어야 스크롤 위치로 행을 계산한다. */
 const NAME_H = 24;
-/** 보이는 행 위아래로 더 그리는 행 — 휠 한 칸(≈100px)에 빈 행이 비치지 않게. */
-const OVERSCAN_ROWS = 2;
-/** 이보다 빠른 **연속** 스크롤(px/ms, 이벤트 간격 50ms 미만) 중에 새로 그려진 칸은 스크롤이
- *  `FLING_SETTLE_MS` 동안 멎을 때까지 썸네일을 요청하지 않는다 — 스크롤바를 끌어 3천 장을 훑으면 지나간
- *  칸마다 디코드가 나가 멈춘 자리의 썸네일이 그 뒤에 줄을 섰다(벤치 f: 옛 구조 2,980장 헛디코드). 휠·
- *  PageDown 같은 **한 번씩의** 이동(이벤트 간격이 길다)에는 걸리지 않아 곧바로 뜬다. */
-const FLING_PX_PER_MS = 3;
-const FLING_SETTLE_MS = 120;
 
 /**
- * 가상 그리드 — 보이는 행 ± `OVERSCAN_ROWS` 만 DOM 에 그리고 전체 높이는 바깥 상자가 잡는다.
+ * 가상 그리드 — 보이는 행 ± 한 화면(행 수)만 DOM 에 그리고 전체 높이는 바깥 상자가 잡는다. 위아래 한 화면은
+ * 휠을 연달아 굴려도 컴포지터가 먼저 밀어 올린 자리에 빈 행이 비치지 않게 하는 몫이다.
+ *
+ * 칸은 썸네일을 요청하지 않는다 — 목록 전체를 미리 받기(`lib/fav-thumb.ts` prefetchFavThumbs)에 넘기고 보이는
+ * 범위만 알린다. 칸마다 요청하던 때는 빠른 스크롤로 지나간 칸마다 디코드가 나가 멈춘 자리가 그 뒤에 줄을 섰고
+ * (벤치 f), 그걸 막으려 스크롤이 멎을 때까지 요청을 미뤘더니 내리는 내내 아이콘만 보였다(벤치 g·h).
  *
  * 열 수는 `repeat(auto-fill, minmax(edge, 1fr))` 와 같은 식으로 스크롤 영역 폭에서 직접 계산한다(창 크기가
  * 바뀌면 ResizeObserver 가 다시 잰다). 클릭·더블클릭·우클릭은 칸마다 핸들러를 달지 않고 바깥에서 `data-i` 로
@@ -670,7 +684,6 @@ function GridView({
   const token = useFavThumbToken();
   const [box, setBox] = useState({ w: 0, h: 0 });
   const [topRow, setTopRow] = useState(0);
-  const [settled, setSettled] = useState(true);
 
   const tileH = edge + NAME_H + 2; // 테두리 위아래 1px
   const rowH = tileH + GAP;
@@ -694,28 +707,14 @@ function GridView({
   useEffect(() => {
     const sc = scrollRef.current;
     if (!sc) return;
-    let lastTop = sc.scrollTop;
-    let lastT = performance.now();
-    let timer: number | undefined;
-    const onScroll = () => {
-      const now = performance.now();
-      const dt = now - lastT;
-      if (dt < 50 && Math.abs(sc.scrollTop - lastTop) / Math.max(dt, 1) > FLING_PX_PER_MS) {
-        setSettled(false);
-        window.clearTimeout(timer);
-        timer = window.setTimeout(() => setSettled(true), FLING_SETTLE_MS);
-      }
-      lastT = now;
-      lastTop = sc.scrollTop;
-      // 같은 행이면 React 가 다시 그리지 않는다(같은 값 setState) — 스크롤 이벤트 대부분이 여기서 끝난다.
-      setTopRow(Math.max(0, Math.floor((sc.scrollTop - PAD) / rowH)));
-    };
-    onScroll(); // 크기(edge)가 바뀌면 같은 scrollTop 이라도 행이 다르다
+    const rowOf = () => Math.max(0, Math.floor((sc.scrollTop - PAD) / rowH));
+    // 같은 행이면 React 가 다시 그리지 않는다(같은 값 setState) — 스크롤 이벤트 대부분이 여기서 끝난다.
+    // 행이 바뀌면 **이 이벤트 안에서** 그린다: React 에 맡기면 그리기 뒤 태스크에서 커밋해, 스크롤바를 끌거나 멀리
+    // 뛸 때 새 위치가 옛 행으로(= 빈 화면) 한 프레임 그려졌다.
+    const onScroll = () => flushSync(() => setTopRow(rowOf()));
+    setTopRow(rowOf()); // 크기(edge)가 바뀌면 같은 scrollTop 이라도 행이 다르다(효과 안이라 flushSync 는 못 쓴다)
     sc.addEventListener("scroll", onScroll, { passive: true });
-    return () => {
-      sc.removeEventListener("scroll", onScroll);
-      window.clearTimeout(timer);
-    };
+    return () => sc.removeEventListener("scroll", onScroll);
   }, [scrollRef, rowH]);
 
   // 키보드로 옮긴 커서가 화면 밖이면 그 행이 보이게 스크롤한다(그 행은 지금 DOM 에 없을 수도 있다 — 계산으로).
@@ -729,10 +728,24 @@ function GridView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reveal]);
 
-  const first = Math.max(0, topRow - OVERSCAN_ROWS);
-  const last = Math.min(rows - 1, topRow + Math.ceil(box.h / rowH) + OVERSCAN_ROWS);
+  const screenRows = Math.max(1, Math.ceil(box.h / rowH));
+  const first = Math.max(0, topRow - screenRows);
+  const last = Math.min(rows - 1, topRow + 2 * screenRows);
   const start = first * cols;
   const slice = items.slice(start, (last + 1) * cols);
+
+  const urls = useMemo(
+    () =>
+      items.map((e) =>
+        token && !e.isDir && e.kind === "image" ? favThumbUrl(join(dir, e.name), e, edge, token) : undefined,
+      ),
+    [items, dir, join, edge, token],
+  );
+  const visFirst = topRow * cols;
+  const visLast = Math.min(items.length, (topRow + screenRows + 1) * cols) - 1;
+  useEffect(() => prefetchFavThumbs(urls, visFirst, visLast), [urls, visFirst, visLast]);
+  // 창을 닫거나 목록 보기로 바꾸면 멈춘다(창을 닫으면 페이지째 사라지지만 목록 보기는 같은 페이지다).
+  useEffect(() => () => prefetchFavThumbs([], 0, -1), []);
 
   const at = (ev: React.MouseEvent) => {
     const el = ev.target instanceof Element ? ev.target.closest<HTMLElement>("[data-i]") : null;
@@ -780,12 +793,7 @@ function GridView({
             i={start + k}
             selected={start + k === cursor}
             edge={edge}
-            url={
-              token && !e.isDir && e.kind === "image"
-                ? favThumbUrl(join(dir, e.name), e, edge, token)
-                : undefined
-            }
-            live={settled}
+            url={urls[start + k]}
           />
         ))}
       </div>
@@ -793,27 +801,28 @@ function GridView({
   );
 }
 
-/** 그리드 한 칸. `live` 가 한 번이라도 참이었으면 썸네일을 건다 — 빠른 스크롤 중에 새로 그려진 칸은
- *  멈출 때까지 기다리고, 이미 건 칸은 그 뒤 빠른 스크롤이 시작돼도 떼지 않는다. */
+/** 그리드 한 칸. 썸네일은 미리 받기가 끝낸 뒤에만 건다 — 그래서 `<img>` 는 처음부터 보이는 상태로 마운트된다
+ *  (받아 둔 `Image` 가 메모리 캐시에 있어 그 자리에서 완성된다). 못 만드는 형식은 아이콘 그대로. */
 const Tile = memo(function Tile({
   e,
   i,
   selected,
   edge,
   url,
-  live,
 }: {
   e: FavEntry;
   i: number;
   selected: boolean;
   edge: ThumbEdge;
   url: string | undefined;
-  live: boolean;
 }) {
-  const [armed, setArmed] = useState(live);
-  if (live && !armed) setArmed(true);
-  const [load, setLoad] = useState<"wait" | "ok" | "fail">("wait");
-  const src = armed && load !== "fail" ? url : undefined;
+  const state = useFavThumbState(url);
+  /** 받아 둔 뒤 다시 읽다 실패한 URL(그사이 지워진 파일) — URL 로 들어야 크기를 바꿔 새 URL 이 오면 풀린다. */
+  const [broken, setBroken] = useState<string | null>(null);
+  const shown = state === "ok" && broken !== url;
+  useEffect(() => {
+    if (shown && url) touchFavThumb(url);
+  }, [shown, url]);
   return (
     <button
       data-i={i}
@@ -829,18 +838,19 @@ const Tile = memo(function Tile({
         {e.isDir ? (
           <Folder size={edge / 3} className="text-fg-dim" />
         ) : (
-          load !== "ok" && <KindIcon kind={e.kind} size={edge / 4} />
+          !shown && <KindIcon kind={e.kind} size={edge / 4} />
         )}
-        {src && (
-          // 뜰 때까지 숨겨 두고 아이콘을 보인다. 못 만드는 형식(svg·손상)은 4xx → onError → 아이콘 그대로.
+        {shown && (
+          // sync — 이 칸이 처음 그려지는 프레임에 디코드까지 끝낸다. async 면 크로뮴이 디코드를 기다리지 않고 그림
+          // 없이 먼저 그릴 수 있다(다음 프레임에 채움) — 스크롤로 새로 나타난 칸이 한 번 비어 보인다. 썸네일은 작은
+          // JPEG 라 동기 디코드가 싸다(벤치 d: 한 화면씩 끝까지 내려가는 동안 Long Task 0).
           <img
-            src={src}
+            src={url}
             alt={e.name}
-            decoding="async"
+            decoding="sync"
             draggable={false}
-            onLoad={() => setLoad("ok")}
-            onError={() => setLoad("fail")}
-            className={`absolute inset-0 h-full w-full object-contain ${load === "ok" ? "" : "invisible"}`}
+            onError={() => setBroken(url ?? null)}
+            className="absolute inset-0 h-full w-full object-contain"
           />
         )}
       </div>
@@ -936,12 +946,21 @@ function ListView({
 
 // ---- 우클릭 메뉴 --------------------------------------------------------------------
 
+/** 프레임 추출 이름(`<stem>_HHhMMmSSs[mmm].<ext>`, commands/video.rs `frame_time_name`)의 영상 시각
+ *  `HH:MM:SS[.mmm]`. 패턴이 **확장자 바로 앞**일 때만 — stem 에도 `_`·숫자가 흔해 이름 중간의 비슷한 조각은 프레임
+ *  이름이 아니다. 시는 두 자리 이상(100시간 넘는 영상은 세 자리). */
+function frameVideoTime(name: string): string | null {
+  const m = /_(\d{2,})h([0-5]\d)m([0-5]\d)s(\d{3})?\.[^.]+$/.exec(name);
+  return m ? `${m[1]}:${m[2]}:${m[3]}${m[4] ? `.${m[4]}` : ""}` : null;
+}
+
 function ItemMenu({
   x,
   y,
   entry,
   onClose,
   onCopyPath,
+  onCopyVideoTime,
   onPastePath,
   onOpen,
   onReveal,
@@ -951,11 +970,13 @@ function ItemMenu({
   entry: FavEntry;
   onClose: () => void;
   onCopyPath: () => void;
+  onCopyVideoTime: (time: string) => void;
   onPastePath: () => void;
   onOpen: () => void;
   onReveal: () => void;
 }) {
   const msg = useMessages();
+  const videoTime = entry.isDir ? null : frameVideoTime(entry.name);
   useEffect(() => {
     const close = () => onClose();
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -975,10 +996,10 @@ function ItemMenu({
   return (
     <div
       className="fixed z-50 min-w-52 rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl"
-      // 항목 4줄 × 31.5 + 헤더 24.5 + 패딩 ≈ 160. PaneMenu 와 같은 클램프 규칙.
+      // 항목 4줄 × 31.5 + 헤더 24.5 + 패딩 ≈ 160(영상 시각 줄이 있으면 +32). PaneMenu 와 같은 클램프 규칙.
       style={{
         left: Math.min(x, window.innerWidth - 220),
-        top: Math.max(0, Math.min(y, window.innerHeight - 160)),
+        top: Math.max(0, Math.min(y, window.innerHeight - (videoTime ? 192 : 160))),
       }}
       onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
@@ -986,6 +1007,13 @@ function ItemMenu({
       <div className="truncate px-3 py-1 text-[11px] text-fg-dim">{entry.name}</div>
       <div className="my-1 border-t border-edge" />
       <Row icon={<Copy size={14} />} label={msg.folder.menuCopyPath} hint={`${modLabel}+C`} onClick={run(onCopyPath)} />
+      {videoTime && (
+        <Row
+          icon={<Clock size={14} />}
+          label={msg.folder.window.menuCopyVideoTime(videoTime)}
+          onClick={run(() => onCopyVideoTime(videoTime))}
+        />
+      )}
       <Row
         icon={<ClipboardPaste size={14} />}
         label={msg.folder.window.menuPasteToTerminal}

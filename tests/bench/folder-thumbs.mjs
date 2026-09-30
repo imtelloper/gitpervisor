@@ -23,9 +23,19 @@
 //      동시 슬롯·큐를 같이 탄다) p50/p90/max
 //   f) 빠른 연속 스크롤(16ms 마다 400px)로 끝까지 → 마지막 화면이 다 뜨기까지 · 백엔드가 만든 썸네일 수
 //      (콜드) — 지나쳐 간 칸을 얼마나 헛디코드하나
+//   g) 왕복(웜) — 새로고침 → 첫 화면 → 2초 둔 뒤 프레임마다 SWEEP_PX 씩 끝까지 내려갔다 맨 위로 올라온다.
+//      프레임마다 **보이는 칸 중 썸네일이 안 보이는 칸**(아이콘이거나 빈 그림)을 세 합계·최대, 칸이 화면을
+//      다 덮지 못한 프레임 수, 멈춘 뒤 화면이 다 차기까지(끝·맨 위 각각)
+//   h) 콜드 연속 스크롤 — 이 픽스처 캐시를 비우고 새로고침 → 첫 화면이 차자마자 g 와 같은 속도로 끝까지.
+//      같은 지표(내려가는 동안만)
 //
-// "썸네일이 떴다" = 보이는 칸의 `<img>` 가 `complete && naturalWidth > 0`. 옛 구조(data URL)와 새 구조
-// (스킴 URL) 모두 같은 판정이다.
+// "썸네일이 떴다"(a~f) = 보이는 칸의 `<img>` 가 `complete && naturalWidth > 0`. 옛 구조(data URL)와 새 구조
+// (스킴 URL) 모두 같은 판정이다. g·h 의 "보인다"는 거기에 **실제로 보이는가**(`visibility`)까지 본다 —
+// 다 받아 둔 그림도 `onLoad` 전까지 숨겨 두고 아이콘을 비추는 구조가 있었다.
+//
+// g·h 는 스크롤 위치를 **프레임 사이(태스크)** 에서 바꾸고 다음 rAF 에서 잰다. 사용자 스크롤처럼 scroll 이벤트
+// → rAF → 그리기 순서가 한 프레임 안에 들어, 잰 DOM 이 곧 그 프레임에 그려지는 DOM 이다(rAF 안에서 바꾸면
+// scroll 이벤트가 다음 프레임으로 밀려 한 프레임씩 어긋난다).
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -143,7 +153,7 @@ const INSTR = `(() => {
     const R = sc.getBoundingClientRect();
     let lo = 0, hi = tiles.length;
     while (lo < hi) { const m = (lo + hi) >> 1; if (tiles[m].getBoundingClientRect().bottom <= R.top) lo = m + 1; else hi = m; }
-    let vis = 0, loaded = 0, firstTop = Infinity, lastBottom = -Infinity;
+    let vis = 0, loaded = 0, shown = 0, firstTop = Infinity, lastBottom = -Infinity;
     for (let i = lo; i < tiles.length; i++) {
       const r = tiles[i].getBoundingClientRect();
       if (r.top >= R.bottom) break;
@@ -151,14 +161,17 @@ const INSTR = `(() => {
       firstTop = Math.min(firstTop, r.top);
       lastBottom = Math.max(lastBottom, r.bottom);
       const img = tiles[i].querySelector("img");
-      if (img && img.complete && img.naturalWidth > 0) loaded++;
+      if (img && img.complete && img.naturalWidth > 0) {
+        loaded++;
+        if (getComputedStyle(img).visibility === "visible") shown++;
+      }
     }
     // 가상 그리드는 스크롤 직후 한 박자 동안 **옛 행**만 DOM 에 있다 — 그 칸들이 다 떴다고 "화면이 다 떴다"로
     // 세면 안 된다. 보이는 칸이 화면 위·아래 끝(행 사이 틈 10px 허용)까지 덮어야 한다(맨 위·맨 끝은 예외).
     const covered =
       (firstTop <= R.top + 10 || sc.scrollTop <= 20) &&
       (lastBottom >= R.bottom - 10 || sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 20);
-    return { dom: tiles.length, vis, loaded, covered, top: sc.scrollTop, h: sc.clientHeight, sh: sc.scrollHeight, sc };
+    return { dom: tiles.length, vis, loaded, shown, covered, top: sc.scrollTop, h: sc.clientHeight, sh: sc.scrollHeight, sc };
   };
   B.frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
   B.full = () => { const v = B.vis(); return !!v && v.covered && v.vis > 0 && v.loaded === v.vis; };
@@ -169,6 +182,16 @@ const INSTR = `(() => {
       await new Promise((r) => setTimeout(r, 5));
     }
     return true;
+  };
+  /** 화면이 다 찰 때까지(g·h) — 프레임마다 본다(5ms 폴링은 그리지도 않은 상태를 잰다). ms, 초과면 -1. */
+  B.waitShown = async (maxMs) => {
+    const t0 = performance.now();
+    for (;;) {
+      await new Promise((r) => requestAnimationFrame(r));
+      const v = B.vis();
+      if (v && v.covered && v.vis > 0 && v.shown === v.vis) return performance.now() - t0;
+      if (performance.now() - t0 > maxMs) return -1;
+    }
   };
   const tick = setInterval(() => {
     const now = performance.now();
@@ -226,6 +249,33 @@ const FLING = `(async () => {
   const flung = performance.now() - t0;
   const ok = await B.waitFull(180000);
   return { flung, lastScreen: performance.now() - t0 - flung, ok };
+})()`;
+
+/** g·h 의 스크롤 속도(px/프레임) — 60fps 면 12,000px/s, 휠을 연달아 굴리는 정도. */
+const SWEEP_PX = 200;
+/** g·h — `dirs` 방향(1 = 끝까지, -1 = 맨 위까지)으로 차례로 쓸고, 방향마다 멈춘 뒤 화면이 다 차기까지를 잰다.
+ *  빈 칸 지표는 모든 방향을 합친다. */
+const SWEEP = (dirs, idleMs) => `(async () => {
+  const B = window.__tb;
+  const sc = B.vis().sc;
+  await new Promise((r) => setTimeout(r, ${idleMs}));
+  const res = { frames: 0, emptySum: 0, emptyMax: 0, gapFrames: 0, settle: [] };
+  for (const dir of ${J(dirs)}) {
+    const end = () => (dir > 0 ? sc.scrollHeight - sc.clientHeight : 0);
+    while (dir > 0 ? sc.scrollTop < end() - 1 : sc.scrollTop > 1) {
+      await new Promise((r) => setTimeout(r, 0)); // 프레임 사이로(머리 주석)
+      sc.scrollTop = Math.max(0, Math.min(end(), sc.scrollTop + dir * ${SWEEP_PX}));
+      await new Promise((r) => requestAnimationFrame(r));
+      const v = B.vis();
+      const empty = v ? v.vis - v.shown : 0;
+      res.frames++;
+      res.emptySum += empty;
+      res.emptyMax = Math.max(res.emptyMax, empty);
+      if (!v || !v.covered) res.gapFrames++;
+    }
+    res.settle.push(await B.waitShown(60000));
+  }
+  return res;
 })()`;
 
 const pct = (xs, p) => {
@@ -297,10 +347,13 @@ async function main() {
     await win._send("Page.addScriptToEvaluateOnNewDocument", { source: INSTR });
 
     const reload = async () => {
+      // 옛 문서에 표시를 남긴다 — 새로고침이 아직 커밋 전이면 옛 문서의 `__tb` 가 "첫 화면 다 떴다"로 읽혀,
+      // 다음 측정이 곧 사라질 문서에서 돌다 "Execution context was destroyed" 로 죽었다(g·h 가 겪었다).
+      await win.eval(`window.__tbStale = true`).catch(() => {});
       await win._send("Page.reload", { ignoreCache: true });
       await sleep(300);
       for (let i = 0; i < 1800; i++) {
-        const s = await win.eval(`window.__tb ? { t: __tb.firstTile, s: __tb.firstScreen } : null`).catch(() => null);
+        const s = await win.eval(`window.__tb && !window.__tbStale ? { t: __tb.firstTile, s: __tb.firstScreen } : null`).catch(() => null);
         if (s?.s) return s;
         await sleep(100);
       }
@@ -338,6 +391,13 @@ async function main() {
       made = n;
     }
     const growing = still < 4; // 120초를 기다려도 아직 만들고 있다 — 센 값은 하한이다
+    // g) 웜 왕복
+    await reload();
+    const g = await win.eval(SWEEP([1, -1], 2000), { timeoutMs: 10 * 60 * 1000 });
+    // h) 콜드 연속 스크롤(첫 화면이 차자마자)
+    dropCached(keys);
+    await reload();
+    const h = await win.eval(SWEEP([1], 0), { timeoutMs: 10 * 60 * 1000 });
 
     const ms = (x) => `${Math.round(x)}ms`;
     console.log(`  DOM 에 그려진 칸                     ${domTiles} / ${N}`);
@@ -351,6 +411,11 @@ async function main() {
     console.log(
       `  f) 연속 스크롤 ${ms(f.flung)} 뒤 마지막 화면까지 ${f.ok ? ms(f.lastScreen) : "180초 초과"} · 만든 썸네일 ${made - firstScreenKeys}장${growing ? "+ (120초 뒤에도 계속 만드는 중 — 하한)" : ""} (첫 화면 ${firstScreenKeys}장 제외)`,
     );
+    const settle = (x) => (x < 0 ? "60초 초과" : ms(x));
+    const sweepLine = (x) =>
+      `${x.frames}프레임 · 빈 칸 합계 ${x.emptySum} · 프레임당 최대 ${x.emptyMax} · 화면을 다 못 덮은 프레임 ${x.gapFrames}`;
+    console.log(`  g) 웜 왕복(${SWEEP_PX}px/프레임, 2초 둔 뒤)  ${sweepLine(g)} · 멈춘 뒤 다 차기까지 끝 ${settle(g.settle[0])} · 맨 위 ${settle(g.settle[1])}`);
+    console.log(`  h) 콜드 연속 스크롤(${SWEEP_PX}px/프레임)  ${sweepLine(h)} · 멈춘 뒤 다 차기까지 ${settle(h.settle[0])}`);
     console.log(
       `\n  (키 계산 확인: 콜드로 끝까지 내려간 뒤 이 픽스처 키 ${cachedAfterWalk}/${N}개가 캐시에 있다 — ${N}에 못 미치면 a·f 의 "콜드"가 믿을 수 없다)\n`,
     );

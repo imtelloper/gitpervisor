@@ -48,6 +48,8 @@ const ko = {
     columnSize: "크기",
     columnModified: "수정",
     menuPasteToTerminal: "터미널에 경로 붙여넣기",
+    menuCopyVideoTime: (time: string) => `영상 시각 복사 (${time})`,
+    copyVideoTimeDone: "영상 시각을 복사했습니다",
   },
   lightbox: {
     keysHint: "← → 이동 · Esc 닫기",
@@ -101,6 +103,8 @@ export const folderText = defineText(ko, {
       columnSize: "Size",
       columnModified: "Modified",
       menuPasteToTerminal: "Paste path into terminal",
+      menuCopyVideoTime: (time) => `Copy video time (${time})`,
+      copyVideoTimeDone: "Video time copied",
     },
     lightbox: {
       keysHint: "← → to navigate · Esc to close",

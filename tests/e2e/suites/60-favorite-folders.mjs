@@ -1,6 +1,6 @@
 // 태스크 66 — 즐겨찾기 폴더 창(스크린샷·다운로드 빠르게 보기).
 //
-// 지키는 계약 열넷:
+// 지키는 계약 열다섯:
 //   ① **게이트가 백엔드에 있다.** 등록되지 않은 폴더는 `fav_list` 가 거부한다 — 프론트가 안 보내는
 //      것과 백엔드가 막는 것은 다르다. 그래서 UI 를 거치지 않고 **커맨드를 직접 invoke** 해서 잰다.
 //      이게 이 스위트의 핵심이다: 이 커맨드들만 절대경로를 받으므로, 게이트가 무너지면 파일시스템
@@ -26,6 +26,10 @@
 //      이미지 더블클릭은 원본 라이트박스(드롭다운 위), 복사는 첫 클릭 한 번, Esc 는 라이트박스만 닫는다.
 //   ⑭ 가상 그리드 — 수백 장 폴더에서 DOM 에 그린 칸은 전체보다 훨씬 적고(전체 높이는 유지), 끝까지 스크롤하면
 //      마지막 칸이 보이고 썸네일이 뜨며, 키보드로 커서를 화면 밖까지 옮기면 스크롤이 따라간다.
+//      · 미리 받기 — 창을 열어 두기만 해도 아직 그리지 않은 칸(맨 끝)의 썸네일까지 받아 두고, 끝으로 뛰어내린
+//        **첫 프레임**에 보이는 칸이 전부 이미 뜬 그림이다. 맨 위로 되돌아온 첫 프레임도 그렇다(본 것은 그대로).
+//   ⑮ 프레임 추출 이름(`…_HHhMMmSSs[mmm].<ext>`)의 우클릭 메뉴에만 "영상 시각 복사 (HH:MM:SS[.mmm])"가 있고,
+//      누르면 클립보드에 그 시각. 패턴이 이름 중간에 있거나 없으면 항목이 없다.
 //
 // 픽스처는 이 스위트가 직접 만든다(공유 git 픽스처와 무관한 그냥 폴더다) — 끝나면 지우고
 // `favoriteFolders` 설정도 되돌린다.
@@ -428,6 +432,77 @@ export async function run({ cdp, report: r }) {
       utimesSync(p, t, t);
     };
 
+    // ── ⑮ 우클릭 → 영상 시각 복사 ──
+    // 프레임 추출(commands/video.rs `frame_time_name`)이 짓는 이름만 항목이 뜬다 — stem 에 `_`·한글이 들어가고,
+    // 간격이 소수면 밀리초 3자리가 붙는다. 시각 패턴이 확장자 직전이 아니면(이름 중간) 프레임 이름이 아니다.
+    // 이 단계의 파일은 끝에서 지우고 새로고침한다 — 뒤 단계(⑦~)의 순서·개수 전제를 건드리지 않게.
+    {
+      const timed = {
+        "cam04_접힘검사_15_01h54m12s.png": "01:54:12",
+        "clip_00h00m01s500.png": "00:00:01.500",
+        "mid_01h02m03s_x.png": null,
+        "b.png": null,
+      };
+      const made = Object.keys(timed).filter((n) => n !== "b.png");
+      for (const n of made) writeFileSync(join(root, n), PNG_1X1);
+      await toolbar("새로고침");
+      await poll(grid, (g) => made.every((n) => g.order.includes(n)), 20, 250);
+      const MENU = `document.querySelector('div.fixed.z-50.min-w-52')`;
+      const menuOf = async (n) => {
+        await win.eval(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+        const ok = await win.eval(`(()=>{
+          const t = Array.from(document.querySelectorAll('button.flex-col[title]')).find((b) => b.title === ${J(n)});
+          if (!t) return false;
+          const rc = t.getBoundingClientRect();
+          t.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: rc.left + 8, clientY: rc.top + 8 }));
+          return true;
+        })()`);
+        if (!ok) return null;
+        return poll(
+          () =>
+            win.eval(
+              `(()=>{ const m = ${MENU}; if (!m || !(m.textContent||'').includes(${J(n)})) return null; return Array.from(m.querySelectorAll('button')).map(b => ((b.querySelector('span.min-w-0')||b).textContent||'').trim()); })()`,
+            ),
+          (v) => Array.isArray(v) && v.includes("경로 복사"),
+          12,
+          200,
+        );
+      };
+      const got = {};
+      for (const n of Object.keys(timed)) {
+        const items = await menuOf(n);
+        got[n] = Array.isArray(items) ? items.filter((l) => l.startsWith("영상 시각")) : null;
+      }
+      r.check(
+        "⑮ 프레임 추출 이름의 우클릭 메뉴에만 '영상 시각 복사 (HH:MM:SS[.mmm])' — 이름 중간의 패턴·패턴 없는 이름엔 없다",
+        Object.entries(timed).every(([n, t]) => J(got[n]) === J(t ? [`영상 시각 복사 (${t})`] : [])),
+        J(got),
+      );
+      const copied = {};
+      for (const [n, t] of Object.entries(timed)) {
+        if (!t) continue;
+        await menuOf(n);
+        await win.eval(
+          `(()=>{ const m = ${MENU}; const b = m && Array.from(m.querySelectorAll('button')).find(el => (((el.querySelector('span.min-w-0')||el).textContent)||'').trim().startsWith('영상 시각 복사')); if (b) { b.click(); return true; } return false; })()`,
+        );
+        copied[n] = await poll(
+          () => cdp.try("term_paste").then((x) => (x.ok ? String(x.r ?? "") : "")),
+          (v) => v === t,
+          14,
+          250,
+        );
+      }
+      r.check(
+        "⑮ [영상 시각 복사] → 클립보드에 그 시각(밀리초 이름이면 .mmm 까지)",
+        Object.entries(timed).every(([n, t]) => !t || copied[n] === t),
+        `${J(copied)} (클립보드가 비거나 옛 값이면 화면 잠금 여부부터 — 잠금이면 쓰기가 막힌다)`,
+      );
+      await win.eval(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+      for (const n of made) rmSync(join(root, n), { force: true });
+      await toolbar("새로고침");
+      await poll(grid, (g) => !made.some((n) => g.order.includes(n)), 20, 250);
+    }
+
     // ── ⑦ 선택은 이름으로 붙든다 ──
     // b.png 를 고르고 → 더 최신(+1h) 이미지를 넣고 → 새로고침. 기본 정렬이 최신 먼저라 새 파일이 b.png
     // **앞**에 끼어 b.png 가 한 칸 밀린다 — 인덱스로 든 선택이면 강조가 그 자리의 다른 파일로 간다.
@@ -645,7 +720,65 @@ export async function run({ cdp, report: r }) {
         `들어감=${entered14} 칸=${v0?.dom}/${N14} 높이=${v0?.sh}/${v0?.h}`,
       );
 
-      await win.eval(`(() => { const t = document.querySelector('button.flex-col[title]'); const sc = t && t.closest('.overflow-auto'); if (sc) sc.scrollTop = sc.scrollHeight; return !!sc; })()`);
+      // ── 미리 받기: 창을 열어 두기만 해도 **아직 한 번도 그리지 않은** 맨 끝 칸(f599)의 썸네일을 받아 둔다 ──
+      // 받은 URL 기억은 lib/fav-thumb.ts 의 DEV 훅(`__gpvThumbs`)으로 본다. URL 은 favThumbUrl 과 같은 식 — 크기(e=)는
+      // 지금 그려진 칸에서 읽는다(⑩ 뒤라 L 이지만 그 전제를 여기 박지 않는다). 식이 어긋나면 빨개지지 공허하게 통과하진 않는다.
+      const lastPath = join(many, name14(N14 - 1));
+      const pre = await poll(
+        () =>
+          win.eval(`(() => {
+            const src = (document.querySelector('button.flex-col[title] img') || {}).src || '';
+            const e = (/[?&]e=(\\d+)/.exec(src) || [])[1];
+            const url = window.__TAURI_INTERNALS__.convertFileSrc(${J(lastPath)}, 'gpvthumb') + '?e=' + e + '&t=' + ${J(token)} + '&v=' + ${J(stampOf(lastPath))};
+            const h = window.__gpvThumbs;
+            return {
+              hook: !!h, edge: e || null,
+              loaded: !!h && !!e && h.loaded(url),
+              inDom: Array.from(document.querySelectorAll('button.flex-col[title]')).some((b) => b.title === ${J(name14(N14 - 1))}),
+            };
+          })()`),
+        (v) => v?.loaded === true,
+        60,
+        250,
+      );
+      r.check(
+        "⑭ 미리 받기: 창을 열어 두기만 해도 아직 그리지 않은 맨 끝 칸(f599)의 썸네일이 이미 받아져 있다",
+        pre?.loaded === true && pre.inDom === false,
+        J(pre),
+      );
+
+      /** 스크롤을 `to`(scrollTop 식)로 옮기고 **다음 프레임**(rAF 한 번)에 보이는 칸을 잰다. eval 은 프레임 사이 태스크라
+       *  scroll 이벤트 → rAF 가 한 프레임에 든다 — 여기서 본 DOM 이 곧 그 프레임에 그려지는 DOM 이다. "보인다" = 그림이
+       *  완성돼 있고 숨겨져 있지 않고 아이콘(svg)이 없다. 칸이 화면을 다 덮는지도 본다 — 옛 행만 남은 빈 화면은 "보이는
+       *  칸 0개"라 그것만으로는 통과해 버린다. */
+      const firstFrame = (to) =>
+        win.eval(`(async () => {
+          const t = document.querySelector('button.flex-col[title]'); const sc = t && t.closest('.overflow-auto');
+          if (!sc) return null;
+          sc.scrollTop = ${to};
+          await new Promise((r) => requestAnimationFrame(r));
+          const R = sc.getBoundingClientRect();
+          let vis = 0, shown = 0, top = Infinity, bottom = -Infinity;
+          const notShown = [];
+          for (const b of document.querySelectorAll('button.flex-col[title]')) {
+            const r = b.getBoundingClientRect();
+            if (r.bottom <= R.top || r.top >= R.bottom) continue;
+            vis++; top = Math.min(top, r.top); bottom = Math.max(bottom, r.bottom);
+            const img = b.querySelector('img');
+            if (img && img.complete && img.naturalWidth > 0 && getComputedStyle(img).visibility === 'visible' && !b.querySelector('svg')) shown++;
+            else notShown.push(b.title);
+          }
+          const covered = (top <= R.top + 10 || sc.scrollTop <= 20) && (bottom >= R.bottom - 10 || sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 20);
+          return { vis, shown, covered, top: sc.scrollTop, notShown: notShown.slice(0, 4) };
+        })()`);
+      const allShown = (f) => !!f && f.vis > 0 && f.covered && f.shown === f.vis;
+
+      const fEnd = await firstFrame("sc.scrollHeight");
+      r.check(
+        "⑭ 미리 받기: 끝으로 뛰어내린 **첫 프레임**에 보이는 칸이 전부 이미 뜬 그림이다(아이콘·빈 칸 없음)",
+        allShown(fEnd),
+        J(fEnd),
+      );
       const vEnd = await poll(view14, (v) => v?.last?.inView === true && v.last.w > 0, 40, 250);
       r.check(
         "⑭ 끝까지 스크롤 → 마지막 칸(f599)이 화면 안에 그려지고 썸네일이 뜬다",
@@ -653,9 +786,17 @@ export async function run({ cdp, report: r }) {
         `마지막=${J(vEnd?.last)} 칸=${vEnd?.dom} scrollTop=${vEnd?.top}`,
       );
 
-      // 맨 위로 돌아가 첫 칸을 고른 뒤 → 40칸 이동. 화면에는 한두 행(3열)만 보이므로 f040 은 화면 밖이다 —
+      // 맨 위로 돌아온 첫 프레임 — 한 번 본 칸은 다시 나타나도 아이콘이 비치지 않는다. 옛 구조는 캐시에 있는 그림도
+      // 칸이 새로 마운트될 때마다 `onLoad` 까지 숨기고 아이콘을 보였다.
+      const fTop = await firstFrame("0");
+      r.check(
+        "⑭ 끝까지 갔다 맨 위로 돌아온 **첫 프레임**에 보이는 칸이 전부 뜬 그림이다(본 것은 그대로 남는다)",
+        allShown(fTop) && fTop.top === 0,
+        J(fTop),
+      );
+
+      // 맨 위에서 첫 칸을 고른 뒤 → 40칸 이동. 화면에는 한두 행(3열)만 보이므로 f040 은 화면 밖이다 —
       // 따라가는 스크롤이 없으면 그 칸은 DOM 에조차 없다(가상 그리드).
-      await win.eval(`(() => { const t = document.querySelector('button.flex-col[title]'); const sc = t && t.closest('.overflow-auto'); if (sc) sc.scrollTop = 0; return true; })()`);
       await poll(view14, (v) => v?.names?.includes(name14(0)), 20, 150);
       const picked14 = await tile(name14(0));
       const vPick = await poll(view14, (v) => v?.hl?.name === name14(0), 20, 150);
