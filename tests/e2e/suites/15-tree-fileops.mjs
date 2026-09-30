@@ -431,4 +431,84 @@ export async function run({ cdp, report: r, fix }) {
 
   // 정리 — 잔여 픽스처 디렉토리 제거(방어적, 이미 지워졌으면 무해).
   await cdp.try("delete_path", P("e2e-newdir"));
+
+  // ── F2 = 마지막으로 누른 트리 행 이름 바꾸기 (사용자 요청 2026-09-30) ──
+  // 판정은 트리 포커스가 아니라 "마지막 포인터가 트리 행이었나"다(파일을 열면 뷰어가 포커스를 가져간다) — 그래서
+  // 행에 pointerdown을 쏘고 F2는 body에 쏜다. 트리 밖을 누른 뒤의 F2는 창을 열면 안 된다.
+  const J = JSON.stringify;
+  const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+  const DIR = "e2e-f2";
+  const FILE = `${DIR}/target.txt`;
+  await cdp.try("create_dir", P(DIR));
+  await cdp.try("create_file", P(FILE));
+  const origSel = await cdp.eval(`window.__gpv.ui.getState().selectedProjectId`);
+  try {
+    await cdp.eval(`window.__gpv.queryClient.invalidateQueries({ queryKey: ["projects"] })`);
+    await sleep(400);
+    await cdp.eval(`window.__gpv.ui.getState().selectProject(${J(fix.projectId)})`);
+    await cdp.eval(`window.__gpv.terminals.getState().setActiveTab(${J(fix.projectId)}, "viewer")`);
+    await cdp.eval(`window.__gpv.queryClient.invalidateQueries({ queryKey: ${J(["dir", fix.projectId])} })`);
+    const press = (sel) =>
+      cdp.eval(`(()=>{
+        const el = [...document.querySelectorAll(${J(sel)})].find((e) => e.offsetWidth > 0);
+        if (!el) return 'none';
+        el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0 }));
+        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        return 'ok';
+      })()`);
+    const f2 = () =>
+      cdp.eval(`(()=>{ document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'F2', bubbles: true, cancelable: true }));
+        return true; })()`);
+    const prompt = async () => {
+      for (let i = 0; i < 10; i++) {
+        const p = await cdp.eval(`(()=>{ const p = window.__gpv.ui.getState().prompt; return p ? p.defaultValue ?? '' : null; })()`);
+        if (p !== null) return p;
+        await sleep(100);
+      }
+      return null;
+    };
+    const closePrompt = () => cdp.eval(`window.__gpv.ui.getState().closePrompt()`);
+    const DIR_ROW = `[data-tree-row][data-tree-path=${J(DIR)}][data-tree-isdir="1"]`;
+    const FILE_ROW = `[data-tree-row][data-tree-file=${J(FILE)}]`;
+    let dirOk = "none";
+    for (let i = 0; i < 20 && dirOk !== "ok"; i++) {
+      dirOk = await cdp.eval(`!![...document.querySelectorAll(${J(DIR_ROW)})].find((e) => e.offsetWidth > 0) ? 'ok' : 'none'`);
+      if (dirOk !== "ok") await sleep(250);
+    }
+    if (dirOk !== "ok") {
+      r.skip("F2 이름 바꾸기", "트리에 픽스처 폴더 행이 보이지 않음(패널 접힘 등)");
+      return;
+    }
+    await closePrompt();
+    await press(DIR_ROW); // 펼친다
+    let fileOk = "none";
+    for (let i = 0; i < 20 && fileOk !== "ok"; i++) {
+      fileOk = await cdp.eval(`!![...document.querySelectorAll(${J(FILE_ROW)})].find((e) => e.offsetWidth > 0) ? 'ok' : 'none'`);
+      if (fileOk !== "ok") await sleep(250);
+    }
+    await press(FILE_ROW);
+    await f2();
+    const pf = await prompt();
+    r.check("F2: 누른 파일 행 → 이름 바꾸기 창(기본값 = 그 파일 이름)", fileOk === "ok" && pf === "target.txt", `row=${fileOk} prompt=${J(pf)}`);
+    await closePrompt();
+    await press(DIR_ROW);
+    await f2();
+    const pd = await prompt();
+    r.check("F2: 누른 폴더 행 → 폴더 이름 바꾸기 창", pd === DIR, `prompt=${J(pd)}`);
+    await closePrompt();
+    // 트리 밖을 누른 뒤 — 옛 행을 기억해 엉뚱한 파일 이름을 바꾸려 들면 안 된다.
+    await cdp.eval(`(()=>{ document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0 })); return true; })()`);
+    await f2();
+    await sleep(300);
+    const pn = await cdp.eval(`window.__gpv.ui.getState().prompt`);
+    r.check("F2: 트리 밖을 누른 뒤에는 창이 열리지 않는다", pn === null, J(pn));
+  } finally {
+    await closePromptSafe(cdp);
+    await cdp.try("delete_path", P(DIR));
+    if (origSel) await cdp.eval(`window.__gpv.ui.getState().selectProject(${J(origSel)})`).catch(() => {});
+  }
+}
+
+async function closePromptSafe(cdp) {
+  await cdp.eval(`window.__gpv.ui.getState().closePrompt()`).catch(() => {});
 }

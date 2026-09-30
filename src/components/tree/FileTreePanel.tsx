@@ -64,7 +64,7 @@ import { isPreviewUrl, useBrowsers } from "../../stores/browser";
 import { useOccludesWebview } from "../../stores/occlusion";
 import { useTerminals } from "../../stores/terminals";
 import { useTreeState } from "../../stores/treeState";
-import { selectActiveDiff, useUi } from "../../stores/ui";
+import { selectActiveDiff, selectBlockingOverlay, useUi } from "../../stores/ui";
 import { CollapsedPanelStrip } from "../common/CollapsedPanelStrip";
 import { DragGhost, type DragGhostHandle } from "../common/DragGhost";
 import { ProjectLogo } from "../common/ProjectLogo";
@@ -548,6 +548,40 @@ export function FileTreePanel({
     };
   }, [menu]);
 
+  // F2 = 마지막으로 누른 행 이름 바꾸기(파일 탐색기 관례). 트리 **포커스**로 판정하지 않는다 — 파일을 누르면
+  // 뷰어가 포커스를 가져간다(영상·오디오 플레이어는 단축키를 받으려고 스스로 포커스한다). 그래서 "마지막 포인터가
+  // 이 트리의 행이었는가"를 본다: 트리 밖을 누르면 지우고, 입력 요소·모달 위에서는 양보한다.
+  const lastRowRef = useRef<TreeMenu | null>(null);
+  const renameRef = useRef<(m: TreeMenu) => void>(() => {});
+  useEffect(() => {
+    const onDown = (e: PointerEvent) => {
+      const el = e.target instanceof Element ? e.target : null;
+      const row = el && treeRef.current?.contains(el) ? el.closest<HTMLElement>("[data-tree-path][data-tree-row]") : null;
+      const path = row?.dataset.treePath;
+      lastRowRef.current = path
+        ? { x: 0, y: 0, path, name: path.split("/").pop() ?? path, isDir: row.dataset.treeIsdir === "1" }
+        : null;
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "F2" || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || e.defaultPrevented) return;
+      const t = e.target instanceof HTMLElement ? e.target : null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+      if (selectBlockingOverlay(useUi.getState())) return;
+      const r = lastRowRef.current;
+      // 그사이 목록이 바뀌어 그 행이 사라졌으면(삭제·폴더 접힘) 옛 경로를 고치지 않는다.
+      if (!r || !treeRef.current?.querySelector(`[data-tree-row][data-tree-path="${CSS.escape(r.path)}"]`)) return;
+      e.preventDefault();
+      renameRef.current(r);
+    };
+    // 캡처 — 행의 onPointerDown(드래그 시작)이 막아도 "누른 곳"은 기록돼야 한다.
+    window.addEventListener("pointerdown", onDown, true);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", onDown, true);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, []);
+
   // 윈도우는 역슬래시, 그 외 슬래시 — project.path 형식을 따른다.
   const sep = projectPath.includes("\\") ? "\\" : "/";
   const toOsPath = (rel: string) => rel.split("/").join(sep);
@@ -922,6 +956,7 @@ export function FileTreePanel({
 
   // 이름 바꾸기 — 같은 폴더 안에서 이름만 바꾼다. 성공 후 펼침 상태·뷰어 탭·멀티선택을 새 경로로
   // 옮긴다: 안 옮기면 방금 이름 바꾼 폴더가 접히고, 열려 있던 탭이 사라진 경로를 가리킨다.
+  renameRef.current = renameEntry;
   function renameEntry(m: TreeMenu) {
     setMenu(null);
     askPrompt({
