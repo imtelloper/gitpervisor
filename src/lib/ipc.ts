@@ -996,7 +996,9 @@ export type ErrorCode =
   // 실패 토스트가 아니라 "UTF-8 로 저장 / 취소" 확인창을 띄우는 것이 이 코드의 계약이다.
   | "UNMAPPABLE"
   // 대본 편집본의 구간이 너무 많은데 ffmpeg가 7 미만이라 그래프 파일을 못 읽는다(태스크 72 §3.6-3).
-  | "TOO_MANY_RANGES";
+  | "TOO_MANY_RANGES"
+  // 빠른 재생용 사본 리먹서가 이 파일 구조를 다루지 않는다(video_remux.rs) — 실패가 아니라 ffmpeg 경로로 넘기라는 신호다.
+  | "UNSUPPORTED";
 
 // ---- API 클라이언트 전송 계약 (commands/http.rs §4.9 / §5.1) ----
 // 백엔드 HttpRequest의 camelCase serde와 1:1 정합. lib/apiclient.ts에서 조립한
@@ -1563,6 +1565,10 @@ export const ipc = {
   // (Windows 응답 유실 대비 — events.ts가 이벤트만으로 UI를 정리한다). 재시도 절대 금지.
   videoExport: (projectId: string, jobId: string, spec: VideoExportSpec) =>
     callMutating<void>("video_export", { projectId, jobId, spec }, 6 * 60 * 60_000),
+  // 빠른 재생용 사본(조각 MP4 → 일반 MP4, 한 번의 순차 패스) — 진행·종결·취소는 videoExport와 같은 이벤트·잡 레지스트리다.
+  // UNSUPPORTED(트랙 2개·암호화·잘린 파일 …)는 종결 이벤트 없이 돌아온다 — 호출부가 같은 jobId로 videoExport(copy)를 부른다.
+  videoFastStartCopy: (projectId: string, jobId: string, relPath: string, outRel: string) =>
+    callMutating<void>("video_fast_start_copy", { projectId, jobId, relPath, outRel }, 6 * 60 * 60_000),
   // 멱등 취소 — 모르는 jobId는 no-op.
   videoExportCancel: (jobId: string) =>
     callMutating<void>("video_export_cancel", { jobId }, 10_000),

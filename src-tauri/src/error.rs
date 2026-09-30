@@ -40,6 +40,9 @@ pub enum ErrorCode {
     /// 대본 편집본의 남길 구간이 명령줄에 다 들어가지 않는데 ffmpeg가 그래프 파일(`-/filter_complex`, 7.0+)을
     /// 못 읽는다(태스크 72 §3.6-3). 다음 행동이 "무음 줄이기 목표를 늘리거나 ffmpeg를 바꾸기"라 Io와 가른다.
     TooManyRanges,
+    /// 빠른 재생용 사본 리먹서(commands/video_remux.rs)가 이 파일 구조를 다루지 않는다(트랙 2개·암호화·잘린 파일 …).
+    /// 실패가 아니다 — 프런트는 토스트 없이 같은 잡 id로 ffmpeg 경로(video_export copy)를 부른다. 임시 파일은 이미 지웠다.
+    Unsupported,
 }
 
 /// 모든 IPC 커맨드의 공통 오류 형태. 프론트엔드는 code로 분기하고 stderr를 상세로 노출한다.

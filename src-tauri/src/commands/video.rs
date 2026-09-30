@@ -1102,23 +1102,24 @@ pub(crate) fn parse_out_time_us(line: &str) -> Option<u64> {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ExportProgress {
-    job_id: String,
-    project_id: String,
-    percent: f64,
-    out_time_ms: u64,
-    speed: Option<String>,
+pub(crate) struct ExportProgress {
+    pub(crate) job_id: String,
+    pub(crate) project_id: String,
+    pub(crate) percent: f64,
+    pub(crate) out_time_ms: u64,
+    pub(crate) speed: Option<String>,
 }
 
+/// 빠른 재생용 사본 리먹서(video_remux.rs)도 같은 이벤트로 끝난다 — 프런트 토스트·무효화가 한 경로다.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ExportFinished {
-    job_id: String,
-    project_id: String,
-    ok: bool,
-    cancelled: bool,
-    error: Option<String>,
-    out_rel: String,
+pub(crate) struct ExportFinished {
+    pub(crate) job_id: String,
+    pub(crate) project_id: String,
+    pub(crate) ok: bool,
+    pub(crate) cancelled: bool,
+    pub(crate) error: Option<String>,
+    pub(crate) out_rel: String,
 }
 
 /// Windows 제어된 폴더 액세스(랜섬웨어 방지) 안내.

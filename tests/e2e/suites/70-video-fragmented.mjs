@@ -5,15 +5,19 @@
 //   frag.mp4       — 같은 플래그 + skip_trailer. ffmpeg는 기본으로 꼬리에 mfra를 쓰므로 그걸 꺼야 실파일과 같아진다.
 //   frag-mfra.mp4  — 같은 플래그(꼬리 mfra 있음 = 색인 있음) — 안내 대상이 아니다.
 //   plain.mp4      — 일반 mp4(moov 하나).
+//   frag-av.mp4    — frag.mp4와 같은 플래그 + 오디오 트랙(sine) — 전용 리먹서의 지원 밖(트랙 2개).
 //
 // 지키는 계약:
 //   ① video_container_info: frag = 조각·색인 없음 · frag-mfra = 조각·색인 있음 · plain = 조각 아님 · 레포 밖 경로 거절.
 //   ② 길이를 모르는(durationMs 0) copy 내보내기도 진행률이 0에 머물지 않는다(쓴 바이트 ÷ 원본 바이트).
 //   ③ UI: plain엔 안내 띠가 없고(판정이 끝난 뒤에) frag엔 띠와 버튼 · 버튼 → `frag (빠른 재생).mp4`가 생기고 조각이 아니다 ·
 //      뷰어가 사본으로 바뀐다 · 사본이 이미 있으면 다시 만들지 않고 그걸 연다.
+//      사본은 전용 리먹서(video_remux.rs)가 만든다 — 그 표식은 moov가 **끝**에 있는 것(ffmpeg 경로는 faststart라 앞)이다.
+//      사본 길이(probe durationMs)는 원본과 같다.
 //   ④ 배속: = 키로 16x까지 오르고(<video>.playbackRate) 더 눌러도 16 · - 한 번이면 8.
+//   ⑤ 오디오 트랙이 있는 조각 MP4: 리먹서는 UNSUPPORTED(임시 파일 없음) → 버튼은 ffmpeg 경로로 넘어가 사본을 만든다(moov가 앞).
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 export const name = "조각 MP4 감지 · 빠른 재생용 사본 · 배속 16x";
@@ -27,21 +31,40 @@ const FRAG_MFRA = `${DIR}/frag-mfra.mp4`;
 const PLAIN = `${DIR}/plain.mp4`;
 const COPY = `${DIR}/frag (빠른 재생).mp4`;
 const BYTES = `${DIR}/bytes-copy.mp4`;
+const AV = `${DIR}/frag-av.mp4`;
+const AV_COPY = `${DIR}/frag-av (빠른 재생).mp4`;
+const AV_DIRECT = `${DIR}/av-direct.mp4`;
 const EVENT_API = "/node_modules/@tauri-apps/api/event.js";
 const FRAG_FLAGS = "+frag_every_frame+empty_moov+default_base_moof";
 
-function makeVideo(out, movflags) {
+function makeVideo(out, movflags, audio = false) {
   execFileSync(
     "ffmpeg",
     [
       "-y", "-hide_banner", "-loglevel", "error",
       "-f", "lavfi", "-i", "testsrc=duration=4:size=320x240:rate=30",
+      ...(audio ? ["-f", "lavfi", "-i", "sine=duration=4", "-c:a", "aac"] : []),
       "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
       ...(movflags ? ["-movflags", movflags] : []),
       out,
     ],
     { encoding: "utf8" },
   );
+}
+
+/** 최상위 박스 순서 — 새 경로(리먹서)는 ftyp·mdat·moov, ffmpeg +faststart는 moov가 mdat 앞이다. */
+function topBoxes(abs) {
+  const b = readFileSync(abs);
+  const out = [];
+  for (let at = 0; at + 8 <= b.length && out.length < 64; ) {
+    let size = b.readUInt32BE(at);
+    if (size === 1) size = Number(b.readBigUInt64BE(at + 8));
+    else if (size === 0) size = b.length - at;
+    out.push(b.toString("latin1", at + 4, at + 8));
+    if (size < 8) break;
+    at += size;
+  }
+  return out;
 }
 
 export async function run({ cdp, report: r, fix }) {
@@ -107,6 +130,7 @@ export async function run({ cdp, report: r, fix }) {
     makeVideo(join(fix.repo, FRAG), `${FRAG_FLAGS}+skip_trailer`);
     makeVideo(join(fix.repo, FRAG_MFRA), FRAG_FLAGS);
     makeVideo(join(fix.repo, PLAIN), null);
+    makeVideo(join(fix.repo, AV), `${FRAG_FLAGS}+skip_trailer`, true);
 
     // ── ① 판정 ──
     const fi = await info(FRAG);
@@ -203,6 +227,18 @@ export async function run({ cdp, report: r, fix }) {
     r.check("③ 사본은 조각 MP4가 아니다", ci.ok && ci.r?.fragmented === false, ci.ok ? J(ci.r) : `${ci.code} ${ci.message}`);
     const vc2 = await poll(() => view(COPY), (v) => v?.judged !== null, 20, 250);
     r.check("③ 사본 화면엔 안내 띠가 없다", vc2?.judged?.fragmented === false && vc2.notice === 0, J(vc2));
+    const copyBoxes = existsSync(copyAbs) ? topBoxes(copyAbs) : null;
+    r.check(
+      "③ 사본은 전용 리먹서가 만들었다 — ftyp·mdat·moov(moov가 끝, faststart 아님)",
+      J(copyBoxes) === J(["ftyp", "mdat", "moov"]),
+      J(copyBoxes),
+    );
+    const [pf, pc] = [await cdp.try("video_probe", { projectId: pid, relPath: FRAG }), await cdp.try("video_probe", { projectId: pid, relPath: COPY })];
+    r.check(
+      "③ 사본 길이(probe durationMs)가 원본과 같다",
+      pf.ok && pc.ok && pf.r.durationMs > 0 && pc.r.durationMs === pf.r.durationMs,
+      `원본=${pf.ok ? pf.r.durationMs : pf.message} 사본=${pc.ok ? pc.r.durationMs : pc.message}`,
+    );
 
     // 같은 이름 사본이 이미 있다 — 다시 만들지 않고(mtime 그대로) 그걸 연다.
     const mtime0 = existsSync(copyAbs) ? statSync(copyAbs).mtimeMs : null;
@@ -247,6 +283,36 @@ export async function run({ cdp, report: r, fix }) {
       rates?.top === 16 && rates.over === 16 && rates.label === true && rates.down === 8,
       J(rates),
     );
+
+    // ── ⑤ 오디오 트랙이 있는 조각 MP4 — 리먹서 지원 밖 → ffmpeg 경로 ──
+    const tmpLeft = () => readdirSync(dirAbs).filter((n) => n.startsWith(".gpv-export-"));
+    const direct = await cdp.try(
+      "video_fast_start_copy",
+      { projectId: pid, jobId: `e2e-frag-av-${Date.now()}`, relPath: AV, outRel: AV_DIRECT },
+      { timeoutMs: 30000 },
+    );
+    r.check(
+      "⑤ 오디오+비디오 조각 MP4 → video_fast_start_copy 는 UNSUPPORTED · 산출물·임시 파일 없음",
+      !direct.ok && direct.code === "UNSUPPORTED" && !existsSync(join(fix.repo, AV_DIRECT)) && tmpLeft().length === 0,
+      `${direct.ok ? "ok" : `${direct.code} ${direct.message}`} out=${existsSync(join(fix.repo, AV_DIRECT))} tmp=${J(tmpLeft())}`,
+    );
+    await open(AV);
+    await poll(() => view(AV), (v) => v?.path === AV && v.notice === 1 && v.button?.disabled === false, 60, 250);
+    await cdp.eval(`window.__gpv.ui.setState({ toasts: [] })`);
+    const avClicked = await clickVisible('[data-gpv="fast-start-make"]');
+    const avAbs = join(fix.repo, AV_COPY);
+    const va = await poll(() => view(AV_COPY), (v) => existsSync(avAbs) && v?.path === AV_COPY, 120, 250);
+    const avBoxes = existsSync(avAbs) ? topBoxes(avAbs) : null;
+    const [ps, pa] = [await cdp.try("video_probe", { projectId: pid, relPath: AV }), await cdp.try("video_probe", { projectId: pid, relPath: AV_COPY })];
+    r.check(
+      "⑤ 버튼 → ffmpeg 폴백으로 사본이 생긴다(moov가 mdat 앞 = faststart · 오디오 유지 · 길이 ±100ms)",
+      avClicked === "ok" && va?.path === AV_COPY && avBoxes !== null && avBoxes.indexOf("moov") >= 0 &&
+        avBoxes.indexOf("moov") < avBoxes.indexOf("mdat") && ps.ok && pa.ok && pa.r.hasAudio === true &&
+        Math.abs(pa.r.durationMs - ps.r.durationMs) <= 100,
+      `click=${avClicked} path=${va?.path} boxes=${J(avBoxes)} dur=${ps.ok ? ps.r.durationMs : ps.message}→${pa.ok ? pa.r.durationMs : pa.message} audio=${pa.ok ? pa.r.hasAudio : "?"}`,
+    );
+    const avInfo = await info(AV_COPY);
+    r.check("⑤ 폴백 사본도 조각 MP4가 아니다", avInfo.ok && avInfo.r?.fragmented === false, avInfo.ok ? J(avInfo.r) : `${avInfo.code} ${avInfo.message}`);
   } finally {
     await cdp.eval(`(()=>{ if (window.__gpvFragUnlisten) window.__gpvFragUnlisten(); window.__gpvFragUnlisten=null; return true; })()`).catch(() => {});
     await cdp.eval(`document.querySelectorAll('video').forEach((v) => v.pause())`).catch(() => {});

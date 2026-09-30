@@ -32,6 +32,7 @@ mod thumb_protocol;
 mod tree;
 mod video;
 mod video_container;
+mod video_remux;
 
 pub use actions::*;
 pub use browser::*;
@@ -67,3 +68,4 @@ pub use thumb_protocol::*;
 pub use tree::*;
 pub use video::*;
 pub use video_container::*;
+pub use video_remux::*;

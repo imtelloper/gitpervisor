@@ -720,7 +720,8 @@ export default function VideoPlayer({
 
   // ── 빠른 재생용 사본 (조각 MP4 · 색인 없음 — video_container.rs) ──
   // 프레임마다 moof 조각이 붙고 sidx·mfra가 없으면 웹뷰가 길이·탐색 색인을 만들려고 파일 전체를 훑는다
-  // (11GB 실파일에서 재생 시작까지 수십 초). 스트림 카피로 일반 mp4(+faststart)를 만들면 moov 하나로 끝난다.
+  // (11GB 실파일에서 재생 시작까지 수십 초). 일반 mp4로 다시 싸면 moov 하나로 끝난다 — 먼저 전용 리먹서(video_remux.rs,
+  // 한 번의 순차 패스)를 쓰고, 그게 못 다루는 구조면 ffmpeg 스트림 카피(+faststart)로 넘긴다.
   // 종결 계약은 convertToMp4와 같다 — video://export-finished가 진실, invoke 완주는 보조, ref 가드로 한 번만.
   const tf = msg.media.fastStart;
   const container = useVideoContainerInfo(projectId, path, /\.(mp4|m4v|mov)$/i.test(path));
@@ -784,23 +785,29 @@ export default function VideoPlayer({
     setFastJob({ id, srcRel: path, pct: 0 });
     markLocalVideoJob(id); // 완료 토스트는 이 창에서만
     try {
-      await ipc.videoExport(projectId, id, {
-        srcRel: path,
-        outRel,
-        overwrite: false,
-        range: null,
-        mode: "copy",
-        speed: null,
-        crop: null,
-        masks: null,
-        maskKind: "mosaic",
-        crf: null,
-        maxHeight: null,
-        removeAudio: false,
-        // 이런 파일은 probe가 시간 초과하기 일쑤다 — 0이면 Rust가 쓴 바이트 ÷ 원본 바이트로 진행률을 낸다.
-        durationMs: probe.data?.durationMs ?? 0,
-        hasAudio: probe.data?.hasAudio ?? true,
-      });
+      try {
+        await ipc.videoFastStartCopy(projectId, id, path, outRel);
+      } catch (e) {
+        // 리먹서가 못 다루는 구조 — 종결 이벤트 없이 돌아왔으니 같은 잡 id로 이어 간다(진행률 구독·취소·토스트가 그대로 이어진다).
+        if (!(isIpcError(e) && e.code === "UNSUPPORTED")) throw e;
+        await ipc.videoExport(projectId, id, {
+          srcRel: path,
+          outRel,
+          overwrite: false,
+          range: null,
+          mode: "copy",
+          speed: null,
+          crop: null,
+          masks: null,
+          maskKind: "mosaic",
+          crf: null,
+          maxHeight: null,
+          removeAudio: false,
+          // 이런 파일은 probe가 시간 초과하기 일쑤다 — 0이면 Rust가 쓴 바이트 ÷ 원본 바이트로 진행률을 낸다.
+          durationMs: probe.data?.durationMs ?? 0,
+          hasAudio: probe.data?.hasAudio ?? true,
+        });
+      }
       finishFast(id, true);
     } catch (e) {
       finishFast(id, false);

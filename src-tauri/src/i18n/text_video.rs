@@ -377,6 +377,29 @@ pub fn video_frames_cancelled() -> &'static str {
     }
 }
 
+// ── 빠른 재생용 사본(조각 MP4 리먹서) — 지원 밖·잘림은 프런트가 ffmpeg 경로로 넘기므로 대개 로그에만 남는다 ──
+
+pub fn video_remux_unsupported(path: &dyn Display, why: &str) -> String {
+    match lang() {
+        Lang::Ko => format!("빠른 사본 변환기가 다루지 않는 영상 구조입니다({path}): {why}"),
+        Lang::En => format!("The fast copy remuxer doesn't handle this video's structure ({path}): {why}"),
+    }
+}
+
+pub fn video_remux_truncated(path: &dyn Display) -> String {
+    match lang() {
+        Lang::Ko => format!("원본 영상이 중간에 잘려 있습니다 — 마지막 조각이 파일 끝을 넘습니다({path})"),
+        Lang::En => format!("The source video is truncated — its last fragment runs past the end of the file ({path})"),
+    }
+}
+
+pub fn video_remux_failed(src: &dyn Display, out: &dyn Display, err: &dyn Display) -> String {
+    match lang() {
+        Lang::Ko => format!("빠른 재생용 사본을 만들지 못했습니다({src} → {out}): {err}"),
+        Lang::En => format!("Couldn't create the fast-playback copy ({src} → {out}): {err}"),
+    }
+}
+
 pub fn video_output_move_failed(path: &dyn Display, err: &dyn Display) -> String {
     match lang() {
         Lang::Ko => format!("산출물 이동 실패({path}): {err}"),
