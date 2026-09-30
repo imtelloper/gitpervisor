@@ -13,6 +13,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -1719,19 +1720,139 @@ fn name_frames_by_time(dir: &Path, stem: &str, interval: f64, format: FramesForm
     Ok(frames.len() as u64)
 }
 
+/// 디코드 경로. 하드웨어 후보는 프레임을 GPU에 둔 채 fps로 솎고 **남은 장만** 내려받는다(`-hwaccel_output_format` + 필터 끝
+/// `hwdownload`). output_format 없이 자동으로 내려받게 두면 모든 프레임을 옮겨 이득이 사라진다 — 2026-09-30 실측(H.264
+/// 670×1610 앞 5분 → 2초 간격, 일반 mp4): CPU 12.5s · cuda 4.5s · d3d11va 5.7s · 자동 내려받기 8.9~12.8s.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[allow(dead_code)] // OS마다 쓰는 후보가 다르다(FRAMES_DECODE_ORDER)
+enum FramesDecode {
+    Cuda,
+    D3d11va,
+    VideoToolbox,
+    Vaapi,
+    Cpu,
+}
+
+impl FramesDecode {
+    /// (`-hwaccel`·`-init_hw_device` 장치 이름, `-hwaccel_output_format`). CPU는 None.
+    fn hw(self) -> Option<(&'static str, &'static str)> {
+        match self {
+            FramesDecode::Cuda => Some(("cuda", "cuda")),
+            FramesDecode::D3d11va => Some(("d3d11va", "d3d11")),
+            FramesDecode::VideoToolbox => Some(("videotoolbox", "videotoolbox_vld")),
+            FramesDecode::Vaapi => Some(("vaapi", "vaapi")),
+            FramesDecode::Cpu => None,
+        }
+    }
+}
+
+/// 해 볼 순서 — 마지막은 늘 CPU. NVIDIA가 있으면 cuda가 가장 빠르다(위 실측). Linux의 VA-API(인텔·AMD)는 장치를
+/// ffmpeg가 첫 렌더 노드로 고른다.
+#[cfg(windows)]
+const FRAMES_DECODE_ORDER: &[FramesDecode] = &[FramesDecode::Cuda, FramesDecode::D3d11va, FramesDecode::Cpu];
+#[cfg(target_os = "macos")]
+const FRAMES_DECODE_ORDER: &[FramesDecode] = &[FramesDecode::VideoToolbox, FramesDecode::Cpu];
+#[cfg(all(unix, not(target_os = "macos")))]
+const FRAMES_DECODE_ORDER: &[FramesDecode] = &[FramesDecode::Cuda, FramesDecode::Vaapi, FramesDecode::Cpu];
+
+/// ffmpeg 경로별로 장치가 열린 첫 후보의 자리(FRAMES_DECODE_ORDER 안) — 장치·드라이버는 프로세스 수명 동안 안 바뀐다.
+/// 코덱 탓 실패(10비트·안 되는 프로파일)는 파일마다 달라 여기 두지 않고, 실제 작업이 다음 후보로 넘긴다.
+static FRAMES_DECODE_START: Mutex<Option<HashMap<PathBuf, usize>>> = Mutex::new(None);
+
+/// 하드웨어 장치를 열어 보기만 한다(입력 없음, 1초 안팎) — 원본으로 확인하면 조각 fMP4는 파일을 여는 것부터 훑기다.
+/// Ok(false) = 이 기계·빌드엔 없다. 실행 실패·시간 초과는 Err.
+async fn frames_hw_device_opens(ffmpeg: &Path, device: &str) -> Result<bool, IpcError> {
+    let args = [
+        "-hide_banner", "-nostdin", "-v", "error", "-init_hw_device", device,
+        "-f", "lavfi", "-i", "nullsrc=s=64x64:d=0.1", "-frames:v", "1", "-f", "null", "-",
+    ];
+    let (code, _, err) = run_capture(ffmpeg, &args, 15).await?;
+    if code != 0 {
+        log::info!("[video] 프레임 추출: {device} 장치를 열 수 없음 — {}", last_error_line(&err));
+    }
+    Ok(code == 0)
+}
+
+/// 이 ffmpeg로 해 볼 디코드 후보(앞에서부터).
+async fn frames_decode_candidates(ffmpeg: &Path) -> &'static [FramesDecode] {
+    let cached = FRAMES_DECODE_START
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|m| m.get(ffmpeg).copied());
+    if let Some(i) = cached {
+        return &FRAMES_DECODE_ORDER[i..];
+    }
+    let mut start = FRAMES_DECODE_ORDER.len() - 1;
+    let mut cacheable = true;
+    for (i, decode) in FRAMES_DECODE_ORDER.iter().enumerate() {
+        let Some((device, _)) = decode.hw() else {
+            start = i;
+            break;
+        };
+        match frames_hw_device_opens(ffmpeg, device).await {
+            Ok(true) => {
+                start = i;
+                break;
+            }
+            Ok(false) => {}
+            // 실행 실패·시간 초과는 이번만 건너뛴다 — 캐시하면 일시적인 문제로 프로세스 내내 느린 경로에 묶인다.
+            Err(e) => {
+                cacheable = false;
+                log::warn!("[video] 프레임 추출: {decode:?} 장치 확인 실패 — {}", e.message);
+            }
+        }
+    }
+    if cacheable {
+        FRAMES_DECODE_START
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_or_insert_with(HashMap::new)
+            .insert(ffmpeg.to_path_buf(), start);
+    }
+    &FRAMES_DECODE_ORDER[start..]
+}
+
+/// 원본을 ffmpeg에 넣는 길. 조각 fMP4는 stdin 파이프다 — 파일로 주면 ffmpeg가 시크할 수 있는 입력이라 조각 헤더를 먼저 다
+/// 훑는다(11GB·조각 20만 개: 열기만 11.4s, 차가운 HDD면 파일 전체 한 번). 파이프는 시크가 없어 곧장 디코드한다(앞 5분
+/// cuda: 파일 13.1s → 파이프 4.5s). 일반 mp4는 moov가 끝에 있을 수 있어 파이프로 못 넣는다.
+#[derive(Clone, Copy, Debug)]
+enum FramesInput<'a> {
+    File(&'a str),
+    Pipe,
+}
+
 /// ffmpeg 한 번으로 전부 뽑는다 — `fps=1/간격`이 0, 간격, 2×간격… 에 가장 가까운 프레임을 고른다.
 /// `-start_number 0`이라 `frame_000123`은 123×간격 초 지점이다(name_frames_by_time이 시각 이름으로 바꾼다).
 /// `V:0`은 커버 아트(attached pic)를 뺀 영상 스트림 — frame_seek_secs와 같은 이유.
 /// `pattern`은 image2 패턴이라 경로의 `%`는 호출부가 `%%`로 이스케이프해 넘긴다.
-fn build_frames_args(src: &str, pattern: &str, interval: f64, format: FramesFormat) -> Vec<String> {
-    let mut args: Vec<String> = [
-        "-hide_banner", "-nostdin", "-loglevel", "error", "-progress", "pipe:1",
-        "-i", src, "-map", "0:V:0",
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect();
-    args.extend(["-vf".into(), format!("fps={:.6}", 1.0 / interval), "-start_number".into(), "0".into()]);
+fn build_frames_args(
+    input: FramesInput,
+    decode: FramesDecode,
+    pattern: &str,
+    interval: f64,
+    format: FramesFormat,
+) -> Vec<String> {
+    let mut args: Vec<String> = ["-hide_banner", "-nostdin", "-loglevel", "error", "-progress", "pipe:1"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    if let Some((accel, out_format)) = decode.hw() {
+        args.extend(["-hwaccel", accel, "-hwaccel_output_format", out_format].map(String::from)); // 입력 옵션 — -i 앞
+    }
+    let src = match input {
+        FramesInput::File(s) => s,
+        FramesInput::Pipe => "pipe:0",
+    };
+    args.extend(["-i", src, "-map", "0:V:0"].map(String::from));
+    let mut vf = format!("fps={:.6}", 1.0 / interval);
+    if decode.hw().is_some() {
+        // nv12 = 8비트 4:2:0. 10비트 원본은 여기서 협상이 실패해 한 장도 못 쓰고 끝난다 → 다음 후보(끝내 CPU).
+        // 끝의 yuv420p는 CPU 디코더가 내는 형식이다 — nv12에서 곧장 RGB(PNG)로 바꾸면 swscale 경로가 달라 CPU 결과와
+        // 어긋난다(2026-09-30 실측 PSNR 34dB). 이렇게 두면 JPEG·PNG 모두 CPU 경로와 비트까지 같다.
+        vf.push_str(",hwdownload,format=nv12,format=yuv420p");
+    }
+    args.extend(["-vf".into(), vf, "-start_number".into(), "0".into()]);
     if format == FramesFormat::Jpg {
         args.extend(["-q:v".into(), "2".into()]); // 2 = mjpeg 최고 화질 쪽(1~31) — 학습 데이터용으로 뭉개지지 않게
     }
@@ -1820,10 +1941,6 @@ async fn video_extract_frames_inner(
     if !src.is_file() {
         return Err(IpcError::new(ErrorCode::NotFound, text_video::video_source_not_found()));
     }
-    let parent = src
-        .parent()
-        .ok_or_else(|| IpcError::new(ErrorCode::NotFound, text_video::video_source_not_found()))?
-        .to_path_buf();
 
     // 취소 등록은 spawn 전 — video_export와 같은 이유(준비 중에 누른 취소도 select!가 받는다).
     let jobs = {
@@ -1835,18 +1952,90 @@ async fn video_extract_frames_inner(
         .unwrap_or_else(|e| e.into_inner())
         .insert(job_id.to_string(), VideoJob { cancel: Some(cancel_tx), pid: None });
     let _guard = JobGuard { jobs: Arc::clone(&jobs), job_id: job_id.to_string() };
+    let decodes = frames_decode_candidates(&bin.ffmpeg).await;
+    extract_frames_in(
+        &bin.ffmpeg, bin.ffprobe.as_deref(), &src, rel_path, decodes, interval, format, duration_ms, job_id, &jobs,
+        &mut cancel_rx, chan,
+    )
+    .await
+}
+
+/// 커맨드 본체(경로 해석·잡 등록 뒤) — 테스트·벤치가 AppHandle 없이 같은 길을 부른다. `decodes`는 앞에서부터 해 볼 후보.
+#[allow(clippy::too_many_arguments)]
+async fn extract_frames_in(
+    ffmpeg: &Path,
+    ffprobe: Option<&Path>,
+    src: &Path,
+    rel_path: &str,
+    decodes: &[FramesDecode],
+    interval: f64,
+    format: FramesFormat,
+    duration_ms: u64,
+    job_id: &str,
+    jobs: &Arc<Mutex<HashMap<String, VideoJob>>>,
+    cancel_rx: &mut tokio::sync::oneshot::Receiver<()>,
+    chan: &Channel<FramesEvent>,
+) -> Result<FramesDone, IpcError> {
+    let parent = src
+        .parent()
+        .ok_or_else(|| IpcError::new(ErrorCode::NotFound, text_video::video_source_not_found()))?
+        .to_path_buf();
+    let read_fail = |e: std::io::Error| {
+        IpcError::new(ErrorCode::Io, text_video::video_container_read_failed(&src.display(), &e))
+    };
+    // Some(원본 크기) = 파이프 입력(FramesInput 참고).
+    let pipe_len = {
+        let mut f = std::fs::File::open(src).map_err(read_fail)?;
+        let fragmented = super::video_container::scan_container(&mut f).map_err(read_fail)?.fragmented;
+        let len = f.metadata().map_err(read_fail)?.len();
+        fragmented.then_some(len)
+    };
 
     // 임시 폴더에 다 쓴 뒤 이름을 바꿔 확정한다 — 취소·실패가 반쯤 찬 폴더를 남기지 않는다. 이름은 여기서 만든
     // uuid다(프론트가 준 job_id를 경로에 넣지 않는다).
     let tmp = parent.join(format!(".gpv-frames-{}.tmp", uuid::Uuid::new_v4().simple()));
     std::fs::create_dir(&tmp)
         .map_err(|e| IpcError::new(ErrorCode::Io, text_video::video_frames_temp_dir_failed(&tmp.display(), &e)))?;
-    let duration_ms = if duration_ms > 0 { duration_ms } else { probe_duration_ms(bin.ffprobe.as_deref(), &src).await };
-    let ran = run_frames_ffmpeg(&bin.ffmpeg, &src, &tmp, interval, format, duration_ms, job_id, &jobs, &mut cancel_rx, chan).await;
-    if let Err(e) = ran {
-        std::fs::remove_dir_all(&tmp).ok(); // 정리 실패는 원래 오류를 가리지 않는다
-        return Err(e);
-    }
+    // 조각 원본은 길이를 재는 것부터 훑기다(ffprobe 수십 초~분) — 파이프 입력은 보낸 바이트로 진행률을 내니 재지 않는다.
+    let duration_ms = if duration_ms > 0 || pipe_len.is_some() {
+        duration_ms
+    } else {
+        probe_duration_ms(ffprobe, src).await
+    };
+    let started = std::time::Instant::now();
+    let mut attempts = decodes.iter().copied().peekable();
+    let used = loop {
+        let Some(decode) = attempts.next() else {
+            std::fs::remove_dir_all(&tmp).ok(); // 정리 실패는 원래 오류를 가리지 않는다
+            return Err(IpcError::new(ErrorCode::Io, text_video::video_frames_none_extracted()));
+        };
+        let ran = run_frames_ffmpeg(
+            ffmpeg, src, pipe_len, decode, &tmp, interval, format, duration_ms, job_id, jobs, cancel_rx, chan,
+        )
+        .await;
+        let tail = match ran {
+            Ok(None) => break decode,
+            Ok(Some(tail)) => tail,
+            Err(e) => {
+                std::fs::remove_dir_all(&tmp).ok();
+                return Err(e);
+            }
+        };
+        // 한 장도 못 쓰고 죽었다(코덱·10비트·드라이버) — 다음 후보로. 폴더가 비었을 때만이다: 부분 출력이 남은 채 다시
+        // 돌리면 두 회차가 섞이고 이름을 바꿀 때 덮인다. 폴더를 못 읽으면 넘기지 않고 이 실패를 그대로 알린다.
+        let empty = std::fs::read_dir(&tmp).is_ok_and(|mut d| d.next().is_none());
+        if let (true, Some(next)) = (empty, attempts.peek()) {
+            log::warn!("[video] 프레임 추출 job={job_id}: {decode:?} 디코드 실패 → {next:?}로 다시");
+            continue;
+        }
+        std::fs::remove_dir_all(&tmp).ok();
+        let line = last_error_line(&tail);
+        return Err(IpcError {
+            code: ErrorCode::Io,
+            message: text_video::video_ffmpeg_failed(&line, &cfa_hint(&line, &tmp)),
+            stderr: Some(tail),
+        });
+    };
     let stem = src.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let count = match name_frames_by_time(&tmp, &stem, interval, format) {
         Ok(n) => n,
@@ -1859,6 +2048,8 @@ async fn video_extract_frames_inner(
         std::fs::remove_dir_all(&tmp).ok();
         return Err(IpcError::new(ErrorCode::Io, text_video::video_frames_none_extracted()));
     }
+    let input = if pipe_len.is_some() { "pipe" } else { "file" };
+    log::info!("[video] 프레임 추출 job={job_id} {} · 디코드 {used:?} · 입력 {input} · {count}장 · {:.1}s", src.display(), started.elapsed().as_secs_f64());
     // 최종 이름은 **끝난 뒤에** 고른다 — 추출하는 몇 분 사이에 같은 이름 폴더가 생겨도 덮지 않는다.
     let base = frames_folder_base(&stem, interval);
     let Some(out) = free_dir_name(&parent, &base) else {
@@ -1877,29 +2068,87 @@ async fn video_extract_frames_inner(
     Ok(FramesDone { out_rel, count })
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn run_frames_ffmpeg(
+/// 진행률(%) — 파이프 입력은 보낸 바이트 ÷ 원본 크기(조각 원본은 길이를 재는 것부터 훑기다), 파일 입력은 시각 ÷ 길이.
+fn frames_percent(pipe_len: Option<u64>, sent: u64, out_us: u64, duration_ms: u64) -> f64 {
+    match pipe_len {
+        Some(len) => super::video_container::copy_progress_pct(sent, len),
+        None if duration_ms > 0 => (out_us as f64 / 1000.0 / duration_ms as f64 * 100.0).clamp(0.0, 100.0),
+        None => 0.0,
+    }
+}
+
+/// 펌프가 한 번에 읽는 양. 읽는 중·대기·쓰는 중 셋까지 떠 있을 수 있다(잡 하나에 96MiB, 잠깐).
+const FRAMES_PIPE_BLOCK: usize = 32 << 20;
+
+/// 원본 → ffmpeg stdin. 읽기(blocking 스레드)와 쓰기를 겹친다 — 번갈아 하면 HDD 읽기(~130MB/s)와 cuda 디코드(~110MB/s)
+/// 시간이 더해져 절반 속도가 된다. 다 쓰면 stdin을 닫아(EOF) ffmpeg를 끝낸다.
+/// ffmpeg가 먼저 끝나면(취소·오류) 쓰기가 BrokenPipe로 풀린다 — 그 사정은 ffmpeg 종료 코드가 말하므로 Ok다. 원본 읽기
+/// 오류는 Err: 그냥 닫으면 ffmpeg는 조기 EOF를 정상 끝으로 알고 앞부분만 뽑은 채 성공한다.
+async fn pump_to_stdin<W: tokio::io::AsyncWrite + Unpin>(
+    src: PathBuf,
+    mut stdin: W,
+    sent: Arc<AtomicU64>,
+) -> std::io::Result<()> {
+    use tokio::io::AsyncWriteExt;
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<std::io::Result<Vec<u8>>>(1);
+    let reader = tauri::async_runtime::spawn_blocking(move || {
+        use std::io::Read;
+        let mut f = match std::fs::File::open(&src) {
+            Ok(f) => f,
+            Err(e) => {
+                let _ = tx.blocking_send(Err(e)); // 받는 쪽이 벌써 없으면 알릴 곳도 없다
+                return;
+            }
+        };
+        loop {
+            let mut buf = Vec::with_capacity(FRAMES_PIPE_BLOCK);
+            let block = match Read::by_ref(&mut f).take(FRAMES_PIPE_BLOCK as u64).read_to_end(&mut buf) {
+                Ok(0) => return,
+                Ok(_) => Ok(buf),
+                Err(e) => Err(e),
+            };
+            let failed = block.is_err();
+            // 받는 쪽이 멈췄으면(ffmpeg 종료) 더 읽을 이유가 없다.
+            if tx.blocking_send(block).is_err() || failed {
+                return;
+            }
+        }
+    });
+    let written = async {
+        while let Some(block) = rx.recv().await {
+            // 1MiB씩 — 진행률(보낸 바이트)이 블록 단위로 뛰지 않게.
+            for piece in block?.chunks(1 << 20) {
+                stdin.write_all(piece).await?;
+                sent.fetch_add(piece.len() as u64, Ordering::Relaxed);
+            }
+        }
+        // Windows의 ChildStdin은 쓰기를 뒤에서 마저 한다(tokio Blocking) — 마지막 쓰기의 오류는 flush에서 나온다.
+        stdin.flush().await
+    }
+    .await;
+    drop(rx);
+    drop(stdin);
+    let joined = reader.await;
+    match written {
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        Err(e) => Err(e),
+        // 읽는 스레드가 패닉하면 채널이 닫혀 여기로 온다 — 앞부분만 보낸 것이니 성공이 아니다.
+        Ok(()) => joined.map_err(|e| std::io::Error::other(e.to_string())),
+    }
+}
+
+type FramesPump = tauri::async_runtime::JoinHandle<std::io::Result<()>>;
+
+/// 추출용 ffmpeg를 띄운다. `pipe_src`가 있으면 그 파일을 stdin으로 흘리는 펌프를 붙인다 — 펌프는 ffmpeg가 끝난 뒤 기다린다.
+fn spawn_frames_ffmpeg(
     ffmpeg: &Path,
-    src: &Path,
-    tmp: &Path,
-    interval: f64,
-    format: FramesFormat,
-    duration_ms: u64,
-    job_id: &str,
-    jobs: &Arc<Mutex<HashMap<String, VideoJob>>>,
-    cancel_rx: &mut tokio::sync::oneshot::Receiver<()>,
-    chan: &Channel<FramesEvent>,
-) -> Result<(), IpcError> {
-    let pattern = format!(
-        "{}{}frame_%06d.{}",
-        tmp.display().to_string().replace('%', "%%"),
-        std::path::MAIN_SEPARATOR,
-        format.ext()
-    );
-    let args = build_frames_args(&src.display().to_string(), &pattern, interval, format);
+    args: &[String],
+    pipe_src: Option<&Path>,
+    sent: &Arc<AtomicU64>,
+) -> Result<(tokio::process::Child, Option<FramesPump>), IpcError> {
     let mut cmd = Command::new(ffmpeg);
-    cmd.args(&args)
-        .stdin(std::process::Stdio::null())
+    cmd.args(args)
+        .stdin(if pipe_src.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::null() })
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
@@ -1910,6 +2159,43 @@ async fn run_frames_ffmpeg(
     let mut child = cmd
         .spawn()
         .map_err(|e| IpcError::new(ErrorCode::Io, text_video::video_ffmpeg_spawn_failed(&e)))?;
+    let pump = match (pipe_src, child.stdin.take()) {
+        (Some(src), Some(stdin)) => {
+            Some(tauri::async_runtime::spawn(pump_to_stdin(src.to_path_buf(), stdin, Arc::clone(sent))))
+        }
+        _ => None,
+    };
+    Ok((child, pump))
+}
+
+/// ffmpeg 한 회차. Ok(None) = 성공, Ok(Some(stderr 꼬리)) = ffmpeg가 0이 아닌 코드로 끝났다(호출부가 다음 후보로 넘길지
+/// 정한다). 취소·실행 실패·원본 읽기 실패는 Err.
+#[allow(clippy::too_many_arguments)]
+async fn run_frames_ffmpeg(
+    ffmpeg: &Path,
+    src: &Path,
+    pipe_len: Option<u64>,
+    decode: FramesDecode,
+    tmp: &Path,
+    interval: f64,
+    format: FramesFormat,
+    duration_ms: u64,
+    job_id: &str,
+    jobs: &Arc<Mutex<HashMap<String, VideoJob>>>,
+    cancel_rx: &mut tokio::sync::oneshot::Receiver<()>,
+    chan: &Channel<FramesEvent>,
+) -> Result<Option<String>, IpcError> {
+    let pattern = format!(
+        "{}{}frame_%06d.{}",
+        tmp.display().to_string().replace('%', "%%"),
+        std::path::MAIN_SEPARATOR,
+        format.ext()
+    );
+    let src_arg = src.display().to_string();
+    let input = if pipe_len.is_some() { FramesInput::Pipe } else { FramesInput::File(&src_arg) };
+    let args = build_frames_args(input, decode, &pattern, interval, format);
+    let sent = Arc::new(AtomicU64::new(0));
+    let (mut child, pump) = spawn_frames_ffmpeg(ffmpeg, &args, pipe_len.map(|_| src), &sent)?;
     if let Some(pid) = child.id() {
         if let Some(j) = jobs.lock().unwrap_or_else(|e| e.into_inner()).get_mut(job_id) {
             j.pid = Some(pid);
@@ -1920,6 +2206,7 @@ async fn run_frames_ffmpeg(
     let stdout = child.stdout.take();
     let p_chan = chan.clone();
     let expected = expected_frames(duration_ms, interval);
+    let p_sent = Arc::clone(&sent);
     let progress_task = tauri::async_runtime::spawn(async move {
         let Some(stdout) = stdout else { return };
         use tokio::io::AsyncBufReadExt;
@@ -1931,11 +2218,7 @@ async fn run_frames_ffmpeg(
             } else if let Some(t) = parse_out_time_us(&line) {
                 us = t;
             } else if line.starts_with("progress=") {
-                let percent = if duration_ms > 0 {
-                    (us as f64 / 1000.0 / duration_ms as f64 * 100.0).clamp(0.0, 100.0)
-                } else {
-                    0.0
-                };
+                let percent = frames_percent(pipe_len, p_sent.load(Ordering::Relaxed), us, duration_ms);
                 let _ = p_chan.send(FramesEvent::Progress { percent, frames, expected });
             }
         }
@@ -1962,19 +2245,27 @@ async fn run_frames_ffmpeg(
     let status = waited.map_err(|e| IpcError::new(ErrorCode::Io, text_video::video_ffmpeg_wait_failed(&e)))?;
     let stderr_tail = stderr_task.await.unwrap_or_default();
     let _ = progress_task.await;
+    let pumped = match pump {
+        Some(p) => p.await.map_err(|e| std::io::Error::other(e.to_string())).and_then(|r| r),
+        None => Ok(()),
+    };
     if cancelled {
         return Err(IpcError::new(ErrorCode::Cancelled, text_video::video_frames_cancelled()));
     }
-    if !status.success() {
-        log::error!("[video] 프레임 추출 실패 job={job_id}\n  args: {args:?}\n  stderr(tail):\n{stderr_tail}");
-        let line = last_error_line(&stderr_tail);
-        return Err(IpcError {
-            code: ErrorCode::Io,
-            message: text_video::video_ffmpeg_failed(&line, &cfa_hint(&line, tmp)),
-            stderr: Some(stderr_tail),
-        });
+    if let Err(e) = pumped {
+        log::error!("[video] 프레임 추출: 원본을 ffmpeg에 흘리다 실패 job={job_id} {}: {e}", src.display());
+        return Err(IpcError::new(ErrorCode::Io, text_video::video_frames_source_read_failed(&src.display(), &e)));
     }
-    Ok(())
+    if !status.success() {
+        // 하드웨어 경로의 실패는 대개 다음 후보로 넘어가는 예정된 일이다(extract_frames_in) — CPU만 오류로 남긴다.
+        if decode == FramesDecode::Cpu {
+            log::error!("[video] 프레임 추출 실패 job={job_id}\n  args: {args:?}\n  stderr(tail):\n{stderr_tail}");
+        } else {
+            log::warn!("[video] 프레임 추출 {decode:?} 실패 job={job_id}\n  args: {args:?}\n  stderr(tail):\n{stderr_tail}");
+        }
+        return Ok(Some(stderr_tail));
+    }
+    Ok(None)
 }
 
 // ══════════════════════════ 타임라인 필름스트립·파형 ══════════════════════════
@@ -3627,14 +3918,16 @@ mod tests {
 
     #[test]
     fn frames_args_by_format() {
-        let jpg = build_frames_args("in.mp4", "out/frame_%06d.jpg", 2.0, FramesFormat::Jpg);
+        let jpg = build_frames_args(FramesInput::File("in.mp4"), FramesDecode::Cpu, "out/frame_%06d.jpg", 2.0, FramesFormat::Jpg);
         let at = |k: &str| jpg.iter().position(|a| a == k).map(|i| jpg[i + 1].as_str());
+        assert_eq!(at("-i"), Some("in.mp4"));
         assert_eq!(at("-vf"), Some("fps=0.500000"));
         assert_eq!(at("-start_number"), Some("0"));
         assert_eq!(at("-map"), Some("0:V:0"));
         assert_eq!(at("-q:v"), Some("2"));
+        assert!(!jpg.iter().any(|a| a.starts_with("-hwaccel")), "CPU 경로 = 예전 인자 그대로");
         assert_eq!(jpg.last().map(String::as_str), Some("out/frame_%06d.jpg"));
-        let png = build_frames_args("in.mp4", "o/frame_%06d.png", 0.5, FramesFormat::Png);
+        let png = build_frames_args(FramesInput::File("in.mp4"), FramesDecode::Cpu, "o/frame_%06d.png", 0.5, FramesFormat::Png);
         assert!(!png.iter().any(|a| a == "-q:v"), "PNG 는 무손실이라 화질 인자가 없다");
         assert!(png.iter().any(|a| a == "fps=2.000000"));
         assert_eq!(parse_progress_frame("frame=123"), Some(123));
@@ -3642,6 +3935,87 @@ mod tests {
         assert_eq!(expected_frames(10_000, 1.0), 10, "10초 영상 1초 간격 = 10장(실측)");
         assert_eq!(expected_frames(6_854_500, 2.0), 3428);
         assert_eq!(expected_frames(0, 2.0), 0);
+    }
+
+    #[test]
+    fn frames_args_by_decode_and_input() {
+        let hw = [
+            (FramesDecode::Cuda, "cuda", "cuda"),
+            (FramesDecode::D3d11va, "d3d11va", "d3d11"),
+            (FramesDecode::VideoToolbox, "videotoolbox", "videotoolbox_vld"),
+            (FramesDecode::Vaapi, "vaapi", "vaapi"),
+        ];
+        for (decode, accel, out) in hw {
+            let a = build_frames_args(FramesInput::Pipe, decode, "o/frame_%06d.jpg", 2.0, FramesFormat::Jpg);
+            let pos = |k: &str| a.iter().position(|x| x == k).unwrap_or_else(|| panic!("{decode:?}: {k} 없음 {a:?}"));
+            assert_eq!(a[pos("-hwaccel") + 1], accel);
+            assert_eq!(a[pos("-hwaccel_output_format") + 1], out);
+            // 입력 옵션이라 -i 뒤에 두면 출력 옵션으로 읽혀 먹지 않는다
+            assert!(pos("-hwaccel") < pos("-i") && pos("-hwaccel_output_format") < pos("-i"), "{a:?}");
+            assert_eq!(a[pos("-i") + 1], "pipe:0");
+            assert_eq!(a[pos("-map") + 1], "0:V:0");
+            // GPU에서 솎은 **뒤** 내려받는다 — 앞에 두면 모든 프레임을 옮긴다
+            assert_eq!(a[pos("-vf") + 1], "fps=0.500000,hwdownload,format=nv12,format=yuv420p");
+            assert_eq!(a[pos("-start_number") + 1], "0");
+        }
+        let cpu = build_frames_args(FramesInput::Pipe, FramesDecode::Cpu, "o/frame_%06d.png", 1.0, FramesFormat::Png);
+        assert!(cpu.windows(2).any(|w| w == ["-i", "pipe:0"]) && cpu.windows(2).any(|w| w == ["-vf", "fps=1.000000"]));
+        // 어느 OS든 하드웨어 후보가 앞, CPU가 맨 끝(모든 폴백이 닿는 자리)
+        let (last, hw_first) = FRAMES_DECODE_ORDER.split_last().expect("후보");
+        assert_eq!(*last, FramesDecode::Cpu);
+        assert!(!hw_first.is_empty() && hw_first.iter().all(|d| d.hw().is_some()), "{FRAMES_DECODE_ORDER:?}");
+    }
+
+    #[test]
+    fn frames_percent_by_input() {
+        // 파이프 = 보낸 바이트 ÷ 원본 크기. 시각·길이가 있어도 바이트를 쓴다(조각 원본의 길이는 재지 않는다).
+        assert_eq!(frames_percent(Some(1000), 250, 0, 0), 25.0);
+        assert_eq!(frames_percent(Some(1000), 250, 9_000_000, 10_000), 25.0);
+        assert_eq!(frames_percent(Some(0), 250, 0, 0), 0.0);
+        // 파일 = 출력 시각 ÷ 길이, 길이를 모르면 0
+        assert_eq!(frames_percent(None, 999, 5_000_000, 10_000), 50.0);
+        assert_eq!(frames_percent(None, 999, 5_000_000, 0), 0.0);
+    }
+
+    #[tokio::test]
+    async fn frames_pump_streams_whole_file_then_closes() {
+        use tokio::io::AsyncReadExt;
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("a.bin");
+        // 블록 경계를 넘는 크기 — 마지막 블록이 짧다
+        let data: Vec<u8> = (0..FRAMES_PIPE_BLOCK + 12_345).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&src, &data).unwrap();
+        let (w, mut r) = tokio::io::duplex(64 << 10);
+        let sent = Arc::new(AtomicU64::new(0));
+        let pump = tokio::spawn(pump_to_stdin(src, w, Arc::clone(&sent)));
+        let mut got = Vec::new();
+        r.read_to_end(&mut got).await.unwrap(); // EOF까지 온다 = 펌프가 다 쓰고 닫았다
+        pump.await.unwrap().unwrap();
+        assert!(got == data, "받은 {} B / 원본 {} B", got.len(), data.len());
+        assert_eq!(sent.load(Ordering::Relaxed), data.len() as u64);
+    }
+
+    #[tokio::test]
+    async fn frames_pump_ends_when_reader_goes_away_and_reports_open_errors() {
+        use tokio::io::AsyncReadExt;
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("a.bin");
+        std::fs::write(&src, vec![7u8; 4 << 20]).unwrap();
+        // 쓰기가 막힌 채 받는 쪽(ffmpeg)이 사라진다 — BrokenPipe로 풀려 Ok로 끝나야 잡이 안 걸린다.
+        let (w, mut r) = tokio::io::duplex(64 << 10);
+        let sent = Arc::new(AtomicU64::new(0));
+        let pump = tokio::spawn(pump_to_stdin(src, w, Arc::clone(&sent)));
+        let mut head = vec![0u8; 1000];
+        r.read_exact(&mut head).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        drop(r);
+        let res = tokio::time::timeout(Duration::from_secs(10), pump).await.expect("펌프가 끝나야 한다").unwrap();
+        assert!(res.is_ok(), "{res:?}");
+        assert!(sent.load(Ordering::Relaxed) < 4 << 20);
+        // 원본을 못 열면 Err — 그냥 닫으면 ffmpeg는 빈 입력을 정상 끝으로 안다
+        let (w, _r) = tokio::io::duplex(1024);
+        let err = pump_to_stdin(dir.path().join("none.bin"), w, Arc::new(AtomicU64::new(0))).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     }
 
     #[test]
@@ -3659,58 +4033,282 @@ mod tests {
         assert_eq!(parse_frame_index("frame_00h00m02s.jpg", "jpg"), None);
     }
 
-    /// 실제 ffmpeg(PATH)로 간격 추출 인자를 끝까지 돌린다 — 장 수·이름·시각(=번호×간격)과 `%` 든 경로.
-    /// `cargo test --lib frames_real_ffmpeg -- --ignored --nocapture`
+    // ── 실제 ffmpeg(PATH) — `cargo test --lib frames_real -- --ignored --nocapture` ──
+
+    /// 테스트 원본 — lavfi 소스를 libx264로. `fragmented`면 카메라 녹화물과 같은 프레임당 조각 fMP4(파이프 입력으로 간다).
+    async fn frames_make_src(ffmpeg: &Path, dst: &Path, lavfi: &str, pix_fmt: &str, fragmented: bool, extra: &[&str]) {
+        let dst_s = dst.display().to_string();
+        let mut gen = vec!["-v", "error", "-y", "-f", "lavfi", "-i", lavfi, "-c:v", "libx264", "-pix_fmt", pix_fmt];
+        if fragmented {
+            gen.extend(["-movflags", "+frag_every_frame+empty_moov+default_base_moof"]);
+        }
+        gen.extend(extra);
+        gen.push(&dst_s);
+        let (code, _, err) = run_capture(ffmpeg, &gen, 120).await.unwrap();
+        assert_eq!(code, 0, "{err}");
+        let mut f = std::fs::File::open(dst).unwrap();
+        let info = super::super::video_container::scan_container(&mut f).unwrap();
+        assert_eq!(info.fragmented, fragmented, "{dst_s}: 입력 경로(파이프/파일) 판정이 원본 종류와 맞아야 한다");
+    }
+
+    /// 이 기계에서 장치가 열리는 하드웨어 후보 — 없는 것은 건너뜀을 알린다.
+    async fn frames_hw_here(ffmpeg: &Path) -> Vec<FramesDecode> {
+        let mut here = Vec::new();
+        for &d in FRAMES_DECODE_ORDER {
+            let Some((device, _)) = d.hw() else { continue };
+            if frames_hw_device_opens(ffmpeg, device).await.unwrap() {
+                here.push(d);
+            } else {
+                eprintln!("건너뜀: {d:?} — 이 기계에서 장치를 열 수 없다");
+            }
+        }
+        here
+    }
+
+    /// 커맨드 본체를 AppHandle 없이 — 결과 폴더 경로와 정렬된 파일 이름.
+    async fn frames_run_core(
+        ffmpeg: &Path,
+        src: &Path,
+        decodes: &[FramesDecode],
+        interval: f64,
+        format: FramesFormat,
+    ) -> Result<(PathBuf, Vec<String>), IpcError> {
+        let jobs = Arc::new(Mutex::new(HashMap::new()));
+        let (_keep_cancel_open, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
+        let chan = Channel::new(|_| Ok(()));
+        let done =
+            extract_frames_in(ffmpeg, None, src, "x/a.mp4", decodes, interval, format, 0, "t", &jobs, &mut cancel_rx, &chan)
+                .await?;
+        let out = src.parent().unwrap().join(done.out_rel.rsplit('/').next().unwrap());
+        let mut names: Vec<String> =
+            std::fs::read_dir(&out).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        assert_eq!(names.len() as u64, done.count);
+        Ok((out, names))
+    }
+
+    fn frames_no_temp_left(dir: &Path) {
+        let left: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(".gpv-frames-"))
+            .collect();
+        assert!(left.is_empty(), "임시 폴더가 남았다: {left:?}");
+    }
+
+    /// 장 수·이름·시각(=번호×간격)과 `%` 든 경로 — CPU·이 기계의 하드웨어 후보마다, 파일 입력(일반 mp4)·파이프 입력(조각 fMP4)마다.
     #[tokio::test]
     #[ignore = "PATH의 ffmpeg 필요"]
     async fn frames_real_ffmpeg_extracts_one_per_interval() {
         let ffmpeg = crate::tools::runner::find_on_path("ffmpeg").expect("ffmpeg");
         let dir = std::env::temp_dir().join(format!("gpv-frames-{}", uuid::Uuid::new_v4().simple()));
-        // 폴더 이름의 % 는 image2 패턴으로 읽힌다 — 이스케이프가 빠지면 여기서 깨진다.
-        let out = dir.join("100% 한글");
-        std::fs::create_dir_all(&out).unwrap();
-        let src = dir.join("a.mp4").display().to_string();
-        // 30fps 10초, 프레임 N의 밝기 = 초(N/30)*20+20 — 뽑힌 장이 몇 초 지점인지 밝기로 안다.
-        let gen = [
-            "-v", "error", "-y", "-f", "lavfi",
-            "-i", "color=black:s=64x36:r=30:d=10,geq=lum='floor(N/30)*20+20':cb=128:cr=128",
-            "-c:v", "libx264", "-pix_fmt", "yuv420p", &src,
-        ];
-        assert_eq!(run_capture(&ffmpeg, &gen, 60).await.unwrap().0, 0);
-        for (format, interval, want) in [(FramesFormat::Jpg, 2.0, 5), (FramesFormat::Png, 1.0, 10)] {
-            for e in std::fs::read_dir(&out).unwrap().flatten() {
-                std::fs::remove_file(e.path()).unwrap();
-            }
-            let pattern = format!(
-                "{}{}frame_%06d.{}",
-                out.display().to_string().replace('%', "%%"),
-                std::path::MAIN_SEPARATOR,
-                format.ext()
-            );
-            let args = build_frames_args(&src, &pattern, interval, format);
-            let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-            let (code, _, err) = run_capture(&ffmpeg, &argv, 60).await.unwrap();
-            assert_eq!(code, 0, "{err}");
-            assert_eq!(name_frames_by_time(&out, "a", interval, format).unwrap(), want as u64);
-            let mut names: Vec<String> = std::fs::read_dir(&out)
-                .unwrap()
-                .flatten()
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .collect();
-            names.sort();
-            assert_eq!(names.len(), want, "{format:?} {interval}s → {names:?}");
-            // 이름순 = 시간순이고, 이름의 시각이 실제 그 지점의 프레임이다 — 밝기(초*20+20)로 확인한다. JPEG·PNG 는 전체 범위(0~255)라
-            // 영상의 제한 범위(16~235) 값으로 되돌려 비교한다(Y 20 → 전체 범위 4.66). 오차는 JPEG 몫.
-            for (k, name) in names.iter().enumerate() {
-                assert_eq!(name, &frame_time_name("a", k as u64, interval, format.ext()));
-                let p = out.join(name).display().to_string();
-                let one = ["-v", "error", "-i", p.as_str(), "-vf", "format=gray,crop=1:1:10:10", "-f", "rawvideo", "-"];
-                let px = run_capture_bytes(&ffmpeg, &one, 30).await.unwrap().1[0] as f64;
-                let y = px * 219.0 / 255.0 + 16.0;
-                let secs = (k as f64 * interval).floor();
-                assert!((y - (secs * 20.0 + 20.0)).abs() <= 4.0, "{name}: 밝기 {y:.1} — {secs}초 지점이어야 한다");
+        // 폴더 이름의 % 는 image2 패턴으로 읽힌다 — 이스케이프가 빠지면 여기서 깨진다(임시 폴더가 원본 옆이다).
+        let at = dir.join("100% 한글");
+        std::fs::create_dir_all(&at).unwrap();
+        // 30fps 10초, 프레임 N의 밝기 = 초(N/30)*20+20 — 뽑힌 장이 몇 초 지점인지 밝기로 안다. 파이프 입력에서 첫 pts가 0이
+        // 아니게 읽히거나 hwdownload 뒤 색 범위가 바뀌면 여기서 빨개진다.
+        let lum = "color=black:s=160x90:r=30:d=10,geq=lum='floor(N/30)*20+20':cb=128:cr=128";
+        let (plain, frag) = (at.join("a.mp4"), at.join("f.mp4"));
+        frames_make_src(&ffmpeg, &plain, lum, "yuv420p", false, &[]).await;
+        frames_make_src(&ffmpeg, &frag, lum, "yuv420p", true, &[]).await;
+        let mut decodes = vec![FramesDecode::Cpu];
+        decodes.extend(frames_hw_here(&ffmpeg).await);
+        for src in [&plain, &frag] {
+            let stem = src.file_stem().unwrap().to_string_lossy().into_owned();
+            for &decode in &decodes {
+                for (format, interval, want) in [(FramesFormat::Jpg, 2.0, 5), (FramesFormat::Png, 1.0, 10)] {
+                    let what = format!("{} {decode:?} {format:?} {interval}s", src.display());
+                    let (out, names) = frames_run_core(&ffmpeg, src, &[decode], interval, format)
+                        .await
+                        .unwrap_or_else(|e| panic!("{what}: {}", e.message));
+                    assert_eq!(names.len(), want, "{what} → {names:?}");
+                    // 이름순 = 시간순이고, 이름의 시각이 실제 그 지점의 프레임이다 — 밝기(초*20+20)로 확인한다. JPEG·PNG 는 전체
+                    // 범위(0~255)라 영상의 제한 범위(16~235) 값으로 되돌려 비교한다(Y 20 → 전체 범위 4.66). 오차는 JPEG 몫.
+                    for (k, name) in names.iter().enumerate() {
+                        assert_eq!(name, &frame_time_name(&stem, k as u64, interval, format.ext()), "{what}");
+                        let p = out.join(name).display().to_string();
+                        let one = ["-v", "error", "-i", p.as_str(), "-vf", "format=gray,crop=1:1:10:10", "-f", "rawvideo", "-"];
+                        let px = run_capture_bytes(&ffmpeg, &one, 30).await.unwrap().1[0] as f64;
+                        let y = px * 219.0 / 255.0 + 16.0;
+                        let secs = (k as f64 * interval).floor();
+                        assert!((y - (secs * 20.0 + 20.0)).abs() <= 4.0, "{what} {name}: 밝기 {y:.1} — {secs}초 지점이어야 한다");
+                    }
+                    std::fs::remove_dir_all(&out).unwrap();
+                }
             }
         }
+        frames_no_temp_left(&at);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `ffmpeg -lavfi psnr`의 평균(dB). 같은 그림이면 inf.
+    async fn frames_psnr(ffmpeg: &Path, a: &Path, b: &Path) -> f64 {
+        let (a, b) = (a.display().to_string(), b.display().to_string());
+        let args = ["-hide_banner", "-i", a.as_str(), "-i", b.as_str(), "-lavfi", "psnr", "-f", "null", "-"];
+        let (code, _, err) = run_capture(ffmpeg, &args, 30).await.unwrap();
+        assert_eq!(code, 0, "{err}");
+        let v = err.split("average:").nth(1).and_then(|s| s.split_whitespace().next()).unwrap_or_else(|| panic!("{err}"));
+        v.parse().unwrap_or_else(|_| panic!("PSNR {v}"))
+    }
+
+    /// 하드웨어 경로 = CPU 경로: 같은 장 수·같은 이름(같은 시각), 대응 프레임 PSNR ≥ 40dB.
+    #[tokio::test]
+    #[ignore = "PATH의 ffmpeg 필요 · 하드웨어 후보는 이 기계에 있는 것만"]
+    async fn frames_real_hw_matches_cpu() {
+        let ffmpeg = crate::tools::runner::find_on_path("ffmpeg").expect("ffmpeg");
+        let hw = frames_hw_here(&ffmpeg).await;
+        if hw.is_empty() {
+            eprintln!("건너뜀: 하드웨어 디코드 후보가 하나도 없다");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("gpv-frames-psnr-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = "testsrc2=s=640x360:r=30:d=6";
+        let (plain, frag) = (dir.join("p.mp4"), dir.join("f.mp4"));
+        frames_make_src(&ffmpeg, &plain, src, "yuv420p", false, &[]).await;
+        frames_make_src(&ffmpeg, &frag, src, "yuv420p", true, &[]).await;
+        for src in [&plain, &frag] {
+            for (format, interval) in [(FramesFormat::Jpg, 1.0), (FramesFormat::Png, 2.0)] {
+                let (cpu_out, cpu_names) = frames_run_core(&ffmpeg, src, &[FramesDecode::Cpu], interval, format).await.unwrap();
+                for &d in &hw {
+                    let what = format!("{} {d:?} {format:?}", src.display());
+                    let (out, names) =
+                        frames_run_core(&ffmpeg, src, &[d], interval, format).await.unwrap_or_else(|e| panic!("{what}: {}", e.message));
+                    assert_eq!(names, cpu_names, "{what}: 장 수·이름이 CPU와 같아야 한다");
+                    let mut worst = f64::INFINITY;
+                    for n in &names {
+                        worst = worst.min(frames_psnr(&ffmpeg, &cpu_out.join(n), &out.join(n)).await);
+                    }
+                    eprintln!("{what}: {}장 · 최저 PSNR {worst} dB", names.len());
+                    assert!(worst >= 40.0, "{what}: PSNR {worst}");
+                    std::fs::remove_dir_all(&out).unwrap();
+                }
+                std::fs::remove_dir_all(&cpu_out).unwrap();
+            }
+        }
+        frames_no_temp_left(&dir);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 10비트 H.264 — 하드웨어 경로가 한 장도 못 쓰고 죽으면 다음 후보로, 끝내 CPU로 끝까지 뽑는다(부분 출력·임시 폴더 없이).
+    #[tokio::test]
+    #[ignore = "PATH의 ffmpeg 필요 · 하드웨어 후보는 이 기계에 있는 것만"]
+    async fn frames_real_hw_falls_back_to_cpu() {
+        let ffmpeg = crate::tools::runner::find_on_path("ffmpeg").expect("ffmpeg");
+        let hw = frames_hw_here(&ffmpeg).await;
+        if hw.is_empty() {
+            eprintln!("건너뜀: 하드웨어 디코드 후보가 하나도 없다");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("gpv-frames-10bit-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (plain, frag) = (dir.join("p.mp4"), dir.join("f.mp4"));
+        frames_make_src(&ffmpeg, &plain, "testsrc2=s=320x240:r=30:d=4", "yuv420p10le", false, &[]).await;
+        frames_make_src(&ffmpeg, &frag, "testsrc2=s=320x240:r=30:d=4", "yuv420p10le", true, &[]).await;
+        for src in [&plain, &frag] {
+            for &d in &hw {
+                match frames_run_core(&ffmpeg, src, &[d], 1.0, FramesFormat::Jpg).await {
+                    Err(e) => eprintln!("{} {d:?} 혼자: 실패(예상) — {}", src.display(), e.message),
+                    Ok((out, _)) => {
+                        eprintln!("{} {d:?} 혼자: 이 장치는 10비트도 된다 — 폴백은 확인 못 함", src.display());
+                        std::fs::remove_dir_all(&out).unwrap();
+                    }
+                }
+                frames_no_temp_left(&dir);
+            }
+            let chain: Vec<_> = hw.iter().copied().chain([FramesDecode::Cpu]).collect();
+            let (out, names) = frames_run_core(&ffmpeg, src, &chain, 1.0, FramesFormat::Jpg)
+                .await
+                .unwrap_or_else(|e| panic!("{} {chain:?}: {}", src.display(), e.message));
+            let (cpu_out, cpu_names) = frames_run_core(&ffmpeg, src, &[FramesDecode::Cpu], 1.0, FramesFormat::Jpg).await.unwrap();
+            assert_eq!(names, cpu_names);
+            assert_eq!(names.len(), 4);
+            for n in &names {
+                let psnr = frames_psnr(&ffmpeg, &cpu_out.join(n), &out.join(n)).await;
+                assert!(psnr >= 40.0, "{n}: PSNR {psnr}");
+            }
+            std::fs::remove_dir_all(&out).unwrap();
+            std::fs::remove_dir_all(&cpu_out).unwrap();
+        }
+        frames_no_temp_left(&dir);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 파이프 입력 도중 취소 — ffmpeg를 죽이면 쓰기 중이던 펌프도 풀려 잡이 곧 끝나고, 임시·결과 폴더가 남지 않는다.
+    #[tokio::test]
+    #[ignore = "PATH의 ffmpeg 필요"]
+    async fn frames_real_cancel_stops_pipe_pump() {
+        let ffmpeg = crate::tools::runner::find_on_path("ffmpeg").expect("ffmpeg");
+        let dir = std::env::temp_dir().join(format!("gpv-frames-cancel-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let frag = dir.join("f.mp4");
+        // 잡음이라 크다(수십 MB) — 취소 시점에 펌프가 아직 쓰는 중(ffmpeg가 느리게 읽어 쓰기가 막힌 채)이어야 한다.
+        let noisy = "testsrc2=s=640x360:r=30:d=30,noise=alls=40:allf=t";
+        frames_make_src(&ffmpeg, &frag, noisy, "yuv420p", true, &["-preset", "ultrafast"]).await;
+        eprintln!("원본 {} B", std::fs::metadata(&frag).unwrap().len());
+        let jobs = Arc::new(Mutex::new(HashMap::new()));
+        let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
+        let chan = Channel::new(|_| Ok(()));
+        let started = std::time::Instant::now();
+        let run = extract_frames_in(
+            &ffmpeg, None, &frag, "f.mp4", &[FramesDecode::Cpu], 0.5, FramesFormat::Png, 0, "t", &jobs, &mut cancel_rx, &chan,
+        );
+        let cancel = async {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            cancel_tx.send(()).unwrap();
+        };
+        let (res, ()) = tokio::join!(tokio::time::timeout(Duration::from_secs(20), run), cancel);
+        let res = res.expect("취소 뒤 잡이 끝나야 한다(펌프가 막혀 있으면 여기서 시간 초과)");
+        assert_eq!(res.err().map(|e| e.code), Some(ErrorCode::Cancelled));
+        eprintln!("취소까지 {:.2}s", started.elapsed().as_secs_f64());
+        frames_no_temp_left(&dir);
+        assert!(!dir.join("f_frames_0.5s").exists(), "취소한 추출의 결과 폴더가 남았다");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 벤치 — `GPV_FRAMES_BENCH_SRC=<영상> [GPV_FRAMES_BENCH_INTERVAL=2] [GPV_FRAMES_BENCH_DECODE=cpu]`
+    /// `GPV_FRAMES_BENCH_SECS=300 GPV_FRAMES_BENCH_OUT=<폴더>`면 앞부분만(-t) 같은 인자·펌프로 OUT에 쓴다(원본 옆에 못 쓸 때).
+    /// 없으면 커맨드 본체 그대로 전체 길이 — 결과는 원본 옆 폴더에 남는다.
+    #[tokio::test]
+    #[ignore = "벤치 — 원본은 환경 변수로"]
+    async fn frames_bench() {
+        let ffmpeg = crate::tools::runner::find_on_path("ffmpeg").expect("ffmpeg");
+        let src = PathBuf::from(std::env::var("GPV_FRAMES_BENCH_SRC").expect("GPV_FRAMES_BENCH_SRC"));
+        let interval: f64 = std::env::var("GPV_FRAMES_BENCH_INTERVAL").map_or(2.0, |v| v.parse().unwrap());
+        let decodes: &[FramesDecode] = match std::env::var("GPV_FRAMES_BENCH_DECODE").as_deref() {
+            Ok("cpu") => &[FramesDecode::Cpu],
+            _ => frames_decode_candidates(&ffmpeg).await,
+        };
+        let started = std::time::Instant::now();
+        let Ok(secs) = std::env::var("GPV_FRAMES_BENCH_SECS") else {
+            let (out, names) = frames_run_core(&ffmpeg, &src, decodes, interval, FramesFormat::Jpg).await.unwrap();
+            eprintln!("BENCH full {decodes:?} → {}장 {:.2}s ({})", names.len(), started.elapsed().as_secs_f64(), out.display());
+            return;
+        };
+        let out = PathBuf::from(std::env::var("GPV_FRAMES_BENCH_OUT").expect("GPV_FRAMES_BENCH_OUT"));
+        std::fs::create_dir_all(&out).unwrap();
+        let fragmented = super::super::video_container::scan_container(&mut std::fs::File::open(&src).unwrap()).unwrap().fragmented;
+        let pattern = format!("{}{}frame_%06d.jpg", out.display().to_string().replace('%', "%%"), std::path::MAIN_SEPARATOR);
+        let src_s = src.display().to_string();
+        let input = if fragmented { FramesInput::Pipe } else { FramesInput::File(&src_s) };
+        let mut args = build_frames_args(input, decodes[0], &pattern, interval, FramesFormat::Jpg);
+        let at = args.len() - 3; // `-f image2 <패턴>` 앞 = 출력 옵션 자리
+        args.splice(at..at, ["-t".to_string(), secs.clone()]);
+        let sent = Arc::new(AtomicU64::new(0));
+        let (child, pump) = spawn_frames_ffmpeg(&ffmpeg, &args, fragmented.then_some(src.as_path()), &sent).unwrap();
+        let output = child.wait_with_output().await.unwrap();
+        if let Some(p) = pump {
+            p.await.unwrap().unwrap();
+        }
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let n = std::fs::read_dir(&out).unwrap().count();
+        eprintln!(
+            "BENCH head {secs}s {:?} {} → {n}장 {:.2}s · 보낸 {} MB",
+            decodes[0],
+            if fragmented { "pipe" } else { "file" },
+            started.elapsed().as_secs_f64(),
+            sent.load(Ordering::Relaxed) >> 20
+        );
     }
 }

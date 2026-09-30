@@ -356,6 +356,13 @@ pub fn video_frames_rename_failed(path: &dyn Display, err: &dyn Display) -> Stri
     }
 }
 
+pub fn video_frames_source_read_failed(path: &dyn Display, err: &dyn Display) -> String {
+    match lang() {
+        Lang::Ko => format!("원본을 읽다가 실패해 프레임 추출을 멈췄습니다({path}): {err}"),
+        Lang::En => format!("Frame extraction stopped because reading the source failed ({path}): {err}"),
+    }
+}
+
 pub fn video_frames_none_extracted() -> &'static str {
     match lang() {
         Lang::Ko => "추출된 프레임이 없습니다 — 영상 스트림이 없거나 읽을 수 없는 파일입니다",
