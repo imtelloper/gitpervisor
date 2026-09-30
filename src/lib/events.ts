@@ -6,9 +6,10 @@ import { currentMessages } from "../i18n/ui-language";
 import { invalidateVideoMedia } from "../queries";
 import { useOps } from "../stores/ops";
 import { useUi } from "../stores/ui";
+import { setVideoJobPct, trackVideoJob, untrackVideoJob } from "../stores/videoJobs";
 import { setSplitQueryClient, useVideoSplit } from "../stores/videoSplit";
 import type { SyncOp } from "../stores/ops";
-import type { RepoStatus, SttFinishedEvent, VideoExportFinished } from "./ipc";
+import type { RepoStatus, SttFinishedEvent, VideoExportFinished, VideoExportProgress } from "./ipc";
 import { ipc } from "./ipc";
 
 interface RepoChanged {
@@ -34,9 +35,11 @@ interface OpFinished {
  */
 const localVideoJobs = new Set<string>();
 
-/** 내보내기 invoke 직전에 부른다 — 이 창이 그 잡의 토스트 주인임을 표시. */
-export function markLocalVideoJob(id: string) {
+/** 내보내기 invoke 직전에 부른다 — 이 창이 그 잡의 토스트 주인임을 표시. `label`(산출물 파일 이름)을 주면 상태바 작업
+ *  목록(TaskCenter)에도 뜬다 — 자기 스토어로 보이는 잡(빠른 재생 사본 대기열 등)은 주지 않는다(두 번 뜨지 않게). */
+export function markLocalVideoJob(id: string, label?: string) {
   localVideoJobs.add(id);
+  if (label) trackVideoJob(id, label);
 }
 
 /**
@@ -46,6 +49,7 @@ export function markLocalVideoJob(id: string) {
  * 위 핸들러가 남의 잡으로 보고 토스트를 다시 띄우지 않는다.
  */
 export function takeLocalVideoJob(id: string): boolean {
+  untrackVideoJob(id);
   return localVideoJobs.delete(id);
 }
 
@@ -67,7 +71,10 @@ export function attachVideoEvents(qc: QueryClient) {
 
   // 동영상 내보내기 종결 — invoke 응답이 유실돼도(§10) 이 이벤트가 토스트·갱신을 책임진다.
   // 진행 중 UI(ExportPanel)는 자기 jobId로 별도 구독하고, 토스트는 여기 한 곳에서만(중복 방지).
+  // 상태바 작업 목록의 진행률 — 등록된(label을 준) 잡만 바뀐다.
+  void listen<VideoExportProgress>("video://export-progress", (e) => setVideoJobPct(e.payload.jobId, e.payload.percent));
   void listen<VideoExportFinished>("video://export-finished", (e) => {
+    untrackVideoJob(e.payload.jobId);
     // 분할 배치가 발급한 잡이면 세그먼트마다 토스트·무효화가 터지면 안 된다 —
     // 스토어가 루프를 이어가고 배치 끝에 요약 토스트 1개만 띄운다(태스크 22 §3.3).
     if (useVideoSplit.getState().owns(e.payload.jobId)) {

@@ -300,7 +300,7 @@ const ko = {
     zoom: "타임라인 확대",
     fitAll: "전체 맞춤",
     barRangeTitle: "드래그해 구간 지정 · 클릭 두 번으로도 지정됩니다",
-    barSeekTitle: "탐색 · 휠: 줌 · Shift+휠: 좌우 이동",
+    barSeekTitle: "클릭: 탐색 · 끌기: 좌우 이동(확대했을 때) · 휠: 줌 · Shift+휠: 좌우 이동",
     videoTrack: "비디오",
     audioTrack: "오디오",
     captionTrack: "자막",
@@ -331,10 +331,11 @@ const ko = {
     naming: (example: string) => `파일 이름에 영상 시각(시h분m초s)이 들어갑니다 — 예: ${example}`,
     start: "추출 시작",
     intervalInvalid: "간격은 0.1초 ~ 3600초 사이로 입력하세요",
-    busyOther: "다른 영상의 프레임을 추출하는 중입니다",
     running: (frames: number, expected: number, percent: number) =>
       `${frames} / 약 ${expected}장 · ${percent}%`,
     runningNoTotal: (frames: number) => `${frames}장 추출됨 — 영상 길이를 몰라 진행률은 표시하지 않습니다`,
+    // 조각 fMP4는 길이를 재지 않고(파일 전체를 훑어야 한다) 읽은 양으로 진행률만 낸다 — 예상 장 수가 없다.
+    runningNoExpected: (frames: number, percent: number) => `${frames}장 추출됨 · ${percent}%`,
     cancel: "취소",
     done: (count: number, folder: string) => `프레임 ${count}장 추출 완료 — ${folder}`,
     openFolder: "폴더 열기",
@@ -361,9 +362,14 @@ const ko = {
     cancel: "취소",
     dismiss: "닫기",
     needsFfmpeg: "사본을 만들려면 ffmpeg가 필요합니다 — 설정 › 코드 도구",
-    busyOther: "다른 영상의 사본을 만드는 중입니다",
     fileName: (stem: string) => `${stem} (빠른 재생).mp4`,
     exists: (name: string) => `${name} 사본이 이미 있어 그 파일을 엽니다`,
+  },
+  // 무거운 영상 작업 대기열(stores/mediaQueue.ts) — 빠른 재생 사본·프레임 추출이 한 줄에 선다.
+  mediaQueue: {
+    queued: (ahead: number) => `대기 중 · 앞에 ${fmtInt(ahead)}개`,
+    unqueue: "대기열에서 빼기",
+    queueTitle: (n: number) => `대기열에 넣습니다 — 앞의 작업 ${fmtInt(n)}개가 끝나면 이어서 시작합니다`,
   },
 };
 
@@ -663,7 +669,7 @@ export const mediaText = defineText(ko, {
       zoom: "Timeline zoom",
       fitAll: "Fit all",
       barRangeTitle: "Drag to set a range · two clicks also work",
-      barSeekTitle: "Seek · wheel: zoom · Shift+wheel: pan",
+      barSeekTitle: "Click: seek · drag: pan (when zoomed) · wheel: zoom · Shift+wheel: pan",
       videoTrack: "Video",
       audioTrack: "Audio",
       captionTrack: "Captions",
@@ -693,9 +699,9 @@ export const mediaText = defineText(ko, {
       naming: (example) => `File names carry the video time (h/m/s) — e.g. ${example}`,
       start: "Start extraction",
       intervalInvalid: "Enter an interval between 0.1 and 3600 seconds",
-      busyOther: "Extracting frames from another video",
       running: (frames, expected, percent) => `${frames} / about ${expected} · ${percent}%`,
       runningNoTotal: (frames) => `${frames} frames extracted — video length unknown, so no percentage`,
+      runningNoExpected: (frames, percent) => `${frames} frames extracted · ${percent}%`,
       cancel: "Cancel",
       done: (count, folder) => `Extracted ${count} frames — ${folder}`,
       openFolder: "Open folder",
@@ -721,9 +727,13 @@ export const mediaText = defineText(ko, {
       cancel: "Cancel",
       dismiss: "Dismiss",
       needsFfmpeg: "Making a copy needs ffmpeg — Settings › Code tools",
-      busyOther: "Already making a copy of another video",
       fileName: (stem) => `${stem} (fast start).mp4`,
       exists: (name) => `${name} already exists — opening it`,
+    },
+    mediaQueue: {
+      queued: (ahead) => `Queued · ${fmtInt(ahead)} ahead`,
+      unqueue: "Remove from queue",
+      queueTitle: (n) => `Adds to the queue — starts after the ${fmtInt(n)} ${plural(n, "job", "jobs")} ahead`,
     },
   },
 });

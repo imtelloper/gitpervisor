@@ -59,7 +59,6 @@ import type {
   CaptionStylePreset,
   RangeMs,
   VideoExportFinished,
-  VideoExportProgress,
   VideoExportSpec,
   VideoFilmstrip,
 } from "../../lib/ipc";
@@ -77,6 +76,7 @@ import { isMac, modLabel } from "../../lib/platform";
 import { usePanelWidth } from "../../lib/use-panel-width";
 import { captionKey, captionReadOnly, useCaptionDoc } from "../../stores/captionDoc";
 import { useDb } from "../../stores/db";
+import { onMediaTaskDone, useMediaQueue } from "../../stores/mediaQueue";
 import { planSegments, type SplitSegment } from "../../stores/videoSplit";
 import { useOcclusion, useOccludesWebview } from "../../stores/occlusion";
 import { selectBlockingOverlay, useUi } from "../../stores/ui";
@@ -696,7 +696,7 @@ export default function VideoPlayer({
       const id = crypto.randomUUID();
       convertRef.current = { id, outRel };
       setConverting(true);
-      markLocalVideoJob(id); // 완료 토스트는 이 창에서만
+      markLocalVideoJob(id, outRel.split("/").pop() ?? outRel); // 완료 토스트는 이 창에서만 · 상태바 작업 목록에도
       return ipc
         .videoExport(projectId, id, spec(outRel))
         .then(() => finishConvert(id, true))
@@ -725,112 +725,49 @@ export default function VideoPlayer({
   // 프레임마다 moof 조각이 붙고 sidx·mfra가 없으면 웹뷰가 길이·탐색 색인을 만들려고 파일 전체를 훑는다
   // (11GB 실파일에서 재생 시작까지 수십 초). 일반 mp4로 다시 싸면 moov 하나로 끝난다 — 먼저 전용 리먹서(video_remux.rs,
   // 한 번의 순차 패스)를 쓰고, 그게 못 다루는 구조면 ffmpeg 스트림 카피(+faststart)로 넘긴다.
-  // 종결 계약은 convertToMp4와 같다 — video://export-finished가 진실, invoke 완주는 보조, ref 가드로 한 번만.
+  // 사본은 대기열(stores/mediaQueue.ts)이 차례로 만든다 — 다른 사본·프레임 추출이 도는 중에 눌러도 뒤에 선다.
   const tf = msg.media.fastStart;
+  const tq = msg.media.mediaQueue;
   const container = useVideoContainerInfo(projectId, path, /\.(mp4|m4v|mov)$/i.test(path));
   const [fastDismissed, setFastDismissed] = useState(false);
   useEffect(() => setFastDismissed(false), [path]);
-  const fastRef = useRef<{ id: string; srcRel: string; outRel: string } | null>(null);
-  const [fastJob, setFastJob] = useState<{ id: string; srcRel: string; pct: number } | null>(null);
   const pathRef = useRef(path);
   pathRef.current = path;
   const openCopy = useCallback(
     (rel: string) => (onOpenPath ? onOpenPath(rel) : openDocWindow(projectId, rel, { size: [1180, 860] })),
     [onOpenPath, projectId],
   );
-  const finishFast = useCallback(
-    (jobId: string, ok: boolean) => {
-      const job = fastRef.current;
-      if (!job || job.id !== jobId) return;
-      fastRef.current = null;
-      setFastJob(null);
-      // 수 분짜리 잡이다 — 그사이 다른 파일로 옮겨 갔으면 끌고 오지 않는다(완료는 events.ts 토스트가 알린다).
-      if (ok && pathRef.current === job.srcRel) openCopy(job.outRel);
-    },
-    [openCopy],
-  );
-  const fastJobId = fastJob?.id ?? null;
-  useEffect(() => {
-    if (!fastJobId) return;
-    // listen()이 resolve되기 전에 정리가 먼저 돌 수 있다(ExportPanel과 같은 처리).
-    let disposed = false;
-    const unsubs: Array<() => void> = [];
-    const track = (p: Promise<() => void>) =>
-      void p.then((f) => {
-        if (disposed) f();
-        else unsubs.push(f);
-      });
-    track(
-      listen<VideoExportProgress>("video://export-progress", (e) => {
-        if (e.payload.jobId === fastJobId)
-          setFastJob((j) => (j && j.id === fastJobId ? { ...j, pct: e.payload.percent } : j));
+  // 끝난 잡의 원본을 **지금 보고 있으면** 사본을 연다 — 수 분짜리 잡이라 그사이 옮겨 갔으면 끌고 오지 않는다(완료는 토스트).
+  useEffect(
+    () =>
+      onMediaTaskDone((d) => {
+        if (d.kind === "fastCopy" && d.openRel && d.projectId === projectId && d.srcRel === pathRef.current)
+          openCopy(d.openRel);
       }),
-    );
-    track(
-      listen<VideoExportFinished>("video://export-finished", (e) => finishFast(e.payload.jobId, e.payload.ok)),
-    );
-    return () => {
-      disposed = true;
-      unsubs.forEach((f) => f());
-    };
-  }, [fastJobId, finishFast]);
-
-  const makeFastCopy = async () => {
-    if (fastRef.current) return;
+    [projectId, openCopy],
+  );
+  const fastJobs = useMediaQueue((s) => s.tasks);
+  const fastHere =
+    fastJobs.find((j) => j.kind === "fastCopy" && j.projectId === projectId && j.srcRel === path) ?? null;
+  const fastAhead = fastHere ? fastJobs.indexOf(fastHere) : fastJobs.length;
+  const makeFastCopy = () => {
     const slash = path.lastIndexOf("/");
     const dir = slash >= 0 ? path.slice(0, slash + 1) : "";
     const base = slash >= 0 ? path.slice(slash + 1) : path;
     const dot = base.lastIndexOf(".");
     const stem = dot > 0 ? base.slice(0, dot) : base;
-    const outRel = `${dir}${tf.fileName(stem)}`;
-    const id = crypto.randomUUID();
-    fastRef.current = { id, srcRel: path, outRel };
-    setFastJob({ id, srcRel: path, pct: 0 });
-    markLocalVideoJob(id); // 완료 토스트는 이 창에서만
-    try {
-      try {
-        await ipc.videoFastStartCopy(projectId, id, path, outRel);
-      } catch (e) {
-        // 리먹서가 못 다루는 구조 — 종결 이벤트 없이 돌아왔으니 같은 잡 id로 이어 간다(진행률 구독·취소·토스트가 그대로 이어진다).
-        if (!(isIpcError(e) && e.code === "UNSUPPORTED")) throw e;
-        await ipc.videoExport(projectId, id, {
-          srcRel: path,
-          outRel,
-          overwrite: false,
-          range: null,
-          mode: "copy",
-          speed: null,
-          crop: null,
-          masks: null,
-          maskKind: "mosaic",
-          crf: null,
-          maxHeight: null,
-          removeAudio: false,
-          // 이런 파일은 probe가 시간 초과하기 일쑤다 — 0이면 Rust가 쓴 바이트 ÷ 원본 바이트로 진행률을 낸다.
-          durationMs: probe.data?.durationMs ?? 0,
-          hasAudio: probe.data?.hasAudio ?? true,
-        });
-      }
-      finishFast(id, true);
-    } catch (e) {
-      finishFast(id, false);
-      // 종결 이벤트가 이미 알렸으면(잡이 돈 뒤의 실패·취소) 표시가 거둬져 있다 — 남아 있으면 이벤트가 없는 실패다.
-      const unreported = takeLocalVideoJob(id);
-      if (isIpcError(e) && e.code === "ALREADY_EXISTS") {
-        // 내보내기는 tmp → rename이라 같은 이름이 있으면 완성된 사본이다 — 다시 만들지 않고 그걸 연다.
-        pushToast("info", tf.exists(tf.fileName(stem)));
-        openCopy(outRel);
-      } else if (unreported) {
-        // 잡 시작 전 실패(원본 없음·원본 덮어쓰기·커맨드 없음 — 옛 바이너리)는 이벤트가 없어 무반응이었다.
-        pushToast(isIpcError(e) && e.code === "CANCELLED" ? "info" : "error", errorMessage(e));
-      }
-    }
+    useMediaQueue.getState().enqueue({
+      kind: "fastCopy",
+      id: crypto.randomUUID(),
+      projectId,
+      srcRel: path,
+      outRel: `${dir}${tf.fileName(stem)}`,
+      // 이런 파일은 probe가 시간 초과하기 일쑤다 — 0이면 Rust가 쓴 바이트 ÷ 원본 바이트로 진행률을 낸다.
+      durationMs: probe.data?.durationMs ?? 0,
+      hasAudio: probe.data?.hasAudio ?? true,
+    });
   };
-  const cancelFastCopy = () => {
-    if (fastJobId) void ipc.videoExportCancel(fastJobId).catch((e) => pushToast("error", errorMessage(e)));
-  };
-  const fastHere = fastJob && fastJob.srcRel === path ? fastJob : null;
-  // 도는 중엔 닫기를 무시한다 — 띠가 사라지면 취소할 곳도 사라진다.
+  // 대기 중·도는 중엔 닫기를 무시한다 — 띠가 사라지면 빼기·취소할 곳도 사라진다.
   const showFastStart =
     !!container.data?.fragmented && !container.data.indexed && (!fastDismissed || !!fastHere);
 
@@ -1322,24 +1259,34 @@ export default function VideoPlayer({
           <span className="min-w-0 flex-1">{tf.notice}</span>
           {fastHere ? (
             <>
-              <span className="flex shrink-0 items-center gap-1.5 font-mono tabular-nums text-fg-muted">
-                <Loader2 size={12} className="animate-spin" /> {tf.making(Math.floor(fastHere.pct))}
+              <span
+                data-gpv="fast-start-status"
+                data-state={fastHere.state}
+                className="flex shrink-0 items-center gap-1.5 font-mono tabular-nums text-fg-muted"
+              >
+                {fastHere.state === "running" ? (
+                  <>
+                    <Loader2 size={12} className="animate-spin" /> {tf.making(Math.floor(fastHere.pct))}
+                  </>
+                ) : (
+                  tq.queued(fastAhead)
+                )}
               </span>
               <button
                 data-gpv="fast-start-cancel"
-                onClick={cancelFastCopy}
+                onClick={() => useMediaQueue.getState().cancel(fastHere.id)}
                 className="shrink-0 rounded border border-edge px-2 py-0.5 hover:bg-raised"
               >
-                {tf.cancel}
+                {fastHere.state === "running" ? tf.cancel : tq.unqueue}
               </button>
             </>
           ) : (
             <>
               <button
                 data-gpv="fast-start-make"
-                onClick={() => void makeFastCopy()}
-                disabled={!hasFfmpeg || !!fastJob}
-                title={!hasFfmpeg ? tf.needsFfmpeg : fastJob ? tf.busyOther : tf.makeTitle}
+                onClick={makeFastCopy}
+                disabled={!hasFfmpeg}
+                title={!hasFfmpeg ? tf.needsFfmpeg : fastJobs.length > 0 ? tq.queueTitle(fastJobs.length) : tf.makeTitle}
                 className="flex shrink-0 items-center gap-1.5 rounded border border-edge bg-panel px-2 py-0.5 hover:bg-raised disabled:opacity-40"
               >
                 <FileVideo2 size={12} /> {tf.make}
@@ -2121,6 +2068,30 @@ function Timeline({
     window.addEventListener("pointercancel", up);
   };
 
+  /**
+   * 눈금자 — 끌면 **보이는 구간 이동(팬)**, 제자리 클릭이면 그 지점으로 탐색(사용자 요청 2026-09-30: 확대한
+   * 타임라인을 지도처럼 잡아 끌고 싶다). 잡은 시각이 커서 밑에 붙어 있게 끈 픽셀만큼 창을 반대로 민다.
+   * 3px 미만은 클릭 — 손떨림으로 창이 흔들리지 않게(구간 지정 드래그와 같은 문턱). 전체 보기에선 팬할 것이 없다.
+   */
+  const startRulerDrag = (e: React.PointerEvent) => {
+    const rect = barRef.current?.getBoundingClientRect();
+    const v0 = viewRef.current;
+    const x0 = e.clientX;
+    let moved = false;
+    trackPointer(
+      e,
+      (clientX) => {
+        if (!moved && Math.abs(clientX - x0) < 3) return;
+        moved = true;
+        if (!v0 || !rect || rect.width === 0) return;
+        panTo(v0.s - ((clientX - x0) / rect.width) * (v0.e - v0.s));
+      },
+      () => {
+        if (!moved) onSeek(posToTime(x0));
+      },
+    );
+  };
+
   const startDrag = (mode: "seek" | "in" | "out") => (e: React.PointerEvent) =>
     trackPointer(e, (clientX) => {
       const t = posToTime(clientX);
@@ -2275,11 +2246,15 @@ function Timeline({
       {/* 눈금자 막대 */}
       <div
         ref={barRef}
+        data-gpv="timeline-bar"
+        // 보이는 구간(초) — e2e 70이 팬을 잰다. 전체 보기면 0~길이.
+        data-view-s={vs.toFixed(3)}
+        data-view-e={ve.toFixed(3)}
         title={rangeActive ? tl.barRangeTitle : tl.barSeekTitle}
         className={`relative h-7 overflow-hidden rounded-sm bg-accent/75 ${
-          rangeActive ? "cursor-crosshair ring-1 ring-inset ring-fg/60" : "cursor-pointer"
+          rangeActive ? "cursor-crosshair ring-1 ring-inset ring-fg/60" : view ? "cursor-grab" : "cursor-pointer"
         }`}
-        onPointerDown={rangeActive ? startRangeDrag : startDrag("seek")}
+        onPointerDown={rangeActive ? startRangeDrag : startRulerDrag}
         onPointerMove={(e) => setHoverT(posToTime(e.clientX))}
         onPointerLeave={() => setHoverT(null)}
       >

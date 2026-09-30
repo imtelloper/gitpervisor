@@ -17,7 +17,7 @@
 //   ④ 배속: = 키로 16x까지 오르고(<video>.playbackRate) 더 눌러도 16 · - 한 번이면 8.
 //   ⑤ 오디오 트랙이 있는 조각 MP4: 리먹서는 UNSUPPORTED(임시 파일 없음) → 버튼은 ffmpeg 경로로 넘어가 사본을 만든다(moov가 앞).
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 export const name = "조각 MP4 감지 · 빠른 재생용 사본 · 배속 16x";
@@ -34,6 +34,11 @@ const BYTES = `${DIR}/bytes-copy.mp4`;
 const AV = `${DIR}/frag-av.mp4`;
 const AV_COPY = `${DIR}/frag-av (빠른 재생).mp4`;
 const AV_DIRECT = `${DIR}/av-direct.mp4`;
+// ⑥ 대기열 — 두 영상을 차례로.
+const Q1 = `${DIR}/q1.mp4`;
+const Q2 = `${DIR}/q2.mp4`;
+const Q1_COPY = `${DIR}/q1 (빠른 재생).mp4`;
+const Q2_COPY = `${DIR}/q2 (빠른 재생).mp4`;
 const EVENT_API = "/node_modules/@tauri-apps/api/event.js";
 const FRAG_FLAGS = "+frag_every_frame+empty_moov+default_base_moof";
 
@@ -262,6 +267,13 @@ export async function run({ cdp, report: r, fix }) {
       `path=${again.v?.path} toasts=${J(again.toasts)} mtime=${mtime0}→${existsSync(copyAbs) ? statSync(copyAbs).mtimeMs : "없음"}`,
     );
 
+    // ③ 끝의 "이미 있으면 연다"가 사본을 다시 열어 <video>가 새로 붙는다 — 재생 가능해지고(canplay) 자동재생 시도
+    // (파일당 한 번)까지 끝난 뒤에 재야 ④의 요소 탐색·④-2의 "멈춘 채" 전제가 선다.
+    const ready = () =>
+      cdp.eval(`(()=>{ const v = [...document.querySelectorAll('video')].find((e) => e.offsetWidth > 0); return v ? v.readyState : -1; })()`);
+    await poll(ready, (s) => s >= 3, 60, 200);
+    await sleep(400);
+
     // ── ④ 배속 — 키 핸들러는 포커스된 컨테이너(tabIndex)에 걸려 있다. 키마다 렌더를 기다린다(같은 틱이면 같은 rate를 읽는다). ──
     const rates = await cdp.eval(`(async()=>{
       const v = [...document.querySelectorAll('video')].find((e) => e.offsetWidth > 0);
@@ -283,6 +295,67 @@ export async function run({ cdp, report: r, fix }) {
       rates?.top === 16 && rates.over === 16 && rates.label === true && rates.down === 8,
       J(rates),
     );
+
+    // ── ④-2 눈금자: 끌면 보이는 구간 이동(팬) · 제자리 클릭이면 탐색 (사용자 요청 2026-09-30) ──
+    // 실제 포인터(CDP Input)로 끈다 — 끌기 판정·window 리스너 경로를 그대로 탄다. 멈춘 채 재야 재생이 시각을 밀지 않는다.
+    const bar = () =>
+      cdp.eval(`(()=>{
+        const b = [...document.querySelectorAll('[data-gpv="timeline-bar"]')].find((e) => e.offsetWidth > 0);
+        const v = [...document.querySelectorAll('video')].find((e) => e.offsetWidth > 0);
+        if (!b || !v) return null;
+        const r = b.getBoundingClientRect();
+        return { x: r.left, y: r.top + r.height / 2, w: r.width, s: Number(b.dataset.viewS), e: Number(b.dataset.viewE), t: v.currentTime, dur: v.duration };
+      })()`);
+    await cdp.eval(`[...document.querySelectorAll('video')].forEach((v) => v.pause())`);
+    // 멈춘 것이 유지되는지 확인하고 시작한다(늦게 온 자동재생이 시각을 밀면 "재생 위치는 그대로" 단언이 거짓 빨강이다).
+    const still = await poll(
+      async () => {
+        const a = await bar();
+        await sleep(250);
+        const b = await bar();
+        return a && b && Math.abs(a.t - b.t) < 1e-3 ? b : null;
+      },
+      (v) => !!v,
+      8,
+      100,
+    );
+    const b0 = still ? await bar() : null;
+    if (!b0) {
+      r.skip("④-2 눈금자 팬", "보이는 눈금자·영상을 찾지 못함");
+    } else {
+      // 휠 = 커서 시각 고정 줌 — 가운데서 네 칸(1.3⁴ ≈ 2.9배).
+      for (let i = 0; i < 4; i++)
+        await cdp.eval(`(()=>{ const b = [...document.querySelectorAll('[data-gpv="timeline-bar"]')].find((e) => e.offsetWidth > 0);
+          b.dispatchEvent(new WheelEvent('wheel', { deltaY: -100, clientX: ${b0.x + b0.w / 2}, clientY: ${b0.y}, bubbles: true, cancelable: true })); return true; })()`);
+      const z = await poll(bar, (v) => !!v && v.e - v.s < v.dur * 0.6, 12, 150);
+      const mouse = (type, x, extra = {}) =>
+        cdp._send("Input.dispatchMouseEvent", { type, x, y: z.y, button: "none", buttons: 0, ...extra });
+      const held = { button: "left", buttons: 1 };
+      const x0 = z.x + z.w / 2;
+      await mouse("mouseMoved", x0);
+      await mouse("mousePressed", x0, { ...held, clickCount: 1 });
+      for (let i = 1; i <= 10; i++) await mouse("mouseMoved", x0 - 10 * i, held); // 왼쪽으로 100px
+      await mouse("mouseReleased", x0 - 100, { ...held, clickCount: 1 });
+      const p = await poll(bar, (v) => !!v && v.s > z.s + 1e-3, 12, 150);
+      const want = (100 / z.w) * (z.e - z.s); // 끈 만큼 창이 앞으로 — 잡은 시각이 커서 밑에 남는다
+      r.check(
+        "④-2 확대한 눈금자를 끌면 보이는 구간이 끈 만큼 이동 · 재생 위치는 그대로",
+        !!z && !!p && Math.abs(p.s - z.s - want) < want * 0.25 && Math.abs(p.e - p.s - (z.e - z.s)) < 1e-3 && Math.abs(p.t - z.t) < 0.02,
+        J({ zoom: z && [z.s, z.e], pan: p && [p.s, p.e], want: +want.toFixed(3), t: [z?.t, p?.t] }),
+      );
+      // 제자리 클릭 — 누른 자리(25%) 시각으로 탐색하고 창은 그대로.
+      const xc = p.x + p.w * 0.25;
+      await mouse("mouseMoved", xc);
+      await mouse("mousePressed", xc, { ...held, clickCount: 1 });
+      await mouse("mouseReleased", xc, { ...held, clickCount: 1 });
+      const c = await poll(bar, (v) => !!v && Math.abs(v.t - p.t) > 1e-3, 12, 150);
+      const at = p.s + 0.25 * (p.e - p.s);
+      r.check(
+        "④-2 눈금자 제자리 클릭 → 그 지점으로 탐색 · 보이는 구간은 그대로",
+        !!c && Math.abs(c.t - at) < 0.1 && Math.abs(c.s - p.s) < 1e-3,
+        J({ want: +at.toFixed(3), t: c?.t, view: c && [c.s, c.e] }),
+      );
+    }
 
     // ── ⑤ 오디오 트랙이 있는 조각 MP4 — 리먹서 지원 밖 → ffmpeg 경로 ──
     const tmpLeft = () => readdirSync(dirAbs).filter((n) => n.startsWith(".gpv-export-"));
@@ -313,6 +386,50 @@ export async function run({ cdp, report: r, fix }) {
     );
     const avInfo = await info(AV_COPY);
     r.check("⑤ 폴백 사본도 조각 MP4가 아니다", avInfo.ok && avInfo.r?.fragmented === false, avInfo.ok ? J(avInfo.r) : `${avInfo.code} ${avInfo.message}`);
+    // ── ⑥ 대기열 — 다른 영상의 사본이 도는 중에 눌러도 뒤에 서고, 앞이 끝나면 이어서 만든다(사용자 요청 2026-09-30) ──
+    copyFileSync(join(fix.repo, FRAG), join(fix.repo, Q1));
+    copyFileSync(join(fix.repo, FRAG), join(fix.repo, Q2));
+    await open(Q2);
+    await poll(() => view(Q2), (v) => v?.path === Q2 && v.notice === 1 && v.button?.disabled === false, 60, 250);
+    await cdp.eval(`window.__gpv.ui.setState({ toasts: [] })`);
+    // 앞 잡(q1)을 넣고 **같은 틱에** 지금 보는 q2의 버튼을 누른다 — 앞 잡이 도는 중이라는 조건이 확실하다(작은 파일은 금방 끝난다).
+    const q = await cdp.eval(`(()=>{
+      const store = window.__gpvMediaQueue;
+      if (!store) return { store: false };
+      store.getState().enqueue({ kind: 'fastCopy', id: 'e2e-q1-' + Date.now(), projectId: ${J(pid)}, srcRel: ${J(Q1)}, outRel: ${J(Q1_COPY)}, durationMs: 0, hasAudio: false });
+      const btn = [...document.querySelectorAll('[data-gpv="fast-start-make"]')].find((e) => e.offsetWidth > 0);
+      const disabled = btn ? btn.disabled : null;
+      btn?.click();
+      return { store: true, disabled, jobs: store.getState().tasks.map((j) => [j.srcRel.split('/').pop(), j.state]) };
+    })()`);
+    r.check(
+      "⑥ 다른 영상 사본이 도는 중에도 버튼이 살아 있고, 누르면 대기열 뒤에 선다(q1 도는 중 · q2 대기)",
+      q.store === true && q.disabled === false && J(q.jobs) === J([["q1.mp4", "running"], ["q2.mp4", "queued"]]),
+      J(q),
+    );
+    const q1Abs = join(fix.repo, Q1_COPY);
+    const q2Abs = join(fix.repo, Q2_COPY);
+    const qd = await poll(
+      () => cdp.eval(`(()=>{ const s = window.__gpvMediaQueue?.getState(); return { left: s ? s.tasks.length : -1, path: window.__gpv.ui.getState().selectedDiff?.path ?? null }; })()`),
+      (v) => v?.left === 0 && existsSync(q1Abs) && existsSync(q2Abs),
+      120,
+      250,
+    );
+    const m1 = existsSync(q1Abs) ? statSync(q1Abs).mtimeMs : null;
+    const m2 = existsSync(q2Abs) ? statSync(q2Abs).mtimeMs : null;
+    r.check(
+      "⑥ 앞 사본이 끝나면 이어서 — 두 사본 모두 생기고 q1이 먼저 끝났다 · 대기열이 비었다",
+      qd?.left === 0 && m1 !== null && m2 !== null && m1 <= m2,
+      J({ left: qd?.left, m1, m2 }),
+    );
+    const qv = await poll(() => view(Q2_COPY), (v) => v?.path === Q2_COPY, 40, 250);
+    r.check("⑥ 보고 있던 영상(q2)의 사본은 끝나면 그 자리에서 열린다", qv?.path === Q2_COPY, J(qv?.path));
+    const qi = await Promise.all([info(Q1_COPY), info(Q2_COPY)]);
+    r.check(
+      "⑥ 대기열로 만든 두 사본 모두 조각 MP4가 아니다",
+      qi.every((x) => x.ok && x.r?.fragmented === false),
+      J(qi.map((x) => (x.ok ? x.r : x.code))),
+    );
   } finally {
     await cdp.eval(`(()=>{ if (window.__gpvFragUnlisten) window.__gpvFragUnlisten(); window.__gpvFragUnlisten=null; return true; })()`).catch(() => {});
     await cdp.eval(`document.querySelectorAll('video').forEach((v) => v.pause())`).catch(() => {});

@@ -53,6 +53,14 @@ const secondaryCls =
   "flex items-center justify-center gap-1 rounded border border-edge px-2 py-1.5 hover:bg-raised hover:text-fg disabled:bg-transparent disabled:text-fg-muted";
 const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4];
 
+/** 구간 시각 → 파일 이름 조각 `01h02m03s`(초 단위 내림). `:`는 Windows 파일 이름에 못 쓴다 — 프레임 추출 이름
+ *  (video.rs `frame_time_name`)과 같은 표기라 두 산출물을 같은 규칙으로 읽는다. */
+export function clipTimeTag(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(Math.floor(s / 3600))}h${pad(Math.floor(s / 60) % 60)}m${pad(s % 60)}s`;
+}
+
 /** 오디오 추출 규칙 — aac/mp3는 무손실 복사(컨테이너만 교체), 그 외는 aac 재인코딩. */
 function audioPlan(acodec: string | null, forceEncode: boolean): { ext: string; mode: "copy" | "encode" } {
   if (!forceEncode && acodec === "aac") return { ext: "m4a", mode: "copy" };
@@ -252,20 +260,22 @@ export const ExportPanel = memo(function ExportPanel({
   // 접미사 자동 이름 — 사용자가 손대기 전까지만 갱신.
   const suggested = useMemo(() => {
     const stem = cleanStem(path);
-    if (format === "gif") return `${stem}${range ? ".clip" : ""}.gif`;
-    if (format === "audio") return `${stem}.${aud.ext}`;
+    // 구간이면 시작·끝 시각을 이름에 — 어느 구간을 뗀 파일인지 이름만 보고 안다(사용자 요청 2026-09-30, 초 단위까지).
+    // 편집본(cut)은 구간을 무시한다(백엔드가 range와 함께 거절) — 시각을 붙이지 않는다.
+    const span = range && !cutOn ? `_${clipTimeTag(range.startMs)}-${clipTimeTag(range.endMs)}` : "";
+    if (format === "gif") return `${stem}${span}.gif`;
+    if (format === "audio") return `${stem}${span}.${aud.ext}`;
     const parts: string[] = [];
-    // 편집본은 구간을 무시한다(백엔드가 range와 함께 거절) — clip이 아니라 cut.
     if (cutOn) parts.push("cut");
-    else if (range) parts.push("clip");
     if (subsOn) parts.push("sub");
     if (crop) parts.push("crop");
     if (masks.length > 0) parts.push(maskKind === "blur" ? "blur" : "mosaic");
     if (speed !== 1) parts.push(`x${speed}`);
     if (maxHeight) parts.push(`${maxHeight}p`);
     if (removeAudio) parts.push("mute");
-    if (parts.length === 0 && mode === "encode") parts.push("edit");
-    return `${stem}.${parts.join(".") || "copy"}.mp4`;
+    // 구간 사본은 시각만으로 원본과 이름이 갈린다 — "copy"·"edit" 꼬리는 둘 다 없을 때만.
+    if (parts.length === 0 && !span) parts.push(mode === "encode" ? "edit" : "copy");
+    return `${stem}${span}${parts.length ? `.${parts.join(".")}` : ""}.mp4`;
   }, [path, format, range, cutOn, subsOn, crop, masks.length, maskKind, speed, maxHeight, removeAudio, mode, aud.ext]);
 
   useEffect(() => {
@@ -396,7 +406,7 @@ export const ExportPanel = memo(function ExportPanel({
       setProgress(null);
     };
     // 종결 토스트는 잡을 시작한 창만 띄운다 — 표시가 없으면 events.ts가 무효화만 하고 끝낸다.
-    markLocalVideoJob(id);
+    markLocalVideoJob(id, name); // name = 산출물 파일 이름 — 상태바 작업 목록에도 뜬다
     void ipc.videoExport(projectId, id, buildSpec(overwrite)).then(done, (e) => {
       done();
       // 백엔드가 AlreadyExists를 **제외한** 모든 결과에 video://export-finished를 emit하고

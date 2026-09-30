@@ -2,7 +2,7 @@
 //
 // - 상태가 여기 있는 이유: 버튼·팝오버는 파일 전환(key={path})에 언마운트되지만 ffmpeg는 계속 돈다
 //   (videoSplit과 같은 이유). 다른 영상으로 옮겨 가도 진행률·취소가 사라지지 않는다.
-// - 한 번에 하나만 — 1시간 영상 디코드는 CPU를 다 쓴다(동시 ffmpeg를 띄우지 않는다, videoSplit 머리 주석).
+// - 한 번에 하나만 — 순서는 mediaQueue가 정한다(빠른 재생 사본과 같은 줄). 여기는 도는 잡의 장 수·진행률만 든다.
 // - 종결은 채널의 종결 메시지와 invoke 프라미스 중 **먼저 온 쪽**(Windows 응답 유실 대비 — video.rs FramesEvent).
 import type { QueryClient } from "@tanstack/react-query";
 import { create } from "zustand";
@@ -38,22 +38,22 @@ type FramesEnd = Exclude<VideoFramesEvent, { phase: "progress" }>;
 
 interface VideoFramesState {
   job: FramesJob | null;
-  start: (opts: {
+  /** mediaQueue만 부른다 — 끝나면(성공·취소·실패 모두) 풀린다. */
+  run: (opts: {
+    jobId: string;
     projectId: string;
     srcRel: string;
     intervalSecs: number;
     format: VideoFramesFormat;
     durationMs: number;
     qc: QueryClient;
-  }) => void;
+  }) => Promise<void>;
   cancel: () => void;
 }
 
 export const useVideoFrames = create<VideoFramesState>((set, get) => ({
   job: null,
-  start: ({ projectId, srcRel, intervalSecs, format, durationMs, qc }) => {
-    if (get().job) return;
-    const jobId = crypto.randomUUID();
+  run: ({ jobId, projectId, srcRel, intervalSecs, format, durationMs, qc }) => new Promise<void>((resolve) => {
     set({
       job: {
         projectId,
@@ -69,6 +69,7 @@ export const useVideoFrames = create<VideoFramesState>((set, get) => ({
       if (ended) return;
       ended = true;
       set({ job: null });
+      resolve();
       const ui = useUi.getState();
       const t = currentMessages().media.frameExtract;
       if (e.phase === "done") {
@@ -97,7 +98,7 @@ export const useVideoFrames = create<VideoFramesState>((set, get) => ({
           if (ended) return;
           set((s) =>
             s.job?.jobId === jobId
-              ? // 시작 때 길이를 몰랐으면(0) 백엔드가 ffprobe로 잰 예상 장 수로 채운다.
+              ? // 시작 때 길이를 몰랐으면(0) 백엔드가 ffprobe로 잰 예상 장 수로 채운다(조각 fMP4는 재지 않아 계속 0 — 퍼센트만 온다).
                 { job: { ...s.job, percent: e.percent, frames: e.frames, expected: e.expected || s.job.expected } }
               : s,
           );
@@ -111,7 +112,7 @@ export const useVideoFrames = create<VideoFramesState>((set, get) => ({
             : { phase: "failed", message: errorMessage(err) },
         ),
       );
-  },
+  }),
   cancel: () => {
     const job = get().job;
     // 같은 잡 레지스트리라 내보내기 취소 커맨드가 그대로 먹는다(모르는 id는 no-op).

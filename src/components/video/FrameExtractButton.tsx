@@ -1,11 +1,13 @@
 // 간격 프레임 추출 — 플레이어 헤더의 "프레임" 옆 버튼 + 팝오버(간격·형식 → 시작 · 진행률 · 취소).
-// 잡 상태는 stores/videoFrames.ts(파일을 바꿔도 추출은 계속되고, 돌아오면 진행률이 다시 보인다).
+// 시작은 대기열(stores/mediaQueue.ts — 빠른 재생 사본과 한 줄)에 넣고, 도는 잡의 장 수·진행률은 stores/videoFrames.ts가 든다
+// (파일을 바꿔도 추출은 계속되고, 돌아오면 진행률이 다시 보인다).
 import { useQueryClient } from "@tanstack/react-query";
-import { Images, Loader2 } from "lucide-react";
+import { Clock, Images, Loader2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { useMessages } from "../../i18n/ui-language";
 import type { VideoFramesFormat } from "../../lib/ipc";
+import { useMediaQueue } from "../../stores/mediaQueue";
 import { useOccludesWebview } from "../../stores/occlusion";
 import { expectedFrameCount, useVideoFrames } from "../../stores/videoFrames";
 import { splitPath } from "./frameCapture";
@@ -26,11 +28,16 @@ export function FrameExtractButton({
 }) {
   const msg = useMessages();
   const t = msg.media.frameExtract;
+  const tq = msg.media.mediaQueue;
   const qc = useQueryClient();
   const job = useVideoFrames((s) => s.job);
-  const start = useVideoFrames((s) => s.start);
   const cancel = useVideoFrames((s) => s.cancel);
+  const tasks = useMediaQueue((s) => s.tasks);
   const mine = job !== null && job.projectId === projectId && job.srcRel === path;
+  const queuedIdx = tasks.findIndex(
+    (x) => x.kind === "frames" && x.state === "queued" && x.projectId === projectId && x.srcRel === path,
+  );
+  const queued = queuedIdx >= 0 ? tasks[queuedIdx] : null;
   // 메타데이터가 늦는 파일(조각 fMP4)은 duration이 0·NaN·Infinity일 수 있다 — 그땐 0을 보내 백엔드가 잰다.
   const knownMs = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 0;
   const [pos, setPos] = useState<{ right: number; top: number } | null>(null);
@@ -73,6 +80,10 @@ export function FrameExtractButton({
           <>
             <Loader2 size={12} className="animate-spin" /> {percent}%
           </>
+        ) : queued ? (
+          <>
+            <Clock size={12} /> {tq.queued(queuedIdx)}
+          </>
         ) : (
           <>
             <Images size={12} /> {t.title}
@@ -89,7 +100,7 @@ export function FrameExtractButton({
             <div className="mb-2 font-medium text-fg">{t.title}</div>
             {mine ? (
               <div className="space-y-2">
-                {job.expected > 0 && (
+                {(job.expected > 0 || job.percent > 0) && (
                   <div className="h-1.5 overflow-hidden rounded bg-raised">
                     <div className="h-full bg-accent transition-[width]" style={{ width: `${percent}%` }} />
                   </div>
@@ -97,13 +108,25 @@ export function FrameExtractButton({
                 <div className="tabular-nums">
                   {job.expected > 0
                     ? t.running(job.frames, job.expected, percent)
-                    : t.runningNoTotal(job.frames)}
+                    : job.percent > 0
+                      ? t.runningNoExpected(job.frames, percent)
+                      : t.runningNoTotal(job.frames)}
                 </div>
                 <button
                   onClick={cancel}
                   className="w-full rounded border border-edge px-2 py-1 text-warn hover:bg-raised"
                 >
                   {t.cancel}
+                </button>
+              </div>
+            ) : queued ? (
+              <div className="space-y-2">
+                <div className="tabular-nums">{tq.queued(queuedIdx)}</div>
+                <button
+                  onClick={() => useMediaQueue.getState().cancel(queued.id)}
+                  className="w-full rounded border border-edge px-2 py-1 hover:bg-raised"
+                >
+                  {tq.unqueue}
                 </button>
               </div>
             ) : (
@@ -160,10 +183,19 @@ export function FrameExtractButton({
                 </div>
                 <button
                   onClick={() =>
-                    start({ projectId, srcRel: path, intervalSecs: interval, format, durationMs: knownMs, qc })
+                    useMediaQueue.getState().enqueue({
+                      kind: "frames",
+                      id: crypto.randomUUID(),
+                      projectId,
+                      srcRel: path,
+                      intervalSecs: interval,
+                      format,
+                      durationMs: knownMs,
+                      qc,
+                    })
                   }
-                  disabled={!valid || job !== null}
-                  title={job !== null ? t.busyOther : undefined}
+                  disabled={!valid}
+                  title={tasks.length > 0 ? tq.queueTitle(tasks.length) : undefined}
                   className="w-full rounded bg-accent/20 px-2 py-1 text-accent hover:bg-accent/30 disabled:opacity-50"
                 >
                   {t.start}

@@ -10,6 +10,7 @@ import { relativeTime } from "../lib/format";
 import { diffQueryOptions, useClaudeUsage, useProjects, useReopenWithEncoding, useStatus } from "../queries";
 import { useAgentActivity } from "../stores/agentActivity";
 import { useUi } from "../stores/ui";
+import { TaskCenter } from "./TaskCenter";
 
 export function StatusBar({ project }: { project: Project | null }) {
   const msg = useMessages();
@@ -45,8 +46,10 @@ export function StatusBar({ project }: { project: Project | null }) {
           </div>
         </>
       ) : (
-        <span>Gitpervisor</span>
+        <span className="mr-auto">Gitpervisor</span>
       )}
+      {/* 맨 오른쪽 — 긴 작업(사본·프레임 추출·내보내기·자막)을 한곳에서 본다. */}
+      <TaskCenter />
     </footer>
   );
 }
