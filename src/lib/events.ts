@@ -39,6 +39,16 @@ export function markLocalVideoJob(id: string) {
   localVideoJobs.add(id);
 }
 
+/**
+ * invoke 가 실패했을 때 부른다 — 종결 이벤트가 아직 이 표시를 거두지 않았으면 거두고 true: 호출자가 그 실패를 직접
+ * 알린다. 잡이 시작되기 **전의** 실패(원본 없음·커맨드 없음·원본 덮어쓰기)는 종결 이벤트가 없어, 표시만 남은 채
+ * 아무 말 없이 끝났다(dev 앱 옛 바이너리에서 "빠른 재생용 사본" 버튼이 무반응). 여기서 거두면 이벤트가 늦게 와도
+ * 위 핸들러가 남의 잡으로 보고 토스트를 다시 띄우지 않는다.
+ */
+export function takeLocalVideoJob(id: string): boolean {
+  return localVideoJobs.delete(id);
+}
+
 /** 이 창이 시작한 자막 만들기(전사) 잡 id → 파일 이름. `stt://finished`도 모든 창에 오므로 위와 같은 이유로 거른다. */
 const localSttJobs = new Map<string, string>();
 

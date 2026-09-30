@@ -53,7 +53,7 @@ import {
 } from "../../lib/captionStyle";
 import { captionLangLabel, captionTranslationLangs } from "../../lib/captionTranslate";
 import { hasUserEngaged } from "../../lib/engagement";
-import { markLocalVideoJob } from "../../lib/events";
+import { markLocalVideoJob, takeLocalVideoJob } from "../../lib/events";
 import { openDocWindow } from "../../lib/floating";
 import type {
   CaptionStylePreset,
@@ -703,6 +703,9 @@ export default function VideoPlayer({
         .catch((e) => {
           // AlreadyExists만 종결 이벤트가 없다(video.rs 계약) — 여기서 직접 되돌린다.
           finishConvert(id, false);
+          // 잡 시작 전 실패(커맨드·원본 없음 등)도 이벤트가 없다 — 표시가 남았으면 여기서 알린다(AlreadyExists는 아래가 잇는다).
+          if (takeLocalVideoJob(id) && !(isIpcError(e) && e.code === "ALREADY_EXISTS"))
+            pushToast(isIpcError(e) && e.code === "CANCELLED" ? "info" : "error", errorMessage(e));
           throw e;
         });
     };
@@ -811,11 +814,15 @@ export default function VideoPlayer({
       finishFast(id, true);
     } catch (e) {
       finishFast(id, false);
-      // AlreadyExists만 종결 이벤트가 없다(video.rs 계약) — 그 밖의 실패·취소 토스트는 events.ts가 띄운다.
+      // 종결 이벤트가 이미 알렸으면(잡이 돈 뒤의 실패·취소) 표시가 거둬져 있다 — 남아 있으면 이벤트가 없는 실패다.
+      const unreported = takeLocalVideoJob(id);
       if (isIpcError(e) && e.code === "ALREADY_EXISTS") {
         // 내보내기는 tmp → rename이라 같은 이름이 있으면 완성된 사본이다 — 다시 만들지 않고 그걸 연다.
         pushToast("info", tf.exists(tf.fileName(stem)));
         openCopy(outRel);
+      } else if (unreported) {
+        // 잡 시작 전 실패(원본 없음·원본 덮어쓰기·커맨드 없음 — 옛 바이너리)는 이벤트가 없어 무반응이었다.
+        pushToast(isIpcError(e) && e.code === "CANCELLED" ? "info" : "error", errorMessage(e));
       }
     }
   };
