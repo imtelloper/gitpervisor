@@ -2108,7 +2108,7 @@ dependencies = [
 
 [[package]]
 name = "gitpervisor"
-version = "0.12.1"
+version = "0.12.2"
 dependencies = [
  "arboard",
  "base64 0.22.1",
