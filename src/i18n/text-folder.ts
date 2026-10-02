@@ -50,6 +50,7 @@ const ko = {
     menuPasteToTerminal: "터미널에 경로 붙여넣기",
     menuCopyVideoTime: (time: string) => `영상 시각 복사 (${time})`,
     copyVideoTimeDone: "영상 시각을 복사했습니다",
+    menuRename: "이름 바꾸기",
   },
   lightbox: {
     keysHint: "← → 이동 · Esc 닫기",
@@ -105,6 +106,7 @@ export const folderText = defineText(ko, {
       menuPasteToTerminal: "Paste path into terminal",
       menuCopyVideoTime: (time) => `Copy video time (${time})`,
       copyVideoTimeDone: "Video time copied",
+      menuRename: "Rename",
     },
     lightbox: {
       keysHint: "← → to navigate · Esc to close",

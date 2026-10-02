@@ -216,6 +216,21 @@ pub async fn rename_path(
     new_name: String,
 ) -> Result<String, IpcError> {
     let repo = project_path(&state, &project_id)?;
+    let new_name = validate_new_name(&new_name)?;
+    // 상위 디렉토리는 그대로 두고 마지막 컴포넌트만 교체한다(마지막 '/' 없으면 루트 바로 아래).
+    let (parent, old_name) = match rel_path.rfind('/') {
+        Some(i) => (&rel_path[..i], &rel_path[i + 1..]),
+        None => ("", rel_path.as_str()),
+    };
+    let new_rel = join_rel(parent, new_name);
+    let from = resolve_in_repo(&repo, &rel_path)?;
+    let to = resolve_in_repo(&repo, &new_rel)?;
+    rename_in_place(&from, &to, old_name, new_name).await?;
+    Ok(new_rel)
+}
+
+/// 이름 바꾸기의 새 이름 검증 — 다듬은 이름을 돌려준다. 즐겨찾기 폴더 창(`fav_rename`)도 같은 규칙을 쓴다.
+pub(crate) fn validate_new_name(new_name: &str) -> Result<&str, IpcError> {
     let new_name = new_name.trim();
     // 구분자를 허용하면 이름 바꾸기가 아니라 '이동'이 된다 — 이 커맨드의 계약을 벗어나므로 거부.
     if new_name.contains('/') || new_name.contains('\\') {
@@ -227,21 +242,19 @@ pub async fn rename_path(
     if new_name.is_empty() || new_name == "." || new_name == ".." {
         return Err(IpcError::new(ErrorCode::Io, text_files::invalid_name()));
     }
-    // 상위 디렉토리는 그대로 두고 마지막 컴포넌트만 교체한다(마지막 '/' 없으면 루트 바로 아래).
-    let (parent, old_name) = match rel_path.rfind('/') {
-        Some(i) => (&rel_path[..i], &rel_path[i + 1..]),
-        None => ("", rel_path.as_str()),
-    };
-    let new_rel = join_rel(parent, new_name);
-    let from = resolve_in_repo(&repo, &rel_path)?;
-    let to = resolve_in_repo(&repo, &new_rel)?;
+    Ok(new_name)
+}
+
+/// 같은 상위 디렉토리 안에서 `from` → `to` 로 이름만 바꾼다. 경로 검증은 호출 측 몫이고, 여기는 충돌 판정
+/// (대소문자만 다른 자기 자신 vs 다른 파일)과 실제 rename 이다 — 파일 트리와 폴더 창이 이 규칙을 한 벌로 쓴다.
+pub(crate) async fn rename_in_place(from: &Path, to: &Path, old_name: &str, new_name: &str) -> Result<(), IpcError> {
     // 존재 판정은 링크를 따라가지 않는다 — 심볼릭 링크 자체도 이름 변경 대상이다.
     if tokio::fs::symlink_metadata(&from).await.is_err() {
         return Err(IpcError::new(ErrorCode::NotFound, text_files::target_not_found()));
     }
     // 이름이 그대로면 파일시스템을 건드리지 않는다(대소문자까지 동일한 경우).
     if from == to {
-        return Ok(new_rel);
+        return Ok(());
     }
     // 상위 디렉토리가 달라지면 '이름 바꾸기'가 아니라 '이동'이다 — rel_path에 역슬래시가 섞여
     // 들어오면(`a\b.txt`) Windows에서 컴포넌트가 갈라져 parent 추출이 어긋나고 실제로 폴더를
@@ -278,7 +291,7 @@ pub async fn rename_path(
     tokio::fs::rename(&from, &to)
         .await
         .map_err(|e| IpcError::new(ErrorCode::Io, text_files::rename_failed(e)))?;
-    Ok(new_rel)
+    Ok(())
 }
 
 /// 파일/폴더 이동 — **이름은 그대로**, 다른 폴더로 옮긴다(트리 드래그 앤 드롭용).

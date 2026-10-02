@@ -1,5 +1,6 @@
 // 레포 상대 경로(항상 `/` 구분자) 문자열 유틸 — 트리와 뷰어가 같은 규칙을 써야 해서 한 곳에 둔다.
 // 파일트리가 갖고 있던 모듈 로컬 사본을 옮긴 것이다(태스크 56).
+import { currentMessages } from "../i18n/ui-language";
 
 /** base 아래 name의 경로 — base가 빈 문자열(레포 루트)이면 name 그대로. */
 export function joinPath(base: string, name: string): string {
@@ -10,4 +11,15 @@ export function joinPath(base: string, name: string): string {
 export function parentDir(rel: string): string {
   const i = rel.lastIndexOf("/");
   return i >= 0 ? rel.slice(0, i) : "";
+}
+
+/** 파일·폴더 새 이름 검증 — 빈 이름·경로 구분자·`..` 거부. 통과면 null. 파일 트리와 폴더 창이 같이 쓴다
+ *  (최종 판정은 백엔드 `validate_new_name` — 여기는 입력창이 미리 막는 몫). */
+export function validateEntryName(v: string): string | null {
+  const t = v.trim();
+  const m = currentMessages().tree.nameValidation;
+  if (!t) return m.required;
+  if (/[\\/]/.test(t)) return m.hasSeparator;
+  if (t === "." || t === ".." || t.includes("..")) return m.invalid;
+  return null;
 }

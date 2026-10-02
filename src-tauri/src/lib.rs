@@ -1341,6 +1341,7 @@ pub fn run() {
             commands::fav_read,
             commands::fav_open,
             commands::fav_delete,
+            commands::fav_rename,
             commands::browser_open,
             commands::browser_navigate,
             commands::browser_set_bounds,

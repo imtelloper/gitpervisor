@@ -80,6 +80,12 @@ const TMP_MAX_AGE: Duration = Duration::from_secs(60 * 60);
 /// 아래 커맨드들과 썸네일 스킴(`thumb_protocol.rs`)은 전부 첫 단계에서 이것을 부른다. 하나라도
 /// 빠뜨리면 그 통로가 파일시스템 전체를 읽는다 — 프론트를 믿고 검사를 생략하지 마라.
 pub(crate) fn allowed(state: &State<'_, AppState>, path: &str) -> Result<PathBuf, IpcError> {
+    let (favs, projects) = roots(state);
+    allowed_in(Path::new(path), &favs, &projects)
+}
+
+/// `allowed` 가 보는 두 루트 목록 — 즐겨찾기 폴더, 등록된 프로젝트.
+fn roots(state: &State<'_, AppState>) -> (Vec<String>, Vec<String>) {
     let favs: Vec<String> = state
         .settings
         .read()
@@ -95,7 +101,7 @@ pub(crate) fn allowed(state: &State<'_, AppState>, path: &str) -> Result<PathBuf
         .iter()
         .map(|p| p.path.clone())
         .collect();
-    allowed_in(Path::new(path), &favs, &projects)
+    (favs, projects)
 }
 
 /// 즐겨찾기 루트, 또는 **등록된 프로젝트 루트** 안인가 — 파일 트리의 폴더 "새 창으로 열기"가 이 창을
@@ -569,6 +575,55 @@ pub fn fav_delete(state: State<'_, AppState>, path: String) -> Result<(), IpcErr
         .map_err(|e| IpcError::new(ErrorCode::Io, text_files::fav_trash_failed(e)))
 }
 
+/// 즐겨찾기 폴더 창의 이름 바꾸기 — 같은 폴더 안에서 이름만 바꾸고 새 절대경로를 돌려준다.
+///
+/// 검사는 **상위 폴더**에 `allowed` 를 건다(원본 전체를 canonicalize 하지 않는다 — `resolve_in_repo` 와 같은 이유로,
+/// 링크를 풀면 링크가 아니라 링크 대상의 이름이 바뀐다). 상위가 루트 안이어야 하므로 등록된 루트 폴더 자신의
+/// 이름은 바꿀 수 없다(바뀌면 등록이 끊긴다). 옛 이름·새 이름 모두 트리 커맨드와 같은 성분 규칙(`.git`·예약
+/// 장치명·`..`)을 거치고, 충돌·대소문자 판정은 파일 트리와 같은 `rename_in_place` 를 쓴다.
+#[tauri::command]
+pub async fn fav_rename(
+    state: State<'_, AppState>,
+    path: String,
+    new_name: String,
+) -> Result<String, IpcError> {
+    let (favs, projects) = roots(&state);
+    let r = fav_rename_paths(&path, &new_name, &favs, &projects)?;
+    super::tree::rename_in_place(&r.from, &r.to, &r.old_name, &r.new_name).await?;
+    Ok(r.to.to_string_lossy().into_owned())
+}
+
+struct FavRename {
+    from: PathBuf,
+    to: PathBuf,
+    old_name: String,
+    new_name: String,
+}
+
+/// `fav_rename` 의 경로 판정 — `State` 없이 테스트할 수 있게 떼어 냈다.
+fn fav_rename_paths(
+    path: &str,
+    new_name: &str,
+    favs: &[String],
+    projects: &[String],
+) -> Result<FavRename, IpcError> {
+    let raw = Path::new(path);
+    let (Some(parent), Some(old_name)) = (raw.parent(), raw.file_name()) else {
+        return Err(IpcError::new(ErrorCode::Io, text_files::invalid_path()));
+    };
+    let old_name = old_name.to_string_lossy().into_owned();
+    super::tree::validate_rel_file(&old_name)?;
+    let new_name = super::tree::validate_new_name(new_name)?;
+    super::tree::validate_rel_file(new_name)?;
+    let dir = allowed_in(parent, favs, projects)?;
+    Ok(FavRename {
+        from: dir.join(&old_name),
+        to: dir.join(new_name),
+        old_name,
+        new_name: new_name.to_string(),
+    })
+}
+
 /// `fav_open` 의 분기 — 프로세스를 띄우지 않고 테스트할 수 있게 떼어 냈다.
 #[derive(Debug, PartialEq)]
 enum Launch {
@@ -802,6 +857,45 @@ mod tests {
                 "{ext} 는 kind_of 가 image 로 분류하는데 mime 이 없다"
             );
         }
+    }
+
+    /// 폴더 창 이름 바꾸기 — 상위 폴더가 루트 안이어야 하고(루트 자신·루트 밖 거부), 새 이름은 한 성분만,
+    /// 충돌은 덮어쓰지 않는다. 실제 rename 까지 한 번 돌려 파일이 옮겨졌는지 본다.
+    #[tokio::test]
+    async fn fav_rename_stays_inside_roots_and_never_overwrites() {
+        let base = scratch("fav-rename");
+        let root = base.join("root");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(root.join("a.png"), b"a").unwrap();
+        std::fs::write(root.join("b.png"), b"b").unwrap();
+        std::fs::write(outside.join("x.png"), b"x").unwrap();
+        let favs = vec![root.to_string_lossy().to_string()];
+        let s = |p: &Path| p.to_string_lossy().to_string();
+
+        let r = fav_rename_paths(&s(&root.join("a.png")), "  c.png ", &favs, &[]).unwrap();
+        assert_eq!(r.new_name, "c.png", "앞뒤 공백은 다듬는다");
+        assert_eq!(r.to.parent(), r.from.parent(), "같은 폴더 안에서만");
+        super::super::tree::rename_in_place(&r.from, &r.to, &r.old_name, &r.new_name).await.unwrap();
+        assert!(!root.join("a.png").exists() && root.join("c.png").exists(), "실제로 이름이 바뀐다");
+
+        let r = fav_rename_paths(&s(&root.join("c.png")), "b.png", &favs, &[]).unwrap();
+        let err = super::super::tree::rename_in_place(&r.from, &r.to, &r.old_name, &r.new_name)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::AlreadyExists, "있는 파일을 덮어쓰지 않는다");
+        assert_eq!(std::fs::read(root.join("b.png")).unwrap(), b"b");
+
+        assert!(fav_rename_paths(&s(&outside.join("x.png")), "y.png", &favs, &[]).is_err(), "루트 밖");
+        assert!(fav_rename_paths(&s(&root), "renamed", &favs, &[]).is_err(), "등록된 루트 자신");
+        for bad in ["sub/c.png", "..\\c.png", "..", ".git", "CON.png", ""] {
+            assert!(
+                fav_rename_paths(&s(&root.join("c.png")), bad, &favs, &[]).is_err(),
+                "새 이름 {bad:?} 는 거부"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// 게이트의 핵심 성질 — `allowed` 가 부르는 `contained` 를 직접 친다.

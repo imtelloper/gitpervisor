@@ -44,7 +44,7 @@ import { openDocWindow, openFolderWindow } from "../../lib/floating";
 import { errorMessage, ipc, isIpcError } from "../../lib/ipc";
 import type { ChangeKind, DirEntry, FileChange, RepoStatus } from "../../lib/ipc";
 import { isHtml, isImage, isVideo } from "../../lib/language-map";
-import { joinPath, parentDir } from "../../lib/path";
+import { joinPath, parentDir, validateEntryName } from "../../lib/path";
 import { usePanelCollapsed, usePanelWidth } from "../../lib/use-panel-width";
 import {
   invalidateAfterMove,
@@ -420,16 +420,6 @@ function MenuItem({
 // 드롭 대상 폴더 행 하이라이트 — React state 대신 classList 직접 조작(DragGhost와 같은 이유).
 // 문자열 리터럴이라 Tailwind JIT가 클래스를 생성한다.
 const DROP_HL = ["ring-1", "ring-inset", "ring-accent", "bg-accent/15"];
-
-/** 폴더/파일 이름 검증 — 빈 이름·경로 구분자·`..` 거부. 통과면 null. */
-function validateName(v: string): string | null {
-  const t = v.trim();
-  const m = currentMessages().tree.nameValidation;
-  if (!t) return m.required;
-  if (/[\\/]/.test(t)) return m.hasSeparator;
-  if (t === "." || t === ".." || t.includes("..")) return m.invalid;
-  return null;
-}
 
 /**
  * 프로젝트의 전체 파일 트리 (지연 로딩). 파일 클릭 → 중앙 뷰어에 내용/diff.
@@ -916,7 +906,7 @@ export function FileTreePanel({
       label: baseDir ? msg.tree.dialog.createIn(toOsPath(baseDir)) : msg.tree.dialog.createInRoot,
       placeholder: msg.tree.dialog.folderNamePlaceholder,
       confirmLabel: msg.tree.dialog.create,
-      validate: validateName,
+      validate: validateEntryName,
       onConfirm: (name) => createDir.mutate(joinPath(baseDir, name.trim())),
     });
   }
@@ -931,7 +921,7 @@ export function FileTreePanel({
       label: baseDir ? msg.tree.dialog.createIn(toOsPath(baseDir)) : msg.tree.dialog.createInRoot,
       placeholder: msg.tree.dialog.fileNamePlaceholderExample,
       confirmLabel: msg.tree.dialog.create,
-      validate: validateName,
+      validate: validateEntryName,
       onConfirm: (name) => {
         const rel = joinPath(baseDir, name.trim());
         createFile.mutate(rel, {
@@ -965,7 +955,7 @@ export function FileTreePanel({
       placeholder: m.isDir ? msg.tree.dialog.folderNamePlaceholder : msg.tree.dialog.fileNamePlaceholder,
       defaultValue: m.name,
       confirmLabel: msg.tree.dialog.renameConfirm,
-      validate: validateName,
+      validate: validateEntryName,
       onConfirm: (v) => {
         const newName = v.trim();
         if (newName === m.name) return; // 이름이 그대로면 호출할 이유가 없다

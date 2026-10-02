@@ -13,6 +13,7 @@ import {
   Image as ImageIcon,
   LayoutGrid,
   List,
+  Pencil,
   RotateCw,
   Search,
   X,
@@ -42,8 +43,10 @@ import {
 } from "../../lib/fav-thumb";
 import { openDocWindow } from "../../lib/floating";
 import { ipc, type FavEntry } from "../../lib/ipc";
+import { validateEntryName } from "../../lib/path";
 import { useUi } from "../../stores/ui";
 import { EmptyState } from "../common/EmptyState";
+import { PromptHost } from "../common/PromptDialog";
 import { Toasts } from "../common/Toast";
 import { FloatTitleBar } from "../FloatTitleBar";
 import { Lightbox } from "./Lightbox";
@@ -250,6 +253,34 @@ export default function FolderWindow({
     [dir, join],
   );
 
+  /** 같은 폴더 안에서 이름만 — 목록을 먼저 고쳐 선택이 새 이름을 따라가게 하고, 다시 읽어 디스크와 맞춘다. */
+  const renameEntry = useCallback(
+    (e: FavEntry) => {
+      const m = currentMessages();
+      useUi.getState().askPrompt({
+        title: m.tree.dialog.renameTitle(e.isDir),
+        label: join(dir, e.name),
+        placeholder: e.isDir ? m.tree.dialog.folderNamePlaceholder : m.tree.dialog.fileNamePlaceholder,
+        defaultValue: e.name,
+        confirmLabel: m.tree.dialog.renameConfirm,
+        validate: validateEntryName,
+        onConfirm: (newName) => {
+          if (newName === e.name) return;
+          void ipc
+            .favRename(join(dir, e.name), newName)
+            .then(() => {
+              setEntries((list) => list && list.map((x) => (x.name === e.name ? { ...x, name: newName } : x)));
+              setSel((s) => (s.name === e.name ? { ...s, name: newName } : s));
+              setLightbox((n) => (n === e.name ? newName : n));
+              void load();
+            })
+            .catch((err) => useUi.getState().pushToast("error", errText(err)));
+        },
+      });
+    },
+    [dir, join, load],
+  );
+
   // ---- 키보드 ----
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
@@ -270,6 +301,14 @@ export default function FolderWindow({
         return;
       }
       if (typing) return;
+      if (ev.key === "F2" && !isMod(ev) && !ev.altKey && !ev.shiftKey) {
+        const e = shown[cursor];
+        if (e && !useUi.getState().prompt) {
+          ev.preventDefault();
+          renameEntry(e);
+        }
+        return;
+      }
       if (isMod(ev) && ev.key >= "1" && ev.key <= "4") {
         ev.preventDefault();
         setView((v) => ({ ...v, mode: MODES[Number(ev.key) - 1].id }));
@@ -312,7 +351,7 @@ export default function FolderWindow({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [lightbox, stepLightbox, shown, cursor, view.mode, load, goUp, openEntry, copyPath]);
+  }, [lightbox, stepLightbox, shown, cursor, view.mode, load, goUp, openEntry, copyPath, renameEntry]);
 
   const crumbs = useMemo(() => {
     const rootName = root.replace(/[\\/]+$/, "").split(SEP).filter(Boolean).pop() ?? root;
@@ -403,6 +442,7 @@ export default function FolderWindow({
           onCopyPath={() => copyPath(menu.entry)}
           onCopyVideoTime={copyVideoTime}
           onPastePath={() => pastePath(menu.entry)}
+          onRename={() => renameEntry(menu.entry)}
           onOpen={() =>
             void ipc.favOpen(join(dir, menu.entry.name), "default").catch(() => {
               useUi.getState().pushToast("error", msg.folder.window.openFailed);
@@ -428,6 +468,7 @@ export default function FolderWindow({
       )}
 
       <Toasts />
+      <PromptHost />
     </div>
   );
 }
@@ -962,6 +1003,7 @@ function ItemMenu({
   onCopyPath,
   onCopyVideoTime,
   onPastePath,
+  onRename,
   onOpen,
   onReveal,
 }: {
@@ -972,6 +1014,7 @@ function ItemMenu({
   onCopyPath: () => void;
   onCopyVideoTime: (time: string) => void;
   onPastePath: () => void;
+  onRename: () => void;
   onOpen: () => void;
   onReveal: () => void;
 }) {
@@ -996,10 +1039,10 @@ function ItemMenu({
   return (
     <div
       className="fixed z-50 min-w-52 rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl"
-      // 항목 4줄 × 31.5 + 헤더 24.5 + 패딩 ≈ 160(영상 시각 줄이 있으면 +32). PaneMenu 와 같은 클램프 규칙.
+      // 항목 5줄 × 31.5 + 헤더 24.5 + 패딩 ≈ 192(영상 시각 줄이 있으면 +32). PaneMenu 와 같은 클램프 규칙.
       style={{
         left: Math.min(x, window.innerWidth - 220),
-        top: Math.max(0, Math.min(y, window.innerHeight - (videoTime ? 192 : 160))),
+        top: Math.max(0, Math.min(y, window.innerHeight - (videoTime ? 224 : 192))),
       }}
       onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
@@ -1019,6 +1062,7 @@ function ItemMenu({
         label={msg.folder.window.menuPasteToTerminal}
         onClick={run(onPastePath)}
       />
+      <Row icon={<Pencil size={14} />} label={msg.folder.window.menuRename} hint="F2" onClick={run(onRename)} />
       <Row icon={<ExternalLink size={14} />} label={msg.folder.menuOpenDefault} onClick={run(onOpen)} />
       <Row icon={<FolderOpen size={14} />} label={msg.folder.menuReveal} onClick={run(onReveal)} />
     </div>
