@@ -24,6 +24,10 @@ jobs:
       AZURE_SIGN_ENDPOINT: ${{ secrets.AZURE_SIGN_ENDPOINT }}
       AZURE_SIGN_ACCOUNT: ${{ secrets.AZURE_SIGN_ACCOUNT }}
       AZURE_SIGN_PROFILE: ${{ secrets.AZURE_SIGN_PROFILE }}
+      # macOS 코드서명용 자체 서명 인증서(p12 base64 + 암호). 비어 있으면 서명 없이 빌드한다.
+      # 설정법·이유: DOCS/macos-code-signing.md
+      MACOS_SIGNING_P12: ${{ secrets.MACOS_SIGNING_P12 }}
+      MACOS_SIGNING_P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
     strategy:
       fail-fast: false
       matrix:
@@ -125,6 +129,50 @@ jobs:
           EOF
           echo "TAURI_SIGN_ARGS=--config src-tauri/sign.windows.json" >> "$GITHUB_ENV"
 
+      # macOS 코드서명 준비 — 서명이 없으면 macOS가 "Downloads 폴더 접근" 같은 개인정보 권한의
+      # 허용을 앱에 묶어 저장하지 못해 **매번 다시 묻는다**(2026-10 실사례). 허용은 앱의 서명 신원
+      # (designated requirement)에 묶이므로, 매 릴리스를 **같은 인증서**로 서명해야 한 번 허용이
+      # 업데이트 뒤에도 유지된다. Apple 발급 인증서가 아니라 자체 서명이라 공증·Gatekeeper 경고는
+      # 그대로다 — 그건 Developer ID의 일이다.
+      #
+      # `APPLE_CERTIFICATE` 경로는 쓸 수 없다: Tauri가 그 인증서를 Apple 발급 이름
+      # ("Developer ID Application:" 등)으로만 찾는다. 그래서 여기서 키체인에 넣고 신원(SHA-1)만
+      # `APPLE_SIGNING_IDENTITY`로 넘긴다 — Tauri는 그러면 keychain 인자 없이 codesign을 부르므로
+      # 검색 목록에 더해야 한다. 자체 서명은 코드서명 용도로 **신뢰 등록**까지 해야 codesign이
+      # 신원을 찾는다(안 하면 "no identity found").
+      - name: Prepare macOS code signing (self-signed)
+        if: matrix.platform == 'macos-latest' && env.MACOS_SIGNING_P12 != ''
+        run: |
+          set -euo pipefail
+          KC="$RUNNER_TEMP/gpv-signing.keychain-db"
+          KC_PASS="$(openssl rand -hex 16)"
+          P12="$RUNNER_TEMP/gpv-signing.p12"
+          echo "$MACOS_SIGNING_P12" | base64 --decode > "$P12"
+          security create-keychain -p "$KC_PASS" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KC_PASS" "$KC"
+          security import "$P12" -k "$KC" -P "$MACOS_SIGNING_P12_PASSWORD" -T /usr/bin/codesign
+          rm -f "$P12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KC_PASS" "$KC" > /dev/null
+          # 기존 검색 목록은 한 줄에 경로 하나(따옴표 포함)다. 경로에 공백이 있을 수 있어 단어로 쪼개면
+          # 목록이 깨진다(로컬 실측: "iOS Developer: … .keychain"). bash 3.2에도 있는 read 루프로 담는다.
+          KEYCHAINS=("$KC")
+          while IFS= read -r line; do
+            line="${line#"${line%%[![:space:]]*}"}"; line="${line#\"}"; line="${line%\"}"
+            if [ -n "$line" ]; then KEYCHAINS+=("$line"); fi
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "${KEYCHAINS[@]}"
+          security find-certificate -c "Gitpervisor Code Signing" -p "$KC" > "$RUNNER_TEMP/gpv-signing.pem"
+          # 신뢰 설정 변경은 root여도 "화면에서 승인"을 요구한다 — 화면 없는 러너에선
+          # `SecTrustSettingsSetTrustSettings: ... no user interaction was possible`로 거부된다
+          # (2026-10-04 로컬 osascript 경로에서 실측). 일회용 러너라 그 승인 규칙을 열어 둔다.
+          sudo security authorizationdb write com.apple.trust-settings.admin allow
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain "$RUNNER_TEMP/gpv-signing.pem"
+          HASH="$(security find-identity -v -p codesigning "$KC" | awk '/"Gitpervisor Code Signing"/ {print $2; exit}')"
+          # 여기서 비면 멈춘다 — 서명 없이 조용히 릴리스되면 사용자에게 권한 창이 다시 뜬다.
+          if [ -z "$HASH" ]; then security find-identity -p codesigning "$KC"; exit 1; fi
+          echo "APPLE_SIGNING_IDENTITY=$HASH" >> "$GITHUB_ENV"
+
       - name: Build & release Tauri app
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         env:
@@ -149,3 +197,17 @@ jobs:
           prerelease: ${{ github.event_name == 'workflow_dispatch' }}
           # TAURI_SIGN_ARGS: Windows 서명 스텝이 시크릿 존재 시에만 --config 주입(없으면 빈 값)
           args: ${{ matrix.args }} ${{ env.TAURI_SIGN_ARGS }}
+
+      # 릴리스는 위 단계에서 이미 공개됐다 — 여기서 빨개지는 것은 "서명이 빠진 채 나갔다"는 경보다.
+      # 신원이 바뀌면 모든 사용자의 권한 허용이 한 번씩 풀리므로, 인증서 SHA-1까지 맞는지 본다.
+      # 자체 서명은 leaf가 곧 root라 codesign이 `certificate root = H"…"`로 적는다(로컬 실측) — 둘 다 받는다.
+      - name: Verify macOS code signature
+        if: matrix.platform == 'macos-latest' && env.APPLE_SIGNING_IDENTITY != ''
+        run: |
+          set -euo pipefail
+          APP="src-tauri/target/universal-apple-darwin/release/bundle/macos/Gitpervisor.app"
+          codesign --verify --strict --deep "$APP"
+          REQ="$(codesign -d -r- "$APP" 2>&1)"
+          echo "$REQ"
+          echo "$REQ" | grep -q 'identifier "com.greathoon.gitpervisor"'
+          echo "$REQ" | grep -qiE "certificate (leaf|root) = H\"$APPLE_SIGNING_IDENTITY\""

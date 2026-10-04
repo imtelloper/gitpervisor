@@ -52,6 +52,9 @@
         "languages": ["Korean", "English"],
         "displayLanguageSelector": false
       }
+    },
+    "macOS": {
+      "hardenedRuntime": false
     }
   }
 }
