@@ -32,15 +32,21 @@ Downloads는 즐겨찾기 기본 항목이라(`commands/favorites.rs`) 앱이 �
 1. p12를 임시 키체인에 넣고 사용자 검색 목록 **맨 앞에** 더한다. codesign은 `--keychain`을 줘도
    검색 목록에 없는 키체인에서는 신원을 못 찾는다(`no identity found`, 로컬 실측). 기존 목록은 한 줄씩
    읽어 그대로 잇는다 — 경로에 공백이 있을 수 있어서다(이 맥: `…/iOS Developer: … .keychain`).
-2. 인증서를 **코드서명 용도로 신뢰 등록**한다(`sudo security add-trusted-cert -d -r trustRoot -p codeSign`).
-   자체 서명은 이게 없으면 `find-identity -v`에 안 나오고 codesign이 거부한다.
-   신뢰 설정 변경은 root여도 **화면에서 승인**을 요구해, 화면 없는 셸에서는
-   `SecTrustSettingsSetTrustSettings: … no user interaction was possible`로 거부된다(`osascript … with
-   administrator privileges`로 실측). 그래서 러너에서는 먼저
-   `sudo security authorizationdb write com.apple.trust-settings.admin allow`로 그 승인 규칙을 연다.
-   일회용 러너라 가능한 일이다 — 개발 맥에서는 하지 말고 진짜 터미널 창에서 `sudo`로 등록한다.
-3. 신원 SHA-1을 `APPLE_SIGNING_IDENTITY`로 넘긴다. Tauri가 번들링 **중에** 서명한다.
-   업데이터 `.app.tar.gz`·`.sig`도 서명된 앱 기준으로 만들어진다.
+2. 인증서 SHA-1을 `find-certificate -Z`로 읽어 워크플로에 고정된 값(`EXPECTED_SHA1`)과 대조한다.
+   다르면 멈춘다 — 시크릿이 실수로 다른 인증서가 되면 모든 사용자의 허용이 풀리기 때문이다.
+3. 그 SHA-1을 `APPLE_SIGNING_IDENTITY`로 넘긴다. Tauri가 번들링 **중에** `codesign --force -s <SHA-1>`만
+   부른다(신원 검사 없음 — `--verbose` 로그 실측). 업데이터 `.app.tar.gz`·`.sig`도 서명된 앱 기준이다.
+
+**신뢰 등록은 하지 않는다.** 필요 없고, 러너에선 할 수도 없다.
+- 신뢰 안 된 자체 서명(`CSSMERR_TP_NOT_TRUSTED`, `find-identity -v` 0개)도 키체인이 검색 목록에 있고
+  SHA-1로 지정하면 codesign이 서명하고 `--verify --strict`까지 통과한다(2026-10-05, 일회용 인증서로 실측).
+  처음엔 신뢰가 필요하다고 잘못 판단했는데, 그때 막은 건 검색 목록이었다.
+- 신뢰 설정 변경은 root여도 화면 승인을 요구한다. 화면 없는 셸에서는 `SecTrustSettingsSetTrustSettings:
+  … no user interaction was possible`, 그 승인 규칙을 열려는 `sudo security authorizationdb write …`는
+  러너에서 `NO (-60005)`로 막혀 v0.12.5 첫 시도가 죽었다(그 실행은 공개 전에 취소).
+
+실패하면 실패한 명령이 `::error` 주석으로 남는다. 작업 로그는 저장소 관리자 인증이 있어야 받을 수 있지만
+주석은 공개 API(`/check-runs/<job>/annotations`)로 읽힌다.
 
 `APPLE_CERTIFICATE` 경로는 쓸 수 없다. Tauri(2.11)는 그 인증서를 Apple 발급 이름
 (`Developer ID Application:` 등)으로만 찾는다.
@@ -64,8 +70,7 @@ GitHub 저장소 Settings → Secrets and variables → **Actions**에 2개를 �
   뜬다. `~/.gitpervisor-signing/`(특히 `key.pem`·`signing.p12`)을 백업해 둔다. 잃어버렸으면 새로 만들되
   위 SHA-1과 이 문서를 함께 고친다.
 - 릴리스 에셋을 사후 서명하지 마라. Windows와 같은 이유로 업데이터 `.sig`가 깨진다.
-- 로컬에서 서명된 번들을 만들어 보려면 그 맥에도 같은 신뢰 등록이 한 번 필요하다(위 2번 명령을 **진짜
-  터미널 창**에서 — `!`나 osascript로는 승인 창을 못 띄워 실패한다). 신원이 검색 목록의 키체인에 있어야
-  하므로 워크플로의 `Prepare macOS code signing` 스크립트를 `sudo` 줄만 빼고 돌린 뒤
+- 로컬에서 서명된 번들을 만들어 보려면 워크플로의 `Prepare macOS code signing` 스크립트를 그대로
+  (`RUNNER_TEMP`·`GITHUB_ENV`·시크릿 두 개를 환경변수로 주고 `/bin/bash`로) 돌린 뒤
   `APPLE_SIGNING_IDENTITY=B2BE003E2A21D26B51935ED8B661E93DB34DFE6C npm run tauri build -- --bundles app`.
-  끝나면 검색 목록을 원래대로 되돌리고 임시 키체인을 지운다.
+  끝나면 키체인 검색 목록을 원래대로 되돌리고(경로에 공백이 있으니 한 줄씩) 임시 키체인을 지운다.

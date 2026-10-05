@@ -138,12 +138,21 @@ jobs:
       # `APPLE_CERTIFICATE` 경로는 쓸 수 없다: Tauri가 그 인증서를 Apple 발급 이름
       # ("Developer ID Application:" 등)으로만 찾는다. 그래서 여기서 키체인에 넣고 신원(SHA-1)만
       # `APPLE_SIGNING_IDENTITY`로 넘긴다 — Tauri는 그러면 keychain 인자 없이 codesign을 부르므로
-      # 검색 목록에 더해야 한다. 자체 서명은 코드서명 용도로 **신뢰 등록**까지 해야 codesign이
-      # 신원을 찾는다(안 하면 "no identity found").
+      # **검색 목록에 더해야** 한다(없으면 `--keychain`을 줘도 "no identity found").
+      #
+      # 신뢰 등록은 하지 않는다 — 필요 없고, 러너에선 할 수도 없다. 신뢰 안 된 자체 서명
+      # (`CSSMERR_TP_NOT_TRUSTED`, `find-identity -v` 0개)도 SHA-1로 지정하면 codesign이 서명·검증까지
+      # 통과한다(2026-10-05 로컬 실측). 반대로 신뢰 설정 변경은 root여도 화면 승인을 요구해, v0.12.5
+      # 첫 시도에서 `sudo security authorizationdb write …`가 `NO (-60005)`로 막혀 잡이 죽었다.
       - name: Prepare macOS code signing (self-signed)
         if: matrix.platform == 'macos-latest' && env.MACOS_SIGNING_P12 != ''
         run: |
           set -euo pipefail
+          # 작업 로그는 저장소 관리자 인증이 있어야 내려받힌다 — 실패한 명령을 공개 주석으로도 남긴다.
+          trap 'echo "::error title=macOS code signing::exit $? at line $LINENO: $BASH_COMMAND"' ERR
+          # 이 인증서로만 서명한다. 신원이 바뀌면 모든 사용자의 권한 허용이 한 번씩 풀린다
+          # (DOCS/macos-code-signing.md) — 시크릿이 다른 인증서로 바뀌었으면 여기서 멈춘다.
+          EXPECTED_SHA1="B2BE003E2A21D26B51935ED8B661E93DB34DFE6C"
           KC="$RUNNER_TEMP/gpv-signing.keychain-db"
           KC_PASS="$(openssl rand -hex 16)"
           P12="$RUNNER_TEMP/gpv-signing.p12"
@@ -162,15 +171,12 @@ jobs:
             if [ -n "$line" ]; then KEYCHAINS+=("$line"); fi
           done < <(security list-keychains -d user)
           security list-keychains -d user -s "${KEYCHAINS[@]}"
-          security find-certificate -c "Gitpervisor Code Signing" -p "$KC" > "$RUNNER_TEMP/gpv-signing.pem"
-          # 신뢰 설정 변경은 root여도 "화면에서 승인"을 요구한다 — 화면 없는 러너에선
-          # `SecTrustSettingsSetTrustSettings: ... no user interaction was possible`로 거부된다
-          # (2026-10-04 로컬 osascript 경로에서 실측). 일회용 러너라 그 승인 규칙을 열어 둔다.
-          sudo security authorizationdb write com.apple.trust-settings.admin allow
-          sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain "$RUNNER_TEMP/gpv-signing.pem"
-          HASH="$(security find-identity -v -p codesigning "$KC" | awk '/"Gitpervisor Code Signing"/ {print $2; exit}')"
-          # 여기서 비면 멈춘다 — 서명 없이 조용히 릴리스되면 사용자에게 권한 창이 다시 뜬다.
-          if [ -z "$HASH" ]; then security find-identity -p codesigning "$KC"; exit 1; fi
+          # `find-identity -v`는 신뢰된 신원만 보여 여기선 늘 비므로 인증서 자체의 SHA-1을 읽는다.
+          HASH="$(security find-certificate -c "Gitpervisor Code Signing" -Z "$KC" | awk '/SHA-1 hash:/ {print $3; exit}')"
+          if [ "$HASH" != "$EXPECTED_SHA1" ]; then
+            echo "::error title=macOS code signing::signing certificate SHA-1 is '$HASH', expected $EXPECTED_SHA1"
+            exit 1
+          fi
           echo "APPLE_SIGNING_IDENTITY=$HASH" >> "$GITHUB_ENV"
 
       - name: Build & release Tauri app
