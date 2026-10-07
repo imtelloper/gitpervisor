@@ -506,8 +506,15 @@ export async function run({ cdp, report: r }) {
         ${J(spreadC)}.map((t, i) => c("c" + String(i).padStart(6,"0"), "커밋 " + i, t)),
         ${J(spreadP)}.map((t, i) => ({ at: t, text: "프롬프트 " + i + " " + "가".repeat(300) })))];
       const mw = R.buildMessages({ ...base, period: "month", sources: wide, ctx: 2048 });
+      // 2026-10-02 실사례 — 활동 0건 프로젝트·오늘 이후 날짜·병합 커밋이 근거에 실려 모델이 "작업 없음"을 지어냈다.
+      const idle = [
+        mk("p1", "알파", [c("aaaaaaa1111", "알파 커밋"), c("mmmmmmm0000", "Merge branch 'main' of https://x/y")], []),
+        mk("p2", "베타", [c("bbbbbbb2222", "베타 커밋")], []),
+        mk("p3", "감마", [], []),
+      ];
+      const mi = R.buildMessages({ ...base, until: "2999-12-31", sources: idle });
       return { sys2: m2[0].content, user2: m2[1].content, user1: m1[1].content,
-               budget: mb[1].content, twoDays: m2d[1].content, wide: mw[1].content };
+               budget: mb[1].content, twoDays: m2d[1].content, wide: mw[1].content, idle: mi[1].content };
     })()`);
     if (asm === "no-hook") {
       r.check("⑧ __gpv.report.buildMessages 노출(dev 빌드)", false, "훅 없음");
@@ -529,6 +536,13 @@ export async function run({ cdp, report: r }) {
         !asm.user1.includes("[알파]") && asm.user1.includes("- 알파 커밋"),
         J(asm.user1.slice(0, 200)),
       );
+      r.check(
+        "⑧ 활동 없는 프로젝트·병합 커밋은 근거에서 빠지고 기간 끝은 오늘까지 · 활동한 날을 적는다",
+        !asm.idle.includes("감마") && !asm.idle.includes("Merge branch") &&
+          asm.idle.includes(`~${today})`) && !asm.idle.includes("2999") &&
+          asm.idle.includes(`활동한 날: ${today}`) && asm.idle.includes("커밋 2건"),
+        J(asm.idle.slice(0, 300)),
+      );
       // 근거에 해시가 있으면 모델이 불릿 끝에 `, c1f4034`처럼 베껴 붙인다(사용자 요청 2026-09-22로 금지).
       r.check(
         "⑧ 근거에 커밋 해시를 싣지 않는다 · system 이 해시 금지와 줄 길이 하한(100자)을 지시",
@@ -537,8 +551,9 @@ export async function run({ cdp, report: r }) {
         J(asm.user2.slice(0, 200)),
       );
       r.check(
-        "⑧ system 에 '정확히 3개'(날짜당 3줄 지시)",
-        asm.sys2.includes("정확히 3개") && asm.sys2.includes("### YYYY-MM-DD (요일)"),
+        "⑧ system 이 날짜당 1~3개(근거만큼) · 근거에 없는 날짜·프로젝트 금지를 지시",
+        asm.sys2.includes("1~3개") && asm.sys2.includes("근거에 없는 날짜는 쓰지 않는다") &&
+          asm.sys2.includes("근거에 없는 프로젝트는 쓰지 말고") && asm.sys2.includes("### YYYY-MM-DD (요일)"),
         J(asm.sys2.slice(0, 200)),
       );
       // 바닥이 없으면 `(2048-2048-400)*1.5 < 0` 이라 날짜마다 **1줄만** 남는다.
@@ -605,7 +620,7 @@ export async function run({ cdp, report: r }) {
       );
       r.check(
         "⑧b 프롬프트가 null·공백뿐이면 기본 프롬프트(자리표시자가 남지 않는다)",
-        pe.blank === pe.nul && pe.nul.includes("정확히 3개") && !pe.nul.includes("{언어}"),
+        pe.blank === pe.nul && pe.nul.includes("1~3개") && !pe.nul.includes("{언어}"),
         J(pe.nul.slice(0, 80)),
       );
       // 예산이 system 길이를 안 보면 긴 프롬프트가 컨텍스트를 넘긴다 — 고정값이면 두 수가 같다.

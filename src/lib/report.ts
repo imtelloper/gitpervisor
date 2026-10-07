@@ -161,6 +161,8 @@ const MAX_COMMITS = 60;
 const MAX_PROMPTS = 80;
 /** 한 줄의 상한 — 커밋 본문 첫 줄과 프롬프트 원문을 각각 이만큼만 싣는다. */
 const BODY_CHARS = 120;
+/** 예산이 모자랄 때 커밋을 제목만으로 싣는 상한. */
+const SUBJECT_CHARS = 100;
 const PROMPT_CHARS = 300;
 /** 채팅에 딸려 보내는 대화 — 최근 몇 개까지(ponytail: 슬라이딩 윈도, 요약 압축은 업그레이드 경로). */
 const HISTORY_MAX = 8;
@@ -203,10 +205,12 @@ function group(
   lines: string[],
   total: number,
   budget: number,
+  /** 다 안 들어갈 때 대신 쓸 짧은 줄(커밋 제목만) — 본문 한 줄을 지키느라 커밋 자체를 버리지 않게. */
+  short?: string[],
 ): { text: string; used: number } {
   if (total === 0) return { text: "", used: 0 };
-  const kept = [...lines];
   const size = (a: string[]) => a.reduce((n, l) => n + l.length + 1, 0);
+  const kept = [...(short && size(lines) > budget ? short : lines)];
   while (kept.length > 0 && size(kept) > budget) kept.pop();
   if (kept.length === 0) {
     const text = `${label} ${total}건 (내용 생략)`; // i18n-ok: LLM 프롬프트
@@ -234,11 +238,40 @@ function localAt(iso: string, fallback: string): { date: string; ms: number; hm:
 }
 
 /**
+ * 근거가 하나라도 있는 프로젝트만. 빈 프로젝트를 머리글에 올리면 모델이 그 이름으로 "변경 없이 유지했다"
+ * 불릿을 지어낸다(2026-10-02 실사례 — 활동 0건인 camstation·nqvm-ais 가 날마다 등장했다).
+ */
+export function activeSources(sources: ReportSource[]): ReportSource[] {
+  return sources.filter((s) => s.commits.length > 0 || s.prompts.length > 0);
+}
+
+/** 병합 커밋 — 제목이 "Merge branch 'main' of …" 뿐이라 한 일을 말하지 않는다. 근거 자리만 먹는다. */
+const MERGE_SUBJECT = /^Merge (branch|remote-tracking branch|pull request|tag) /;
+
+/**
+ * 예산 나누기 — 적게 필요한 날부터 필요한 만큼 주고, 남은 몫을 나머지 날에 고르게 넘긴다(water-filling).
+ * 똑같이 나누면 커밋 5건인 날의 남는 몫이 버려지고 17건인 날은 "…외 13건" 으로 잘렸다(2026-10-02 실측).
+ */
+export function shareBudget(needs: number[], total: number): number[] {
+  const out = needs.map(() => 0);
+  let left = total;
+  const order = needs.map((_, i) => i).sort((a, b) => needs[a] - needs[b]);
+  order.forEach((i, k) => {
+    out[i] = Math.min(needs[i], left / (order.length - k));
+    left -= out[i];
+  });
+  return out;
+}
+
+/**
  * 근거 블록(요약 요청의 user 메시지 · 채팅의 "### 근거") — **날짜 섹션**으로 묶는다(설계 67 §3.1).
  *
- * 예산은 활동 날짜 수로 **균등 분배**하고 날짜 안에서 커밋이 절반을 먼저 쓴다. 기존의
- * "최신순 전체 예산"은 월간 요약에서 앞쪽 날짜를 통째로 먹어 치웠다 — 날짜마다 3줄을 쓰려면
- * 모든 날짜가 근거를 조금씩이라도 들고 있어야 한다.
+ * 예산은 활동 날짜에 [`shareBudget`]로 나누고 날짜 안에서는 커밋이 70%를 먼저 쓴다(커밋이 한 일의 기록이고,
+ * 프롬프트는 그 배경이다). 기존의 "최신순 전체 예산"은 월간 요약에서 앞쪽 날짜를 통째로 먹어 치웠다 —
+ * 날짜마다 불릿을 쓰려면 모든 날짜가 근거를 조금씩이라도 들고 있어야 한다.
+ *
+ * 머리글의 기간 끝은 **오늘**까지다 — 주간·월간의 남은 날을 그대로 적으면 모델이 그 날짜도 채운다
+ * (2026-10-02 금요일에 10-03·10-04 불릿이 나왔다). 활동한 날을 따로 적어 그 밖은 없다고 못 박는다.
  */
 function evidenceBlock(args: {
   sources: ReportSource[];
@@ -246,18 +279,22 @@ function evidenceBlock(args: {
   until: string;
   budget: number;
 }): string {
-  const { sources, since, until, budget } = args;
+  const { since, budget } = args;
+  const sources = activeSources(args.sources);
+  const now = today();
+  const until = args.until < now ? args.until : now;
   // 여러 프로젝트일 때만 줄머리에 이름을 붙인다 — 한 프로젝트면 매 줄이 같은 접두라 낭비다.
   const multi = sources.length > 1;
   const names = sources.map((s) => s.project.name).join(", ");
   const head = `프로젝트: ${names || "(없음)"} (${since}~${until})`; // i18n-ok: LLM 프롬프트
 
-  type Entry = { date: string; ms: number; line: string };
+  type Entry = { date: string; ms: number; line: string; short?: string };
   const commits: Entry[] = [];
   const prompts: Entry[] = [];
   for (const s of sources) {
     const tag = multi ? `[${s.project.name}] ` : "";
     for (const c of s.commits) {
+      if (MERGE_SUBJECT.test(c.subject)) continue;
       const at = localAt(c.authoredAt, since);
       // 커밋은 `%aI` **오프셋의 날짜**로 버킷한다 — Rust 의 기간 필터도 잔디도 그 기준이다
       // (`report.rs` 의 `date_naive()`). 로컬로 변환하면 UTC 로 찍힌 커밋이 기간 밖 날짜 머리글을
@@ -270,39 +307,57 @@ function evidenceBlock(args: {
         date: /^\d{4}-\d{2}-\d{2}/.test(c.authoredAt) ? c.authoredAt.slice(0, 10) : at.date,
         ms: at.ms,
         line: `- ${tag}${c.subject}${body ? ` — ${clip(body.trim(), BODY_CHARS)}` : ""}`,
+        short: `- ${tag}${clip(c.subject, SUBJECT_CHARS)}`,
       });
     }
     for (const p of s.prompts) {
       const at = localAt(p.at, since);
+      // `[Image #3]` 은 붙여 넣은 그림 자리표시자라 모델에게 뜻이 없다 — 글자 예산만 먹는다.
+      const text = p.text.replace(/\[Image #\d+\]/g, " ").replace(/\s+/g, " ").trim();
+      if (!text) continue;
       prompts.push({
         date: at.date,
         ms: at.ms,
-        line: `- ${tag}[${at.hm}] ${clip(p.text.replace(/\s+/g, " ").trim(), PROMPT_CHARS)}`,
+        line: `- ${tag}[${at.hm}] ${clip(text, PROMPT_CHARS)}`,
       });
     }
   }
 
-  // 전체 건수 상한은 최신순으로 **먼저** — 그 뒤에 남은 것들로 날짜를 나눈다.
+  // 전체 건수 상한은 최신순으로 **먼저** — 그 뒤에 남은 것들로 날짜를 나눈다. 같은 날 같은 줄은 한 번만
+  // 싣는다(체리픽한 커밋·이어 연 세션에 되풀이된 프롬프트가 근거 자리를 두 번 먹었다).
   const newest = (a: Entry, b: Entry) => b.ms - a.ms;
-  const keptC = [...commits].sort(newest).slice(0, MAX_COMMITS);
-  const keptP = [...prompts].sort(newest).slice(0, MAX_PROMPTS);
+  const once = (es: Entry[]) => {
+    const seen = new Set<string>();
+    return es.filter((e) => !seen.has(`${e.date}|${e.line}`) && !!seen.add(`${e.date}|${e.line}`));
+  };
+  const keptC = once([...commits].sort(newest)).slice(0, MAX_COMMITS);
+  const keptP = once([...prompts].sort(newest)).slice(0, MAX_PROMPTS);
 
   const dates = [...new Set([...keptC, ...keptP].map((e) => e.date))].sort();
   if (dates.length === 0) return `${head}\n\n(활동 없음)`; // i18n-ok: LLM 프롬프트
+  const activeDays = `활동한 날: ${dates.join(", ")} — 이 밖의 날짜와 위에 없는 프로젝트에는 활동이 없다`; // i18n-ok: LLM 프롬프트
 
-  const perDay = budget / dates.length;
-  const sections = dates.map((d) => {
+  const len = (es: Entry[]) => es.reduce((n, e) => n + e.line.length + 1, 0);
+  const shares = shareBudget(
+    dates.map((d) => len(keptC.filter((e) => e.date === d)) + len(keptP.filter((e) => e.date === d))),
+    budget,
+  );
+  const sections = dates.map((d, i) => {
+    const dayC = keptC.filter((e) => e.date === d);
+    const dayP = keptP.filter((e) => e.date === d);
     const c = group(
       "커밋", // i18n-ok: LLM 프롬프트
-      keptC.filter((e) => e.date === d).map((e) => e.line),
+      dayC.map((e) => e.line),
       commits.filter((e) => e.date === d).length,
-      perDay * 0.5,
+      // 커밋이 먼저 70% — 프롬프트가 그만큼 안 쓰면 그 나머지도 커밋 몫이다.
+      Math.max(shares[i] * 0.7, shares[i] - len(dayP)),
+      dayC.map((e) => e.short ?? e.line),
     );
     const p = group(
       "프롬프트", // i18n-ok: LLM 프롬프트
-      keptP.filter((e) => e.date === d).map((e) => e.line),
+      dayP.map((e) => e.line),
       prompts.filter((e) => e.date === d).length,
-      perDay - c.used,
+      shares[i] - c.used,
     );
     return [`### ${d} (${WEEKDAY[parseYmd(d).getDay()]})`, c.text, p.text]
       .filter(Boolean)
@@ -317,7 +372,7 @@ function evidenceBlock(args: {
   const folded = sections.length - kept.length;
   const body = folded > 0 ? [`…이전 ${folded}일 생략`, ...kept] : kept; // i18n-ok: LLM 프롬프트
 
-  return `${head}\n\n${body.join("\n\n")}`;
+  return `${head}\n${activeDays}\n\n${body.join("\n\n")}`;
 }
 
 /**
@@ -352,11 +407,12 @@ export const DEFAULT_REPORT_PROMPT =
   `## 날짜별\n### YYYY-MM-DD (요일)\n` + // i18n-ok: LLM 프롬프트
   `- {프로젝트접두}무엇을 왜 했는지 한 문장. 어떻게 했고 무엇이 나아졌는지 한 문장.\n` + // i18n-ok: LLM 프롬프트
   `- 같은 형태\n- 같은 형태\n\n` + // i18n-ok: LLM 프롬프트
-  `활동이 있는 날짜마다 위 날짜 블록을 반복한다. 날짜당 불릿은 정확히 3개이고, 불릿마다 두 문장이다.\n\n` + // i18n-ok: LLM 프롬프트
+  `근거에 나온 날짜마다 위 날짜 블록을 반복하고, 근거에 없는 날짜는 쓰지 않는다. 날짜당 불릿은 그날 근거가 뒷받침하는 만큼 1~3개이고, 불릿마다 두 문장이다.\n\n` + // i18n-ok: LLM 프롬프트
   `## 다음 할 일\n- 무엇을 왜 해야 하는지 한 문장. 끝나면 무엇이 나아지는지 한 문장.\n- 3개 이하\n\n` + // i18n-ok: LLM 프롬프트
   `모든 줄은 공백 포함 100자 이상 220자 이하여야 한다 — 짧으면 바꾼 이유·영향·세부를 근거 ` + // i18n-ok: LLM 프롬프트
   `안에서 덧붙여 채운다. 커밋 해시는 쓰지 마라.\n` + // i18n-ok: LLM 프롬프트
-  `근거 없는 내용은 쓰지 마라. 프롬프트는 사용자가 AI에게 한 요청이다.`; // i18n-ok: LLM 프롬프트
+  `근거 없는 내용은 쓰지 마라. 근거에 없는 프로젝트는 쓰지 말고, "작업이 없었다"·"유지했다" 같은 문장도 쓰지 마라. ` + // i18n-ok: LLM 프롬프트
+  `프롬프트는 사용자가 AI에게 한 요청이다.`; // i18n-ok: LLM 프롬프트
 
 /**
  * 자리표시자와 그 뜻 — 편집 화면의 도움말도 이 목록을 그린다(설명이 코드와 따로 놀지 않게).
@@ -415,7 +471,7 @@ export function buildMessages(args: {
   prompt?: string | null;
 }): ChatMsg[] {
   const { sources, period, since, until, language } = args;
-  const system = fillReportPrompt(args.prompt, { language, period, multi: sources.length > 1 });
+  const system = fillReportPrompt(args.prompt, { language, period, multi: activeSources(sources).length > 1 });
 
   return [
     { role: "system", content: system },
@@ -473,7 +529,7 @@ export function chatMessages(
     const guide = fillReportPrompt(prompt, {
       language,
       period: ctx.period,
-      multi: ctx.sources.length > 1,
+      multi: activeSources(ctx.sources).length > 1,
     });
     const budget = Math.max(
       800,

@@ -103,7 +103,12 @@ export function ReportCard({
   const promptCount = sources.reduce((n, s) => n + s.prompts.length, 0);
   // 아직 안 온 데이터를 "활동 없음"으로 읽으면 안 된다 — 배치가 그 카드를 조용히 건너뛴다.
   const loading = [...commitQs, ...promptQs].some((q) => q.isPending);
-  const empty = !loading && commitCount === 0 && promptCount === 0;
+  // **못 읽은 데이터도 0건으로 읽으면 안 된다.** 위 `data ?? []` 가 실패를 빈 목록으로 만들어, 커밋 조회가
+  // 시간 초과로 실패한 채 프롬프트만으로 요약이 나갔다 — 모델이 "작업이 전혀 없었다"를 7일치 지어냈다
+  // (2026-10-02 실사례, 그 시각 설치본 로그 `health=danger sys=timeout`). 실패가 있으면 생성을 막고 보인다.
+  const failedQs = [...commitQs, ...promptQs].filter((q) => q.isError);
+  const loadError = failedQs.length > 0 ? errorMessage(failedQs[0].error) : null;
+  const empty = !loading && !loadError && commitCount === 0 && promptCount === 0;
 
   // 저장된 요약이 아직 유효한가 — 입력이 바뀌면 뱃지를 띄운다.
   useEffect(() => {
@@ -136,13 +141,14 @@ export function ReportCard({
   const stale = !!saved && !!hash && saved.inputHash !== hash;
   const body = text || saved?.text || "";
   const title = combined ? msg.report.card.combinedTitle(projects.length) : (projects[0]?.name ?? "");
+  // 실제로 요청에 쓴 모델 — 리포트 전용 모델이 있으면 그것이다(기본 모델 이름을 적으면 12B로 만든 요약에 1.7B가 찍힌다).
   const model =
     settings?.llmProvider === "external"
       ? (settings.llmExternalModel ?? "external")
-      : (settings?.llmModel ?? "");
+      : (reportModel ?? settings?.llmModel ?? "");
 
   const generate = async () => {
-    if (busy || reason || empty) return;
+    if (busy || reason || empty || loadError) return;
     setBusy(true);
     setText("");
     setNote(null);
@@ -212,7 +218,7 @@ export function ReportCard({
     // 도착하는 순간 이 효과가 다시 돈다. 안 그러면 "모두 생성"을 연 직후 누른 사용자에게
     // 아직 로딩 중이던 카드만 조용히 빈 채로 남는다.
     if (loading) return;
-    if (busy || reason || empty) onFinish?.();
+    if (busy || reason || empty || loadError) onFinish?.();
     else void generate();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runNow, loading]);
@@ -278,8 +284,8 @@ export function ReportCard({
             ) : (
               <button
                 onClick={() => void generate()}
-                disabled={!!reason || empty}
-                title={reason ?? undefined}
+                disabled={!!reason || empty || !!loadError}
+                title={reason ?? loadError ?? undefined}
                 className="flex items-center gap-1 rounded bg-accent px-2 py-0.5 text-[11px] text-on-accent hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <Sparkles size={11} /> {saved ? msg.report.card.regenerate : msg.report.card.generate}
@@ -302,6 +308,18 @@ export function ReportCard({
                 {msg.report.openSettings}
               </button>
             )}
+          </div>
+        )}
+
+        {loadError && (
+          <div data-gpv="report-load-error" className="mt-2 flex items-center gap-2 text-[11px] text-danger">
+            <span className="min-w-0 break-all">{msg.report.card.loadFailed(loadError)}</span>
+            <button
+              onClick={() => failedQs.forEach((q) => void q.refetch())}
+              className="shrink-0 rounded bg-raised px-1.5 py-0.5 text-fg-muted hover:text-fg"
+            >
+              {msg.report.card.retry}
+            </button>
           </div>
         )}
 

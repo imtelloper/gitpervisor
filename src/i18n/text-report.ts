@@ -35,6 +35,8 @@ const ko = {
     generate: "요약 생성",
     generating: "요약 생성 중…",
     noActivity: "활동 없음",
+    loadFailed: (err: string) => `커밋·프롬프트를 읽지 못해 요약할 수 없습니다 — ${err}`,
+    retry: "다시 읽기",
   },
   chat: {
     busyNote: "다른 생성이 진행 중입니다 — 끝나면 다시 보내세요",
@@ -107,6 +109,8 @@ export const reportText = defineText(ko, {
       generate: "Generate summary",
       generating: "Generating summary…",
       noActivity: "No activity",
+      loadFailed: (err) => `Couldn't read commits/prompts, so it can't be summarized — ${err}`,
+      retry: "Reload",
     },
     chat: {
       busyNote: "Another generation is in progress — send again when it finishes",
