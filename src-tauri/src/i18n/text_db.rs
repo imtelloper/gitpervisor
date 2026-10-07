@@ -996,6 +996,22 @@ pub fn llm_external_url_empty() -> &'static str {
     }
 }
 
+pub fn llm_not_enough_memory(need: u64, avail: u64) -> String {
+    let gb = |b: u64| b as f64 / (1u64 << 30) as f64;
+    match lang() {
+        Lang::Ko => format!(
+            "메모리가 부족해 모델을 불러오지 않았습니다 — 필요 약 {:.1}GB, 여유 {:.1}GB. 다른 프로그램을 닫거나 더 작은 모델을 고르세요",
+            gb(need),
+            gb(avail)
+        ),
+        Lang::En => format!(
+            "Not enough memory to load the model — needs about {:.1} GB, {:.1} GB free. Close other programs or pick a smaller model",
+            gb(need),
+            gb(avail)
+        ),
+    }
+}
+
 pub fn llm_runtime_not_installed() -> &'static str {
     match lang() {
         Lang::Ko => "AI 런타임이 없습니다 — 설정 › AI에서 런타임을 다운로드하세요",

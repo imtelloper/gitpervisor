@@ -491,6 +491,19 @@ pub async fn ensure_server_ctx(
         s.terminate();
     }
 
+    // 모자라면 띄우지 않는다 — 띄우면 이 앱이 아니라 시스템 전체가 스왑에 빠진다(memory_shortfall 주석).
+    // 옛 세션은 위에서 wait 까지 거뒀으니 그 몫은 이미 비어 있다.
+    let mut sys = sysinfo::System::new();
+    sys.refresh_memory();
+    if let Some((need, avail)) = memory_shortfall(model_size, sys.available_memory(), sys.total_memory()) {
+        log::warn!(
+            "[llm] 메모리 부족 — {model_id} 기동 안 함 (필요 {}MB, 여유 {}MB)", // i18n-ok: 로그
+            need / 1_048_576,
+            avail / 1_048_576
+        );
+        return Err(IpcError::new(ErrorCode::Io, text_db::llm_not_enough_memory(need, avail)));
+    }
+
     let art = acquire::spec_for_backend(&backend).ok_or_else(|| {
         IpcError::new(ErrorCode::ToolNotFound, text_db::llm_runtime_unsupported_platform())
     })?;
@@ -527,6 +540,16 @@ pub async fn ensure_server_ctx(
             .map_err(|(e, _, _, _)| e)
         }
     }
+}
+
+/// 모델을 띄우기 전 메모리 판정 — 모자라면 (필요, 여유) 바이트.
+///
+/// 실측(2026-10-07, Gemma 4 12B q4 파일 6.98GB · ngl=99 · ctx 8192): llama-server 작업 집합 11.5GB로 시스템 여유가
+/// 14.8GB → 5%(커밋 98%)까지 떨어졌고, 그 직후 설치본의 UI 스레드가 멈춰 AppHang 으로 강제 종료됐다. 그래서 파일의
+/// **1.7배**에 다른 프로그램 몫(전체의 10%, 최소 2GB)까지 비어 있어야 띄운다 — 16GB 노트북에서 4B(2.5GB)는 6.3GB면 된다.
+fn memory_shortfall(model_bytes: u64, available: u64, total: u64) -> Option<(u64, u64)> {
+    let need = model_bytes.saturating_mul(17) / 10 + (total / 10).max(2 << 30);
+    (available < need).then_some((need, available))
 }
 
 /// 물리 코어 수(없으면 논리, 그것도 없으면 1). `-t`에 그대로 들어간다.
@@ -670,6 +693,21 @@ fn kill_group(pid: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 2026-10-07 그 상황(64GB 머신, 여유 14.8GB, 12B)은 거절하고, 여유가 넉넉하거나 작은 모델이면 띄운다.
+    #[test]
+    fn memory_shortfall_refuses_the_12b_load_that_hung_the_machine() {
+        const GB: u64 = 1 << 30;
+        let gemma12 = 6_975_879_296;
+        let total = 63 * GB;
+        let (need, avail) = memory_shortfall(gemma12, 14_800 * 1_048_576, total).expect("그날의 여유로는 거절");
+        assert!(need > 17 * GB && avail < need, "need={need}");
+        assert!(memory_shortfall(gemma12, 30 * GB, total).is_none(), "여유 30GB면 띄운다");
+        assert!(memory_shortfall(2_497_280_256, 14_800 * 1_048_576, total).is_none(), "4B는 그날도 띄운다");
+        // 작은 머신 — 바닥 2GB가 걸리고 10%(1.6GB)는 안 쓴다.
+        assert!(memory_shortfall(2_497_280_256, 7 * GB, 16 * GB).is_none(), "16GB 노트북의 4B");
+        assert!(memory_shortfall(2_497_280_256, 5 * GB, 16 * GB).is_some(), "필요(≈5.95GiB)보다 적으면 거절");
+    }
 
     /// 로드 상한은 모델이 클수록 길어야 한다 — 8B(5GB)를 4B와 같은 시한으로 재면 HDD 머신에서
     /// 정상 로드를 "실패"로 오판하고, 그 오판이 Windows에서 **CPU 폴백까지** 유발한다.

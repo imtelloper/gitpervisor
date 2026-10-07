@@ -1161,6 +1161,10 @@ pub fn run() {
                 env!("CARGO_PKG_VERSION").to_string(),
                 chrono::Local::now().to_rfc3339(),
             );
+            // UI 스레드 멈춤 감시 — 덤프는 하위 폴더에 둔다(로그 폴더 총량 정리 `prune_logs`가 덤프와 로그를 서로 밀어내지 않게).
+            if let Ok(dir) = app.path().app_log_dir() {
+                health::ui_stall::spawn(app.handle().clone(), dir.join("ui-stall"));
+            }
 
             // 메인 창을 코드에서 생성한다 — 원격 디버깅 포트(CDP)는 debug 빌드에서만 열고
             // release 빌드에는 노출하지 않기 위함 (정적 config로는 빌드별 분기가 불가).

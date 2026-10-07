@@ -14,6 +14,7 @@
 pub mod alloc_guard;
 pub mod probe;
 pub mod session;
+pub mod ui_stall;
 pub mod winlog;
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -587,6 +588,7 @@ pub fn begin_session(app: &AppHandle, version: &str) {
 
 /// 정상 종료 표시(종료 훅에서 호출).
 pub fn end_session() {
+    ui_stall::stop();
     session::mark_clean();
 }
 
