@@ -734,3 +734,48 @@ Claude Code는 둘 다 줄바꿈으로 받는다(태스크 32에서 실측). **W
 - **Claude Code 샌드박스에서는 `pgrep`이 실행 중인 앱을 못 찾는다.** `ps -Axo pid,comm | grep Gitpervisor`를 쓴다.
   `pgrep`만 믿고 "안 떠 있다"고 판단해 같은 identifier의 복사본을 띄우면, 실행 중인 설치본과
   `session.json`을 공유해 세션 기록이 덮인다(이 조사 중 실제로 한 번 그랬다).
+
+---
+
+## 15. Claude Code에서 타자가 몰아서 찍힌다 — statusline `refreshInterval` (Windows)
+
+### 증상
+
+터미널 안의 Claude Code 입력줄에 한글을 치면, 조합 중인 한 글자만 보이다가 그 앞에 친 글자들이 1~3초 뒤
+한꺼번에 찍힌다. 조합 중인 글자는 xterm이 직접 그리고, 확정된 글자는 Claude가 다시 그려 줘야 보이기 때문이다.
+같은 앱의 pwsh 탭은 멀쩡하다.
+
+### 원인 — 앱이 아니다
+
+`~/.claude/settings.json`의 `statusLine.refreshInterval`이다. 이 값이 있으면 Claude Code가 그 주기마다 statusline
+명령을 새로 띄운다(Windows: `bash.exe` → 명령 → `taskkill.exe`). 그렇게 띄우는 동안에는 키 입력을 처리하지 못한다.
+**명령 내용과는 무관하다** — `echo x`로 바꿔도 똑같이 멈췄다.
+
+2026-10-06 실측. Gitpervisor 없이 pywinpty ConPTY로 Claude를 띄우고 120초 동안 한글을 쳤다. 입력한 글자가 출력에
+나타나기까지 걸린 시간이다.
+
+| 조건 | p50 | 최대 | 5초 안에 안 찍힌 키 |
+|---|---|---|---|
+| `refreshInterval: 3` | 2957ms | 4983ms | 224/425 |
+| 주기 갱신 끔 | 4ms | 60ms | 0 |
+| `echo x`를 3초마다 | 2241ms | 4965ms | 250/425 |
+| pwsh(대조군) | 4ms | 22ms | 0 |
+
+실사용 세션은 이보다 덜하다(평소 10~40ms, 가끔 1~2초). 다만 대기 중인 claude.exe 6개가 각각 분당 약 20번
+`taskkill`을 띄우고, 분당 2~5번 0.5~0.9초씩 CPU 한 코어를 채우고 있었다.
+
+### 해결
+
+`statusLine`에서 `refreshInterval` 키를 뺀다. statusline은 메시지가 오갈 때마다 계속 갱신되고, 시계성 값
+(리셋 카운트다운 같은 것)만 덜 자주 바뀐다. 떠 있는 세션에도 재시작 없이 바로 반영된다(키를 뺀 뒤 `taskkill` 0회).
+
+### 진단할 때
+
+- **설치본 `Gitpervisor.log`의 `[term-perf]` 줄부터 본다**(읽는 법: `DOCS/task/69-terminal-lag-fixes-and-perf-log.md` §5).
+  이 경우는 `write_p50`이 4ms이고 `lag`·`long`이 낮은데 `arrive_p90`이 `echo_p90`만큼 컸다. 앱은 키를 바로 보내고
+  출력을 바로 그렸는데, PTY 안의 프로그램이 출력을 늦게 냈다는 뜻이다.
+- 같은 앱의 **새 pwsh 탭에서 타자가 멀쩡하면** 앱 전송로가 아니라 터미널 안 프로그램 쪽이다.
+- **Claude를 원시 PTY 하네스로 띄웠다 죽이지 마라.** 하네스가 터미널 질의(DA1·XTVERSION·DECRQM 등)에 다 답하지
+  못하면 fullscreen 렌더러 시동이 "실패"로 쳐진다. 두 번이면 `~/.claude.json`에 `fullscreenAutoDisabled`가 남아
+  **그 머신의 모든 Claude 세션이 classic 렌더러로 떨어진다.** 되돌리려면 `/tui fullscreen`을 실행하거나 그 키를
+  지운다. 굳이 재야 하면 `--settings '{"tui":"default"}'`로 띄운다.
