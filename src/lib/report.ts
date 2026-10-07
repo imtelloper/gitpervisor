@@ -338,8 +338,12 @@ function evidenceBlock(args: {
   const activeDays = `활동한 날: ${dates.join(", ")} — 이 밖의 날짜와 위에 없는 프로젝트에는 활동이 없다`; // i18n-ok: LLM 프롬프트
 
   const len = (es: Entry[]) => es.reduce((n, e) => n + e.line.length + 1, 0);
+  // 묶음 머리글("커밋 12건")·"…외 N건" 줄 몫까지 필요량에 넣는다 — 빼면 넉넉한 날에도 마지막 묶음(프롬프트)이
+  // 머리글 길이만큼 모자라 "(내용 생략)"이 됐다(e2e 48 ⑧).
+  const GROUP_HEAD = 24;
+  const need = (es: Entry[]) => (es.length > 0 ? len(es) + GROUP_HEAD : 0);
   const shares = shareBudget(
-    dates.map((d) => len(keptC.filter((e) => e.date === d)) + len(keptP.filter((e) => e.date === d))),
+    dates.map((d) => need(keptC.filter((e) => e.date === d)) + need(keptP.filter((e) => e.date === d))),
     budget,
   );
   const sections = dates.map((d, i) => {
@@ -350,7 +354,7 @@ function evidenceBlock(args: {
       dayC.map((e) => e.line),
       commits.filter((e) => e.date === d).length,
       // 커밋이 먼저 70% — 프롬프트가 그만큼 안 쓰면 그 나머지도 커밋 몫이다.
-      Math.max(shares[i] * 0.7, shares[i] - len(dayP)),
+      Math.max(shares[i] * 0.7, shares[i] - need(dayP)),
       dayC.map((e) => e.short ?? e.line),
     );
     const p = group(
