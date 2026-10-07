@@ -32,16 +32,49 @@ import { collectByContent, useTerminals } from "../../stores/terminals";
 import { useUi } from "../../stores/ui";
 
 /**
+ * 헤더 버튼 메뉴 닫기 — Esc, 그리고 버튼·메뉴 **밖**을 누를 때.
+ *
+ * 화면을 덮는 배경 막(`fixed inset-0`)을 깔지 않는다. 막은 바깥 클릭을 먹어 사용자가 누른 곳
+ * (다른 셀·터미널)에 아무 일도 안 일어나게 했고, 셀 헤더의 쌓임 맥락 안에 갇혀 터미널을 덮지
+ * 못하면 바깥을 눌러도 메뉴가 닫히지 않았다 — 메뉴 항목을 골라야만 풀렸다(2026-10-07 신고).
+ * 창 전체의 pointerdown을 **캡처 단계**로 듣고 막지는 않는다: xterm 등이 전파를 끊어도 먼저 받고,
+ * 클릭은 원래 대상에 그대로 간다.
+ */
+function useMenuDismiss(
+  isOpen: boolean,
+  setMenu: (v: null) => void,
+  inside: React.RefObject<HTMLElement | null>[],
+) {
+  useEffect(() => {
+    if (!isOpen) return;
+    const onDown = (e: PointerEvent) => {
+      if (inside.some((r) => r.current?.contains(e.target as Node))) return;
+      setMenu(null);
+    };
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setMenu(null);
+    window.addEventListener("pointerdown", onDown, true);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", onDown, true);
+      window.removeEventListener("keydown", onKey);
+    };
+    // inside 는 호출부의 useRef 들이라 신원이 고정이다 — 배열 리터럴을 deps 에 넣으면 매 렌더 재구독한다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, setMenu]);
+}
+
+/**
  * 이 세션의 컬러 스킴 선택 — 팔레트 버튼. 여러 세션을 색으로 구분하는 용도라, 선택은
  * **세션(termId) 단위**로 저장돼(termThemes 스토어) 그 세션이 닫히지 않는 한 유지된다
  * (모아보기를 닫거나 앱을 재시작해도 — dropPane에서만 지운다).
- * 메뉴는 버튼 rect 기준 fixed + 백드롭 — 부모가 overflow-hidden이라 안에 그리면 잘린다.
+ * 메뉴는 버튼 rect 기준 fixed — 부모가 overflow-hidden이라 안에 그리면 잘린다.
  */
 export function ThemeButton({ termId }: { termId: string }) {
   const msg = useMessages();
   const current = useTermThemes((s) => s.byTerminal[termId]);
   const setScheme = useTermThemes((s) => s.setScheme);
   const btnRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const [menu, setMenu] = useState<{
     right: number;
     top?: number;
@@ -50,13 +83,7 @@ export function ThemeButton({ termId }: { termId: string }) {
   } | null>(null);
   // 열린 동안 네이티브 webview를 숨긴다 — 브라우저 셀/패널이 이 메뉴를 덮지 않게.
   useOccludesWebview(!!menu);
-
-  useEffect(() => {
-    if (!menu) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setMenu(null);
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [menu]);
+  useMenuDismiss(!!menu, setMenu, [btnRef, menuRef]);
 
   const close = () => setMenu(null);
   const open = () => {
@@ -98,8 +125,8 @@ export function ThemeButton({ termId }: { termId: string }) {
       </button>
       {menu && (
         <>
-          <div className="fixed inset-0 z-40" onClick={close} />
           <div
+            ref={menuRef}
             className="fixed z-50 w-[210px] overflow-y-auto rounded-md border border-edge bg-panel py-1 text-[12px] shadow-xl"
             style={{
               right: menu.right,
@@ -149,23 +176,36 @@ export function ThemeButton({ termId }: { termId: string }) {
   );
 }
 
+/** 이만큼 머물러야 연다 — 헤더를 스치는 포인터마다 메뉴가 뜨면 열린 동안 숨는 브라우저 셀이 깜빡인다. */
+const HOVER_OPEN_MS = 120;
+/** 버튼·메뉴를 모두 벗어난 뒤 이만큼 지나야 닫는다 — 둘 사이 4px 틈을 건너는 동안 닫히지 않게. */
+const HOVER_CLOSE_MS = 250;
+
 /**
  * 이 터미널에 AI 세션(Claude Code·OpenCode)을 띄운다 — 지금 셸 프롬프트에 실행 줄을 입력한다
  * (lib/agent-launch.ts `launchAgentInTerminal`). 뭔가 돌고 있는 터미널이면 그 프로그램에 입력이 가니
- * 셸 프롬프트에서 누르는 버튼이다. 메뉴 배치는 ThemeButton과 같은 fixed + 백드롭(헤더가 overflow-hidden).
+ * 셸 프롬프트에서 누르는 버튼이다. 메뉴 배치는 ThemeButton과 같은 fixed(헤더가 overflow-hidden).
+ *
+ * 포인터를 올리기만 해도 열린다(항목이 둘뿐이라 클릭 한 번을 아낀다). 터치는 탭 직후
+ * pointerleave가 와서 바로 닫혀 버리므로 호버 처리에서 뺀다(탭 = 클릭으로 연다).
  */
 export function AgentLaunchButton({ termId }: { termId: string }) {
   const msg = useMessages();
   const btnRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const [menu, setMenu] = useState<{ right: number; top?: number; bottom?: number } | null>(null);
   useOccludesWebview(!!menu);
+  useMenuDismiss(!!menu, setMenu, [btnRef, menuRef]);
 
-  useEffect(() => {
-    if (!menu) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setMenu(null);
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [menu]);
+  // 대기 중인 호버 동작(열기 또는 닫기) 하나 — 둘은 동시에 걸리지 않는다.
+  const hoverTimer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(hoverTimer.current), []);
+  const cancelHover = () => window.clearTimeout(hoverTimer.current);
+  const closeSoon = (e: React.PointerEvent) => {
+    if (e.pointerType === "touch") return;
+    cancelHover();
+    hoverTimer.current = window.setTimeout(() => setMenu(null), HOVER_CLOSE_MS);
+  };
 
   const open = () => {
     const r = btnRef.current?.getBoundingClientRect();
@@ -179,6 +219,7 @@ export function AgentLaunchButton({ termId }: { termId: string }) {
     );
   };
   const pick = (agent: TerminalAgent) => {
+    cancelHover();
     setMenu(null);
     void launchAgentInTerminal(termId, agent);
   };
@@ -196,8 +237,18 @@ export function AgentLaunchButton({ termId }: { termId: string }) {
     <>
       <button
         ref={btnRef}
-        onClick={() => (menu ? setMenu(null) : open())}
-        title={msg.git.termSession.agentLaunchTitle}
+        onPointerEnter={(e) => {
+          if (e.pointerType === "touch") return;
+          cancelHover();
+          if (!menu) hoverTimer.current = window.setTimeout(open, HOVER_OPEN_MS);
+        }}
+        onPointerLeave={closeSoon}
+        onClick={() => {
+          cancelHover();
+          if (!menu) open();
+        }}
+        // title 이 아니라 aria-label — 호버로 메뉴가 바로 뜨므로 네이티브 툴팁이 메뉴 위에 겹친다.
+        aria-label={msg.git.termSession.agentLaunchTitle}
         className={`shrink-0 rounded p-0.5 ${
           menu ? "bg-raised text-accent" : "text-fg-dim hover:bg-raised hover:text-fg"
         }`}
@@ -206,8 +257,10 @@ export function AgentLaunchButton({ termId }: { termId: string }) {
       </button>
       {menu && (
         <>
-          <div className="fixed inset-0 z-40" onClick={() => setMenu(null)} />
           <div
+            ref={menuRef}
+            onPointerEnter={cancelHover}
+            onPointerLeave={closeSoon}
             className="fixed z-50 min-w-[180px] rounded-md border border-edge bg-panel py-1 text-[12px] shadow-xl"
             style={{ right: menu.right, top: menu.top, bottom: menu.bottom }}
           >
