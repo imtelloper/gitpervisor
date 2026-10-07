@@ -1,13 +1,17 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { GitCommitHorizontal } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { useMessages } from "../../i18n/ui-language";
 import { copyWithToast } from "../../lib/clipboard";
 import { errorMessage } from "../../lib/ipc";
 import { shortDate } from "../../lib/format";
-import { useLog } from "../../queries";
+import { commitDetailOptions, useLog } from "../../queries";
 import { useUi } from "../../stores/ui";
 import { EmptyState } from "../common/EmptyState";
+
+/** 행 위에 이만큼 머물면 그 커밋 상세를 미리 읽는다 — 목록을 스치기만 하는 포인터에 git을 줄줄이 띄우지 않게. */
+const HOVER_PREFETCH_MS = 80;
 
 interface CommitMenu {
   x: number;
@@ -60,6 +64,17 @@ export function CommitList({
   const selectedCommitSha = onSelectCommit ? (selectedSha ?? null) : storeSha;
   const selectCommit = onSelectCommit ?? storeSelectCommit;
   const [menu, setMenu] = useState<CommitMenu | null>(null);
+  // 머문 행의 상세를 미리 적재해 클릭하면 바로 뜨게 한다(상세는 불변이라 캐시가 영구다).
+  const qc = useQueryClient();
+  const hoverTimer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(hoverTimer.current), []);
+  const prefetchDetail = (sha: string) => {
+    window.clearTimeout(hoverTimer.current);
+    hoverTimer.current = window.setTimeout(
+      () => void qc.prefetchQuery(commitDetailOptions(projectId, sha)),
+      HOVER_PREFETCH_MS,
+    );
+  };
 
   // 메뉴 열림 동안 바깥 클릭 / Esc 로 닫는다 (FileTreePanel과 동일 패턴).
   useEffect(() => {
@@ -111,6 +126,8 @@ export function CommitList({
           <div
             key={c.sha}
             onClick={() => selectCommit(c.sha)}
+            onPointerEnter={() => prefetchDetail(c.sha)}
+            onPointerLeave={() => window.clearTimeout(hoverTimer.current)}
             onContextMenu={(e) => {
               e.preventDefault();
               setMenu({

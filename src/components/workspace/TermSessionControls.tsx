@@ -15,6 +15,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { fmtTime } from "../../i18n/format-locale";
@@ -23,6 +24,7 @@ import { launchAgentInTerminal, type TerminalAgent } from "../../lib/agent-launc
 import { copyText } from "../../lib/clipboard";
 import { relativeTime } from "../../lib/format";
 import { TERM_SCHEMES } from "../../lib/term-color-schemes";
+import { prefetchGitDialog } from "../../queries";
 import { useOccludesWebview } from "../../stores/occlusion";
 import { usePromptHistory, type PromptEntry } from "../../stores/promptHistory";
 import { useTermThemes } from "../../stores/termThemes";
@@ -253,8 +255,10 @@ export function PromptLogButton({ termId }: { termId: string }) {
 export function GitDialogButton({ projectId }: { projectId: string }) {
   const msg = useMessages();
   const open = useUi((s) => s.openGitDialog);
+  const qc = useQueryClient();
   return (
     <button
+      onPointerEnter={() => prefetchGitDialog(qc, projectId)}
       onClick={() => open(projectId)}
       title={msg.git.termSession.gitDialogTitle}
       className="flex shrink-0 items-center rounded p-0.5 text-fg-dim hover:bg-raised hover:text-fg"

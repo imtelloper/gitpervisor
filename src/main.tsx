@@ -30,7 +30,7 @@ import {
 import { ipc } from "./lib/ipc";
 import { opensInOwnViewer } from "./lib/language-map";
 import { buildMessages, chatMessages, scopeKey } from "./lib/report";
-import { keys, LOG_PAGE_SIZE } from "./queries";
+import { keys, logQueryOptions } from "./queries";
 import {
   getTerminal,
   installTerminalCopyFallback,
@@ -248,7 +248,7 @@ function docWindowTree(id: string) {
   }
   // **읽기를 렌더보다 먼저 건다.** 뷰어 컴포넌트는 lazy라 청크를 받아 오는 동안 아무 일도
   // 안 하는데, 그 시간에 IPC를 태우면 마운트 시점엔 대개 캐시에 이미 있다. 뷰어가 쓰는 것과
-  // **같은 키·같은 인자**여야 하므로 queries의 keys·LOG_PAGE_SIZE를 그대로 쓴다(어긋나면
+  // **같은 키·같은 인자**여야 하므로 queries의 keys·logQueryOptions를 그대로 쓴다(어긋나면
   // 조용히 두 번 읽는다).
   const t = docTarget(id);
   const logProjectId = t?.log;
@@ -256,11 +256,7 @@ function docWindowTree(id: string) {
     // git 로그 창 — 첫 페이지 커밋 목록. `useLog`(useInfiniteQuery, CommitList)와 같은 키·
     // 같은 limit·skip 이어야 캐시가 그대로 쓰인다. 브랜치는 프리페치하지 않는다: 이 창은
     // `BranchesPane`을 그리지 않아(LogWindow.tsx — Git 모달의 LogPanel 전용) 쓰이지 않는다.
-    void docQc.prefetchInfiniteQuery({
-      queryKey: keys.log(logProjectId),
-      queryFn: () => ipc.getLog(logProjectId, { limit: LOG_PAGE_SIZE, skip: 0 }),
-      initialPageParam: 0,
-    });
+    void docQc.prefetchInfiniteQuery(logQueryOptions(logProjectId));
   } else if (t && !t.folder && !t.report && !opensInOwnViewer(t.path)) {
     // 폴더 창(태스크 66)·리포트 창(67)은 프로젝트 상대경로 diff 를 읽지 않는다 — projectId 가
     // 빈 문자열이라 여기서 걸러 두지 않으면 뜰 때마다 실패할 게 뻔한 IPC 를 한 번씩 태운다.

@@ -1,6 +1,8 @@
 import type { Query, QueryClient } from "@tanstack/react-query";
 import {
+  infiniteQueryOptions,
   keepPreviousData,
+  queryOptions,
   replaceEqualDeep,
   useInfiniteQuery,
   useMutation,
@@ -9,6 +11,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useCallback, useEffect, useState } from "react";
 
 import type {
@@ -33,9 +36,8 @@ import { useTerminals } from "../stores/terminals";
 import { useTreeState } from "../stores/treeState";
 import { useUi } from "../stores/ui";
 
-/** 커밋 로그 한 페이지 크기. **export 인 이유**: 문서 창(main.tsx)이 렌더 전에 같은 인자로
- *  프리페치한다 — 값이 어긋나면 `useLog` 가 캐시를 못 쓰고 조용히 한 번 더 읽는다. */
-export const LOG_PAGE_SIZE = 200;
+/** 커밋 로그 한 페이지 크기. 프리페치도 `logQueryOptions` 하나로 같은 값을 쓴다. */
+const LOG_PAGE_SIZE = 200;
 
 /** DiffTarget을 안정적인 쿼리 키 문자열로 직렬화 (mode별로 구분). */
 function diffTargetKey(t: DiffTarget): string {
@@ -376,7 +378,7 @@ function keepLastGoodStatuses(
 }
 
 /** 전 프로젝트 상태 단일 배치 쿼리 — 요청 1개로 모든 사이드바 뱃지를 채운다 */
-export function useStatuses() {
+export function useStatuses(enabled = true) {
   const { data: projects } = useProjects();
   const ids = (projects ?? []).map((p) => p.id);
   // 키는 정렬본 — 프로젝트 표시 순서가 바뀌어도 동일 쿼리 1개로 유지(중복 fetch 방지).
@@ -388,7 +390,7 @@ export function useStatuses() {
     // (`refetchOnWindowFocus: true`) 전 레포 배치가 통째로 다시 돈다(프로젝트 21개 실측 22.5초).
     // 10초면 창을 오가는 동안은 캐시를 쓰고, 워처가 놓친 변경도 곧 따라잡는다.
     staleTime: 10_000,
-    enabled: ids.length > 0,
+    enabled: enabled && ids.length > 0,
     // 프로젝트 추가/제거로 키(전체 id 목록)가 바뀌어도 직전 상태를 유지한다 —
     // 그렇지 않으면 기존 프로젝트까지 전부 "불러오는 중"으로 떨어진다. 기존은 그대로
     // 보이고, 새로 추가된 프로젝트만 (직전 데이터에 없으니) 로딩으로 표시된다.
@@ -401,14 +403,54 @@ export function useStatuses() {
   });
 }
 
-/** 배치 결과에서 한 프로젝트의 상태를 선택한다 (쿼리 메타는 배치 것을 공유) */
+/**
+ * 전 프로젝트 배치를 쓰는 창인가 — 사이드바(전 프로젝트 뱃지)가 그 배치를 늘 데워 두는 메인 창뿐이다.
+ * 보조 창(모아보기·문서 창)은 한 프로젝트만 보는데, 배치를 쓰면 그 하나를 보려고 등록된 전부의
+ * `git status`가 끝나길 기다린다. 2026-10-07 실측(프로젝트 29개): 모아보기 창의 Git 모달 Changes가
+ * 뜨기까지 2.6~11.5초, 같은 프로젝트 하나만 재면 77ms.
+ */
+const STATUS_BATCH_WINDOW = (() => {
+  try {
+    return getCurrentWebviewWindow().label === "main";
+  } catch {
+    return true;
+  }
+})();
+
+/** 한 프로젝트(자기 + 중첩 저장소)만 재는 status — 보조 창용. 키가 배치와 같은 `["statuses", ids]`
+ *  모양이라 변경 작업 뒤 `["statuses"]` 무효화를 그대로 받는다. */
+function projectStatusesOptions(projectId: string) {
+  return queryOptions({
+    queryKey: keys.statuses([projectId]),
+    queryFn: () => ipc.getStatuses([projectId]),
+    staleTime: 10_000,
+    structuralSharing: (prev, next) =>
+      keepLastGoodStatuses(
+        prev as RepoStatus[] | undefined,
+        next as RepoStatus[],
+      ) as unknown as typeof next,
+  });
+}
+
+/**
+ * 한 프로젝트 화면의 status 목록 — 그 프로젝트와 중첩 저장소가 들어 있다. 메인 창에서는 배치라
+ * 다른 프로젝트도 섞여 있으니 호출부가 `projectId`·`parentId`로 고른다.
+ */
+export function useProjectStatuses(projectId: string | null) {
+  const batch = useStatuses(STATUS_BATCH_WINDOW);
+  const single = useQuery({
+    ...projectStatusesOptions(projectId ?? "none"),
+    enabled: !STATUS_BATCH_WINDOW && !!projectId,
+  });
+  return STATUS_BATCH_WINDOW ? batch : single;
+}
+
+/** 한 프로젝트의 상태 (쿼리 메타는 배치·단일 쿼리 것을 공유) */
 export function useStatus(projectId: string | null) {
-  const batch = useStatuses();
+  const q = useProjectStatuses(projectId);
   return {
-    ...batch,
-    data: projectId
-      ? batch.data?.find((s) => s.projectId === projectId)
-      : undefined,
+    ...q,
+    data: projectId ? q.data?.find((s) => s.projectId === projectId) : undefined,
   };
 }
 
@@ -755,20 +797,38 @@ export function usePrefetchDiffs(projectId: string) {
 
 // ---- M3: 히스토리 ----
 
-/** 커밋 로그 — 200개 단위 무한 스크롤 (`--skip`, 설계 §12). enabled로 패널 펼침 시에만 조회. */
-export function useLog(projectId: string | null, enabled = true) {
-  return useInfiniteQuery({
-    queryKey: keys.log(projectId ?? "none"),
+/** 커밋 로그 옵션 — `useLog`와 프리페치(문서 창 부트·Git 모달 호버)가 **같은 키·같은 인자**를
+ *  써야 캐시가 그대로 쓰인다(어긋나면 조용히 두 번 읽는다). */
+export function logQueryOptions(projectId: string) {
+  return infiniteQueryOptions({
+    queryKey: keys.log(projectId),
     queryFn: ({ pageParam }) =>
-      ipc.getLog(projectId!, { limit: LOG_PAGE_SIZE, skip: pageParam }),
+      ipc.getLog(projectId, { limit: LOG_PAGE_SIZE, skip: pageParam }),
     initialPageParam: 0,
     getNextPageParam: (lastPage, allPages) =>
       lastPage.length === LOG_PAGE_SIZE
         ? allPages.reduce((n, p) => n + p.length, 0)
         : undefined,
-    enabled: !!projectId && enabled,
     staleTime: 30_000,
   });
+}
+
+/** 커밋 로그 — 200개 단위 무한 스크롤 (`--skip`, 설계 §12). enabled로 패널 펼침 시에만 조회. */
+export function useLog(projectId: string | null, enabled = true) {
+  return useInfiniteQuery({
+    ...logQueryOptions(projectId ?? "none"),
+    enabled: !!projectId && enabled,
+  });
+}
+
+/**
+ * Git 모달(변경·로그)을 열기 직전 — 버튼에 포인터가 올라온 순간 — 데이터를 미리 적재한다.
+ * 클릭까지의 수백 ms 동안 git이 돌아서, 모달이 뜰 때는 대개 캐시에 이미 있다. 쓰는 쪽과 같은
+ * 옵션이라 신선한 캐시가 있으면 IPC가 0회다. 메인 창의 status는 사이드바 배치가 이미 데워 둔다.
+ */
+export function prefetchGitDialog(qc: QueryClient, projectId: string) {
+  if (!STATUS_BATCH_WINDOW) void qc.prefetchQuery(projectStatusesOptions(projectId));
+  void qc.prefetchInfiniteQuery(logQueryOptions(projectId));
 }
 
 export function useBranches(projectId: string | null, enabled = true) {
@@ -780,13 +840,19 @@ export function useBranches(projectId: string | null, enabled = true) {
   });
 }
 
-/** 단일 커밋 상세 — 커밋 내용은 불변이라 무기한 캐시. */
+/** 단일 커밋 상세 옵션 — 커밋 내용은 불변이라 무기한 캐시. 목록 행 호버 프리페치(CommitList)와 공유. */
+export function commitDetailOptions(projectId: string, sha: string) {
+  return queryOptions({
+    queryKey: keys.commitDetail(projectId, sha),
+    queryFn: () => ipc.getCommitDetail(projectId, sha),
+    staleTime: Infinity,
+  });
+}
+
 export function useCommitDetail(projectId: string | null, sha: string | null) {
   return useQuery({
-    queryKey: keys.commitDetail(projectId ?? "none", sha ?? "none"),
-    queryFn: () => ipc.getCommitDetail(projectId!, sha!),
+    ...commitDetailOptions(projectId ?? "none", sha ?? "none"),
     enabled: !!projectId && !!sha,
-    staleTime: Infinity,
   });
 }
 

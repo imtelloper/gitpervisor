@@ -23,9 +23,9 @@ import {
   useDiscardFiles,
   usePrefetchDiffs,
   useSettings,
+  useProjectStatuses,
   useStageFiles,
   useStatus,
-  useStatuses,
   useUnstageFiles,
 } from "../../queries";
 import { useOccludesWebview } from "../../stores/occlusion";
@@ -780,7 +780,7 @@ export function ChangesPanel({
   embedded?: boolean;
 }) {
   const msg = useMessages();
-  const { data: statuses } = useStatuses();
+  const { data: statuses } = useProjectStatuses(projectId);
   const status = statuses?.find((s) => s.projectId === projectId);
   // 이 프로젝트에 속한 임베디드 저장소들 — 상대경로 순으로 안정 정렬.
   const nested = (statuses ?? [])

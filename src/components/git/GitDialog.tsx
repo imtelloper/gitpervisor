@@ -90,6 +90,12 @@ function Body({
   // 서로의 선택을 덮어쓰고, 남의 저장소 sha를 조회한 상세는 영영 안 뜬다.
   const [sha, setSha] = useState<string | null>(null);
   const active = sel[tab];
+  // Monaco 청크를 모달이 그려진 뒤 쉬는 틈에 미리 받아 둔다 — 첫 파일 클릭이 번들 로드를 기다리지
+  // 않게. 위 lazy 와 같은 지정자라 같은 청크다(이미 받은 창에서는 아무 일도 없다).
+  useEffect(() => {
+    const id = requestIdleCallback(() => void import("../diff/DiffViewer"));
+    return () => cancelIdleCallback(id);
+  }, []);
   // DiffViewer가 정의 이동용으로 모듈 컨텍스트에 들고 있으므로 신원이 안정해야 한다.
   const onSelect = useCallback(
     (target: DiffTarget, repoId: string) =>
