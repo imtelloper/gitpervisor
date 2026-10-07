@@ -260,6 +260,9 @@ rm -f installers/Gitpervisor_<이전버전>*
   `DOCS/windows-code-signing.md`). **지금은 시크릿이 없어 setup.exe가 무서명(NotSigned)이다.** 무서명 setup.exe는 AhnLab V3 '앱 격리 검사'·SmartScreen에
   걸려 설치가 막힌다(v0.3.5 실사례). **릴리스 에셋을 사후 서명하지 마라** — 파일이 바뀌어
   업데이터 `.sig` 검증이 통째로 깨진다. 이것도 겉으로는 멀쩡해 보이는 유형이다.
+- **macOS 앱은 CI가 자체 서명 인증서로 서명한다** (시크릿 `MACOS_SIGNING_P12`·`_PASSWORD` 존재 시 —
+  `DOCS/macos-code-signing.md`). 무서명이면 Downloads 접근 허용 같은 TCC 권한이 저장되지 않아 매번
+  다시 뜬다. **인증서를 바꾸지 마라** — 신원이 바뀌면 모든 macOS 사용자에게 권한 창이 한 번씩 다시 뜬다.
 
 ---
 
@@ -321,6 +324,7 @@ rm -f installers/Gitpervisor_<이전버전>*
 | 배포 절차·함정 | `.claude/skills/release/SKILL.md` |
 | Windows 코드서명(유료·구현완료) | `DOCS/windows-code-signing.md` |
 | Windows 코드서명(무료·미구현 설계) | `DOCS/signpath-free-signing-design.md` |
+| macOS 코드서명(자체 서명·구현완료) | `DOCS/macos-code-signing.md` |
 | OOM 사건 원인·수정 로드맵 | `DOCS/process-leak-postmortem.md` |
 | 조기경보(health) 설계 | `DOCS/health-watchdog-design.md` |
 | 알려진 증상별 해결 | `DOCS/TROUBLESHOOTING.md` |
