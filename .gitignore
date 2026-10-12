@@ -58,3 +58,9 @@ vite.config.d.ts
 
 # pdf.js 정적 자산 — predev/prebuild가 node_modules/pdfjs-dist에서 복사한다(scripts/copy-pdfjs-assets.mjs)
 /public/pdfjs/
+
+# Playwright MCP가 남기는 페이지 스냅샷 — 도구 부산물이라 릴리스 커밋에 휩쓸려 들어가지 않게 한다.
+/.playwright-mcp/
+
+# 사이트 개편 시안·앱 스크린샷(약 15MB) — 로컬에만 둔다. PNG가 git 히스토리에 영구히 남지 않게.
+/designs/website-v2/
