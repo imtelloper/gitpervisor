@@ -53,6 +53,7 @@ import {
   collectByContent,
   IS_AGGREGATE_WINDOW,
   type PaneKind,
+  terminalLabel,
   useTerminals,
 } from "../stores/terminals";
 import { useOccludesWebview } from "../stores/occlusion";
@@ -1614,6 +1615,7 @@ function AggregateCell({
       id: meta.id,
       projectId: meta.projectId,
       fontSize,
+      label: terminalLabel(meta.id),
     }).then(() => {
       if (!cancelled && el) attachTerminal(meta.id, el);
     });

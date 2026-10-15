@@ -146,6 +146,17 @@ function migrateLeafContent(node: Pane): Pane {
 
 export { collectByContent, collectPanes };
 
+/** 이 칸이 속한 탭 제목 — 분할이면 칸 번호를 붙인다. `term_open`이 Rust에 넘겨 MCP `list_terminals`가
+ *  사용자가 보는 이름으로 보여 준다. 여는 순간의 값이라 나중의 분할·닫기로 번호가 바뀌어도 따라가지 않는다. */
+export function terminalLabel(paneId: string): string | undefined {
+  for (const t of useTerminals.getState().terminals) {
+    const panes = collectPanes(t.layout);
+    const i = panes.indexOf(paneId);
+    if (i >= 0) return panes.length > 1 ? `${t.title} (${i + 1}/${panes.length})` : t.title;
+  }
+  return undefined;
+}
+
 interface TerminalsState {
   terminals: TermTab[];
   /** 프로젝트별 활성 탭 ("viewer" 또는 tabId) */

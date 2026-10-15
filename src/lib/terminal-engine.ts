@@ -517,6 +517,7 @@ export function createTerminalImpl(opts: {
   projectId: string;
   fontSize: number;
   attach?: boolean;
+  label?: string;
 }): TermInstance {
   ensureExitListener();
   // 측정 로그는 **첫 터미널에서** 설치한다(이 모듈 자체가 그때 동적 import 된다) — 터미널을
@@ -987,6 +988,7 @@ export function createTerminalImpl(opts: {
         projectId: opts.projectId,
         cols: term.cols || 80,
         rows: term.rows || 24,
+        label: opts.label ?? null,
         onData: channel,
       });
   void startCmd.catch((e: unknown) => {

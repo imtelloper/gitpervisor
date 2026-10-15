@@ -149,6 +149,8 @@ export async function createTerminal(opts: {
   fontSize: number;
   /** 명시하면 그대로 따른다. 생략하면 "살아있는 세션이 있으면 attach, 없으면 open"으로 자동 판정. */
   attach?: boolean;
+  /** 새 PTY일 때 Rust에 남길 이름(탭 제목) — MCP `list_terminals`용. attach면 쓰지 않는다. */
+  label?: string;
 }): Promise<TermInstance> {
   ensureSizeResyncOnVisible();
   const existing = registry.get(opts.id);

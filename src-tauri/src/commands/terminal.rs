@@ -226,6 +226,8 @@ pub struct TerminalSession {
     sink: Arc<Mutex<Option<Channel<Response>>>>,
     /// 최근 원시 출력 — MCP `read_terminal`이 읽을 때만 화면으로 다시 그린다(`mcp.rs`).
     tail: Arc<Mutex<TermTail>>,
+    /// 사용자가 보는 이름(탭 제목, 분할이면 칸 번호) — MCP `list_terminals`용. 연 순간의 값이다.
+    label: String,
     /// 이 PTY가 속한 프로젝트 — 플로팅 창이 이 값으로 새 분할 패널의 cwd를 잡는다.
     project_id: String,
     /// 실제로 띄운 셸 프로그램(shell.rs 폴백 결과) — 이미 열린 터미널에 에이전트를 띄울 때 셸별
@@ -252,6 +254,7 @@ impl TermTail {
 /// MCP 도구가 보는 터미널 한 개 — 전역 세션 락 밖에서 만든 사본이다.
 pub(crate) struct TermSnapshot {
     pub term_id: String,
+    pub label: String,
     pub project_id: String,
     pub shell: String,
     pub rows: u16,
@@ -267,17 +270,19 @@ pub(crate) fn term_snapshots(state: &AppState) -> Vec<TermSnapshot> {
         .unwrap_or_else(|e| e.into_inner())
         .iter()
         .map(|(id, s)| {
-            (id.clone(), s.project_id.clone(), s.shell.clone(), Arc::clone(&s.master), Arc::clone(&s.tail))
+            let names = (id.clone(), s.label.clone(), s.project_id.clone(), s.shell.clone());
+            (names, Arc::clone(&s.master), Arc::clone(&s.tail))
         })
         .collect();
     picked
         .into_iter()
-        .map(|(term_id, project_id, shell, master, tail)| {
+        .map(|((term_id, label, project_id, shell), master, tail)| {
             // 크기를 못 읽으면 xterm 기본값으로 다시 그린다 — 읽기용 근사라 틀려도 줄바꿈 위치만 어긋난다.
             let size = master.lock().unwrap_or_else(|e| e.into_inner()).get_size().ok();
             let tail: Vec<u8> = tail.lock().unwrap_or_else(|e| e.into_inner()).0.iter().copied().collect();
             TermSnapshot {
                 term_id,
+                label,
                 project_id,
                 shell,
                 rows: size.map_or(24, |s| s.rows),
@@ -316,6 +321,7 @@ pub fn term_open(
     project_id: String,
     cols: u16,
     rows: u16,
+    label: Option<String>,
     on_data: Channel<Response>,
 ) -> Result<TermOpened, IpcError> {
     let path = project_path(&state, &project_id)?;
@@ -519,6 +525,7 @@ pub fn term_open(
         closed,
         sink,
         tail,
+        label: label.unwrap_or_default(),
         project_id,
         shell: shell.clone(),
     };

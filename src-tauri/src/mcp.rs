@@ -349,7 +349,7 @@ Returns `project:path:line: text`, at most 200 lines.",
         ),
         tool(
             "list_terminals",
-            "Terminals open in Gitpervisor (often other coding agents, dev servers or builds) with the last line on screen.",
+            "Terminals open in Gitpervisor (often other coding agents, dev servers or builds): id, the tab title the user sees (e.g. \"Terminal 2\"; `(2/3)` = second of three split panes), project, and the last line on screen.",
             json!({}),
             &[],
         ),
@@ -481,8 +481,9 @@ async fn call_tool(app: &AppHandle, name: &str, args: &Value) -> Result<String, 
                     let shell = std::path::Path::new(&t.shell).file_name().map_or(t.shell.clone(), |f| {
                         f.to_string_lossy().into_owned()
                     });
+                    let title = if t.label.is_empty() { String::new() } else { format!("  title=\"{}\"", t.label) };
                     format!(
-                        "{}  project={}  shell={shell}  size={}x{}  last: {last}",
+                        "{}{title}  project={}  shell={shell}  size={}x{}  last: {last}",
                         t.term_id,
                         display_name(&names, &t.project_id),
                         t.cols,

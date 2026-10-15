@@ -33,7 +33,7 @@ import {
 import { translateRequest } from "../../lib/translate";
 import { useOccludesWebview } from "../../stores/occlusion";
 import { usePromptHistory } from "../../stores/promptHistory";
-import { useTerminals } from "../../stores/terminals";
+import { terminalLabel, useTerminals } from "../../stores/terminals";
 import { useUi } from "../../stores/ui";
 import { PromptSidePanel } from "./TermSessionControls";
 import { modLabel } from "../../lib/platform";
@@ -83,7 +83,7 @@ export function TerminalPane({
     if (takenByWindow) return;
     // createTerminal은 무거운 xterm 엔진(~441kB)을 동적 import하므로 async — 로드 후 attach.
     // 첫 터미널 탭에서만 엔진 청크가 로드되고, 이후 생성은 즉시 반환된다.
-    void createTerminal({ id: paneId, projectId, fontSize }).then(() => {
+    void createTerminal({ id: paneId, projectId, fontSize, label: terminalLabel(paneId) }).then(() => {
       if (!cancelled && el) attachTerminal(paneId, el);
     });
     const ro = new ResizeObserver(() => fitTerminal(paneId));
@@ -145,7 +145,7 @@ export function TerminalPane({
             onClick={async () => {
               // 옛 PTY가 backend에서 완전히 닫힌 뒤 새로 연다 — term_close↔term_open 레이스 방지.
               await disposeTerminal(paneId);
-              await createTerminal({ id: paneId, projectId, fontSize });
+              await createTerminal({ id: paneId, projectId, fontSize, label: terminalLabel(paneId) });
               if (ref.current) attachTerminal(paneId, ref.current);
               useTerminals.getState().setPaneStatus(paneId, "live");
             }}
