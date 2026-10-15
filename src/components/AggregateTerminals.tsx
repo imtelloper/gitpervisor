@@ -1033,6 +1033,11 @@ export function AggregateTerminals() {
                 onClick={() => addAgentTerminal(cells[0].projectId, startAgent)}
               />
               <MenuRow
+                icon={<Sparkles size={13} />}
+                label={msg.app.aggregate.claudeSessionIn(groupMenu.name)}
+                onClick={() => addAgentTerminal(cells[0].projectId, "claude")}
+              />
+              <MenuRow
                 icon={<Bot size={13} />}
                 label={msg.app.aggregate.openCodeSessionIn(groupMenu.name)}
                 onClick={() => addAgentTerminal(cells[0].projectId, "opencode")}
@@ -1123,6 +1128,7 @@ export function AggregateTerminals() {
           // 새 터미널·Float·닫기가 여기서도 그대로 동작한다. 예외는 **독립 브라우저 탭 닫기**뿐:
           // closeBrowserTab은 위임 경로가 없는 메인 전용이라 별도 창에선 항목을 빼 둔다.
           onNewTerminal={() => addAgentTerminal(chipMenu.cell.projectId, startAgent)}
+          onNewClaude={() => addAgentTerminal(chipMenu.cell.projectId, "claude")}
           onNewOpenCode={() => addAgentTerminal(chipMenu.cell.projectId, "opencode")}
           onFloat={
             chipMenu.cell.kind === "terminal" && chipMenu.cell.tabId != null
@@ -1173,6 +1179,7 @@ function ChipMenu({
   onTogglePrompt,
   onTranslate,
   onNewTerminal,
+  onNewClaude,
   onNewOpenCode,
   onFloat,
   onCloseCell,
@@ -1192,6 +1199,7 @@ function ChipMenu({
   /** 선택이 있는 표시 중 터미널 셀에만 넘어온다(태스크 61). */
   onTranslate?: () => void;
   onNewTerminal?: () => void;
+  onNewClaude?: () => void;
   /** 같은 프로젝트에 OpenCode 세션 셀 — `onNewTerminal`이 있을 때만 의미가 있다. */
   onNewOpenCode?: () => void;
   onFloat?: () => void;
@@ -1285,6 +1293,13 @@ function ChipMenu({
           icon={<TerminalIcon size={14} />}
           label={msg.app.aggregate.newTerminalIn(cell.projName)}
           onClick={run(onNewTerminal)}
+        />
+      )}
+      {onNewClaude && (
+        <MenuItem
+          icon={<Sparkles size={14} />}
+          label={msg.app.aggregate.claudeSessionIn(cell.projName)}
+          onClick={run(onNewClaude)}
         />
       )}
       {onNewOpenCode && (
