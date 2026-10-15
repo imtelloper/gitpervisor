@@ -97,6 +97,7 @@ const ko = {
   },
   editorProviders: {
     referencesTruncated: "참조가 많아 일부만 표시합니다",
+    referencesFailed: (err: string) => `참조 찾기 실패: ${err}`,
     openSettings: "설정 열기",
     formatFailed: (err: string) => `포맷 실패: ${err}`,
     definitionHintMulti: (count: number, path: string, line: number) =>
@@ -355,6 +356,7 @@ export const gitText = defineText(ko, {
     },
     editorProviders: {
       referencesTruncated: "Too many references — showing only some",
+      referencesFailed: (err) => `Couldn't find references: ${err}`,
       openSettings: "Open settings",
       formatFailed: (err) => `Format failed: ${err}`,
       definitionHintMulti: (count, path, line) =>

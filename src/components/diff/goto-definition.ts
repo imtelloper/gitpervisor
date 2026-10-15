@@ -13,7 +13,7 @@ import { monaco } from "./monaco-setup";
 
 import { currentMessages } from "../../i18n/ui-language";
 import type { DefMatch, DiffTarget } from "../../lib/ipc";
-import { ipc } from "../../lib/ipc";
+import { ipc, isIpcError } from "../../lib/ipc";
 import { extToLang, lspActive } from "../../lib/lsp/client";
 import { languageOf } from "../../lib/language-map";
 import { useUi } from "../../stores/ui";
@@ -67,7 +67,13 @@ export function lookup(
   const key = `${ctx.projectId}:${ctx.ext}:${symbol}`;
   let p = cache.get(key);
   if (!p) {
-    p = ipc.findDefinition(ctx.projectId, symbol, ctx.ext, lane).catch(() => []);
+    const mine: Promise<DefMatch[]> = ipc.findDefinition(ctx.projectId, symbol, ctx.ext, lane).catch((e) => {
+      // 타임아웃은 다음 조회에서 다시 시도한다. git 이 확정적으로 거절한 경우(GIT_ERROR: 저장소 아님·PCRE 없음)는
+      // 다시 띄워도 결과가 같고 프로세스 비용만 반복되므로 캐시에 둔다. clear() 뒤 같은 키에 들어간 새 항목은 지우지 않는다.
+      if (!(isIpcError(e) && e.code === "GIT_ERROR") && cache.get(key) === mine) cache.delete(key);
+      return [];
+    });
+    p = mine;
     cache.set(key, p);
     if (cache.size > 800) cache.clear();
   }

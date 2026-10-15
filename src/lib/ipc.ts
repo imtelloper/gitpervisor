@@ -1488,7 +1488,9 @@ export const ipc = {
     symbol: string,
     ext: string,
     lane: "interactive" | "background" = "interactive",
-  ) => call<DefMatch[]>("find_definition", { projectId, symbol, ext }, { lane }),
+  ) =>
+    // 백엔드 git grep 시한(READ_TIMEOUT 10s)보다 길게, 재시도 없이 — 8s×3 이면 느린 grep 을 겹쳐 다시 띄운다.
+    call<DefMatch[]>("find_definition", { projectId, symbol, ext }, { lane, timeoutMs: 12_000, attempts: 1 }),
   // Go to Symbol — 프로젝트 전체 심볼 부분일치. interactive 레인, 재시도 없음(낡은 쿼리
   // 재시도는 슬롯 낭비 — 다음 키 입력이 새 요청을 만들고 프론트가 seq로 무효화).
   findSymbols: (projectId: string, query: string, extHint: string | null) =>
@@ -1499,7 +1501,11 @@ export const ipc = {
     ),
   // 참조 찾기 — interactive 레인(Shift+F12 직결).
   findReferences: (projectId: string, symbol: string, ext: string) =>
-    call<RefsResult>("find_references", { projectId, symbol, ext }, { lane: "interactive" }),
+    call<RefsResult>(
+      "find_references",
+      { projectId, symbol, ext },
+      { lane: "interactive", timeoutMs: 12_000, attempts: 1 },
+    ),
   // Find in Files — 재시도 없음(무거운 검색 자동 재실행 방지). 백엔드 10s + 여유.
   searchInProject: (projectId: string, query: string, opts: SearchOpts) =>
     call<SearchResult>(

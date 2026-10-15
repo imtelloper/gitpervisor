@@ -1809,6 +1809,28 @@ mod tests {
         }
     }
 
+    /// 코드 내비게이션 커맨드는 git grep 실패를 빈 결과로 바꾸지 않는다 — 예전엔 `Err(_) => return Ok(빈것)`
+    /// 이라 저장소 아님·PCRE 없음·타임아웃이 전부 "정의 없음"으로 보였다. **있어야 할 호출**을 단언한다:
+    /// "삼키는 패턴이 없음"을 보면 `.ok()`·`if let Ok` 로 다시 삼켜도 통과한다.
+    #[test]
+    fn code_nav_commands_route_through_grep_helper() {
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/tree.rs"),
+        )
+        .unwrap();
+        for name in ["find_definition", "find_symbols", "find_references"] {
+            let start = src
+                .find(&format!("pub async fn {name}("))
+                .unwrap_or_else(|| panic!("{name} 선언을 못 찾았다 — 이름이 바뀌었나?"));
+            // 최상위 fn 본문의 끝 = 0열의 `}`.
+            let end = start + src[start..].find("\n}\n").expect("본문 끝");
+            assert!(
+                src[start..end].contains("grep_output_or_error("),
+                "{name} 이 git grep 결과를 grep_output_or_error 로 판정하지 않는다"
+            );
+        }
+    }
+
     /// poison된 락에 `.unwrap()`을 쓰면 안 된다.
     ///
     /// 어느 스레드가 락을 쥔 채 패닉하면(그 패닉 자체는 tokio가 조용히 삼킬 수 있다) 뮤텍스가

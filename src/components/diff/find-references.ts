@@ -11,7 +11,7 @@ import {
 } from "./goto-definition";
 
 import { currentMessages } from "../../i18n/ui-language";
-import { ipc } from "../../lib/ipc";
+import { errorMessage, ipc } from "../../lib/ipc";
 import { extToLang, lspActive } from "../../lib/lsp/client";
 import { useUi } from "../../stores/ui";
 
@@ -53,10 +53,13 @@ export function registerFindReferences(): void {
       if (lang && lspActive(ctx.projectId, lang)) return [];
       // 참조는 별칭 해석 없이 커서의 단어 그대로 검색(사용처 의미론).
       const [refs, defs] = await Promise.all([
-        ipc.findReferences(ctx.projectId, word.word, ctx.ext).catch(() => ({
-          matches: [],
-          truncated: false,
-        })),
+        // 실패를 "참조 0개"로 보이지 않게 알린다 — Shift+F12 는 명시적 한 번이라 토스트가 쏟아지지 않는다.
+        ipc.findReferences(ctx.projectId, word.word, ctx.ext).catch((e) => {
+          useUi
+            .getState()
+            .pushToast("error", currentMessages().git.editorProviders.referencesFailed(errorMessage(e)));
+          return { matches: [], truncated: false };
+        }),
         // includeDeclaration=false 재호출 대비 정의줄 대조(캐시가 이미 데워져 있으면 ~0ms)
         lookup(word.word).catch(() => []),
       ]);

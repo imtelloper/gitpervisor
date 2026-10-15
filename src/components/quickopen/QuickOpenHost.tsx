@@ -42,7 +42,7 @@ export function QuickOpenHost() {
     return [selectedProjectId, ...embedded.map((s) => s.projectId)].sort();
   }, [selectedProjectId, embedded]);
 
-  const { data: lists } = useQuery({
+  const { data: lists, isError } = useQuery({
     queryKey: ["repo-files", ...sortedIds],
     queryFn: () => ipc.listRepoFiles(sortedIds),
     enabled: open && sortedIds.length > 0,
@@ -157,7 +157,15 @@ export function QuickOpenHost() {
       source={source}
       onPick={onPick}
       onClose={() => setOpen(false)}
-      emptyText={lists ? msg.search.quickOpen.noMatches : msg.search.quickOpen.loadingFiles}
+      emptyText={
+        // 선택 프로젝트의 ls-files 실패(저장소 아님 등)는 "일치 없음"이 아니라 그 사유를 보인다.
+        lists?.find((l) => l.projectId === selectedProjectId)?.error ??
+        (lists
+          ? msg.search.quickOpen.noMatches
+          : isError
+            ? msg.search.quickOpen.loadFailed
+            : msg.search.quickOpen.loadingFiles)
+      }
       footer={truncated ? msg.search.quickOpen.truncatedFooter : undefined}
     />
   );

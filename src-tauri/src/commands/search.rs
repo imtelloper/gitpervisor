@@ -39,6 +39,27 @@ const TEXT_WINDOW: usize = 240; // 라인 텍스트 윈도우(문자)
 const MAX_INCLUDE: usize = 8;
 
 /// git grep 기반 전역 검색. exit 1=무매치(빈 결과)·exit>1=GIT_ERROR(잘못된 정규식 등).
+/// git grep 종료 코드 판정 — 전역 검색과 코드 내비게이션(정의·심볼·참조)이 같이 쓴다.
+/// exit 1 은 무매치(정상)다. 그 밖(128 = 저장소 아님, 2 = 잘못된 패턴·PCRE 없음, -1 = 신호로 죽음)은
+/// 오류로 올린다 — 빈 결과로 바꾸면 "정의 없음"과 "찾지 못함"이 구분되지 않는다.
+/// 프런트 console 은 로그 파일로 가지 않으므로 기록은 여기서 남긴다.
+pub(crate) fn grep_output_or_error(
+    repo: &std::path::Path,
+    out: runner::GitOutput,
+) -> Result<runner::GitOutput, IpcError> {
+    if matches!(out.code, 0 | 1) {
+        return Ok(out);
+    }
+    let stderr = out.stderr.trim();
+    log::warn!("[grep] {} code={} {}", repo.display(), out.code, stderr);
+    let msg = if stderr.is_empty() {
+        crate::i18n::text_tools::search_failed().to_string()
+    } else {
+        stderr.to_string()
+    };
+    Err(IpcError::new(ErrorCode::GitError, msg))
+}
+
 #[tauri::command]
 pub async fn search_in_project(
     state: State<'_, AppState>,
@@ -92,16 +113,7 @@ pub async fn search_in_project(
         }
     }
 
-    let out = runner::run_git(Some(&repo), &args, runner::READ_TIMEOUT_SECS).await?;
-    // exit 1 = 무매치(정상). exit >1 = 오류(잘못된 정규식 등).
-    if out.code > 1 {
-        let msg = if out.stderr.trim().is_empty() {
-            crate::i18n::text_tools::search_failed().to_string()
-        } else {
-            out.stderr.trim().to_string()
-        };
-        return Err(IpcError::new(ErrorCode::GitError, msg));
-    }
+    let out = grep_output_or_error(&repo, runner::run_git(Some(&repo), &args, runner::READ_TIMEOUT_SECS).await?)?;
     // 줄 단위 디코드(B-K7) — 여러 파일의 줄이 섞인 스트림이라 통째 판정은 한 CP949 파일 때문에
     // 나머지 전부를 깨뜨린다. 뷰어에서는 한글이 보이는데 검색 결과만 깨지는 비대칭도 막는다.
     let stdout = encoding::decode_lines(&out.stdout);
@@ -176,4 +188,25 @@ fn window_line(text: &str, col_no: u32) -> (String, u32) {
     let prefix = if start > 0 { "…" } else { "" };
     let new_col = (char_idx - start) as u32 + 1 + prefix.chars().count() as u32;
     (format!("{prefix}{slice}"), new_col)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn out(code: i32, stderr: &str) -> runner::GitOutput {
+        runner::GitOutput { code, stdout: Vec::new(), stderr: stderr.into() }
+    }
+
+    #[test]
+    fn grep_output_or_error_separates_no_match_from_failure() {
+        let repo = std::path::Path::new("r");
+        assert!(grep_output_or_error(repo, out(0, "")).is_ok());
+        assert!(grep_output_or_error(repo, out(1, "")).is_ok(), "exit 1 = 무매치, 오류 아님");
+        let e = grep_output_or_error(repo, out(128, "fatal: not a git repository\n")).err().unwrap();
+        assert_eq!(e.code, ErrorCode::GitError);
+        assert_eq!(e.message, "fatal: not a git repository");
+        // 신호로 죽은 프로세스(runner 가 -1 로 만든다)는 예전엔 "매치 없음"으로 통과했다.
+        assert!(grep_output_or_error(repo, out(-1, "")).is_err());
+    }
 }

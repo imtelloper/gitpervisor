@@ -9,6 +9,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use super::projects::project_path;
+use super::search::grep_output_or_error;
 use crate::error::{ErrorCode, IpcError};
 use crate::git::runner;
 use crate::git::types::DirEntry;
@@ -675,6 +676,21 @@ pub async fn list_repo_files(
             )
             .await
             {
+                // 저장소가 아닌 폴더(exit 128) 등 — 빈 목록이면 Quick Open 이 "일치 없음"으로 보인다.
+                Ok(out) if out.code != 0 => {
+                    let stderr = out.stderr.trim();
+                    log::warn!("[ls-files] {} code={} {}", p.display(), out.code, stderr);
+                    RepoFileList {
+                        project_id: id,
+                        files: Vec::new(),
+                        truncated: false,
+                        error: Some(if stderr.is_empty() {
+                            crate::i18n::text_tools::search_failed().to_string()
+                        } else {
+                            stderr.to_string()
+                        }),
+                    }
+                }
                 Ok(out) => {
                     let mut files: Vec<String> = Vec::new();
                     let mut truncated = false;
@@ -1040,9 +1056,10 @@ pub struct DefMatch {
     pub doc: Option<String>,
 }
 
-/// 심볼의 정의 위치를 휴리스틱으로 찾는다(LSP 없이 언어별 "정의 패턴"을 ripgrep으로 검색).
+/// 심볼의 정의 위치를 휴리스틱으로 찾는다(LSP 없이 언어별 "정의 패턴"을 git grep으로 검색).
 /// 완벽하진 않으나 함수/클래스/타입 정의를 대부분 잡는다. .gitignore된 경로(node_modules·
-/// target 등)는 ripgrep이 자동 제외한다. rg 미설치/타임아웃이면 조용히 빈 결과를 반환한다.
+/// target 등)는 git grep이 자동 제외한다. 매치 없음은 빈 결과, git 오류·타임아웃은 Err
+/// (search::grep_output_or_error) — 빈 결과로 바꾸면 "정의 없음"과 구분되지 않는다.
 #[tauri::command]
 pub async fn find_definition(
     state: State<'_, AppState>,
@@ -1083,10 +1100,7 @@ pub async fn find_definition(
             args.push(g);
         }
     }
-    let out = match runner::run_git(Some(&repo), &args, runner::READ_TIMEOUT_SECS).await {
-        Ok(o) => o,
-        Err(_) => return Ok(Vec::new()),
-    };
+    let out = grep_output_or_error(&repo, runner::run_git(Some(&repo), &args, runner::READ_TIMEOUT_SECS).await?)?;
     // 줄마다 디코드한다(B-K7) — grep 출력은 여러 파일의 줄이 섞인 스트림이라 통째 판정은
     // 한 CP949 파일 때문에 나머지 전부를 깨뜨린다. UTF-8 줄의 결과는 종전과 동일하다.
     let stdout = encoding::decode_lines(&out.stdout);
@@ -1158,7 +1172,7 @@ pub struct SymbolMatch {
 }
 
 /// 심볼명 부분일치로 정의 후보를 프로젝트 전체에서 찾는다(전 언어 def 패턴 합집합 + pathspec).
-/// 쿼리 검증(2..=64자 식별자 문자만) 실패·git 오류·타임아웃은 조용히 빈 결과(find_definition 관례).
+/// 쿼리 검증(2..=64자 식별자 문자만) 실패는 빈 결과, git 오류·타임아웃은 Err(find_definition 관례).
 /// 랭킹(정확>접두>부분 → 정의강도 → ext 힌트 → 얕은 경로) 후 캡 100. ext_hint는 랭킹 부스트 전용.
 #[tauri::command]
 pub async fn find_symbols(
@@ -1211,10 +1225,7 @@ pub async fn find_symbols(
             args.push(g);
         }
     }
-    let out = match runner::run_git(Some(&repo), &args, runner::READ_TIMEOUT_SECS).await {
-        Ok(o) => o,
-        Err(_) => return Ok(Vec::new()),
-    };
+    let out = grep_output_or_error(&repo, runner::run_git(Some(&repo), &args, runner::READ_TIMEOUT_SECS).await?)?;
     let stdout = encoding::decode_lines(&out.stdout); // 줄 단위 디코드(B-K7)
 
     let q_lower = query.to_lowercase();
@@ -1415,7 +1426,7 @@ fn lang_exts(ext: &str) -> Vec<String> {
 
 /// 심볼의 사용처(참조)를 `git grep -F -w`(고정 문자열 + 단어 경계)로 찾는다. 정규식 해석이
 /// 없어 인젝션 표면 0. 확장자 pathspec으로 같은 언어 계열만 스캔. 매치 200/파일 30 캡.
-/// 심볼 검증·매치 없음·타임아웃은 find_definition 관례(조용히 빈 결과).
+/// 심볼 검증 실패·매치 없음은 빈 결과, git 오류·타임아웃은 Err(find_definition 관례).
 #[tauri::command]
 pub async fn find_references(
     state: State<'_, AppState>,
@@ -1443,15 +1454,7 @@ pub async fn find_references(
             args.push(g);
         }
     }
-    let out = match runner::run_git(Some(&repo), &args, runner::READ_TIMEOUT_SECS).await {
-        Ok(o) => o,
-        Err(_) => {
-            return Ok(RefsResult {
-                matches: Vec::new(),
-                truncated: false,
-            })
-        }
-    };
+    let out = grep_output_or_error(&repo, runner::run_git(Some(&repo), &args, runner::READ_TIMEOUT_SECS).await?)?;
     let stdout = encoding::decode_lines(&out.stdout); // 줄 단위 디코드(B-K7)
     let mut matches: Vec<RefMatch> = Vec::new();
     let mut files: HashSet<String> = HashSet::new();
@@ -1496,6 +1499,7 @@ pub async fn find_references(
 
 /// `git ls-files`(추적 + 미추적, .gitignore 제외)에서 심볼과 같은 이름의 모듈 파일을 찾는다.
 /// 얕은 경로 우선 정렬(루트 근처 모듈이 보통 의도한 대상) 후 최대 5건.
+// 이것만 실패를 빈 결과로 둔다 — 주 grep 이 성공한 뒤에 도는 보조 후보라 실패해도 주 결과를 가리지 않는다.
 async fn find_module_files(repo: &Path, symbol: &str, exts: &[String]) -> Vec<DefMatch> {
     // 후보 이름을 미리 만든다 — `foo.py`류(basename)와 `foo/__init__.py`·`foo/index.ts`류(디렉터리 모듈).
     let base_names: Vec<String> = exts.iter().map(|e| format!("{symbol}{e}")).collect();

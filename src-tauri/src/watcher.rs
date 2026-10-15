@@ -51,7 +51,7 @@ pub fn register(app: &AppHandle, project: &Project) {
             let events = match result {
                 Ok(events) => events,
                 Err(errors) => {
-                    eprintln!("[watcher] 이벤트 오류: {errors:?}");
+                    log::warn!("[watcher] 이벤트 오류: {errors:?}");
                     return;
                 }
             };
@@ -106,7 +106,7 @@ pub fn register(app: &AppHandle, project: &Project) {
                     },
                 );
                 if let Err(e) = emit_result {
-                    eprintln!("[watcher] emit 실패: {e}");
+                    log::warn!("[watcher] emit 실패: {e}");
                 }
             }
         },
@@ -117,13 +117,13 @@ pub fn register(app: &AppHandle, project: &Project) {
     let mut debouncer = match debouncer {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("[watcher] 생성 실패 {}: {e}", project.path);
+            log::warn!("[watcher] 생성 실패 {}: {e}", project.path);
             return;
         }
     };
     let n = watch_pruned(&mut debouncer, path);
     if n == 0 {
-        eprintln!("[watcher] watch 실패 {}", project.path);
+        log::warn!("[watcher] watch 실패 {}", project.path);
         return;
     }
     log::info!(
@@ -263,11 +263,25 @@ fn collect_watch_targets(root: &Path) -> Vec<(PathBuf, RecursiveMode)> {
 }
 
 /// 준비된 목록을 실제로 등록한다(감시 등록 syscall만). 호출자가 워처 락을 쥔 구간이므로 짧아야 한다.
+/// 실패는 로그로만 남긴다(eprintln 은 Windows 릴리스에서 버려진다) — inotify 한도 같은 부분 실패가
+/// 흔적 없이 사라지면 "변경이 안 잡힌다"를 원인 없이 쫓게 된다. 경로마다 찍으면 수천 줄이라 첫 오류 하나만.
 fn apply_watches(d: &mut RepoWatcher, targets: &[(PathBuf, RecursiveMode)]) -> usize {
-    targets
-        .iter()
-        .filter(|(p, mode)| d.watch(p, *mode).is_ok())
-        .count()
+    let mut ok = 0;
+    let mut failed = 0;
+    let mut first_err: Option<String> = None;
+    for (p, mode) in targets {
+        match d.watch(p, *mode) {
+            Ok(()) => ok += 1,
+            Err(e) => {
+                failed += 1;
+                first_err.get_or_insert_with(|| format!("{}: {e}", p.display()));
+            }
+        }
+    }
+    if let Some(first) = first_err {
+        log::warn!("[watcher] {failed}개 감시 실패, 첫 오류 {first}");
+    }
+    ok
 }
 
 /// 경로에 무시 대상 디렉토리 세그먼트가 하나라도 있는지 (정확 세그먼트 일치).

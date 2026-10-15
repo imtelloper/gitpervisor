@@ -8,6 +8,7 @@ const ko = {
     placeholder: "파일 이름으로 검색…",
     noMatches: "일치하는 파일 없음",
     loadingFiles: "파일 목록 불러오는 중…",
+    loadFailed: "파일 목록을 불러오지 못했습니다",
     truncatedFooter: "일부만 표시 — 더 입력해 좁히세요(50,000개 초과)",
   },
   findInFiles: {
@@ -34,6 +35,7 @@ export const searchText = defineText(ko, {
       placeholder: "Search by file name…",
       noMatches: "No matching files",
       loadingFiles: "Loading file list…",
+      loadFailed: "Couldn't load the file list",
       truncatedFooter: "Partial list — type more to narrow it (over 50,000 files)",
     },
     findInFiles: {
