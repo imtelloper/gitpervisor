@@ -53,7 +53,7 @@ const ko = {
     flushFailed: "대본 편집이 저장되지 않아 내보내지 않았습니다 — 대본 패널 위 안내를 먼저 해결하세요",
     overwriteMessage: (name: string) => `${name} 파일이 이미 있습니다. 덮어쓸까요?`,
     splitScopeWarn:
-      "분할 저장은 구간·배속·해상도·영역·가림·오디오 제거·대본 편집·자막을 적용하지 않습니다. 영상 전체를 분할 지점 경계로만 자릅니다.",
+      "분할 저장은 구간·배속·해상도·영역·가림·오디오 제거·음량 맞추기·대본 편집·자막을 적용하지 않습니다. 영상 전체를 분할 지점 경계로만 자릅니다.",
     // 내보내기 탭
     outputSection: "출력 형식",
     formatLabel: "형식",
@@ -141,6 +141,8 @@ const ko = {
     audioTrackInfo: (codec: string | null, notMp4: boolean) =>
       `트랙 ${codec ?? "알 수 없음"} · 출력에서 오디오를 뺍니다.${notMp4 ? " (오디오 제거는 mp4 출력에만 적용됩니다)" : ""}`,
     audioSpeedEncodes: (ext: string) => `배속을 바꾸면 오디오를 스트림 복사할 수 없어 재인코딩됩니다(확장자 ${ext}).`,
+    loudnorm: "음량 맞추기 (-16 LUFS)",
+    loudnormNote: "작게 녹음된 마이크도 영상 플랫폼 기준 음량으로 맞춥니다. 오디오를 다시 인코딩합니다.",
     // 가리기 탭
     maskSection: "가리기",
     maskMp4Only: "가릴 영역은 mp4 출력에서 지정합니다",
@@ -425,7 +427,7 @@ export const mediaText = defineText(ko, {
         "Transcript edits weren't saved, so nothing was exported — resolve the notice above the transcript panel first",
       overwriteMessage: (name) => `${name} already exists. Overwrite it?`,
       splitScopeWarn:
-        "Split save ignores range, speed, resolution, crop, masks, audio removal, transcript edits and captions. It only cuts the whole video at the split points.",
+        "Split save ignores range, speed, resolution, crop, masks, audio removal, loudness normalization, transcript edits and captions. It only cuts the whole video at the split points.",
       outputSection: "Output format",
       formatLabel: "Format",
       formatMp4: "mp4 video",
@@ -514,6 +516,8 @@ export const mediaText = defineText(ko, {
         `Track ${codec ?? "unknown"} · removes the audio from the output.${notMp4 ? " (Audio removal applies to mp4 output only)" : ""}`,
       audioSpeedEncodes: (ext) =>
         `Changing the speed prevents copying the audio stream, so it's re-encoded (extension ${ext}).`,
+      loudnorm: "Normalize loudness (-16 LUFS)",
+      loudnormNote: "Brings quiet mic recordings up to the loudness video platforms expect. The audio is re-encoded.",
       maskSection: "Mask",
       maskMp4Only: "Masks are available for mp4 output",
       maskDragTitle: "Drag on the video to mark areas to hide with mosaic or blur (multiple allowed)",

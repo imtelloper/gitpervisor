@@ -31,6 +31,7 @@ use crate::stt::acquire::{self, WhisperBin, VAD_MODEL};
 use crate::stt::doc::{build_doc, strip_invisible, DocEngine, DocSource};
 use crate::stt::store::{self, CaptionLoaded};
 use crate::stt::whisper_json::{parse_vad_line, parse_whisper_json, VadSpan, WhisperParseError};
+use crate::stt::word_energy;
 
 /// 앱 로컬 데이터 폴더 아래 임시 폴더(위 머리 주석의 ANSI argv 이유).
 /// 편집본 내보내기의 긴 필터 그래프 파일(commands/video.rs)도 여기 둔다 — 고아 청소를 같이 탄다.
@@ -638,6 +639,16 @@ async fn transcribe_inner(
     };
     check_cancel(&mut cancel_rx)?;
 
+    // 어절 끝을 소리 에너지로 당긴다 — WAV는 _files 가드가 지우기 전이다.
+    let mut words = parsed.words;
+    let wav_for_db = wav_abs.clone();
+    match tauri::async_runtime::spawn_blocking(move || word_energy::wav_frame_db(&wav_for_db)).await {
+        Ok(Ok(db)) => word_energy::tighten_word_ends(&mut words, &db),
+        // 다듬기는 보정일 뿐이다 — 못 읽으면 whisper 시각 그대로 문서를 만든다(전사 전체를 실패시킬 이유가 아니다).
+        Ok(Err(e)) => log::warn!("[stt] 어절 끝 다듬기 건너뜀 — WAV 읽기 실패 {}: {e}", wav_abs.display()),
+        Err(e) => log::warn!("[stt] 어절 끝 다듬기 건너뜀 — 작업 실패 {}: {e}", wav_abs.display()),
+    }
+
     // 5. [parse] → 문서 → 앱 데이터
     let doc = build_doc(
         DocSource {
@@ -658,7 +669,7 @@ async fn transcribe_inner(
             prompt,
             word_timing: parsed.word_timing,
         },
-        parsed.words,
+        words,
     );
     let loaded = store::write_transcribed(app, &req.project_id, &req.rel_path, doc)?;
     log::info!(

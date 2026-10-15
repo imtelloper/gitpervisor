@@ -1441,6 +1441,7 @@ pub fn run() {
             stt::store::caption_doc_load,
             stt::store::caption_doc_save,
             stt::subs::caption_export_subs,
+            stt::subs_import::caption_import_subs,
             // 작업 리포트(태스크 60) — 히트맵·요약 입력·요약 저장.
             report::git_activity,
             report::commits_between,
@@ -1783,6 +1784,7 @@ mod tests {
             ("stt/acquire.rs", "stt_model_download"),
             ("stt/transcribe.rs", "stt_transcribe"),
             ("stt/subs.rs", "caption_export_subs"),
+            ("stt/subs_import.rs", "caption_import_subs"),
             // 수 GB 영상의 박스 헤더 읽기 — 느린 디스크(외장·네트워크)에서 UI 스레드를 잡으면 안 된다.
             ("commands/video_container.rs", "video_container_info"),
             // 수 GB를 읽고 쓰는 한 패스 — 본체는 spawn_blocking이지만 커맨드 자체도 UI 스레드 밖에 둔다.

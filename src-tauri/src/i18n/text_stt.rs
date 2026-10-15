@@ -541,3 +541,40 @@ pub fn caption_burn_temp_dir_failed(path: &dyn Display, err: &dyn Display) -> St
         Lang::En => format!("Failed to create caption temp folder ({path}): {err}"),
     }
 }
+
+// ── stt/subs_import.rs — 자막 파일 가져오기 ─────────────────────
+
+pub fn caption_import_bad_ext(path: &dyn Display) -> String {
+    match lang() {
+        Lang::Ko => format!("SRT·VTT 자막 파일만 가져올 수 있습니다: {path}"),
+        Lang::En => format!("Only SRT and VTT subtitle files can be imported: {path}"),
+    }
+}
+
+pub fn caption_import_read_failed(path: &dyn Display, err: &dyn Display) -> String {
+    match lang() {
+        Lang::Ko => format!("자막 파일을 읽지 못했습니다({path}): {err}"),
+        Lang::En => format!("Failed to read subtitle file ({path}): {err}"),
+    }
+}
+
+pub fn caption_import_too_large(path: &dyn Display) -> String {
+    match lang() {
+        Lang::Ko => format!("자막 파일이 너무 큽니다(16MB 초과) — 자막 파일이 맞는지 확인하세요: {path}"),
+        Lang::En => format!("Subtitle file is too large (over 16 MB) — check that it is a subtitle file: {path}"),
+    }
+}
+
+pub fn caption_import_undecodable(path: &dyn Display) -> String {
+    match lang() {
+        Lang::Ko => format!("자막 파일의 글자 인코딩을 알아내지 못했습니다 — UTF-8로 저장한 뒤 다시 가져오세요: {path}"),
+        Lang::En => format!("Couldn't detect the subtitle file's text encoding — save it as UTF-8 and import again: {path}"),
+    }
+}
+
+pub fn caption_import_no_cues(path: &dyn Display) -> String {
+    match lang() {
+        Lang::Ko => format!("자막 파일에서 자막을 찾지 못했습니다(시각 줄 `-->`가 없음): {path}"),
+        Lang::En => format!("No subtitles found in the file (no `-->` timing lines): {path}"),
+    }
+}

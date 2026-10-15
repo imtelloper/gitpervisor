@@ -213,6 +213,13 @@ const ko = {
     emptyTitle: "아직 자막이 없습니다",
     emptyDesc: "이 영상의 음성을 이 컴퓨터에서 인식해 자막 초안을 만듭니다. 인터넷은 엔진·모델을 받을 때만 씁니다.",
     generate: "자막 만들기",
+    importSubs: "자막 파일 가져오기 (SRT·VTT)",
+    importSubsTitle: "다른 도구로 만든 자막을 불러와 고치고·번역하고·영상에 입힙니다. 시각이 줄 단위라 대본으로 자르기는 안 됩니다.",
+    importSubsConfirm: "지금 자막(편집 포함)을 가져온 자막 파일로 바꿉니다. 직전 판은 한 세대 백업으로 남습니다.",
+    importSubsDialogTitle: "가져올 자막 파일",
+    importSubsFilter: "자막 파일",
+    importSubsDone: (n: number) => `자막 ${fmtInt(n)}줄을 가져왔습니다`,
+    importSubsFailed: (err: string) => `자막 파일을 가져오지 못했습니다 — ${err}`,
   },
 };
 
@@ -432,6 +439,15 @@ export const captionsText = defineText(ko, {
       emptyDesc:
         "Recognizes this video's speech on this computer to draft captions. The internet is used only to download the engine and model.",
       generate: "Generate captions",
+      importSubs: "Import subtitle file (SRT/VTT)",
+      importSubsTitle:
+        "Load captions made in another tool to fix, translate, or burn into the video. Timing is per line, so cutting by transcript isn't available.",
+      importSubsConfirm:
+        "Replace the current captions (including edits) with the imported subtitle file? The previous version is kept as a one-generation backup.",
+      importSubsDialogTitle: "Subtitle file to import",
+      importSubsFilter: "Subtitle files",
+      importSubsDone: (n) => `Imported ${fmtInt(n)} caption ${plural(n, "line", "lines")}`,
+      importSubsFailed: (err) => `Couldn't import the subtitle file — ${err}`,
     },
   },
 });

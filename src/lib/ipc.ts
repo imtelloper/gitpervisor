@@ -465,6 +465,8 @@ export interface VideoExportSpec {
   /** 자막 입힌 영상(태스크 72 §3.6) — **저장된** 자막 문서의 자막을 번인하거나 자막 스트림으로 싣는다. mp4/mov 전용.
    *  소리는 문서가 전사한 오디오 트랙(`source.audioStream`)이다. */
   captionSubs?: CaptionSubsSpec | null;
+  /** 음량 맞추기 — EBU R128 loudnorm으로 -16 LUFS(배속 뒤에 건다). encode 전용, copy와 함께면 백엔드가 거절. */
+  loudnorm?: boolean;
 }
 
 export type CaptionStylePreset = "basic" | "box" | "large";
@@ -2060,6 +2062,10 @@ export const ipc = {
   // 레포에 SRT/VTT/TXT — 이미 있으면 ALREADY_EXISTS(overwrite=true로 재시도). 반환 = 쓴 상대 경로.
   captionExportSubs: (projectId: string, relPath: string, spec: SubExportSpec) =>
     callMutating<string>("caption_export_subs", { projectId, relPath, spec }, 60_000),
+  // SRT·VTT 자막 파일(subPath = 파일 대화상자의 절대 경로, 읽기만) → 이 영상의 자막 문서. 직전 문서는 .bak 한 세대로
+  // 남는다(재전사와 같다). 단어 시각은 근사라 컷 편집은 안 된다. 성공하면 caption://changed.
+  captionImportSubs: (projectId: string, relPath: string, subPath: string) =>
+    callMutating<CaptionLoaded>("caption_import_subs", { projectId, relPath, subPath }, 60_000),
 
   // ---- 작업 리포트 (report.rs, 태스크 60) ----
   // 히트맵은 1년치를 **프로젝트마다** 부른다 — background 레인·재시도 없음(다음 무효화가 재조회).
@@ -2254,7 +2260,8 @@ export interface CaptionDoc {
     audioStream: number;
   };
   engine: {
-    name: "whisper.cpp";
+    /** "import" = 자막 파일 가져오기(caption_import_subs) — build는 "srt"|"vtt", modelId는 빈 문자열, wordTiming은 항상 approx. */
+    name: "whisper.cpp" | "import";
     build: string;
     modelId: string;
     language: string;

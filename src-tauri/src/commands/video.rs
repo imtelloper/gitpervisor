@@ -611,6 +611,22 @@ pub struct ExportSpec {
     /// 싣는다. 영상 컨테이너 전용, 번인은 재인코딩 전용, 편집본 시각은 `caption_cut`과 짝.
     #[serde(default)]
     pub caption_subs: Option<CaptionSubs>,
+    /// 음량 맞추기 — EBU R128 `loudnorm`으로 -16 LUFS(말소리 영상 관례). 재인코딩 전용(copy와 배타).
+    #[serde(default)]
+    pub loudnorm: bool,
+}
+
+/// loudnorm 1패스 + 48kHz로 되돌리기 — loudnorm은 내부적으로 192kHz로 올려 내보내므로 그대로 두면 aac가 192kHz를 받는다.
+const LOUDNORM_FILTER: &str = "loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000";
+
+/// 오디오 필터 체인(배속 → 음량) — 없으면 None. 음량은 배속 **뒤**: atempo가 바꾼 소리를 기준으로 맞춘다.
+fn audio_filter_chain(speed: f64, speeding: bool, loudnorm: bool) -> Option<String> {
+    let parts: Vec<String> = speeding
+        .then(|| atempo_chain(speed))
+        .into_iter()
+        .chain(loudnorm.then(|| LOUDNORM_FILTER.to_string()))
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(","))
 }
 
 fn ext_of(path: &str) -> String {
@@ -795,6 +811,7 @@ fn validate_spec(spec: &ExportSpec) -> Result<(), IpcError> {
                 || spec.crf.is_some()
                 || spec.max_height.is_some()
                 || spec.masks.as_ref().is_some_and(|m| !m.is_empty())
+                || spec.loudnorm
                 || ext == "gif"
             {
                 return bad(text_video::video_spec_copy_incompatible());
@@ -850,6 +867,7 @@ fn build_export_args(src: &str, tmp_out: &str, spec: &ExportSpec, doc: &DocInput
     let audio_only = matches!(ext.as_str(), "m4a" | "mp3");
     let speed = spec.speed.unwrap_or(1.0);
     let speeding = (speed - 1.0).abs() > f64::EPSILON;
+    let afilter = audio_filter_chain(speed, speeding, spec.loudnorm);
 
     if spec.mode == "copy" {
         if audio_only {
@@ -917,23 +935,23 @@ fn build_export_args(src: &str, tmp_out: &str, spec: &ExportSpec, doc: &DocInput
             // 100% 실패한다(사용자가 파일명을 .mp3로 고쳐 쓰는 경로가 실재).
             let ac = if ext == "mp3" { "libmp3lame" } else { "aac" };
             a.extend(["-vn".into(), "-c:a".into(), ac.into(), "-b:a".into(), "192k".into()]);
-            if speeding {
-                a.extend(["-af".into(), atempo_chain(speed)]);
+            if let Some(af) = &afilter {
+                a.extend(["-af".into(), af.clone()]);
             }
         } else {
             if mask.is_some() || cut_graph.is_some() {
                 // filter_complex를 쓰면 자동 스트림 선택이 꺼진다 — 오디오도 명시로 매핑한다.
                 let chain = if vf.is_empty() { "null".to_string() } else { vf.join(",") };
                 let mut graph = format!("{mprefix}{vin}{chain}[v]");
-                // 컷 오디오는 그래프 출력([ac])이라 -af를 함께 걸 수 없다 — 배속도 그래프 안에서.
-                let amap = match (audio_in, cut_graph.is_some()) {
-                    (false, _) => None,
-                    (true, false) => Some(format!("{a_stream}?")),
-                    (true, true) if speeding => {
-                        graph.push_str(&format!(";[ac]{}[a]", atempo_chain(speed)));
+                // 컷 오디오는 그래프 출력([ac])이라 -af를 함께 걸 수 없다 — 배속·음량도 그래프 안에서.
+                let amap = match (audio_in, cut_graph.is_some(), &afilter) {
+                    (false, _, _) => None,
+                    (true, false, _) => Some(format!("{a_stream}?")),
+                    (true, true, Some(af)) => {
+                        graph.push_str(&format!(";[ac]{af}[a]"));
                         Some("[a]".to_string())
                     }
-                    (true, true) => Some("[ac]".to_string()),
+                    (true, true, None) => Some("[ac]".to_string()),
                 };
                 a.extend(["-filter_complex".into(), graph, "-map".into(), "[v]".into()]);
                 if let Some(m) = amap {
@@ -961,8 +979,8 @@ fn build_export_args(src: &str, tmp_out: &str, spec: &ExportSpec, doc: &DocInput
             ]);
             if audio_in {
                 a.extend(["-c:a".into(), "aac".into(), "-b:a".into(), "192k".into()]);
-                if speeding && cut_graph.is_none() {
-                    a.extend(["-af".into(), atempo_chain(speed)]);
+                if let (Some(af), None) = (&afilter, &cut_graph) {
+                    a.extend(["-af".into(), af.clone()]);
                 }
             } else {
                 a.push("-an".into());
@@ -2387,7 +2405,14 @@ fn build_waveform_args(src: &str) -> Vec<String> {
     ]
 }
 
-/// s16le 모노 PCM → buckets개 피크(각 0..1). 최대 피크로 정규화해 조용한 소스도 보이게 한다.
+/// 파형 눈금 바닥(dBFS) — 이보다 작은 소리는 0 높이. 눈금과 증폭 상한은 FilmCraft 타임라인 파형에서 빌렸다.
+const WAVE_FLOOR_DB: f32 = -48.0;
+/// 조용한 소스를 키우는 상한(+12dB). 무제한 최대값 정규화는 거의 무음인 녹화도 꽉 찬 파형으로 그려
+/// "마이크가 작게 녹음됐다"를 숨겼다.
+const WAVE_MAX_GAIN: f32 = 3.981_072;
+
+/// s16le 모노 PCM → buckets개 피크(각 0..1 = 화면 높이). 최대 피크 기준으로 +12dB까지만 키운 뒤
+/// -48~0 dBFS 로그 눈금으로 옮긴다 — 선형 눈금은 말소리 대부분이 바닥 몇 픽셀에 눌린다.
 fn reduce_peaks(pcm: &[u8], buckets: usize) -> Vec<f32> {
     let n = pcm.len() / 2;
     if n == 0 || buckets == 0 {
@@ -2404,8 +2429,10 @@ fn reduce_peaks(pcm: &[u8], buckets: usize) -> Vec<f32> {
     }
     let max = peaks.iter().copied().fold(0f32, f32::max);
     if max > 0.0 {
+        let gain = (32768.0 / max).min(WAVE_MAX_GAIN) / 32768.0;
         for p in &mut peaks {
-            *p /= max;
+            let lin = *p * gain;
+            *p = if lin > 0.0 { ((20.0 * lin.log10() - WAVE_FLOOR_DB) / -WAVE_FLOOR_DB).clamp(0.0, 1.0) } else { 0.0 };
         }
     }
     peaks
@@ -2793,7 +2820,33 @@ mod tests {
             has_audio: true,
             caption_cut: false,
             caption_subs: None,
+            loudnorm: false,
         }
+    }
+
+    /// 음량 맞추기는 모든 오디오 경로에서 배속 뒤에 붙고(-af·컷 그래프·오디오 추출), copy와는 배타다.
+    #[test]
+    fn loudnorm_follows_speed_on_every_audio_path() {
+        let enc = ExportSpec { mode: "encode".into(), loudnorm: true, ..base_spec() };
+        let a = build_export_args("/in.mp4", "/out.tmp", &enc, &DocInputs::default());
+        assert_eq!(value_after(&a, "-af"), LOUDNORM_FILTER);
+        let sped = ExportSpec { speed: Some(2.0), ..enc.clone() };
+        let a = build_export_args("/in.mp4", "/out.tmp", &sped, &DocInputs::default());
+        assert_eq!(value_after(&a, "-af"), format!("atempo=2,{LOUDNORM_FILTER}"));
+        let m4a = ExportSpec { out_rel: "a.m4a".into(), ..enc.clone() };
+        let a = build_export_args("/in.mp4", "/out.tmp", &m4a, &DocInputs::default());
+        assert_eq!(value_after(&a, "-af"), LOUDNORM_FILTER);
+        let keep = [RangeMs { start_ms: 0, end_ms: 1000 }];
+        let cut = ExportSpec { loudnorm: true, ..cut_spec() };
+        let a = build_export_args("/in.mp4", "/out.tmp", &cut, &cut_in(&keep));
+        let fc = value_after(&a, "-filter_complex");
+        assert!(fc.ends_with(&format!(";[ac]{LOUDNORM_FILTER}[a]")), "fc={fc}");
+        assert!(!a.iter().any(|x| x == "-af"), "그래프 출력에 -af를 함께 걸 수 없다: {a:?}");
+        // 소리를 안 내보내면 걸 곳이 없다.
+        let mute = ExportSpec { remove_audio: true, ..enc.clone() };
+        assert!(!build_export_args("/in.mp4", "/out.tmp", &mute, &DocInputs::default()).iter().any(|x| x == "-af"));
+        assert!(validate_spec(&ExportSpec { loudnorm: true, ..base_spec() }).is_err(), "copy는 소리를 못 바꾼다");
+        assert!(validate_spec(&enc).is_ok());
     }
 
     fn cut_spec() -> ExportSpec {
@@ -3288,6 +3341,59 @@ mod tests {
             println!("{name}: Σkeep {want}ms → 출력 {got:.3}s, streams {}", v["streams"]);
             assert!((got * 1000.0 - want as f64).abs() <= 34.0, "{name}: Σkeep {want}ms인데 {got}s");
         }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 실제 ffmpeg로 음량 맞추기: 작게 녹음된(≈−40 LUFS) 소리가 −16 LUFS 근처·48kHz로 나오는지 — 일반 경로(-af)와
+    /// 대본 컷 경로(그래프 안)를 둘 다. `cargo test --lib loudnorm_real_ffmpeg -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore = "PATH의 ffmpeg·ffprobe 필요"]
+    async fn loudnorm_real_ffmpeg_reaches_target() {
+        let ffmpeg = crate::tools::runner::find_on_path("ffmpeg").expect("ffmpeg");
+        let probe = crate::tools::runner::find_on_path("ffprobe").expect("ffprobe");
+        let dir = std::env::temp_dir().join(format!("gpv-loud-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("src.mp4").display().to_string();
+        let gen = [
+            "-v", "error", "-y",
+            "-f", "lavfi", "-i", "testsrc=size=160x120:rate=30:duration=6",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=6,volume=0.01",
+            "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", &src,
+        ];
+        let (code, _, err) = run_capture(&ffmpeg, &gen, 120).await.unwrap();
+        assert_eq!(code, 0, "{err}");
+        let integrated = |path: String| {
+            let ffmpeg = ffmpeg.clone();
+            async move {
+                let (_, _, err) =
+                    run_capture(&ffmpeg, &["-hide_banner", "-nostats", "-i", &path, "-af", "ebur128", "-f", "null", "-"], 60)
+                        .await
+                        .unwrap();
+                let line = err.lines().filter(|l| l.trim_start().starts_with("I:")).last().expect("ebur128 요약");
+                line.split_whitespace().nth(1).unwrap().parse::<f64>().unwrap()
+            }
+        };
+        let before = integrated(src.clone()).await;
+        let keep = [RangeMs { start_ms: 0, end_ms: 2500 }, RangeMs { start_ms: 3500, end_ms: 6000 }];
+        let plain = ExportSpec { mode: "encode".into(), out_rel: "a.loud.mp4".into(), loudnorm: true, duration_ms: 6000, ..base_spec() };
+        let cut = ExportSpec { loudnorm: true, duration_ms: 6000, ..cut_spec() };
+        for (name, spec, doc) in [("plain", &plain, DocInputs::default()), ("cut", &cut, cut_in(&keep))] {
+            let out = dir.join(format!("{name}.mp4")).display().to_string();
+            let (code, _, err) = run_capture_bytes(&ffmpeg, &build_export_args(&src, &out, spec, &doc), 120).await.unwrap();
+            assert_eq!(code, 0, "{name}: {}", last_error_line(&err));
+            let after = integrated(out.clone()).await;
+            let (_, rate, _) = run_capture(
+                &probe,
+                &["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=sample_rate", "-of", "csv=p=0", &out],
+                30,
+            )
+            .await
+            .unwrap();
+            println!("{name}: {before:.1} LUFS → {after:.1} LUFS, {}Hz", rate.trim());
+            assert!((after + 16.0).abs() <= 2.0, "{name}: −16 LUFS 근처여야 한다, {after}");
+            assert_eq!(rate.trim(), "48000", "{name}: loudnorm의 192kHz가 새어 나갔다");
+        }
+        assert!(before < -30.0, "원본이 작게 녹음돼 있어야 시험이 된다: {before}");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -3889,14 +3995,24 @@ mod tests {
         assert_eq!(a.last().unwrap(), "pipe:1");
     }
 
-    /// 버킷별 절대 피크 → 최대값 정규화. 샘플이 버킷보다 적어도 나눗셈이 0으로 가지 않는다.
+    fn pcm_of(samples: &[i16]) -> Vec<u8> {
+        samples.iter().flat_map(|s| s.to_le_bytes()).collect()
+    }
+
+    /// 버킷별 절대 피크 → +12dB 상한 증폭 → -48~0 dBFS 눈금. 샘플이 버킷보다 적어도 나눗셈이 0으로 가지 않는다.
     #[test]
-    fn peaks_normalise_and_handle_short_input() {
-        // 4샘플 · 2버킷 → [max(1000,-2000), max(500,4000)] → [2000,4000] → [0.5, 1.0]
-        let pcm: Vec<u8> = [1000i16, -2000, 500, 4000].iter().flat_map(|s| s.to_le_bytes()).collect();
-        assert_eq!(reduce_peaks(&pcm, 2), vec![0.5, 1.0]);
+    fn peaks_use_db_scale_with_gain_cap() {
+        let close = |got: f32, want: f32| assert!((got - want).abs() < 0.01, "got {got}, want {want}");
+        // 만점 소스: 증폭 없음. 최대 피크 = 0dBFS = 1.0, 그 절반(−6dB) = (48−6.02)/48.
+        let full = reduce_peaks(&pcm_of(&[32767, -16384]), 2);
+        close(full[0], 1.0);
+        close(full[1], 0.875);
+        // 거의 무음인 소스(최대 100 ≈ −50.3dBFS)는 +12dB까지만 키운다 → −38.3dB → 0.20. 최대값 정규화였다면 1.0.
+        close(reduce_peaks(&pcm_of(&[100]), 1)[0], 0.20);
+        // 상한 안쪽이면 최대 피크가 꼭대기에 닿는다(−9dB 소스 → 0dB).
+        close(reduce_peaks(&pcm_of(&[11_600, 1]), 2)[0], 1.0);
         // 샘플 1개 · 버킷 4개 — 패닉·0나눗셈 없이 첫 칸만 채운다.
-        assert_eq!(reduce_peaks(&100i16.to_le_bytes(), 4), vec![1.0, 0.0, 0.0, 0.0]);
+        assert_eq!(reduce_peaks(&pcm_of(&[30_000]), 4)[1..], [0.0, 0.0, 0.0]);
         // 완전 무음은 정규화 분모가 0 — NaN을 만들지 않는다.
         assert_eq!(reduce_peaks(&[0, 0, 0, 0], 2), vec![0.0, 0.0]);
         // 오디오 없음(빈 PCM)은 빈 벡터 = 프론트의 "파형 없음" 계약.

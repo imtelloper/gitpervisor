@@ -172,6 +172,7 @@ export const ExportPanel = memo(function ExportPanel({
   const [maxHeight, setMaxHeight] = useState<"" | "1080" | "720" | "480">("");
   const [speed, setSpeed] = useState(1);
   const [removeAudio, setRemoveAudio] = useState(false);
+  const [loudnorm, setLoudnorm] = useState(false);
   const [name, setName] = useState("");
   const nameEditedRef = useRef(false);
   const [jobId, setJobId] = useState<string | null>(null);
@@ -244,8 +245,11 @@ export const ExportPanel = memo(function ExportPanel({
   const subsOn = subsChoice !== "none" && !!capDoc && subsBlock === null;
   const burnOn = subsOn && subsChoice === "burn";
 
+  // 음량 맞추기는 소리를 내보내는 출력(mp4·오디오 추출)에서만 — gif·오디오 제거엔 걸 곳이 없다.
+  const loudnormOn = loudnorm && !!probe?.hasAudio && format !== "gif" && !(format === "mp4" && removeAudio);
   // 재인코딩이 강제되는 조건 — copy 선택과 겹치면 안내 후 자동 encode.
   const forcesEncode =
+    loudnormOn ||
     format === "gif" ||
     speed !== 1 ||
     !!crop ||
@@ -253,7 +257,7 @@ export const ExportPanel = memo(function ExportPanel({
     cutOn ||
     burnOn ||
     (format === "mp4" && maxHeight !== "");
-  const aud = audioPlan(probe?.acodec ?? null, speed !== 1);
+  const aud = audioPlan(probe?.acodec ?? null, speed !== 1 || loudnormOn);
   const mode: "copy" | "encode" =
     format === "audio" ? aud.mode : quality === "copy" && !forcesEncode ? "copy" : "encode";
 
@@ -273,10 +277,11 @@ export const ExportPanel = memo(function ExportPanel({
     if (speed !== 1) parts.push(`x${speed}`);
     if (maxHeight) parts.push(`${maxHeight}p`);
     if (removeAudio) parts.push("mute");
+    if (loudnormOn) parts.push("loud");
     // 구간 사본은 시각만으로 원본과 이름이 갈린다 — "copy"·"edit" 꼬리는 둘 다 없을 때만.
     if (parts.length === 0 && !span) parts.push(mode === "encode" ? "edit" : "copy");
     return `${stem}${span}${parts.length ? `.${parts.join(".")}` : ""}.mp4`;
-  }, [path, format, range, cutOn, subsOn, crop, masks.length, maskKind, speed, maxHeight, removeAudio, mode, aud.ext]);
+  }, [path, format, range, cutOn, subsOn, crop, masks.length, maskKind, speed, maxHeight, removeAudio, loudnormOn, mode, aud.ext]);
 
   useEffect(() => {
     if (!nameEditedRef.current) setName(suggested);
@@ -366,6 +371,7 @@ export const ExportPanel = memo(function ExportPanel({
     crf: mode === "encode" && format === "mp4" ? Number(quality === "copy" ? 23 : quality) : null,
     maxHeight: mode === "encode" && format === "mp4" && maxHeight ? Number(maxHeight) : null,
     removeAudio: format === "mp4" && removeAudio,
+    loudnorm: loudnormOn,
     durationMs: probe.durationMs,
     hasAudio: probe.hasAudio,
     captionCut: cutOn,
@@ -858,7 +864,7 @@ export const ExportPanel = memo(function ExportPanel({
               {/* 분할은 위 설정을 하나도 쓰지 않는다(videoSplit.ts:227-240이 전부 하드코딩).
                   컨트롤이 활성인 채로 무시하면 사용자는 적용된 줄 안다 — 그래서 명시한다. */}
               {ticks.length > 0 &&
-                (range || speed !== 1 || maxHeight !== "" || crop || removeAudio || masks.length > 0 || cutOn || subsOn) && (
+                (range || speed !== 1 || maxHeight !== "" || crop || removeAudio || loudnormOn || masks.length > 0 || cutOn || subsOn) && (
                   <div className="text-[11px] text-warn">{splitScopeWarn}</div>
                 )}
               <button
@@ -890,6 +896,17 @@ export const ExportPanel = memo(function ExportPanel({
             ) : (
               <div className="text-[11px] text-fg-dim">{t.audioTrackInfo(probe.acodec, format !== "mp4")}</div>
             )}
+            <label className="flex items-center gap-1.5">
+              <input
+                type="checkbox"
+                checked={loudnorm}
+                onChange={(e) => setLoudnorm(e.target.checked)}
+                disabled={busy || format === "gif" || !probe.hasAudio || (format === "mp4" && removeAudio)}
+                className="accent-accent"
+              />
+              {t.loudnorm}
+            </label>
+            {loudnormOn && <div className="text-[11px] text-fg-dim">{t.loudnormNote}</div>}
             {/* 오디오 추출은 재인코딩 경고에서 제외돼 있어, 배속이 스트림 복사를 깨는 것을 아무도 안 알렸다. */}
             {format === "audio" && speed !== 1 && (
               <div className="text-[11px] text-warn">{t.audioSpeedEncodes(aud.ext)}</div>

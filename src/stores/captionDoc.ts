@@ -114,6 +114,8 @@ interface CaptionDocState {
   overwriteConflict(key: string): Promise<void>;
   transcribe(projectId: string, relPath: string, opts: TranscribeOpts): Promise<void>;
   cancelTranscribe(key: string): void;
+  /** SRT·VTT 파일(절대 경로)로 문서를 만든다 — 재전사처럼 지금 문서를 덮는다(.bak 한 세대). 실패는 던진다(호출부 토스트). */
+  importSubs(projectId: string, relPath: string, subPath: string): Promise<void>;
   /** 빠졌거나 원문이 바뀐 cue만 `lang`으로 번역한다(기본 LLM 모델). ctx = 설정 `llmContext`. */
   translate(key: string, lang: string, ctx: number): Promise<void>;
   /** 진행 중인 LLM 요청까지 끊는다(llm_cancel). 번역한 배치는 남는다. */
@@ -398,6 +400,16 @@ export const useCaptionDoc = create<CaptionDocState>((set, get) => {
               error: errorMessage(err),
             }),
         );
+    },
+
+    importSubs: async (projectId, relPath, subPath) => {
+      attachChanged();
+      const key = ensureEntry(projectId, relPath);
+      // 전사·번역 중엔 막는다(버튼도 막혀 있다) — 끝나는 쪽이 가져온 문서를 덮거나 사라진 cue에 번역을 붙인다.
+      if (get().entries[key].job || get().entries[key].translate) return;
+      // 대기 중인 자동 저장을 먼저 보낸다 — 가져오기가 올린 rev 뒤에 옛 base_rev 저장이 도착하면 CONFLICT다.
+      await get().flush(key);
+      applyLoaded(key, await ipc.captionImportSubs(projectId, relPath, subPath));
     },
 
     cancelTranscribe: (key) => {

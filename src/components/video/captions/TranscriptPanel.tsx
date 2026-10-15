@@ -7,6 +7,7 @@
 //   classList로만 강조한다(React 렌더 0회). cue 행은 객체 동일성으로 memo.
 // - 문서·자동 저장·전사 잡·되돌리기는 captionDoc 스토어가 든다 — 이 패널은 토글·파일 전환(key={path})에 언마운트된다.
 import { useQueryClient } from "@tanstack/react-query";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   Download,
   EyeOff,
@@ -20,6 +21,7 @@ import {
   Search,
   Timer,
   Undo2,
+  Upload,
   X,
 } from "lucide-react";
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -542,6 +544,75 @@ function TranscribeForm({
         {label}
       </button>
     </div>
+  );
+}
+
+// ══════════════════════════ 자막 파일 가져오기 ══════════════════════════
+
+/** SRT·VTT 파일 고르기 → (문서가 있으면 확인) → 문서로. 백엔드가 인코딩을 판정하고 못 읽으면 거절한다. */
+function ImportSubsButton({
+  projectId,
+  path,
+  hasDoc,
+}: {
+  projectId: string;
+  path: string;
+  hasDoc: boolean;
+}) {
+  const tx = useMessages().captions.transcript;
+  const pushToast = useUi((s) => s.pushToast);
+  const askConfirm = useUi((s) => s.askConfirm);
+  const [busy, setBusy] = useState(false);
+
+  const importFrom = async (subPath: string) => {
+    setBusy(true);
+    try {
+      await useCaptionDoc.getState().importSubs(projectId, path, subPath);
+      const n = useCaptionDoc.getState().entries[captionKey(projectId, path)]?.doc?.cues.length ?? 0;
+      pushToast("success", tx.importSubsDone(n));
+    } catch (err) {
+      pushToast("error", tx.importSubsFailed(errorMessage(err)));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const pick = async () => {
+    let picked: string | string[] | null;
+    try {
+      picked = await open({
+        title: tx.importSubsDialogTitle,
+        multiple: false,
+        directory: false,
+        filters: [{ name: tx.importSubsFilter, extensions: ["srt", "vtt"] }],
+      });
+    } catch (err) {
+      pushToast("error", tx.importSubsFailed(errorMessage(err)));
+      return;
+    }
+    if (typeof picked !== "string") return;
+    if (hasDoc)
+      askConfirm({
+        title: tx.importSubs,
+        message: tx.importSubsConfirm,
+        confirmLabel: tx.importSubs,
+        danger: true,
+        onConfirm: () => void importFrom(picked),
+      });
+    else void importFrom(picked);
+  };
+
+  return (
+    <button
+      data-gpv="caption-import-subs"
+      onClick={() => void pick()}
+      disabled={busy}
+      title={tx.importSubsTitle}
+      className={`${smallBtn} flex w-full items-center justify-center gap-1 py-1`}
+    >
+      {busy ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />}
+      {tx.importSubs}
+    </button>
   );
 }
 
@@ -1632,6 +1703,9 @@ export const TranscriptPanel = memo(function TranscriptPanel({
             label={tx.retranscribe}
             onStart={start}
           />
+          <div className="mt-2">
+            <ImportSubsButton projectId={projectId} path={path} hasDoc />
+          </div>
         </div>
       )}
 
@@ -1682,6 +1756,9 @@ export const TranscriptPanel = memo(function TranscriptPanel({
             label={tx.generate}
             onStart={start}
           />
+          <div className="mt-2">
+            <ImportSubsButton projectId={projectId} path={path} hasDoc={false} />
+          </div>
         </div>
       )}
     </div>

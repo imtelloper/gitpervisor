@@ -221,7 +221,8 @@ pub fn parse_whisper_json(bytes: &[u8], vad: &[VadSpan], strict: bool) -> Result
             let (start, chunk) = starts[k];
             // 끝 = 다음 어절 시작, 세그먼트 마지막이면 세그먼트 끝. 어절이 든 VAD 조각 끝을 넘지 않는다 —
             // whisper 세그먼트는 문장 사이 무음을 끼기도 해서(부록 B.1) 그대로 두면 쉼이 앞 어절에 붙는다.
-            // 어절 **끝** 시각은 정답이 없어 재지 못했다(부록 B.5).
+            // 어절 **끝** 시각은 정답이 없어 재지 못했다(부록 B.5) — 조각 안의 쉼은 transcribe.rs가 소리 에너지로
+            // 다시 걷어 낸다(word_energy.rs).
             let mut end = starts.get(k + 1).map_or(seg_to, |n| n.0);
             if let Some(c) = chunk {
                 end = end.min(vad[c].orig_end);
