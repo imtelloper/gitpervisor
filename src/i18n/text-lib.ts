@@ -134,8 +134,7 @@ const ko = {
     logoSet: "로고를 지정했습니다",
     logoCleared: "로고를 해제했습니다",
   },
-  // lib/ipc.ts. 영어에도 "timed out"을 남긴다 — 타임아웃을 "시간 초과"·"timed out" 문구로 가려내는 관례
-  // (queries keepLastGoodStatuses)와 맞춘다. 한국어 "IPC 응답 시간 초과"는 e2e 48 이 접두어로 본다.
+  // lib/ipc.ts. 한국어 "IPC 응답 시간 초과"는 e2e 48 이 접두어로 본다.
   ipcTimeout: (cmd: string) => `IPC 응답 시간 초과: ${cmd}`,
   ipcMutatingTimeout: (cmd: string) =>
     `${cmd} 응답을 받지 못했습니다 — 실제 결과는 새로고침된 상태로 확인하세요`,

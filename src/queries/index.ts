@@ -365,8 +365,7 @@ function keepLastGoodStatuses(
   const prevById = new Map(prev.map((s) => [s.projectId, s]));
   const merged = next.map((s) => {
     const old = prevById.get(s.projectId);
-    // Rust 가 타임아웃 문구를 현재 언어로 만든다(text_git_net::git_timed_out) — 두 언어를 다 본다.
-    const timedOut = s.error?.includes("시간 초과") || s.error?.includes("timed out"); // i18n-ok: Rust 오류와 비교(표시 안 함)
+    const timedOut = s.errorCode === "TIMEOUT";
     if (timedOut && old && !old.error) return old;
     return s;
   });

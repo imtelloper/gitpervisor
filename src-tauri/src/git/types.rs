@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::error::ErrorCode;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Project {
@@ -61,6 +63,9 @@ pub struct RepoStatus {
     pub conflicted: Vec<FileChange>,
     /// 경로 소실·git 실패 등 — 값이 있으면 사이드바에서 회색(오류) 상태로 표시한다.
     pub error: Option<String>,
+    /// `error` 의 분류. 프론트는 문구가 아니라 이 값으로 분기한다 — 번역문을 비교하면
+    /// 문구를 고치는 순간 타임아웃 판별(keepLastGoodStatuses)이 조용히 꺼진다.
+    pub error_code: Option<ErrorCode>,
     /// 이 status가 임베디드(중첩) 저장소면 그 부모 프로젝트 id. 최상위 프로젝트는 None.
     /// 프론트는 배치에서 parent_id == 선택 프로젝트 인 항목을 Changes 패널에 별도 섹션으로 렌더한다.
     pub parent_id: Option<String>,
@@ -89,6 +94,7 @@ impl RepoStatus {
             untracked: Vec::new(),
             conflicted: Vec::new(),
             error: None,
+            error_code: None,
             parent_id: None,
             rel_path: None,
             nested_changes: 0,
@@ -97,9 +103,10 @@ impl RepoStatus {
         }
     }
 
-    pub fn with_error(project_id: &str, message: impl Into<String>) -> Self {
+    pub fn with_error(project_id: &str, code: ErrorCode, message: impl Into<String>) -> Self {
         let mut status = Self::empty(project_id);
         status.error = Some(message.into());
+        status.error_code = Some(code);
         status
     }
 }
@@ -383,4 +390,20 @@ pub struct DirEntry {
     pub is_dir: bool,
     /// .gitignore에 의해 무시되는 항목 (.git 포함) — UI에서 흐리게 표시
     pub is_ignored: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// TS 는 `errorCode === "TIMEOUT"` 로 비교한다. 직렬화 이름이 어긋나면 양쪽 다 컴파일되고
+    /// 타임아웃 판별만 조용히 꺼지므로 이름 계약을 여기서 못 박는다.
+    #[test]
+    fn repo_status_error_code_serializes_for_ts() {
+        let v = serde_json::to_value(RepoStatus::with_error("p", ErrorCode::Timeout, "x")).unwrap();
+        assert_eq!(v["errorCode"], "TIMEOUT");
+        assert_eq!(v["error"], "x");
+        let ok = serde_json::to_value(RepoStatus::empty("p")).unwrap();
+        assert!(ok["errorCode"].is_null());
+    }
 }

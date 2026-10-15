@@ -51,6 +51,8 @@ export interface RepoStatus {
   untracked: FileChange[];
   conflicted: FileChange[];
   error: string | null;
+  /** `error` 의 분류 — 분기는 문구가 아니라 이 값으로 한다. */
+  errorCode: ErrorCode | null;
   /** 임베디드(중첩) 저장소면 부모 프로젝트 id — Changes 패널이 이 항목을 별도 섹션으로 렌더. */
   parentId: string | null;
   /** 임베디드 저장소의 부모 루트 기준 상대 경로(예: "APPLICATION/nexus-application"). */
