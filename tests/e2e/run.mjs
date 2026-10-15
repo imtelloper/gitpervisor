@@ -1,11 +1,11 @@
 // gitpervisor 전체 기능 E2E 러너.
 //
-// 실행 중인 디버그 빌드(원격 디버깅 포트 9222)에 CDP 로 붙어, 격리된 임시 git 픽스처에서
+// 실행 중인 디버그 빌드(원격 디버깅 포트 GPV_E2E_PORT)에 CDP 로 붙어, 격리된 임시 git 픽스처에서
 // 모든 Tauri 커맨드(~60개)를 직접 invoke 해 기능을 검증한다. 사용자의 실제 프로젝트/설정/
 // DB 연결/메모는 건드리지 않으며(스냅샷 후 복원), 추가한 픽스처는 끝나면 전부 정리한다.
 //
-//   사용법:  npm run test:e2e          (앱이 'npm run tauri dev' 로 떠 있어야 함)
-//            GPV_E2E_PORT=9222 node tests/e2e/run.mjs
+//   사용법:  npm run test:e2e          (= shard.mjs — 새 .dev 앱을 직접 빌드·실행해서 붙는다)
+//            GPV_E2E_PORT=29222 node tests/e2e/run.mjs   (이미 떠 있는 내 디버그 앱에 붙을 때 — 포트 필수)
 //
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -94,7 +94,8 @@ const SUITES = [
   "./suites/31-capture.mjs",
 ];
 
-/** 스위트별 소요 시간표(초) — `GPV_E2E_WRITE_TIMES=1` 로 전체 회차를 돌리면 갱신된다.
+/** 스위트별 소요 시간표(초) — 전체 샤드 회차 로그의 스위트별 초를 보고 **손으로** 갱신한다
+ *  (자동 기록기는 없다 — 실패·느린 회차의 시간까지 섞여 표가 오염되기 때문).
  *  샤드 분배의 **유일한 목적**은 균형이다. 표가 낡아도 회차는 정상이고 분배만 나빠진다. */
 const TIMES_FILE = new URL("./suite-times.json", import.meta.url);
 /** 표에 없는 스위트의 가정값(초). 새로 추가된 스위트가 한 샤드에 몰리지 않을 정도면 된다. */
@@ -446,6 +447,14 @@ async function restoreMainWebviewFocus() {
 async function main() {
   console.log(`\x1b[1m\x1b[36mgitpervisor E2E\x1b[0m  — gitpervisor 디버그 창 탐색 중...\n`);
 
+  // 포트 없이 붙으면 cdp.mjs 가 포트를 스캔해 **남의 dev 앱**에 픽스처를 심는다(2026-09-16 사고).
+  // 스캔은 bench 같은 수동 도구용으로 남기고, 앱을 바꾸는 러너는 포트를 명시해야만 돈다.
+  if (!process.env.GPV_E2E_PORT) {
+    throw new Error(
+      "GPV_E2E_PORT 가 없습니다 — 스캔으로 붙으면 남의 dev 앱에 픽스처를 심는다(2026-09-16). " +
+        "새 앱으로: node tests/e2e/shard.mjs 1 · 떠 있는 내 앱으로: GPV_E2E_PORT=<포트> node tests/e2e/run.mjs",
+    );
+  }
   // 연결 + 스냅샷 + 픽스처 셋업
   cdp = await connect();
   console.log(`  연결됨: ${cdp.pageUrl}  (CDP ${cdp.cdpPort})`);
@@ -538,6 +547,28 @@ async function main() {
     console.log(
       `  샤드 ${shard.index}/${shard.total}: ${suites.length}개 스위트 · 예상 ${shard.estimate.toFixed(0)}s\n`,
     );
+  }
+  // 러너 자체 검사 — 둘 다 "아무것도 안 돌았는데 ALL GREEN" 을 만드는 구멍이다. 샤드 N개가 같은 실패를
+  // N번 찍지 않게 1번(또는 비샤드)에서만 본다. "이 샤드에 0개 배정"으로 판정하지 않는 이유: ONLY 와
+  // 여러 샤드를 같이 쓰면 빈 샤드가 정상이다.
+  if (!shard || shard.index === 1) {
+    const onDisk = readdirSync(new URL("./suites/", import.meta.url))
+      .filter((n) => n.endsWith(".mjs"))
+      .map((n) => `./suites/${n}`);
+    const unregistered = onDisk.filter((p) => !SUITES.includes(p));
+    const unmatched = only.filter((o) => !SUITES.some((p) => p.includes(`/${o}-`)));
+    report.suite("(러너 자체 검사)");
+    report.check(
+      "suites/ 의 모든 파일이 SUITES 에 등록돼 있다",
+      !unregistered.length,
+      unregistered.length ? `미등록=[${unregistered.join(", ")}] — run.mjs SUITES 에 넣어라` : "",
+    );
+    if (only.length)
+      report.check(
+        "GPV_E2E_ONLY 의 번호가 모두 스위트와 맞는다",
+        !unmatched.length,
+        unmatched.length ? `맞는 스위트 없음=[${unmatched.join(",")}]` : "",
+      );
   }
   for (const path of suites) {
     // import 가 던지면(구문 오류 등) 그 스위트를 **실패로 세고** 다음으로 간다. 예전엔 main 이 통째로

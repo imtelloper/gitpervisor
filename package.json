@@ -21,7 +21,7 @@
     "tauri": "tauri",
     "dev:app": "tauri dev --config src-tauri/tauri.dev.conf.json",
     "build:mac": "npm run tauri build && bash scripts/build-mac-dmg.sh",
-    "test:e2e": "node tests/e2e/run.mjs",
+    "test:e2e": "node tests/e2e/shard.mjs",
     "fetch-tools": "node scripts/fetch-tools.mjs",
     "fetch-lsp": "node scripts/fetch-lsp.mjs"
   },

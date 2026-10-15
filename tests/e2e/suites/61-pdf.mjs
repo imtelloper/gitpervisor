@@ -42,7 +42,7 @@
 //      beforeBuildCommand(npm run build → prebuild)가 dist 와 public/pdfjs 를 새로 만든다 — 아래 누출 grep 대상.
 //   4) src-tauri/target/e2e-prod/debug/gitpervisor.exe 를 띄운다. 데이터 디렉터리가 비어 있어도 러너가
 //      add_project 로 픽스처를 직접 등록한다(run.mjs).
-//   5) GPV_E2E_ONLY=61 node tests/e2e/run.mjs
+//   5) GPV_E2E_PORT=29222 GPV_E2E_ONLY=61 node tests/e2e/run.mjs   (포트 필수 — 러너는 스캔하지 않는다)
 //   끝나면 그 exe 를 끄고 dev 앱을 다시 띄운다.
 import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";

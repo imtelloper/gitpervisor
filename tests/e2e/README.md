@@ -7,14 +7,17 @@
 ## 실행
 
 ```bash
-# 1) 디버그 앱을 띄운다 (CDP 29222 는 debug 빌드에서만 열림 — lib.rs)
-npm run tauri dev
+# 기본: 드라이버가 .dev identifier 로 앱을 직접 빌드·실행하고 샤드마다 데이터를 가른다(앱 3개 병렬)
+npm run test:e2e                              # = node tests/e2e/shard.mjs
+GPV_E2E_ONLY=25 node tests/e2e/shard.mjs 1    # 스위트 하나만, 깨끗한 새 앱 하나에서
 
-# 2) 앱이 뜬 뒤, 다른 터미널에서
-npm run test:e2e
+# 이미 떠 있는 내 디버그 앱(npm run dev:app)에 붙을 때 — 포트를 꼭 준다
+GPV_E2E_PORT=29222 node tests/e2e/run.mjs
 ```
 
-포트를 바꾸려면: `GPV_E2E_PORT=29222 node tests/e2e/run.mjs` (기본 스캔: 29222, 9222~9226, 9333)
+러너(`run.mjs`)는 `GPV_E2E_PORT` 가 없으면 바로 실패한다 — 포트를 스캔하면 남의 dev 앱에 픽스처를
+심을 수 있기 때문이다(2026-09-16). `suites/` 에 파일을 추가하면 `run.mjs` 의 `SUITES` 에도 넣어야 한다 —
+빠뜨리면 러너 자체 검사가 빨갛다.
 
 > 별도 의존성 없음 — Node 18+ 의 내장 `fetch`/`WebSocket` 만 사용합니다.
 > 종료 코드: 전부 통과 시 `0`, 한 건이라도 실패 시 `1` (CI 연동 가능).
