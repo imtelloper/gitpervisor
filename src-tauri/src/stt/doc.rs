@@ -130,6 +130,29 @@ pub struct CaptionDoc {
     /// `CaptionSubs.preset`으로 받는다) — 영상마다 기억할 자리로 문서를 쓴다(설계 9절 76).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style_preset: Option<CaptionStylePreset>,
+    /// 대본 요약(로컬 LLM, 프론트 `captionSummary`) — 백엔드는 읽지 않는다. 여기 선언이 없으면 serde가 저장 때 버린다.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<CaptionSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptionSummary {
+    /// 요약을 쓴 언어(UI 언어).
+    pub lang: String,
+    /// 요약할 때 대본의 해시 — 지금 대본과 다르면 프론트가 "대본이 바뀜"으로 표시한다.
+    pub src: String,
+    pub overview: String,
+    pub points: Vec<String>,
+    pub chapters: Vec<CaptionChapter>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptionChapter {
+    /// 문서 시각(토큰 startMs와 같은 축).
+    pub start_ms: u64,
+    pub title: String,
 }
 
 /// whisper 출력에서 만든 어절 하나(whisper_json.rs → build_doc). `segment`는 whisper 세그먼트 번호 —
@@ -375,6 +398,7 @@ pub fn build_doc(source: DocSource, engine: DocEngine, mut words: Vec<SttWord>) 
         translations: None,
         translation_src: None,
         style_preset: None,
+        summary: None,
     }
 }
 
@@ -630,5 +654,13 @@ pub(crate) mod tests {
         v["translationSrc"] = tr.clone();
         let back: CaptionDoc = serde_json::from_value(v).unwrap();
         assert_eq!(serde_json::to_value(&back).unwrap()["translationSrc"], tr);
+
+        // 요약도 TS 모양 그대로 왕복한다.
+        let sum = serde_json::json!({"lang": "ko", "src": "ab12", "overview": "개요", "points": ["하나"],
+            "chapters": [{"startMs": 1500, "title": "시작"}]});
+        let mut v = serde_json::to_value(&doc).unwrap();
+        v["summary"] = sum.clone();
+        let back: CaptionDoc = serde_json::from_value(v).unwrap();
+        assert_eq!(serde_json::to_value(&back).unwrap()["summary"], sum);
     }
 }

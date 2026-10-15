@@ -12,6 +12,7 @@ import {
   Download,
   EyeOff,
   Languages,
+  ListTree,
   Link2,
   Loader2,
   Redo2,
@@ -76,6 +77,7 @@ import { captionKey, captionReadOnly, useCaptionDoc, type TranscribeOpts } from 
 import { useUi } from "../../../stores/ui";
 import { splitPath, subsOutRel } from "../frameCapture";
 import { fmtTime } from "../VideoPlayer";
+import { SummaryPanel } from "./SummaryPanel";
 import { TranslatePanel } from "./TranslatePanel";
 
 /** 현재 재생 단어 표시 — classList로만 붙였다 뗀다. 선택(bg)·찾기(bg)와 겹쳐도 보이게 배경을 쓰지 않는다. */
@@ -781,7 +783,7 @@ export const TranscriptPanel = memo(function TranscriptPanel({
   const [repl, setRepl] = useState("");
   /** 이동한 찾은 곳 번호. -1 = 아직 안 옮겼다(Enter가 첫 결과로 간다). */
   const [hit, setHit] = useState(-1);
-  const [popup, setPopup] = useState<"none" | "export" | "form" | "silence" | "translate">("none");
+  const [popup, setPopup] = useState<"none" | "export" | "form" | "silence" | "translate" | "summary">("none");
   const [fmt, setFmt] = useState<SubFormat>("srt");
   const [subsTl, setSubsTl] = useState<SubTimeline>("source");
   const [subsText, setSubsText] = useState<SubText>("caption");
@@ -1362,6 +1364,26 @@ export const TranscriptPanel = memo(function TranscriptPanel({
               <Languages size={13} />
             </button>
             <button
+              data-gpv="summary-toggle"
+              onClick={() => setPopup((p) => (p === "summary" ? "none" : "summary"))}
+              title={
+                entry?.summarize
+                  ? msg.captions.summary.toggleBusy
+                  : entry?.summaryError
+                    ? msg.captions.summary.toggleError(entry.summaryError)
+                    : msg.captions.summary.toggle
+              }
+              className={`${iconBtn} ${popup === "summary" ? "bg-raised" : ""} ${
+                popup === "summary" || entry?.summarize || doc.summary
+                  ? "text-accent"
+                  : entry?.summaryError
+                    ? "text-warn"
+                    : ""
+              }`}
+            >
+              <ListTree size={13} />
+            </button>
+            <button
               data-gpv="subs-export-toggle"
               onClick={() => setPopup((p) => (p === "export" ? "none" : "export"))}
               disabled={!!job}
@@ -1689,6 +1711,18 @@ export const TranscriptPanel = memo(function TranscriptPanel({
           lang={transLang}
           onLang={setTransPick}
           blocked={readOnly ? tx.translateBlockedReadOnly : job ? tx.translateBlockedBusy : null}
+        />
+      )}
+
+      {/* 대본 요약 */}
+      {popup === "summary" && doc && (
+        <SummaryPanel
+          capKey={key}
+          doc={doc}
+          onSeek={onSeekDocMs}
+          blocked={
+            readOnly ? msg.captions.summary.blockedReadOnly : job ? msg.captions.summary.blockedBusy : null
+          }
         />
       )}
 

@@ -12,7 +12,9 @@
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 
+import { currentLocale } from "../i18n/locale-state";
 import { currentMessages } from "../i18n/ui-language";
+import { summarizeCaptionDoc } from "../lib/captionSummary";
 import {
   captionTranslatePending,
   setCaptionTranslations,
@@ -56,6 +58,13 @@ export interface CaptionTranslateJob {
   status: string | null;
 }
 
+/** 요약 잡 — done/total은 LLM 호출 단계(긴 대본은 구간 메모 N번 + 마지막 1번). */
+export interface CaptionSummaryJob {
+  done: number;
+  total: number;
+  status: string | null;
+}
+
 export interface CaptionEntry {
   projectId: string;
   relPath: string;
@@ -79,6 +88,9 @@ export interface CaptionEntry {
   translate: CaptionTranslateJob | null;
   /** 번역이 멈춘 이유 또는 끝났지만 못 한 줄의 안내. 취소면 null. */
   translateError: string | null;
+  summarize: CaptionSummaryJob | null;
+  /** 요약이 멈춘 이유. 취소면 null. */
+  summaryError: string | null;
 }
 
 export interface TranscribeOpts {
@@ -120,6 +132,9 @@ interface CaptionDocState {
   translate(key: string, lang: string, ctx: number): Promise<void>;
   /** 진행 중인 LLM 요청까지 끊는다(llm_cancel). 번역한 배치는 남는다. */
   cancelTranslate(key: string): void;
+  /** 대본을 UI 언어로 요약해 `doc.summary`에 쓴다(기본 LLM 모델, 되돌리기 한 단계). ctx = 설정 `llmContext`. */
+  summarize(key: string, ctx: number): Promise<void>;
+  cancelSummarize(key: string): void;
 }
 
 const blank = (projectId: string, relPath: string): CaptionEntry => ({
@@ -141,10 +156,13 @@ const blank = (projectId: string, relPath: string): CaptionEntry => ({
   jobError: null,
   translate: null,
   translateError: null,
+  summarize: null,
+  summaryError: null,
 });
 
 const saveTimers = new Map<string, number>();
 const translateAborts = new Map<string, AbortController>();
+const summaryAborts = new Map<string, AbortController>();
 /** 저장 중에 또 저장이 요청된 키 — 끝난 뒤 한 번 더 돈다. */
 const saveQueued = new Set<string>();
 
@@ -480,6 +498,53 @@ export const useCaptionDoc = create<CaptionDocState>((set, get) => {
 
     cancelTranslate: (key) => {
       translateAborts.get(key)?.abort();
+    },
+
+    summarize: async (key, ctx) => {
+      const e = get().entries[key];
+      if (!e?.doc || e.job || e.summarize || captionReadOnly(e.doc)) return;
+      const ac = new AbortController();
+      summaryAborts.set(key, ac);
+      patch(key, { summarize: { done: 0, total: 1, status: null }, summaryError: null });
+      const bump = (p: Partial<CaptionSummaryJob>) => {
+        const j = get().entries[key]?.summarize;
+        if (j) patch(key, { summarize: { ...j, ...p } });
+      };
+      const clearStatus = () => {
+        if (get().entries[key]?.summarize?.status) bump({ status: null });
+      };
+      const chat: CaptionChat = (messages, o) =>
+        chatWithBusyRetry(messages, clearStatus, {
+          ...o,
+          signal: ac.signal,
+          onProgress: (_phase, message) => bump({ status: message ?? null }),
+          onBusy: () => bump({ status: currentMessages().captions.summary.waitingBusy }),
+        });
+      try {
+        const summary = await summarizeCaptionDoc({
+          doc: e.doc,
+          lang: currentLocale(),
+          ctx,
+          chat,
+          signal: ac.signal,
+          onProgress: (p) => bump({ ...p, status: null }),
+        });
+        if (summary && !get().edit(key, (d) => ({ ...d, summary })))
+          throw new Error(currentMessages().captions.summary.docLocked);
+        patch(key, { summarize: null });
+      } catch (err) {
+        const cancelled = ac.signal.aborted || (isIpcError(err) && err.code === "CANCELLED");
+        patch(key, {
+          summarize: null,
+          summaryError: cancelled ? null : currentMessages().captions.summary.failed(errorMessage(err)),
+        });
+      } finally {
+        summaryAborts.delete(key);
+      }
+    },
+
+    cancelSummarize: (key) => {
+      summaryAborts.get(key)?.abort();
     },
   };
 });

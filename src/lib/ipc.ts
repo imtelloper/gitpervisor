@@ -1427,6 +1427,16 @@ export const ipc = {
   // 새 폴더 생성 (트리 컨텍스트 메뉴). 재시도 금지.
   createDir: (projectId: string, relPath: string) =>
     callMutating<void>("create_dir", { projectId, relPath }),
+  // 앱 밖에서 끌어 놓은 파일 복사(tree_import.rs) — 시작(임시 파일)·조각(raw 본문)·마무리(rename)·취소. 재시도 금지.
+  // 이미 있는 이름이면 begin 이 ALREADY_EXISTS.
+  treeImportBegin: (projectId: string, relPath: string, size: number, overwrite: boolean) =>
+    callMutating<string>("tree_import_begin", { projectId, relPath, size, overwrite }),
+  treeImportChunk: (uploadId: string, offset: number, bytes: Uint8Array) =>
+    invoke<void>("tree_import_chunk", bytes, {
+      headers: { "x-gpv-upload": uploadId, "x-gpv-offset": String(offset) },
+    }),
+  treeImportFinish: (uploadId: string) => callMutating<void>("tree_import_finish", { uploadId }),
+  treeImportAbort: (uploadId: string) => callMutating<void>("tree_import_abort", { uploadId }),
   // 새 파일 생성 (빈 파일, 임의 확장자). 같은 이름이 있으면 ALREADY_EXISTS. 재시도 금지.
   createFile: (projectId: string, relPath: string) =>
     callMutating<void>("create_file", { projectId, relPath }),
@@ -2320,6 +2330,19 @@ export interface CaptionDoc {
   /** 자막 스타일 — 미리보기 오버레이와 번인 기본값(없으면 basic). 재전사해도 남는다. 백엔드는 번인 때 이 값이 아니라
    *  `CaptionSubsSpec.preset`을 쓴다. */
   stylePreset?: CaptionStylePreset;
+  /** 대본 요약(로컬 LLM, `captionSummary`). 백엔드는 읽지 않는다. */
+  summary?: CaptionSummary;
+}
+
+export interface CaptionSummary {
+  /** 요약을 쓴 언어(UI 언어). */
+  lang: string;
+  /** 요약할 때 대본의 해시(`captionSummarySrc`) — 지금과 다르면 "대본이 바뀜". */
+  src: string;
+  overview: string;
+  points: string[];
+  /** startMs = 문서 시각(토큰 startMs와 같은 축). */
+  chapters: { startMs: number; title: string }[];
 }
 
 export interface RangeMs {
