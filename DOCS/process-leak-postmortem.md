@@ -300,7 +300,7 @@ fn terminate_session(pid: i32) {
 
 **동시에 락 순서를 고친다** — 현재 `close_session`(`:240`)은 `if let Some(session) = state.terminals.lock().unwrap().remove(...)` 라 guard가 본문 끝까지 살아 최대 200ms 블록하는 kill을 전역 락 아래에서 돌린다. `let session = ...remove(); if let Some(session) = session {` 로 분리하고, kill은 별도 스레드로 던진다. `kill_all`도 drain 후 락을 놓고 병렬로.
 
-**리스크:** `libc` 크레이트 신규 의존(현재 0건). `/proc` 순회는 리눅스 전용 — macOS는 `killpg`만, Windows는 Job Object. sid 수집 중 PID 재사용 레이스 → 수집 직후 즉시 시그널을 보내고, `/proc/<p>/stat` 재확인으로 완화.
+**리스크:** `libc` 크레이트 신규 의존(현재 0건). `/proc` 순회는 리눅스 전용 — macOS는 `killpg`만, Windows는 Job Object. sid 수집 중 PID 재사용 레이스 → 수집 직후 즉시 시그널을 보낸다. **`/proc/<p>/stat` 재확인은 구현하지 않았다**(2026-10-15 확인) — 스냅샷과 마지막 SIGKILL 사이가 ≤300ms 이고 커널은 쓰이는 pgid·sid 번호를 재할당하지 않으므로 그 창에서 PID 공간이 한 바퀴 돌아야 오발이 난다(`DOCS/rea-takeaways-design.md` 보류 F).
 
 #### P0-2. 리더 스레드가 EOF에 목매지 않게 한다
 **파일:** `src-tauri/src/commands/terminal.rs:119-143`
