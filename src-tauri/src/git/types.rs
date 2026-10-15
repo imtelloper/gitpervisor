@@ -318,6 +318,13 @@ pub struct Settings {
     /// 즐겨찾기 폴더 (태스크 66). **이 목록이 곧 `commands/favorites.rs` 의 허용 루트다** —
     /// 등록되지 않은 경로는 읽기·썸네일·열기가 전부 거부된다. 비어 있으면 폴더 창을 열 수 없다.
     pub favorite_folders: Vec<FavoriteFolder>,
+    // ---- 로컬 MCP 서버 (DOCS/mcp-server-design.md §8) ----
+    /// 기본 꺼짐 — 켜면 `127.0.0.1:<mcp_port>/mcp`에서 읽기 전용 도구를 연다(`mcp.rs`).
+    pub mcp_enabled: bool,
+    /// 클라이언트 등록 명령에 박히므로 고정 포트다. dev 앱과 둘 다 켜려면 서로 다르게.
+    pub mcp_port: u16,
+    /// Bearer 토큰 — 켤 때 프런트가 만든다. 비어 있으면 서버를 띄우지 않는다(§4).
+    pub mcp_token: String,
 }
 
 impl Default for Settings {
@@ -365,6 +372,9 @@ impl Default for Settings {
             stt_model: "turbo-q5".to_string(),
             stt_language: "auto".to_string(),
             favorite_folders: Vec::new(),
+            mcp_enabled: false,
+            mcp_port: 47820,
+            mcp_token: String::new(),
         }
     }
 }

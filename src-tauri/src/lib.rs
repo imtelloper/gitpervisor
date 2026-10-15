@@ -10,6 +10,7 @@ mod health;
 mod i18n;
 mod llm;
 mod lsp;
+mod mcp;
 mod monitor;
 mod notifications;
 mod proc_icons;
@@ -1235,6 +1236,8 @@ pub fn run() {
             let reports = state::load_reports(app.handle());
             // 저장된 git 경로를 부팅 시 적용 (이후 set_settings로 갱신)
             git::runner::set_git_override(settings.git_path.as_ref().map(PathBuf::from));
+            // 바인드만 하고 accept는 자기 스레드라 setup을 막지 않는다. 기본 꺼짐(DOCS/mcp-server-design.md).
+            mcp::apply(app.handle(), &settings);
             app.manage(AppState::new(projects.clone(), settings, notes, reports));
             // LSP 유휴 서버 리퍼 — 10분 방치된 언어 서버 종료(태스크 17 §3.4).
             commands::lsp_spawn_idle_reaper(app.handle().clone());
@@ -1291,6 +1294,7 @@ pub fn run() {
             commands::get_settings,
             commands::set_settings,
             commands::ui_language_resolved,
+            mcp::mcp_status,
             commands::open_in,
             commands::run_executable,
             commands::preview_local_url,

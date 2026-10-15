@@ -126,6 +126,10 @@ export const SETTINGS_INDEX: SettingIndexEntry[] = [
   { category: "ai", key: "sttModel" },
   { category: "ai", key: "sttLanguage" },
   { category: "ai", key: null, id: "sttRuntimeDownload" },
+  // 로컬 MCP 서버 — AI 섹션의 소제목.
+  { category: "ai", key: "mcpEnabled" },
+  { category: "ai", key: "mcpPort", parentToggle: "mcpEnabled" },
+  { category: "ai", key: "mcpToken", parentToggle: "mcpEnabled" },
   // 업데이트 (즉시 액션 — key null)
   { category: "update", key: null, id: "appUpdate" },
   { category: "update", key: null, id: "autoUpdateCheck" },

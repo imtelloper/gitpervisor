@@ -308,6 +308,17 @@ export interface Settings {
   /** 즐겨찾기 폴더 (태스크 66). **이 목록이 곧 백엔드의 허용 루트다** — `fav_*` 커맨드는 여기
    *  등록된 폴더 아래가 아니면 거부한다. 비어 있으면 폴더 창을 열 수 있는 경로가 없다. */
   favoriteFolders: FavoriteFolder[];
+  // 로컬 MCP 서버 (DOCS/mcp-server-design.md — mcp.rs)
+  mcpEnabled: boolean; // 기본 false
+  mcpPort: number; // 기본 47820 — 클라이언트 등록 명령에 박힌다
+  mcpToken: string; // Bearer 토큰 — 켤 때 McpSection 이 만든다, 비면 서버가 안 뜬다
+}
+
+/** 저장된 설정 기준의 MCP 서버 상태 — 폼의 미저장 값과 다를 수 있다. */
+export interface McpStatus {
+  running: boolean;
+  port: number | null;
+  error: string | null; // 마지막 시작 실패(포트 사용 중 등)의 OS 메시지
 }
 
 /** 즐겨찾기 폴더 한 칸 — `path`는 절대경로, `name`은 드롭다운 표시용(기본 = 폴더명). */
@@ -1360,6 +1371,7 @@ export const ipc = {
   getSettings: () => call<Settings>("get_settings"),
   /** 지금 UI 언어 — 설정이 "system"이면 Rust가 판정한 OS 표시 언어. 프런트는 이 값만 쓴다. */
   uiLanguageResolved: () => call<UiLocale>("ui_language_resolved"),
+  mcpStatus: () => call<McpStatus>("mcp_status", {}, { lane: "background", attempts: 1 }),
   setSettings: (settings: Settings) =>
     callMutating<void>("set_settings", { settings }),
   openIn: (projectId: string, target: OpenTarget) =>

@@ -28,6 +28,7 @@ pub fn set_settings(
     runner::set_git_override(settings.git_path.as_ref().map(PathBuf::from));
     *state.settings.write().unwrap_or_else(|e| e.into_inner()) = settings.clone();
     state::save_settings(&app, &settings)?;
+    crate::mcp::apply(&app, &settings);
     // 아래 이벤트를 받은 창들이 `ui_language_resolved`를 다시 묻는다 — 그 전에 걸어 둬야 새 값을 받는다.
     let before = crate::i18n::lang();
     if crate::i18n::apply_setting(&settings.ui_language) != before {

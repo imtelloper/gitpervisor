@@ -224,11 +224,68 @@ pub struct TerminalSession {
     /// 다시 실려 최악 조합이 된다. Raw면 1KB 미만은 지금처럼 eval 1홉, 그 이상은 fetch로
     /// **ArrayBuffer 그대로** 간다 — JSON 직렬화·파싱이 통째로 사라진다(태스크 63 §4 P0).
     sink: Arc<Mutex<Option<Channel<Response>>>>,
+    /// 최근 원시 출력 — MCP `read_terminal`이 읽을 때만 화면으로 다시 그린다(`mcp.rs`).
+    tail: Arc<Mutex<TermTail>>,
     /// 이 PTY가 속한 프로젝트 — 플로팅 창이 이 값으로 새 분할 패널의 cwd를 잡는다.
     project_id: String,
     /// 실제로 띄운 셸 프로그램(shell.rs 폴백 결과) — 이미 열린 터미널에 에이전트를 띄울 때 셸별
     /// 명령 문법을 고른다(`term_shell`). 별도 창은 attach라 open 응답을 못 받으므로 여기 둔다.
     shell: String,
+}
+
+/// 세션당 원시 출력 꼬리 상한. 터미널 13개 ≈ 3.3MB.
+/// ponytail: 고정 바이트 링 — Claude TUI(~1KB/s)면 수 분치라 "지금 화면"에는 충분, 더 긴 이력이 필요해지면 키운다.
+const TAIL_BYTES: usize = 256 * 1024;
+
+#[derive(Default)]
+struct TermTail(std::collections::VecDeque<u8>);
+
+impl TermTail {
+    fn push(&mut self, data: &[u8]) {
+        let data = &data[data.len().saturating_sub(TAIL_BYTES)..];
+        let over = (self.0.len() + data.len()).saturating_sub(TAIL_BYTES);
+        self.0.drain(..over);
+        self.0.extend(data);
+    }
+}
+
+/// MCP 도구가 보는 터미널 한 개 — 전역 세션 락 밖에서 만든 사본이다.
+pub(crate) struct TermSnapshot {
+    pub term_id: String,
+    pub project_id: String,
+    pub shell: String,
+    pub rows: u16,
+    pub cols: u16,
+    pub tail: Vec<u8>,
+}
+
+/// 살아 있는 터미널 전부의 사본. 전역 락은 Arc 복제까지만 쥔다 — 꼬리 복사·크기 조회는 그 밖에서.
+pub(crate) fn term_snapshots(state: &AppState) -> Vec<TermSnapshot> {
+    let picked: Vec<_> = state
+        .terminals
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .map(|(id, s)| {
+            (id.clone(), s.project_id.clone(), s.shell.clone(), Arc::clone(&s.master), Arc::clone(&s.tail))
+        })
+        .collect();
+    picked
+        .into_iter()
+        .map(|(term_id, project_id, shell, master, tail)| {
+            // 크기를 못 읽으면 xterm 기본값으로 다시 그린다 — 읽기용 근사라 틀려도 줄바꿈 위치만 어긋난다.
+            let size = master.lock().unwrap_or_else(|e| e.into_inner()).get_size().ok();
+            let tail: Vec<u8> = tail.lock().unwrap_or_else(|e| e.into_inner()).0.iter().copied().collect();
+            TermSnapshot {
+                term_id,
+                project_id,
+                shell,
+                rows: size.map_or(24, |s| s.rows),
+                cols: size.map_or(80, |s| s.cols),
+                tail,
+            }
+        })
+        .collect()
 }
 
 #[derive(Clone, Serialize)]
@@ -307,6 +364,7 @@ pub fn term_open(
     let closed = Arc::new(AtomicBool::new(false));
     // 출력 sink를 Arc<Mutex>로 — 플로팅 분리 시 term_attach가 이 sink를 새 창 Channel로 바꾼다.
     let sink = Arc::new(Mutex::new(Some(on_data)));
+    let tail = Arc::new(Mutex::new(TermTail::default()));
 
     // 출력은 **리더 + 펌프** 두 스레드로 나눈다(태스크 63 §4 P0).
     //
@@ -317,6 +375,7 @@ pub fn term_open(
     let (tx, rx) = sync_channel::<Vec<u8>>(PUMP_QUEUE);
     {
         let sink = Arc::clone(&sink);
+        let tail = Arc::clone(&tail);
         // 로그 한 줄에 전체 id를 싣지 않는다 — 터미널 여러 개를 한눈에 훑을 때만 쓰는 꼬리표다.
         let log_term: String = term_id.chars().take(8).collect();
         std::thread::spawn(move || {
@@ -332,6 +391,7 @@ pub fn term_open(
                 }
                 let n = buf.len();
                 let chunk = std::mem::replace(buf, Vec::with_capacity(MAX_CHUNK));
+                tail.lock().unwrap_or_else(|e| e.into_inner()).push(&chunk);
                 if let Some(ch) = sink.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
                     // 창이 닫혀 send가 실패해도 루프를 끊지 않는다 — 플로팅 분리 중
                     // (detach↔attach 사이)의 짧은 공백을 위해서다.
@@ -458,6 +518,7 @@ pub fn term_open(
         pid,
         closed,
         sink,
+        tail,
         project_id,
         shell: shell.clone(),
     };
@@ -1267,5 +1328,26 @@ mod pacer_tests {
         assert!(line.contains("span_s=5"), "{line}");
         assert!(line.contains("mem_lv=danger budget_kb=128"), "{line}");
         assert!(line.contains("sleeps=2 slept_ms=1800"), "{line}");
+    }
+}
+
+#[cfg(test)]
+mod tail_tests {
+    use super::*;
+
+    #[test]
+    fn term_tail_keeps_only_the_newest_bytes() {
+        let mut t = TermTail::default();
+        t.push(b"abc");
+        t.push(&vec![b'x'; TAIL_BYTES - 1]);
+        assert_eq!(t.0.len(), TAIL_BYTES);
+        assert_eq!(t.0.front(), Some(&b'c'));
+        // 한 번에 상한보다 큰 청크가 와도 끝부분만 남는다.
+        let mut big = vec![b'y'; TAIL_BYTES];
+        big.push(b'z');
+        t.push(&big);
+        assert_eq!(t.0.len(), TAIL_BYTES);
+        assert_eq!(t.0.back(), Some(&b'z'));
+        assert!(t.0.iter().all(|&b| b != b'x'));
     }
 }

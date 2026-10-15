@@ -122,10 +122,10 @@ fn accept_loop(listener: TcpListener, token: String, app: AppHandle, alive: Arc<
     }
 }
 
-struct Request {
-    method: String,
-    path: String,
-    headers: HashMap<String, String>,
+pub(crate) struct Request {
+    pub(crate) method: String,
+    pub(crate) path: String,
+    pub(crate) headers: HashMap<String, String>,
 }
 
 /// 요청 머리(요청 줄 + 헤더, 빈 줄 제외) 해석. 헤더 이름은 소문자로 둔다.
@@ -139,6 +139,27 @@ fn parse_head(lines: &[String]) -> Option<Request> {
         .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
         .collect();
     Some(Request { method, path, headers })
+}
+
+/// 빈 줄까지 읽어 요청 머리를 해석한다. 연결이 먼저 끊기거나 `MAX_HEAD`를 넘거나 형식이 틀리면 None
+/// (호출자가 400). MCP 서버(`mcp.rs`)도 같은 문지기를 쓴다.
+pub(crate) fn read_head(reader: &mut impl BufRead) -> std::io::Result<Option<Request>> {
+    let mut lines = Vec::new();
+    let mut head_bytes = 0usize;
+    loop {
+        let mut line = String::new();
+        let n = reader.read_line(&mut line)?;
+        head_bytes += n;
+        if n == 0 || head_bytes > MAX_HEAD {
+            return Ok(None);
+        }
+        let line = line.trim_end_matches(['\r', '\n']).to_string();
+        if line.is_empty() {
+            break;
+        }
+        lines.push(line);
+    }
+    Ok(parse_head(&lines))
 }
 
 /// 중계가 받아 주는 경로 — OpenAI 호환 API(`/v1/…`)만. 상류로 이어 붙이므로 `..`·절대 URL은 막는다.
@@ -195,22 +216,7 @@ fn handle_conn(
 ) -> std::io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
     let mut reader = BufReader::new(stream.try_clone()?);
-    let mut lines = Vec::new();
-    let mut head_bytes = 0usize;
-    loop {
-        let mut line = String::new();
-        let n = reader.read_line(&mut line)?;
-        head_bytes += n;
-        if n == 0 || head_bytes > MAX_HEAD {
-            return write_simple(&mut stream, 400, "bad request");
-        }
-        let line = line.trim_end_matches(['\r', '\n']).to_string();
-        if line.is_empty() {
-            break;
-        }
-        lines.push(line);
-    }
-    let Some(req) = parse_head(&lines) else {
+    let Some(req) = read_head(&mut reader)? else {
         return write_simple(&mut stream, 400, "bad request");
     };
     // 인증을 가장 먼저 — 토큰 없는 요청은 경로·본문을 보기 전에 끊는다(모델 기동도 하지 않는다).

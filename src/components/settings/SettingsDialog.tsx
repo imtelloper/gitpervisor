@@ -19,6 +19,7 @@ import { GeneralSection } from "./sections/GeneralSection";
 import { MaintenanceSection } from "./sections/MaintenanceSection";
 import { UpdateSection } from "./sections/UpdateSection";
 import { NotifySection } from "./sections/NotifySection";
+import { McpSection } from "./sections/McpSection";
 import { SttSection } from "./sections/SttSection";
 import { TerminalSection } from "./sections/TerminalSection";
 import {
@@ -572,6 +573,7 @@ export function SettingsDialog() {
                   onModelDelete={deleteSttModel}
                   onCancel={(name) => void ipc.llmDownloadCancel(name)}
                 />
+                <McpSection form={form} update={update} hl={hl} />
               </>
             )}
             {category === "update" && <UpdateSection hl={hl} />}

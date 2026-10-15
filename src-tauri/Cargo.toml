@@ -41,6 +41,8 @@ chrono = "0.4.45"
 futures = "0.3.32"
 notify-debouncer-full = "0.7.0"
 portable-pty = "0.8.1"
+# MCP `read_terminal` — 출력 꼬리를 읽을 때만 화면으로 다시 그린다(DOCS/mcp-server-design.md §5.1).
+vt100 = "0.16"
 sysinfo = "0.33"
 mongodb = "3"
 keyring = { version = "3", features = ["windows-native"] }
