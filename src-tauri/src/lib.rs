@@ -1085,7 +1085,22 @@ pub fn run() {
 
     install_panic_hook();
 
-    let result = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // 같은 identifier 로 두 번 뜨면 두 프로세스가 각자 메모리 사본으로 projects.json·settings.json 을 통째로
+    // 덮고 session.json·배경 fetch·터미널 복원도 겹친다. 저장마다 파일 락을 거는 대신 두 번째 실행을 시작
+    // 시점에 첫 창으로 넘기고 끝낸다(DOCS/rea-takeaways-design.md 보류 E). 첫 플러그인이어야 다른 플러그인
+    // 초기화 전에 빠진다. 릴리스만 — e2e 샤드는 .dev identifier 로 앱 여럿을 일부러 나란히 띄운다.
+    // 업데이트 재실행(relaunch)은 RunEvent::Exit 에서 잠금이 풀린 뒤 exec 하므로 막히지 않는다.
+    #[cfg(all(desktop, not(debug_assertions)))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        if let Some(win) = app.get_webview_window("main") {
+            // 실패해도 할 수 있는 게 없다 — 두 번째 프로세스는 어차피 곧 끝나고 첫 창은 그대로 산다.
+            let _ = win.unminimize();
+            let _ = win.show();
+            focus_window(&win);
+        }
+    }));
+    let result = builder
         .plugin(tauri_plugin_process::init())
         // 화면 캡쳐 전역 단축키. 등록은 setup에서 하고, 여기선 눌림만 받는다.
         // 지금 등록하는 단축키가 하나뿐이라 어느 것인지 가리지 않는다 — 늘어나면 shortcut을 본다.

@@ -69,7 +69,7 @@
 | 파일 감시 | **notify + notify-debouncer-full** (Rust) | 크로스플랫폼 FS 이벤트 + 디바운스 |
 | 영속화 | **tauri-plugin-store** | projects.json / settings.json |
 | 타입 동기화 | **tauri-specta** (권장) | Rust 커맨드 → TS 바인딩 자동 생성. 부담되면 수동 타입 정의로 시작 |
-| 기타 플러그인 | dialog(폴더 선택), opener(탐색기 열기), window-state | 표준 구성 (single-instance 는 도입하지 않았다 — `DOCS/rea-takeaways-design.md` 보류 E) |
+| 기타 플러그인 | dialog(폴더 선택), opener(탐색기 열기), window-state, single-instance(릴리스 빌드만) | 표준 구성 — single-instance 근거는 `DOCS/rea-takeaways-design.md` E |
 
 ### 핵심 결정: git CLI vs libgit2(git2 crate)
 

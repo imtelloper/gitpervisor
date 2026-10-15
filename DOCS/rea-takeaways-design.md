@@ -265,13 +265,13 @@ OS 차이: git 실행은 세 OS 공통 경로(`runner::run_git_env`)를 탄다. 
 
 ## 보류
 
-### E. 프로세스 간 저장 락: 왜 안 하는가
+### E. 프로세스 간 저장 락: 왜 안 하는가 → 대신 single-instance 적용(2026-10-15)
 
 - 데이터 폴더를 둘이 같이 쓰는 경로는 이미 막혀 있다. dev와 설치본은 identifier가 갈라져 있고(`tauri.dev.conf.json`), e2e 샤드는 샤드마다 `GPV_DATA_DIR`을 받는다(`shard.mjs:494`). 설치본 identifier에 e2e 환경변수가 붙으면 exit 3이다(`lib.rs:1076-1083`). 남은 경우는 **설치본을 두 번 띄우는 것** 하나인데 사고 기록은 없다.
 - 각 프로세스는 디스크를 다시 읽지 않고 자기 **메모리 사본 전체**를 쓴다. 파일을 읽어서 고쳐 쓰는 일은 부팅 때 한 번뿐이다(`lib.rs:1217`). 그래서 `File::lock`은 순서만 정할 뿐 마지막에 쓴 쪽이 이기는 결과는 그대로다. mtime 검사는 오래 열어 둔 쪽이 영원히 저장을 거부당하는 새 실패를 만든다. 두 번 띄웠을 때의 진짜 피해(session.json 오진, remote fetch 이중 실행, 터미널 이중 복원)는 파일 락으로 하나도 막지 못한다.
 - `SAVE_LOCK`(`state.rs:146`)은 파일 쓰기를 직렬화할 뿐이다. 메모리에서 디스크로 반영되는 순서는 보장하지 않는다(예: `settings.rs:28-30`과 `llm/server.rs:528-530`의 경합). 그 영향은 다음 부팅에서 Vulkan을 한 번 더 시도하는 정도라 무시한다.
-- 사고가 보고되면 들어갈 안은 파일 락이 아니라 `tauri-plugin-single-instance`이고, 릴리스 빌드에만(`!cfg!(debug_assertions)`) 단다. 도입할 때 **macOS 동작과 업데이터(NSIS passive) 재시작 경로는 실기 확인이 필요하다.** 지금은 확정하지 않는다.
-- 문서 정정만 한다. `DOCS/DESIGN.md:72`의 "기타 플러그인" 칸에 적힌 single-instance는 Cargo.toml에도 코드에도 없으므로 뺀다(커밋 5).
+- **적용(사용자 지시, 2026-10-15):** 파일 락 대신 `tauri-plugin-single-instance`를 첫 플러그인으로, 릴리스 빌드에만 단다(`lib.rs` `run()`). 저장마다 비용이 드는 락과 달리 두 번째 실행을 시작 시점에 첫 창으로 넘기고 끝내므로, 위의 진짜 피해(세션 오진·fetch 이중·터미널 이중 복원)까지 한 번에 막는다. 디버그를 빼는 이유는 e2e 샤드가 `.dev` identifier로 앱 여럿을 일부러 나란히 띄우기 때문이다.
+- 업데이트 재실행: 플러그인은 `RunEvent::Exit`에서 잠금을 푼다(`tauri-plugin-single-instance-2.4.5/src/platform_impl/*.rs`). `relaunch()`는 그 뒤에 exec 하고, Windows NSIS는 프로세스를 끝낸 뒤 새로 띄우므로 막히지 않는다. **macOS·Linux 실기는 미확인**이다(Windows 릴리스 exe 두 번 실행만 확인).
 
 ### F. PID 소유권 재검증과 Windows Job Object: 왜 안 하는가
 

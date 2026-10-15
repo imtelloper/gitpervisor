@@ -30,7 +30,7 @@ npm run dev:app     # = tauri dev --config src-tauri/tauri.dev.conf.json
 
 **`npm run tauri dev`를 그냥 쓰지 마라.** 사용자는 설치본(`C:\Program Files\Gitpervisor`)을
 평소 작업에 계속 켜 둔 채로 개발한다 — 끄고 시작하는 게 아니라 **나란히 띄우는 게 기본**이다.
-single-instance 플러그인이 없어서 맨 `tauri dev`도 뜨긴 뜬다. **그게 함정이다.**
+single-instance 플러그인은 **릴리스 빌드에만** 있어서 맨 `tauri dev`(디버그)도 뜨긴 뜬다. **그게 함정이다.**
 
 Tauri는 `app_data_dir`/`app_local_data_dir`/`app_log_dir`/WebView2 유저데이터를 **전부
 `identifier` 하나에서** 파생시킨다(`tauri-2.11.2/src/path/desktop.rs:247`,
