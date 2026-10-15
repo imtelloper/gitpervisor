@@ -234,6 +234,13 @@ pub fn directory_read_failed(err: impl Display) -> String {
     }
 }
 
+pub fn file_kinds_bad_ext(ext: &dyn Display) -> String {
+    match lang() {
+        Lang::Ko => format!("파일 종류 확장자 목록이 잘못됐습니다: {ext}"),
+        Lang::En => format!("Invalid file-type extension list: {ext}"),
+    }
+}
+
 pub fn directory_read_task_failed(err: impl Display) -> String {
     match lang() {
         Lang::Ko => format!("디렉토리 읽기 작업 실패: {err}"),

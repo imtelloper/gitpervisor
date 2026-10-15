@@ -27,6 +27,7 @@ import type {
 } from "../lib/ipc";
 import { currentMessages } from "../i18n/ui-language";
 import { formatBytes } from "../lib/format";
+import { ALL_FILE_KIND_EXTS, fileKindExts, type FileKindTab } from "../lib/fileKinds";
 import { errorMessage, ipc, isIpcError } from "../lib/ipc";
 import { opensInOwnViewer } from "../lib/language-map";
 import { useDb } from "../stores/db";
@@ -852,6 +853,19 @@ export function useCommitDetail(projectId: string | null, sha: string | null) {
   return useQuery({
     ...commitDetailOptions(projectId ?? "none", sha ?? "none"),
     enabled: !!projectId && !!sha,
+  });
+}
+
+/** 파일 트리 종류별 탭 — 고른 탭의 파일 목록 + 모든 탭의 개수(디스크 걷기 한 번). 탭이 열려 있을 때만 돈다.
+ *  키를 `["dir", pid, …]` 아래 두어 트리를 바꾸는 모든 무효화(워처·생성·삭제·이동)를 그대로 받는다 — relPath
+ *  자리의 `\0`은 실제 경로에 나올 수 없어 폴더 키와 겹치지 않는다. */
+export function useTreeKindFiles(projectId: string, tab: FileKindTab | null) {
+  return useQuery({
+    queryKey: ["dir", projectId, "\0kinds", tab] as const,
+    queryFn: () => ipc.treeFilesByExt(projectId, tab ? [...fileKindExts(tab)] : [], [...ALL_FILE_KIND_EXTS]),
+    enabled: tab !== null,
+    staleTime: 30_000,
+    placeholderData: keepPreviousData,
   });
 }
 

@@ -23,6 +23,11 @@ export function fmtDateTime(d: Date): string {
   return d.toLocaleString(INTL_TAG[currentLocale()]);
 }
 
+/** 날짜만(짧게) — 좁은 목록의 수정일 칸. */
+export function fmtDate(d: Date): string {
+  return d.toLocaleDateString(INTL_TAG[currentLocale()], { year: "2-digit", month: "2-digit", day: "2-digit" });
+}
+
 export function fmtTime(d: Date): string {
   return d.toLocaleTimeString(INTL_TAG[currentLocale()]);
 }

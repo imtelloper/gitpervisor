@@ -1,4 +1,6 @@
 import {
+  ArrowDown,
+  ArrowUp,
   ChevronDown,
   ChevronRight,
   ChevronsLeft,
@@ -29,6 +31,7 @@ import {
 
 import { useQueryClient } from "@tanstack/react-query";
 
+import { fmtDate, fmtDateTime, fmtInt } from "../../i18n/format-locale";
 import { currentMessages, useMessages } from "../../i18n/ui-language";
 import { copyWithToast } from "../../lib/clipboard";
 import { fileIcon, folderIcon } from "../../lib/file-icon";
@@ -40,9 +43,18 @@ import {
   type ImgFormat,
   loadImage,
 } from "../../lib/image-codec";
+import {
+  FILE_KIND_TABS,
+  fileKindOf,
+  fileKindTabCounts,
+  sortKindFiles,
+  type FileKindSort,
+  type FileKindTab,
+} from "../../lib/fileKinds";
 import { openDocWindow, openFolderWindow } from "../../lib/floating";
+import { formatBytes } from "../../lib/format";
 import { errorMessage, ipc, isIpcError } from "../../lib/ipc";
-import type { ChangeKind, DirEntry, FileChange, RepoStatus } from "../../lib/ipc";
+import type { ChangeKind, DirEntry, FileChange, RepoStatus, TreeKindFile } from "../../lib/ipc";
 import { isHtml, isImage, isVideo } from "../../lib/language-map";
 import { joinPath, parentDir, validateEntryName } from "../../lib/path";
 import { usePanelCollapsed, usePanelWidth } from "../../lib/use-panel-width";
@@ -59,6 +71,7 @@ import {
   useSaveImage,
   useSetProjectLogo,
   useStatus,
+  useTreeKindFiles,
 } from "../../queries";
 import { isPreviewUrl, useBrowsers } from "../../stores/browser";
 import { useOccludesWebview } from "../../stores/occlusion";
@@ -197,6 +210,146 @@ function FileRow({
       <span className="w-[13px] shrink-0" />
       <Icon size={14} color={color} className="shrink-0" />
       <span className={nameColor}>{name}</span>
+    </div>
+  );
+}
+
+// ── 종류별 탭: 프로젝트 전체에서 그 종류의 파일을 평평한 목록으로 ──
+
+/** 트리 행과 같은 data-tree-* 속성을 단다 — 멀티선택 범위(DOM 순서)·F2·드래그 이동·우클릭 메뉴가 그대로 동작한다. */
+function KindFileRow({ file, sortKey }: { file: TreeKindFile; sortKey: FileKindSort }) {
+  const activeDiff = useUi(selectActiveDiff);
+  const ts = useContext(TreeStatusCtx);
+  const openMenu = useContext(TreeMenuCtx);
+  const row = useContext(TreeRowCtx);
+  const slash = file.path.lastIndexOf("/");
+  const name = file.path.slice(slash + 1);
+  const dir = slash >= 0 ? file.path.slice(0, slash) : "";
+  const { Icon, color } = fileIcon(name);
+  const selected =
+    (row?.sel.has(file.path) ?? false) ||
+    (activeDiff?.target.mode === "file" && activeDiff.target.path === file.path);
+  const kind = ts?.fileKind.get(file.path);
+  const when = file.mtimeMs > 0 ? new Date(file.mtimeMs) : null;
+  return (
+    <div
+      data-tree-file={file.path}
+      data-tree-path={file.path}
+      data-tree-row
+      onClick={(e) => row?.onClick(file.path, e)}
+      onDoubleClick={() => row?.onDouble(file.path, name)}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        openMenu({ x: e.clientX, y: e.clientY, path: file.path, name, isDir: false });
+      }}
+      title={`${file.path}\n${formatBytes(file.size)}${when ? ` · ${fmtDateTime(when)}` : ""}`}
+      className={`flex cursor-pointer items-center gap-1.5 py-0.5 pl-2 pr-2 ${selected ? "bg-selection" : "hover:bg-raised"}`}
+    >
+      <Icon size={14} color={color} className="shrink-0" />
+      <span className={`shrink-0 ${kind ? colorClassOf(kind) : ""}`}>{name}</span>
+      <span className="min-w-0 flex-1 truncate text-[11px] text-fg-dim">{dir}</span>
+      <span className="shrink-0 text-[11px] tabular-nums text-fg-dim">
+        {sortKey === "mtime" ? (when ? fmtDate(when) : "—") : formatBytes(file.size)}
+      </span>
+    </div>
+  );
+}
+
+type KindQuery = ReturnType<typeof useTreeKindFiles>;
+
+function KindFileList({ tab, kinds }: { tab: FileKindTab; kinds: KindQuery }) {
+  const t = useMessages().tree.kinds;
+  const { data, error } = kinds;
+  const [sortKey, setSortKey] = useState<FileKindSort>("name");
+  const [desc, setDesc] = useState(false);
+  const files = useMemo(
+    () => sortKindFiles((data?.files ?? []).filter((f) => fileKindOf(f.path) === tab), sortKey, desc),
+    [data, tab, sortKey, desc],
+  );
+  // 같은 기준을 다시 누르면 뒤집고, 다른 기준이면 그 기준의 자연스러운 방향(이름 ↑, 크기·날짜 ↓)부터.
+  const pickSort = (k: FileKindSort) => {
+    if (k === sortKey) setDesc((d) => !d);
+    else {
+      setSortKey(k);
+      setDesc(k !== "name");
+    }
+  };
+  const sortBtn = (k: FileKindSort, label: string) => (
+    <button
+      key={k}
+      data-kind-sort={k}
+      onClick={() => pickSort(k)}
+      title={t.sortTitle}
+      className={`flex items-center gap-0.5 rounded px-1.5 py-0.5 ${
+        sortKey === k ? "bg-raised text-fg" : "text-fg-dim hover:bg-raised hover:text-fg"
+      }`}
+    >
+      {label}
+      {sortKey === k && (desc ? <ArrowDown size={11} /> : <ArrowUp size={11} />)}
+    </button>
+  );
+
+  // 다른 탭에서 넘어온 직후의 자리표시 데이터는 그 탭의 목록이다 — "없음"으로 깜빡이지 않게 읽는 중으로 본다.
+  if (kinds.isLoading || kinds.isPlaceholderData)
+    return <div className="px-3 py-2 text-xs text-fg-dim">{t.loading}</div>;
+  if (error) return <div className="px-3 py-2 text-xs text-warn">{t.loadFailed(errorMessage(error))}</div>;
+  return (
+    <div data-gpv="tree-kind-list" className="min-w-0">
+      <div className="flex items-center gap-1 px-2 pb-1 text-[11px]">
+        {sortBtn("name", t.sortName)}
+        {sortBtn("size", t.sortSize)}
+        {sortBtn("mtime", t.sortMtime)}
+        <div className="flex-1" />
+        <span className="text-fg-dim">{t.count(files.length)}</span>
+      </div>
+      {data?.truncated && <div className="px-3 pb-1 text-[11px] text-warn">{t.truncated}</div>}
+      {data && !data.truncated && data.filesTruncated && (
+        <div className="px-3 pb-1 text-[11px] text-warn">{t.filesTruncated(files.length)}</div>
+      )}
+      {files.length === 0 ? (
+        <div className="px-3 py-2 text-xs text-fg-dim">{t.empty}</div>
+      ) : (
+        files.map((f) => <KindFileRow key={f.path} file={f} sortKey={sortKey} />)
+      )}
+    </div>
+  );
+}
+
+/** 패널 맨 아래 탭 줄 — [트리] + 종류별. 개수는 종류 탭을 연 동안 보인다(트리 탭에서는 디스크를 걷지 않는다). */
+function KindTabBar({
+  tab,
+  onTab,
+  kinds,
+}: {
+  tab: FileKindTab | null;
+  onTab: (t: FileKindTab | null) => void;
+  kinds: KindQuery;
+}) {
+  const t = useMessages().tree.kinds;
+  const counts = useMemo(() => (kinds.data ? fileKindTabCounts(kinds.data.counts) : null), [kinds.data]);
+  const chip = (active: boolean) =>
+    `rounded px-1.5 py-0.5 ${active ? "bg-accent/20 text-accent" : "text-fg-dim hover:bg-raised hover:text-fg"}`;
+  return (
+    <div data-gpv="tree-kind-tabs" className="flex shrink-0 flex-wrap gap-0.5 border-t border-edge px-1.5 py-1 text-[11px]">
+      <button onClick={() => onTab(null)} title={t.treeTitle} className={chip(tab === null)}>
+        {t.tree}
+      </button>
+      {FILE_KIND_TABS.map((k) => {
+        const n = counts?.get(k) ?? 0;
+        return (
+          <button
+            key={k}
+            data-kind-tab={k}
+            onClick={() => onTab(k)}
+            title={t.tabTitle[k]}
+            className={`${chip(tab === k)} ${counts && n === 0 && tab !== k ? "opacity-50" : ""}`}
+          >
+            {t.tab[k]}
+            {counts && n > 0 && <span className="ml-0.5 tabular-nums opacity-70">{fmtInt(n)}</span>}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -493,6 +646,10 @@ export function FileTreePanel({
   );
 
   const [menu, setMenu] = useState<TreeMenu | null>(null);
+  // 아래 탭 줄 — null이면 폴더 트리, 아니면 그 종류의 파일 목록. 프로젝트가 바뀌면 트리로 돌아간다.
+  const [kindTab, setKindTab] = useState<FileKindTab | null>(null);
+  useEffect(() => setKindTab(null), [projectId]);
+  const kinds = useTreeKindFiles(projectId, kindTab);
   // 우클릭 메뉴가 워크스페이스 영역으로 넘어가면 네이티브 webview에 가린다 — 열린 동안 숨긴다.
   useOccludesWebview(!!menu);
   // 파일 멀티선택(Ctrl/Cmd 토글, Shift 범위) — 이미지 일괄 변환에 사용. 프로젝트 전환 시 비운다.
@@ -1261,13 +1418,18 @@ export function FileTreePanel({
         <TreeStatusCtx.Provider value={treeStatus}>
           <TreeRowCtx.Provider value={rowApi}>
             <TreeMenuCtx.Provider value={setMenu}>
-              <div key={projectId} className="w-max min-w-full">
-                <DirChildren projectId={projectId} path="" depth={0} />
-              </div>
+              {kindTab ? (
+                <KindFileList key={projectId} tab={kindTab} kinds={kinds} />
+              ) : (
+                <div key={projectId} className="w-max min-w-full">
+                  <DirChildren projectId={projectId} path="" depth={0} />
+                </div>
+              )}
             </TreeMenuCtx.Provider>
           </TreeRowCtx.Provider>
         </TreeStatusCtx.Provider>
       </div>
+      <KindTabBar tab={kindTab} onTab={setKindTab} kinds={kinds} />
       {/* 모달은 고정 크기라 폭 핸들이 없다 — 남기면 사이드바의 영속 폭을 모달이 바꾼다. */}
       {!modal && (
         <ResizeHandle onMouseDown={startResize} onDoubleClick={fitToContent} />

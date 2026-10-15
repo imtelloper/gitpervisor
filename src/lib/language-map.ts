@@ -69,7 +69,7 @@ export function languageOf(path: string): string {
 // 디코드가 실패한다(실측). 그래도 목록에 두는 편이 낫다 — 빼면 "바이너리 파일"이라는 엉뚱한
 // 안내가 나오고, 넣으면 macOS에선 제대로 보이고 Windows에선 ImageView가 형식 미지원임을
 // 알리며 외부 앱으로 넘겨준다.
-const IMAGE_EXT = new Set([
+export const IMAGE_EXT = new Set([
   "png",
   "jpg",
   "jpeg",
@@ -101,7 +101,7 @@ export function isImage(path: string): boolean {
 // MediaView가 코덱 미지원으로 안내하며 외부 앱 열기로 넘긴다.
 // avi/mkv/wmv/flv는 웹뷰가 대개 못 푼다 — 그래도 목록에 있어야 뷰어가 열리고, 거기서
 // "mp4로 변환해 열기"(ffmpeg)를 제안할 수 있다. `ts`는 넣지 않는다(TypeScript와 충돌).
-const VIDEO_EXT = new Set([
+export const VIDEO_EXT = new Set([
   "mp4",
   "m4v",
   "mov",
@@ -112,7 +112,7 @@ const VIDEO_EXT = new Set([
   "wmv",
   "flv",
 ]);
-const AUDIO_EXT = new Set(["mp3", "wav", "m4a", "aac", "flac", "oga", "ogg"]);
+export const AUDIO_EXT = new Set(["mp3", "wav", "m4a", "aac", "flac", "oga", "ogg"]);
 
 function extOf(path: string): string {
   const base = path.split("/").pop() ?? path;

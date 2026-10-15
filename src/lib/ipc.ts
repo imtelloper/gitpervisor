@@ -834,6 +834,24 @@ export interface DirListing {
   entries: DirEntry[];
 }
 
+/** `tree_files_by_ext` 결과 한 줄 — path는 트리 행과 같은 `/` 상대 경로, mtimeMs 0 = 시각 모름. */
+export interface TreeKindFile {
+  path: string;
+  size: number;
+  mtimeMs: number;
+}
+
+export interface TreeKindFileList {
+  /** listExts에 든 파일만, 경로순. */
+  files: TreeKindFile[];
+  /** countExts(+listExts)의 확장자별 개수(소문자 키) — 탭 개수 표시용. */
+  counts: Record<string, number>;
+  /** 걷기 상한에 걸렸다 — 목록도 개수도 전부가 아니다. */
+  truncated: boolean;
+  /** 목록만 상한(5천)에 걸렸다 — 개수는 정확하다. */
+  filesTruncated: boolean;
+}
+
 /** Quick Open 파일 목록 (commands/tree.rs list_repo_files). */
 export interface RepoFileList {
   projectId: string;
@@ -1657,6 +1675,11 @@ export const ipc = {
   // 모달 진입 경로라 interactive 레인(기본). 합성 id(임베디드) 포함 가능.
   listRepoFiles: (projectIds: string[]) =>
     call<RepoFileList[]>("list_repo_files", { projectIds }, { timeoutMs: 20000 }),
+  // 파일 트리 종류별 탭 — 프로젝트 전체를 디스크에서 걸어 확장자가 맞는 파일(.gitignore된 것·git 아닌 폴더 포함).
+  // 큰 폴더는 최대 30만 항목까지만 걷는다(truncated). 재시도 없음(디스크 걷기를 두 번 돌리지 않는다).
+  // 목록은 listExts만, 개수는 countExts까지.
+  treeFilesByExt: (projectId: string, listExts: string[], countExts: string[]) =>
+    call<TreeKindFileList>("tree_files_by_ext", { projectId, listExts, countExts }, { attempts: 1, timeoutMs: 60_000 }),
   // ---- DB 탐색기 ----
   dbListConnections: () => call<DbConnection[]>("db_list_connections"),
   dbSaveConnection: (connection: DbConnection, password: string | null) =>

@@ -1,7 +1,7 @@
 // 파일 트리.
 
 import { defineText } from "./define-text";
-import { plural } from "./format-locale";
+import { fmtInt, plural } from "./format-locale";
 
 const ko = {
   dir: {
@@ -74,6 +74,31 @@ const ko = {
     copyPath: "경로 복사",
     copyRelPath: "상대 경로 복사",
     copyName: "이름 복사",
+  },
+  kinds: {
+    tree: "트리",
+    treeTitle: "폴더 트리로 보기",
+    tab: { exe: "실행", pdf: "PDF", sheet: "엑셀", doc: "문서", image: "이미지", video: "영상", audio: "오디오", archive: "압축" },
+    tabTitle: {
+      exe: "실행·설치 파일 (exe, msi, bat, ps1, sh, dmg …)",
+      pdf: "PDF",
+      sheet: "표 (xlsx, xls, csv …)",
+      doc: "문서 (docx, hwp, pptx …)",
+      image: "이미지",
+      video: "동영상",
+      audio: "오디오",
+      archive: "압축 파일 (zip, 7z, rar …)",
+    },
+    sortName: "이름",
+    sortSize: "크기",
+    sortMtime: "수정일",
+    sortTitle: "다시 누르면 순서를 뒤집습니다",
+    loading: "파일을 찾는 중…",
+    empty: "이 종류의 파일이 없습니다.",
+    loadFailed: (err: string) => `파일 목록을 읽지 못했습니다 — ${err}`,
+    truncated: "폴더가 커서 일부만 찾았습니다 — 목록이 전부가 아닙니다.",
+    filesTruncated: (n: number) => `너무 많아 ${fmtInt(n)}개만 보여 줍니다 — 탭의 개수가 전체입니다.`,
+    count: (n: number) => `${fmtInt(n)}개`,
   },
 };
 
@@ -148,6 +173,31 @@ export const treeText = defineText(ko, {
       copyPath: "Copy path",
       copyRelPath: "Copy relative path",
       copyName: "Copy name",
+    },
+    kinds: {
+      tree: "Tree",
+      treeTitle: "Show the folder tree",
+      tab: { exe: "Apps", pdf: "PDF", sheet: "Sheets", doc: "Docs", image: "Images", video: "Video", audio: "Audio", archive: "Archives" },
+      tabTitle: {
+        exe: "Executables and installers (exe, msi, bat, ps1, sh, dmg …)",
+        pdf: "PDF",
+        sheet: "Spreadsheets (xlsx, xls, csv …)",
+        doc: "Documents (docx, hwp, pptx …)",
+        image: "Images",
+        video: "Videos",
+        audio: "Audio",
+        archive: "Archives (zip, 7z, rar …)",
+      },
+      sortName: "Name",
+      sortSize: "Size",
+      sortMtime: "Modified",
+      sortTitle: "Click again to reverse the order",
+      loading: "Finding files…",
+      empty: "No files of this type.",
+      loadFailed: (err) => `Couldn't read the file list — ${err}`,
+      truncated: "The folder is large, so only part of it was searched — this list is incomplete.",
+      filesTruncated: (n) => `Too many to list — showing ${fmtInt(n)}. The count on the tab is the full total.`,
+      count: (n) => `${fmtInt(n)} ${plural(n, "file", "files")}`,
     },
   },
 });
