@@ -480,7 +480,8 @@ export async function run({ cdp, report: r, fix }) {
       return;
     }
     await closePrompt();
-    await press(DIR_ROW); // 펼친다
+    await press(DIR_ROW); // 선택(F2 대상 기록) — 폴더는 더블클릭해야 펼친다
+    await cdp.eval(`[...document.querySelectorAll(${J(DIR_ROW)})].find((e) => e.offsetWidth > 0)?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`);
     let fileOk = "none";
     for (let i = 0; i < 20 && fileOk !== "ok"; i++) {
       fileOk = await cdp.eval(`!![...document.querySelectorAll(${J(FILE_ROW)})].find((e) => e.offsetWidth > 0) ? 'ok' : 'none'`);

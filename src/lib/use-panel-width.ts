@@ -48,6 +48,42 @@ export function usePanelWidth(
 }
 
 /**
+ * 아래쪽에 붙은 서브 패널의 높이 — 핸들이 패널 **위** 가장자리라 위로 끌면 커진다. 최대는 호출부가
+ * CSS max-height로 부모 비율에 맞춰 자른다(창 크기를 이 훅이 모른다).
+ */
+export function usePanelHeight(storageKey: string, initial: number, min: number) {
+  const [height, setHeight] = useState(() => {
+    const saved = Number(localStorage.getItem(storageKey));
+    return saved >= min ? saved : initial;
+  });
+
+  useEffect(() => {
+    localStorage.setItem(storageKey, String(height));
+  }, [storageKey, height]);
+
+  const startResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    // 저장값이 CSS max-height보다 크면 화면 높이부터 시작해야 첫 드래그가 헛돌지 않는다.
+    const box = (e.currentTarget as HTMLElement).parentElement;
+    const startH = box ? box.getBoundingClientRect().height : height;
+    const onMove = (ev: MouseEvent) => setHeight(Math.max(min, Math.round(startH + startY - ev.clientY)));
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    document.body.style.cursor = "row-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  return { height, startResize };
+}
+
+/**
  * 드래그로 조절 가능한 박스 크기(폭·높이). localStorage에 JSON으로 영속한다.
  *
  * 델타가 `usePanelWidth`와 반대인 이유: 이 훅을 쓰는 팝오버는 **우상단 앵커**(right/top 고정)라

@@ -16,6 +16,11 @@ const ko = {
   toast: {
     executed: (name: string) => `${name} 실행됨`,
     moved: (n: number, dest: string) => `${n}개 이동됨 → ${dest}`,
+    importing: (n: number, dest: string) => `${fmtInt(n)}개 복사 중… → ${dest}`,
+    imported: (n: number, dest: string) => `${fmtInt(n)}개 복사됨 → ${dest}`,
+    importFailed: (n: number, first: string, more: boolean) =>
+      `복사 실패 ${fmtInt(n)}개 — ${first}${more ? " 외" : ""}`,
+    importSkipped: (n: number) => `이미 있는 파일 ${fmtInt(n)}개는 건너뛰었습니다`,
     moveFailed: (n: number, first: string, more: boolean) =>
       `이동 실패 ${n}개 — ${first}${more ? " 외" : ""}`,
     converted: (name: string, note: string) => `변환됨 — ${name}${note}`,
@@ -76,8 +81,6 @@ const ko = {
     copyName: "이름 복사",
   },
   kinds: {
-    tree: "트리",
-    treeTitle: "폴더 트리로 보기",
     tab: { exe: "실행", pdf: "PDF", sheet: "엑셀", doc: "문서", image: "이미지", video: "영상", audio: "오디오", archive: "압축" },
     tabTitle: {
       exe: "실행·설치 파일 (exe, msi, bat, ps1, sh, dmg …)",
@@ -116,6 +119,11 @@ export const treeText = defineText(ko, {
     toast: {
       executed: (name) => `Launched ${name}`,
       moved: (n, dest) => `Moved ${n} ${plural(n, "item", "items")} → ${dest}`,
+      importing: (n, dest) => `Copying ${fmtInt(n)} ${plural(n, "file", "files")}… → ${dest}`,
+      imported: (n, dest) => `Copied ${fmtInt(n)} ${plural(n, "file", "files")} → ${dest}`,
+      importFailed: (n, first, more) =>
+        `Couldn't copy ${fmtInt(n)} ${plural(n, "item", "items")} — ${first}${more ? " and more" : ""}`,
+      importSkipped: (n) => `Skipped ${fmtInt(n)} existing ${plural(n, "file", "files")}`,
       moveFailed: (n, first, more) =>
         `Couldn't move ${n} ${plural(n, "item", "items")} — ${first}${more ? " and more" : ""}`,
       converted: (name, note) => `Converted — ${name}${note}`,
@@ -175,8 +183,6 @@ export const treeText = defineText(ko, {
       copyName: "Copy name",
     },
     kinds: {
-      tree: "Tree",
-      treeTitle: "Show the folder tree",
       tab: { exe: "Apps", pdf: "PDF", sheet: "Sheets", doc: "Docs", image: "Images", video: "Video", audio: "Audio", archive: "Archives" },
       tabTitle: {
         exe: "Executables and installers (exe, msi, bat, ps1, sh, dmg …)",

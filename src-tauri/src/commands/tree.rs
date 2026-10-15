@@ -430,11 +430,12 @@ pub async fn start_os_file_drag(
             let target = window.gtk_window().map_err(|e| e.to_string())?;
             #[cfg(not(target_os = "linux"))]
             let target = window;
+            log::info!("[os-drag] 시작 {}개", files.len());
             drag::start_drag(
                 &target,
                 drag::DragItem::Files(files),
                 icon,
-                |_, _| {},
+                |r, pos| log::info!("[os-drag] 끝 {r:?} @({},{})", pos.x, pos.y),
                 drag::Options::default(),
             )
             .map(|()| true)

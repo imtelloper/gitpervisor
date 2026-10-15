@@ -234,6 +234,20 @@ pub fn directory_read_failed(err: impl Display) -> String {
     }
 }
 
+pub fn tree_import_unknown_upload(id: &dyn Display) -> String {
+    match lang() {
+        Lang::Ko => format!("진행 중인 파일 복사를 찾을 수 없습니다: {id}"),
+        Lang::En => format!("No file copy in progress with id {id}"),
+    }
+}
+
+pub fn tree_import_bad_chunk(got: u64, want: u64) -> String {
+    match lang() {
+        Lang::Ko => format!("파일 복사 조각 순서가 어긋났습니다({got} ≠ {want}바이트)"),
+        Lang::En => format!("File copy chunks arrived out of order ({got} ≠ {want} bytes)"),
+    }
+}
+
 pub fn file_kinds_bad_ext(ext: &dyn Display) -> String {
     match lang() {
         Lang::Ko => format!("파일 종류 확장자 목록이 잘못됐습니다: {ext}"),

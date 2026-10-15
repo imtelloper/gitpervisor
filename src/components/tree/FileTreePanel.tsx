@@ -57,7 +57,8 @@ import { errorMessage, ipc, isIpcError } from "../../lib/ipc";
 import type { ChangeKind, DirEntry, FileChange, RepoStatus, TreeKindFile } from "../../lib/ipc";
 import { isHtml, isImage, isVideo } from "../../lib/language-map";
 import { joinPath, parentDir, validateEntryName } from "../../lib/path";
-import { usePanelCollapsed, usePanelWidth } from "../../lib/use-panel-width";
+import { collectDropped, droppedSources, importDropped, type DroppedItem, type ImportResult } from "../../lib/treeImport";
+import { usePanelCollapsed, usePanelHeight, usePanelWidth } from "../../lib/use-panel-width";
 import {
   invalidateAfterMove,
   keys,
@@ -153,6 +154,8 @@ interface TreeRowApi {
   onClick: (path: string, e: React.MouseEvent) => void;
   /** 더블클릭 — 실행 파일이면 즉시 실행 */
   onDouble: (path: string, name: string) => void;
+  /** 폴더 클릭 — 선택만 한다(펼치기는 더블클릭·화살표). Ctrl/Cmd면 멀티선택 토글 */
+  onFolderClick: (path: string, e: React.MouseEvent) => void;
 }
 const TreeRowCtx = createContext<TreeRowApi | null>(null);
 
@@ -296,7 +299,7 @@ function KindFileList({ tab, kinds }: { tab: FileKindTab; kinds: KindQuery }) {
   if (error) return <div className="px-3 py-2 text-xs text-warn">{t.loadFailed(errorMessage(error))}</div>;
   return (
     <div data-gpv="tree-kind-list" className="min-w-0">
-      <div className="flex items-center gap-1 px-2 pb-1 text-[11px]">
+      <div className="sticky top-0 z-10 flex items-center gap-1 bg-panel px-2 py-1 text-[11px]">
         {sortBtn("name", t.sortName)}
         {sortBtn("size", t.sortSize)}
         {sortBtn("mtime", t.sortMtime)}
@@ -316,7 +319,7 @@ function KindFileList({ tab, kinds }: { tab: FileKindTab; kinds: KindQuery }) {
   );
 }
 
-/** 패널 맨 아래 탭 줄 — [트리] + 종류별. 개수는 종류 탭을 연 동안 보인다(트리 탭에서는 디스크를 걷지 않는다). */
+/** 서브 패널 머리의 탭 줄 — 누르면 열고, 열린 탭을 다시 누르면 닫는다. 개수는 탭이 열려 있는 동안만 보인다(닫혀 있으면 디스크를 걷지 않는다). */
 function KindTabBar({
   tab,
   onTab,
@@ -331,17 +334,14 @@ function KindTabBar({
   const chip = (active: boolean) =>
     `rounded px-1.5 py-0.5 ${active ? "bg-accent/20 text-accent" : "text-fg-dim hover:bg-raised hover:text-fg"}`;
   return (
-    <div data-gpv="tree-kind-tabs" className="flex shrink-0 flex-wrap gap-0.5 border-t border-edge px-1.5 py-1 text-[11px]">
-      <button onClick={() => onTab(null)} title={t.treeTitle} className={chip(tab === null)}>
-        {t.tree}
-      </button>
+    <div data-gpv="tree-kind-tabs" className="flex shrink-0 flex-wrap gap-0.5 px-1.5 py-1 text-[11px]">
       {FILE_KIND_TABS.map((k) => {
         const n = counts?.get(k) ?? 0;
         return (
           <button
             key={k}
             data-kind-tab={k}
-            onClick={() => onTab(k)}
+            onClick={() => onTab(tab === k ? null : k)}
             title={t.tabTitle[k]}
             className={`${chip(tab === k)} ${counts && n === 0 && tab !== k ? "opacity-50" : ""}`}
           >
@@ -370,6 +370,7 @@ function TreeNode({
   const toggleFolder = useTreeState((s) => s.toggle);
   const ts = useContext(TreeStatusCtx);
   const openMenu = useContext(TreeMenuCtx);
+  const row = useContext(TreeRowCtx);
 
   if (!entry.isDir) {
     return (
@@ -384,10 +385,13 @@ function TreeNode({
 
   const { Icon, color } = folderIcon(expanded);
   const dirHasChanges = !entry.isIgnored && ts?.dirChanged.has(path);
+  const selected = row?.sel.has(path) ?? false;
+  const Chevron = expanded ? ChevronDown : ChevronRight;
   return (
     <>
       <div
-        onClick={() => toggleFolder(projectId, path)}
+        onClick={(e) => row?.onFolderClick(path, e)}
+        onDoubleClick={() => toggleFolder(projectId, path)}
         onContextMenu={(e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -404,15 +408,20 @@ function TreeNode({
         data-tree-path={path}
         data-tree-isdir="1"
         style={{ paddingLeft: depth * INDENT + 8 }}
-        className={`flex cursor-pointer items-center gap-1.5 whitespace-nowrap py-0.5 pr-3 hover:bg-raised ${
-          entry.isIgnored ? "italic text-fg-dim" : ""
-        }`}
+        className={`flex cursor-pointer items-center gap-1.5 whitespace-nowrap py-0.5 pr-3 ${
+          selected ? "bg-selection" : "hover:bg-raised"
+        } ${entry.isIgnored ? "italic text-fg-dim" : ""}`}
       >
-        {expanded ? (
-          <ChevronDown size={13} className="shrink-0 text-fg-dim" />
-        ) : (
-          <ChevronRight size={13} className="shrink-0 text-fg-dim" />
-        )}
+        {/* 화살표는 한 번 눌러도 펼친다(VS Code 와 같다) — 행 더블클릭으로 번지면 두 번 뒤집히므로 막는다. */}
+        <Chevron
+          size={13}
+          className="shrink-0 text-fg-dim"
+          onClick={(e) => {
+            e.stopPropagation();
+            toggleFolder(projectId, path);
+          }}
+          onDoubleClick={(e) => e.stopPropagation()}
+        />
         <Icon size={14} color={color} className="shrink-0" />
         <span className={`font-medium ${dirHasChanges ? "text-mod" : ""}`}>
           {entry.name}
@@ -646,10 +655,11 @@ export function FileTreePanel({
   );
 
   const [menu, setMenu] = useState<TreeMenu | null>(null);
-  // 아래 탭 줄 — null이면 폴더 트리, 아니면 그 종류의 파일 목록. 프로젝트가 바뀌면 트리로 돌아간다.
+  // 트리 아래 종류별 서브 패널 — null이면 탭 줄만(목록 닫힘). 프로젝트가 바뀌면 닫는다.
   const [kindTab, setKindTab] = useState<FileKindTab | null>(null);
   useEffect(() => setKindTab(null), [projectId]);
   const kinds = useTreeKindFiles(projectId, kindTab);
+  const { height: kindHeight, startResize: startKindResize } = usePanelHeight("gp:filetree-kinds-height", 260, 90);
   // 우클릭 메뉴가 워크스페이스 영역으로 넘어가면 네이티브 webview에 가린다 — 열린 동안 숨긴다.
   useOccludesWebview(!!menu);
   // 파일 멀티선택(Ctrl/Cmd 토글, Shift 범위) — 이미지 일괄 변환에 사용. 프로젝트 전환 시 비운다.
@@ -657,6 +667,9 @@ export function FileTreePanel({
   // Shift 범위 선택의 기준(앵커) 파일 경로 + 트리 컨테이너 ref(DOM 순서로 범위 계산).
   const anchorRef = useRef<string | null>(null);
   const treeRef = useRef<HTMLDivElement | null>(null);
+  // 종류별 서브 패널의 목록 — 행은 트리 행과 같은 data-tree-* 속성이라 F2·Shift 범위·드래그 소스가 여기도 본다.
+  const kindRef = useRef<HTMLDivElement | null>(null);
+  const inRowLists = (el: Element) => !!(treeRef.current?.contains(el) || kindRef.current?.contains(el));
 
   // 핸들 더블클릭 — 현재 펼쳐진 행들의 최장 자연 폭에 맞춰 패널 폭 자동 조절(grow/shrink 모두).
   // 행은 whitespace-nowrap(잘림 없음)이라 각 행 이름 span의 자연 우측 끝을 측정한다(스크롤 위치 보정).
@@ -703,7 +716,7 @@ export function FileTreePanel({
   useEffect(() => {
     const onDown = (e: PointerEvent) => {
       const el = e.target instanceof Element ? e.target : null;
-      const row = el && treeRef.current?.contains(el) ? el.closest<HTMLElement>("[data-tree-path][data-tree-row]") : null;
+      const row = el && inRowLists(el) ? el.closest<HTMLElement>("[data-tree-path][data-tree-row]") : null;
       const path = row?.dataset.treePath;
       lastRowRef.current = path
         ? { x: 0, y: 0, path, name: path.split("/").pop() ?? path, isDir: row.dataset.treeIsdir === "1" }
@@ -716,7 +729,9 @@ export function FileTreePanel({
       if (selectBlockingOverlay(useUi.getState())) return;
       const r = lastRowRef.current;
       // 그사이 목록이 바뀌어 그 행이 사라졌으면(삭제·폴더 접힘) 옛 경로를 고치지 않는다.
-      if (!r || !treeRef.current?.querySelector(`[data-tree-row][data-tree-path="${CSS.escape(r.path)}"]`)) return;
+      if (!r) return;
+      const sel = `[data-tree-row][data-tree-path="${CSS.escape(r.path)}"]`;
+      if (!(treeRef.current?.querySelector(sel) || kindRef.current?.querySelector(sel))) return;
       e.preventDefault();
       renameRef.current(r);
     };
@@ -747,8 +762,10 @@ export function FileTreePanel({
       const baseName = path.split("/").pop() ?? path;
       // Shift 범위 — 화면에 보이는 파일 행의 DOM 순서로 앵커~클릭 사이를 모두 선택.
       if (e.shiftKey && anchorRef.current) {
+        // 누른 행이 사는 목록(트리 또는 종류별) 안에서만 — 앵커가 다른 목록이면 아래 단일 선택으로 넘어간다.
+        const scope = e.target instanceof Node && kindRef.current?.contains(e.target) ? kindRef.current : treeRef.current;
         const order = Array.from(
-          treeRef.current?.querySelectorAll<HTMLElement>("[data-tree-file]") ?? [],
+          scope?.querySelectorAll<HTMLElement>("[data-tree-file]") ?? [],
         )
           .map((el) => el.dataset.treeFile)
           .filter((p): p is string => !!p);
@@ -805,9 +822,22 @@ export function FileTreePanel({
     [projectId],
   );
 
+  // 폴더는 뷰어에 열 것이 없으니 선택만 세운다. 앵커로도 삼는다 — Shift 범위는 파일 행만 세므로 폴더 앵커는 단일 선택으로 떨어진다.
+  const onFolderClick = useCallback((path: string, e: React.MouseEvent) => {
+    if (e.ctrlKey || e.metaKey)
+      setTreeSel((prev) => {
+        const next = new Set(prev);
+        if (next.has(path)) next.delete(path);
+        else next.add(path);
+        return next;
+      });
+    else setTreeSel(new Set([path]));
+    anchorRef.current = path;
+  }, []);
+
   const rowApi = useMemo<TreeRowApi>(
-    () => ({ sel: treeSel, onClick: onRowClick, onDouble }),
-    [treeSel, onRowClick, onDouble],
+    () => ({ sel: treeSel, onClick: onRowClick, onDouble, onFolderClick }),
+    [treeSel, onRowClick, onDouble, onFolderClick],
   );
 
   // ── 드래그로 이동 ──
@@ -881,13 +911,103 @@ export function FileTreePanel({
       );
   }
 
+  // ── 앱 밖(탐색기·바탕화면)에서 끌어 온 파일을 폴더에 복사 ── (lib/treeImport.ts)
+  // HTML5 드롭으로 받는다 — 창의 OS 드롭 핸들러는 꺼져 있다(lib.rs). 놓을 자리 규칙은 위 드래그 이동과 같다:
+  // 폴더 행 = 그 폴더, 파일 행 = 그 파일의 폴더, 빈 영역 = 루트.
+  // 우리 트리에서 OS 드래그로 내보낸 파일이 이 창에 도로 떨어지면(Windows 는 드롭까지 startOsFileDrag 가 안 끝난다) 받지 않는다.
+  const osDragOutRef = useRef(false);
+  const osDropHlRef = useRef<HTMLElement | null>(null);
+  const setOsDropHl = (el: HTMLElement | null) => {
+    if (osDropHlRef.current === el) return;
+    osDropHlRef.current?.classList.remove(...DROP_HL);
+    el?.classList.add(...DROP_HL);
+    osDropHlRef.current = el;
+  };
+  const isOsFileDrag = (e: React.DragEvent) => e.dataTransfer.types.includes("Files") && !osDragOutRef.current;
+  const osDropTarget = (e: React.DragEvent): { dir: string; row: HTMLElement | null } => {
+    const hit = e.target instanceof Element ? e.target.closest<HTMLElement>("[data-tree-path]") : null;
+    if (!hit) return { dir: "", row: treeRef.current };
+    const path = hit.dataset.treePath ?? "";
+    if (hit.dataset.treeIsdir === "1") return { dir: path, row: hit };
+    const dir = parentDir(path);
+    const row = dir
+      ? (treeRef.current?.querySelector<HTMLElement>(
+          `[data-tree-row][data-tree-isdir="1"][data-tree-path="${CSS.escape(dir)}"]`,
+        ) ?? null)
+      : treeRef.current;
+    return { dir, row };
+  };
+  const onOsDragOver = (e: React.DragEvent) => {
+    if (!isOsFileDrag(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+    setOsDropHl(osDropTarget(e).row);
+  };
+  const onOsDragLeave = (e: React.DragEvent) => {
+    if (!(e.relatedTarget instanceof Node && treeRef.current?.contains(e.relatedTarget))) setOsDropHl(null);
+  };
+  const onOsDrop = (e: React.DragEvent) => {
+    if (!isOsFileDrag(e)) return;
+    e.preventDefault();
+    setOsDropHl(null);
+    const sources = droppedSources(e.dataTransfer);
+    if (sources.length) void importFromOs(sources, osDropTarget(e).dir);
+  };
+
+  async function importFromOs(entries: (FileSystemEntry | File)[], destDir: string) {
+    const dest = destDir ? toOsPath(destDir) : msg.tree.moveDestRoot;
+    let items: DroppedItem[];
+    try {
+      items = await collectDropped(entries);
+    } catch (err) {
+      pushToast("error", msg.tree.toast.importFailed(entries.length, errorMessage(err), false));
+      return;
+    }
+    const files = items.filter((it) => it.file);
+    // 큰 복사는 시작을 알린다 — 수 GB 영상은 수십 초가 걸리고 그동안 트리에 아무 변화가 없다.
+    if (files.reduce((n, it) => n + (it.file?.size ?? 0), 0) > 32 * 1024 * 1024)
+      pushToast("info", msg.tree.toast.importing(files.length, dest));
+    const report = (r: ImportResult) => {
+      if (r.copied || items.some((it) => !it.file)) {
+        const ts = useTreeState.getState();
+        if (destDir && !(ts.expanded[projectId] ?? []).includes(destDir)) ts.toggle(projectId, destDir);
+        invalidateAfterMove(qc);
+      }
+      if (r.copied) pushToast("success", msg.tree.toast.imported(r.copied, dest));
+      if (r.failed.length) {
+        const first = r.failed[0];
+        pushToast(
+          "error",
+          msg.tree.toast.importFailed(r.failed.length, `${first.rel}: ${first.error}`, r.failed.length > 1),
+        );
+      }
+    };
+    const r = await importDropped(projectId, destDir, items, false, () => {});
+    report(r);
+    if (!r.conflicts.length) return;
+    const again = items.filter((it) => it.file && r.conflicts.includes(it.rel));
+    const n = again.length;
+    askConfirm({
+      title: msg.tree.dialog.overwriteTitle,
+      message:
+        n === 1
+          ? msg.tree.dialog.overwriteMessage(again[0].rel.split("/").pop() ?? again[0].rel)
+          : msg.tree.dialog.batchOverwriteMessage(n),
+      detail: again.slice(0, 8).map((it) => it.rel).join("\n") + (n > 8 ? "\n…" : ""),
+      confirmLabel: n === 1 ? msg.tree.dialog.overwriteTitle : msg.tree.dialog.overwriteAll,
+      danger: true,
+      onConfirm: () => void importDropped(projectId, destDir, again, true, () => {}).then(report),
+      onCancel: () => pushToast("info", msg.tree.toast.importSkipped(n)),
+    });
+  }
+
   function onTreePointerDown(e: React.PointerEvent) {
     if (e.button !== 0 || dragRef.current) return;
     // 드래그 "소스"는 실제 행만 — 자리표시자("비어 있음")는 대상은 되지만 끌 수는 없다.
     const rowEl = (e.target as HTMLElement).closest?.(
       "[data-tree-path][data-tree-row]",
     ) as HTMLElement | null;
-    if (!rowEl || !treeRef.current?.contains(rowEl)) return;
+    if (!rowEl || !inRowLists(rowEl)) return;
     const path = rowEl.dataset.treePath;
     if (!path) return;
     const isDir = rowEl.dataset.treeIsdir === "1";
@@ -917,9 +1037,13 @@ export function FileTreePanel({
       ) {
         const { paths } = st;
         st.cleanup();
+        osDragOutRef.current = true;
         ipc
           .startOsFileDrag(projectId, paths)
-          .catch((err) => pushToast("error", errorMessage(err)));
+          .catch((err) => pushToast("error", errorMessage(err)))
+          .finally(() => {
+            osDragOutRef.current = false;
+          });
         return;
       }
       const cont = treeRef.current;
@@ -1401,6 +1525,9 @@ export function FileTreePanel({
       <div
         ref={treeRef}
         onPointerDown={onTreePointerDown}
+        onDragOver={onOsDragOver}
+        onDragLeave={onOsDragLeave}
+        onDrop={onOsDrop}
         className="min-h-0 flex-1 overflow-auto py-1 text-[13px]"
         onContextMenu={(e) => {
           // 빈 영역 우클릭 → 루트 새 폴더 메뉴 (행은 stopPropagation으로 여기 안 온다).
@@ -1418,18 +1545,43 @@ export function FileTreePanel({
         <TreeStatusCtx.Provider value={treeStatus}>
           <TreeRowCtx.Provider value={rowApi}>
             <TreeMenuCtx.Provider value={setMenu}>
-              {kindTab ? (
-                <KindFileList key={projectId} tab={kindTab} kinds={kinds} />
-              ) : (
-                <div key={projectId} className="w-max min-w-full">
-                  <DirChildren projectId={projectId} path="" depth={0} />
-                </div>
-              )}
+              <div key={projectId} className="w-max min-w-full">
+                <DirChildren projectId={projectId} path="" depth={0} />
+              </div>
             </TreeMenuCtx.Provider>
           </TreeRowCtx.Provider>
         </TreeStatusCtx.Provider>
       </div>
-      <KindTabBar tab={kindTab} onTab={setKindTab} kinds={kinds} />
+      {/* 종류별 서브 패널 — 닫혀 있으면 탭 줄만, 열면 위 가장자리를 끌어 높이를 바꾼다(트리가 나머지를 쓴다). */}
+      <div
+        data-gpv="tree-kind-panel"
+        style={kindTab ? { height: kindHeight } : undefined}
+        className={`flex shrink-0 flex-col border-t border-edge ${kindTab ? "max-h-[80%] min-h-0" : ""}`}
+      >
+        {kindTab && (
+          <div
+            onMouseDown={startKindResize}
+            className="h-[3px] shrink-0 cursor-row-resize transition-colors hover:bg-accent"
+          />
+        )}
+        <KindTabBar tab={kindTab} onTab={setKindTab} kinds={kinds} />
+        {kindTab && (
+          <div
+            ref={kindRef}
+            onPointerDown={onTreePointerDown}
+            onContextMenu={(e) => e.preventDefault()}
+            className="min-h-0 flex-1 overflow-auto border-t border-edge text-[13px]"
+          >
+            <TreeStatusCtx.Provider value={treeStatus}>
+              <TreeRowCtx.Provider value={rowApi}>
+                <TreeMenuCtx.Provider value={setMenu}>
+                  <KindFileList key={projectId} tab={kindTab} kinds={kinds} />
+                </TreeMenuCtx.Provider>
+              </TreeRowCtx.Provider>
+            </TreeStatusCtx.Provider>
+          </div>
+        )}
+      </div>
       {/* 모달은 고정 크기라 폭 핸들이 없다 — 남기면 사이드바의 영속 폭을 모달이 바꾼다. */}
       {!modal && (
         <ResizeHandle onMouseDown={startResize} onDoubleClick={fitToContent} />
