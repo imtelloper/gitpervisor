@@ -36,8 +36,8 @@ Tauri는 `app_data_dir`/`app_local_data_dir`/`app_log_dir`/WebView2 유저데이
 `identifier` 하나에서** 파생시킨다(`tauri-2.11.2/src/path/desktop.rs:247`,
 `manager/webview.rs:534`). identifier가 같으면 두 프로세스가:
 
-- `projects.json`·`settings.json`을 양쪽이 **파일 통째로** read-modify-write 한다 →
-  나중에 저장한 쪽이 상대 변경분을 말없이 덮는다. `state.rs`의 `SAVE_LOCK`은
+- `projects.json`·`settings.json`을 양쪽이 **자기 메모리 사본 통째로** 덮어쓴다(디스크는 부팅 때 한 번만
+  읽는다) → 나중에 저장한 쪽이 상대 변경분을 말없이 덮는다. 파일 락으로도 못 막는다. `state.rs`의 `SAVE_LOCK`은
   **프로세스 내부** 뮤텍스라 아무 것도 막지 못한다.
 - `session.json`을 공유한다 → dev가 뜨는 순간 "지난번에 비정상 종료됐습니다"를 오진한다
   (설치본이 **실행 중**이라 `clean_exit`가 당연히 false다). 반대로 dev를 끄면 설치본의
