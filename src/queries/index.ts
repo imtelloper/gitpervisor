@@ -968,10 +968,9 @@ export function useAddProject() {
       useUi.getState().selectProject(project.id);
     },
     onError: (e) => {
-      // 이미 등록됐는데 목록엔 없는(stale) 상태 — 진실을 다시 끌어와 표시한다
-      if (isIpcError(e) && e.code === "DUPLICATE_PROJECT") {
-        void qc.invalidateQueries({ queryKey: keys.projects });
-      }
+      // 코드와 무관하게 다시 조회한다 — callMutating 의 TIMEOUT 은 "실패"가 아니라 "모름"이라
+      // 백엔드에선 추가됐을 수 있고, staleTime: Infinity 라 여기서 안 끌어오면 수동 새로고침 전까지 안 보인다.
+      void qc.invalidateQueries({ queryKey: keys.projects });
       useUi.getState().pushToast("error", errorMessage(e));
     },
   });
@@ -1010,7 +1009,11 @@ export function useRemoveProject() {
       );
       void qc.invalidateQueries({ queryKey: keys.projects });
     },
-    onError: (e) => useUi.getState().pushToast("error", errorMessage(e)),
+    onError: (e) => {
+      // useAddProject 와 같은 이유 — TIMEOUT 이면 이미 지워졌을 수 있다.
+      void qc.invalidateQueries({ queryKey: keys.projects });
+      useUi.getState().pushToast("error", errorMessage(e));
+    },
   });
 }
 
