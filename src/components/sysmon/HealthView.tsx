@@ -9,7 +9,8 @@ import type { Messages } from "../../i18n/messages";
 import { useMessages } from "../../i18n/ui-language";
 import { formatBytes } from "../../lib/format";
 import { errorMessage, ipc } from "../../lib/ipc";
-import type { CrashKind, DiskHealth, DiskHealthStatus } from "../../lib/ipc";
+import type { CrashEvent, CrashKind, DiskHealth, DiskHealthStatus } from "../../lib/ipc";
+import { SortLabel, useTableSort } from "./sort-table";
 
 type T = Messages["pccareHealth"];
 
@@ -140,6 +141,9 @@ function DiskCard({ d, t }: { d: DiskHealth; t: T }) {
   );
 }
 
+// 데이터가 없을 때 렌더마다 새 [] 를 넘기면 정렬 메모가 매번 다시 돈다.
+const NO_EVENTS: CrashEvent[] = [];
+
 export function HealthView() {
   const msg = useMessages();
   const t = msg.pccareHealth;
@@ -163,6 +167,18 @@ export function HealthView() {
     staleTime: 60_000,
     retry: false,
   });
+
+  const crashSort = useTableSort(
+    "crashes",
+    crashes.data?.events ?? NO_EVENTS,
+    {
+      time: (e) => e.timeMs,
+      kind: (e) => kindLabel(e.kind, t),
+      code: (e) => e.code,
+      detail: (e) => e.detail,
+    },
+    { key: "time", dir: "desc" },
+  );
 
   const busy = disks.isFetching || crashes.isFetching;
   const refresh = () => {
@@ -255,14 +271,22 @@ export function HealthView() {
               <table className="w-full table-fixed border-collapse text-[11px]">
                 <thead>
                   <tr className="border-b border-edge text-left text-fg-dim">
-                    <th className="w-36 px-3 py-1 font-normal">{t.crashTime}</th>
-                    <th className="w-32 px-3 py-1 font-normal">{t.crashKind}</th>
-                    <th className="w-28 px-3 py-1 font-normal">{t.crashCode}</th>
-                    <th className="px-3 py-1 font-normal">{t.crashDetail}</th>
+                    <th className="w-36 px-3 py-1 font-normal">
+                      <SortLabel label={t.crashTime} k="time" sort={crashSort.sort} onSort={crashSort.toggle} />
+                    </th>
+                    <th className="w-32 px-3 py-1 font-normal">
+                      <SortLabel label={t.crashKind} k="kind" sort={crashSort.sort} onSort={crashSort.toggle} />
+                    </th>
+                    <th className="w-28 px-3 py-1 font-normal">
+                      <SortLabel label={t.crashCode} k="code" sort={crashSort.sort} onSort={crashSort.toggle} />
+                    </th>
+                    <th className="px-3 py-1 font-normal">
+                      <SortLabel label={t.crashDetail} k="detail" sort={crashSort.sort} onSort={crashSort.toggle} />
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
-                  {crashes.data.events.map((e, i) => (
+                  {crashSort.sorted.map((e, i) => (
                     <tr key={`${e.timeMs}:${i}`} className="border-b border-edge/40 last:border-0 hover:bg-hover">
                       <td className="px-3 py-1 tabular-nums text-fg-muted">{dateTime(e.timeMs)}</td>
                       <td className={`px-3 py-1 ${e.kind === "unexpectedShutdown" ? "text-fg-muted" : "text-danger"}`}>

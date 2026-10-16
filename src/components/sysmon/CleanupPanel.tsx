@@ -10,6 +10,7 @@ import { useMessages } from "../../i18n/ui-language";
 import { formatBytes } from "../../lib/format";
 import { errorMessage, ipc } from "../../lib/ipc";
 import { useUi } from "../../stores/ui";
+import { SortLabel, useTableSort } from "./sort-table";
 
 const BTN =
   "flex items-center gap-1 rounded border border-edge px-2 py-1 text-[11px] text-fg-muted transition-colors hover:bg-raised hover:text-fg";
@@ -34,6 +35,16 @@ export function CleanupPanel() {
   const chosen = items.filter((c) => selected.has(c.id));
   const chosenBytes = chosen.reduce((s, c) => s + c.bytes, 0);
   const busy = isFetching || running;
+  const cleanSort = useTableSort(
+    "cleanup",
+    items,
+    {
+      name: (c) => c.label,
+      size: (c) => c.bytes,
+      files: (c) => c.files,
+    },
+    { key: "size", dir: "desc" },
+  );
 
   const toggle = (id: string) =>
     setSelected((prev) => {
@@ -109,7 +120,15 @@ export function CleanupPanel() {
         <div className="px-3 py-3 text-[11px] text-fg-dim">{t.cleanupEmpty}</div>
       ) : (
         <ul className="text-[11px]">
-          {items.map((c) => (
+          <li className="flex items-center gap-2 border-b border-edge px-3 py-1 text-[10px] text-fg-dim">
+            <span className="flex-1 pl-5">
+              <SortLabel label={msg.sysmon.common.columnName} k="name" sort={cleanSort.sort} onSort={cleanSort.toggle} />
+            </span>
+            <SortLabel label={msg.sysmon.diskUsage.columnSize} k="size" sort={cleanSort.sort} onSort={cleanSort.toggle} align="right" />
+            <span className="text-fg-dim/50">·</span>
+            <SortLabel label={msg.sysmon.diskUsage.columnFiles} k="files" sort={cleanSort.sort} onSort={cleanSort.toggle} align="right" />
+          </li>
+          {cleanSort.sorted.map((c) => (
             <li key={c.id} className="border-b border-edge/40 last:border-0 hover:bg-hover">
               <label className="flex cursor-pointer items-start gap-2 px-3 py-1.5">
                 <input

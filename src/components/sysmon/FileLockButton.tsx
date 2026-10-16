@@ -11,6 +11,7 @@ import { useMessages } from "../../i18n/ui-language";
 import { errorMessage, ipc } from "../../lib/ipc";
 import type { FileLocker } from "../../lib/ipc";
 import { useUi } from "../../stores/ui";
+import { SortLabel, useTableSort } from "./sort-table";
 
 const BTN =
   "flex shrink-0 items-center gap-1 whitespace-nowrap rounded border border-edge px-2 py-1 text-[11px] text-fg-muted transition-colors hover:bg-raised hover:text-fg";
@@ -34,6 +35,9 @@ export function FileLockButton() {
   );
 }
 
+// 결과가 없을 때 렌더마다 새 [] 를 넘기면 정렬 메모가 매번 다시 돈다.
+const NO_LOCKERS: FileLocker[] = [];
+
 function FileLockDialog({ onClose }: { onClose: () => void }) {
   const msg = useMessages();
   const t = msg.pccareTools;
@@ -49,6 +53,17 @@ function FileLockDialog({ onClose }: { onClose: () => void }) {
     retry: false,
     gcTime: 0,
   });
+  const lockSort = useTableSort(
+    "file-lockers",
+    data?.lockers ?? NO_LOCKERS,
+    {
+      name: (r) => r.name,
+      pid: (r) => r.pid,
+      reason: (r) => r.reason,
+      exe: (r) => r.exePath,
+    },
+    { key: "name", dir: "asc" },
+  );
 
   const pick = async (directory: boolean) => {
     const picked = await open({
@@ -151,15 +166,23 @@ function FileLockDialog({ onClose }: { onClose: () => void }) {
                 <table className="w-full table-fixed border-collapse text-[11px]">
                   <thead className="sticky top-0 bg-panel text-fg-dim">
                     <tr className="border-b border-edge">
-                      <th className="w-[22%] px-3 py-1 text-left font-normal">{t.lockColName}</th>
-                      <th className="w-[10%] px-2 py-1 text-right font-normal">PID</th>
-                      <th className="w-[26%] px-2 py-1 text-left font-normal">{t.lockColReason}</th>
-                      <th className="px-2 py-1 text-left font-normal">{t.lockColExe}</th>
+                      <th className="w-[22%] px-3 py-1 text-left font-normal">
+                        <SortLabel label={t.lockColName} k="name" sort={lockSort.sort} onSort={lockSort.toggle} />
+                      </th>
+                      <th className="w-[10%] px-2 py-1 text-right font-normal">
+                        <SortLabel label="PID" k="pid" sort={lockSort.sort} onSort={lockSort.toggle} align="right" />
+                      </th>
+                      <th className="w-[26%] px-2 py-1 text-left font-normal">
+                        <SortLabel label={t.lockColReason} k="reason" sort={lockSort.sort} onSort={lockSort.toggle} />
+                      </th>
+                      <th className="px-2 py-1 text-left font-normal">
+                        <SortLabel label={t.lockColExe} k="exe" sort={lockSort.sort} onSort={lockSort.toggle} />
+                      </th>
                       <th className="w-[96px] px-2 py-1" />
                     </tr>
                   </thead>
                   <tbody>
-                    {data.lockers.map((l) => (
+                    {lockSort.sorted.map((l) => (
                       <tr key={l.pid} className="border-b border-edge/40 hover:bg-hover">
                         <td className="truncate px-3 py-1 text-fg" title={l.name}>{l.name}</td>
                         <td className="px-2 py-1 text-right tabular-nums text-fg-muted">{l.pid}</td>

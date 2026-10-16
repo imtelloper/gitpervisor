@@ -12,6 +12,7 @@ import { useMessages } from "../../i18n/ui-language";
 import { errorMessage, ipc, isIpcError } from "../../lib/ipc";
 import type { ScheduledTaskState, StartupScope } from "../../lib/ipc";
 import { useUi } from "../../stores/ui";
+import { SortLabel, useTableSort } from "./sort-table";
 
 type Text = Messages["pccareStartup"];
 
@@ -229,6 +230,30 @@ export function StartupView() {
     ...(startup.isLoading ? [t.loading] : []),
   ];
   const taskItems = tasks.data?.tasks ?? [];
+  const startupSort = useTableSort(
+    "startup",
+    startupItems,
+    {
+      enabled: (r) => r.enabled,
+      name: (r) => r.name,
+      command: (r) => r.command,
+      location: (r) => `${scopeLabel(t, r.scope)} · ${r.location}`,
+    },
+    { key: "name", dir: "asc" },
+  );
+  const taskSort = useTableSort(
+    "tasks",
+    taskItems,
+    {
+      enabled: (r) => r.enabled,
+      name: (r) => r.name,
+      state: (r) => stateLabel(t, r.state),
+      lastRun: (r) => r.lastRunMs,
+      nextRun: (r) => r.nextRunMs,
+      lastResult: (r) => r.lastResult,
+    },
+    { key: "name", dir: "asc" },
+  );
   const taskNotes = [
     ...(tasks.error ? [t.loadFailed(errorMessage(tasks.error))] : []),
     ...(tasks.data?.unreadable ?? []),
@@ -251,14 +276,22 @@ export function StartupView() {
           <table className="w-full table-fixed border-collapse text-[11px]">
             <thead className="sticky top-0 z-10 bg-panel">
               <tr className="border-b border-edge text-fg-dim">
-                <th className="w-[44px] px-2 py-1.5 text-left font-medium">{t.columnEnabled}</th>
-                <th className="w-[28%] px-2 py-1.5 text-left font-medium">{t.columnName}</th>
-                <th className="px-2 py-1.5 text-left font-medium">{t.columnCommand}</th>
-                <th className="w-[24%] px-2 py-1.5 text-left font-medium">{t.columnLocation}</th>
+                <th className="w-[56px] px-2 py-1.5 text-left font-medium">
+                  <SortLabel label={t.columnEnabled} k="enabled" sort={startupSort.sort} onSort={startupSort.toggle} />
+                </th>
+                <th className="w-[28%] px-2 py-1.5 text-left font-medium">
+                  <SortLabel label={t.columnName} k="name" sort={startupSort.sort} onSort={startupSort.toggle} />
+                </th>
+                <th className="px-2 py-1.5 text-left font-medium">
+                  <SortLabel label={t.columnCommand} k="command" sort={startupSort.sort} onSort={startupSort.toggle} />
+                </th>
+                <th className="w-[24%] px-2 py-1.5 text-left font-medium">
+                  <SortLabel label={t.columnLocation} k="location" sort={startupSort.sort} onSort={startupSort.toggle} />
+                </th>
               </tr>
             </thead>
             <tbody>
-              {startupItems.map((it) => (
+              {startupSort.sorted.map((it) => (
                 <tr key={it.id} className="border-b border-edge/50 hover:bg-raised/50">
                   <td className="px-2 py-1">
                     <Toggle
@@ -308,16 +341,28 @@ export function StartupView() {
           <table className="w-full table-fixed border-collapse text-[11px]">
             <thead className="sticky top-0 z-10 bg-panel">
               <tr className="border-b border-edge text-fg-dim">
-                <th className="w-[44px] px-2 py-1.5 text-left font-medium">{t.columnEnabled}</th>
-                <th className="px-2 py-1.5 text-left font-medium">{t.columnName}</th>
-                <th className="w-[72px] px-2 py-1.5 text-left font-medium">{t.columnState}</th>
-                <th className="w-[132px] px-2 py-1.5 text-left font-medium">{t.columnLastRun}</th>
-                <th className="w-[132px] px-2 py-1.5 text-left font-medium">{t.columnNextRun}</th>
-                <th className="w-[84px] px-2 py-1.5 text-left font-medium">{t.columnLastResult}</th>
+                <th className="w-[56px] px-2 py-1.5 text-left font-medium">
+                  <SortLabel label={t.columnEnabled} k="enabled" sort={taskSort.sort} onSort={taskSort.toggle} />
+                </th>
+                <th className="px-2 py-1.5 text-left font-medium">
+                  <SortLabel label={t.columnName} k="name" sort={taskSort.sort} onSort={taskSort.toggle} />
+                </th>
+                <th className="w-[72px] px-2 py-1.5 text-left font-medium">
+                  <SortLabel label={t.columnState} k="state" sort={taskSort.sort} onSort={taskSort.toggle} />
+                </th>
+                <th className="w-[132px] px-2 py-1.5 text-left font-medium">
+                  <SortLabel label={t.columnLastRun} k="lastRun" sort={taskSort.sort} onSort={taskSort.toggle} />
+                </th>
+                <th className="w-[132px] px-2 py-1.5 text-left font-medium">
+                  <SortLabel label={t.columnNextRun} k="nextRun" sort={taskSort.sort} onSort={taskSort.toggle} />
+                </th>
+                <th className="w-[84px] px-2 py-1.5 text-left font-medium">
+                  <SortLabel label={t.columnLastResult} k="lastResult" sort={taskSort.sort} onSort={taskSort.toggle} />
+                </th>
               </tr>
             </thead>
             <tbody>
-              {taskItems.map((task) => (
+              {taskSort.sorted.map((task) => (
                 <tr key={task.path} className="border-b border-edge/50 hover:bg-raised/50">
                   <td className="px-2 py-1">
                     <Toggle

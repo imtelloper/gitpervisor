@@ -17,6 +17,7 @@ import type {
   ServiceState,
 } from "../../lib/ipc";
 import { useUi } from "../../stores/ui";
+import { SortLabel, useTableSort } from "./sort-table";
 
 type Text = Messages["pccareServices"];
 
@@ -139,6 +140,18 @@ export function ServicesView() {
         (s.description ?? "").toLowerCase().includes(q),
     );
   }, [data, query]);
+  const svcSort = useTableSort(
+    "services",
+    rows,
+    {
+      name: (r) => r.displayName,
+      state: (r) => stateLabel(t, r.state),
+      startType: (r) => startTypeLabel(t, r.startType),
+      pid: (r) => r.pid,
+      description: (r) => r.description,
+    },
+    { key: "name", dir: "asc" },
+  );
 
   useEffect(() => {
     if (!menu) return;
@@ -273,16 +286,26 @@ export function ServicesView() {
         <table className="w-full table-fixed border-collapse text-[11px]">
           <thead className="sticky top-0 z-10 bg-panel">
             <tr className="border-b border-edge text-fg-dim">
-              <th className="px-2 py-1.5 text-left font-medium">{t.columnName}</th>
-              <th className="w-[76px] px-2 py-1.5 text-left font-medium">{t.columnState}</th>
-              <th className="w-[96px] px-2 py-1.5 text-left font-medium">{t.columnStartType}</th>
-              <th className="w-[56px] px-2 py-1.5 text-right font-medium">PID</th>
-              <th className="w-[34%] px-2 py-1.5 text-left font-medium">{t.columnDescription}</th>
+              <th className="px-2 py-1.5 text-left font-medium">
+                <SortLabel label={t.columnName} k="name" sort={svcSort.sort} onSort={svcSort.toggle} />
+              </th>
+              <th className="w-[76px] px-2 py-1.5 text-left font-medium">
+                <SortLabel label={t.columnState} k="state" sort={svcSort.sort} onSort={svcSort.toggle} />
+              </th>
+              <th className="w-[96px] px-2 py-1.5 text-left font-medium">
+                <SortLabel label={t.columnStartType} k="startType" sort={svcSort.sort} onSort={svcSort.toggle} />
+              </th>
+              <th className="w-[56px] px-2 py-1.5 text-right font-medium">
+                <SortLabel label="PID" k="pid" sort={svcSort.sort} onSort={svcSort.toggle} align="right" />
+              </th>
+              <th className="w-[34%] px-2 py-1.5 text-left font-medium">
+                <SortLabel label={t.columnDescription} k="description" sort={svcSort.sort} onSort={svcSort.toggle} />
+              </th>
               {controllable ? <th className="w-[68px]" /> : null}
             </tr>
           </thead>
           <tbody>
-            {rows.map((s) => (
+            {svcSort.sorted.map((s) => (
               <tr
                 key={s.name}
                 className="group border-b border-edge/50 hover:bg-raised/50"

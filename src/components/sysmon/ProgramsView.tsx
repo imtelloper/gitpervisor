@@ -13,6 +13,7 @@ import { errorMessage, ipc } from "../../lib/ipc";
 import type { ActiveXControl, InstalledApp, InstalledAppCategory } from "../../lib/ipc";
 import { isMac } from "../../lib/platform";
 import { useUi } from "../../stores/ui";
+import { SortLabel, useTableSort } from "./sort-table";
 
 type CategoryFilter = "all" | InstalledAppCategory;
 const UNUSED_DAYS = [15, 30, 60] as const;
@@ -115,6 +116,30 @@ export function ProgramsView() {
     const cutoff = Date.now() - unused * 86_400_000;
     return controls.filter((c) => c.lastUsedMs != null && c.lastUsedMs < cutoff);
   }, [activex.data, unused]);
+  const appSort = useTableSort(
+    "programs",
+    shown,
+    {
+      name: (r) => r.name,
+      publisher: (r) => r.publisher,
+      version: (r) => r.version,
+      installed: (r) => r.installDateMs,
+      size: (r) => r.sizeBytes,
+    },
+    { key: "name", dir: "asc" },
+  );
+  const axSort = useTableSort(
+    "activex",
+    shownActivex,
+    {
+      name: (r) => r.name,
+      clsid: (r) => r.clsid,
+      version: (r) => r.version,
+      lastUsed: (r) => r.lastUsedMs,
+      files: (r) => r.files.length,
+    },
+    { key: "name", dir: "asc" },
+  );
 
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: APPS_KEY });
@@ -207,11 +232,13 @@ export function ProgramsView() {
 
       {/* 설치된 프로그램 표 */}
       <div className={`${APP_GRID} gap-2 border-b border-edge bg-panel px-3 py-1 text-fg-dim`}>
-        <span>{msg.sysmon.common.columnName}</span>
-        <span>{t.colPublisher}</span>
-        <span>{t.colVersion}</span>
-        <span>{t.colInstalled}</span>
-        <span className="text-right">{t.colSize}</span>
+        <SortLabel label={msg.sysmon.common.columnName} k="name" sort={appSort.sort} onSort={appSort.toggle} />
+        <SortLabel label={t.colPublisher} k="publisher" sort={appSort.sort} onSort={appSort.toggle} />
+        <SortLabel label={t.colVersion} k="version" sort={appSort.sort} onSort={appSort.toggle} />
+        <SortLabel label={t.colInstalled} k="installed" sort={appSort.sort} onSort={appSort.toggle} />
+        <span className="text-right">
+          <SortLabel label={t.colSize} k="size" sort={appSort.sort} onSort={appSort.toggle} align="right" />
+        </span>
         <span />
       </div>
       {apps.isLoading ? (
@@ -221,7 +248,7 @@ export function ProgramsView() {
       ) : shown.length === 0 ? (
         <div className="px-3 py-2 text-fg-dim">{t.noMatches}</div>
       ) : (
-        shown.map((a) => (
+        appSort.sorted.map((a) => (
           <div
             key={a.id}
             className={`${APP_GRID} items-center gap-2 border-b border-edge/50 px-3 py-1 hover:bg-hover`}
@@ -295,17 +322,19 @@ export function ProgramsView() {
           ) : (
             <>
               <div className={`${AX_GRID} gap-2 border-b border-edge bg-panel px-3 py-1 text-fg-dim`}>
-                <span>{msg.sysmon.common.columnName}</span>
-                <span>CLSID</span>
-                <span>{t.colVersion}</span>
-                <span>{t.colLastUsed}</span>
-                <span className="text-right">{t.colFiles}</span>
+                <SortLabel label={msg.sysmon.common.columnName} k="name" sort={axSort.sort} onSort={axSort.toggle} />
+                <SortLabel label="CLSID" k="clsid" sort={axSort.sort} onSort={axSort.toggle} />
+                <SortLabel label={t.colVersion} k="version" sort={axSort.sort} onSort={axSort.toggle} />
+                <SortLabel label={t.colLastUsed} k="lastUsed" sort={axSort.sort} onSort={axSort.toggle} />
+                <span className="text-right">
+                  <SortLabel label={t.colFiles} k="files" sort={axSort.sort} onSort={axSort.toggle} align="right" />
+                </span>
                 <span />
               </div>
               {shownActivex.length === 0 ? (
                 <div className="px-3 py-2 text-fg-dim">{t.activexNoMatches}</div>
               ) : (
-                shownActivex.map((c) => (
+                axSort.sorted.map((c) => (
                   <div
                     key={c.clsid}
                     className={`${AX_GRID} items-center gap-2 border-b border-edge/50 px-3 py-1 hover:bg-hover`}
