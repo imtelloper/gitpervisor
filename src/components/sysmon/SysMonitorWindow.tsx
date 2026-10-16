@@ -12,6 +12,11 @@ import { ConfirmHost } from "../common/ConfirmDialog";
 import { Toasts } from "../common/Toast";
 import { FloatTitleBar } from "../FloatTitleBar";
 import { DiskUsageView } from "./DiskUsageView";
+import { FileLockButton } from "./FileLockButton";
+import { HealthView } from "./HealthView";
+import { ProgramsView } from "./ProgramsView";
+import { ServicesView } from "./ServicesView";
+import { StartupView } from "./StartupView";
 import type { SysmonView } from "./prefs";
 import { loadSysmonPrefs, saveSysmonPrefs } from "./prefs";
 import { SystemInfoView } from "./SystemInfoView";
@@ -382,6 +387,10 @@ export function SysMonitorWindow() {
           [
             ["proc", msg.sysmon.window.tabProcesses],
             ["disk", msg.sysmon.window.tabDisk],
+            ["startup", msg.sysmon.window.tabStartup],
+            ["services", msg.sysmon.window.tabServices],
+            ["programs", msg.sysmon.window.tabPrograms],
+            ["health", msg.sysmon.window.tabHealth],
             ["info", msg.sysmon.window.tabSystemInfo],
           ] as const
         ).map(([k, label]) => (
@@ -401,6 +410,10 @@ export function SysMonitorWindow() {
       </div>
 
       {view === "disk" ? <DiskUsageView /> : null}
+      {view === "startup" ? <StartupView /> : null}
+      {view === "services" ? <ServicesView /> : null}
+      {view === "programs" ? <ProgramsView /> : null}
+      {view === "health" ? <HealthView /> : null}
       {view === "info" ? <SystemInfoView /> : null}
 
       {/* ── 프로세스 뷰 ── */}
@@ -431,6 +444,7 @@ export function SysMonitorWindow() {
           <span className="text-[10px] text-fg-dim">{msg.sysmon.common.measuring}</span>
         ) : null}
         <div className="flex-1" />
+        <FileLockButton />
         <div className="relative">
           <Search
             size={12}
@@ -447,7 +461,7 @@ export function SysMonitorWindow() {
           type="button"
           onClick={() => setGroupByName((v) => !v)}
           title={msg.sysmon.window.groupByNameTitle}
-          className={`rounded border px-2 py-1 text-[11px] transition-colors ${
+          className={`shrink-0 whitespace-nowrap rounded border px-2 py-1 text-[11px] transition-colors ${
             groupByName
               ? "border-accent bg-accent/15 text-accent"
               : "border-edge text-fg-muted hover:bg-raised hover:text-fg"

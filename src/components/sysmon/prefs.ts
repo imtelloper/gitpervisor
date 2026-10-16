@@ -10,7 +10,24 @@ const LS_KEY = "gp:sysmon";
 
 /** 팝업의 표시 뷰 — 프로세스 목록 ⇄ 디스크 용량 분석(disk-usage-analyzer 설계 §3.4)
  *  ⇄ 시스템 정보(태스크 31 §3.3). */
-export type SysmonView = "proc" | "disk" | "info";
+export type SysmonView =
+  | "proc"
+  | "disk"
+  | "startup"
+  | "services"
+  | "programs"
+  | "health"
+  | "info";
+
+const SYSMON_VIEWS: readonly SysmonView[] = [
+  "proc",
+  "disk",
+  "startup",
+  "services",
+  "programs",
+  "health",
+  "info",
+];
 
 export interface SysmonPrefs {
   sortBy: ProcSortKey;
@@ -30,7 +47,7 @@ export function loadSysmonPrefs(): SysmonPrefs {
       return {
         sortBy,
         groupByName: !!p.groupByName,
-        view: p.view === "disk" || p.view === "info" ? p.view : "proc",
+        view: SYSMON_VIEWS.find((v) => v === p.view) ?? "proc",
       };
     }
   } catch {

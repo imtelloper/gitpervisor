@@ -140,7 +140,7 @@ objc2-vision = { version = "0.3", default-features = false, features = ["std", "
 # Win32_System_LibraryLoader: 번들 ConPTY 사이드로드(SetDllDirectoryW/GetModuleHandleW — lib.rs, 태스크 33).
 # Win32_System_Diagnostics_Debug(+_Kernel·_Memory — MiniDumpWriteDump 의 cfg 조건): UI 스레드 멈춤 때 자기 미니덤프(health/ui_stall.rs).
 # Win32_Globalization: GetACP — 인코딩 탐지의 마지막 폴백(한국어 Windows = CP949, text/encoding.rs).
-windows-sys = { version = "0.59", features = ["Win32_System_Performance", "Win32_System_SystemInformation", "Win32_System_Diagnostics_Debug", "Win32_System_Kernel", "Win32_System_Memory", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_System_ProcessStatus", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_Graphics_Gdi", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Globalization"] }
+windows-sys = { version = "0.59", features = ["Win32_System_Performance", "Win32_System_SystemInformation", "Win32_System_Diagnostics_Debug", "Win32_System_Kernel", "Win32_System_Memory", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_System_ProcessStatus", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_Graphics_Gdi", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Globalization", "Win32_System_Services", "Win32_System_RestartManager", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_Registry", "Wdk_Graphics_Direct3D"] }
 # 추출한 아이콘 BGRA→PNG 인코딩(리소스 모니터). tauri image-png가 같은 0.25를 트리에 가져 비용 미미.
 # jpeg: 화면 캡쳐 오버레이의 **표시용** 프레임. PNG는 같은 프레임에 667ms/9.75MB가 들어 예산을
 # 통째로 먹는다(실측 — DOCS/screen-capture-design.md §2.3). 최종 결과물은 항상 무손실 원본에서 뜬다.
@@ -149,7 +149,9 @@ clipboard-win = "5"
 # 이미지 글자 추출(commands/ocr.rs, 태스크 68)의 Windows 엔진 — Windows.Media.Ocr(WinRT 프로젝션).
 # tao/wry가 이미 같은 0.61.x를 트리에 두고 windows-core 0.61.2 한 벌을 공유하므로, 피처 6개는
 # 바인딩 생성만 늘린다(windows-sys와 달리 이쪽은 WinRT라 별개 크레이트가 필요하다).
-windows = { version = "0.61", features = ["Media_Ocr", "Graphics_Imaging", "Globalization", "Foundation_Collections", "Storage_Streams", "Security_Cryptography"] }
+# Win32_System_TaskScheduler/Com/Variant/Ole: 리소스 모니터 예약 작업 탭(pc_care/scheduled_tasks.rs) — ITaskService COM.
+# Services·RestartManager·IO·Ioctl·Registry·Wdk_Graphics_Direct3D(windows-sys): 같은 PC 관리 탭들(DOCS/pc-care-design.md).
+windows = { version = "0.61", features = ["Media_Ocr", "Graphics_Imaging", "Globalization", "Foundation_Collections", "Storage_Streams", "Security_Cryptography", "Win32_System_TaskScheduler", "Win32_System_Com", "Win32_System_Variant", "Win32_System_Ole", "Win32_Foundation"] }
 # AI 완료 OS 토스트를 앱 AUMID로 직접 띄운다 — 알림 플러그인은 dev(target/debug)에서 app_id를
 # 안 붙여 PowerShell 명의로 뜨므로, 직접 토스트 + AUMID(DisplayName/Icon) 레지스트리 등록으로 대체.
 tauri-winrt-notification = "0.7"

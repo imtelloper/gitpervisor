@@ -43,6 +43,9 @@ pub enum ErrorCode {
     /// 빠른 재생용 사본 리먹서(commands/video_remux.rs)가 이 파일 구조를 다루지 않는다(트랙 2개·암호화·잘린 파일 …).
     /// 실패가 아니다 — 프런트는 토스트 없이 같은 잡 id로 ffmpeg 경로(video_export copy)를 부른다. 임시 파일은 이미 지웠다.
     Unsupported,
+    /// 관리자(root) 권한이 필요하다(리소스 모니터 PC 관리 — DOCS/pc-care-design.md §2). 프런트는 이 코드면
+    /// "관리자 권한으로 다시 시도"를 보이고 같은 커맨드를 `elevate: true`로 다시 부른다. 대상은 손대지 않은 상태다.
+    PermissionDenied,
 }
 
 /// 모든 IPC 커맨드의 공통 오류 형태. 프론트엔드는 code로 분기하고 stderr를 상세로 노출한다.

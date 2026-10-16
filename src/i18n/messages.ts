@@ -27,6 +27,11 @@ import { pdfText } from "./text-pdf";
 import { mediaText } from "./text-media";
 import { windowsText } from "./text-windows";
 import { captionsText } from "./text-captions";
+import { pccareHealthText } from "./text-pccare-health";
+import { pccareStartupText } from "./text-pccare-startup";
+import { pccareServicesText } from "./text-pccare-services";
+import { pccareProgramsText } from "./text-pccare-programs";
+import { pccareToolsText } from "./text-pccare-tools";
 
 export function messagesFor(locale: Locale) {
   return {
@@ -53,6 +58,11 @@ export function messagesFor(locale: Locale) {
     media: mediaText[locale],
     windows: windowsText[locale],
     captions: captionsText[locale],
+    pccareHealth: pccareHealthText[locale],
+    pccareStartup: pccareStartupText[locale],
+    pccareServices: pccareServicesText[locale],
+    pccarePrograms: pccareProgramsText[locale],
+    pccareTools: pccareToolsText[locale],
   };
 }
 

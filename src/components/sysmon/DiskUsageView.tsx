@@ -21,6 +21,7 @@ import type { DiskRoot, DiskScanStatus } from "../../lib/ipc";
 import { useDiskChildren } from "../../queries";
 import { useUi } from "../../stores/ui";
 import { DiskTreemap } from "./DiskTreemap";
+import { CleanupPanel } from "./CleanupPanel";
 
 /** 부하 임계 색 — SysMonitor와 동일 규약. 디스크 점유율 바에 재사용한다. */
 function pctBar(pct: number): string {
@@ -582,6 +583,7 @@ export function DiskUsageView() {
             <div className="mt-1 text-[10px]">
               {msg.sysmon.diskUsage.emptyNote}
             </div>
+            <CleanupPanel />
           </div>
         ) : null}
       </div>

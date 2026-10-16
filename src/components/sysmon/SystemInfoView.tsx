@@ -61,12 +61,13 @@ const VOLUME_KIND: Record<string, string> = {
 
 interface Card {
   title: string;
-  rows: [string, string | null][];
+  /** 세 번째 값이 true면 흐리게(IPv6처럼 덜 중요한 보조 값). */
+  rows: [string, string | null, boolean?][];
 }
 
 /** 응답 → 카드 7개. 표시와 "요약 복사"가 같은 모델을 쓰므로 둘이 어긋날 수 없다. */
 function toCards(d: SystemInfo, msg: Messages): Card[] {
-  const { os, cpu, memory, gpus, board, volumes, app } = d;
+  const { os, cpu, memory, gpus, board, volumes, networks, app } = d;
   const t = msg.sysmon.systemInfo;
 
   const memRows: [string, string | null][] = [
@@ -123,6 +124,20 @@ function toCards(d: SystemInfo, msg: Messages): Card[] {
             .join(" · "),
         ]);
 
+  const netRows: [string, string | null, boolean?][] =
+    networks.length === 0
+      ? [[msg.pccareTools.networkAdapter, null]]
+      : networks.flatMap((n): [string, string | null, boolean?][] => {
+          // 주소가 없는 것은 수집 실패가 아니라 원래 없는 값이다(IPv6 끔·VPN 터널) — null(=정보 없음)로
+          // 그리면 수집 실패 메모가 툴팁·요약에 붙으므로 빈 줄은 빼고, 주소가 하나도 없으면 대시로 둔다.
+          const v4 = n.ipv4.join(", ");
+          const v6 = n.ipv6.join(", ");
+          const rows: [string, string | null, boolean?][] = [[n.name, v4 || v6 || "—"]];
+          if (v4 && v6) rows.push(["IPv6", v6, true]);
+          if (n.mac) rows.push(["MAC", n.mac]);
+          return rows;
+        });
+
   return [
     {
       title: "OS",
@@ -169,6 +184,7 @@ function toCards(d: SystemInfo, msg: Messages): Card[] {
         : [[t.board, null]],
     },
     { title: t.cardStorage, rows: volRows },
+    { title: msg.pccareTools.networkCard, rows: netRows },
     {
       title: t.cardApp,
       rows: [
@@ -205,12 +221,12 @@ function InfoCard({ card, noteTip }: { card: Card; noteTip?: string }) {
       </h3>
       <table className="w-full table-fixed border-collapse text-[11px]">
         <tbody>
-          {card.rows.map(([k, v], i) => (
+          {card.rows.map(([k, v, dim], i) => (
             <tr key={`${k}:${i}`} className="border-b border-edge/40 last:border-0">
               <td className="w-[38%] px-3 py-1 align-top text-fg-dim">{k}</td>
               <td
                 className={`px-3 py-1 break-words ${
-                  v == null ? "text-fg-dim" : "text-fg-muted"
+                  v == null || dim ? "text-fg-dim" : "text-fg-muted"
                 }`}
                 title={v == null ? noteTip : undefined}
               >

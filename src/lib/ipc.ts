@@ -803,6 +803,178 @@ export interface AppInfo {
   webviewVersion: string;
   buildProfile: "debug" | "release";
 }
+// ---- 리소스 모니터 PC 관리 타입 (pc_care/*.rs ↔ DOCS/pc-care-design.md §4) ----
+// ── pc_care types: health ──
+export type DiskHealthStatus = "ok" | "warning" | "critical" | "unknown";
+export interface DiskHealth {
+  index: number;
+  model: string;
+  serial: string | null;
+  bus: string;
+  sizeBytes: number | null;
+  kind: "nvme" | "ata" | "other";
+  status: DiskHealthStatus;
+  temperatureC: number | null;
+  percentageUsed: number | null;
+  availableSparePct: number | null;
+  availableSpareThresholdPct: number | null;
+  powerOnHours: number | null;
+  powerCycles: number | null;
+  unsafeShutdowns: number | null;
+  mediaErrors: number | null;
+  errorLogEntries: number | null;
+  dataReadBytes: number | null;
+  dataWrittenBytes: number | null;
+  criticalWarning: number | null;
+  unreadableReason: string | null;
+}
+export interface GpuTemperature {
+  name: string;
+  temperatureC: number | null;
+  source: string;
+}
+export interface GpuTemperatures {
+  supported: boolean;
+  unsupportedReason: string | null;
+  gpus: GpuTemperature[];
+}
+export type CrashKind = "bugcheck" | "unexpectedShutdown" | "kernelPanic";
+export interface CrashEvent {
+  timeMs: number;
+  kind: CrashKind;
+  code: string | null;
+  detail: string | null;
+}
+export interface CrashHistory {
+  supported: boolean;
+  unsupportedReason: string | null;
+  events: CrashEvent[];
+}
+// ── pc_care types: startup ──
+export type StartupScope = "user" | "machine";
+export interface StartupItem {
+  id: string;
+  name: string;
+  command: string;
+  location: string;
+  scope: StartupScope;
+  enabled: boolean;
+  publisher: string | null;
+  exePath: string | null;
+}
+export interface StartupList {
+  items: StartupItem[];
+  unreadable: string[];
+}
+export type ScheduledTaskState = "ready" | "running" | "disabled" | "queued" | "unknown";
+export interface ScheduledTask {
+  path: string;
+  name: string;
+  enabled: boolean;
+  state: ScheduledTaskState;
+  lastRunMs: number | null;
+  nextRunMs: number | null;
+  lastResult: number | null;
+  author: string | null;
+  command: string | null;
+  canToggle: boolean;
+}
+export interface ScheduledTaskList {
+  tasks: ScheduledTask[];
+  unreadable: string[];
+}
+// ── pc_care types: services ──
+export type ServiceState = "running" | "stopped" | "startPending" | "stopPending" | "paused" | "unknown";
+export type ServiceStartType = "auto" | "autoDelayed" | "manual" | "disabled" | "boot" | "system" | "unknown";
+export type ServiceAction = "start" | "stop" | "restart";
+export type ServiceStartTypeChoice = "auto" | "manual" | "disabled";
+export interface ServiceInfo {
+  name: string;
+  displayName: string;
+  description: string | null;
+  state: ServiceState;
+  startType: ServiceStartType;
+  pid: number | null;
+  binaryPath: string | null;
+  isMicrosoft: boolean;
+  canStop: boolean;
+}
+export interface ServicesList {
+  services: ServiceInfo[];
+  hiddenMicrosoft: number;
+  filtersMicrosoft: boolean;
+  controlSupported: boolean;
+  unsupportedReason: string | null;
+}
+// ── pc_care types: programs ──
+export type InstalledAppCategory = "security" | "finance" | "other";
+export interface InstalledApp {
+  /** 불투명 값 — 제거 명령은 Rust 가 이 id 로 레지스트리를 다시 읽는다. */
+  id: string;
+  name: string;
+  publisher: string | null;
+  version: string | null;
+  /** 날짜뿐이라 UTC 자정 — UTC 로 그린다. */
+  installDateMs: number | null;
+  sizeBytes: number | null;
+  location: string | null;
+  category: InstalledAppCategory;
+  scope: "user" | "machine";
+  canUninstall: boolean;
+  /** Linux 전용 — 앱이 지우지 않고 사용자가 칠 명령. */
+  uninstallCommand: string | null;
+}
+export interface ActiveXControl {
+  clsid: string;
+  name: string;
+  version: string | null;
+  codebase: string | null;
+  files: string[];
+  lastUsedMs: number | null;
+}
+export interface ActiveXList {
+  supported: boolean;
+  unsupportedReason: string | null;
+  controls: ActiveXControl[];
+}
+// ── pc_care types: tools ──
+/** 파일 잠금 찾기 한 행(file_locks.rs FileLocker). reason 은 백엔드가 현재 언어로 만든 문장. */
+export interface FileLocker {
+  pid: number;
+  name: string;
+  exePath: string | null;
+  reason: string;
+}
+export interface FileLockReport {
+  lockers: FileLocker[];
+  truncated: boolean; // 폴더 안 파일이 상한(2,000개)을 넘어 일부만 확인
+  notes: string[]; // 확인하지 못한 부분의 사유(권한 없는 프로세스 등)
+}
+export type CleanupKind = "temp" | "recycleBin" | "crashDumps" | "devCache" | "thumbnail";
+export interface CleanupCandidate {
+  id: string;
+  label: string;
+  path: string | null; // Windows 휴지통은 null(셸 API)
+  bytes: number;
+  files: number;
+  kind: CleanupKind;
+  note: string | null;
+}
+export interface CleanupResult {
+  freedBytes: number;
+  deletedFiles: number;
+  skippedFiles: number;
+}
+/** 시스템 정보의 네트워크 어댑터(sysinfo_static.rs NetworkInfo). */
+export interface NetworkInfo {
+  name: string;
+  mac: string | null;
+  ipv4: string[];
+  ipv6: string[];
+  rxBytes: number;
+  txBytes: number;
+}
+
 export interface SystemInfo {
   collectedAtMs: number;
   os: OsInfo;
@@ -811,6 +983,7 @@ export interface SystemInfo {
   gpus: GpuInfo[];
   board: BoardInfo | null;
   volumes: VolumeInfo[];
+  networks: NetworkInfo[];
   app: AppInfo;
   notes: string[]; // 수집 실패 항목 사유("CIM: 시간 초과" 등)
 }
@@ -1031,7 +1204,9 @@ export type ErrorCode =
   // 대본 편집본의 구간이 너무 많은데 ffmpeg가 7 미만이라 그래프 파일을 못 읽는다(태스크 72 §3.6-3).
   | "TOO_MANY_RANGES"
   // 빠른 재생용 사본 리먹서가 이 파일 구조를 다루지 않는다(video_remux.rs) — 실패가 아니라 ffmpeg 경로로 넘기라는 신호다.
-  | "UNSUPPORTED";
+  | "UNSUPPORTED"
+  // 관리자 권한 필요(리소스 모니터 PC 관리 — DOCS/pc-care-design.md §2). "관리자 권한으로 다시 시도"를 보인다.
+  | "PERMISSION_DENIED";
 
 // ---- API 클라이언트 전송 계약 (commands/http.rs §4.9 / §5.1) ----
 // 백엔드 HttpRequest의 camelCase serde와 1:1 정합. lib/apiclient.ts에서 조립한
@@ -1805,6 +1980,73 @@ export const ipc = {
       { force },
       { lane: "background", attempts: 1, timeoutMs: 30_000 },
     ),
+  // ---- 리소스 모니터 PC 관리 (pc_care/*.rs, DOCS/pc-care-design.md) ----
+  // ── pc_care: health ──
+  // 디스크마다 IOCTL 몇 번(USB는 거절이 빠르다) — smartctl을 쓰는 OS는 디스크당 수 초라 길게.
+  diskHealthList: () =>
+    call<DiskHealth[]>("disk_health_list", {}, { lane: "background", attempts: 1, timeoutMs: 60_000 }),
+  gpuTemperatures: () =>
+    call<GpuTemperatures>("gpu_temperatures", {}, { lane: "background", attempts: 1, timeoutMs: 4000 }),
+  crashHistoryList: () =>
+    call<CrashHistory>("crash_history_list", {}, { lane: "background", attempts: 1, timeoutMs: 25_000 }),
+  // ── pc_care: startup ──
+  startupList: () =>
+    call<StartupList>("startup_list", {}, { lane: "background", attempts: 1, timeoutMs: 15_000 }),
+  startupSetEnabled: (id: string, enabled: boolean, elevate: boolean) =>
+    callMutating<void>("startup_set_enabled", { id, enabled, elevate }),
+  scheduledTasksList: (includeMicrosoft: boolean) =>
+    call<ScheduledTaskList>(
+      "scheduled_tasks_list",
+      { includeMicrosoft },
+      { lane: "background", attempts: 1, timeoutMs: 30_000 },
+    ),
+  scheduledTaskSetEnabled: (path: string, enabled: boolean, elevate: boolean) =>
+    callMutating<void>("scheduled_task_set_enabled", { path, enabled, elevate }),
+  // ── pc_care: services ──
+  servicesList: (includeMicrosoft: boolean) =>
+    call<ServicesList>(
+      "services_list",
+      { includeMicrosoft },
+      { lane: "background", attempts: 1, timeoutMs: 20_000 },
+    ),
+  serviceControl: (name: string, action: ServiceAction, elevate: boolean) =>
+    callMutating<void>("service_control", { name, action, elevate }),
+  serviceSetStartType: (name: string, startType: ServiceStartTypeChoice, elevate: boolean) =>
+    callMutating<void>("service_set_start_type", { name, startType, elevate }),
+  // ── pc_care: programs ──
+  // 레지스트리 수백 키(Windows)·dpkg 수천 줄(Linux) — 수 초 걸릴 수 있다.
+  installedAppsList: () =>
+    call<InstalledApp[]>(
+      "installed_apps_list",
+      {},
+      { lane: "background", attempts: 1, timeoutMs: 30_000 },
+    ),
+  /** 제거 프로그램 실행까지만(끝을 기다리지 않는다) — 관리자 매니페스트면 UAC 응답까지 막힌다. */
+  installedAppUninstall: (id: string) =>
+    callMutating<void>("installed_app_uninstall", { id }),
+  activexList: () =>
+    call<ActiveXList>("activex_list", {}, { lane: "background", attempts: 1, timeoutMs: 15_000 }),
+  /** 항상 승격 — 파일마다 UAC 창(60초씩)이 뜰 수 있어 길게 둔다. */
+  activexRemove: (clsid: string) =>
+    callMutating<void>("activex_remove", { clsid }, 600_000),
+  // ── pc_care: tools ──
+  // 파일 잠금 찾기 — 조회 전용. 폴더는 Restart Manager 등록·프로세스 작업 폴더 조사가 수 초라 길게.
+  fileLockers: (path: string) =>
+    call<FileLockReport>(
+      "file_lockers",
+      { path },
+      { lane: "background", attempts: 1, timeoutMs: 30_000 },
+    ),
+  // 정리 가능 공간 검사 — 후보마다 3초 상한으로 센다(병렬).
+  cleanupScan: () =>
+    call<CleanupCandidate[]>("cleanup_scan", undefined, {
+      lane: "background",
+      attempts: 1,
+      timeoutMs: 30_000,
+    }),
+  // 정리 실행 — 캐시가 수십만 파일이면 수 분이 걸린다. 경로는 서버의 고정 후보표에서 id로만 고른다.
+  cleanupRun: (ids: string[]) =>
+    callMutating<CleanupResult>("cleanup_run", { ids }, 600_000),
   // ---- 디스크 용량 분석 (disk_scan.rs) ----
   // 스캔 대상 후보 볼륨 — 클릭 시 1회 열거.
   diskRoots: () =>

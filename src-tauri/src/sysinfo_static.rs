@@ -112,6 +112,18 @@ pub struct VolumeInfo {
     pub removable: bool,
 }
 
+/// 네트워크 어댑터(DOCS/pc-care-design.md §4.11). 루프백·MAC 없음·IP 없음은 뺀다.
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkInfo {
+    pub name: String,
+    pub mac: Option<String>,
+    pub ipv4: Vec<String>,
+    pub ipv6: Vec<String>,
+    pub rx_bytes: u64,
+    pub tx_bytes: u64,
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppInfo {
@@ -132,6 +144,7 @@ pub struct SystemInfo {
     pub gpus: Vec<GpuInfo>,
     pub board: Option<BoardInfo>,
     pub volumes: Vec<VolumeInfo>,
+    pub networks: Vec<NetworkInfo>,
     pub app: AppInfo,
     /// 수집 실패 항목 사유("CIM: 시간 초과" 등) — UI가 "정보 없음" 툴팁에 쓴다.
     pub notes: Vec<String>,
@@ -224,6 +237,7 @@ async fn collect(app: &AppHandle) -> SystemInfo {
         gpus: Vec::new(),
         board: None,
         volumes: volumes(),
+        networks: networks(),
         app: app_info(app),
         notes: Vec::new(),
     };
@@ -244,6 +258,44 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+fn networks() -> Vec<NetworkInfo> {
+    let nets = sysinfo::Networks::new_with_refreshed_list();
+    let mut out: Vec<NetworkInfo> = nets
+        .list()
+        .iter()
+        .filter_map(|(name, d)| {
+            let ips: Vec<std::net::IpAddr> = d.ip_networks().iter().map(|n| n.addr).collect();
+            network_entry(name, d.mac_address().0, &ips, d.total_received(), d.total_transmitted())
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+/// 어댑터 하나 → 보일 행. 루프백 주소는 버리고, 남은 IP가 없으면(루프백·끊긴 어댑터) 행째 뺀다.
+fn network_entry(name: &str, mac: [u8; 6], ips: &[std::net::IpAddr], rx: u64, tx: u64) -> Option<NetworkInfo> {
+    let mut ipv4 = Vec::new();
+    let mut ipv6 = Vec::new();
+    for ip in ips.iter().filter(|ip| !ip.is_loopback() && !ip.is_unspecified()) {
+        match ip {
+            std::net::IpAddr::V4(a) => ipv4.push(a.to_string()),
+            std::net::IpAddr::V6(a) => ipv6.push(a.to_string()),
+        }
+    }
+    if ipv4.is_empty() && ipv6.is_empty() {
+        return None;
+    }
+    let mac = sysinfo::MacAddr(mac);
+    Some(NetworkInfo {
+        name: name.to_string(),
+        mac: (!mac.is_unspecified()).then(|| mac.to_string().to_uppercase()),
+        ipv4,
+        ipv6,
+        rx_bytes: rx,
+        tx_bytes: tx,
+    })
 }
 
 fn volumes() -> Vec<VolumeInfo> {
@@ -289,7 +341,7 @@ fn app_info(app: &AppHandle) -> AppInfo {
 ///
 /// **종료 코드는 보지 않는다.** `sysctl`은 없는 키 하나에 1로 끝나면서도 나머지는 정상 출력하고,
 /// `lspci`도 장치 종류에 따라 경고와 함께 끝난다 — 호출자가 내용으로 판단한다(빈 출력 = 실패).
-async fn run_capture(program: &str, args: &[&str], timeout_secs: u64) -> Result<String, String> {
+pub(crate) async fn run_capture(program: &str, args: &[&str], timeout_secs: u64) -> Result<String, String> {
     let mut cmd = Command::new(program);
     cmd.args(args)
         .stdin(Stdio::null())
@@ -1086,6 +1138,27 @@ fn parse_size_bytes(s: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pccare_tools_network_entry_drops_loopback_and_empty() {
+        use std::net::IpAddr;
+        let lo: Vec<IpAddr> = vec!["127.0.0.1".parse().unwrap(), "::1".parse().unwrap()];
+        assert_eq!(network_entry("lo", [0; 6], &lo, 0, 0), None);
+        assert_eq!(network_entry("down", [1, 2, 3, 4, 5, 6], &[], 0, 0), None);
+
+        let ips: Vec<IpAddr> = vec![
+            "192.168.0.7".parse().unwrap(),
+            "fe80::1".parse().unwrap(),
+            "127.0.0.1".parse().unwrap(),
+        ];
+        let e = network_entry("Ethernet", [0xa, 0xb, 0xc, 0xd, 0xe, 0xf], &ips, 10, 20).unwrap();
+        assert_eq!(e.mac.as_deref(), Some("0A:0B:0C:0D:0E:0F"));
+        assert_eq!(e.ipv4, vec!["192.168.0.7"]);
+        assert_eq!(e.ipv6, vec!["fe80::1"]);
+        assert_eq!((e.rx_bytes, e.tx_bytes), (10, 20));
+        // MAC이 없는 터널(VPN 등)은 IP가 있으면 남기고 MAC만 비운다.
+        assert_eq!(network_entry("wg0", [0; 6], &ips[..1], 0, 0).unwrap().mac, None);
+    }
 
     /// 이 머신(2026-09-03)의 실제 스크립트 출력 — 값을 그대로 옮겼다. 두 번째 메모리 모듈만
     /// 숫자를 문자열로 바꿔 `Num`의 양쪽 수용을 함께 본다.

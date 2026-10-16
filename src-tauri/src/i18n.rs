@@ -15,6 +15,12 @@ pub mod text_system;
 pub mod text_git_net;
 pub mod text_video;
 pub mod text_stt;
+pub mod text_pccare;
+pub mod text_pccare_health;
+pub mod text_pccare_startup;
+pub mod text_pccare_services;
+pub mod text_pccare_programs;
+pub mod text_pccare_tools;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lang {

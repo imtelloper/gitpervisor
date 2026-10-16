@@ -13,6 +13,7 @@ mod lsp;
 mod mcp;
 mod monitor;
 mod notifications;
+mod pc_care;
 mod proc_icons;
 // 타이핑 경로 우선순위 — 비특권 우선순위 상향이 Windows에만 있다(모듈 머리 주석).
 #[cfg(windows)]
@@ -1421,6 +1422,28 @@ pub fn run() {
             disk_scan::disk_treemap,
             disk_scan::disk_roots,
             proc_icons::get_process_icons,
+            // pc_care: health
+            pc_care::disk_health::disk_health_list,
+            pc_care::gpu_temp::gpu_temperatures,
+            pc_care::crash_history::crash_history_list,
+            // pc_care: startup
+            pc_care::startup_items::startup_list,
+            pc_care::startup_items::startup_set_enabled,
+            pc_care::scheduled_tasks::scheduled_tasks_list,
+            pc_care::scheduled_tasks::scheduled_task_set_enabled,
+            // pc_care: services
+            pc_care::services::services_list,
+            pc_care::services::service_control,
+            pc_care::services::service_set_start_type,
+            // pc_care: programs
+            pc_care::installed_apps::installed_apps_list,
+            pc_care::installed_apps::installed_app_uninstall,
+            pc_care::activex::activex_list,
+            pc_care::activex::activex_remove,
+            // pc_care: tools
+            pc_care::file_locks::file_lockers,
+            pc_care::cleanup::cleanup_scan,
+            pc_care::cleanup::cleanup_run,
             claude_usage::claude_usage,
             claude_usage::last_agent_message,
             db::db_list_connections,
