@@ -3,6 +3,7 @@
 
 pub mod activex;
 pub mod cleanup;
+pub mod cpu_temp;
 pub mod crash_history;
 pub mod disk_health;
 pub mod elevate;

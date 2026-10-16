@@ -1,5 +1,6 @@
 import { AppWindow, Copy, FolderOpen, Search, Square } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 
 import { useMessages } from "../../i18n/ui-language";
 import { copyWithToast } from "../../lib/clipboard";
@@ -20,6 +21,7 @@ import { StartupView } from "./StartupView";
 import type { SysmonView } from "./prefs";
 import { loadSysmonPrefs, saveSysmonPrefs } from "./prefs";
 import { SystemInfoView } from "./SystemInfoView";
+import { TempLine, useProcTemps } from "./TempGauges";
 
 // 부하 임계 색 — 타이틀바 SysMonitor의 Metric과 동일 규약(평상시/70%+/88%+).
 function loadText(pct: number): string {
@@ -43,10 +45,13 @@ function Gauge({
   label,
   pct,
   tip,
+  below,
 }: {
   label: string;
   pct: number | null;
   tip?: string;
+  /** 바 아래 한 줄(CPU·GPU 온도) — 폭을 늘리지 않으려고 세로로 붙인다. */
+  below?: ReactNode;
 }) {
   const v = pct == null ? null : Math.max(0, Math.min(100, Math.round(pct)));
   return (
@@ -71,6 +76,7 @@ function Gauge({
           style={{ transform: `scaleX(${(v ?? 0) / 100})` }}
         />
       </div>
+      {below}
     </div>
   );
 }
@@ -249,6 +255,7 @@ export function SysMonitorWindow() {
   );
 
   const totals = data?.totals;
+  const temps = useProcTemps(view === "proc");
   // GPU를 못 읽는 플랫폼(macOS/Linux)에선 전 행이 null이라 GPU 정렬이 무의미하다.
   const gpuSupported = !totals || totals.gpu != null;
   // 이전 버전이 localStorage에 눌러앉힌 sortBy:"gpu"를 자가복구한다 — 그대로 두면 재오픈
@@ -421,9 +428,15 @@ export function SysMonitorWindow() {
         <>
       {/* 헤더: 전체 사용률 게이지 + 검색 + 프로그램별 토글 */}
       <div className="flex shrink-0 items-center gap-4 border-b border-edge bg-panel px-3 py-2.5">
-        <Gauge label="CPU" pct={totals?.cpu ?? null} tip={msg.sysmon.window.cpuTipTotal} />
+        <Gauge
+          label="CPU"
+          pct={totals?.cpu ?? null}
+          tip={msg.sysmon.window.cpuTipTotal}
+          below={<TempLine reading={temps.cpu} />}
+        />
         <Gauge
           label="GPU"
+          below={<TempLine reading={temps.gpu} />}
           pct={totals?.gpu ?? null}
           tip={
             totals && totals.gpu == null

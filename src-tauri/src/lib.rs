@@ -1425,6 +1425,7 @@ pub fn run() {
             // pc_care: health
             pc_care::disk_health::disk_health_list,
             pc_care::gpu_temp::gpu_temperatures,
+            pc_care::cpu_temp::cpu_temperature,
             pc_care::crash_history::crash_history_list,
             // pc_care: startup
             pc_care::startup_items::startup_list,

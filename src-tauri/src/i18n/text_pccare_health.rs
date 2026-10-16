@@ -106,3 +106,37 @@ pub fn crash_history_unsupported_os() -> &'static str {
         Lang::En => "Crash history is not available on this operating system",
     }
 }
+
+// ─────────────────────────── CPU 온도(pc_care/cpu_temp.rs) ───────────────────────────
+
+#[cfg(windows)]
+pub fn cpu_temp_needs_hwinfo() -> &'static str {
+    match lang() {
+        Lang::Ko => "Windows는 관리자 드라이버 없이 CPU 온도를 알려 주지 않습니다. HWiNFO를 '공유 메모리 지원'을 켠 채로 실행해 두면 여기 표시됩니다",
+        Lang::En => "Windows does not expose CPU temperature without an administrator driver. Run HWiNFO with 'Shared Memory Support' enabled to show it here",
+    }
+}
+
+#[cfg(windows)]
+pub fn cpu_temp_hwinfo_no_cpu() -> &'static str {
+    match lang() {
+        Lang::Ko => "HWiNFO 센서 목록에 CPU 온도가 없습니다",
+        Lang::En => "HWiNFO does not report a CPU temperature sensor",
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn cpu_temp_linux_none() -> &'static str {
+    match lang() {
+        Lang::Ko => "CPU 온도 센서(coretemp·k10temp)를 찾지 못했습니다",
+        Lang::En => "No CPU temperature sensor (coretemp/k10temp) was found",
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn cpu_temp_macos_unsupported() -> &'static str {
+    match lang() {
+        Lang::Ko => "macOS에서는 CPU 온도를 읽을 수 없습니다(비공개 API)",
+        Lang::En => "CPU temperature is not available on macOS (private API)",
+    }
+}

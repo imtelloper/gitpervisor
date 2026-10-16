@@ -838,6 +838,11 @@ export interface GpuTemperatures {
   unsupportedReason: string | null;
   gpus: GpuTemperature[];
 }
+export interface CpuTemperature {
+  temperatureC: number | null;
+  source: string | null;
+  unavailableReason: string | null;
+}
 export type CrashKind = "bugcheck" | "unexpectedShutdown" | "kernelPanic";
 export interface CrashEvent {
   timeMs: number;
@@ -1987,6 +1992,9 @@ export const ipc = {
     call<DiskHealth[]>("disk_health_list", {}, { lane: "background", attempts: 1, timeoutMs: 60_000 }),
   gpuTemperatures: () =>
     call<GpuTemperatures>("gpu_temperatures", {}, { lane: "background", attempts: 1, timeoutMs: 4000 }),
+  // 프로세스 탭 머리 2초 폴링 — 공유 메모리 한 번 읽기/sysfs 몇 개라 가볍다.
+  cpuTemperature: () =>
+    call<CpuTemperature>("cpu_temperature", {}, { lane: "background", attempts: 1, timeoutMs: 4000 }),
   crashHistoryList: () =>
     call<CrashHistory>("crash_history_list", {}, { lane: "background", attempts: 1, timeoutMs: 25_000 }),
   // ── pc_care: startup ──

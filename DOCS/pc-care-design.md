@@ -198,6 +198,16 @@ interface DiskHealth { index: number; model: string; serial: string | null; bus:
 `SystemInfo.networks: { name: string; mac: string | null; ipv4: string[]; ipv6: string[]; rxBytes: number; txBytes: number }[]` —
 sysinfo `Networks`(세 OS 공통). 루프백·MAC 00:00…·IP 없음은 뺀다. 시스템 정보 탭에 "네트워크" 카드 + 요약 복사에 포함.
 
+### 4.12 CPU·GPU 온도 실시간(프로세스 탭, `cpu_temp.rs`, `cpu_temperature`)
+
+프로세스 탭 CPU·GPU 게이지 바 아래 한 줄로 2초마다(탭이 보일 때만). GPU는 §4.2 `gpu_temperatures`(여러 어댑터면 최댓값, 툴팁에 전부).
+- Windows CPU: 공식 비관리자 경로인 ACPI 열 영역(`\Thermal Zone Information`)은 **쓰지 않는다** — 실측 TZ00 = 28℃로 메인보드·케이스
+  영역이라 CPU 온도로 보이면 틀린 값이다. 코어 온도는 커널 드라이버(관리자)만 읽으므로, 이미 드라이버를 가진 HWiNFO의
+  공유 메모리(`Global\HWiNFO_SENS_SM2`, "공유 메모리 지원" 켜야 함, 비관리자로 열림)에서 `CPU Package` → `CPU (Tctl/Tdie)` →
+  `CPU Die (average)` → `Core Max` 순으로 고른다(°F 설정이면 환산). 없으면 "--" + 툴팁에 HWiNFO 안내.
+- Linux: hwmon `coretemp`/`k10temp`/`zenpower`/`cpu_thermal` — `Package id 0`·`Tctl`·`Tdie` 라벨 우선, 없으면 그 칩들의 최댓값. root 불필요.
+- macOS: 미지원(SMC/IOHID 비공개 API) — 이유를 툴팁에.
+
 ## 5. 검증
 
 - 단위: 상태 판정·XML/last 파서·분류·StartupApproved 바이트 해석·명령줄 조립·정리 안전 규칙.
