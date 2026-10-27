@@ -23,6 +23,7 @@ const ko = {
   docWindow: {
     reportTitle: "작업 리포트",
     reportBadge: "리포트",
+    browserBadge: "브라우저",
     fileFallbackName: "파일",
     fileBadge: "파일",
     targetMissingTitle: "열 파일을 찾지 못했습니다",
@@ -62,6 +63,7 @@ export const windowsText = defineText(ko, {
     docWindow: {
       reportTitle: "Work report",
       reportBadge: "Report",
+      browserBadge: "Browser",
       fileFallbackName: "File",
       fileBadge: "File",
       targetMissingTitle: "Couldn't find the file to open",

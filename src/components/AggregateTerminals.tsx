@@ -720,14 +720,10 @@ export function AggregateTerminals() {
               ))}
         </div>
         {/* 별도 창에서도 만들 수 있다 — 이 창의 스토어는 변경을 메인에 위임하므로
-            (stores/terminals.ts terminals://cmd) 메인이 만들고 결과가 storage로 돌아온다.
-            브라우저만 제외: 브라우저 스토어에는 storage 따라가기가 없어 위임해도 이 창 그리드에
-            안 뜬다 → onCreateBrowser를 안 넘겨 터미널 두 종류(일반·Claude)만 남는다. */}
-        <NewCellButton
-          projects={projects}
-          onCreateTerminal={addTerminal}
-          onCreateBrowser={IS_AGGREGATE_WINDOW ? undefined : addBrowser}
-        />
+            (stores/terminals.ts terminals://cmd · stores/browser.ts browsers://cmd) 메인이 만들고
+            결과가 storage로 돌아온다. 브라우저의 네이티브 webview는 보여 주는 창으로 옮겨 붙는다
+            (commands/browser.rs place). */}
+        <NewCellButton projects={projects} onCreateTerminal={addTerminal} onCreateBrowser={addBrowser} />
         {/* 셀 크기 균등 복구 + 모드 선택. 클릭은 지금 모드로 균등 정렬(드래그로 흐트러진 fr 비율과
             확대 상태를 함께 되돌린다 — 확대를 안 풀면 눌러도 화면이 그대로라 고장으로 보인다),
             호버는 모드 팝오버.
@@ -897,6 +893,8 @@ export function AggregateTerminals() {
                         // 다른 셀 확대 중에도 숨긴다 — 네이티브 webview는 DOM 위에 떠서
                         // invisible로는 확대된 터미널을 가리는 것을 못 막는다.
                         suspended={resizing || !!moving || (zoomedId !== null && !isZoomed)}
+                        zoomed={isZoomed}
+                        onUnzoom={() => setZoomed(null)}
                         // 칩 토글로 셀이 "크기 그대로 위치만" 밀리면 ResizeObserver가 못
                         // 잡는다 — 슬롯 좌표가 바뀔 때 bounds를 재동기화하게 한다.
                         layoutKey={`${n}:${r}:${c}`}
@@ -966,26 +964,21 @@ export function AggregateTerminals() {
         (() => {
           const cells = all.filter((c) => c.projName === groupMenu.name);
           if (cells.length === 0) return null;
-          // 닫을 수 있는 셀 = ChipMenu의 단일 닫기 조건을 셀마다 그대로 적용한 것 —
-          // 별도 창의 독립 브라우저 탭(tabId null)만 빠진다(closeBrowserTab에 위임 경로 없음).
-          const closable = cells.filter(
-            (c) => !(IS_AGGREGATE_WINDOW && c.tabId == null),
-          );
           const closeAll = () => {
             // 확인창이 뜨는 동안 hover 지연 닫기 타이머와 경합하지 않게 드롭다운을 먼저 닫는다.
             // 강조도 같이 지운다 — 드롭다운이 사라지면 mouseleave가 안 와서 ring이 박제된다
             // (확인창을 취소해도 다음 칩을 호버할 때까지 남는다).
             setGroupMenu(null);
             setHovered(NO_HOVER);
-            const procs = closable.filter((c) => c.kind === "terminal").length;
+            const procs = cells.filter((c) => c.kind === "terminal").length;
             askConfirm({
               title: msg.app.aggregate.closeAllTabsTitle,
               // 단일 브라우저 닫기는 확인이 없지만 묶음은 여러 개를 한 번에 없애므로 항상 확인한다.
-              message: msg.app.aggregate.closeAllTabsConfirm(groupMenu.name, closable.length, procs),
+              message: msg.app.aggregate.closeAllTabsConfirm(groupMenu.name, cells.length, procs),
               confirmLabel: msg.app.aggregate.closeAllTabsConfirmLabel,
               danger: true,
               onConfirm: () =>
-                closable.forEach((c) =>
+                cells.forEach((c) =>
                   c.tabId != null ? closePane(c.tabId, c.id) : closeBrowserTab(c.id),
                 ),
             });
@@ -1042,16 +1035,13 @@ export function AggregateTerminals() {
                 label={msg.app.aggregate.openCodeSessionIn(groupMenu.name)}
                 onClick={() => addAgentTerminal(cells[0].projectId, "opencode")}
               />
-              {/* 묶음 단위 닫기 — 종류가 섞이므로 "터미널/브라우저"가 아니라 "탭"으로 부른다.
-                  닫을 수 있는 셀이 없으면(별도 창 + 독립 브라우저 탭뿐) 항목 자체를 뺀다. */}
-              {closable.length > 0 && (
-                <MenuItem
-                  icon={<X size={13} />}
-                  label={msg.app.aggregate.closeAllTabsMenu(groupMenu.name, closable.length)}
-                  danger
-                  onClick={closeAll}
-                />
-              )}
+              {/* 묶음 단위 닫기 — 종류가 섞이므로 "터미널/브라우저"가 아니라 "탭"으로 부른다. */}
+              <MenuItem
+                icon={<X size={13} />}
+                label={msg.app.aggregate.closeAllTabsMenu(groupMenu.name, cells.length)}
+                danger
+                onClick={closeAll}
+              />
             </div>
           );
         })()}
@@ -1124,9 +1114,8 @@ export function AggregateTerminals() {
                   )
               : undefined
           }
-          // 별도 창의 변경은 스토어가 메인에 위임한다(stores/terminals.ts terminals://cmd) —
-          // 새 터미널·Float·닫기가 여기서도 그대로 동작한다. 예외는 **독립 브라우저 탭 닫기**뿐:
-          // closeBrowserTab은 위임 경로가 없는 메인 전용이라 별도 창에선 항목을 빼 둔다.
+          // 별도 창의 변경은 스토어가 메인에 위임한다(stores/terminals.ts terminals://cmd ·
+          // stores/browser.ts browsers://cmd) — 새 터미널·Float·닫기가 여기서도 그대로 동작한다.
           onNewTerminal={() => addAgentTerminal(chipMenu.cell.projectId, startAgent)}
           onNewClaude={() => addAgentTerminal(chipMenu.cell.projectId, "claude")}
           onNewOpenCode={() => addAgentTerminal(chipMenu.cell.projectId, "opencode")}
@@ -1135,27 +1124,23 @@ export function AggregateTerminals() {
               ? () => floatPane(chipMenu.cell.tabId!, chipMenu.cell.id)
               : undefined
           }
-          onCloseCell={
-            IS_AGGREGATE_WINDOW && chipMenu.cell.tabId == null
-              ? undefined
-              : () => {
-                  const c = chipMenu.cell;
-                  if (c.kind === "terminal" && c.tabId != null) {
-                    askConfirm({
-                      title: msg.app.aggregate.closeTerminal,
-                      message: msg.app.aggregate.closeTerminalConfirm(c.projName, c.title),
-                      confirmLabel: msg.app.aggregate.close,
-                      danger: true,
-                      onConfirm: () => closePane(c.tabId!, c.id),
-                    });
-                  } else if (c.tabId != null) {
-                    // 브라우저 pane — 프로세스가 없으니 확인 없이(그리드 셀 X와 동일).
-                    closePane(c.tabId, c.id);
-                  } else {
-                    closeBrowserTab(c.id);
-                  }
-                }
-          }
+          onCloseCell={() => {
+            const c = chipMenu.cell;
+            if (c.kind === "terminal" && c.tabId != null) {
+              askConfirm({
+                title: msg.app.aggregate.closeTerminal,
+                message: msg.app.aggregate.closeTerminalConfirm(c.projName, c.title),
+                confirmLabel: msg.app.aggregate.close,
+                danger: true,
+                onConfirm: () => closePane(c.tabId!, c.id),
+              });
+            } else if (c.tabId != null) {
+              // 브라우저 pane — 프로세스가 없으니 확인 없이(그리드 셀 X와 동일).
+              closePane(c.tabId, c.id);
+            } else {
+              closeBrowserTab(c.id);
+            }
+          }}
         />
       )}
     </div>
@@ -1423,10 +1408,7 @@ function newCellLabel(kind: NewCellKind, msg: Messages): string {
  *  API 클라이언트는 그리드가 지원하는 셀 종류가 아니라 여기 메뉴엔 없다.
  *
  *  프로젝트가 1개면 종류만 고르면 바로 생성한다(모호성 없음). 0개(또는 로딩 전)면 비활성.
- *  메뉴는 버튼 rect 기준 fixed 위치 + 백드롭 패턴 — 헤더(h-10) 밖으로 넘칠 때 클리핑을 벗어난다.
- *
- *  `onCreateBrowser`를 생략하면(별도 창 — 브라우저는 위임해도 이 창 그리드에 안 뜬다) 브라우저
- *  항목만 빠진다. 터미널 종류가 둘이라 종류 선택 단계 자체는 건너뛸 수 없다. */
+ *  메뉴는 버튼 rect 기준 fixed 위치 + 백드롭 패턴 — 헤더(h-10) 밖으로 넘칠 때 클리핑을 벗어난다. */
 function NewCellButton({
   projects,
   onCreateTerminal,
@@ -1434,7 +1416,7 @@ function NewCellButton({
 }: {
   projects: Project[] | undefined;
   onCreateTerminal: (projectId: string, initialInput?: InitialInput) => void;
-  onCreateBrowser?: (projectId: string) => void;
+  onCreateBrowser: (projectId: string) => void;
 }) {
   const msg = useMessages();
   const selectedProjectId = useUi((s) => s.selectedProjectId);
@@ -1458,7 +1440,7 @@ function NewCellButton({
     setKind(null);
   };
   const create = (k: NewCellKind, projectId: string) => {
-    if (k === "browser") onCreateBrowser?.(projectId);
+    if (k === "browser") onCreateBrowser(projectId);
     // 이 메뉴는 종류를 **고르는** 곳이라 기본값을 따르지 않는다 — "새 터미널"은 셸이다.
     else runWithAgent(k === "terminal" ? null : k, (input) => onCreateTerminal(projectId, input));
     close();
@@ -1488,9 +1470,7 @@ function NewCellButton({
         title={
           list.length === 0
             ? msg.app.aggregate.newCellNoProjectsTitle
-            : onCreateBrowser
-              ? msg.app.aggregate.newCellTitleWithBrowser
-              : msg.app.aggregate.newCellTitleTerminalsOnly
+            : msg.app.aggregate.newCellTitleWithBrowser
         }
         className="ml-1 flex shrink-0 items-center rounded p-1 text-fg-muted hover:bg-raised hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
       >
@@ -1521,14 +1501,11 @@ function NewCellButton({
                   label={newCellLabel("opencode", msg)}
                   onClick={() => pickKind("opencode")}
                 />
-                {/* 별도 창은 브라우저를 위임해도 이 창 그리드에 안 뜬다 — 그 창에선 항목을 뺀다. */}
-                {onCreateBrowser && (
-                  <MenuRow
-                    icon={<Globe size={14} />}
-                    label={newCellLabel("browser", msg)}
-                    onClick={() => pickKind("browser")}
-                  />
-                )}
+                <MenuRow
+                  icon={<Globe size={14} />}
+                  label={newCellLabel("browser", msg)}
+                  onClick={() => pickKind("browser")}
+                />
               </>
             ) : (
               <>
@@ -1648,7 +1625,9 @@ function AggregateCell({
 
   return (
     <div
-      className={`group/cell relative flex h-full w-full min-h-0 min-w-0 flex-col overflow-hidden rounded border border-edge ${
+      className={`group/cell relative flex h-full w-full min-h-0 min-w-0 flex-col overflow-hidden rounded border ${
+        zoomed ? "border-accent" : "border-edge"
+      } ${
         status === "working"
           ? "ai-working"
           : status === "done"
@@ -1660,10 +1639,11 @@ function AggregateCell({
         style={{ backgroundColor: meta.color.bg }}
         onPointerDown={onMoveStart}
         data-agg-cell-header
-        className={`flex h-6 shrink-0 items-center gap-1.5 border-b border-edge px-2 text-[11px] text-fg-muted ${
+        className={`relative flex h-6 shrink-0 items-center gap-1.5 border-b border-edge px-2 text-[11px] text-fg-muted ${
           zoomed ? "" : "cursor-grab"
         }`}
       >
+        {zoomed && <UnzoomPill onClick={onZoom} />}
         <StatusIcon status={status} />
         {/* h-6 헤더라 14px — 16px은 빡빡하다(태스크 54). */}
         <ProjectLogo projectId={meta.projectId} size={14} />
@@ -1719,6 +1699,8 @@ function AggregateCell({
 function BrowserCell({
   meta,
   suspended,
+  zoomed,
+  onUnzoom,
   layoutKey,
   canRight,
   canBottom,
@@ -1729,6 +1711,9 @@ function BrowserCell({
 }: {
   meta: BrowserMeta;
   suspended: boolean;
+  /** 칩 메뉴의 "확대해서 보기"로 확대된 상태 — 헤더에 축소 버튼을 띄운다(셀엔 확대 버튼이 없다). */
+  zoomed: boolean;
+  onUnzoom: () => void;
   layoutKey: string;
   canRight: boolean;
   canBottom: boolean;
@@ -1745,13 +1730,20 @@ function BrowserCell({
   }, [meta.id, meta.projectId, ensurePane]);
 
   return (
-    <div className="group/cell relative flex h-full w-full min-h-0 min-w-0 flex-col overflow-hidden rounded border border-edge">
+    <div
+      className={`group/cell relative flex h-full w-full min-h-0 min-w-0 flex-col overflow-hidden rounded border ${
+        zoomed ? "border-accent" : "border-edge"
+      }`}
+    >
       <div
         style={{ backgroundColor: meta.color.bg }}
         onPointerDown={onMoveStart}
         data-agg-cell-header
-        className="flex h-6 shrink-0 cursor-grab items-center gap-1.5 border-b border-edge px-2 text-[11px] text-fg-muted"
+        className={`relative flex h-6 shrink-0 items-center gap-1.5 border-b border-edge px-2 text-[11px] text-fg-muted ${
+          zoomed ? "" : "cursor-grab"
+        }`}
       >
+        {zoomed && <UnzoomPill onClick={onUnzoom} />}
         <Globe size={11} className="shrink-0 text-accent" />
         <ProjectLogo projectId={meta.projectId} size={14} />
         <span className="min-w-0 flex-1 truncate">
@@ -1761,17 +1753,13 @@ function BrowserCell({
         <GitDialogButton projectId={meta.projectId} />
         <FileTreeButton projectId={meta.projectId} />
         <HideButton onClick={onHide} title={msg.app.aggregate.hideBrowserTitle} />
-        {/* 분할 pane(tabId 있음)은 closePane이라 위임을 탄다. 독립 브라우저 탭은 closeBrowserTab —
-            위임 경로가 없는 메인 전용이라 별도 창에선 X를 감춘다(ChipMenu와 같은 규칙). */}
-        {(!IS_AGGREGATE_WINDOW || meta.tabId != null) && (
-          <button
-            onClick={onClose}
-            title={msg.app.aggregate.closeBrowser}
-            className="-mr-1 shrink-0 rounded p-0.5 text-fg-dim hover:bg-raised hover:text-danger"
-          >
-            <X size={12} />
-          </button>
-        )}
+        <button
+          onClick={onClose}
+          title={msg.app.aggregate.closeBrowser}
+          className="-mr-1 shrink-0 rounded p-0.5 text-fg-dim hover:bg-raised hover:text-danger"
+        >
+          <X size={12} />
+        </button>
       </div>
       <div
         className={`min-h-0 flex-1 ${suspended ? "pointer-events-none" : ""}${
@@ -1786,6 +1774,23 @@ function BrowserCell({
         onResizeStart={onResizeStart}
       />
     </div>
+  );
+}
+
+/** 확대 중인 셀 헤더 한가운데의 축소 버튼 — 오른쪽 끝 12px 아이콘 하나로는 지금이 확대 상태인지도,
+ *  어디를 눌러 돌아가는지도 눈에 안 띄었다(2026-10-27 사용자 지적). 셀 테두리 강조와 짝이다. */
+function UnzoomPill({ onClick }: { onClick: () => void }) {
+  const msg = useMessages();
+  return (
+    <button
+      onClick={onClick}
+      title={msg.app.aggregate.unzoomCellTitle}
+      data-agg-unzoom
+      className="absolute left-1/2 top-1/2 z-10 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1 whitespace-nowrap rounded-full bg-accent px-2.5 py-px text-[11px] font-medium text-on-accent shadow hover:brightness-110"
+    >
+      <Minimize2 size={11} />
+      {msg.app.aggregate.zoomedPill}
+    </button>
   );
 }
 

@@ -31,16 +31,37 @@ export function lastKnownUrl(id: string): string | undefined {
   return lastUrl.get(id);
 }
 
-/** 자식 webview 보장 — 없으면 생성, 있으면 navigate(백엔드가 멱등). */
+// 생성 요청이 진행 중인 id — 그 사이 setVisible이 "아직 없음"을 받아도 다시 만들지 않게(같은 라벨 이중 생성).
+const opening = new Set<string>();
+
+/** 자식 webview 보장 — 없으면 이 창의 자식으로 생성, 있으면(다른 창이 만든 것) 그대로 둔다. 표시·창 이동은 setVisible. */
 export async function openBrowser(id: string, url: string, bounds: Bounds): Promise<void> {
   created.add(id);
   lastUrl.set(id, url);
+  opening.add(id);
   try {
     await invoke("browser_open", { browserId: id, url, bounds });
   } catch {
     created.delete(id); // 생성 실패 시 다음 시도에서 재생성
     lastUrl.delete(id);
+  } finally {
+    opening.delete(id);
   }
+}
+
+// 다른 창으로 넘긴 id — 이 창의 패널이 언마운트돼도 webview를 닫지 않는다(handOffBrowser).
+const handedOff = new Set<string>();
+
+/**
+ * 이 창이 webview를 **닫지 않고 놓는다** — 브라우저 탭을 새 창으로 분리할 때(같은 id를 그 창이 이어받아
+ * 페이지 상태가 유지된다). 숨김 요청으로 이 창의 "보이고 싶음"을 백엔드에서 지우고, 탭을 닫아 패널이
+ * 언마운트될 때 releaseBrowser가 dispose하지 않게 표시한다. 탭 닫기보다 **먼저** 불러야 한다.
+ */
+export function handOffBrowser(id: string): void {
+  handedOff.add(id);
+  void setVisible(id, false);
+  created.delete(id);
+  lastUrl.delete(id);
 }
 
 export function navigate(id: string, url: string): void {
@@ -92,6 +113,7 @@ export function isBrowserReferenced(id: string): boolean {
  * 표준 탭/패널 양쪽에서 동일하게 동작.
  */
 export function releaseBrowser(id: string): void {
+  if (handedOff.delete(id)) return;
   if (isBrowserReferenced(id)) {
     void setVisible(id, false);
   } else {
@@ -134,6 +156,9 @@ const visSeq = new Map<string, number>();
 /**
  * 표시/숨김. hide는 모달 위 "끼임"(정합성 버그)을 막기 위해 per-attempt 타임아웃으로
  * 끊긴(hung) invoke를 차단하고 재시도한다(메모리: 동시 invoke 응답 유실).
+ *
+ * 보이려는데 백엔드에 webview가 없다고 하면 다시 만든다 — 그 webview를 가졌던 다른 창(모아보기 별도 창)이
+ * 닫히며 같이 사라진 경우다. 이 창이 만든 적이 있어야(created) 하고 생성이 진행 중이 아니어야 한다.
  */
 export async function setVisible(
   id: string,
@@ -145,13 +170,20 @@ export async function setVisible(
   const attempts = visible ? 1 : 4;
   for (let i = 0; i < attempts; i++) {
     if (visSeq.get(id) !== seq) return; // 더 새로운 요청이 대체 — 낡은 재시도 중단
-    const ok = await Promise.race([
-      invoke("browser_set_visible", { browserId: id, visible, bounds: bounds ?? null })
-        .then(() => true)
-        .catch(() => false),
-      new Promise<boolean>((r) => setTimeout(() => r(false), 400)),
+    // 응답 = 그 webview를 가질 창 라벨(없으면 null). 실패·시간 초과는 undefined로 구분해 재시도한다.
+    const host = await Promise.race([
+      invoke<string | null>("browser_set_visible", { browserId: id, visible, bounds: bounds ?? null }).catch(
+        () => undefined,
+      ),
+      new Promise<undefined>((r) => setTimeout(() => r(undefined), 400)),
     ]);
-    if (ok) return;
+    if (host === undefined) continue;
+    // browser://host 이벤트는 이 창의 구독(ensureBrowserEvents)보다 먼저 지나갔을 수 있다 — 응답으로도 맞춘다.
+    if (host !== null) useBrowsers.getState().setHost(id, host);
+    const url = lastUrl.get(id);
+    if (visible && host === null && bounds && url && created.has(id) && !opening.has(id) && visSeq.get(id) === seq)
+      void openBrowser(id, url, bounds);
+    return;
   }
 }
 
@@ -186,6 +218,10 @@ export function ensureBrowserEvents(): void {
   });
   void listen<{ browserId: string; title: string }>("browser://title", (e) => {
     useBrowsers.getState().setTitle(e.payload.browserId, e.payload.title);
+  });
+  // webview가 어느 창에 붙어 있는가 — 다른 창이 가져가면 이 창의 패널이 "다른 곳에서 표시 중"을 띄운다.
+  void listen<{ browserId: string; window: string }>("browser://host", (e) => {
+    useBrowsers.getState().setHost(e.payload.browserId, e.payload.window);
   });
   // 다운로드는 인앱에서 받지 않고 OS 브라우저로 위임 — 사용자에게 알린다.
   void listen<{ url: string; delegated: boolean }>("browser://download", (e) => {

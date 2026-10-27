@@ -1508,6 +1508,9 @@ pub fn run() {
             // 종료시켰다. 잃을 게 실제로 있을 때(살아있는 PTY 세션)만 한 번 물어본다.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() != "main" {
+                    // 이 창이 가진 브라우저 webview를 원하는 창(메인)으로 넘긴다 — 창과 같이 사라지지 않게.
+                    // 닫힘 전에 해야 한다(Destroyed에선 webview가 이미 없다). browser.rs 모듈 주석.
+                    commands::browser_window_closing(window.app_handle(), window.label());
                     return;
                 }
                 // 이미 물어봤으면 그냥 닫는다 — CLOSE_ASKED 주석 참고(막다른 골목 금지).
@@ -1532,6 +1535,9 @@ pub fn run() {
             }
             if let tauri::WindowEvent::Destroyed = event {
                 let label = window.label();
+                if label != "main" {
+                    commands::browser_window_destroyed(window.app_handle(), label);
+                }
                 if label == "main" {
                     // 메인 창이 닫히면 자식 자원을 전부 정리한다(좀비 셸 방지, 설계 §16.8).
                     // 순서·재진입 방지는 shutdown_children 한 곳에 모여 있다.

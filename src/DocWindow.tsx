@@ -9,6 +9,8 @@ import { PromptHost } from "./components/common/PromptDialog";
 import { Toasts } from "./components/common/Toast";
 import { TranslateHost } from "./components/common/TranslateCard";
 import { FloatTitleBar } from "./components/FloatTitleBar";
+// 정적 import 여도 메인 청크가 커지지 않는다 — WorkspaceTabs 가 이미 같은 모듈을 정적으로 끌어온다.
+import { BrowserPane } from "./components/workspace/BrowserPane";
 import { useMessages } from "./i18n/ui-language";
 import { attachVideoEvents } from "./lib/events";
 import type { DiffTarget } from "./lib/ipc";
@@ -16,6 +18,7 @@ import { docTarget } from "./lib/floating";
 import { errorMessage } from "./lib/ipc";
 import { languageOf } from "./lib/language-map";
 import { useDiff, useSettings } from "./queries";
+import { type BrowserItem, useBrowsers } from "./stores/browser";
 import { useUi } from "./stores/ui";
 
 /**
@@ -74,7 +77,36 @@ export function DocWindow({ docId }: { docId: string }) {
       </Suspense>
     );
   }
+  if (target?.browser) {
+    return <BrowserWindow item={target.browser} />;
+  }
   return <FileDocWindow docId={docId} />;
+}
+
+/**
+ * 분리한 브라우저 탭 창(탭 우클릭 → 새 창으로 분리). 메인 탭의 항목을 이 창 스토어에 넣고 같은 id로
+ * BrowserPane을 띄운다 — 네이티브 webview가 이 창으로 옮겨 붙어 페이지 상태가 이어진다.
+ * 이 창은 gp:browser를 저장하지 않는다(stores/browser.ts) — 창을 닫으면 이 탭도 끝난다.
+ */
+function BrowserWindow({ item }: { item: BrowserItem }) {
+  const msg = useMessages();
+  const { data: settings } = useSettings();
+  useEffect(() => {
+    if (settings?.theme) document.documentElement.dataset.theme = settings.theme;
+  }, [settings?.theme]);
+  // 첫 렌더 전에 넣는다 — 항목 없이 한 번 그려지면 BrowserPane이 "새 브라우저" 빈 화면을 깜빡인다.
+  useState(() => useBrowsers.getState().adoptItem(item));
+  const title = useBrowsers((s) => s.items[item.id]?.title) ?? item.title;
+  return (
+    <div className="flex h-screen flex-col bg-base">
+      <FloatTitleBar title={title} badge={msg.windows.docWindow.browserBadge} />
+      <div className="min-h-0 flex-1">
+        <BrowserPane id={item.id} active />
+      </div>
+      {/* 다운로드 위임 안내(browser://download)가 이 창의 토스트로 뜬다. */}
+      <Toasts />
+    </div>
+  );
 }
 
 /**

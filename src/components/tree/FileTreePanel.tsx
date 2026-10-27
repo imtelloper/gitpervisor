@@ -621,7 +621,6 @@ export function FileTreePanel({
   const selectDiff = useUi((s) => s.selectDiff);
   // 로컬 .html을 내장 브라우저 탭으로 열기 위한 스토어 액션.
   const openBrowserTab = useBrowsers((s) => s.openBrowser);
-  const setBrowserTitle = useBrowsers((s) => s.setTitle);
   const createDir = useCreateDir(projectId);
   const createFile = useCreateFile(projectId);
   const deletePath = useDeletePath(projectId);
@@ -1355,8 +1354,9 @@ export function FileTreePanel({
       }
       const url = await ipc.previewLocalUrl(projectId, m.path); // m.path = 트리 상대(슬래시) 경로
       // preview 출처를 함께 저장 — 앱 재시작 후에도 이 탭의 URL을 재발급해 되살릴 수 있다.
-      const id = openBrowserTab(projectId, url, { projectId, relPath: m.path });
-      setBrowserTitle(id, m.name); // 없으면 제목이 "127.0.0.1:<port>"로 뜬다
+      // 제목은 만들 때 같이 넘긴다(없으면 "127.0.0.1:<port>"로 뜬다) — 모아보기 창에선 탭이 메인에서 만들어져
+      // 나중에 setTitle을 불러도 이 창엔 아직 항목이 없다.
+      openBrowserTab(projectId, url, { projectId, relPath: m.path }, { title: m.name });
     } catch (e) {
       pushToast("error", errorMessage(e));
     }

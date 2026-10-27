@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 
 import { currentMessages } from "../i18n/ui-language";
+import type { BrowserItem } from "../stores/browser";
 import { isPdf } from "./language-map";
 
 /**
@@ -77,6 +78,13 @@ export interface DocTarget {
    * 위 필드들과 같은 이유로 **옵셔널이어야 한다** — 이 필드 이전에 적힌 항목이 남아 있다.
    */
   log?: string;
+  /**
+   * 있으면 이 창은 **분리한 브라우저 탭**이다(탭 우클릭 → 새 창으로 분리). 메인 탭의 항목을 그대로
+   * 싣는다 — 같은 id라 네이티브 webview가 이 창으로 옮겨 붙어 페이지가 새로 고쳐지지 않는다
+   * (commands/browser.rs place). `projectId` 는 항목의 것, `path` 는 창 제목이다.
+   * 위 필드들과 같은 이유로 **옵셔널이어야 한다**.
+   */
+  browser?: BrowserItem;
 }
 
 /**
@@ -116,6 +124,22 @@ function readDocs(): Record<string, DocTarget> {
   }
 }
 
+/** 창 id → 대상을 적는다(최신 DOC_MAX개만 보관). */
+function putDocTarget(id: string, target: DocTarget): void {
+  const docs = readDocs();
+  docs[id] = target;
+  const keys = Object.keys(docs); // 문자열 키라 삽입 순서가 유지된다 → 뒤쪽이 최신
+  const kept =
+    keys.length > DOC_MAX
+      ? Object.fromEntries(keys.slice(-DOC_MAX).map((k) => [k, docs[k]]))
+      : docs;
+  try {
+    localStorage.setItem(DOC_KEY, JSON.stringify(kept));
+  } catch {
+    /* 용량 초과 — 창은 그래도 띄운다(대상을 못 찾으면 그 창이 안내한다) */
+  }
+}
+
 /**
  * 파일 하나를 읽기용 별도 창으로 띄운다(파일트리 우클릭 → 새 창으로 열기).
  *
@@ -133,18 +157,7 @@ export function openDocWindow(
   opts?: { size?: [number, number]; edit?: boolean },
 ): void {
   const id = crypto.randomUUID().replace(/-/g, "");
-  const docs = readDocs();
-  docs[id] = { projectId, path, edit: opts?.edit };
-  const keys = Object.keys(docs); // 문자열 키라 삽입 순서가 유지된다 → 뒤쪽이 최신
-  const kept =
-    keys.length > DOC_MAX
-      ? Object.fromEntries(keys.slice(-DOC_MAX).map((k) => [k, docs[k]]))
-      : docs;
-  try {
-    localStorage.setItem(DOC_KEY, JSON.stringify(kept));
-  } catch {
-    /* 용량 초과 — 창은 그래도 띄운다(대상을 못 찾으면 그 창이 안내한다) */
-  }
+  putDocTarget(id, { projectId, path, edit: opts?.edit });
   // `size`는 Rust가 창 내부 크기로 받는다(`lib.rs` open_doc_window — 생략하면 900×760,
   // 값은 420..3000으로 클램프된다: 화면 밖으로 나간 커스텀 타이틀바는 움직일 수도 닫을 수도 없다).
   void invoke("open_doc_window", {
@@ -195,20 +208,12 @@ export function fnv16(s: string): string {
  */
 export function openFolderWindow(path: string, project?: { id: string; root: string }): void {
   const id = fnv16(path);
-  const docs = readDocs();
-  docs[id] = project
-    ? { projectId: project.id, path, folder: project.root, start: path }
-    : { projectId: "", path, folder: path };
-  const keys = Object.keys(docs);
-  const kept =
-    keys.length > DOC_MAX
-      ? Object.fromEntries(keys.slice(-DOC_MAX).map((k) => [k, docs[k]]))
-      : docs;
-  try {
-    localStorage.setItem(DOC_KEY, JSON.stringify(kept));
-  } catch {
-    /* 용량 초과 — 창은 그래도 띄운다(대상을 못 찾으면 그 창이 안내한다) */
-  }
+  putDocTarget(
+    id,
+    project
+      ? { projectId: project.id, path, folder: project.root, start: path }
+      : { projectId: "", path, folder: path },
+  );
   // 파일 뷰어(900×760)보다 넓게 — 썸네일 그리드가 한 줄에 여러 장 들어가야 쓸 만하다.
   // Rust 가 420..3000 으로 클램프한다.
   void invoke("open_doc_window", {
@@ -229,19 +234,8 @@ export function openFolderWindow(path: string, project?: { id: string; root: str
  * 준다(lib.rs open_doc_window 의 싱글턴 분기). 리포트는 읽기 데이터라 창이 하나면 충분하다.
  */
 export function openReportWindow(): void {
-  const docs = readDocs();
   const title = currentMessages().lib.reportWindowTitle;
-  docs["report"] = { projectId: "", path: title, report: true };
-  const keys = Object.keys(docs);
-  const kept =
-    keys.length > DOC_MAX
-      ? Object.fromEntries(keys.slice(-DOC_MAX).map((k) => [k, docs[k]]))
-      : docs;
-  try {
-    localStorage.setItem(DOC_KEY, JSON.stringify(kept));
-  } catch {
-    /* 용량 초과 — 창은 그래도 띄운다(대상을 못 찾으면 그 창이 안내한다) */
-  }
+  putDocTarget("report", { projectId: "", path: title, report: true });
   // 카드 + 우측 채팅 패널(§3.2)이 함께 들어가는 창이라 폴더 창보다 넓게 연다.
   // Rust 가 420..3000 으로 클램프한다.
   void invoke("open_doc_window", {
@@ -264,18 +258,7 @@ export function openReportWindow(): void {
  */
 export function openLogWindow(projectId: string, name: string): void {
   const id = fnv16(`log:${projectId}`);
-  const docs = readDocs();
-  docs[id] = { projectId, path: name, log: projectId };
-  const keys = Object.keys(docs);
-  const kept =
-    keys.length > DOC_MAX
-      ? Object.fromEntries(keys.slice(-DOC_MAX).map((k) => [k, docs[k]]))
-      : docs;
-  try {
-    localStorage.setItem(DOC_KEY, JSON.stringify(kept));
-  } catch {
-    /* 용량 초과 — 창은 그래도 띄운다(대상을 못 찾으면 그 창이 안내한다) */
-  }
+  putDocTarget(id, { projectId, path: name, log: projectId });
   // 브랜치 | 커밋 목록 | 상세 | diff 4단이라 리포트 창과 같은 폭으로 연다(Rust 가 420..3000 클램프).
   void invoke("open_doc_window", {
     docId: id,
@@ -284,5 +267,23 @@ export function openLogWindow(projectId: string, name: string): void {
     size: [1240, 820],
   }).catch((e) => {
     console.error("로그 창 생성 실패:", e);
+  });
+}
+
+/**
+ * 브라우저 탭을 **별도 OS 창**으로 분리한다(탭 우클릭 → 새 창으로 분리). 문서 창(`doc-*`) 경로를 그대로 탄다.
+ * 창 id는 매번 새로 — 같은 페이지를 두 번 분리해도 창이 둘이다(탭 id가 다르다). 메인 쪽 정리
+ * (handOffBrowser → 탭 닫기)는 호출부가 한다.
+ */
+export function openBrowserWindow(item: BrowserItem): void {
+  const id = crypto.randomUUID().replace(/-/g, "");
+  putDocTarget(id, { projectId: item.projectId, path: item.title, browser: item });
+  void invoke("open_doc_window", {
+    docId: id,
+    title: item.title,
+    origin: window.location.origin,
+    size: [1200, 860],
+  }).catch((e) => {
+    console.error("브라우저 창 생성 실패:", e);
   });
 }

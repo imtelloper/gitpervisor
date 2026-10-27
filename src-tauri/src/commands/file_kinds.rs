@@ -7,8 +7,12 @@
 //
 // 목록은 **고른 탭의 확장자만** 돌려주고, 다른 탭은 개수만 센다. 처음엔 모든 탭의 파일을 한 상한(1만)으로 같이
 // 받았는데, 데이터셋 폴더(학습 이미지 수만 장)가 그 상한을 혼자 채워 실행·PDF 탭이 비어 보였다(2026-10-15 실측).
+//
+// 걷기는 **너비 우선**이다. 깊이 우선(스택)일 때 `ML/test-data`(이미지 19만 장)가 걷기 상한을 혼자 다 써서,
+// 이름순으로 먼저 쌓인 `APPLICATION/vis-service-manager/*.exe`(깊이 2)에 끝내 닿지 못했다(2026-10-27 실측).
+// 실행·설치 파일은 대개 얕은 곳에 있고 상한에 걸려 잘리는 것은 깊은 데이터 더미 쪽이어야 한다.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -68,12 +72,21 @@ pub fn walk_files_by_ext(
     list_exts: &HashSet<String>,
     count_exts: &HashSet<String>,
 ) -> std::io::Result<KindFileList> {
+    walk_files_by_ext_capped(root, list_exts, count_exts, MAX_VISITED)
+}
+
+fn walk_files_by_ext_capped(
+    root: &Path,
+    list_exts: &HashSet<String>,
+    count_exts: &HashSet<String>,
+    max_visited: usize,
+) -> std::io::Result<KindFileList> {
     // 루트를 못 읽는 것은 오류다(빈 목록으로 숨기지 않는다). 하위 폴더 실패는 아래에서 건너뛴다.
     std::fs::read_dir(root)?;
     let mut out = KindFileList { files: Vec::new(), counts: BTreeMap::new(), truncated: false, files_truncated: false };
     let mut visited = 0usize;
-    let mut stack: Vec<(PathBuf, String)> = vec![(root.to_path_buf(), String::new())];
-    'walk: while let Some((dir, rel)) = stack.pop() {
+    let mut queue: VecDeque<(PathBuf, String)> = VecDeque::from([(root.to_path_buf(), String::new())]);
+    'walk: while let Some((dir, rel)) = queue.pop_front() {
         let read = match std::fs::read_dir(&dir) {
             Ok(r) => r,
             // 권한 없는 하위 폴더(시스템 폴더·다른 사용자 소유)는 목록에서 빠질 뿐이다 — 탭 전체를 실패시키지 않는다.
@@ -84,7 +97,7 @@ pub fn walk_files_by_ext(
         };
         for entry in read.flatten() {
             visited += 1;
-            if visited > MAX_VISITED {
+            if visited > max_visited {
                 out.truncated = true;
                 break 'walk;
             }
@@ -98,7 +111,7 @@ pub fn walk_files_by_ext(
             if ft.is_dir() {
                 if !SKIP_DIRS.contains(&name.as_str()) {
                     let child_rel = if rel.is_empty() { name } else { format!("{rel}/{name}") };
-                    stack.push((entry.path(), child_rel));
+                    queue.push_back((entry.path(), child_rel));
                 }
                 continue;
             }
@@ -192,5 +205,26 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
         assert!(walk_files_by_ext(&root, &set(&["exe"]), &set(&[])).is_err(), "없는 루트는 빈 목록이 아니라 오류");
         assert!(ext_set(vec!["../x".into()]).is_err());
+    }
+
+    /// 걷기 상한에 걸려도 얕은 실행 파일은 목록에 남는다 — 깊은 데이터 더미가 상한을 다 먹어도.
+    /// 깊이 우선이던 때는 NTFS 이름순으로 `app`이 먼저 쌓이고 `data`가 먼저 꺼내져 `app/tool/x.exe`가 빠졌다.
+    #[test]
+    fn file_kinds_walk_reaches_shallow_exe_before_deep_data_hits_cap() {
+        let root = std::env::temp_dir().join(format!("gpv-file-kinds-bfs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let deep = root.join("data/a/b/c");
+        std::fs::create_dir_all(&deep).unwrap();
+        for i in 0..50 {
+            std::fs::write(deep.join(format!("{i}.png")), "").unwrap();
+        }
+        std::fs::create_dir_all(root.join("app/tool")).unwrap();
+        std::fs::write(root.join("app/tool/x.exe"), "").unwrap();
+        // 폴더 6개(app·data·tool·a·b·c) + x.exe 1개 = 7 — 그 뒤 png 몇 장에서 상한에 걸린다.
+        let got = walk_files_by_ext_capped(&root, &set(&["exe"]), &set(&["png"]), 10).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(got.truncated);
+        let paths: Vec<&str> = got.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, vec!["app/tool/x.exe"]);
     }
 }

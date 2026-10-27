@@ -36,6 +36,7 @@ import {
   type BrowserItem,
   remintPreview,
   resolveOmnibox,
+  THIS_WINDOW_LABEL,
   useBrowsers,
 } from "../../stores/browser";
 import { useOccludesWebview, useWebviewBlocked } from "../../stores/occlusion";
@@ -112,6 +113,11 @@ export function BrowserPane({
   const blocked = useWebviewBlocked();
 
   const shouldShow = active && mode === "native" && !!url && !blocked;
+  // 네이티브 webview를 지금 가진 창 — 다른 창(모아보기 별도 창·분리 창)이 가져가면 여기엔 안내만 남는다.
+  // 바뀔 때마다 아래 표시 효과를 다시 돌린다: 그 창이 닫혀 webview가 같이 사라지면("") 이 창이 다시
+  // 보이려 하고, 백엔드가 "없음"을 돌려주면 setVisible이 새로 만든다.
+  const host = useBrowsers((s) => s.host[id]);
+  const heldElsewhere = mode === "native" && !!host && host !== THIS_WINDOW_LABEL;
 
   // 안정 리스너에서 최신 shouldShow를 읽기 위한 ref
   const shouldShowRef = useRef(shouldShow);
@@ -191,7 +197,7 @@ export function BrowserPane({
     }
     if (shouldShow) void setVisible(id, true, rectOf(viewportRef.current));
     else void setVisible(id, false);
-  }, [shouldShow, mode, id]);
+  }, [shouldShow, mode, id, host]);
 
   // bounds 동기화 — 콘텐츠 rect 변화가 단일 진실(ResizeObserver). LogPanel/FileTree/분할
   // 토글 등 모든 리플로우는 viewport 크기를 바꾸므로 여기서 잡힌다.
@@ -387,7 +393,7 @@ export function BrowserPane({
         ) : (
           // 네이티브 모드: webview가 위를 덮는다. 숨겨질 때 보이는 중립 배경.
           <div className="flex h-full w-full items-center justify-center text-xs text-fg-dim">
-            {!active && msg.git.browser.shownElsewhere}
+            {(!active || heldElsewhere) && msg.git.browser.shownElsewhere}
           </div>
         )}
       </div>

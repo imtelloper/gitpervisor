@@ -173,12 +173,6 @@ pub fn external_link_not_allowed() -> &'static str {
     }
 }
 
-pub fn browser_main_window_not_found() -> &'static str {
-    match lang() {
-        Lang::Ko => "메인 창을 찾을 수 없습니다",
-        Lang::En => "Main window not found",
-    }
-}
 
 pub fn browser_profile_clear_schedule_failed(err: impl Display) -> String {
     match lang() {
