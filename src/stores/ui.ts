@@ -987,12 +987,10 @@ export const useUi = create<UiState>((set) => ({
 // localStorage 스냅샷이고 그 뒤 메인 창이 연 탭은 반영되지 않는다 — 보조 창에서 selectDiff가
 // 한 번이라도 불리면(모아보기 창의 Git 모달 안 DiffViewer, doc 창의 "편집" 등) 그 낡은 스냅샷이
 // 통째로 기록돼 **메인 창이 그 뒤 연 탭이 재시작 후 전부 사라진다.**
+// 제외 목록이 아니라 "main만"으로 판정한다 — 목록식이던 때 리소스 모니터(sysmon)·캡처 창이 빠져 있었다.
 const SKIP_VIEWER_PERSIST = (() => {
   try {
-    const label = getCurrentWebviewWindow().label;
-    return (
-      label.startsWith("float-") || label.startsWith("doc-") || label === "aggregate"
-    );
+    return getCurrentWebviewWindow().label !== "main";
   } catch {
     return false;
   }

@@ -1,3 +1,4 @@
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { create } from "zustand";
 
 import { currentMessages } from "../i18n/ui-language";
@@ -922,15 +923,28 @@ function persistNow() {
   }
 }
 
+// 저장은 **메인 창만** 한다. 이 모듈은 모든 창(모아보기·문서 창·리소스 모니터·분리 터미널·프리워밍 풀)에
+// 로드되지만 API 탭은 메인에서만 편집된다 — 보조 창이 저장하면 그 창이 열릴 때 읽은 낡은 사본이 들어간다.
+// 창을 닫을 때의 flush(beforeunload/pagehide)가 메인에서 방금 연 탭·편집을 저장분에서 지웠다
+// (2026-10-27 실측: 리소스 모니터·모아보기 창을 닫자 새 API 탭이 gp:apiclient에서 사라졌다).
+const IS_MAIN_WINDOW = (() => {
+  try {
+    return getCurrentWebviewWindow().label === "main";
+  } catch {
+    return true;
+  }
+})();
+
 // patchDraft가 이제 매 키 입력마다 nodes를 바꾸므로, 즉시 저장 대신 디바운스로 묶어
 // localStorage write 폭주를 막는다(거대 컬렉션도 stringify 부담 완화).
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
-useApiClient.subscribe(() => {
-  if (persistTimer) clearTimeout(persistTimer);
-  persistTimer = setTimeout(persistNow, 250);
-});
+if (IS_MAIN_WINDOW)
+  useApiClient.subscribe(() => {
+    if (persistTimer) clearTimeout(persistTimer);
+    persistTimer = setTimeout(persistNow, 250);
+  });
 // 창 닫힘/숨김 시 디바운스 대기분을 즉시 비운다(마지막 편집 유실 방지).
-if (typeof window !== "undefined") {
+if (IS_MAIN_WINDOW && typeof window !== "undefined") {
   const flush = () => {
     if (persistTimer) {
       clearTimeout(persistTimer);

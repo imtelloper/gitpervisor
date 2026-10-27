@@ -66,11 +66,24 @@ export const useTreeState = create<TreeStateStore>((set) => ({
 }));
 
 // 영속 — 상태 변화 시 localStorage에 기록(플로팅 창은 트리가 없어 스킵).
-if (!IS_FLOAT)
+// **읽고-고쳐-쓰기로 이 창이 바꾼 프로젝트만** 쓴다(promptHistory·termThemes와 같은 이유): 모아보기 창의
+// 파일 트리 모달도 이 스토어를 쓰는데, 통째로 쓰면 그 창이 열릴 때 읽은 낡은 사본이 그 뒤 메인에서
+// 펼치고 접은 다른 프로젝트들을 되돌린다.
+if (!IS_FLOAT) {
+  let prev = useTreeState.getState().expanded;
   useTreeState.subscribe((s) => {
+    if (s.expanded === prev) return;
+    const cur = load();
+    for (const p of new Set([...Object.keys(prev), ...Object.keys(s.expanded)])) {
+      if (s.expanded[p] === prev[p]) continue;
+      if (s.expanded[p]) cur[p] = s.expanded[p];
+      else delete cur[p];
+    }
+    prev = s.expanded;
     try {
-      localStorage.setItem(KEY, JSON.stringify(s.expanded));
+      localStorage.setItem(KEY, JSON.stringify(cur));
     } catch {
       /* localStorage 불가 환경 무시 */
     }
   });
+}

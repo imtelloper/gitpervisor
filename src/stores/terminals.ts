@@ -29,23 +29,27 @@ function dropPane(paneId: string): void {
 // "불러오기"와 "저장하기"를 따로 정한다 — 보조 창이 저장하면 메인 창 탭을 스테일 스냅샷으로
 // 덮어쓰기 때문에 **저장은 메인만** 한다.
 //
-//  - main       : 불러옴 + 저장함
-//  - float-*    : 불러오지 않음(FloatingTerminal이 단일 pane을 시드) + 저장 안 함
-//  - aggregate  : **불러옴**(그리드에 메인의 터미널을 그려야 한다) + 저장 안 함.
-//                 메인이 이후 만든 터미널은 storage 이벤트로 따라간다(아래 구독).
-//                 **변경은 메인에 위임한다**(terminals://cmd) — 아래 sendTerminalsCmd.
-type WindowRole = "main" | "float" | "aggregate";
-const ROLE: WindowRole = (() => {
+//  - main    : 불러옴 + 저장함 + 보조 창 명령 실행
+//  - float-* : 불러오지 않음(FloatingTerminal이 단일 pane을 시드) + 저장 안 함
+//  - mirror  : 그 밖의 보조 창 전부(모아보기·문서 창·리소스 모니터·캡처). **불러옴**(모아보기는 그리드에
+//              메인의 터미널을 그려야 한다) + 저장 안 함. 메인이 이후 만든 터미널은 storage 이벤트로
+//              따라간다(아래 구독). **변경은 메인에 위임한다**(terminals://cmd) — 아래 sendTerminalsCmd.
+//
+// "main"은 라벨이 main인 창 **하나뿐**이어야 한다. 예전엔 float-·aggregate가 아니면 전부 main으로 봐서
+// 리소스 모니터·문서 창·캡처 창도 저장하고 terminals://cmd를 같이 실행했다 — Tauri는 `listen()`(대상 Any)
+// 리스너에게 `emitTo("main")` 이벤트도 전달하므로, 모아보기에서 Float 분리를 누르면 그 창들도 분리 창을
+// 하나씩 더 띄웠다(2026-10-27 실측: 리소스 모니터 창이 위임된 새 터미널을 자기 스토어에도 만들었다).
+type WindowRole = "main" | "float" | "mirror";
+const WINDOW_LABEL = (() => {
   try {
-    const label = getCurrentWebviewWindow().label;
-    if (label.startsWith("float-")) return "float";
-    if (label === "aggregate") return "aggregate";
-    return "main";
+    return getCurrentWebviewWindow().label;
   } catch {
     return "main";
   }
 })();
-export const IS_AGGREGATE_WINDOW = ROLE === "aggregate";
+const ROLE: WindowRole =
+  WINDOW_LABEL === "main" ? "main" : WINDOW_LABEL.startsWith("float-") ? "float" : "mirror";
+export const IS_AGGREGATE_WINDOW = WINDOW_LABEL === "aggregate";
 
 /** 보조 창이 메인에 내리는 터미널 변경 명령 — 스토어 액션과 1:1. */
 export type TerminalsCmd =
@@ -265,7 +269,7 @@ export const useTerminals = create<TerminalsState>((set, get) => ({
   openTerminal: (projectId, ids) => {
     const tabId = ids?.tabId ?? crypto.randomUUID();
     const paneId = ids?.paneId ?? crypto.randomUUID();
-    if (ROLE === "aggregate") {
+    if (ROLE === "mirror") {
       sendTerminalsCmd({ op: "openTerminal", projectId, tabId, paneId });
       return { tabId, paneId }; // 호출부는 이 id로 selected에 넣는다 — 같은 id가 storage로 돌아온다
     }
@@ -383,7 +387,7 @@ export const useTerminals = create<TerminalsState>((set, get) => ({
   },
 
   floatPane: (tabId, paneId) => {
-    if (ROLE === "aggregate")
+    if (ROLE === "mirror")
       return sendTerminalsCmd({ op: "floatPane", tabId, paneId });
     const tab = get().terminals.find((t) => t.id === tabId);
     if (!tab) return;
@@ -437,7 +441,7 @@ export const useTerminals = create<TerminalsState>((set, get) => ({
     })),
 
   closePane: (tabId, paneId) => {
-    if (ROLE === "aggregate")
+    if (ROLE === "mirror")
       return sendTerminalsCmd({ op: "closePane", tabId, paneId });
     dropPane(paneId);
     const tab = get().terminals.find((t) => t.id === tabId);
@@ -534,9 +538,9 @@ if (ROLE === "main")
     else if (c.op === "floatPane") ts.floatPane(c.tabId, c.paneId);
   });
 
-// 모아보기 창은 메인이 저장한 내용을 따라간다 — storage 이벤트는 **다른 창**에서만 발화하므로
-// 메인이 터미널을 새로 열거나 닫으면 이 창의 그리드에도 반영된다(단방향: 메인 → 모아보기).
-if (ROLE === "aggregate")
+// 보조 창(mirror)은 메인이 저장한 내용을 따라간다 — storage 이벤트는 **다른 창**에서만 발화하므로
+// 메인이 터미널을 새로 열거나 닫으면 모아보기 그리드에도 반영된다(단방향: 메인 → 보조 창).
+if (ROLE === "mirror")
   window.addEventListener("storage", (e) => {
     if (e.key !== PERSIST_KEY || !e.newValue) return;
     try {
