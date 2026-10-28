@@ -216,8 +216,11 @@ export function ensureBrowserEvents(): void {
       loading: e.payload.loading,
     });
   });
-  void listen<{ browserId: string; title: string }>("browser://title", (e) => {
-    useBrowsers.getState().setTitle(e.payload.browserId, e.payload.title);
+  void listen<{ browserId: string; title: string; url: string }>("browser://title", (e) => {
+    // 페이지 안 이동(SPA)이면 탭 주소가 여기서 바뀐다 — 먼저 실적으로 적어 두지 않으면 BrowserPane 이 새 주소로
+    // navigate(전체 새로 고침)한다(browser://nav 와 같은 이유).
+    if (e.payload.url) lastUrl.set(e.payload.browserId, e.payload.url);
+    useBrowsers.getState().setTitle(e.payload.browserId, e.payload.title, e.payload.url);
   });
   // webview가 어느 창에 붙어 있는가 — 다른 창이 가져가면 이 창의 패널이 "다른 곳에서 표시 중"을 띄운다.
   void listen<{ browserId: string; window: string }>("browser://host", (e) => {

@@ -90,12 +90,86 @@ export function resolveOmnibox(raw: string): string | null {
 export interface HistoryEntry {
   url: string;
   title: string;
+  /** 다 읽힌 횟수(페이지 로드 완료 기준) — 자동완성 순위. 옛 저장본엔 없다. */
+  visits?: number;
 }
 export interface BookmarkEntry {
   url: string;
   title: string;
 }
-const HISTORY_CAP = 120;
+/** ponytail: 최근 1000개만 — 검색 URL 은 길어 최악 ~500KB 를 탐색마다 통째로 직렬화한다. 더 길게 기억하려면 IndexedDB 로. */
+const HISTORY_CAP = 1000;
+
+/** 검색 결과 페이지면 검색어 — 자동완성에 주소 대신 검색어로 보이고 검색어로 찾힌다(Chrome처럼). */
+export function searchQueryOf(url: string): string | null {
+  try {
+    const u = new URL(url);
+    const h = u.hostname.replace(/^www\./, "");
+    const key =
+      (/^google\.[a-z.]+$/.test(h) || h === "bing.com") && u.pathname === "/search"
+        ? "q"
+        : h === "duckduckgo.com" || h === "search.daum.net"
+          ? "q"
+          : h === "search.naver.com"
+            ? "query"
+            : null;
+    return (key && u.searchParams.get(key)?.trim()) || null;
+  } catch {
+    return null;
+  }
+}
+
+export interface OmniboxSuggestion {
+  url: string;
+  title: string;
+  bookmarked: boolean;
+  /** 검색 결과 페이지면 그 검색어(`searchQueryOf`). */
+  query: string | null;
+}
+
+/**
+ * 주소창 입력에 맞는 북마크·방문기록. 입력의 낱말이 모두 주소(scheme·www 뺀)나 제목·검색어에 들어 있어야 하고,
+ * 주소 앞부분이 그대로 맞는 것(git → github.com) > 제목·검색어가 그 말로 시작하는 것 > 포함만 하는 것 순,
+ * 같은 급이면 북마크 > 방문 횟수 > 최근 순이다. 같은 검색어의 결과 URL(파라미터만 다른)은 한 줄로 합친다.
+ */
+export function suggestOmnibox(
+  input: string,
+  bookmarks: readonly BookmarkEntry[],
+  history: readonly HistoryEntry[],
+  limit = 8,
+): OmniboxSuggestion[] {
+  const q = input.trim().toLowerCase();
+  if (!q) return [];
+  const words = q.split(/\s+/);
+  const visitsOf = new Map(history.map((h) => [h.url, h.visits ?? 0]));
+  const seen = new Set<string>();
+  const hits: { s: OmniboxSuggestion; rank: number; visits: number; order: number }[] = [];
+  const all = [
+    ...bookmarks.map((b) => ({ url: b.url, title: b.title, bookmarked: true })),
+    ...history.map((h) => ({ url: h.url, title: h.title, bookmarked: false })),
+  ];
+  all.forEach((e, order) => {
+    const query = searchQueryOf(e.url);
+    const key = query ? `?${query.toLowerCase()}` : e.url;
+    if (seen.has(key)) return;
+    const bare = e.url.replace(/^[a-z]+:\/\/(www\.)?/i, "").toLowerCase();
+    const text = (query ?? e.title).toLowerCase();
+    if (!words.every((w) => bare.includes(w) || text.includes(w))) return;
+    seen.add(key);
+    const rank = !query && bare.startsWith(q) ? 2 : text.startsWith(q) || text.includes(` ${q}`) ? 1 : 0;
+    hits.push({ s: { ...e, query }, rank, visits: visitsOf.get(e.url) ?? 0, order });
+  });
+  return hits
+    .sort(
+      (a, b) =>
+        b.rank - a.rank ||
+        Number(b.s.bookmarked) - Number(a.s.bookmarked) ||
+        b.visits - a.visits ||
+        a.order - b.order,
+    )
+    .slice(0, limit)
+    .map((h) => h.s);
+}
 
 /** 보조 창이 메인에 내리는 브라우저 변경 명령 — 스토어 액션과 1:1. */
 type BrowsersCmd =
@@ -110,7 +184,8 @@ type BrowsersCmd =
   | { op: "closeBrowser"; id: string }
   | { op: "setUrl"; id: string; url: string }
   | { op: "ensurePane"; id: string; projectId: string; url: string }
-  | { op: "setBookmark"; url: string; title: string; on: boolean };
+  | { op: "setBookmark"; url: string; title: string; on: boolean }
+  | { op: "forgetHistory"; url: string };
 
 const sendBrowsersCmd = (cmd: BrowsersCmd) =>
   void emitTo("main", "browsers://cmd", cmd).catch((e) =>
@@ -155,18 +230,23 @@ interface BrowsersState {
   refreshPreview: (id: string, url: string, expect?: PreviewSource) => void;
   /** 백엔드 browser://nav 반영 (페이지가 스스로 이동한 경우 포함) */
   applyNav: (id: string, p: { url: string; loading: boolean }) => void;
-  setTitle: (id: string, title: string) => void;
+  /** 백엔드 browser://title 반영. `url` 은 그 시점 페이지 주소(못 읽었으면 "") — 페이지 안 이동(SPA)을 여기서 잡는다. */
+  setTitle: (id: string, title: string, url?: string) => void;
+  /** 방문기록에서 지운다 — 검색 결과 주소면 같은 검색어의 기록을 다 지운다(자동완성에서 한 줄로 보이므로). */
+  forgetHistory: (url: string) => void;
   /** 북마크 토글 — 있으면 제거, 없으면 추가 */
   toggleBookmark: (url: string, title: string) => void;
   /** 북마크를 그 상태로 맞춘다(on=true면 맨 앞에 추가). 토글과 보조 창 위임이 쓴다. */
   setBookmark: (url: string, title: string, on: boolean) => void;
 }
 
-function pushHistory(history: HistoryEntry[], url: string, title?: string): HistoryEntry[] {
+/** 맨 앞으로 올린다. `visited` 면 방문 횟수를 센다 — 로드 시작·완료·제목 갱신이 다 여기로 오므로 완료 때만 센다. */
+function pushHistory(history: HistoryEntry[], url: string, title?: string, visited = false): HistoryEntry[] {
   if (!url || url === "about:blank" || isPreviewUrl(url)) return history;
   const rest = history.filter((h) => h.url !== url);
   const prev = history.find((h) => h.url === url);
-  return [{ url, title: title || prev?.title || "" }, ...rest].slice(0, HISTORY_CAP);
+  const visits = (prev?.visits ?? 0) + (visited ? 1 : 0);
+  return [{ url, title: title || prev?.title || "", ...(visits ? { visits } : {}) }, ...rest].slice(0, HISTORY_CAP);
 }
 
 // 터미널과 분리된 키로 영속 — 탭/패널 URL + 방문기록 + 북마크(네이티브 history·세션은 복구 불가).
@@ -340,25 +420,26 @@ export const useBrowsers = create<BrowsersState>((set, get) => ({
       const item = s.items[id];
       // 모르는 id = 다른 창(분리한 브라우저 창)이 자기 스토어에만 둔 브라우저다. browser://nav는 모든 창에
       // 오므로 방문 기록만은 남긴다 — 기록은 메인이 저장하는 공용 자료다.
-      if (!item)
-        return {
-          loading: { ...s.loading, [id]: p.loading },
-          history: p.url ? pushHistory(s.history, p.url) : s.history,
-        };
+      const history = p.url ? pushHistory(s.history, p.url, undefined, !p.loading) : s.history;
+      if (!item) return { loading: { ...s.loading, [id]: p.loading }, history };
       return {
         loading: { ...s.loading, [id]: p.loading },
         items: { ...s.items, [id]: { ...item, url: p.url || item.url } },
-        history: p.url ? pushHistory(s.history, p.url) : s.history,
+        history,
       };
     }),
 
-  setTitle: (id, title) =>
+  setTitle: (id, title, url = "") =>
     set((s) => {
       const item = s.items[id];
-      if (!item) return s;
+      // 모르는 id = 다른 창(분리한 브라우저 창)의 브라우저 — 주소가 왔으면 방문기록 제목만 채운다(applyNav 와 같은 이유).
+      if (!item) return url && title ? { history: pushHistory(s.history, url, title) } : s;
+      // 제목과 함께 온 주소가 탭 주소와 다르면 페이지 안 이동(pushState)이다 — page_load 가 없으니 여기서 방문으로 센다.
+      const moved = !!url && url !== item.url;
+      const at = moved ? url : item.url;
       return {
-        items: { ...s.items, [id]: { ...item, title: title || item.title } },
-        history: title ? pushHistory(s.history, item.url, title) : s.history,
+        items: { ...s.items, [id]: { ...item, url: at, title: title || item.title } },
+        history: title || moved ? pushHistory(s.history, at, title, moved) : s.history,
         bookmarks: title
           ? s.bookmarks.map((bm) =>
               bm.url === item.url && !bm.title ? { ...bm, title } : bm,
@@ -382,6 +463,16 @@ export const useBrowsers = create<BrowsersState>((set, get) => ({
       const rest = s.bookmarks.filter((b) => b.url !== url);
       return { bookmarks: on ? [{ url, title: title || url }, ...rest] : rest };
     }),
+
+  forgetHistory: (url) => {
+    // 북마크와 같은 이유로 메인에도 보낸다 — 이 창에서만 지우면 다음 저장(메인)에 되살아난다.
+    if (ROLE !== "main") sendBrowsersCmd({ op: "forgetHistory", url });
+    if (ROLE === "aggregate") return;
+    const query = searchQueryOf(url);
+    set((s) => ({
+      history: s.history.filter((h) => h.url !== url && !(query && searchQueryOf(h.url) === query)),
+    }));
+  },
 }));
 
 // 프리뷰 URL(루프백 포트+토큰)은 프로세스 수명이라 재시작 후엔 죽은 주소다 — 출처가 저장된
@@ -416,7 +507,10 @@ export function remintPreview(id: string): void {
 // 탭/패널 URL·방문기록·북마크가 바뀔 때마다 localStorage에 저장 — 다음 실행에서 복구.
 // 메인 창만 쓴다(위 ROLE 주석) — 보조 창이 스테일 스냅샷으로 덮지 않게.
 if (ROLE === "main")
-  useBrowsers.subscribe((s) => {
+  useBrowsers.subscribe((s, prev) => {
+    // 로딩·호스트 표시만 바뀐 갱신은 건너뛴다 — 방문기록이 커서 매번 통째로 직렬화하면 아깝다.
+    if (s.items === prev.items && s.tabIds === prev.tabIds && s.history === prev.history && s.bookmarks === prev.bookmarks)
+      return;
     try {
       localStorage.setItem(
         PERSIST_KEY,
@@ -444,6 +538,7 @@ if (ROLE === "main")
     else if (c.op === "setUrl") bs.setUrl(c.id, c.url);
     else if (c.op === "ensurePane") bs.ensurePane(c.id, c.projectId, c.url);
     else if (c.op === "setBookmark") bs.setBookmark(c.url, c.title, c.on);
+    else if (c.op === "forgetHistory") bs.forgetHistory(c.url);
     else {
       const never: never = c;
       console.error("알 수 없는 브라우저 위임:", never);

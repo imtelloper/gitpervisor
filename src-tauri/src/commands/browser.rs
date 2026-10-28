@@ -164,6 +164,8 @@ struct NavEvent {
 struct TitleEvent {
     browser_id: String,
     title: String,
+    /// 제목이 바뀐 시점의 주소 — 못 읽으면 빈 문자열(프런트는 제목만 갱신).
+    url: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -499,11 +501,21 @@ fn build_browser_webview(
             );
         })
         .on_document_title_changed(|webview, title| {
+            // 페이지 안 이동(pushState — SPA)에는 page_load 가 안 뜬다. 그런 앱은 대개 제목을 바꾸므로 그때의 주소를
+            // 같이 실어 탭 주소·방문기록이 따라가게 한다. 메인 스레드 콜백이라 url() 은 그 자리에서 답한다.
+            let url = match webview.url() {
+                Ok(u) => u.to_string(),
+                Err(e) => {
+                    log::warn!("[browser] 제목 갱신 시 주소 읽기 실패 {}: {e}", webview.label());
+                    String::new()
+                }
+            };
             let _ = webview.emit(
                 "browser://title",
                 TitleEvent {
                     browser_id: id_of(webview.label()),
                     title,
+                    url,
                 },
             );
         });

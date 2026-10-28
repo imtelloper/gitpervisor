@@ -7,11 +7,12 @@ import {
   Lock,
   Plug,
   RotateCw,
+  Search,
   Star,
   Unlock,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { useMessages } from "../../i18n/ui-language";
 import {
@@ -36,6 +37,7 @@ import {
   type BrowserItem,
   remintPreview,
   resolveOmnibox,
+  suggestOmnibox,
   THIS_WINDOW_LABEL,
   useBrowsers,
 } from "../../stores/browser";
@@ -43,11 +45,8 @@ import { useOccludesWebview, useWebviewBlocked } from "../../stores/occlusion";
 import { EmptyState } from "../common/EmptyState";
 import { Favicon } from "./Favicon";
 
-interface Suggestion {
-  url: string;
-  title: string;
-  bookmarked: boolean;
-}
+/** 자동완성에 채워 넣는 모양 — scheme·www 를 뺀 주소(사람이 치는 모양). */
+const bareUrl = (url: string) => url.replace(/^[a-z]+:\/\/(www\.)?/i, "");
 
 function hostOf(url: string): string {
   try {
@@ -105,6 +104,7 @@ export function BrowserPane({
   const history = useBrowsers((s) => s.history);
   const bookmarks = useBrowsers((s) => s.bookmarks);
   const toggleBookmark = useBrowsers((s) => s.toggleBookmark);
+  const forgetHistory = useBrowsers((s) => s.forgetHistory);
   const isBookmarked = bookmarks.some((b) => b.url === url);
 
   // 점유(occlusion) 조건 — active(호출자) & 네이티브 & URL 있음 & 가리는 오버레이 없음.
@@ -126,8 +126,11 @@ export function BrowserPane({
   // iframe 새로고침 세대 — key 교체로 리마운트해 구현(iframe엔 네이티브 reload 경로가 없다)
   const [iframeGen, setIframeGen] = useState(0);
 
-  // 주소창 입력 로컬 상태 (미포커스 시 url을 따라감)
+  // 주소창 입력 로컬 상태 (미포커스 시 url을 따라감). 화면 값은 draft + inline — draft 는 사용자가 친 것만이고
+  // 제안은 이것으로 찾는다(채워 넣은 주소로 찾으면 목록이 그 한 줄로 좁아진다).
   const [draft, setDraft] = useState(url);
+  /** 마지막 입력이 끝에 글자를 친 것인가 — 지우는 중·IME 조합 중·중간 편집에는 채워 넣지 않는다(Chrome처럼). */
+  const [typedAtEnd, setTypedAtEnd] = useState(false);
   const [focused, setFocused] = useState(false);
   const [sel, setSel] = useState(-1); // 자동완성 선택 인덱스 (-1=입력값 사용)
   useEffect(() => {
@@ -135,24 +138,25 @@ export function BrowserPane({
   }, [url, focused]);
   useEffect(() => setSel(-1), [draft]);
 
-  // 옴니박스 자동완성 — 북마크(우선) + 방문기록 합쳐 substring 매칭(최대 6)
   const q = draft.trim().toLowerCase();
   // 주소창을 "실제로 편집 중"인가 — 포커스만으론 부족하다(포커스 시 draft가 현재 url로 채워진다).
   const editingOmnibox = focused && !!q && q !== url.toLowerCase();
-  const matches: Suggestion[] = (() => {
-    if (!editingOmnibox) return [];
-    const bm: Suggestion[] = bookmarks.map((b) => ({ ...b, bookmarked: true }));
-    const seen = new Set(bm.map((b) => b.url));
-    const hist: Suggestion[] = history
-      .filter((h) => !seen.has(h.url))
-      .map((h) => ({ ...h, bookmarked: false }));
-    return [...bm, ...hist]
-      .filter(
-        (x) =>
-          x.url.toLowerCase().includes(q) || x.title.toLowerCase().includes(q),
-      )
-      .slice(0, 6);
-  })();
+  const matches = useMemo(
+    () => (editingOmnibox ? suggestOmnibox(q, bookmarks, history) : []),
+    [editingOmnibox, q, bookmarks, history],
+  );
+  // 인라인 자동완성 — 첫 제안의 주소가 친 글자로 시작하면 나머지를 입력칸에 채우고 선택해 둔다(그대로 Enter 면
+  // 그 주소, 계속 치면 선택이 덮인다). 검색어 줄·제목으로만 맞은 줄은 채우지 않는다.
+  const top = matches[0];
+  const topBare = top && !top.query ? bareUrl(top.url) : "";
+  const inline =
+    typedAtEnd && topBare && draft === draft.trimStart() && topBare.toLowerCase().startsWith(draft.toLowerCase())
+      ? topBare.slice(draft.length)
+      : "";
+  useLayoutEffect(() => {
+    const el = inputRef.current;
+    if (inline && el && document.activeElement === el) el.setSelectionRange(draft.length, draft.length + inline.length);
+  }, [draft, inline]);
 
   // 자동완성 목록은 컨트롤 바 아래(=네이티브 webview 점유 영역)로 펼쳐지므로, 열려 있는 동안
   // webview를 숨겨야 보인다. 등록 기준은 matches.length가 아니라 editingOmnibox다 — 매치 수는
@@ -288,16 +292,28 @@ export function BrowserPane({
             )}
             <input
               ref={inputRef}
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
+              value={draft + inline}
+              onChange={(e) => {
+                const ne = e.nativeEvent as InputEvent;
+                const v = e.target.value;
+                setTypedAtEnd(ne.inputType === "insertText" && !ne.isComposing && e.target.selectionEnd === v.length);
+                setDraft(v);
+              }}
               onFocus={(e) => {
                 setFocused(true);
                 e.target.select();
               }}
-              onBlur={() => setFocused(false)}
+              onBlur={() => {
+                setFocused(false);
+                setTypedAtEnd(false);
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
-                  go(sel >= 0 && matches[sel] ? matches[sel].url : draft);
+                  go(sel >= 0 && matches[sel] ? matches[sel].url : inline && top ? top.url : draft);
+                } else if (e.key === "Delete" && e.shiftKey && sel >= 0 && matches[sel] && !matches[sel].bookmarked) {
+                  // Chrome 과 같은 키 — 고른 기록 한 줄을 지운다(북마크는 별 버튼으로).
+                  e.preventDefault();
+                  forgetHistory(matches[sel].url);
                 } else if (e.key === "ArrowDown" && matches.length) {
                   e.preventDefault();
                   setSel((i) => (i + 1) % matches.length);
@@ -324,19 +340,35 @@ export function BrowserPane({
                     e.preventDefault();
                     go(m.url);
                   }}
-                  className={`flex w-full items-center gap-2 px-3 py-1 text-left text-xs ${
+                  className={`group flex w-full items-center gap-2 px-3 py-1 text-left text-xs ${
                     i === sel ? "bg-raised text-fg" : "text-fg-muted hover:bg-raised"
                   }`}
                 >
-                  {m.bookmarked ? (
+                  {m.query ? (
+                    <Search size={12} className="shrink-0 text-fg-dim" />
+                  ) : m.bookmarked ? (
                     <Star size={12} className="shrink-0 fill-accent text-accent" />
                   ) : (
                     <Globe size={12} className="shrink-0 text-fg-dim" />
                   )}
-                  <span className="truncate">{m.title || m.url}</span>
-                  <span className="ml-auto shrink-0 truncate text-[11px] text-fg-dim">
-                    {hostOf(m.url)}
+                  <span className="min-w-0 truncate">{m.query ?? (m.title || m.url)}</span>
+                  <span className="ml-auto min-w-0 max-w-[45%] shrink-0 truncate text-[11px] text-fg-dim">
+                    {m.query ? hostOf(m.url) : m.url.replace(/^https?:\/\//, "")}
                   </span>
+                  {!m.bookmarked && (
+                    <span
+                      role="button"
+                      title={msg.git.browser.forgetHistory}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        forgetHistory(m.url);
+                      }}
+                      className="-mr-1 shrink-0 rounded p-0.5 text-fg-dim opacity-0 hover:bg-panel hover:text-fg group-hover:opacity-100"
+                    >
+                      <X size={11} />
+                    </span>
+                  )}
                 </button>
               ))}
             </div>
