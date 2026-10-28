@@ -150,7 +150,7 @@ export async function run({ cdp, report: r, fix }) {
       await cdp.eval(`(()=>{
         const d = document.querySelector('[data-tree-path=${J(DIR)}][data-tree-isdir="1"]');
         if (!d) return 'no-dir';
-        d.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); // 폴더는 더블클릭해야 펼친다
+        d.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 2 })); // 폴더는 더블클릭(두 번째 click, detail 2)해야 펼친다
         return 'ok';
       })()`);
       await poll(() => cdp.eval(`!!document.querySelector(${J(rowSel)})`), (v) => v === true, 20, 250);

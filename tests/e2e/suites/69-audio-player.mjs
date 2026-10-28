@@ -212,8 +212,8 @@ export async function run({ cdp, report: r, fix }) {
     await sleep(400);
     const rowSel = `[data-tree-file=${J(B)}]`;
     if ((await cdp.eval(`!!document.querySelector(${J(rowSel)})`)) !== true) {
-      // 폴더는 더블클릭해야 펼친다
-      await cdp.eval(`document.querySelector(${J(`[data-tree-path=${J(DIR)}][data-tree-isdir="1"]`)})?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`);
+      // 폴더는 더블클릭(두 번째 click, detail 2)해야 펼친다
+      await cdp.eval(`document.querySelector(${J(`[data-tree-path=${J(DIR)}][data-tree-isdir="1"]`)})?.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 2 }))`);
       await poll(() => cdp.eval(`!!document.querySelector(${J(rowSel)})`), (v) => v === true, 20, 250);
     }
     const viaTree = (await clickEl(rowSel)) === "ok";

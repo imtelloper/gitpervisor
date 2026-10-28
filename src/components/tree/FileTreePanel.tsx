@@ -390,8 +390,12 @@ function TreeNode({
   return (
     <>
       <div
-        onClick={(e) => row?.onFolderClick(path, e)}
-        onDoubleClick={() => toggleFolder(projectId, path)}
+        // 더블클릭 = 펼침/접힘을 onDoubleClick 이 아니라 click 의 detail(연속 클릭 수)로 본다 — 빠르게
+        // 더블클릭을 거듭하면 클릭 수가 3·4…로 이어져 dblclick 은 첫 번째(2)에만 오고 나머지는 묻힌다.
+        onClick={(e) => {
+          row?.onFolderClick(path, e);
+          if (e.detail >= 2 && e.detail % 2 === 0) toggleFolder(projectId, path);
+        }}
         onContextMenu={(e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -412,7 +416,7 @@ function TreeNode({
           selected ? "bg-selection" : "hover:bg-raised"
         } ${entry.isIgnored ? "italic text-fg-dim" : ""}`}
       >
-        {/* 화살표는 한 번 눌러도 펼친다(VS Code 와 같다) — 행 더블클릭으로 번지면 두 번 뒤집히므로 막는다. */}
+        {/* 화살표는 한 번 눌러도 펼친다(VS Code 와 같다) — 행 클릭으로 번지면 짝수 번째 클릭에서 두 번 뒤집히므로 막는다. */}
         <Chevron
           size={13}
           className="shrink-0 text-fg-dim"
@@ -420,7 +424,6 @@ function TreeNode({
             e.stopPropagation();
             toggleFolder(projectId, path);
           }}
-          onDoubleClick={(e) => e.stopPropagation()}
         />
         <Icon size={14} color={color} className="shrink-0" />
         <span className={`font-medium ${dirHasChanges ? "text-mod" : ""}`}>
