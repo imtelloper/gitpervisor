@@ -665,8 +665,8 @@ function Toolbar({
             key={id}
             title={modeTitle(msg, id)}
             onClick={() => setView((v) => ({ ...v, mode: id, zoom: null }))}
+            // Ctrl+휠로 크기를 바꿨으면 어느 프리셋도 아니다 — 같은 버튼을 다시 누르면 그 크기로 돌아간다.
             className={`p-1 ${
-              // Ctrl+휠로 크기를 바꿨으면 어느 프리셋도 아니다 — 같은 버튼을 다시 누르면 그 크기로 돌아간다.
               view.mode === id && (id === "list" || view.zoom === null)
                 ? "bg-raised text-accent"
                 : "text-fg-muted hover:bg-raised hover:text-fg"
