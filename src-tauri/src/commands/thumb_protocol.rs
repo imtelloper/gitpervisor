@@ -202,9 +202,9 @@ mod tests {
     }
 
     #[test]
-    fn edge_outside_the_three_sizes_is_rejected() {
+    fn edge_outside_the_allowed_sizes_is_rejected() {
         let p = enc(r"C:\x\a.png");
-        for e in ["256", "0", "-1", "192.0", "", "1920"] {
+        for e in ["256", "0", "-1", "192.0", "", "1920", "641"] {
             assert_eq!(
                 parse_thumb_request(&p, &format!("e={e}&t={TOK}&v=1-2"), TOK),
                 Err(StatusCode::BAD_REQUEST),

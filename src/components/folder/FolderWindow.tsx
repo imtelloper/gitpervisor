@@ -36,6 +36,7 @@ import { copyText } from "../../lib/clipboard";
 import {
   favThumbUrl,
   prefetchFavThumbs,
+  thumbEdgeFor,
   touchFavThumb,
   useFavThumbState,
   useFavThumbToken,
@@ -86,6 +87,11 @@ export default function FolderWindow({
   const [entries, setEntries] = useState<FavEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState(() => readView(root));
+  const zoomGrid = useCallback(
+    (f: number) =>
+      setView((v) => (v.mode === "list" ? v : { ...v, zoom: clampTile((v.zoom ?? EDGE[v.mode]) * f) })),
+    [],
+  );
   const [query, setQuery] = useState("");
   /** 선택. **이름으로 붙든다** — 인덱스로 들면 포커스·F5 갱신이 더 최신 파일을 앞에 끼울 때(기본
    *  정렬이 최신 먼저) 강조·Ctrl+C·Enter 가 말없이 옆 파일로 옮겨 간다. 스크린샷 경로를 Claude 에
@@ -311,7 +317,7 @@ export default function FolderWindow({
       }
       if (isMod(ev) && ev.key >= "1" && ev.key <= "4") {
         ev.preventDefault();
-        setView((v) => ({ ...v, mode: MODES[Number(ev.key) - 1].id }));
+        setView((v) => ({ ...v, mode: MODES[Number(ev.key) - 1].id, zoom: null }));
         return;
       }
       if (isMod(ev) && ev.key.toLowerCase() === "c") {
@@ -422,7 +428,8 @@ export default function FolderWindow({
             items={shown}
             dir={dir}
             join={join}
-            edge={EDGE[view.mode]}
+            tile={view.zoom ?? EDGE[view.mode]}
+            onZoom={zoomGrid}
             cursor={cursor}
             reveal={reveal}
             scrollRef={scrollRef}
@@ -500,9 +507,15 @@ const EDGE: Record<Exclude<Mode, "list">, ThumbEdge> = {
   "grid-m": 192,
   "grid-l": 320,
 };
+/** Ctrl+휠로 키우고 줄이는 칸 크기(px) 범위 — 위는 가장 큰 썸네일(640)이라 그 이상은 흐려진다. */
+const TILE_MIN = 96;
+const TILE_MAX = 640;
+const clampTile = (n: number) => Math.round(Math.min(TILE_MAX, Math.max(TILE_MIN, n)));
 type Sort = "mtime" | "name" | "size";
 interface View {
   mode: Mode;
+  /** Ctrl+휠로 정한 칸 크기 — 있으면 `EDGE[mode]` 대신 쓴다. 보기 버튼·Ctrl+숫자는 이것을 지운다. */
+  zoom: number | null;
   sort: Sort;
   imagesOnly: boolean;
 }
@@ -515,6 +528,7 @@ function readView(root: string): View {
       const v = JSON.parse(raw) as Partial<View>;
       return {
         mode: MODES.some((m) => m.id === v.mode) ? (v.mode as Mode) : "grid-m",
+        zoom: typeof v.zoom === "number" ? clampTile(v.zoom) : null,
         sort: v.sort === "name" || v.sort === "size" ? v.sort : "mtime",
         imagesOnly: !!v.imagesOnly,
       };
@@ -522,7 +536,7 @@ function readView(root: string): View {
   } catch {
     /* 파싱 실패는 기본값으로 */
   }
-  return { mode: "grid-m", sort: "mtime", imagesOnly: false };
+  return { mode: "grid-m", zoom: null, sort: "mtime", imagesOnly: false };
 }
 function writeView(root: string, v: View) {
   try {
@@ -650,9 +664,12 @@ function Toolbar({
           <button
             key={id}
             title={modeTitle(msg, id)}
-            onClick={() => setView((v) => ({ ...v, mode: id }))}
+            onClick={() => setView((v) => ({ ...v, mode: id, zoom: null }))}
             className={`p-1 ${
-              view.mode === id ? "bg-raised text-accent" : "text-fg-muted hover:bg-raised hover:text-fg"
+              // Ctrl+휠로 크기를 바꿨으면 어느 프리셋도 아니다 — 같은 버튼을 다시 누르면 그 크기로 돌아간다.
+              view.mode === id && (id === "list" || view.zoom === null)
+                ? "bg-raised text-accent"
+                : "text-fg-muted hover:bg-raised hover:text-fg"
             }`}
           >
             {/* 그리드 3종은 같은 아이콘이라 크기로 구분한다 — 목록만 다른 아이콘. */}
@@ -703,7 +720,8 @@ function GridView({
   items,
   dir,
   join,
-  edge,
+  tile,
+  onZoom,
   cursor,
   reveal,
   scrollRef,
@@ -714,7 +732,9 @@ function GridView({
   items: FavEntry[];
   dir: string;
   join: (dir: string, name: string) => string;
-  edge: ThumbEdge;
+  tile: number;
+  /** 칸 크기에 곱할 배율 — 부모가 범위로 자른다. 배율로 넘겨야 그리기 전에 몰려온 휠 여러 번이 누적된다. */
+  onZoom: (factor: number) => void;
   cursor: number;
   reveal: number;
   scrollRef: RefObject<HTMLDivElement | null>;
@@ -725,10 +745,11 @@ function GridView({
   const token = useFavThumbToken();
   const [box, setBox] = useState({ w: 0, h: 0 });
   const [topRow, setTopRow] = useState(0);
+  const edge = thumbEdgeFor(tile);
 
-  const tileH = edge + NAME_H + 2; // 테두리 위아래 1px
+  const tileH = tile + NAME_H + 2; // 테두리 위아래 1px
   const rowH = tileH + GAP;
-  const cols = Math.max(1, Math.floor((box.w - 2 * PAD + GAP) / (edge + GAP)));
+  const cols = Math.max(1, Math.floor((box.w - 2 * PAD + GAP) / (tile + GAP)));
   const rows = Math.ceil(items.length / cols);
 
   useLayoutEffect(() => {
@@ -758,6 +779,38 @@ function GridView({
     return () => sc.removeEventListener("scroll", onScroll);
   }, [scrollRef, rowH]);
 
+  // Ctrl+휠(터치패드 핀치도 ctrlKey 휠로 온다) = 칸 크기. 마우스 아래 칸이 크기가 바뀐 뒤에도 같은 높이에 남게
+  // 스크롤을 맞춘다 — scrollTop 을 그대로 두면 행 높이가 바뀌어 수천 장 폴더에서는 전혀 다른 곳으로 튄다.
+  const zoomAnchor = useRef<{ i: number; frac: number; y: number } | null>(null);
+  useEffect(() => {
+    const sc = scrollRef.current;
+    if (!sc) return;
+    const onWheel = (ev: WheelEvent) => {
+      if (!ev.ctrlKey) return;
+      ev.preventDefault();
+      const f = Math.exp(-ev.deltaY * 0.0015); // 휠 한 칸(100) ≈ ×1.16
+      if ((f > 1 && tile >= TILE_MAX) || (f < 1 && tile <= TILE_MIN)) return;
+      const r = sc.getBoundingClientRect();
+      const y = ev.clientY - r.top;
+      const pos = Math.max(0, sc.scrollTop + y - PAD);
+      const row = Math.floor(pos / rowH);
+      const col = Math.min(cols - 1, Math.max(0, Math.floor(((ev.clientX - r.left - PAD) * cols) / (box.w - 2 * PAD))));
+      zoomAnchor.current = { i: Math.min(items.length - 1, row * cols + col), frac: (pos - row * rowH) / rowH, y };
+      onZoom(f);
+    };
+    sc.addEventListener("wheel", onWheel, { passive: false });
+    return () => sc.removeEventListener("wheel", onWheel);
+  }, [scrollRef, tile, rowH, cols, box.w, items.length, onZoom]);
+  useLayoutEffect(() => {
+    const sc = scrollRef.current;
+    const a = zoomAnchor.current;
+    if (!sc || !a) return;
+    zoomAnchor.current = null;
+    sc.scrollTop = PAD + Math.floor(a.i / cols) * rowH + a.frac * rowH - a.y;
+    // 같은 커밋 안에서 행도 맞춘다 — 스크롤 효과(useEffect)를 기다리면 옛 행으로 한 프레임 빈 화면이 그려진다.
+    setTopRow(Math.max(0, Math.floor((sc.scrollTop - PAD) / rowH)));
+  }, [scrollRef, cols, rowH]);
+
   // 키보드로 옮긴 커서가 화면 밖이면 그 행이 보이게 스크롤한다(그 행은 지금 DOM 에 없을 수도 있다 — 계산으로).
   useLayoutEffect(() => {
     const sc = scrollRef.current;
@@ -784,7 +837,7 @@ function GridView({
   );
   const visFirst = topRow * cols;
   const visLast = Math.min(items.length, (topRow + screenRows + 1) * cols) - 1;
-  useEffect(() => prefetchFavThumbs(urls, visFirst, visLast), [urls, visFirst, visLast]);
+  useEffect(() => prefetchFavThumbs(urls, visFirst, visLast, edge), [urls, visFirst, visLast, edge]);
   // 창을 닫거나 목록 보기로 바꾸면 멈춘다(창을 닫으면 페이지째 사라지지만 목록 보기는 같은 페이지다).
   useEffect(() => () => prefetchFavThumbs([], 0, -1), []);
 
@@ -833,7 +886,7 @@ function GridView({
             e={e}
             i={start + k}
             selected={start + k === cursor}
-            edge={edge}
+            size={tile}
             url={urls[start + k]}
           />
         ))}
@@ -848,13 +901,13 @@ const Tile = memo(function Tile({
   e,
   i,
   selected,
-  edge,
+  size,
   url,
 }: {
   e: FavEntry;
   i: number;
   selected: boolean;
-  edge: ThumbEdge;
+  size: number;
   url: string | undefined;
 }) {
   const state = useFavThumbState(url);
@@ -874,12 +927,12 @@ const Tile = memo(function Tile({
     >
       <div
         className="relative flex w-full shrink-0 items-center justify-center overflow-hidden bg-base"
-        style={{ height: edge }}
+        style={{ height: size }}
       >
         {e.isDir ? (
-          <Folder size={edge / 3} className="text-fg-dim" />
+          <Folder size={size / 3} className="text-fg-dim" />
         ) : (
-          !shown && <KindIcon kind={e.kind} size={edge / 4} />
+          !shown && <KindIcon kind={e.kind} size={size / 4} />
         )}
         {shown && (
           // sync — 이 칸이 처음 그려지는 프레임에 디코드까지 끝낸다. async 면 크로뮴이 디코드를 기다리지 않고 그림

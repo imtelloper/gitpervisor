@@ -36,8 +36,13 @@ export function useFavThumbToken(): string | null {
   return token;
 }
 
-/** 썸네일 한 변 — 백엔드가 **이 셋만** 받는다(캐시 폭주 방지). */
-export type ThumbEdge = 128 | 192 | 320;
+/** 썸네일 한 변 — 백엔드가 **이 넷만** 받는다(캐시 폭주 방지, favorites.rs `EDGES`). */
+export type ThumbEdge = 128 | 192 | 320 | 640;
+const THUMB_EDGES: readonly ThumbEdge[] = [128, 192, 320, 640];
+/** 칸 크기(px)를 덮는 가장 작은 썸네일 — 칸보다 작은 그림을 늘려 흐려 보이지 않게. 640 을 넘는 칸은 640 을 늘린다. */
+export function thumbEdgeFor(tile: number): ThumbEdge {
+  return THUMB_EDGES.find((e) => e >= tile) ?? 640;
+}
 
 /** URL 에 파일 스탬프(mtime·크기)가 들어간다 — 같은 이름으로 다시 쓴 파일은 URL 이 바뀌어 새로 받고,
  *  그래서 백엔드가 `immutable` 로 캐시시켜도 안전하다. 백엔드 디스크 캐시 키도 같은 셋이다. */
@@ -65,7 +70,8 @@ const thumbFailed = new Set<string>();
  *  돌아온다(= 쥐지 않으면 브라우저도 안 쥔다). `decode()` 를 불러도 늘지 않았다 — 디코드된 픽셀은 크로뮴이 자기
  *  예산으로 버리는 캐시에 들어, 여기서 쥘 수도 없고 쥘 필요도 없다(칸의 `decoding="sync"` 가 그리는 프레임에
  *  다시 푼다). 그래서 6,500장 ≈ 85MB 가 최악이다. 미리 받기 창(2 × PREFETCH_SPAN + 한 화면)보다 커야 한 폴더에서
- *  받은 것을 스스로 밀어내지 않는다. */
+ *  받은 것을 스스로 밀어내지 않는다. ponytail: 640(Ctrl+휠로 키운 칸)은 장당 몇 배라 그 크기로 폴더를 끝까지
+ *  훑으면 같은 장수에 수백 MB 까지 간다(미실측). 문제가 되면 장수 대신 edge 로 가중한 합으로 자른다. */
 const thumbKept = new Map<string, HTMLImageElement>();
 const THUMB_KEEP_MAX = 6500;
 const thumbListeners = new Map<string, Set<() => void>>();
@@ -119,7 +125,12 @@ const prefetchInflight = new Map<string, HTMLImageElement>();
  * 번갈아 받는다. 스크롤해서 다시 부르면 순서를 새 위치 기준으로 다시 짠다. `urls` 가 바뀌면(폴더·크기·목록 갱신)
  * 새 목록에 없는 진행 중 요청은 끊는다 — 옛 폴더 요청이 새 폴더 앞을 막지 않게. 빈 배열 = 멈춤.
  */
-export function prefetchFavThumbs(urls: readonly (string | undefined)[], first: number, last: number): void {
+export function prefetchFavThumbs(
+  urls: readonly (string | undefined)[],
+  first: number,
+  last: number,
+  edge: ThumbEdge = 320,
+): void {
   if (urls !== prefetchUrls) {
     prefetchUrls = urls;
     const keep = new Set(urls);
@@ -130,7 +141,8 @@ export function prefetchFavThumbs(urls: readonly (string | undefined)[], first: 
       prefetchInflight.delete(url);
     }
   }
-  prefetchOrder = nearFirst(urls.length, first, last, PREFETCH_SPAN);
+  // 640 은 320 의 4배 픽셀이라 장당 디코드·디스크·쥐는 메모리가 몇 배다 — 한 화면에 몇 칸 안 들어오니 범위를 줄인다.
+  prefetchOrder = nearFirst(urls.length, first, last, edge > 320 ? PREFETCH_SPAN / 4 : PREFETCH_SPAN);
   prefetchPos = 0;
   pumpPrefetch();
 }

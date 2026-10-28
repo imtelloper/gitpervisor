@@ -36,9 +36,9 @@ use crate::state::AppState;
 /// 라이트박스 원본 한도 — `read_file_base64`(diff.rs)와 같은 이유·같은 값이다.
 const MAX_READ_BYTES: u64 = 25 * 1024 * 1024;
 
-/// 썸네일 한 변으로 허용하는 값. **셋만 받는다** — 프론트의 그리드 S/M/L 이고, 임의의 수를
-/// 받으면 캐시 디렉터리가 크기마다 한 벌씩 불어난다.
-pub(crate) const EDGES: [u32; 3] = [128, 192, 320];
+/// 썸네일 한 변으로 허용하는 값. **이 넷만 받는다** — 프론트의 그리드 S/M/L 과 Ctrl+휠로 키운 칸(640)이고,
+/// 임의의 수를 받으면 캐시 디렉터리가 크기마다 한 벌씩 불어난다.
+pub(crate) const EDGES: [u32; 4] = [128, 192, 320, 640];
 
 /// 썸네일 디코드 한도 — 헤더만 부풀린 파일 하나가 수 GB 를 할당하게 두지 않는다.
 /// 8K 스크린샷(7680×4320 RGBA ≈ 127MiB)은 넉넉히 통과한다. `MAX_DECODE_ALLOC` 은 **입력 파일
@@ -841,9 +841,9 @@ mod tests {
     }
 
     #[test]
-    fn only_three_thumbnail_edges_are_accepted() {
-        // 프론트의 그리드 S/M/L 과 짝이다 — 여기가 열리면 캐시가 크기마다 한 벌씩 늘어난다.
-        assert!(EDGES.contains(&128) && EDGES.contains(&192) && EDGES.contains(&320));
+    fn only_listed_thumbnail_edges_are_accepted() {
+        // 프론트의 ThumbEdge(fav-thumb.ts)와 짝이다 — 여기가 열리면 캐시가 크기마다 한 벌씩 늘어난다.
+        assert_eq!(EDGES, [128, 192, 320, 640]);
         assert!(!EDGES.contains(&256));
     }
 
@@ -1110,9 +1110,9 @@ mod tests {
         let dir = scratch("scaled");
         let frame = dir.join("frame.jpg");
         write_jpeg(&frame, image::DynamicImage::new_rgb8(670, 1610));
-        for (edge, pre) in [(128, (84, 202)), (192, (84, 202)), (320, (168, 403))] {
+        for (edge, pre) in [(128, (84, 202)), (192, (84, 202)), (320, (168, 403)), (640, (335, 805))] {
             let raw = decode_jpeg_scaled(&frame, edge).expect("RGB JPEG 는 축소 디코드 길을 탄다");
-            assert_eq!((raw.width(), raw.height()), pre, "edge {edge}: 1/8·1/4 중 긴 변이 edge 이상인 가장 작은 배율");
+            assert_eq!((raw.width(), raw.height()), pre, "edge {edge}: 1/8·1/4·1/2 중 긴 변이 edge 이상인 가장 작은 배율");
             let full = image::open(&frame).unwrap().thumbnail(edge, edge);
             let out = image::load_from_memory(&decode_thumb(&frame, edge).unwrap()).unwrap();
             assert_eq!(out.height(), edge, "긴 변이 정확히 edge");
