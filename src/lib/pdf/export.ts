@@ -219,7 +219,13 @@ export async function buildFlatten(bytes: Uint8Array, m: SaveModel | null): Prom
       form.dict.set(N("Subtype"), N("Form"));
       const name = page.node.newXObject("GpvFlat", apRef);
       const a = placeMatrix(rect, bbox, numsOf(lib, form.dict, "Matrix") ?? [1, 0, 0, 1, 0, 0]);
-      ops.push(`q ${a.map(fmt).join(" ")} cm ${name.toString()} Do Q`);
+      // 주석 /CA(§12.5.2)는 외관 전체에 걸리는 불투명도다. 외관이 자기 ExtGState 로 불투명도를 이미 굽는 경우(우리 것·pdf.js 가
+      // 쓴 것은 둘 다 /CA 와 외관 gs 를 같이 쓴다)에 또 걸면 두 번 옅어진다 — 외관에 ExtGState 가 없을 때만 건다.
+      // ponytail: 외관이 gs 를 쓰되 불투명도와 무관한 값(선 굵기 등)만 담은 경우는 /CA 를 놓친다 — 필요해지면 gs 값을 읽어 가른다.
+      const ca = d.lookupMaybe(N("CA"), lib.PDFNumber)?.asNumber() ?? 1;
+      const ownGs = form.dict.lookupMaybe(N("Resources"), lib.PDFDict)?.has(N("ExtGState")) ?? false;
+      const gs = ca < 1 && !ownGs ? `${page.node.newExtGState("GpvCA", ctx.obj({ Type: "ExtGState", CA: ca, ca })).toString()} gs ` : "";
+      ops.push(`q ${gs}${a.map(fmt).join(" ")} cm ${name.toString()} Do Q`);
     }
     if (!gone.size) continue;
     const kept = arr.asArray().filter((e) => {

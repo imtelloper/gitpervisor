@@ -53,22 +53,26 @@ export interface PdfPropsBarProps {
   opacity: number;
   /** 활성 페이지의 선택 노드 — 첫 노드 값을 보여 준다. */
   selected: readonly Node[];
+  /** 선택한 텍스트 마크업 — 있으면 그 색·불투명도를 보이고, 마크업에 없는 칸(채움·두께·글자)은 숨긴다. */
+  markup?: { color: string; opacity: number } | null;
   onChange: (c: PdfPaintChange) => void;
 }
 
-export default function PdfPropsBar({ paint, opacity, selected, onChange }: PdfPropsBarProps) {
+export default function PdfPropsBar({ paint, opacity, selected, markup, onChange }: PdfPropsBarProps) {
   const t = useMessages().pdf.annotate;
   const first = selected[0] ?? null;
-  const stroke = first
-    ? solidColor(first.kind === "text" ? first.fills : first.strokes)
-    : solidColor(paint.strokes);
+  const stroke = markup
+    ? markup.color
+    : first
+      ? solidColor(first.kind === "text" ? first.fills : first.strokes)
+      : solidColor(paint.strokes);
   const fill = first ? (takesFill(first) ? solidColor(first.fills) : null) : solidColor(paint.fills);
   const width = first ? first.strokeWidth : paint.strokeWidth;
-  const op = first ? first.opacity : opacity;
+  const op = markup ? markup.opacity : first ? first.opacity : opacity;
   const fontSize = first?.kind === "text" ? first.fontSize : paint.fontSize;
-  const showFill = !first || selected.some(takesFill);
-  const showWidth = !first || selected.some((n) => n.kind !== "text");
-  const showFont = !first || selected.some((n) => n.kind === "text");
+  const showFill = !markup && (!first || selected.some(takesFill));
+  const showWidth = !markup && (!first || selected.some((n) => n.kind !== "text"));
+  const showFont = !markup && (!first || selected.some((n) => n.kind === "text"));
 
   return (
     <div

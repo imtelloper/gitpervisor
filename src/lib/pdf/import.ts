@@ -6,7 +6,7 @@
 //   3. 그 외 → 건드리지 않는다(pdf.js 가 그린다)
 // 규칙 2 가 우리 JSON 보다 앞서는 경우(해시 불일치)는 다른 앱이 고친 뒤다 — 그 앱의 표준 키가 정본이다.
 
-import type { PDFArray, PDFDict, PDFObject, PDFPage, PDFRef } from "@cantoo/pdf-lib";
+import type { PDFArray, PDFDict, PDFObject, PDFPage, PDFRawStream, PDFRef } from "@cantoo/pdf-lib";
 
 import { currentLocale } from "../../i18n/locale-state";
 import { messagesFor } from "../../i18n/messages";
@@ -240,11 +240,14 @@ function bytesToBase64(b: Uint8Array): string {
   return btoa(s);
 }
 
+const PNG_SIG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
 /**
- * 규칙 1 이미지 노드(T2 Stamp)의 에셋을 /GPV_Asset 스트림에서 되살린다. 스트림이 DCTDecode 면 JPEG 원본 바이트다
- * (write.ts imageOps). 이미지 채우기가 있는데 에셋을 못 찾으면 false — 저장할 수 없는 노드라 편집 대상에서 뺀다.
+ * 규칙 1 이미지 노드(T2 Stamp)의 에셋을 /GPV_Asset 스트림에서 되살린다(write.ts imageOps). 스트림은
+ * DCTDecode 면 JPEG 원본 바이트, 이미지 XObject 면 그 픽셀(+SMask)로 PNG 를 다시 만든다. 앞이 PNG 서명이면 원본 PNG 를
+ * 따로 담던 옛 판이다. 이미지 채우기가 있는데 에셋을 못 찾으면 false — 저장할 수 없는 노드라 편집 대상에서 뺀다.
  */
-function restoreAsset(lib: PdfLib, d: PDFDict, raw: Rec, assets: EditorDoc["assets"]): boolean {
+async function restoreAsset(lib: PdfLib, d: PDFDict, raw: Rec, assets: EditorDoc["assets"]): Promise<boolean> {
   const fills = Array.isArray(raw.fills) ? raw.fills : [];
   const ids = fills.flatMap((f: unknown) => {
     const r = typeof f === "object" && f !== null ? (f as Rec) : null; // 외부 데이터 경계
@@ -257,10 +260,61 @@ function restoreAsset(lib: PdfLib, d: PDFDict, raw: Rec, assets: EditorDoc["asse
   if (!(st instanceof lib.PDFRawStream)) return false;
   const w = st.dict.lookupMaybe(N("Width"), lib.PDFNumber)?.asNumber() ?? 0;
   const h = st.dict.lookupMaybe(N("Height"), lib.PDFNumber)?.asNumber() ?? 0;
-  const mime = st.dict.get(N("Filter")) === N("DCTDecode") ? "image/jpeg" : "image/png";
-  const data = bytesToBase64(st.contents);
+  let mime: string;
+  let data: string;
+  if (st.dict.get(N("Filter")) === N("DCTDecode")) {
+    mime = "image/jpeg";
+    data = bytesToBase64(st.contents);
+  } else if (PNG_SIG.every((b, k) => st.contents[k] === b)) {
+    mime = "image/png";
+    data = bytesToBase64(st.contents);
+  } else {
+    const png = await pngOfXObject(lib, st, w, h);
+    if (!png) return false;
+    mime = "image/png";
+    data = bytesToBase64(png);
+  }
   for (const id of ids) assets[id] = { mime, w, h, data };
   return true;
+}
+
+/** pdf-lib embedPng 가 쓴 꼴(8비트 DeviceRGB + DeviceGray SMask)만 — 그 밖이면 null(우리가 쓴 것이 아니다). */
+async function pngOfXObject(lib: PdfLib, st: PDFRawStream, w: number, h: number): Promise<Uint8Array | null> {
+  const N = (s: string) => lib.PDFName.of(s);
+  const bpc = st.dict.lookupMaybe(N("BitsPerComponent"), lib.PDFNumber)?.asNumber();
+  if (bpc !== 8 || st.dict.get(N("ColorSpace")) !== N("DeviceRGB") || !w || !h) return null;
+  const rgb = lib.decodePDFRawStream(st).decode();
+  const maskRef = st.dict.get(N("SMask"));
+  const mask = maskRef ? st.dict.context.lookup(maskRef) : undefined;
+  const alpha = mask instanceof lib.PDFRawStream ? lib.decodePDFRawStream(mask).decode() : null;
+  if (rgb.length < w * h * 3 || (alpha && alpha.length < w * h)) return null;
+  const rgba = new Uint8Array(w * h * 4);
+  for (let p = 0; p < w * h; p++) {
+    rgba[p * 4] = rgb[p * 3];
+    rgba[p * 4 + 1] = rgb[p * 3 + 1];
+    rgba[p * 4 + 2] = rgb[p * 3 + 2];
+    rgba[p * 4 + 3] = alpha ? alpha[p] : 255;
+  }
+  const { encode } = await import("@cantoo/pdf-lib/upng");
+  return new Uint8Array(encode([rgba.buffer], w, h, 0));
+}
+
+/**
+ * 주석 `/NM` → ref·페이지 key(`"12 0 R"`) — '그래도 저장'이 새 판에서 이 세션이 아는 주석의 자리를 다시 찾을 때.
+ * 기하를 보지 않아 페이지 정보가 필요 없다(페이지 연산 뒤 infos 는 디스크 판과 쪽수가 다르다). 같은 /NM 은 첫 것.
+ */
+export async function annotRefsByName(bytes: Uint8Array): Promise<Map<string, { ref: string; pageKey: string }>> {
+  const lib = await import("@cantoo/pdf-lib");
+  const doc = await loadForIncrement(lib, bytes);
+  const out = new Map<string, { ref: string; pageKey: string }>();
+  for (const page of doc.getPages()) {
+    for (const e of annotEntries(lib, page)) {
+      if (!(e instanceof lib.PDFRef)) continue;
+      const nm = textOf(lib, doc.context.lookupMaybe(e, lib.PDFDict)?.get(lib.PDFName.of("NM")));
+      if (nm && !out.has(nm)) out.set(nm, { ref: e.toString(), pageKey: page.ref.toString() });
+    }
+  }
+  return out;
 }
 
 /**
@@ -311,7 +365,7 @@ export async function importAnnotations(
         continue;
       }
       const r1 = rule1(lib, d);
-      if (r1 && !restoreAsset(lib, d, r1, assets)) continue;
+      if (r1 && !(await restoreAsset(lib, d, r1, assets))) continue;
       const raw = r1 ?? rule2(lib, d, infos[i], font);
       if (!raw) continue;
       const nm = textOf(lib, d.get(lib.PDFName.of("NM")));

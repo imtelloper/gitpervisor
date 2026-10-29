@@ -373,8 +373,7 @@ function base64ToBytes(b64: string): Uint8Array {
 /**
  * 이미지 XObject 를 문서에 임베드하고 그 그리기 연산을 만든다. PNG·JPEG 만 — 그 밖 형식은 화면이 넣을 때 PNG 로 바꾼다.
  * 배치는 화면(paint.ts patternOf)과 같다: fill = 덮기(넘치는 쪽 잘림)·fit = 맞춤·stretch = 축마다, 셋 다 가운데 정렬.
- * 반환 `assetRef` 는 /GPV_Asset — JPEG 는 XObject 가 원본 바이트 그대로(DCTDecode)라 그 ref 를, PNG 는 pdf-lib 이
- * 픽셀로 풀어 다시 압축하므로 원본 PNG 를 담은 별도 스트림을 쓴다.
+ * 반환 `assetRef` 는 /GPV_Asset — 둘 다 이미지 XObject 자신이다(JPEG 는 원본 바이트 그대로, PNG 는 픽셀).
  */
 async function imageOps(
   c: WriteCtx,
@@ -386,14 +385,14 @@ async function imageOps(
     const a = c.asset?.(fill.assetId);
     if (!a) throw new Error(`write: image node ${node.id} asset ${fill.assetId} is missing`);
     const bytes = base64ToBytes(a.data);
-    const ctx = c.doc.context;
     if (a.mime === "image/jpeg") {
       const e = await c.doc.embedJpg(bytes);
       img = { ref: e.ref, assetRef: e.ref, width: e.width, height: e.height };
     } else if (a.mime === "image/png") {
+      // 원본 PNG 를 따로 담지 않는다 — 픽셀은 XObject(8비트 RGB + SMask)에 이미 있고, 다시 열 때 거기서 PNG 를 다시 만든다
+      // (import.ts restoreAsset). 따로 담으면 이미지가 파일에 두 번 들어간다.
       const e = await c.doc.embedPng(bytes);
-      const assetRef = ctx.register(ctx.stream(bytes, { Width: e.width, Height: e.height }));
-      img = { ref: e.ref, assetRef, width: e.width, height: e.height };
+      img = { ref: e.ref, assetRef: e.ref, width: e.width, height: e.height };
     } else {
       throw new Error(`write: image node ${node.id} has unsupported type ${a.mime} (PNG/JPEG only)`);
     }

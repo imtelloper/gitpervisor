@@ -33,7 +33,7 @@ await build({
   stdin: {
     contents: [
       'export { buildIncrement, isDirty, lastTrailerSize } from "./src/lib/pdf/save.ts";',
-      'export { importAnnotations } from "./src/lib/pdf/import.ts";',
+      'export { importAnnotations, annotRefsByName } from "./src/lib/pdf/import.ts";',
       'export { applyPageOp, displayBytes, extractPages } from "./src/lib/pdf/pages.ts";',
       'export { normalizeDoc } from "./src/lib/annotate/schema.ts";',
       'export { emptyLedger } from "./src/lib/pdf/model.ts";',
@@ -51,7 +51,7 @@ await build({
   banner: { js: 'import { createRequire as __cr } from "node:module"; const require = __cr(import.meta.url);' },
 });
 const core = await import(pathToFileURL(outfile).href);
-const { buildIncrement, isDirty, lastTrailerSize, importAnnotations, applyPageOp, displayBytes, extractPages, normalizeDoc, emptyLedger, pdfLib: L } = core;
+const { buildIncrement, isDirty, lastTrailerSize, importAnnotations, annotRefsByName, applyPageOp, displayBytes, extractPages, normalizeDoc, emptyLedger, pdfLib: L } = core;
 
 const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
 pdfjs.GlobalWorkerOptions.workerSrc = pathToFileURL(join(ROOT, "node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs")).href;
@@ -249,6 +249,19 @@ async function run(label, classic) {
   check("페이지 트리 /Count 6", lib2.count === 6, String(lib2.count));
   check("주석 subtype(링크는 A 에 남음, 지운 B 의 선은 없음)", JSON.stringify(lib2.pages.map((p) => p.subtypes)) === JSON.stringify([["Ink"], ["Circle"], ["Link", "Square"], ["Line"], [], []]), JSON.stringify(lib2.pages.map((p) => p.subtypes)));
 
+  // '그래도 저장'(PdfView save(true)) — 연산이 쌓인 채로 디스크 판의 /NM 만으로 장부를 다시 세운다(infos 는 연산 뒤라 못 쓴다).
+  const byName = await annotRefsByName(file1);
+  check("annotRefsByName = 가져오기 장부(ref·페이지 key)", imp.ledger.refs.size > 0 && [...imp.ledger.refs].every(([id, ref]) => byName.get(id)?.ref === ref && byName.get(id)?.pageKey === imp.ledger.pageOf.get(id)));
+  const known = new Set([...imp.ledger.refs.keys(), ...st.pages.flatMap((d) => d.objects.map((o) => o.id))]);
+  const ovLedger = emptyLedger();
+  for (const [id, at] of byName) if (known.has(id)) (ovLedger.refs.set(id, at.ref), ovLedger.pageOf.set(id, at.pageKey));
+  const sOv = await buildIncrement(file1, { infos: st.infos, pages: st.pages, ledger: ovLedger, textLines, font: null, pageOps: ops }, read);
+  const libOv = await libPages(concat(file1, sOv.inc));
+  check("그래도 저장(연산 있음): 주석이 두 겹이 되지 않는다", JSON.stringify(libOv.pages.map((p) => p.subtypes)) === JSON.stringify(lib2.pages.map((p) => p.subtypes)), JSON.stringify(libOv.pages.map((p) => p.subtypes)));
+  const sNo = await buildIncrement(file1, { infos: st.infos, pages: st.pages, ledger: emptyLedger(), textLines, font: null, pageOps: ops }, read);
+  const libNo = await libPages(concat(file1, sNo.inc));
+  check("대조군: 빈 장부면 두 겹이 된다", JSON.stringify(libNo.pages.map((p) => p.subtypes)) !== JSON.stringify(lib2.pages.map((p) => p.subtypes)), JSON.stringify(libNo.pages.map((p) => p.subtypes)));
+
   const imp2 = await importAnnotations(file2, infos2, null);
   const want = st.pages.map((d) => d.objects);
   const got = imp2.pages.map((d) => d.objects);
@@ -268,6 +281,32 @@ async function run(label, classic) {
   check("추출: 페이지 수 2·크기", extInfos.length === 2 && near(extInfos.map((i) => [i.w, i.h]), [[792, 612], [300, 500]]) === null, JSON.stringify(extInfos.map((i) => [i.w, i.h])));
   const libE = await libPages(ext);
   check("추출: 주석 따라감(내부 링크는 뺌)·다른 페이지 객체 안 딸려 옴", JSON.stringify(libE.pages.map((p) => p.subtypes)) === JSON.stringify([["Square"], []]) && libE.leaves === 2, JSON.stringify([libE.pages.map((p) => p.subtypes), libE.leaves]));
+}
+
+// 복제한 쪽에 다른 앱 주석(링크)도 따라간다 — 사전 사본(/P = 새 leaf), 원본과 객체를 나누지 않는다. 우리 노드는 모델이
+// 새 id 로 복사해 새 주석으로 쓰므로 그 원본 주석 사전은 복사하지 않는다(두 겹 방지).
+async function duplicateForeign() {
+  console.log("\n[복제 쪽 다른 앱 주석]");
+  const bytes = await makeMain(false);
+  const infos = await pageInfos(bytes);
+  const kA = infos[0].key;
+  const pages0 = infos.map((_, i) => normalizeDoc({ objects: i ? [] : [{ id: "n-a", kind: "rect", x: 100, y: 100, w: 200, h: 80, opacity: 1, strokeWidth: 4, strokes: [solid("#FF0000")], fills: [] }] }));
+  const s1 = await buildIncrement(bytes, { infos, pages: pages0, ledger: emptyLedger(), textLines, font: null });
+  const file1 = concat(bytes, s1.inc);
+  const imp = await importAnnotations(file1, infos, null);
+  const op = { kind: "duplicate", keys: [kA], newKeys: ["new:dupA"] };
+  const st = applyPageOp({ infos, pages: imp.pages, markups: [] }, op);
+  const s2 = await buildIncrement(file1, { infos: st.infos, pages: st.pages, ledger: imp.ledger, textLines, font: null, pageOps: [op] });
+  const doc = await L.PDFDocument.load(concat(file1, s2.inc), { updateMetadata: false });
+  const ann = (p) => doc.context.lookup(p.node.get(L.PDFName.of("Annots"))).asArray().map((e) => ({ ref: e.toString(), d: doc.context.lookup(e) }));
+  const [a, dup] = doc.getPages().slice(0, 2).map(ann);
+  const sub = (x) => x.map((e) => e.d.get(L.PDFName.of("Subtype")).decodeText()).sort().join(",");
+  check("복제 쪽: 링크 사본 + 우리 사각형 하나(두 겹 아님)", sub(dup) === "Link,Square" && sub(a) === "Link,Square", `${sub(a)} | ${sub(dup)}`);
+  const shared = dup.filter((e) => a.some((o) => o.ref === e.ref));
+  check("복제 쪽 주석은 원본과 객체를 나누지 않는다", shared.length === 0, JSON.stringify(shared.map((e) => e.ref)));
+  const dupRef = doc.getPages()[1].ref;
+  const link = dup.find((e) => e.d.get(L.PDFName.of("Subtype")) === L.PDFName.of("Link"));
+  check("링크 사본 /P = 복제 leaf", link?.d.get(L.PDFName.of("P"))?.toString() === dupRef.toString(), String(link?.d.get(L.PDFName.of("P"))));
 }
 
 /** 원시 바이트 + 풀 수 있는 모든 Flate 스트림에서 문자열 개수 — 고아 객체로 남은 콘텐츠까지 센다. */
@@ -394,6 +433,7 @@ try {
   await extractLeak();
   await repeatedSource();
   await imageRotate();
+  await duplicateForeign();
 } catch (e) {
   failed++;
   console.error("\nFAIL (exception)", e);

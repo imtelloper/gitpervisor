@@ -7,7 +7,7 @@
 
 import type { PDFDocument, PDFPage, PDFRef } from "@cantoo/pdf-lib";
 
-import { normalizeDeg, transformObjects, transformPoint } from "../annotate/geometry";
+import { transformObjects } from "../annotate/geometry";
 import { normalizeDoc } from "../annotate/schema";
 import { newObjId, type EditorDoc, type Node } from "../annotate/types";
 import { ipc } from "../ipc";
@@ -15,7 +15,7 @@ import { collectGarbage } from "./export";
 import type { Affine, PageOp, PdfMarkup, PdfPageInfo } from "./model";
 import { buildIncrement, incrementOf, loadForIncrement, type SaveModel } from "./save";
 import { mul } from "./space";
-import { annotEntries, imageFillOf, type PdfLib } from "./write";
+import { annotEntries, type PdfLib } from "./write";
 
 export type PdfSource = Extract<PageOp, { kind: "insertPdf" }>["source"];
 export type ReadPdfSource = (src: PdfSource) => Promise<Uint8Array>;
@@ -84,21 +84,6 @@ function copyNodes(objects: readonly Node[]): Node[] {
   return objects.map((o) => ({ ...o, id: ids.get(o.id)!, parentId: o.parentId ? (ids.get(o.parentId) ?? null) : null }));
 }
 
-/**
- * transformObjects 는 사각형 상자를 전치(w↔h)하고 rot 은 둔다 — 무늬 없는 도형은 그게 같은 모양이지만 이미지 채우기는
- * 방향이 있어, 그림이 선 채 가운데만 잘려 보였다(화면·파일 둘 다). 이미지 사각형은 크기를 두고 중심만 옮겨 rot 을 ±90 한다
- * (rect 의 회전 피벗은 중심).
- */
-function rotateNodes(objects: readonly Node[], delta: 90 | -90, w: number, h: number): Node[] {
-  const dir = delta === 90 ? "rotCW" : "rotCCW";
-  const moved = transformObjects(objects, dir, w, h);
-  return moved.map((n, i) => {
-    const o = objects[i];
-    if (o.kind !== "rect" || !imageFillOf(o)) return n;
-    const c = transformPoint(o.x + o.w / 2, o.y + o.h / 2, dir, w, h);
-    return { ...o, x: c.x - o.w / 2, y: c.y - o.h / 2, rot: normalizeDeg(o.rot + delta) };
-  });
-}
 
 /**
  * 연산 하나를 편집 상태에 적용한다. `inserted` 는 insertPdf 의 새 페이지 정보(pdf.js 로 소스를 열어 잰 값, op.keys 순서).
@@ -110,7 +95,7 @@ export function applyPageOp(st: PageEditState, op: PageOp, inserted: readonly Pd
   const next = stepPages<E>(list, (e) => e.info.key, op, {
     rotate: ({ info, doc }, delta) => ({
       info: { ...info, w: info.h, h: info.w, toPage: mul(info.toPage, rotationAffine(delta, info.w, info.h)) },
-      doc: { ...doc, objects: rotateNodes(doc.objects, delta, info.w, info.h) },
+      doc: { ...doc, objects: transformObjects(doc.objects, delta === 90 ? "rotCW" : "rotCCW", info.w, info.h) },
     }),
     blank: (o) => ({ info: { index: 0, key: o.key, w: o.w, h: o.h, toPage: [1, 0, 0, -1, 0, o.h] }, doc: emptyDoc() }),
     pdf: (o) => {
@@ -229,6 +214,8 @@ export async function applyPageOpsToDoc(
   doc: PDFDocument,
   ops: readonly PageOp[],
   read: ReadPdfSource = readSourceIpc,
+  /** 편집 노드·마크업의 주석 ref — 복제본에 사본을 만들지 않는다(모델이 새 id 로 복사해 새 주석으로 쓴다). */
+  editable: ReadonlySet<string> = new Set(),
 ): Promise<{ key: string; page: PDFPage }[]> {
   const orig = doc.getPages();
   const origKeys = orig.map((p) => p.ref.toString());
@@ -260,14 +247,29 @@ export async function applyPageOpsToDoc(
     copied.set(id, new Map(indices.map((i, k) => [i, pages[k]])));
   }
 
-  // 복제 — 같은 /Contents·/Resources 를 가리키는 새 leaf. 주석은 한 페이지에만 속하므로 /Annots 는 떼고,
-  // 편집 노드는 모델이 새 id 로 복사해 새 주석으로 쓴다.
-  // ponytail: 다른 앱의 주석(링크 등)은 복제본에 안 따라간다 — 필요해지면 annot 사전을 복사하고 /P 를 바꾼다.
+  // 복제 — 같은 /Contents·/Resources 를 가리키는 새 leaf. 주석은 한 페이지에만 속하므로 공유하지 않는다: 편집 노드는
+  // 모델이 새 id 로 복사해 새 주석으로 쓰고, 다른 앱 주석(링크·메모 등)은 사전을 복사해 /P 를 새 leaf 로 바꾼다.
+  // 위젯(폼 필드)·Popup·답글(/IRT)은 따라가지 않는다 — 필드 값이 두 곳에 묶이고, 팝업·답글은 부모 주석에 매여 있다.
+  const N = (k: string) => lib.PDFName.of(k);
   const cloneLeaf = (p: PDFPage): PDFPage => {
     pinInherited(lib, p);
     const leaf = p.node.clone();
-    leaf.delete(lib.PDFName.of("Annots"));
-    return lib.PDFPage.of(leaf, doc.context.register(leaf), doc);
+    leaf.delete(N("Annots"));
+    const ref = doc.context.register(leaf);
+    const copies: PDFRef[] = [];
+    for (const e of annotEntries(lib, p)) {
+      if (editable.has(e.toString())) continue;
+      const d = doc.context.lookupMaybe(e, lib.PDFDict);
+      const sub = d?.get(N("Subtype"));
+      if (!d || sub === N("Widget") || sub === N("Popup") || d.has(N("IRT"))) continue;
+      const c = d.clone();
+      c.set(N("P"), ref);
+      c.delete(N("Popup"));
+      c.delete(N("NM")); // 같은 이름이 두 쪽에 있으면 /NM 으로 찾는 쪽('그래도 저장')이 엉뚱한 사본을 잡는다
+      copies.push(doc.context.register(c));
+    }
+    if (copies.length) leaf.set(N("Annots"), doc.context.obj(copies));
+    return lib.PDFPage.of(leaf, ref, doc);
   };
   const usedCopies = new Set<PDFPage>();
 

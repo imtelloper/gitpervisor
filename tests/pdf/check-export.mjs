@@ -426,12 +426,37 @@ async function deletedPageGone() {
   }
 }
 
+// 다른 앱 주석의 /CA — 외관에 자기 ExtGState 가 없으면 평탄화가 /CA 를 걸고(빨강 → 분홍), 있으면 다시 걸지 않는다(두 번 옅어짐 방지).
+async function flattenOpacity() {
+  console.log("\n[평탄화 /CA]");
+  const doc = await L.PDFDocument.create({ updateMetadata: false });
+  const page = doc.addPage([200, 100]);
+  const ctx = doc.context;
+  const ap = (gs) =>
+    ctx.register(
+      ctx.stream(`${gs ? "/G gs " : ""}1 0 0 rg 0 0 40 40 re f`, {
+        Type: "XObject", Subtype: "Form", BBox: [0, 0, 40, 40],
+        ...(gs ? { Resources: { ExtGState: { G: { Type: "ExtGState", ca: 0.5, CA: 0.5 } } } } : {}),
+      }),
+    );
+  const annot = (x, gs) => ctx.register(ctx.obj({ Type: "Annot", Subtype: "Square", Rect: [x, 30, x + 40, 70], CA: 0.5, F: 4, AP: { N: ap(gs) } }));
+  page.node.set(L.PDFName.of("Annots"), ctx.obj([annot(20, false), annot(120, true)]));
+  const bytes = new Uint8Array(await doc.save());
+  const [img] = await renderAll(await buildFlatten(bytes, null));
+  const px = (x, y) => Array.from(img.data.slice((y * img.width + x) * 4, (y * img.width + x) * 4 + 3));
+  const a = px(40, 50);
+  const b = px(140, 50);
+  check("평탄화 /CA: 외관에 gs 없음 → /CA 0.5 적용(분홍)", a[0] > 230 && a[1] > 100 && a[1] < 160, JSON.stringify(a));
+  check("평탄화 /CA: 외관이 gs 로 이미 0.5 → 한 번만(분홍, 더 옅지 않음)", b[0] > 230 && b[1] > 100 && b[1] < 160, JSON.stringify(b));
+}
+
 try {
   await run("classic xref %PDF-1.3", true);
   await run("xref stream %PDF-1.7", false);
   await drafts();
   await guards();
   await deletedPageGone();
+  await flattenOpacity();
 } catch (e) {
   failed++;
   console.error("\nFAIL (exception)", e);

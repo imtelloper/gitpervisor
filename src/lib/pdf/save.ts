@@ -165,7 +165,7 @@ export async function buildIncrement(
   const pageByKey = new Map(orig.map((p) => [p.ref.toString(), p]));
   let pages = orig;
   if (m.pageOps?.length) {
-    const placed = await applyPageOpsToDoc(lib, doc, m.pageOps, readSource);
+    const placed = await applyPageOpsToDoc(lib, doc, m.pageOps, readSource, new Set(m.ledger.refs.values()));
     const bad = placed.findIndex((x, i) => x.key !== m.infos[i]?.key);
     if (bad >= 0 || placed.length !== m.infos.length) {
       throw new Error(`buildIncrement: page keys disagree with page ops at index ${bad} (file ${placed.length}, infos ${m.infos.length})`);

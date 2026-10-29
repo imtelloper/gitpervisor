@@ -5,6 +5,7 @@ import { Eraser, FileDown, FilePlus2, MoreHorizontal } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { currentMessages, useMessages } from "../../i18n/ui-language";
+import { openDocWindow } from "../../lib/floating";
 import { errorMessage, isIpcError } from "../../lib/ipc";
 import type { EditorDoc } from "../../lib/annotate/types";
 import type { PdfLedger, PdfMarkup } from "../../lib/pdf/model";
@@ -59,7 +60,11 @@ export function createPdfExport(deps: PdfExportDeps) {
       const exp = await loadExport();
       if (kind === "saveAs") await exp.saveAsPdf(deps.projectId, deps.path, stamp, target, model, overwrite);
       else await exp.flattenPdf(deps.projectId, deps.path, stamp, target, model, overwrite);
-      pushToast("success", kind === "saveAs" ? t().savedAs(target) : t().flattened(target));
+      // 뷰어는 원본에 남는다 — 만든 파일은 토스트에서 바로 연다.
+      pushToast("success", kind === "saveAs" ? t().savedAs(target) : t().flattened(target), {
+        label: t().openResult,
+        run: () => openDocWindow(deps.projectId, target, { size: [1180, 860] }),
+      });
     } catch (e) {
       if (!overwrite && isIpcError(e) && e.code === "ALREADY_EXISTS")
         askConfirm({

@@ -93,6 +93,14 @@ async function renderPage(bytes, pageNo) {
   };
   return { px, annots };
 }
+const UPNG = await import("@cantoo/pdf-lib/upng");
+const rgbaOf = (a) => new Uint8Array(UPNG.toRGBA8(UPNG.decode(Buffer.from(a.data, "base64")))[0]);
+function samePixels(a, b) {
+  if (!a || !b || a.w !== b.w || a.h !== b.h) return false;
+  const x = rgbaOf(a);
+  const y = rgbaOf(b);
+  return x.length === y.length && x.every((v, i) => v === y[i]);
+}
 const close = (a, b, tol = 40) => a.every((v, i) => Math.abs(v - b[i]) <= tol);
 
 async function libAnnots(bytes) {
@@ -232,9 +240,22 @@ check("④ rule 1: 3 markups", imp.markups.length === 3);
 for (const m of markups0) check(`④ rule 1 markup ${m.id} equal`, !near(byId.get(m.id), m), near(byId.get(m.id), m) ?? "");
 const n0 = new Map(imp.pages[0].objects.map((o) => [o.id, o]));
 for (const o of p0.objects) check(`④ rule 1 node ${o.id} equal`, !near(n0.get(o.id), o), near(n0.get(o.id), o) ?? "");
-check("④ PNG asset bytes restored", imp.pages[0].assets["a-png"]?.data === assets.png.data && imp.pages[0].assets["a-png"].mime === "image/png");
+// PNG 는 XObject 픽셀에서 다시 만든다 — 바이트가 아니라 픽셀(알파 포함)이 같아야 한다. 원본 PNG 는 파일에 따로 없다.
+check("④ PNG asset pixels restored (alpha too)", samePixels(imp.pages[0].assets["a-png"], assets.png) && imp.pages[0].assets["a-png"].mime === "image/png");
+check("④ original PNG not stored a second time", !Buffer.from(saved1).includes(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])));
 check("④ JPEG asset bytes restored", imp.pages[0].assets["a-jpg"]?.data === assets.jpg.data && imp.pages[0].assets["a-jpg"].mime === "image/jpeg");
 check("④ asset size restored", imp.pages[0].assets["a-png"]?.w === 40 && imp.pages[0].assets["a-png"]?.h === 20);
+// 옛 판(원본 PNG 를 /GPV_Asset 에 따로 담던 4714956·fa6354b 저장본)도 그 바이트 그대로 읽는다.
+{
+  const doc = await L.PDFDocument.load(saved1, { updateMetadata: false });
+  const ref = L.PDFRef.of(...imp.ledger.refs.get("img-png").split(" ").slice(0, 2).map(Number));
+  const d = doc.context.lookup(ref);
+  const raw = Buffer.from(assets.png.data, "base64");
+  d.set(L.PDFName.of("GPV_Asset"), doc.context.register(doc.context.stream(raw, { Width: 40, Height: 20 })));
+  const old = await doc.save({ useObjectStreams: false });
+  const impOld = await importAnnotations(old, await pageInfos(old), null);
+  check("④ old-format PNG asset still restored byte-identical", impOld.pages[0].assets["a-png"]?.data === assets.png.data);
+}
 check("④ imported is clean", !isDirty(imp.pages, imp.ledger, [], imp.markups));
 check("④ working copy hides markups from pdf.js", imp.workingCopy && (await renderPage(imp.workingCopy, 1)).annots.length === 0);
 
@@ -250,7 +271,7 @@ const la2 = await libAnnots(saved2);
 check("⑤ underline removed, same ref reused", la2[0].length === 4 && la2[0].find((a) => a.subtype === "Highlight")?.ref === hl.ref);
 const imp2 = await importAnnotations(saved2, infos, null);
 check("⑤ re-import color change", imp2.markups.find((m) => m.id === "mk-hl")?.color === "#00FF00");
-check("⑤ moved image keeps asset", imp2.pages[0].assets["a-png"]?.data === assets.png.data && imp2.pages[0].objects.find((o) => o.id === "img-png")?.x === 90);
+check("⑤ moved image keeps asset", samePixels(imp2.pages[0].assets["a-png"], assets.png) && imp2.pages[0].objects.find((o) => o.id === "img-png")?.x === 90);
 // 이동·복제는 이미지를 다시 넣지 않는다 — 넣으면 저장마다 파일이 이미지 크기만큼 자란다.
 const imgCount = (b) => (Buffer.from(b).toString("latin1").match(/\/Subtype\s*\/Image/g) ?? []).length;
 check("⑤ first save embeds images (control)", imgCount(r1.inc) >= 2, String(imgCount(r1.inc)));
@@ -262,7 +283,7 @@ check("⑤ moving an image embeds nothing new", imgCount(r2.inc) === 0, String(i
   const saved3 = concat(saved2, r3.inc);
   check("⑤ copied image shares the XObject", imgCount(r3.inc) === 0, String(imgCount(r3.inc)));
   const imp3 = await importAnnotations(saved3, infos, null);
-  check("⑤ copied image restores asset", imp3.pages[0].assets["a-png"]?.data === assets.png.data && imp3.pages[0].objects.some((o) => o.id === "img-png-copy"));
+  check("⑤ copied image restores asset", samePixels(imp3.pages[0].assets["a-png"], assets.png) && imp3.pages[0].objects.some((o) => o.id === "img-png-copy"));
   const r = await renderPage(saved3, 1);
   check("⑤ copied image drawn (red half)", close(r.px(260, 230), [255, 0, 0]), JSON.stringify(r.px(260, 230)));
 }

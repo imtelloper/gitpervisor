@@ -53,7 +53,7 @@ import {
   type ObjId,
   type TextNode,
 } from "../../lib/annotate/types";
-import { IS_DOC_WINDOW } from "../../lib/floating";
+import { IS_DOC_WINDOW, openDocWindow } from "../../lib/floating";
 import { errorMessage, ipc, isIpcError, type AssetBytes, type DiffTarget } from "../../lib/ipc";
 import {
   emptyLedger,
@@ -215,6 +215,7 @@ const drafts = new Map<string, AnnSession>();
 /** pdf-lib 를 끌고 오는 코어는 주석 모드 첫 진입 때만 — 보기 전용 사용자가 그 청크를 받지 않게. */
 interface PdfCore {
   importAnnotations: typeof import("../../lib/pdf/import").importAnnotations;
+  annotRefsByName: typeof import("../../lib/pdf/import").annotRefsByName;
   savePdf: typeof import("../../lib/pdf/save").savePdf;
   isDirty: typeof import("../../lib/pdf/save").isDirty;
   ensurePdfFont: typeof import("../../lib/pdf/fonts").ensurePdfFont;
@@ -236,6 +237,7 @@ function loadPdfCore(): Promise<PdfCore> {
     ([i, s, f, pg]) =>
       (coreLoaded = {
         importAnnotations: i.importAnnotations,
+        annotRefsByName: i.annotRefsByName,
         savePdf: s.savePdf,
         isDirty: s.isDirty,
         ensurePdfFont: f.ensurePdfFont,
@@ -1399,18 +1401,18 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
           // 새 판에도 우리가 전에 쓴 주석(/NM = 노드 id)이 남아 있으면 그 ref 를 다시 쓴다 — 빈 장부로 쓰면 전부 새로
           // 만들어 같은 주석이 두 겹이 된다(통합 검증 실측: 7개 → 14개). 이 세션이 모르는 id(외부에서 새로 단 주석)는
           // 장부에서 빼 건드리지 않는다. 판이 맞는지는 savePdf 가 expected 로 다시 확인한다.
-          const fresh = await core.importAnnotations(
-            new Uint8Array(await ipc.readFileRaw(projectId, path)),
-            s.infos,
-            s.font,
-          );
-          const known = new Set([...s.ledger.refs.keys(), ...s.pages.flatMap((d) => d.objects.map((o) => o.id))]);
+          // 페이지 정보 없이 /NM 으로만 찾는다 — 페이지 연산이 쌓여 있으면 s.infos 는 디스크 판과 쪽수가 달라 가져오기가 실패했다.
+          const fresh = await core.annotRefsByName(new Uint8Array(await ipc.readFileRaw(projectId, path)));
+          const known = new Set([
+            ...s.ledger.refs.keys(),
+            ...s.pages.flatMap((d) => d.objects.map((o) => o.id)),
+            ...s.markups.map((m) => m.id),
+          ]);
           ledger = emptyLedger();
-          for (const [id, ref] of fresh.ledger.refs) {
-            const page = fresh.ledger.pageOf.get(id);
-            if (!known.has(id) || page === undefined) continue;
-            ledger.refs.set(id, ref);
-            ledger.pageOf.set(id, page);
+          for (const [id, at] of fresh) {
+            if (!known.has(id)) continue;
+            ledger.refs.set(id, at.ref);
+            ledger.pageOf.set(id, at.pageKey);
           }
         }
         const r = await core.savePdf(projectId, path, expected, saveModelOf(s, ledger));
@@ -1528,7 +1530,11 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
           const c = ctl.current;
           if (!s || !c) return;
           c.exclusive(() => core.extractPagesToFile(projectId, path, s.stamp, saveModelOf(s), keys, out, overwrite)).then(
-            () => pushToast("success", currentMessages().pdf.pages.extracted(out)),
+            () =>
+              pushToast("success", currentMessages().pdf.pages.extracted(out), {
+                label: currentMessages().pdf.export.openResult,
+                run: () => openDocWindow(projectId, out, { size: [1180, 860] }),
+              }),
             (e: unknown) => {
               const m = currentMessages().pdf;
               if (!overwrite && isIpcError(e) && e.code === "ALREADY_EXISTS")
@@ -2124,6 +2130,7 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
             const ids = new Set(selectedIds);
             return (sess.pages[active]?.objects ?? []).filter((o) => ids.has(o.id));
           })()}
+          markup={markSel ? sess.markups.find((m) => m.id === markSel) : null}
           onChange={changePaint}
         />
       )}

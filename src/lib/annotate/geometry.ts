@@ -556,6 +556,12 @@ export function transformObjects(
       case "ellipse":
       case "mosaic":
       case "frame": {
+        // 이미지 채우기는 무늬에 방향이 있다 — 상자를 전치하면 그림은 똑바로 선 채 가운데만 남는다. 상자는 그대로 두고
+        // 중심만 옮겨 rot 으로 돌린다(앵커가 중심이라 정확히 돈다). 뒤집기는 거울상을 표현할 필드가 없어 상자만 옮긴다.
+        if (!isFlip && o.kind === "rect" && o.fills.some((f) => f.visible && f.type === "image")) {
+          const c = P(o.x + o.w / 2, o.y + o.h / 2);
+          return { ...o, x: c.x - o.w / 2, y: c.y - o.h / 2, rot: normalizeDeg(o.rot + (delta === "rotCW" ? 90 : -90)) };
+        }
         const a = P(o.x, o.y);
         const b = P(o.x + o.w, o.y + o.h);
         const r = normalizeRect(a.x, a.y, b.x, b.y);
