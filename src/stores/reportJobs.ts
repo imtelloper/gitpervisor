@@ -5,8 +5,14 @@
 // "생성 안 함"이라, 다시 누르면 "다른 AI 요청이 진행 중입니다"로 실패했다. 이제 작업은 여기서 돌고 카드는 자기 키의
 // 상태를 구독만 한다. LLM 은 한 번에 한 요청이라 직렬 대기열이다 — 다른 카드의 생성은 실패 대신 차례를 기다린다.
 // 입력은 **차례가 왔을 때** 같은 쿼리 캐시에서 읽는다(카드가 화면에 없어도 "모두 생성"이 이어진다).
+//
+// 대기열은 **메인 창 하나**에만 있다 — 모아보기 별도 창·별도 리포트 창에서 누른 생성도 그 창을 닫으면 같이 죽지
+// 않게. 다른 창은 명령을 메인에 보내고(report-jobs://cmd) 메인이 방송하는 상태(report-jobs://state)를 그린다.
+// 메인 창을 닫으면 앱이 끝난다(lib.rs CloseRequested). 저장된 요약은 report://changed 로 각 창 캐시에 들어간다.
 
 import type { QueryClient } from "@tanstack/react-query";
+import { emit, emitTo, listen } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { create } from "zustand";
 
 import { currentMessages } from "../i18n/ui-language";
@@ -23,6 +29,7 @@ export interface ReportJob {
   batch: string | null;
 }
 
+/** 창 사이로 오간다 — 직렬화 가능한 값만. */
 export interface ReportJobInput {
   key: string;
   projects: Project[];
@@ -31,7 +38,31 @@ export interface ReportJobInput {
   until: string;
   mine: boolean;
   settings: Settings | undefined;
-  qc: QueryClient;
+}
+
+type ReportJobsCmd =
+  | { op: "enqueue"; input: ReportJobInput }
+  | { op: "cancel"; key: string }
+  | { op: "clear"; key: string }
+  | { op: "batch"; items: ReportJobInput[] }
+  | { op: "cancelBatch" }
+  | { op: "sync" };
+
+const IS_MAIN = (() => {
+  try {
+    return getCurrentWebviewWindow().label === "main";
+  } catch {
+    return true; // Tauri 밖(단위 검사 등) — 스스로 돈다
+  }
+})();
+
+const sendCmd = (cmd: ReportJobsCmd) =>
+  void emitTo("main", "report-jobs://cmd", cmd).catch((e) => console.error("[report-jobs] main delegation failed", cmd.op, e));
+
+/** 메인 창의 QueryClient — 입력을 그 캐시로 읽고 저장본을 그 캐시에 넣는다(main.tsx 부팅이 묶는다). */
+let qc: QueryClient | null = null;
+export function bindReportJobsQueryClient(client: QueryClient): void {
+  qc = client;
 }
 
 interface ReportJobsState {
@@ -62,11 +93,13 @@ export function reportModelName(settings: Settings | undefined): string {
 }
 
 async function loadSources(i: ReportJobInput): Promise<ReportSource[]> {
+  const c = qc;
+  if (!c) throw new Error("report jobs: query client is not bound in this window");
   return Promise.all(
     i.projects.map(async (project) => {
       const [commits, dump] = await Promise.all([
-        i.qc.fetchQuery(commitsBetweenQuery(project, i.since, i.until, i.mine)),
-        i.qc.fetchQuery(promptDumpQuery(project, i.since, i.until)),
+        c.fetchQuery(commitsBetweenQuery(project, i.since, i.until, i.mine)),
+        c.fetchQuery(promptDumpQuery(project, i.since, i.until)),
       ]);
       return { project, commits, prompts: dump.items };
     }),
@@ -123,7 +156,7 @@ async function run(i: ReportJobInput, ac: AbortController): Promise<void> {
       model: reportModelName(i.settings),
     };
     await ipc.reportSet(i.key, record);
-    i.qc.setQueryData<ReportMap>(["reports"], (old) => ({ ...old, [i.key]: record }));
+    qc?.setQueryData<ReportMap>(["reports"], (old) => ({ ...old, [i.key]: record }));
     patch(i.key, null);
   } catch (e) {
     patch(i.key, { status: "failed", text: acc, note: ac.signal.aborted ? t.cancelled : errorMessage(e) });
@@ -131,7 +164,12 @@ async function run(i: ReportJobInput, ac: AbortController): Promise<void> {
 }
 
 /** 생성을 대기열에 넣는다. 같은 키가 이미 대기·진행 중이면 무시한다. */
-export function enqueueReport(i: ReportJobInput, batch: string | null = null): void {
+export function enqueueReport(i: ReportJobInput): void {
+  if (IS_MAIN) enqueueLocal(i, null);
+  else sendCmd({ op: "enqueue", input: i });
+}
+
+function enqueueLocal(i: ReportJobInput, batch: string | null): void {
   if (active(useReportJobs.getState().jobs[i.key])) return;
   const ac = new AbortController();
   controllers.set(i.key, ac);
@@ -150,23 +188,27 @@ export function enqueueReport(i: ReportJobInput, batch: string | null = null): v
 }
 
 export function cancelReport(key: string): void {
-  controllers.get(key)?.abort();
+  if (IS_MAIN) controllers.get(key)?.abort();
+  else sendCmd({ op: "cancel", key });
 }
 
 /** 실패·취소로 남은 흔적을 지운다(저장본이 새로 왔을 때 — 채팅의 [요약으로 저장]). 진행 중이면 두지 않는다. */
 export function clearReportResidue(key: string): void {
+  if (!IS_MAIN) return sendCmd({ op: "clear", key });
   if (!active(useReportJobs.getState().jobs[key])) patch(key, null);
 }
 
 /** "모두 생성" — 각 항목을 순서대로 대기열에. 진행률은 그 배치에서 아직 안 끝난 작업 수로 센다. */
 export function startReportBatch(items: ReportJobInput[]): void {
   if (!items.length) return;
+  if (!IS_MAIN) return sendCmd({ op: "batch", items });
   const id = crypto.randomUUID();
   useReportJobs.setState({ batch: { id, total: items.length } });
-  for (const i of items) enqueueReport(i, id);
+  for (const i of items) enqueueLocal(i, id);
 }
 
 export function cancelReportBatch(): void {
+  if (!IS_MAIN) return sendCmd({ op: "cancelBatch" });
   const b = useReportJobs.getState().batch;
   if (!b) return;
   for (const [key, j] of Object.entries(useReportJobs.getState().jobs)) if (j.batch === b.id && active(j)) cancelReport(key);
@@ -181,4 +223,35 @@ function settleBatch() {
 export function batchRemaining(s: ReportJobsState): number {
   const b = s.batch;
   return b ? Object.values(s.jobs).filter((j) => j.batch === b.id && active(j)).length : 0;
+}
+
+// ── 창 사이 동기화 ────────────────────────────────────────────────────────────
+
+if (IS_MAIN) {
+  // 토큰마다 창마다 IPC 를 쏘지 않게 100ms 로 모은다 — 스트리밍 본문은 그 간격이면 충분히 매끄럽다.
+  let timer: number | null = null;
+  const broadcast = () => {
+    timer = null;
+    const { jobs, batch } = useReportJobs.getState();
+    void emit("report-jobs://state", { jobs, batch }).catch((e) => console.error("[report-jobs] broadcast failed", e));
+  };
+  void listen<ReportJobsCmd>("report-jobs://cmd", ({ payload: c }) => {
+    if (c.op === "enqueue") enqueueLocal(c.input, null);
+    else if (c.op === "cancel") cancelReport(c.key);
+    else if (c.op === "clear") clearReportResidue(c.key);
+    else if (c.op === "batch") startReportBatch(c.items);
+    else if (c.op === "cancelBatch") cancelReportBatch();
+    else if (c.op === "sync") broadcast();
+    else {
+      const never: never = c;
+      console.error("[report-jobs] unknown command", never);
+    }
+  });
+  useReportJobs.subscribe(() => {
+    timer ??= window.setTimeout(broadcast, 100);
+  });
+} else {
+  void listen<ReportJobsState>("report-jobs://state", ({ payload }) => useReportJobs.setState(payload));
+  // 늦게 연 창은 지금 상태를 한 번 받아 온다 — 진행 중인 생성이 이 창에서도 바로 보이게.
+  sendCmd({ op: "sync" });
 }

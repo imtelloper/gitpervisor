@@ -372,6 +372,9 @@ if (label === "aggregate") {
 
   // watcher·작업 이벤트 구독 (모듈 스코프 — StrictMode 이중 마운트와 무관하게 1회)
   attachRepoEvents(queryClient);
+  // 리포트 요약 대기열은 메인 창이 돌린다 — 다른 창이 닫혀도 생성이 이어지게(stores/reportJobs). 메인에서만
+  // 부르므로 동적 import — 정적이면 이 진입점을 같이 쓰는 모든 보조 창이 대기열 리스너를 단다.
+  void import("./stores/reportJobs").then((m) => m.bindReportJobsQueryClient(queryClient));
 
   // 재시작으로 죽은 프리뷰(로컬 HTML) 탭의 루프백 URL을 재발급해 되살린다. 메인 창에서만
   // 실행한다 — 보조 창이 공유 localStorage(gp:browser)를 스테일 스냅샷으로 덮지 않게.

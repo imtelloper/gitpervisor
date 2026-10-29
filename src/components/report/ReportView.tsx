@@ -7,7 +7,6 @@ import {
   Sparkles,
   X,
 } from "lucide-react";
-import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 
 import { useMessages } from "../../i18n/ui-language";
@@ -169,7 +168,6 @@ export function ReportView() {
   // "모두 생성"은 카드 밖 대기열(stores/reportJobs)에서 돈다 — 리포트를 접었다 열어도 이어서 진행된다.
   const batch = useReportJobs((s) => s.batch);
   const batchLeft = useReportJobs(batchRemaining);
-  const qc = useQueryClient();
   const { data: llmStatus } = useLlmStatus();
   // 채팅 패널 — 컨텍스트·대화는 여기 둔다(패널을 닫았다 열어도 남아야 한다, 67 §3.2).
   const [chatOpen, setChatOpen] = useState(
@@ -262,7 +260,6 @@ export function ReportView() {
         until: range.until,
         mine,
         settings,
-        qc,
       })),
     );
 

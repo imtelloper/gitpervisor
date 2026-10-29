@@ -1,4 +1,3 @@
-import { useQueryClient } from "@tanstack/react-query";
 import { Loader2, MessageSquare, Sparkles, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -50,7 +49,6 @@ export function ReportCard({
   const { data: reports } = useReports();
   const { data: settings } = useSettings();
   const { data: status } = useLlmStatus();
-  const qc = useQueryClient();
   const openSettings = useUi((s) => s.openSettings);
 
   const scope = scopeKey(projects);
@@ -119,7 +117,7 @@ export function ReportCard({
   const title = combined ? msg.report.card.combinedTitle(projects.length) : (projects[0]?.name ?? "");
   const generate = () => {
     if (busy || reason || empty || loadError) return;
-    enqueueReport({ key, projects, period, since, until, mine, settings, qc });
+    enqueueReport({ key, projects, period, since, until, mine, settings });
   };
 
   return (
