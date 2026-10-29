@@ -1405,18 +1405,24 @@ export function useActivities(
 }
 
 /** 히트맵 둘째 시리즈 — 프로젝트별 날짜별 프롬프트 수(전사 스캔이라 경로가 키다). */
+/** 리포트 입력 쿼리 정의 — 카드 훅과 요약 대기열(stores/reportJobs, 화면 밖에서 직접 fetchQuery)이 같은 키·캐시를 쓴다. */
+export const promptDumpQuery = (p: Project, since: string, until: string) => ({
+  queryKey: ["prompts", p.path, since, until] as const,
+  queryFn: () => ipc.claudePrompts(p.path, since, until),
+  staleTime: REPORT_STALE_MS,
+});
+export const commitsBetweenQuery = (p: Project, since: string, until: string, mine: boolean) => ({
+  queryKey: ["commits-between", p.id, since, until, mine] as const,
+  queryFn: () => ipc.commitsBetween(p.id, since, until, mine),
+  staleTime: REPORT_STALE_MS,
+});
+
 export function usePromptDumps(
   projects: Project[],
   since: string,
   until: string,
 ) {
-  return useQueries({
-    queries: projects.map((p) => ({
-      queryKey: ["prompts", p.path, since, until] as const,
-      queryFn: () => ipc.claudePrompts(p.path, since, until),
-      staleTime: REPORT_STALE_MS,
-    })),
-  });
+  return useQueries({ queries: projects.map((p) => promptDumpQuery(p, since, until)) });
 }
 
 /** 카드 입력 — 선택 기간의 커밋(≤200). */
@@ -1443,13 +1449,7 @@ export function useCommitsBetweenMany(
   until: string,
   mine: boolean,
 ) {
-  return useQueries({
-    queries: projects.map((p) => ({
-      queryKey: ["commits-between", p.id, since, until, mine] as const,
-      queryFn: () => ipc.commitsBetween(p.id, since, until, mine),
-      staleTime: REPORT_STALE_MS,
-    })),
-  });
+  return useQueries({ queries: projects.map((p) => commitsBetweenQuery(p, since, until, mine)) });
 }
 
 /** 카드 입력 — 선택 기간의 프롬프트 원문(히트맵의 1년 쿼리와 기간이 달라 키가 갈린다). */

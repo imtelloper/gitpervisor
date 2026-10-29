@@ -7,22 +7,26 @@ import {
   Sparkles,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
 
 import { useMessages } from "../../i18n/ui-language";
 import type { Project } from "../../lib/ipc";
-import type { ChatMsg } from "../../lib/llm";
+import { llmReadyReason, useLlmStatus, type ChatMsg } from "../../lib/llm";
 import { NO_COLOR, useProjectColors } from "../../lib/project-color";
 import type { ChatContext, Period } from "../../lib/report";
 import {
   addDays,
   PERIOD_LABEL,
   periodRange,
+  reportKey,
+  scopeKey,
   shiftPeriod,
   today,
 } from "../../lib/report";
 import { useActivities, useProjects, usePromptDumps, useSettings } from "../../queries";
 import { useOccludesWebview } from "../../stores/occlusion";
+import { batchRemaining, cancelReportBatch, startReportBatch, useReportJobs } from "../../stores/reportJobs";
 import { useUi } from "../../stores/ui";
 import type { DayValue } from "./Heatmap";
 import { Heatmap } from "./Heatmap";
@@ -162,9 +166,11 @@ export function ReportView() {
   const [mine, setMine] = useState(
     () => localStorage.getItem(MINE_KEY) !== "0",
   );
-  // 배치 생성 대기열(앞이 현재 차례). 59는 한 번에 한 요청이라 직렬이다.
-  const [queue, setQueue] = useState<string[] | null>(null);
-  const [batchTotal, setBatchTotal] = useState(0);
+  // "모두 생성"은 카드 밖 대기열(stores/reportJobs)에서 돈다 — 리포트를 접었다 열어도 이어서 진행된다.
+  const batch = useReportJobs((s) => s.batch);
+  const batchLeft = useReportJobs(batchRemaining);
+  const qc = useQueryClient();
+  const { data: llmStatus } = useLlmStatus();
   // 채팅 패널 — 컨텍스트·대화는 여기 둔다(패널을 닫았다 열어도 남아야 한다, 67 §3.2).
   const [chatOpen, setChatOpen] = useState(
     () => localStorage.getItem(CHAT_KEY) === "1",
@@ -212,10 +218,6 @@ export function ReportView() {
   }, [activities, dumps]);
 
   const range = periodRange(period, anchor);
-  const advance = useCallback(
-    () => setQueue((q) => (q && q.length > 1 ? q.slice(1) : null)),
-    [],
-  );
 
   const toggleMine = () => {
     const v = !mine;
@@ -248,11 +250,21 @@ export function ReportView() {
     openChat(true);
   };
 
-  const startBatch = () => {
-    const ids = scoped.map((p) => p.id);
-    setBatchTotal(ids.length);
-    setQueue(ids);
-  };
+  // 모델이 준비되지 않았으면 배치를 막는다 — 카드마다 같은 사유로 실패만 쌓인다.
+  const llmReason = llmReadyReason(llmStatus, settings, settings?.llmReportModel ?? null);
+  const startBatch = () =>
+    startReportBatch(
+      scoped.map((p) => ({
+        key: reportKey(scopeKey([p]), period, range.since),
+        projects: [p],
+        period,
+        since: range.since,
+        until: range.until,
+        mine,
+        settings,
+        qc,
+      })),
+    );
 
   return (
     <div className="flex min-h-0 flex-1">
@@ -309,17 +321,19 @@ export function ReportView() {
               <FileText size={11} /> {msg.report.view.promptToggle(customPrompt)}
             </button>
             {scoped.length > 1 &&
-              (queue ? (
+              (batch ? (
                 <button
-                  onClick={() => setQueue(null)}
+                  onClick={cancelReportBatch}
                   className="flex items-center gap-1 rounded bg-raised px-2 py-0.5 hover:text-fg"
                 >
-                  <X size={11} /> {msg.report.view.cancelBatch(batchTotal - queue.length + 1, batchTotal)}
+                  <X size={11} /> {msg.report.view.cancelBatch(batch.total - batchLeft + 1, batch.total)}
                 </button>
               ) : (
                 <button
                   onClick={startBatch}
-                  className="flex items-center gap-1 rounded bg-raised px-2 py-0.5 hover:text-fg"
+                  disabled={!!llmReason}
+                  title={llmReason ?? undefined}
+                  className="flex items-center gap-1 rounded bg-raised px-2 py-0.5 hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <Sparkles size={11} /> {msg.report.view.generateAll}
                 </button>
@@ -381,8 +395,6 @@ export function ReportView() {
                 (projectColorsOn ? colors.get(p.name) : undefined)?.stripe ??
                 NO_COLOR.stripe
               }
-              runNow={queue?.[0] === p.id}
-              onFinish={advance}
               onAsk={ask}
             />
           ))}

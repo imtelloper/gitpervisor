@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { Loader2, MessageSquare, Sparkles, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -6,22 +7,11 @@ import { useMessages } from "../../i18n/ui-language";
 import { IS_DOC_WINDOW } from "../../lib/floating";
 import { errorMessage } from "../../lib/ipc";
 import type { Project } from "../../lib/ipc";
-import { chat, llmReadyReason, useLlmStatus } from "../../lib/llm";
+import { llmReadyReason, useLlmStatus } from "../../lib/llm";
 import type { ChatContext, Period, ReportSource } from "../../lib/report";
-import {
-  buildMessages,
-  inputHash,
-  maxTokensFor,
-  reportKey,
-  scopeKey,
-} from "../../lib/report";
-import {
-  useCommitsBetweenMany,
-  usePromptDumps,
-  useReports,
-  useSetReport,
-  useSettings,
-} from "../../queries";
+import { inputHash, reportKey, scopeKey } from "../../lib/report";
+import { useCommitsBetweenMany, usePromptDumps, useReports, useSettings } from "../../queries";
+import { cancelReport, clearReportResidue, enqueueReport, useReportJobs } from "../../stores/reportJobs";
 import { useUi } from "../../stores/ui";
 import MarkdownView from "../diff/MarkdownView";
 import { ProjectLogo } from "../common/ProjectLogo";
@@ -34,6 +24,7 @@ import { ProjectLogo } from "../common/ProjectLogo";
  *
  * 입력(커밋·프롬프트)은 LLM이 없어도 보인다 — "요약 생성"만 막힌다(설계 60 §1). 저장된 요약이
  * 있으면 즉시 본문을 그리고, 입력 해시가 달라졌으면 "입력이 바뀜" 뱃지로 재생성을 권한다.
+ * 생성 자체는 카드 밖 대기열(stores/reportJobs)에서 돈다 — 카드는 자기 키의 진행 상태를 그리기만 한다.
  */
 export function ReportCard({
   projects,
@@ -42,8 +33,6 @@ export function ReportCard({
   until,
   mine,
   stripe,
-  runNow,
-  onFinish,
   onAsk,
 }: {
   projects: Project[];
@@ -52,9 +41,6 @@ export function ReportCard({
   until: string;
   mine: boolean;
   stripe: string;
-  /** 배치("모두 생성")의 현재 차례 — true가 되는 순간 1회 생성한다. */
-  runNow?: boolean;
-  onFinish?: () => void;
   /** [AI에게 묻기] — 뷰가 우측 채팅 패널을 이 컨텍스트로 연다(§3.2). */
   onAsk?: (ctx: ChatContext) => void;
 }) {
@@ -64,7 +50,7 @@ export function ReportCard({
   const { data: reports } = useReports();
   const { data: settings } = useSettings();
   const { data: status } = useLlmStatus();
-  const setReport = useSetReport();
+  const qc = useQueryClient();
   const openSettings = useUi((s) => s.openSettings);
 
   const scope = scopeKey(projects);
@@ -75,14 +61,11 @@ export function ReportCard({
   const reason = llmReadyReason(status, settings, reportModel);
   const combined = projects.length > 1;
 
-  const [text, setText] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState<string | null>(null);
   const [hash, setHash] = useState<string | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
-  // 지금 카드가 가리키는 기간 — 비동기 생성이 끝났을 때 "그 사이에 기간이 바뀌었나"를 본다.
-  const keyRef = useRef(key);
-  keyRef.current = key;
+  const job = useReportJobs((s) => s.jobs[key]);
+  const busy = job?.status === "queued" || job?.status === "running";
+  const text = job?.text ?? "";
+  const note = job?.status === "queued" ? msg.report.card.queued : (job?.note ?? null);
 
   // `useQueries` 결과는 렌더마다 새 배열·새 객체다(query-core는 combine 없이는 구조 공유를
   // 하지 않는다) — 그대로 deps에 넣으면 아래 해시 효과가 매 렌더 돈다. 데이터가 실제로 바뀐
@@ -121,107 +104,23 @@ export function ReportCard({
     };
   }, [sources]);
 
-  // 기간·프로젝트가 바뀌면 화면의 스트리밍 결과는 그 기간 것이 아니다 — 저장본으로 되돌린다.
-  // 진행 중인 생성도 함께 끊는다: 카드는 key가 같아 리마운트되지 않으므로(ReportView가
-  // `key={p.id}`) 안 끊으면 **떠난 기간**의 토큰이 새 기간 머리글 아래로 계속 쌓이고,
-  // 한 번에 하나뿐인 LLM 슬롯도 그동안 물고 있는다.
+  // 저장본이 새로 오면 남은 실패·취소 흔적을 지운다 — 채팅의 [요약으로 저장](§3.2)이 이 카드의 키에 쓰는데,
+  // 흔적의 `text`가 남아 있으면 `body`가 그쪽을 먼저 골라 **옛 본문이 계속 보인다**("저장했는데 안 바뀐다").
+  // 마운트 때는 건너뛴다 — 접었다 다시 연 카드가 "취소됨"·오류 안내를 잃지 않게.
+  const seenGenerated = useRef(saved?.generatedAt);
   useEffect(() => {
-    abortRef.current?.abort();
-    setText("");
-    setNote(null);
-  }, [key]);
-
-  // 저장본이 새로 오면 로컬 텍스트를 비운다 — 채팅의 [요약으로 저장](§3.2)이 이 카드의 키에
-  // 쓰는데, 스트리밍 잔여 `text`가 남아 있으면 `body`가 그쪽을 먼저 골라 **옛 본문이 계속
-  // 보인다**("저장했는데 안 바뀐다").
-  useEffect(() => {
-    setText("");
-  }, [saved?.generatedAt]);
+    if (seenGenerated.current === saved?.generatedAt) return;
+    seenGenerated.current = saved?.generatedAt;
+    clearReportResidue(key);
+  }, [saved?.generatedAt, key]);
 
   const stale = !!saved && !!hash && saved.inputHash !== hash;
   const body = text || saved?.text || "";
   const title = combined ? msg.report.card.combinedTitle(projects.length) : (projects[0]?.name ?? "");
-  // 실제로 요청에 쓴 모델 — 리포트 전용 모델이 있으면 그것이다(기본 모델 이름을 적으면 12B로 만든 요약에 1.7B가 찍힌다).
-  const model =
-    settings?.llmProvider === "external"
-      ? (settings.llmExternalModel ?? "external")
-      : (reportModel ?? settings?.llmModel ?? "");
-
-  const generate = async () => {
+  const generate = () => {
     if (busy || reason || empty || loadError) return;
-    setBusy(true);
-    setText("");
-    setNote(null);
-    const ac = new AbortController();
-    abortRef.current = ac;
-    const keyAtStart = key;
-    let acc = "";
-    try {
-      const done = await chat(
-        buildMessages({
-          sources,
-          period,
-          since,
-          until,
-          language: settings?.llmLanguage ?? "ko",
-          ctx: settings?.llmContext,
-          prompt: settings?.reportPrompt,
-        }),
-        // 취소는 `llm_cancel` IPC 왕복이라 abort 직후에도 델타가 몇 개 더 온다 —
-        // 그걸 그리면 기간을 바꾼 카드에 옛 기간 본문이 도로 채워진다.
-        (delta) => {
-          acc += delta;
-          if (!ac.signal.aborted) setText(acc);
-        },
-        {
-          // 날짜마다 3줄이라 응답이 기간에 비례한다(값과 근거는 maxTokensFor 주석).
-          maxTokens: maxTokensFor(period),
-          temperature: 0.3,
-          modelId: reportModel ?? undefined,
-          signal: ac.signal,
-          onProgress: (_phase, message) => setNote(message ?? msg.report.modelLoading),
-        },
-      );
-      if (!ac.signal.aborted) setText(done.text);
-      setNote(null);
-      await setReport.mutateAsync({
-        key,
-        record: {
-          text: done.text,
-          generatedAt: new Date().toISOString(),
-          inputHash: await inputHash(sources),
-          model,
-        },
-      });
-    } catch (e) {
-      // 취소는 오류가 아니다 — 카드에 흔적만 남기고 지금까지 받은 텍스트는 그대로 둔다.
-      // 단 **기간을 옮겨서** 끊긴 경우는 조용히 넘어간다: 그 "취소됨"은 사용자가 지금 보고 있는
-      // 새 기간 머리글 아래에 붙어, 누르지도 않은 취소가 일어난 것처럼 보인다.
-      if (keyAtStart !== keyRef.current)
-        return;
-      setNote(ac.signal.aborted ? msg.report.cancelled : errorMessage(e));
-    } finally {
-      setBusy(false);
-      abortRef.current = null;
-      onFinish?.();
-    }
+    enqueueReport({ key, projects, period, since, until, mine, settings, qc });
   };
-
-  // 배치 차례 — 부모가 순서대로 한 장씩 켠다(59는 한 번에 한 요청).
-  // 생성할 수 없는 카드(활동 없음·LLM 미준비)는 **여기서** 건너뛴다: generate()의 이른 반환은
-  // try 이전이라 `finally`의 onFinish를 타지 않아, 대기열이 그 카드에서 영영 멈춘다.
-  // generate() 쪽을 고치지 않는 이유는 수동 버튼도 같은 함수를 쓰기 때문 — 그쪽이 대기열을
-  // 밀면 안 된다.
-  useEffect(() => {
-    if (!runNow) return;
-    // 데이터가 아직 안 왔으면 **기다린다**(건너뛰지 않는다) — loading이 deps에 있어
-    // 도착하는 순간 이 효과가 다시 돈다. 안 그러면 "모두 생성"을 연 직후 누른 사용자에게
-    // 아직 로딩 중이던 카드만 조용히 빈 채로 남는다.
-    if (loading) return;
-    if (busy || reason || empty || loadError) onFinish?.();
-    else void generate();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runNow, loading]);
 
   return (
     <div
@@ -276,14 +175,14 @@ export function ReportCard({
             )}
             {busy ? (
               <button
-                onClick={() => abortRef.current?.abort()}
+                onClick={() => cancelReport(key)}
                 className="flex items-center gap-1 rounded bg-raised px-2 py-0.5 text-[11px] text-fg-muted hover:text-fg"
               >
                 <X size={11} /> {msg.report.cancel}
               </button>
             ) : (
               <button
-                onClick={() => void generate()}
+                onClick={generate}
                 disabled={!!reason || empty || !!loadError}
                 title={reason ?? loadError ?? undefined}
                 className="flex items-center gap-1 rounded bg-accent px-2 py-0.5 text-[11px] text-on-accent hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
