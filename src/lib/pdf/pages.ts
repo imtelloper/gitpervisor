@@ -343,7 +343,7 @@ export async function extractPages(full: Uint8Array, indices: readonly number[])
 }
 
 /**
- * 선택 key 의 페이지를 새 파일 `outRel` 로(같은 프로젝트, 덮어쓰지 않음). 지금 편집(주석·페이지 연산)을 반영하되
+ * 선택 key 의 페이지를 새 파일 `outRel` 로(같은 프로젝트, 있으면 ALREADY_EXISTS — 사용자가 확인하면 overwrite 로 다시). 지금 편집(주석·페이지 연산)을 반영하되
  * 원본 파일은 읽기만 한다. stamp 가 다르면 장부가 엉뚱한 객체를 가리키므로 막는다.
  */
 export async function extractPagesToFile(
@@ -353,7 +353,9 @@ export async function extractPagesToFile(
   m: SaveModel,
   keys: readonly string[],
   outRel: string,
+  overwrite = false,
 ): Promise<void> {
+  if (outRel === path) throw new Error(`extractPagesToFile: target ${outRel} is the source file`);
   const now = await ipc.fileStamp(projectId, path);
   if (now !== expectedStamp) throw new Error(`extractPagesToFile: ${path} changed since it was loaded`);
   const disk = new Uint8Array(await ipc.readFileRaw(projectId, path));
@@ -366,5 +368,5 @@ export async function extractPagesToFile(
     if (i < 0) throw new Error(`extractPagesToFile: page ${k} is not in the document`);
     return i;
   });
-  await ipc.writeFileRaw(projectId, outRel, await extractPages(full, indices), { mode: "replace", overwrite: false });
+  await ipc.writeFileRaw(projectId, outRel, await extractPages(full, indices), { mode: "replace", overwrite });
 }

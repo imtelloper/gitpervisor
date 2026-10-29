@@ -337,6 +337,18 @@ export interface WriteCtx {
   textFont: () => Promise<PDFFont>;
   /** 이미지 채우기 노드(T2 Stamp)의 에셋 — 노드 JSON 은 assetId 만 들고 바이트는 페이지 문서 assets 에 있다. */
   asset?: (id: AssetId) => EditorDoc["assets"][AssetId] | undefined;
+  /** 파일에 이미 있는 그 에셋의 이미지 — 이동·크기만 바꾼 저장이 이미지를 다시 넣어 파일이 저장마다 그만큼 자라던 것을 막는다. */
+  existingImage?: (id: AssetId) => EmbeddedImage | null;
+  /** 이번 저장에서 이미 넣은 이미지(복제 노드가 같은 에셋을 두 번 넣지 않게). */
+  images?: Map<AssetId, EmbeddedImage>;
+}
+
+export interface EmbeddedImage {
+  ref: PDFRef;
+  /** /GPV_Asset — 다시 열 때 원본 바이트를 되살리는 스트림. */
+  assetRef: PDFRef;
+  width: number;
+  height: number;
 }
 
 // ── 이미지 Stamp(M3 T2) ──────────────────────────────────────────────────────
@@ -369,21 +381,25 @@ async function imageOps(
   node: Extract<PdfNode, { kind: "rect" }>,
   fill: Extract<Fill, { type: "image" }>,
 ): Promise<{ ops: string; resources: Lit; assetRef: PDFRef }> {
-  const a = c.asset?.(fill.assetId);
-  if (!a) throw new Error(`write: image node ${node.id} asset ${fill.assetId} is missing`);
-  const bytes = base64ToBytes(a.data);
-  const ctx = c.doc.context;
-  let img;
-  let assetRef: PDFRef;
-  if (a.mime === "image/jpeg") {
-    img = await c.doc.embedJpg(bytes);
-    assetRef = img.ref;
-  } else if (a.mime === "image/png") {
-    img = await c.doc.embedPng(bytes);
-    assetRef = ctx.register(ctx.stream(bytes, { Width: img.width, Height: img.height }));
-  } else {
-    throw new Error(`write: image node ${node.id} has unsupported type ${a.mime} (PNG/JPEG only)`);
+  let img = c.images?.get(fill.assetId) ?? c.existingImage?.(fill.assetId) ?? null;
+  if (!img) {
+    const a = c.asset?.(fill.assetId);
+    if (!a) throw new Error(`write: image node ${node.id} asset ${fill.assetId} is missing`);
+    const bytes = base64ToBytes(a.data);
+    const ctx = c.doc.context;
+    if (a.mime === "image/jpeg") {
+      const e = await c.doc.embedJpg(bytes);
+      img = { ref: e.ref, assetRef: e.ref, width: e.width, height: e.height };
+    } else if (a.mime === "image/png") {
+      const e = await c.doc.embedPng(bytes);
+      const assetRef = ctx.register(ctx.stream(bytes, { Width: e.width, Height: e.height }));
+      img = { ref: e.ref, assetRef, width: e.width, height: e.height };
+    } else {
+      throw new Error(`write: image node ${node.id} has unsupported type ${a.mime} (PNG/JPEG only)`);
+    }
   }
+  c.images?.set(fill.assetId, img);
+  const assetRef = img.assetRef;
   const kx = node.w / img.width;
   const ky = node.h / img.height;
   const uniform = fill.mode === "stretch" ? null : fill.mode === "fill" ? Math.max(kx, ky) : Math.min(kx, ky);
@@ -406,6 +422,20 @@ async function imageOps(
     resources: { XObject: { [IMAGE_KEY]: img.ref } },
     assetRef,
   };
+}
+
+/** 우리가 쓴 Stamp 사전(buildAnnotDict)에서 이미지 XObject·에셋 ref 를 꺼낸다. 모양이 다르면 null — 다시 넣는다. */
+export function embeddedImageOf(lib: PdfLib, dict: PDFDict): EmbeddedImage | null {
+  const N = (s: string) => lib.PDFName.of(s);
+  const assetRef = dict.get(N(GPV_ASSET));
+  const st = dict.lookupMaybe(N("AP"), lib.PDFDict)?.lookup(N("N"));
+  if (!(assetRef instanceof lib.PDFRef) || !(st instanceof lib.PDFRawStream)) return null;
+  const ref = st.dict.lookupMaybe(N("Resources"), lib.PDFDict)?.lookupMaybe(N("XObject"), lib.PDFDict)?.get(N(IMAGE_KEY));
+  const xo = ref instanceof lib.PDFRef ? dict.context.lookup(ref) : undefined;
+  if (!(ref instanceof lib.PDFRef) || !(xo instanceof lib.PDFRawStream)) return null;
+  const width = xo.dict.lookupMaybe(N("Width"), lib.PDFNumber)?.asNumber();
+  const height = xo.dict.lookupMaybe(N("Height"), lib.PDFNumber)?.asNumber();
+  return width && height ? { ref, assetRef, width, height } : null;
 }
 
 /** 우리가 값을 정하는 키 — 다른 앱 주석을 고칠 때 이 밖의 키(/T 작성자·/Popup·모르는 키)는 보존한다(§6.3). */

@@ -3,7 +3,8 @@
 // 그리기: `.page` 마다 SVG 한 장(viewBox = page space)을 portal 로 얹는다. viewBox 가 배율을 따라가므로 줌·스크롤에 다시 잴 것이
 // 없다. 호스트는 mix-blend-mode multiply — 하이라이트가 글자를 덮지 않고 저장본 AP(/BM /Multiply)와 같은 모양이 된다.
 // 입력: 마크업 도구일 때 PdfView 가 오버레이를 비활성으로 두고 텍스트 레이어에 포인터를 돌려준다(pdf.css data-pdf-markup).
-// 끌어 선택 → pointerup 에 선택 범위의 글자 사각형 → 줄마다 합친 quad. 끌지 않은 클릭은 마크업 선택(hit-test).
+// 끌어 선택 → pointerup 에 선택 범위의 글자 사각형 → 줄마다 합친 quad. 끌지 않은 클릭은 마크업 선택(hit-test) —
+// 선택 도구에서도 노드를 맞히지 못한 클릭이면 마크업을 고른다.
 // 서명 놓기 대기 중이면 누른 자리를 캡처 단계에서 가로채 페이지 좌표로 넘긴다.
 
 import { useEffect, useReducer, useRef, type ReactNode } from "react";
@@ -113,7 +114,7 @@ export async function fileToAssetBytes(file: File): Promise<AssetBytes> {
   return { mime: file.type, base64: btoa(s) };
 }
 
-function MarkupShape({ m, selected }: { m: PdfMarkup; selected: boolean }) {
+export function MarkupShape({ m, selected }: { m: PdfMarkup; selected: boolean }) {
   const q = m.quads;
   const parts: ReactNode[] = [];
   for (let i = 0; i + 7 < q.length; i += 8) {
@@ -176,8 +177,11 @@ export interface PdfMarkupLayerProps {
   tool: MarkupSubtype | null;
   /** 서명 놓기 대기 중. */
   placing: boolean;
+  /** 선택 도구 — 노드를 맞히지 못한 클릭이 마크업을 고른다(onPick). */
+  pick: boolean;
   onAdd: (ms: PdfMarkup[]) => void;
   onSelect: (id: string | null) => void;
+  onPick: (id: string | null) => void;
   onPlace: (page: number, x: number, y: number) => void;
 }
 
@@ -249,6 +253,37 @@ export default function PdfMarkupLayer(p: PdfMarkupLayerProps) {
     );
     return () => ac.abort();
   }, [p.tool, container, viewer]);
+
+  // 선택 도구: 주석 레이어가 누름을 먼저 처리(노드 선택·해제)한 **뒤에** 마크업을 맞혀 본다 — 노드가 위라 노드가 이긴다(onPick 이 거른다).
+  useEffect(() => {
+    if (!p.pick) return;
+    const ac = new AbortController();
+    let down: { x: number; y: number } | null = null;
+    container.addEventListener("pointerdown", (e) => void (down = e.button === 0 ? { x: e.clientX, y: e.clientY } : null), {
+      capture: true,
+      signal: ac.signal,
+    });
+    container.addEventListener(
+      "pointerup",
+      (e) => {
+        const d = down;
+        down = null;
+        // 끌기(이동·영역 선택)는 클릭이 아니다.
+        if (!d || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 3) return;
+        const i = pageIndexOfNode(e.target instanceof globalThis.Node ? e.target : null);
+        const { clientX, clientY } = e;
+        setTimeout(() => {
+          const s = latest.current;
+          const div = i === null ? undefined : (viewer.getPageView(i)?.div as HTMLElement | undefined);
+          if (!s.pick || i === null || !div || !s.infos[i]) return s.onPick(null);
+          const ps = toPageSpace(div, s.infos[i]);
+          s.onPick(hitMarkup(s.markups, s.infos[i].key, ps.x(clientX), ps.y(clientY), 3 / ps.ds)?.id ?? null);
+        }, 0);
+      },
+      { capture: true, signal: ac.signal },
+    );
+    return () => ac.abort();
+  }, [p.pick, container, viewer]);
 
   // 서명 놓기: 캡처 단계에서 가로채 레이어가 그 누름을 그리기로 받지 않게.
   useEffect(() => {

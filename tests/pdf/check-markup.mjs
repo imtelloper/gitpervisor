@@ -251,6 +251,21 @@ check("⑤ underline removed, same ref reused", la2[0].length === 4 && la2[0].fi
 const imp2 = await importAnnotations(saved2, infos, null);
 check("⑤ re-import color change", imp2.markups.find((m) => m.id === "mk-hl")?.color === "#00FF00");
 check("⑤ moved image keeps asset", imp2.pages[0].assets["a-png"]?.data === assets.png.data && imp2.pages[0].objects.find((o) => o.id === "img-png")?.x === 90);
+// 이동·복제는 이미지를 다시 넣지 않는다 — 넣으면 저장마다 파일이 이미지 크기만큼 자란다.
+const imgCount = (b) => (Buffer.from(b).toString("latin1").match(/\/Subtype\s*\/Image/g) ?? []).length;
+check("⑤ first save embeds images (control)", imgCount(r1.inc) >= 2, String(imgCount(r1.inc)));
+check("⑤ moving an image embeds nothing new", imgCount(r2.inc) === 0, String(imgCount(r2.inc)));
+{
+  const png = imp2.pages[0].objects.find((o) => o.id === "img-png");
+  const pages3 = [{ ...imp2.pages[0], objects: [...imp2.pages[0].objects, { ...png, id: "img-png-copy", x: png.x + 150 }] }, imp2.pages[1]];
+  const r3 = await buildIncrement(saved2, { infos, pages: pages3, ledger: imp2.ledger, textLines: () => [], font: null, markups: imp2.markups });
+  const saved3 = concat(saved2, r3.inc);
+  check("⑤ copied image shares the XObject", imgCount(r3.inc) === 0, String(imgCount(r3.inc)));
+  const imp3 = await importAnnotations(saved3, infos, null);
+  check("⑤ copied image restores asset", imp3.pages[0].assets["a-png"]?.data === assets.png.data && imp3.pages[0].objects.some((o) => o.id === "img-png-copy"));
+  const r = await renderPage(saved3, 1);
+  check("⑤ copied image drawn (red half)", close(r.px(260, 230), [255, 0, 0]), JSON.stringify(r.px(260, 230)));
+}
 
 // 규칙 2: 다른 앱이 고친 Highlight(/C 바뀜 → 해시는 맞아도 우리 JSON 이 우선이므로, 다른 앱 주석을 흉내 내 /GPV_* 를 지운다)
 {

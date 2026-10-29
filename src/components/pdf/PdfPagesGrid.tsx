@@ -6,17 +6,22 @@
 // pages.ts 는 `import type` 만 — 런타임은 PdfView 의 늦은 코어 청크에 있다(보기 전용 사용자가 받지 않게).
 
 import { Copy, FileInput, FileOutput, FilePlus, RotateCcw, RotateCw, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { PDFDocumentLoadingTask, PDFDocumentProxy, PDFPageProxy, RenderTask } from "pdfjs-dist/legacy/build/pdf.mjs";
 
 import { useMessages } from "../../i18n/ui-language";
+import { ensureAssets, imageStore } from "../../lib/annotate/imageStore";
+import { renderScene } from "../../lib/annotate/render";
+import { resolveScene } from "../../lib/annotate/scene";
+import type { EditorDoc } from "../../lib/annotate/types";
 import { errorMessage, ipc } from "../../lib/ipc";
-import type { PageOp, PdfPageInfo } from "../../lib/pdf/model";
+import type { PageOp, PdfMarkup, PdfPageInfo } from "../../lib/pdf/model";
 import type { PageSlot, PdfSource } from "../../lib/pdf/pages";
 import { loadPdfjs } from "../../lib/pdf/pdfjs";
 import { isMod } from "../../lib/platform";
 import { useUi } from "../../stores/ui";
 import { QuickPick, type QuickPickItem } from "../common/QuickPick";
+import { MarkupShape } from "./PdfMarkupLayer";
 
 export interface PdfPagesGridProps {
   /** 연산 전 표시 문서 — `baseKeys[i]` 가 그 i+1 쪽이다. */
@@ -25,6 +30,9 @@ export interface PdfPagesGridProps {
   /** 연산 뒤 순서(replayPageOps). `infos` 와 같은 순서·key. */
   slots: readonly PageSlot[];
   infos: readonly PdfPageInfo[];
+  /** 연산 뒤 순서의 편집 노드·마크업 — 썸네일은 연산 전 문서에서 그리므로 우리 주석은 그 위에 따로 얹는다. */
+  pages: readonly EditorDoc[];
+  markups: readonly PdfMarkup[];
   projectId: string;
   onOp(op: PageOp, inserted?: PdfPageInfo[]): void;
   onExtract(keys: string[]): void;
@@ -32,6 +40,7 @@ export interface PdfPagesGridProps {
   onRedo(): void;
 }
 
+const NO_MARKUPS: readonly PdfMarkup[] = [];
 const BOX = 150; // 썸네일 칸(CSS px) — 페이지는 이 안에 비율대로 맞춘다
 const newKey = () => `new:${crypto.randomUUID()}`;
 const srcId = (s: PdfSource) => `${s.projectId}\0${s.relPath}`;
@@ -44,12 +53,16 @@ function PageThumb({
   doc,
   baseIndex,
   openSource,
+  page,
+  markups,
 }: {
   slot: PageSlot;
   info: PdfPageInfo;
   doc: PDFDocumentProxy;
   baseIndex: number;
   openSource: OpenSource;
+  page: EditorDoc;
+  markups: readonly PdfMarkup[];
 }) {
   const boxRef = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
@@ -107,9 +120,52 @@ function PageThumb({
 
   return (
     <div className="flex items-center justify-center" style={{ width: BOX, height: BOX }}>
-      {/* 캔버스는 effect 가 명령형으로 붙인다 — React 자식을 두지 않는다 */}
-      <div ref={boxRef} className="overflow-hidden bg-white shadow" style={{ width: info.w * fit, height: info.h * fit }} />
+      <div className="relative shadow" style={{ width: info.w * fit, height: info.h * fit }}>
+        {/* 캔버스는 effect 가 명령형으로 붙인다 — React 자식을 두지 않는다 */}
+        <div ref={boxRef} className="h-full w-full overflow-hidden bg-white" />
+        {visible && <ThumbAnnots info={info} fit={fit} page={page} markups={markups} />}
+      </div>
     </div>
+  );
+}
+
+/** 썸네일 위 우리 주석 — 노드는 page space 라 배율 하나(fit)로 그리고, 마크업은 화면과 같은 SVG(viewBox = page space). */
+function ThumbAnnots({ info, fit, page, markups }: { info: PdfPageInfo; fit: number; page: EditorDoc; markups: readonly PdfMarkup[] }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  const [assetsVer, bump] = useReducer((v: number) => v + 1, 0);
+  useEffect(() => {
+    let alive = true;
+    void ensureAssets(page).then(() => alive && bump());
+    return () => {
+      alive = false;
+    };
+  }, [page]);
+  useLayoutEffect(() => {
+    const cv = ref.current;
+    if (!cv || !page.objects.length) return;
+    const dpr = window.devicePixelRatio || 1;
+    cv.width = Math.ceil(info.w * fit * dpr);
+    cv.height = Math.ceil(info.h * fit * dpr);
+    const k = fit * dpr;
+    renderScene(cv.getContext("2d")!, resolveScene(page), { tx: 0, ty: 0, sx: k, sy: k }, { background: "transparent", store: imageStore(page) });
+  }, [page, info.w, info.h, fit, assetsVer]);
+  return (
+    <>
+      {page.objects.length > 0 && <canvas ref={ref} aria-hidden data-pdf-thumb-annots className="pointer-events-none absolute inset-0 h-full w-full" />}
+      {markups.length > 0 && (
+        <svg
+          aria-hidden
+          viewBox={`0 0 ${info.w} ${info.h}`}
+          preserveAspectRatio="none"
+          className="pointer-events-none absolute inset-0 h-full w-full"
+          style={{ mixBlendMode: "multiply" }}
+        >
+          {markups.map((m) => (
+            <MarkupShape key={m.id} m={m} selected={false} />
+          ))}
+        </svg>
+      )}
+    </>
   );
 }
 
@@ -118,6 +174,8 @@ export default function PdfPagesGrid({
   baseKeys,
   slots,
   infos,
+  pages,
+  markups,
   projectId,
   onOp,
   onExtract,
@@ -128,6 +186,11 @@ export default function PdfPagesGrid({
   const t = msg.pdf.pages;
   const pushToast = useUi((s) => s.pushToast);
   const rootRef = useRef<HTMLDivElement>(null);
+  const markupsOf = useMemo(() => {
+    const m = new Map<string, PdfMarkup[]>();
+    for (const mk of markups) m.set(mk.pageKey, [...(m.get(mk.pageKey) ?? []), mk]);
+    return m;
+  }, [markups]);
   const [sel, setSel] = useState<ReadonlySet<string>>(new Set());
   const anchor = useRef<string | null>(null);
   const [drop, setDrop] = useState<number | null>(null);
@@ -385,6 +448,8 @@ export default function PdfPagesGrid({
                   doc={doc}
                   baseIndex={slot.src.kind === "orig" ? (baseIndex.get(slot.src.key) ?? 0) : 0}
                   openSource={openSource}
+                  page={pages[i]}
+                  markups={markupsOf.get(infos[i].key) ?? NO_MARKUPS}
                 />
               )}
               <span className="text-[11px] tabular-nums text-fg-dim">{t.page(i + 1)}</span>

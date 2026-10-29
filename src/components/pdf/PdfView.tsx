@@ -478,10 +478,12 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
     setMarkTool(null);
     setSigPlace(null);
   }, [tool]);
-  useEffect(() => {
-    if (!markTool) setMarkSel(null);
-  }, [markTool]);
+  useEffect(() => setMarkSel(null), [markTool]);
   const selectedIds = useImageEditorUi((s) => s.selectedIds);
+  // 노드와 마크업은 한쪽만 선택된다 — Delete·속성 바가 어느 쪽에 걸리는지 하나로 정해진다.
+  useEffect(() => {
+    if (selectedIds.length) setMarkSel(null);
+  }, [selectedIds]);
   const askConfirm = useUi((s) => s.askConfirm);
   const annotating = annMode === "annotate" && sess !== null;
   const dirty = sessionDirty(sess);
@@ -1419,7 +1421,8 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
         return r.stamp;
       });
       result = { ok: true, stamp, at: Date.now() };
-      setBanner((b) => (b?.kind === "external" ? null : b));
+      // 복원 안내도 저장으로 끝난다 — 복원한 편집이 이제 파일에 있다.
+      setBanner(null);
       pushToast("success", currentMessages().pdf.annotate.saved);
       exportActions.suggestAfterSave(pre.pages, pre.ledger, pre.markups);
     } catch (e) {
@@ -1500,6 +1503,7 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
     setMode("pages");
   };
 
+  const pdfName = (n: string) => (/\.pdf$/i.test(n) ? n : `${n}.pdf`);
   const extractSelected = (keys: string[]) => {
     const core = coreLoaded;
     if (!core || !keys.length) return;
@@ -1514,18 +1518,32 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
       validate: (v) => {
         const n = v.trim();
         if (!n) return tp.nameRequired;
-        return /[\\/]/.test(n) || n.includes("..") ? tp.nameInvalid : null;
+        if (/[\\/]/.test(n) || n.includes("..")) return tp.nameInvalid;
+        return dir + pdfName(n) === path ? tp.nameIsSource : null;
       },
       onConfirm: (v) => {
-        const s = sessRef.current;
-        const c = ctl.current;
-        if (!s || !c) return;
-        const name = /\.pdf$/i.test(v.trim()) ? v.trim() : `${v.trim()}.pdf`;
-        const out = dir + name;
-        c.exclusive(() => core.extractPagesToFile(projectId, path, s.stamp, saveModelOf(s), keys, out)).then(
-          () => pushToast("success", currentMessages().pdf.pages.extracted(out)),
-          (e: unknown) => pushToast("error", currentMessages().pdf.pages.extractFailed(errorMessage(e))),
-        );
+        const out = dir + pdfName(v.trim());
+        const run = (overwrite: boolean) => {
+          const s = sessRef.current;
+          const c = ctl.current;
+          if (!s || !c) return;
+          c.exclusive(() => core.extractPagesToFile(projectId, path, s.stamp, saveModelOf(s), keys, out, overwrite)).then(
+            () => pushToast("success", currentMessages().pdf.pages.extracted(out)),
+            (e: unknown) => {
+              const m = currentMessages().pdf;
+              if (!overwrite && isIpcError(e) && e.code === "ALREADY_EXISTS")
+                useUi.getState().askConfirm({
+                  title: m.export.existsTitle,
+                  message: m.export.existsMessage(out),
+                  confirmLabel: m.export.existsConfirm,
+                  danger: true,
+                  onConfirm: () => run(true),
+                });
+              else pushToast("error", m.pages.extractFailed(errorMessage(e)));
+            },
+          );
+        };
+        run(false);
       },
     });
   };
@@ -1967,7 +1985,7 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
           className="w-10 shrink-0 rounded border border-edge bg-base px-1 py-0.5 text-center tabular-nums text-fg outline-none focus:border-accent"
         />
         <span data-pdf-pages className="tabular-nums @max-sm:hidden">
-          / {pagesCount}
+          / {annMode === "pages" && sess ? sess.infos.length : pagesCount}
         </span>
         <TBtn data-pdf-next label={msg.pdf.view.nextPage} onClick={() => liveViewer()?.nextPage()}>
           <ChevronRight size={13} />
@@ -2235,6 +2253,10 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
               selectedId={markSel}
               tool={annotating ? markTool : null}
               placing={annotating && sigPlace !== null}
+              pick={annotating && !markTool && sigPlace === null && tool === "select"}
+              onPick={(id) => {
+                if (!id || !useImageEditorUi.getState().selectedIds.length) setMarkSel(id);
+              }}
               onAdd={(ms) => {
                 const cur = sessRef.current;
                 if (cur) commitMarkups([...cur.markups, ...ms]);
@@ -2265,6 +2287,8 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
               baseKeys={sess.baseKeys}
               slots={coreLoaded.replayPageOps(sess.baseKeys, sess.pageOps)}
               infos={sess.infos}
+              pages={sess.pages}
+              markups={sess.markups}
               projectId={projectId}
               onOp={commitPageOp}
               onExtract={extractSelected}

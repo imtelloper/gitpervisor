@@ -15,6 +15,8 @@ import { applyPageOpsToDoc, type ReadPdfSource } from "./pages";
 import {
   annotEntries,
   buildAnnotDict,
+  embeddedImageOf,
+  imageFillOf,
   embedTextFont,
   isPdfNode,
   setAnnots,
@@ -187,6 +189,18 @@ export async function buildIncrement(
       for (const d of m.pages) if (d.assets[id]) return d.assets[id];
       return undefined;
     },
+    // 장부 기준으로 고른다 — 그 ref 의 사전은 마지막 저장 때 그 노드(같은 에셋)로 쓴 것이다.
+    existingImage: (id) => {
+      for (const [nid, refStr] of m.ledger.refs) {
+        const prev = m.ledger.saved.get(nid);
+        if (!prev || !("kind" in prev) || imageFillOf(prev)?.assetId !== id) continue;
+        const d = doc.context.lookupMaybe(parseRef(lib, refStr), lib.PDFDict);
+        const img = d ? embeddedImageOf(lib, d) : null;
+        if (img) return img;
+      }
+      return null;
+    },
+    images: new Map(),
   };
   const ledger: PdfLedger = { refs: new Map(), saved: new Map(), pageOf: new Map() };
   const live = new Set<string>();
