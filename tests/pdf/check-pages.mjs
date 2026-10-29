@@ -309,6 +309,27 @@ async function duplicateForeign() {
   check("링크 사본 /P = 복제 leaf", link?.d.get(L.PDFName.of("P"))?.toString() === dupRef.toString(), String(link?.d.get(L.PDFName.of("P"))));
 }
 
+// 회전한 쪽을 곧바로 복제 — 사본도 한 번만 돈다. 원본 leaf 를 먼저 돌리고 나서 복제가 그 leaf 를 뜨면 회전이 두 번 들어가
+// 사본이 180° 로 저장됐다(e2e 62 E5 실측: /Rotate [90,180,0,0]). 회전 A·복제 B 처럼 다른 쪽이면 드러나지 않는다.
+async function rotateThenDuplicate() {
+  console.log("\n[회전한 쪽 복제]");
+  const bytes = await makeMain(false);
+  const infos = await pageInfos(bytes);
+  const kA = infos[0].key;
+  const pages0 = infos.map(() => normalizeDoc({ objects: [] }));
+  const ops = [
+    { kind: "rotate", keys: [kA], delta: 90 },
+    { kind: "duplicate", keys: [kA], newKeys: ["new:dupA"] },
+  ];
+  let st = { infos, pages: pages0, markups: [] };
+  for (const op of ops) st = applyPageOp(st, op);
+  const s1 = await buildIncrement(bytes, { infos: st.infos, pages: st.pages, ledger: emptyLedger(), textLines, font: null, pageOps: ops });
+  const rots = (await libPages(concat(bytes, s1.inc))).pages.map((p) => p.rotate);
+  check("저장본 /Rotate = [90, 90, 0, 90](사본도 90 — 두 번 돌지 않음)", JSON.stringify(rots) === JSON.stringify([90, 90, 0, 90]), JSON.stringify(rots));
+  const shown = await pageInfos(await displayBytes(bytes, ops));
+  check("표시 바이트 크기 = 모델(사본도 792×612)", near(shown.map((i) => [i.w, i.h]), st.infos.map((i) => [i.w, i.h])) === null, JSON.stringify(shown.map((i) => [i.w, i.h])));
+}
+
 /** 원시 바이트 + 풀 수 있는 모든 Flate 스트림에서 문자열 개수 — 고아 객체로 남은 콘텐츠까지 센다. */
 function countIn(bytes, needle) {
   const s = latin1(bytes);
@@ -434,6 +455,7 @@ try {
   await repeatedSource();
   await imageRotate();
   await duplicateForeign();
+  await rotateThenDuplicate();
 } catch (e) {
   failed++;
   console.error("\nFAIL (exception)", e);

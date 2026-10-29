@@ -1,4 +1,4 @@
-// PDF 주석 모드의 도구 목록·기본 페인트 — PdfView 와 스파이크 하니스(PdfAnnotateSpike)가 같은 값을 쓴다.
+// PDF 주석 모드의 도구 목록·기본 페인트 — PdfView 레일과 e2e 62(레일 순서 단언)가 이 순서를 계약으로 본다.
 
 import { DEFAULT_PAINT, type DefaultPaint } from "../../lib/annotate/types";
 import type { RailItem } from "../image/ToolRail";

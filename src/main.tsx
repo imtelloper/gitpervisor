@@ -200,12 +200,6 @@ if (import.meta.env.DEV) {
     openLogWindow, // git 로그 창 — 사이드바 우클릭 메뉴가 부르는 것과 같은 계약
     // 리포트 프롬프트 조립 e2e 48 ⑧ — LLM 없이 "무엇을 보내는가"만 잰다(순수 함수).
     report: { buildMessages, chatMessages, scopeKey },
-    // PDF 주석 스파이크 하니스(S1) — e2e 62. 동적 import 라 메인 청크에 안 들어간다. 첫 open 이
-    // 모듈을 불러 이 자리를 전체 API(close·setZoom·switchTo·setNodes·stats…)로 바꾼다.
-    pdfSpike: {
-      open: (o?: import("./components/pdf/PdfAnnotateSpike").SpikeOpenOpts) =>
-        import("./components/pdf/PdfAnnotateSpike").then((m) => m.pdfSpike.open(o)),
-    },
   };
 }
 

@@ -71,7 +71,7 @@ const SUITES = [
   "./suites/52-terminal-copy.mjs",
   "./suites/60-favorite-folders.mjs",
   "./suites/61-pdf.mjs",
-  "./suites/62-pdf-spike.mjs",
+  "./suites/62-pdf-annotate.mjs",
   // 비-UTF8 파일을 만들었다가 지운다 — 루트 목록·status 개수를 재는 스위트 뒤에 둔다.
   "./suites/63-encoding.mjs",
   // 대본 편집·편집본 내보내기(태스크 72) — 엔진 없이 합성 자막 문서로. 영상 doc 창을 연다.
@@ -471,7 +471,7 @@ async function main() {
   // 한 번도 안 쓰면서 빨개진다(Monaco 청크는 main.tsx 의 idle 프리로드라 느린 머신에선 30초를 넘긴다).
   // 판정은 teardown 의 `훅 미노출로 통째로 건너뛴 스위트 없음` 이 한다 — 그쪽이 정확하다.
   const hooks = await cdp
-    .eval("({ gpv: !!window.__gpv, monaco: !!window.__monaco, spike: typeof window.__gpv?.pdfSpike?.open })")
+    .eval("({ gpv: !!window.__gpv, monaco: !!window.__monaco })")
     .catch((e) => ({ err: e.message }));
   if (!hooks?.gpv || !hooks?.monaco) report.info(`앱 dev 훅이 덜 떴다 — ${JSON.stringify(hooks)}`);
   snapshot = await takeSnapshot();

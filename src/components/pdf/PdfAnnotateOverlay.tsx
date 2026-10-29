@@ -1,5 +1,5 @@
 // PDF 주석 오버레이 — pdf.js `.page` div 마다 React portal 로 얹는다. 배치·viewport 백킹·활성 페이지 규칙은
-// 스파이크 하니스(PdfAnnotateSpike.tsx, S1 게이트 통과)를 그대로 옮기고, 페이지 박스만 pdf.js 의 것을 잰다.
+// M0 스파이크(S1 게이트 통과, 설계 부록 A)에서 옮겼고 페이지 박스만 pdf.js 의 것을 잰다. 게이트는 e2e 62 가 이 오버레이 위에서 다시 잰다.
 //
 // 좌표: 노드는 page space(pt) = pdf.js getViewport({scale:1}). 백킹 배율 k = round(cssW·dpr)/w(디바이스 px/pt),
 // 화면 배율 ds = k/dpr. pdf.js 가 `.page` 폭을 round(down, …, --scale-round-x)로 정하므로 cssW·dpr 은 거의 정수고
@@ -57,18 +57,33 @@ interface Geo {
   key: string;
 }
 
-function measure(div: HTMLElement, info: PdfPageInfo, c: DOMRect, dpr: number, pinned: Geo | undefined): Geo | null {
+/**
+ * `.page` 안쪽 박스(client 좌표) — pdf.js 캔버스·텍스트 레이어의 기준. `.page` 는 content-box + 대칭 테두리(pdf.css)다.
+ * 테두리는 계산 스타일로 읽는다: 소수 DPR 에서 Chromium 은 테두리를 디바이스 px 로 스냅하는데(DPR 1.5 에서 1px → 0.667px)
+ * clientLeft·clientTop 은 정수로 반올림해 1 을 준다. 그 값을 쓰면 오버레이·포인터 환산이 pdf.js 내용에서 ⅓ css px 어긋났다
+ * (e2e 62 VP-3·LC-3 실측: 400% 에서 y +0.11pt, 60% 에서 +0.82pt).
+ */
+export function pageInnerBox(div: HTMLElement): { left: number; top: number; width: number; height: number } {
   const r = div.getBoundingClientRect();
-  // .page 는 content-box + 대칭 테두리(pdf.css) — 안쪽 박스가 pdf.js 캔버스·텍스트 레이어의 기준이다.
-  const w = r.width - 2 * div.clientLeft;
-  if (w <= 0 || r.height <= 0 || info.w <= 0 || info.h <= 0) return null;
+  const cs = getComputedStyle(div);
+  const bl = parseFloat(cs.borderLeftWidth) || 0;
+  const bt = parseFloat(cs.borderTopWidth) || 0;
+  const br = parseFloat(cs.borderRightWidth) || 0;
+  const bb = parseFloat(cs.borderBottomWidth) || 0;
+  return { left: r.left + bl, top: r.top + bt, width: r.width - bl - br, height: r.height - bt - bb };
+}
+
+function measure(div: HTMLElement, info: PdfPageInfo, c: DOMRect, dpr: number, pinned: Geo | undefined): Geo | null {
+  const ib = pageInnerBox(div);
+  const w = ib.width;
+  if (w <= 0 || ib.height <= 0 || info.w <= 0 || info.h <= 0) return null;
   if (pinned) {
     // 줌 도중: 백킹·viewport 는 마지막 settle 값, 배치만 라이브 배율 — 엔진이 viewport × displayScale 로 놓는다.
     const ds = w / info.w;
     return { ...pinned, left: 0, top: 0, cssW: w, cssH: info.h * ds, displayScale: ds };
   }
-  const ox = r.left + div.clientLeft;
-  const oy = r.top + div.clientTop;
+  const ox = ib.left;
+  const oy = ib.top;
   const backFull = Math.max(1, Math.round(w * dpr));
   const scale = backFull / info.w;
   const backHFull = Math.max(1, Math.round(info.h * scale));
@@ -85,7 +100,7 @@ function measure(div: HTMLElement, info: PdfPageInfo, c: DOMRect, dpr: number, p
   const y1 = Math.min(info.h, (c.bottom - y0e + m) / ds);
   const visible = x1 > x0 && y1 > y0;
   // 백킹 px 격자로 바깥 스냅 — backW 가 정수로 떨어지고 css 원점도 디바이스 px 에 놓인다. ±EPS 는 float32 로
-  // 읽히는 scrollTop 때문에 floor/ceil 이 한 칸 튀는 것을 막는다(하니스 geoOf 실측).
+  // 읽히는 scrollTop 때문에 floor/ceil 이 한 칸 튀는 것을 막는다(M0 스파이크 실측).
   const EPS = 1e-3;
   let bx0 = Math.floor(x0 * scale + EPS);
   let bx1 = Math.min(backFull, Math.ceil(x1 * scale - EPS));

@@ -53,6 +53,6 @@
   "./suites/53-image-pen-node.mjs": 23.6,
   "./suites/60-favorite-folders.mjs": 8,
   "./suites/61-pdf.mjs": 58.7,
-  "./suites/62-pdf-spike.mjs": 27.4,
+  "./suites/62-pdf-annotate.mjs": 27.4,
   "./suites/63-encoding.mjs": 0.9
 }

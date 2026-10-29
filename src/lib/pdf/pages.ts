@@ -293,9 +293,14 @@ export async function applyPageOpsToDoc(
         for (const e of annotEntries(lib, page)) doc.context.lookupMaybe(e, lib.PDFDict)?.set(lib.PDFName.of("P"), page.ref);
       }
     }
-    if (s.rot) page.setRotation(lib.degrees((page.getRotation().angle + s.rot) % 360));
     placed.push({ key: s.key, page });
   }
+  // 회전은 모든 사본을 뜬 **뒤에** — 같은 루프에서 돌리면 뒤 슬롯의 복제(cloneLeaf)가 이미 돈 leaf 를 떠 회전이 두 번 들어간다
+  // (회전한 쪽을 복제하면 사본이 180° 로 저장됐다 — e2e 62 E5 · check-pages '회전한 쪽 복제').
+  placed.forEach(({ page }, i) => {
+    const rot = slots[i].rot;
+    if (rot) page.setRotation(lib.degrees((page.getRotation().angle + rot) % 360));
+  });
 
   if (!placed.length) throw new Error("applyPageOpsToDoc: a PDF needs at least one page");
   const same = placed.length === orig.length && placed.every((x, i) => x.page === orig[i]);

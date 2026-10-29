@@ -76,7 +76,7 @@ import type { SelectionRef } from "../diff/DiffViewer";
 import { TBtn } from "../diff/ImageView";
 import type { AnnotationLayerHandle } from "../image/AnnotationLayer";
 import ToolRail from "../image/ToolRail";
-import PdfAnnotateOverlay from "./PdfAnnotateOverlay";
+import PdfAnnotateOverlay, { pageInnerBox } from "./PdfAnnotateOverlay";
 import PdfMarkupLayer, { fileToAssetBytes, PdfMarkupTools, toPdfImageBytes, visibleCenter } from "./PdfMarkupLayer";
 import PdfSignaturePad from "./PdfSignaturePad";
 import { acquireAsset } from "../../lib/annotate/assets";
@@ -1291,6 +1291,9 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
     } finally {
       enteringRef.current = false;
       setEntering(false);
+      // 들어가는 동안 [주석]·[페이지] 탭은 disabled 라 브라우저가 거기 있던 포커스를 body 로 떨군다 — 가져오기가 길면
+      // (초안 복원·큰 파일) 들어간 뒤 도구 키·Ctrl+S 가 페이지를 한 번 누를 때까지 죽어 있었다. 다른 곳을 고른 포커스는 그대로 둔다.
+      if (document.activeElement === document.body) focusRoot();
     }
   };
 
@@ -1444,13 +1447,9 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
       setSaving(false);
     }
     live.lastSave = result;
-    // 덮어 쓴 판은 외부 내용 + 우리 주석이다 — 화면은 옛 판이니 다시 가져와 작업 사본을 새로 만든다.
-    if (override && result.ok) {
-      const wasAnnotating = modeRef.current === "annotate";
-      discardSession();
-      if (wasAnnotating) await enterAnnotate();
-      else ctl.current?.retry();
-    } else if (result.ok && pre.pageOps.length) await reloadAfterPageOps();
+    // 덮어 쓴 판은 외부 내용 + 우리 주석이다 — 화면은 옛 판이니 다시 가져와 작업 사본을 새로 만든다. 페이지 연산을 쓴 판도
+    // 같은 길이다. 둘 다 reloadAfterPageOps 로 — 덮어쓰기 쪽만 따로 두었을 때 [페이지] 모드에서 '그래도 저장'하면 보기 모드로 튕겼다.
+    if (result.ok && (override || pre.pageOps.length)) await reloadAfterPageOps();
     return result;
   };
 
@@ -1676,9 +1675,9 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
         const div = ctl.current?.viewer?.getPageView(pg)?.div as HTMLElement | undefined;
         const info = sessRef.current?.infos[pg];
         if (!div || !info) return null;
-        const r = div.getBoundingClientRect();
-        const ds = (r.width - 2 * div.clientLeft) / info.w;
-        return { x: r.left + div.clientLeft + x * ds, y: r.top + div.clientTop + y * ds };
+        const ib = pageInnerBox(div);
+        const ds = ib.width / info.w;
+        return { x: ib.left + x * ds, y: ib.top + y * ds };
       },
     };
 
@@ -1973,6 +1972,13 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
             </button>
           </span>
         </div>
+        {/* 비활성 탭의 툴팁만으로는 왜 안 되는지 모른다 — 막혔으면 사유를 늘 보인다. */}
+        {editBlock && (
+          <span data-pdf-edit-block className="ml-1 flex shrink-0 items-center gap-1 text-fg-dim @max-sm:hidden">
+            <Lock size={12} />
+            {editBlock === "restricted" ? ta.blockedRestricted : ta.blockedEncrypted}
+          </span>
+        )}
         <div className="mx-1 h-4 w-px bg-edge" />
         <TBtn data-pdf-prev label={msg.pdf.view.prevPage} onClick={() => liveViewer()?.previousPage()}>
           <ChevronLeft size={13} />

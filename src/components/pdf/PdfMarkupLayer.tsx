@@ -27,6 +27,7 @@ import {
   type PageRect,
 } from "../../lib/pdf/markup";
 import type { PdfMarkup, PdfPageInfo } from "../../lib/pdf/model";
+import { pageInnerBox } from "./PdfAnnotateOverlay";
 
 const hosts = new WeakMap<Element, HTMLDivElement>();
 
@@ -51,10 +52,9 @@ function hostOf(div: HTMLElement): HTMLDivElement {
 /** `.page` div 안쪽 박스 기준 client → page space. */
 function toPageSpace(div: HTMLElement, info: PdfPageInfo) {
   const r = div.getBoundingClientRect();
-  const ds = (r.width - 2 * div.clientLeft) / info.w;
-  const ox = r.left + div.clientLeft;
-  const oy = r.top + div.clientTop;
-  return { ds, x: (cx: number) => (cx - ox) / ds, y: (cy: number) => (cy - oy) / ds, r };
+  const ib = pageInnerBox(div); // 스냅된 테두리 — clientLeft 는 정수라 쓰지 않는다(pageInnerBox 주석)
+  const ds = ib.width / info.w;
+  return { ds, x: (cx: number) => (cx - ib.left) / ds, y: (cy: number) => (cy - ib.top) / ds, r };
 }
 
 function pageIndexOfNode(n: Node | null): number | null {
