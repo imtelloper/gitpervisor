@@ -26,6 +26,8 @@
     "fetch-lsp": "node scripts/fetch-lsp.mjs"
   },
   "dependencies": {
+    "@cantoo/fontkit": "2.0.12",
+    "@cantoo/pdf-lib": "2.11.0",
     "@jsquash/avif": "^2.1.1",
     "@monaco-editor/react": "^4.7.0",
     "@tailwindcss/vite": "^4.3.0",

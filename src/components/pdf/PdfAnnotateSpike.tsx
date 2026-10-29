@@ -46,13 +46,14 @@ import { renderScene } from "../../lib/annotate/render";
 import { resolveScene } from "../../lib/annotate/scene";
 import { normalizeDoc } from "../../lib/annotate/schema";
 import type { Guide } from "../../lib/annotate/snap";
-import { DEFAULT_PAINT, type DefaultPaint, type EditorDoc } from "../../lib/annotate/types";
+import type { EditorDoc } from "../../lib/annotate/types";
 import { useImageEditorUi, type Tool } from "../../stores/imageEditor";
 import { useOccludesWebview } from "../../stores/occlusion";
 import AnnotationLayer, { type AnnotationLayerHandle } from "../image/AnnotationLayer";
 import ChromeOverlay, { type ChromeOverlayHandle } from "../image/ChromeOverlay";
 import type { StatusBarHandle } from "../image/EditorStatusBar";
-import ToolRail, { type RailItem } from "../image/ToolRail";
+import ToolRail from "../image/ToolRail";
+import { PDF_PAINT as PAINT, PDF_TOOLS } from "./pdfAnnotateTools";
 
 type Strategy = "page" | "viewport" | "image";
 type Viewport = { x: number; y: number; width: number; height: number };
@@ -67,25 +68,6 @@ const VIEWPORT_MARGIN_CSS = 96;
 /** 크롬 여백(css px) — 페이지 가장자리 객체의 핸들·HUD 가 SVG 경계에서 잘리지 않게(s1-critic). */
 const CHROME_PAD = 24;
 
-/** PDF 도구 집합(설계 §8.1). vpen(베지어)·크롭·모자이크는 없다. */
-export const PDF_TOOLS: readonly RailItem["id"][] = [
-  "select",
-  "hand",
-  "text",
-  "rect",
-  "ellipse",
-  "line",
-  "arrow",
-  "pen",
-  "highlight",
-];
-/** 기본 페인트 — 값이 문서 단위라 pt 다(설계 Q5 본문 14pt). */
-const PAINT: DefaultPaint = {
-  ...DEFAULT_PAINT,
-  strokeWidth: 2,
-  fontSize: 14,
-  typo: { ...DEFAULT_PAINT.typo, fontSize: 14 },
-};
 const NO_GUIDES: readonly Guide[] = [];
 const NOOP = () => {};
 const keepPos = (_axis: "x" | "y", pos: number) => pos;

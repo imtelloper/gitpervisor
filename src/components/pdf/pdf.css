@@ -17,3 +17,10 @@
 .pdfViewer .page {
   box-sizing: content-box;
 }
+
+/* 주석 모드: 활성 오버레이가 포인터를 받는다 — 텍스트 선택·링크·폼이 그리기 제스처를 먹지 않게. */
+[data-pdf-annotating] .textLayer,
+[data-pdf-annotating] .annotationLayer,
+[data-pdf-annotating] .annotationLayer * {
+  pointer-events: none !important;
+}

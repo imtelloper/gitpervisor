@@ -5,10 +5,15 @@
 // pdfjs-dist 런타임은 lib/pdf/pdfjs.ts 만 불러온다 — 이 파일은 `import type` 과 CSS 만.
 //
 // 키는 루트 onKeyDown 한 곳에서만 받는다(window 리스너 없음) — 분할 4칸·Git 모달에 인스턴스가 여럿 뜬다.
+//
+// 주석 모드(M2, DOCS/task/74): 첫 진입 때 pdf-lib 코어를 늦게 불러 디스크 바이트에서 주석을 가져오고, 편집 가능한
+// 주석을 뺀 작업 사본을 pdf.js 에 제자리 교체한다. 편집은 페이지별 EditorDoc(+문서 전체 스냅샷 undo), 저장은 증분.
+// 오버레이·활성 페이지는 PdfAnnotateOverlay, 속성은 PdfPropsBar.
 
 import "pdfjs-dist/legacy/web/pdf_viewer.css";
 import "./pdf.css";
 
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   ChevronLeft,
   ChevronRight,
@@ -18,6 +23,7 @@ import {
   Minus,
   PanelLeft,
   Plus,
+  Save,
   Search,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -33,16 +39,45 @@ import type {
 } from "pdfjs-dist/legacy/web/pdf_viewer.mjs";
 
 import { currentMessages, useMessages } from "../../i18n/ui-language";
+import { isGeomNode, translateObject } from "../../lib/annotate/geometry";
+import { normalizeDoc } from "../../lib/annotate/schema";
+import { matchShortcut, type ShortcutId } from "../../lib/annotate/shortcuts";
+import { layoutText } from "../../lib/annotate/text-layout";
+import { remove as treeRemove } from "../../lib/annotate/tree";
+import {
+  DUPLICATE_OFFSET,
+  newObjId,
+  type DefaultPaint,
+  type EditorDoc,
+  type Node,
+  type ObjId,
+  type TextNode,
+} from "../../lib/annotate/types";
+import { IS_DOC_WINDOW } from "../../lib/floating";
 import { errorMessage, ipc, isIpcError, type DiffTarget } from "../../lib/ipc";
+import {
+  emptyLedger,
+  type Affine,
+  type PdfFont,
+  type PdfLedger,
+  type PdfPageInfo,
+  type PdfTextLine,
+} from "../../lib/pdf/model";
 import { loadPdfjs, type PdfDocOpts, type Pdfjs } from "../../lib/pdf/pdfjs";
 import { isMod, modLabel } from "../../lib/platform";
 import { WHEEL_STEP } from "../../lib/zoom";
+import { useImageEditorUi, type Tool } from "../../stores/imageEditor";
 import { useUi } from "../../stores/ui";
 import { EmptyState } from "../common/EmptyState";
 import type { SelectionRef } from "../diff/DiffViewer";
 import { TBtn } from "../diff/ImageView";
+import type { AnnotationLayerHandle } from "../image/AnnotationLayer";
+import ToolRail from "../image/ToolRail";
+import PdfAnnotateOverlay from "./PdfAnnotateOverlay";
+import { PDF_PAINT, PDF_TOOLS } from "./pdfAnnotateTools";
 import PdfFindBar from "./PdfFindBar";
 import PdfOutline from "./PdfOutline";
+import PdfPropsBar, { applyPdfPaint, applyPdfPaintDefaults, type PdfPaintChange } from "./PdfPropsBar";
 import PdfThumbs from "./PdfThumbs";
 
 // ponytail: 인스턴스당 metadata IPC 0.67회/s(background 레인). 문제가 되면 repo://changed 로컬 listen 을
@@ -112,7 +147,100 @@ interface Ctl {
   submitPassword(pw: string): void;
   cancelPassword(): void;
   openLink(raw: string): void;
+  /** 바이트를 화면 문서로 제자리 교체(스크롤·줌 보존). `data` 는 pdf.js 워커로 넘어가 파괴된다 — 사본을 넘겨라. */
+  showBytes(data: Uint8Array, stamp: string): Promise<void>;
+  /** 외부 변경 폴링이 이 stamp 를 이미 본 것으로 — 자기 저장·작업 사본 교체가 재로드를 부르지 않게. */
+  markSeen(stamp: string): void;
+  /** 폴링 읽기와 겹치지 않게 돈다(폴링이 끝나길 기다리고, 도는 동안 폴링은 건너뛴다). */
+  exclusive<T>(fn: () => Promise<T>): Promise<T>;
+  /** 화면 문서의 페이지별 page space — 주석 좌표의 유일한 출처(getViewport scale 1). */
+  pageInfos(): Promise<PdfPageInfo[]>;
 }
+
+// ── 주석 세션 ───────────────────────────────────────────────────────────────
+
+type ViewMode = "view" | "annotate";
+type EditBlock = "encrypted" | "restricted" | null;
+
+/** 주석 편집 상태 한 벌 — undo 는 페이지 배열 스냅샷(엔진이 바뀐 노드만 새 참조라 싸다). 장부는 히스토리 밖이다(§6.1). */
+interface AnnSession {
+  infos: PdfPageInfo[];
+  pages: EditorDoc[];
+  ledger: PdfLedger;
+  font: PdfFont | null;
+  /** 장부가 가리키는 디스크 판 — 저장의 expectedStamp. */
+  stamp: string;
+  past: EditorDoc[][];
+  future: EditorDoc[][];
+}
+
+const HISTORY_CAP = 200;
+
+// ponytail: 창 메모리 초안 — 탭을 옮겼다 와도 남지만 앱을 끄면 사라진다. 세션 간 복구는 M3 사이드카(설계 §8.3).
+const drafts = new Map<string, AnnSession>();
+
+/** pdf-lib 를 끌고 오는 코어는 주석 모드 첫 진입 때만 — 보기 전용 사용자가 그 청크를 받지 않게. */
+interface PdfCore {
+  importAnnotations: typeof import("../../lib/pdf/import").importAnnotations;
+  savePdf: typeof import("../../lib/pdf/save").savePdf;
+  isDirty: typeof import("../../lib/pdf/save").isDirty;
+  ensurePdfFont: typeof import("../../lib/pdf/fonts").ensurePdfFont;
+}
+let corePromise: Promise<PdfCore> | null = null;
+/** 세션이 있으면 반드시 채워져 있다(세션은 코어를 받은 뒤에만 생긴다) — 렌더 중 dirty 판정용. */
+let coreLoaded: PdfCore | null = null;
+function loadPdfCore(): Promise<PdfCore> {
+  corePromise ??= Promise.all([
+    import("../../lib/pdf/import"),
+    import("../../lib/pdf/save"),
+    import("../../lib/pdf/fonts"),
+  ]).then(
+    ([i, s, f]) =>
+      (coreLoaded = {
+        importAnnotations: i.importAnnotations,
+        savePdf: s.savePdf,
+        isDirty: s.isDirty,
+        ensurePdfFont: f.ensurePdfFont,
+      }),
+    (e: unknown) => {
+      corePromise = null; // 청크 로드 실패는 다음 진입에서 다시 시도
+      throw e;
+    },
+  );
+  return corePromise;
+}
+
+const sessionDirty = (s: AnnSession | null) => !!s && !!coreLoaded && coreLoaded.isDirty(s.pages, s.ledger);
+
+/**
+ * 텍스트 노드의 저장 줄 — 화면 렌더(render.ts drawText)가 fillText 하는 런 하나 = PDF 줄 하나. 레이아웃 좌표는
+ * 앵커 로컬이라 노드 x/y 를 더한다. 회전(rot)은 넣지 않는다 — 쓰는 쪽이 노드 rot 으로 cm 을 건다(계약 §write).
+ */
+function pdfTextLines(node: TextNode): PdfTextLine[] {
+  const l = layoutText(node);
+  const out: PdfTextLine[] = [];
+  for (const line of l.lines) {
+    for (const run of line.runs)
+      if (run.text) out.push({ text: run.text, x: node.x + run.x, baseline: node.y + run.baseline });
+    if (line.marker) out.push({ text: line.marker.text, x: node.x + line.marker.x, baseline: node.y + line.baseline });
+  }
+  return out;
+}
+
+/**
+ * 텍스트 노드 글꼴을 PDF 임베드 폰트로 — 레이어는 새 텍스트를 고정 시스템 글꼴로 만든다(annotation/draft.ts).
+ * 화면 줄바꿈과 저장본 글리프가 같은 폰트여야 줄이 안 어긋난다(§6.4 1항).
+ */
+function withPdfFont(nodes: Node[], font: PdfFont | null): Node[] {
+  if (!font) return nodes;
+  return nodes.map((n) => (n.kind === "text" && n.fontFamily !== font.family ? { ...n, fontFamily: font.family } : n));
+}
+
+const frames = (n = 2) =>
+  new Promise<void>((res) => {
+    const step = () => (--n > 0 ? requestAnimationFrame(step) : res());
+    requestAnimationFrame(step);
+  });
 
 // ── DEV 훅(C-DEV) ─────────────────────────────────────────────────────────────
 // window.__gpv.pdf = { list, byPath } — e2e 61 이 상태를 읽는다. 입력 쪽 window.__gpv.pdfOpts 는
@@ -152,6 +280,38 @@ interface PdfDevHandle {
   viewer(): unknown;
   eventBus(): unknown;
   doc(): unknown;
+  /** 주석 모드 — 통합 검사가 CDP 로 몬다. */
+  readonly annotate: PdfAnnotateDev;
+}
+
+type LastSave = { ok: true; stamp: string; at: number } | { ok: false; error: string; at: number };
+
+interface PdfAnnotateDev {
+  state(): {
+    mode: ViewMode;
+    /** 페이지별 노드 수 — 세션이 없으면 빈 배열. */
+    nodes: number[];
+    dirty: boolean;
+    active: number;
+    tool: Tool;
+    editBlock: EditBlock;
+    banner: "external" | "restored" | null;
+    stamp: string | null;
+    historyDepth: { past: number; future: number };
+    lastSave: LastSave | null;
+  };
+  enterAnnotate(): Promise<void>;
+  leaveAnnotate(): void;
+  setTool(t: Tool): void;
+  /** 스키마 정규화를 거쳐 페이지 노드를 통째로 바꾼다(undo 1칸). @returns 살아남은 노드 수 */
+  setNodes(page: number, nodes: unknown[]): Promise<number>;
+  getNodes(page: number): Node[];
+  switchPage(page: number): void;
+  save(): Promise<LastSave | null>;
+  undo(): void;
+  redo(): void;
+  /** 페이지 page space (x,y) → client 좌표. */
+  docToClient(page: number, x: number, y: number): { x: number; y: number } | null;
 }
 
 const devPdfs = import.meta.env.DEV ? new Set<PdfDevHandle>() : null;
@@ -212,6 +372,7 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
     renderedPages: new Set<number>(),
     docOpts: null as PdfDocOpts | null,
     find: { open: false, query: "", state: null, current: 0, total: 0 } as FindInfo,
+    lastSave: null as LastSave | null,
   }));
 
   const [status, setStatusState] = useState<PdfStatus>("loading");
@@ -227,6 +388,45 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
   const [find, setFind] = useState<FindInfo>(live.find);
   const [sidebar, setSidebar] = useState(false);
   const [tab, setTab] = useState<"thumbs" | "outline">("thumbs");
+
+  // ── 주석 ──
+  const draftKey = `${projectId}\0${path}`;
+  const [annMode, setModeState] = useState<ViewMode>("view");
+  const modeRef = useRef<ViewMode>("view");
+  const setMode = (m: ViewMode) => {
+    modeRef.current = m;
+    setModeState(m);
+  };
+  const [sess, setSessState] = useState<AnnSession | null>(null);
+  // 리스너·비동기 저장이 호출 시점 값을 읽는다 — 커밋은 이 ref 를 동기로 갱신한다(같은 틱의 저장이 옛 페이지를 쓰지 않게).
+  const sessRef = useRef<AnnSession | null>(null);
+  const setSess = (s: AnnSession | null) => {
+    sessRef.current = s;
+    setSessState(s);
+  };
+  const [active, setActive] = useState(0);
+  const activeRef = useRef(0);
+  const [paint, setPaint] = useState<DefaultPaint>(PDF_PAINT);
+  const [opacity, setOpacity] = useState(1);
+  const [entering, setEntering] = useState(false);
+  const enteringRef = useRef(false);
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
+  const [banner, setBanner] = useState<{ kind: "external"; stamp: string } | { kind: "restored" } | null>(null);
+  const [editBlock, setEditBlock] = useState<EditBlock>(null);
+  const layerRef = useRef<AnnotationLayerHandle | null>(null);
+  const tool = useImageEditorUi((s) => s.tool);
+  const selectedIds = useImageEditorUi((s) => s.selectedIds);
+  const askConfirm = useUi((s) => s.askConfirm);
+  const annotating = annMode === "annotate" && sess !== null;
+  const dirty = sessionDirty(sess);
+  // 폴링(effect 클로저)이 부르는 주석 훅 — 렌더마다 최신 클로저로 바꿔 끼운다.
+  const annHooks = useRef<{ hold(): boolean; onHeld(stamp: string): void; onReloaded(): void }>({
+    hold: () => false,
+    onHeld: (_stamp: string) => {},
+    onReloaded: () => {},
+  });
+  const annDev = useRef<PdfAnnotateDev | null>(null);
 
   const setStatus = (s: PdfStatus, err: string | null = null) => {
     live.status = s;
@@ -289,6 +489,8 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
       let t: PDFDocumentLoadingTask | null = null;
       let opts: PdfDocOpts | null = null;
       let next: PDFDocumentProxy;
+      let perms: Set<number> | null;
+      let prompted = false;
       try {
         ({ task: t, opts } = lib.open(data, password));
         live.liveTasks++;
@@ -296,11 +498,14 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
         t.onPassword = (update: (pw: string | Error) => void, reason: number) => {
           if (import.meta.env.DEV) live.passwordPrompts.push(reason);
           if (dead) return update(new Error("unmounted"));
+          prompted = true;
           pwUpdate = update;
           setPw({ reason });
           setStatus("password");
         };
         next = await t.promise;
+        // 원래 권한은 아래에서 getPermissions 를 덮기 **전에** 읽는다. pdf.js 는 암호화 문서에서만 배열을 준다.
+        perms = await next.getPermissions();
       } catch (e) {
         if (pending === t) pending = null;
         pwUpdate = null;
@@ -326,6 +531,14 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
       const PF = lib.lib.PermissionFlag;
       const noEdit = new Set(Object.values(PF).filter((f) => f !== PF.MODIFY_CONTENTS));
       next.getPermissions = () => Promise.resolve(noEdit);
+      // 암호화 문서의 증분 저장(새 객체를 문서 키로 암호화하는지)은 미검증이라 주석을 막는다(설계 §7.4).
+      setEditBlock(
+        perms === null && !prompted
+          ? null
+          : perms && !perms.has(PF.MODIFY_ANNOTATIONS)
+            ? "restricted"
+            : "encrypted",
+      );
 
       const el = scrollRef.current!;
       const had = shown !== null;
@@ -378,6 +591,11 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
         return;
       }
       if (s === seen) return;
+      // 저장 안 한 주석이 있으면 다시 읽지 않는다 — 배너로 묻는다(설계 §7.3). seen 을 안 바꾸니 tick 마다 다시 알린다.
+      if (annHooks.current.hold()) {
+        annHooks.current.onHeld(s);
+        return;
+      }
       busy = true;
       try {
         live.readCount++;
@@ -400,6 +618,7 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
         seen = s;
         // 암호 입력 대기도 이 안에서 기다린다 → 그동안 busy 라 폴링 읽기가 멈춘다(제출·취소 후 재개).
         await swapIn(data, s);
+        if (!dead && live.lastStamp === s) annHooks.current.onReloaded();
       } finally {
         busy = false;
       }
@@ -600,6 +819,20 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
             viewer: () => v,
             eventBus: () => bus,
             doc: () => shown,
+            // 렌더마다 바뀌는 클로저로 위임한다 — 핸들은 effect 가 한 번 만든다.
+            annotate: {
+              state: () => annDev.current!.state(),
+              enterAnnotate: () => annDev.current!.enterAnnotate(),
+              leaveAnnotate: () => annDev.current!.leaveAnnotate(),
+              setTool: (t) => annDev.current!.setTool(t),
+              setNodes: (pg, nodes) => annDev.current!.setNodes(pg, nodes),
+              getNodes: (pg) => annDev.current!.getNodes(pg),
+              switchPage: (pg) => annDev.current!.switchPage(pg),
+              save: () => annDev.current!.save(),
+              undo: () => annDev.current!.undo(),
+              redo: () => annDev.current!.redo(),
+              docToClient: (pg, x, y) => annDev.current!.docToClient(pg, x, y),
+            },
             state: () => ({
               id,
               projectId,
@@ -661,6 +894,31 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
         const u = pwUpdate;
         pwUpdate = null;
         u?.(new Error("cancelled"));
+      },
+      showBytes: swapIn,
+      markSeen: (stamp) => {
+        seen = stamp;
+      },
+      exclusive: async (fn) => {
+        while (busy) await new Promise((r) => setTimeout(r, 50));
+        busy = true;
+        try {
+          return await fn();
+        } finally {
+          busy = false;
+          // 그사이 tick 이 busy 를 보고 타이머를 걸지 않았을 수 있다 — 폴링 체인을 다시 잇는다.
+          if (!dead && viewer) void tick();
+        }
+      },
+      pageInfos: async () => {
+        const d = shown;
+        if (!d) throw new Error(currentMessages().pdf.view.openFailed);
+        return Promise.all(
+          Array.from({ length: d.numPages }, async (_, i): Promise<PdfPageInfo> => {
+            const vp = (await d.getPage(i + 1)).getViewport({ scale: 1 });
+            return { index: i, w: vp.width, h: vp.height, toPage: [...vp.transform] as Affine };
+          }),
+        );
       },
     };
     ctl.current = c;
@@ -730,6 +988,419 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
   const openExternal = () =>
     void ipc.runExecutable(projectId, path).catch((e) => pushToast("error", errorMessage(e)));
 
+  // ── 주석 동작 ─────────────────────────────────────────────────────────────
+
+  const ta = msg.pdf.annotate;
+  const focusRoot = () => scrollRef.current?.focus({ preventScroll: true });
+  const selIds = (): ObjId[] =>
+    useImageEditorUi.getState().selectedIds.filter((id): id is ObjId => id !== "__base");
+
+  /** 문서 전체 스냅샷 1칸 = 커밋 1회. */
+  const commitPages = (pages: EditorDoc[]) => {
+    const s = sessRef.current;
+    if (!s) return;
+    setSess({ ...s, pages, past: [...s.past, s.pages].slice(-HISTORY_CAP), future: [] });
+  };
+  const commitPageNodes = (page: number, objects: Node[]) => {
+    const s = sessRef.current;
+    if (!s?.pages[page]) return;
+    commitPages(s.pages.map((d, i) => (i === page ? { ...d, objects: withPdfFont(objects, s.font) } : d)));
+  };
+  const activeObjects = () => sessRef.current?.pages[activeRef.current]?.objects ?? [];
+
+  const undo = () => {
+    // 펜 드래프트 중이면 마지막 정점만 무른다 — 문서 undo 로 새면 그리기 전 편집이 대신 사라진다.
+    if (layerRef.current?.handleUndo()) return;
+    const s = sessRef.current;
+    if (!s?.past.length) return;
+    useImageEditorUi.getState().select([]);
+    setSess({ ...s, pages: s.past[s.past.length - 1], past: s.past.slice(0, -1), future: [s.pages, ...s.future] });
+  };
+  const redo = () => {
+    const s = sessRef.current;
+    if (!s?.future.length) return;
+    useImageEditorUi.getState().select([]);
+    setSess({ ...s, pages: s.future[0], past: [...s.past, s.pages].slice(-HISTORY_CAP), future: s.future.slice(1) });
+  };
+  const removeSel = () => {
+    const ids = selIds();
+    if (!ids.length) return;
+    commitPageNodes(activeRef.current, treeRemove(activeObjects(), ids));
+    useImageEditorUi.getState().select([]);
+  };
+  const duplicateSel = () => {
+    const ids = new Set(selIds());
+    const objs = activeObjects();
+    // 컨테이너는 기하가 없다 — PDF 도구는 그룹을 만들지 않으므로 말단만 온다(ImageEditor duplicateSel 과 같은 범위).
+    const copies = objs
+      .filter((o) => ids.has(o.id))
+      .map((o): Node =>
+        isGeomNode(o)
+          ? { ...translateObject(o, DUPLICATE_OFFSET, DUPLICATE_OFFSET), id: newObjId() }
+          : { ...o, id: newObjId() },
+      );
+    if (!copies.length) return;
+    commitPageNodes(activeRef.current, [...objs, ...copies]);
+    useImageEditorUi.getState().select(copies.map((o) => o.id));
+  };
+  const nudgeSel = (e: KeyboardEvent) => {
+    // auto-repeat 는 무시한다 — 초당 ~30 커밋이면 히스토리 200칸이 7초에 소진된다(ImageEditor K5).
+    if (e.repeat) return;
+    const step = e.shiftKey ? 10 : 1;
+    const dx = e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0;
+    const dy = e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0;
+    const ids = new Set(selIds());
+    if ((!dx && !dy) || !ids.size) return;
+    commitPageNodes(
+      activeRef.current,
+      activeObjects().map((o) => (ids.has(o.id) && isGeomNode(o) ? translateObject(o, dx, dy) : o)),
+    );
+  };
+
+  const changePaint = (c: PdfPaintChange) => {
+    setPaint((p) => applyPdfPaintDefaults(p, c));
+    if (c.opacity !== undefined) setOpacity(c.opacity);
+    const ids = new Set(selIds());
+    if (!ids.size || modeRef.current !== "annotate") return;
+    const objs = activeObjects();
+    let changed = false;
+    const next = objs.map((o) => {
+      if (!ids.has(o.id)) return o;
+      const n = applyPdfPaint(o, c);
+      if (n !== o) changed = true;
+      return n;
+    });
+    if (changed) commitPageNodes(activeRef.current, next);
+    // 스와치·색 칸에 포커스가 남으면 Space 가 손 도구 대신 그 버튼을 다시 누른다. 숫자 칸은 그대로 둔다 —
+    // 여기서 blur 시키면 같은 값으로 onBlur 커밋이 한 번 더 돈다.
+    const el = document.activeElement;
+    if (el instanceof HTMLButtonElement || (el instanceof HTMLInputElement && el.type === "color")) focusRoot();
+  };
+
+  /** 활성 페이지 전환 — 순서가 계약이다(설계 §8.2): 텍스트 확정 → 스토어 잔재 정리 → flushSync 로 활성 변경. */
+  const switchPage = (i: number) => {
+    const s = sessRef.current;
+    if (!s || i === activeRef.current || i < 0 || i >= s.pages.length) return;
+    const ui = useImageEditorUi.getState();
+    // 레이어에는 언마운트 확정 경로가 없고, 제거되는 textarea 의 onBlur 에 기댈 수도 없다.
+    if (ui.textEditing) layerRef.current?.handleEscape();
+    ui.select([]);
+    ui.setHover(null);
+    ui.setTextEditing(false);
+    if (useImageEditorUi.getState().mode.kind !== "design") ui.setMode({ kind: "design" });
+    activeRef.current = i;
+    // 곧바로 이어지는 첫 클릭이 커밋 전 DOM 에 떨어지지 않게.
+    flushSync(() => setActive(i));
+  };
+
+  const discardSession = () => {
+    setSess(null);
+    setMode("view");
+    useImageEditorUi.getState().reset();
+  };
+
+  const enterAnnotate = async () => {
+    const c = ctl.current;
+    // ref 로 막는다 — 같은 렌더 클로저의 두 번 클릭은 entering 상태를 둘 다 false 로 본다.
+    if (!c || enteringRef.current || editBlock || live.status !== "ready") return;
+    if (sessRef.current) {
+      setMode("annotate");
+      return;
+    }
+    enteringRef.current = true;
+    setEntering(true);
+    try {
+      const core = await loadPdfCore();
+      const font = await core.ensurePdfFont();
+      const notes = await c.exclusive(async () => {
+        const s0 = await ipc.fileStamp(projectId, path);
+        const buf = await ipc.readFileRaw(projectId, path);
+        const s1 = await ipc.fileStamp(projectId, path);
+        if (s0 === null || s0 !== s1) throw new Error(currentMessages().pdf.annotate.fileChanging);
+        const bytes = new Uint8Array(buf);
+        // 화면이 디스크보다 옛 판이면 먼저 맞춘다 — infos 와 가져오기가 같은 판을 봐야 한다.
+        if (s0 !== live.lastStamp) await c.showBytes(bytes.slice(), s0);
+        const infos = await c.pageInfos();
+        const r = await core.importAnnotations(bytes.slice(), infos, font);
+        // 편집 가능 주석을 뺀 작업 사본 — 오버레이와 pdf.js 가 같은 주석을 두 번 그리지 않게.
+        if (r.workingCopy) await c.showBytes(r.workingCopy, s0);
+        c.markSeen(s0);
+        let next: AnnSession = {
+          infos,
+          pages: r.pages.map((d) => ({ ...d, objects: withPdfFont(d.objects, font) })),
+          ledger: r.ledger,
+          font,
+          stamp: s0,
+          past: [],
+          future: [],
+        };
+        const d = drafts.get(draftKey);
+        drafts.delete(draftKey);
+        let restored = false;
+        // 같은 판에서 만든 초안만 — 판이 바뀌었으면 장부(refs)가 엉뚱한 객체를 가리킨다.
+        if (d && d.stamp === s0 && d.pages.length === infos.length) {
+          next = { ...d, infos, font };
+          restored = true;
+        }
+        useImageEditorUi.getState().reset(); // 창 싱글턴 편집기 UI 잔재를 한 번 비운다(도구도 select 로)
+        const v = c.viewer;
+        const first = Math.min(Math.max((v?.currentPageNumber ?? 1) - 1, 0), infos.length - 1);
+        activeRef.current = first;
+        setActive(first);
+        setSess(next);
+        setMode("annotate");
+        setBanner(restored ? { kind: "restored" } : null);
+        return r.notes;
+      });
+      if (!font) pushToast("info", ta.noFont);
+      if (notes.length) pushToast("info", notes.join("\n"));
+    } catch (e) {
+      pushToast("error", currentMessages().pdf.annotate.enterFailed(errorMessage(e)));
+    } finally {
+      enteringRef.current = false;
+      setEntering(false);
+    }
+  };
+
+  const leaveAnnotate = () => {
+    if (useImageEditorUi.getState().textEditing) layerRef.current?.handleEscape();
+    useImageEditorUi.getState().select([]);
+    setMode("view");
+  };
+
+  /** @param override 외부 변경 확인창에서 '그래도 저장' — 디스크 새 판 위에 장부 없이(전부 새 주석으로) 쓴다(설계 §7.3). */
+  const save = async (override = false): Promise<LastSave | null> => {
+    const c = ctl.current;
+    const core = coreLoaded;
+    if (!c || !core || !sessRef.current || savingRef.current) return null;
+    // 입력 중인 글자도 저장에 들어가야 한다 — 확정 커밋이 sessRef 를 동기로 갱신한다.
+    if (useImageEditorUi.getState().textEditing) layerRef.current?.handleEscape();
+    savingRef.current = true;
+    setSaving(true);
+    let result: LastSave;
+    try {
+      const stamp = await c.exclusive(async () => {
+        const s = sessRef.current!;
+        let expected = s.stamp;
+        let ledger = s.ledger;
+        if (override) {
+          const now = await ipc.fileStamp(projectId, path);
+          if (now === null) throw new Error(currentMessages().pdf.view.fileNotFound);
+          expected = now;
+          // 새 판에도 우리가 전에 쓴 주석(/NM = 노드 id)이 남아 있으면 그 ref 를 다시 쓴다 — 빈 장부로 쓰면 전부 새로
+          // 만들어 같은 주석이 두 겹이 된다(통합 검증 실측: 7개 → 14개). 이 세션이 모르는 id(외부에서 새로 단 주석)는
+          // 장부에서 빼 건드리지 않는다. 판이 맞는지는 savePdf 가 expected 로 다시 확인한다.
+          const fresh = await core.importAnnotations(
+            new Uint8Array(await ipc.readFileRaw(projectId, path)),
+            s.infos,
+            s.font,
+          );
+          const known = new Set([...s.ledger.refs.keys(), ...s.pages.flatMap((d) => d.objects.map((o) => o.id))]);
+          ledger = emptyLedger();
+          for (const [id, ref] of fresh.ledger.refs) {
+            const page = fresh.ledger.pageOf.get(id);
+            if (!known.has(id) || page === undefined) continue;
+            ledger.refs.set(id, ref);
+            ledger.pageOf.set(id, page);
+          }
+        }
+        const r = await core.savePdf(projectId, path, expected, {
+          infos: s.infos,
+          pages: s.pages,
+          ledger,
+          textLines: pdfTextLines,
+          font: s.font,
+        });
+        c.markSeen(r.stamp); // 자기 저장으로 재로드되지 않게
+        // 저장하는 동안 더 그린 것은 장부의 saved 와 참조가 달라 다음 저장에서 changed 로 잡힌다.
+        const cur = sessRef.current ?? s;
+        setSess({ ...cur, ledger: r.ledger, stamp: r.stamp });
+        return r.stamp;
+      });
+      result = { ok: true, stamp, at: Date.now() };
+      setBanner((b) => (b?.kind === "external" ? null : b));
+      pushToast("success", currentMessages().pdf.annotate.saved);
+    } catch (e) {
+      result = { ok: false, error: errorMessage(e), at: Date.now() };
+      const t = currentMessages().pdf.annotate;
+      if (!override && isIpcError(e) && e.code === "CONFLICT")
+        askConfirm({
+          title: t.conflictTitle,
+          message: t.conflictMessage,
+          confirmLabel: t.conflictConfirm,
+          danger: true,
+          onConfirm: () => void save(true),
+        });
+      else pushToast("error", t.saveFailed(errorMessage(e)));
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
+    live.lastSave = result;
+    // 덮어 쓴 판은 외부 내용 + 우리 주석이다 — 화면은 옛 판이니 다시 가져와 작업 사본을 새로 만든다.
+    if (override && result.ok) {
+      const wasAnnotating = modeRef.current === "annotate";
+      discardSession();
+      if (wasAnnotating) await enterAnnotate();
+      else ctl.current?.retry();
+    }
+    return result;
+  };
+
+  const reloadDiscard = () => {
+    const wasAnnotating = modeRef.current === "annotate";
+    setBanner(null);
+    discardSession();
+    if (wasAnnotating) void enterAnnotate();
+    else ctl.current?.retry();
+  };
+  const keepEditing = () => {
+    if (banner?.kind === "external") ctl.current?.markSeen(banner.stamp);
+    setBanner(null);
+  };
+
+  annHooks.current = {
+    hold: () => sessionDirty(sessRef.current),
+    onHeld: (stamp) =>
+      setBanner((b) => (b?.kind === "external" && b.stamp === stamp ? b : { kind: "external", stamp })),
+    onReloaded: () => {
+      // 편집 없는 세션 — 새 판에서 다시 가져온다(보기 모드면 세션을 버려 pdf.js 가 원래대로 그린다).
+      if (!sessRef.current) return;
+      const wasAnnotating = modeRef.current === "annotate";
+      discardSession();
+      if (wasAnnotating) void enterAnnotate();
+    },
+  };
+
+  const fontReady = !!sess?.font;
+  const railTools = fontReady ? PDF_TOOLS : PDF_TOOLS.filter((x) => x !== "text");
+  const layerTool: Tool = (railTools as readonly string[]).includes(tool) ? tool : "select";
+
+  const annActions: Partial<Record<ShortcutId, (e: KeyboardEvent) => void>> = {
+    "tool.select": () => useImageEditorUi.getState().setTool("select"),
+    "tool.rect": () => useImageEditorUi.getState().setTool("rect"),
+    "tool.ellipse": () => useImageEditorUi.getState().setTool("ellipse"),
+    "tool.line": () => useImageEditorUi.getState().setTool("line"),
+    "tool.arrow": () => useImageEditorUi.getState().setTool("arrow"),
+    "tool.pen": () => useImageEditorUi.getState().setTool("pen"),
+    "tool.highlight": () => useImageEditorUi.getState().setTool("highlight"),
+    "tool.text": () => {
+      if (fontReady) useImageEditorUi.getState().setTool("text");
+      else pushToast("info", ta.noFont);
+    },
+    // 홀드 — auto-repeat 마다 temporary 로 다시 들어가면 prevTool 이 손으로 덮인다. 뗌은 onKeyUp.
+    hand: (e) => {
+      if (!e.repeat) useImageEditorUi.getState().setTool("hand", { temporary: true });
+    },
+    undo,
+    redo,
+    duplicate: duplicateSel,
+    delete: removeSel,
+    nudge: nudgeSel,
+    selectAll: () => {
+      useImageEditorUi.getState().select(activeObjects().filter((o) => !o.locked).map((o) => o.id));
+    },
+  };
+
+  /** 이 뷰어 루트가 PDF 주석 키를 받아도 되나 — 이미지 편집기 모달·확인창이 위에 있으면 그쪽 것이다. */
+  const annKeysOn = () => {
+    const u = useUi.getState();
+    return annotating && !u.imageEditorPath && !u.confirm && !u.prompt;
+  };
+
+  if (import.meta.env.DEV)
+    annDev.current = {
+      state: () => {
+        const s = sessRef.current;
+        return {
+          mode: modeRef.current,
+          nodes: s ? s.pages.map((d) => d.objects.length) : [],
+          dirty: sessionDirty(s),
+          active: activeRef.current,
+          tool: useImageEditorUi.getState().tool,
+          editBlock,
+          banner: banner?.kind ?? null,
+          stamp: s?.stamp ?? null,
+          historyDepth: { past: s?.past.length ?? 0, future: s?.future.length ?? 0 },
+          lastSave: live.lastSave,
+        };
+      },
+      enterAnnotate,
+      leaveAnnotate,
+      setTool: (t) => useImageEditorUi.getState().setTool(t),
+      setNodes: async (pg, nodes) => {
+        const objects = normalizeDoc({ objects: nodes }).objects;
+        commitPageNodes(pg, objects);
+        await frames(2);
+        return sessRef.current?.pages[pg]?.objects.length ?? 0;
+      },
+      getNodes: (pg) => sessRef.current?.pages[pg]?.objects ?? [],
+      switchPage,
+      save: () => save(),
+      undo,
+      redo,
+      docToClient: (pg, x, y) => {
+        const div = ctl.current?.viewer?.getPageView(pg)?.div as HTMLElement | undefined;
+        const info = sessRef.current?.infos[pg];
+        if (!div || !info) return null;
+        const r = div.getBoundingClientRect();
+        const ds = (r.width - 2 * div.clientLeft) / info.w;
+        return { x: r.left + div.clientLeft + x * ds, y: r.top + div.clientTop + y * ds };
+      },
+    };
+
+  // 언마운트(탭 이동·분할 닫기) — 저장 안 한 편집을 창 메모리 초안으로 남긴다. 같은 판이면 다음 진입에서 복원.
+  useEffect(
+    () => () => {
+      const s = sessRef.current;
+      if (sessionDirty(s)) drafts.set(draftKey, s!);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+  // 초안이 있는 파일을 다시 열면 주석 모드로 곧장 — 보기 모드로 열면 편집이 사라진 것처럼 보인다.
+  const autoEnter = useRef(drafts.has(draftKey));
+  useEffect(() => {
+    if (status !== "ready" || !autoEnter.current) return;
+    autoEnter.current = false;
+    void enterAnnotate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status]);
+
+  // 문서 창 X 는 탭 닫기 가드를 지나지 않는다 — 이미지 편집기와 같은 방식(설계 §8.3 함정 C): onCloseRequested 로
+  // 묻고 destroy(). close() 를 다시 부르면 CloseRequested 가 또 떠 확인창이 무한히 돈다.
+  useEffect(() => {
+    if (!IS_DOC_WINDOW) return;
+    const win = getCurrentWebviewWindow();
+    let off: (() => void) | undefined;
+    let gone = false;
+    void win
+      .onCloseRequested((e) => {
+        if (!sessionDirty(sessRef.current)) return;
+        e.preventDefault();
+        const t = currentMessages().pdf.annotate;
+        useUi.getState().askConfirm({
+          title: t.closeDirtyTitle,
+          message: t.closeDirtyMessage,
+          confirmLabel: t.closeDirtyConfirm,
+          danger: true,
+          onConfirm: () => void win.destroy(),
+        });
+      })
+      .then((f) => {
+        if (gone) f();
+        else off = f;
+      })
+      .catch(() => {
+        /* 창 API 를 못 쓰는 환경 — 가드 없이 종전처럼 닫힌다(ImageEditor 와 같은 처리) */
+      });
+    return () => {
+      gone = true;
+      off?.();
+    };
+  }, []);
+
   // 키 순서가 계약이다(명세 C-PdfView 9 + 비평 반영).
   const onKeyDown = (e: React.KeyboardEvent) => {
     const mod = isMod(e.nativeEvent);
@@ -745,13 +1416,45 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
       stepFind(e.shiftKey);
       return;
     }
+    // 저장은 모드와 무관하게(보기 모드로 돌아와서도 편집이 남아 있으면) — 입력 칸 안에서도 받는다.
+    if (mod && !e.altKey && !e.shiftKey && k === "s" && dirty) {
+      e.preventDefault();
+      e.stopPropagation();
+      void save();
+      return;
+    }
+    const tag = (e.target as HTMLElement).tagName;
+    // Esc 계층(설계 §8.1): 텍스트 확정 → 드래프트 취소 → 선택 도구로 → 선택 해제 → 검색바 닫기.
+    // 입력 칸(찾기·속성 숫자)의 Esc 는 그 칸 몫이라 레이어로 보내지 않는다.
+    if (e.key === "Escape" && tag !== "INPUT" && annKeysOn() && layerRef.current?.handleEscape()) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     if (e.key === "Escape" && find.open) {
       closeFind();
       e.stopPropagation(); // Git 모달 등 바깥 Esc 가 같이 닫지 않게
       return;
     }
-    const tag = (e.target as HTMLElement).tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    if (annKeysOn()) {
+      // 단축키 표(shortcuts.ts)를 매칭에만 쓴다 — useEditorKeys 의 window capture 는 consume 행을 액션 없이도
+      // 삼켜 앱 전역 단축키를 죽인다(설계 §8.2 끝). 이 맵에 없는 행은 아래 보기 키·앱 전역으로 그대로 흐른다.
+      const ui = useImageEditorUi.getState();
+      const id = matchShortcut(e.nativeEvent, {
+        mode: ui.mode,
+        sel: selIds().length,
+        selKinds: new Set(),
+        textEditing: ui.textEditing,
+      });
+      const act = id ? annActions[id] : undefined;
+      if (act) {
+        e.preventDefault();
+        e.stopPropagation();
+        act(e.nativeEvent);
+        return;
+      }
+    }
     if (mod && !e.altKey && !e.shiftKey && k === "a") {
       // 전체 선택을 이 뷰어로 좁힌다 — 기본 select-all 은 앱 전체의 선택 가능한 텍스트를 고른다.
       e.preventDefault();
@@ -777,12 +1480,22 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
     e.preventDefault();
   };
 
+  // Space 홀드(손)를 떼면 원래 도구로 — 일시 전환이 아니었으면 prevTool 이 비어 있어 아무 일도 없다.
+  const onKeyUp = (e: React.KeyboardEvent) => {
+    if (e.code === "Space" && annotating) useImageEditorUi.getState().restoreTool();
+  };
+
   return (
     <div
       ref={rootRef}
       data-pdf-view={path}
       data-pdf-status={status}
       onKeyDown={onKeyDown}
+      onKeyUp={onKeyUp}
+      onPointerDownCapture={() => {
+        // 주석 키는 이 루트 onKeyDown 으로만 온다 — 오버레이를 눌렀는데 포커스가 바깥에 남으면 도구 키가 죽는다.
+        if (annotating && !rootRef.current?.contains(document.activeElement)) focusRoot();
+      }}
       className="flex h-full flex-col bg-base"
     >
       {/* @container — 좁은 분할 칸·최소 크기 문서 창에서 덜 중요한 항목(맞춤 select → 쪽 수·배율 %)부터 숨겨
@@ -796,6 +1509,42 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
         >
           <PanelLeft size={13} />
         </TBtn>
+        <div className="mx-1 h-4 w-px bg-edge" />
+        <div role="group" aria-label={ta.modeGroup} className="flex shrink-0 overflow-hidden rounded border border-edge">
+          <button
+            data-pdf-mode="view"
+            aria-pressed={!annotating}
+            onClick={leaveAnnotate}
+            className={`px-2 leading-5 ${!annotating ? "bg-raised text-fg" : "hover:text-fg"}`}
+          >
+            {ta.modeView}
+          </button>
+          {/* 비활성 버튼은 툴팁을 띄우지 않는 환경이 있어 사유는 감싼 span 에 단다. */}
+          <span
+            title={
+              editBlock === "restricted"
+                ? ta.blockedRestricted
+                : editBlock === "encrypted"
+                  ? ta.blockedEncrypted
+                  : entering
+                    ? ta.entering
+                    : ta.modeAnnotateTitle
+            }
+            className="flex"
+          >
+            <button
+              data-pdf-mode="annotate"
+              aria-pressed={annotating}
+              disabled={editBlock !== null || status !== "ready" || entering}
+              onClick={() => void enterAnnotate()}
+              className={`border-l border-edge px-2 leading-5 disabled:opacity-50 ${
+                annotating ? "bg-raised text-fg" : "enabled:hover:text-fg"
+              }`}
+            >
+              {ta.modeAnnotate}
+            </button>
+          </span>
+        </div>
         <div className="mx-1 h-4 w-px bg-edge" />
         <TBtn data-pdf-prev label={msg.pdf.view.prevPage} onClick={() => liveViewer()?.previousPage()}>
           <ChevronLeft size={13} />
@@ -845,6 +1594,24 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
           <option value="page-actual">{msg.pdf.view.fitActual}</option>
         </select>
         <div className="mx-1 h-4 w-px bg-edge" />
+        {dirty && (
+          <span data-pdf-dirty className="flex shrink-0 items-center gap-1 text-fg-muted" title={ta.unsaved}>
+            <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+            <span className="@max-md:hidden">{ta.unsaved}</span>
+          </span>
+        )}
+        {(annotating || dirty) && (
+          <button
+            data-pdf-save
+            disabled={!dirty || saving}
+            onClick={() => void save()}
+            title={ta.saveTitle(modLabel)}
+            className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 enabled:hover:bg-raised enabled:hover:text-fg disabled:opacity-50"
+          >
+            <Save size={13} />
+            <span className="@max-sm:hidden">{saving ? ta.saving : ta.save}</span>
+          </button>
+        )}
         <TBtn
           data-pdf-find-toggle
           label={msg.pdf.view.find(modLabel)}
@@ -864,6 +1631,54 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
         >
           {msg.pdf.view.worktreeNote}
         </div>
+      )}
+
+      {banner && (
+        <div
+          data-pdf-banner={banner.kind}
+          className="flex shrink-0 items-center gap-2 border-b border-edge bg-panel px-3 py-1 text-xs text-fg-muted"
+        >
+          <span className="min-w-0 flex-1 truncate">
+            {banner.kind === "external" ? ta.externalBanner : ta.draftRestored}
+          </span>
+          {banner.kind === "external" ? (
+            <>
+              <button
+                data-pdf-banner-reload
+                onClick={reloadDiscard}
+                className="shrink-0 rounded border border-edge px-2 py-0.5 hover:bg-raised hover:text-fg"
+              >
+                {ta.reloadDiscard}
+              </button>
+              <button
+                data-pdf-banner-keep
+                onClick={keepEditing}
+                className="shrink-0 rounded border border-edge px-2 py-0.5 hover:bg-raised hover:text-fg"
+              >
+                {ta.keepEditing}
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={() => setBanner(null)}
+              className="shrink-0 rounded border border-edge px-2 py-0.5 hover:bg-raised hover:text-fg"
+            >
+              {ta.dismiss}
+            </button>
+          )}
+        </div>
+      )}
+
+      {annotating && sess && (
+        <PdfPropsBar
+          paint={paint}
+          opacity={opacity}
+          selected={(() => {
+            const ids = new Set(selectedIds);
+            return (sess.pages[active]?.objects ?? []).filter((o) => ids.has(o.id));
+          })()}
+          onChange={changePaint}
+        />
       )}
 
       <div className="relative flex min-h-0 flex-1">
@@ -918,17 +1733,40 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
           </aside>
         )}
 
+        {annotating && (
+          <ToolRail tools={railTools} paint={paint} onFocusRoot={focusRoot} onPlaceImage={() => {}} />
+        )}
+
         <div className="relative min-w-0 flex-1">
           {/* PDFViewer 는 absolute 컨테이너를 요구한다. 이 두 div 의 className 은 고정 — pdf.js 가 클래스·형제를
               직접 붙이므로 React 가 다시 쓰지 않게 한다. */}
           <div
             ref={scrollRef}
             data-pdf-scroll
+            data-pdf-annotating={annotating ? "" : undefined}
             tabIndex={0}
             className="absolute inset-0 overflow-auto bg-base outline-none"
           >
             <div ref={innerRef} className="pdfViewer" />
           </div>
+
+          {sess && ctl.current?.viewer && ctl.current.bus && scrollRef.current && (
+            <PdfAnnotateOverlay
+              viewer={ctl.current.viewer}
+              bus={ctl.current.bus}
+              container={scrollRef.current}
+              infos={sess.infos}
+              pages={sess.pages}
+              active={active}
+              interactive={annotating}
+              tool={layerTool}
+              paint={paint}
+              opacity={opacity}
+              layerRef={layerRef}
+              onCommit={commitPageNodes}
+              onActivate={switchPage}
+            />
+          )}
 
           {find.open && (
             <PdfFindBar

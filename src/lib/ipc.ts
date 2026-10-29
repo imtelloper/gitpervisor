@@ -1,9 +1,15 @@
-import { Channel, invoke } from "@tauri-apps/api/core";
+import { Channel, invoke, type InvokeArgs, type InvokeOptions } from "@tauri-apps/api/core";
 
 // `ui-language`(currentMessages)는 이 파일을 import 하므로 여기서 부르면 순환이다 — 잎 모듈 둘로 직접 만든다.
 import { currentLocale } from "../i18n/locale-state";
 import { messagesFor } from "../i18n/messages";
 import type { ThemeId, ThemeName } from "./themes";
+
+export interface FontCandidate {
+  path: string;
+  family: string;
+  collection: boolean;
+}
 
 export interface Project {
   id: string;
@@ -1421,12 +1427,13 @@ async function runCall<T>(
 /// 타임아웃은 응답 유실 시 UI가 영원히 멈추는 것만 막는다 — 실제 결과는 상태 재조회가 진실.
 async function callMutating<T>(
   cmd: string,
-  args: Record<string, unknown>,
+  args: InvokeArgs,
   timeoutMs = 180_000,
+  options?: InvokeOptions,
 ): Promise<T> {
   try {
     return await Promise.race([
-      invoke<T>(cmd, args),
+      invoke<T>(cmd, args, options),
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new IpcTimeoutError(cmd)), timeoutMs),
       ),
@@ -1519,6 +1526,32 @@ export const ipc = {
       { projectId, relPath },
       { timeoutMs: 60_000, attempts: 1, dedup: false },
     ),
+  // PDF 한글 임베드용 시스템 폰트 — 후보는 우선순위 순, 읽기는 Rust가 폰트 폴더 하위만 허용.
+  pdfFontCandidates: () => call<FontCandidate[]>("pdf_font_candidates", {}),
+  fontReadRaw: (path: string) =>
+    call<ArrayBuffer>("font_read_raw", { path }, { timeoutMs: 30_000, attempts: 1, dedup: false }),
+  // PDF 증분 저장(raw_file.rs write_file_raw) — 본문은 raw, 인자는 헤더(parse_write_headers). 재시도 금지.
+  // append 는 expectedStamp·baseLen 필수: 증분 xref 오프셋이 읽은 길이 기준 절대값이라 다른 내용 뒤에 붙으면 파일이 깨진다.
+  // 성공하면 새 stamp(메타를 못 읽으면 null).
+  writeFileRaw: (
+    projectId: string,
+    relPath: string,
+    body: Uint8Array,
+    o: { mode: "append" | "replace"; expectedStamp?: string; baseLen?: number; overwrite?: boolean },
+  ) => {
+    // 헤더 값은 ASCII 만 — 한글 경로는 UTF-8 base64 로 보낸다(x-gpv-path-b64).
+    let bin = "";
+    for (const b of new TextEncoder().encode(relPath)) bin += String.fromCharCode(b);
+    const headers: Record<string, string> = {
+      "x-gpv-project": projectId,
+      "x-gpv-path-b64": btoa(bin),
+      "x-gpv-mode": o.mode,
+    };
+    if (o.expectedStamp !== undefined) headers["x-gpv-expected-stamp"] = o.expectedStamp;
+    if (o.baseLen !== undefined) headers["x-gpv-base-len"] = String(o.baseLen);
+    if (o.overwrite) headers["x-gpv-overwrite"] = "1";
+    return callMutating<string | null>("write_file_raw", body, 180_000, { headers });
+  },
   // PDF 링크를 OS 기본 앱으로 — http/https/mailto만 허용(Rust가 신뢰 경계에서 재검증).
   openExternalUrl: (url: string) =>
     callMutating<void>("open_external_url", { url }, 10_000),

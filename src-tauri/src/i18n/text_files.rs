@@ -742,3 +742,33 @@ pub fn image_library_label() -> &'static str {
         Lang::En => "image library",
     }
 }
+
+// ---- 시스템 폰트 읽기 (commands/fonts.rs) ----
+
+pub fn font_path_outside_font_dirs(path: &str) -> String {
+    match lang() {
+        Lang::Ko => format!("폰트 폴더 밖의 파일은 읽을 수 없습니다: {path}"),
+        Lang::En => format!("Cannot read a file outside the font folders: {path}"),
+    }
+}
+
+pub fn font_extension_not_allowed(path: &str) -> String {
+    match lang() {
+        Lang::Ko => format!("폰트 파일(ttf/otf/ttc)만 읽을 수 있습니다: {path}"),
+        Lang::En => format!("Only font files (ttf/otf/ttc) can be read: {path}"),
+    }
+}
+
+pub fn font_too_large_64mb(path: &str) -> String {
+    match lang() {
+        Lang::Ko => format!("폰트 파일이 너무 큽니다 (64MB 초과): {path}"),
+        Lang::En => format!("Font file is too large (over 64MB): {path}"),
+    }
+}
+
+pub fn font_read_failed(path: &str, e: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("폰트 파일을 읽지 못했습니다 ({path}): {e}"),
+        Lang::En => format!("Failed to read font file ({path}): {e}"),
+    }
+}

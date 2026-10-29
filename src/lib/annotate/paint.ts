@@ -410,7 +410,7 @@ function outsideClip(path: Path2D, bbox: Rect, w: number): Path2D {
 
 // ── 화살촉 (§3.6 — render.ts:282 과 같은 기하) ───────────────────────────────
 
-interface HeadAnchor {
+export interface HeadAnchor {
   /** 접선의 시작(꼬리 쪽). */
   fromX: number;
   fromY: number;
@@ -420,7 +420,7 @@ interface HeadAnchor {
 }
 
 /** `heads` 가 켜진 끝점과 그 접선. 닫힌 경로처럼 끝점이 없는 노드는 null. */
-function headAnchors(node: GeomNode): { start: HeadAnchor | null; end: HeadAnchor | null } | null {
+export function headAnchors(node: GeomNode): { start: HeadAnchor | null; end: HeadAnchor | null } | null {
   if (node.heads.start !== "arrow" && node.heads.end !== "arrow") return null;
   const ends = pathEnds(node);
   if (!ends) return null;
@@ -497,18 +497,35 @@ function headAnchorOf(t: EndTangent): HeadAnchor {
  * 틀리면 머리 크기·벌림이 달라져 같은 화살표가 프리뷰와 저장에서 다르게 보인다.
  */
 function drawArrowHead(ctx: CanvasRenderingContext2D, h: HeadAnchor, strokeWidth: number): void {
+  const tri = arrowHeadTriangle(h, strokeWidth);
+  if (!tri) return;
+  ctx.beginPath();
+  ctx.moveTo(tri[0], tri[1]);
+  ctx.lineTo(tri[2], tri[3]);
+  ctx.lineTo(tri[4], tri[5]);
+  ctx.closePath();
+  ctx.fill();
+}
+
+/** 화살촉 삼각형 [끝x,끝y, 왼x,왼y, 오x,오y] — PDF 저장(pdf/write.ts)이 같은 기하를 쓴다. 접선이 0이면 null. */
+export function arrowHeadTriangle(
+  h: HeadAnchor,
+  strokeWidth: number,
+): [number, number, number, number, number, number] | null {
   const len = ARROW_HEAD_SCALE * strokeWidth;
   const dx = h.toX - h.fromX;
   const dy = h.toY - h.fromY;
-  if (dx === 0 && dy === 0) return;
+  if (dx === 0 && dy === 0) return null;
   const a = Math.atan2(dy, dx);
   const spread = Math.PI / 7; // 좌우 ≈25.7° → 전체 ≈51°
-  ctx.beginPath();
-  ctx.moveTo(h.toX, h.toY);
-  ctx.lineTo(h.toX - len * Math.cos(a - spread), h.toY - len * Math.sin(a - spread));
-  ctx.lineTo(h.toX - len * Math.cos(a + spread), h.toY - len * Math.sin(a + spread));
-  ctx.closePath();
-  ctx.fill();
+  return [
+    h.toX,
+    h.toY,
+    h.toX - len * Math.cos(a - spread),
+    h.toY - len * Math.sin(a - spread),
+    h.toX - len * Math.cos(a + spread),
+    h.toY - len * Math.sin(a + spread),
+  ];
 }
 
 // ── 색 ───────────────────────────────────────────────────────────────────────

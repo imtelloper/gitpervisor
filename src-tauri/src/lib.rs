@@ -1323,6 +1323,8 @@ pub fn run() {
             commands::file_stamp,
             commands::read_file_raw,
             commands::write_file_raw,
+            commands::pdf_font_candidates,
+            commands::font_read_raw,
             commands::open_external_url,
             commands::ocr_image,
             commands::image_doc_read,
