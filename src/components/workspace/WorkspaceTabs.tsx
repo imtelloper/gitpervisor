@@ -14,8 +14,6 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 
 import { useMessages } from "../../i18n/ui-language";
 import { openTerminalWith } from "../../lib/agent-launch";
-import { handOffBrowser } from "../../lib/browser";
-import { openBrowserWindow } from "../../lib/floating";
 import { CLAUDE_LAUNCH, queueInitialInput } from "../../lib/terminal";
 import { useSettings } from "../../queries";
 import { useAgentActivity } from "../../stores/agentActivity";
@@ -68,15 +66,7 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
     .filter((b): b is NonNullable<typeof b> => !!b && b.projectId === projectId);
   const openBrowser = useBrowsers((s) => s.openBrowser);
   const closeBrowser = useBrowsers((s) => s.closeBrowser);
-  // 브라우저 탭을 별도 창으로 — 같은 id를 그 창이 이어받는다(페이지가 새로 고쳐지지 않는다). 이 창은 webview를
-  // 닫지 않고 놓기만 한 뒤(handOffBrowser) 탭을 지운다 — 순서가 바뀌면 탭이 언마운트되며 webview를 닫는다.
-  const popOutBrowser = (id: string) => {
-    const item = items[id];
-    if (!item) return;
-    openBrowserWindow(item);
-    handOffBrowser(id);
-    closeBrowser(id);
-  };
+  const popOutBrowser = useBrowsers((s) => s.popOut);
   const apiTabIds = useApiClient((s) => s.tabIds);
   const apiItems = useApiClient((s) => s.items);
   const apiTabs = apiTabIds

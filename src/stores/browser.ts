@@ -3,8 +3,11 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { create } from "zustand";
 
 import { currentMessages } from "../i18n/ui-language";
+// lib/browser 도 이 스토어를 import 한다 — 순환이지만 popOut 이 **호출될 때만** 쓰므로 평가 순서와 무관하다.
+import { handOffBrowser } from "../lib/browser";
+import { openBrowserWindow } from "../lib/floating";
 import { ipc } from "../lib/ipc";
-import { useTerminals } from "./terminals";
+import { collectByContent, useTerminals } from "./terminals";
 
 // gp:browser localStorage는 **메인 창만** 쓴다 — 보조 창들은 같은 origin의 공유 키를 쓰므로, 보조 창이 자기
 // 로드 시점 스냅샷으로 덮으면 메인 창의 최신 탭이 소실된다. 예전 판정(sysmon·float-* 만 제외)은 모아보기
@@ -182,6 +185,7 @@ type BrowsersCmd =
       title?: string;
     }
   | { op: "closeBrowser"; id: string }
+  | { op: "popOut"; id: string }
   | { op: "setUrl"; id: string; url: string }
   | { op: "ensurePane"; id: string; projectId: string; url: string }
   | { op: "setBookmark"; url: string; title: string; on: boolean }
@@ -215,6 +219,8 @@ interface BrowsersState {
     opts?: { id?: string; title?: string; activate?: boolean },
   ) => string;
   closeBrowser: (id: string) => void;
+  /** 독립 탭·분할 pane 브라우저를 별도 OS 창으로 — 같은 id 를 그 창이 이어받아 페이지가 다시 로드되지 않는다. */
+  popOut: (id: string) => void;
   /** 다른 창에서 넘겨받은 항목을 이 창 스토어에 넣는다(분리한 브라우저 창 — 이 창은 저장하지 않는다). */
   adoptItem: (item: BrowserItem) => void;
   setHost: (id: string, window: string) => void;
@@ -337,6 +343,21 @@ export const useBrowsers = create<BrowsersState>((set, get) => ({
 
   setHost: (id, window) =>
     set((s) => (s.host[id] === window ? s : { host: { ...s.host, [id]: window } })),
+
+  popOut: (id) => {
+    // 이 창이 webview 를 **닫지 않고 놓는다** — 탭·pane 을 지우기 전에. 모아보기 창은 놓기만 하고 나머지는 메인이 한다
+    // (메인도 그 id 를 그리고 있었을 수 있어 메인 쪽에서도 놓는다 — 안 그러면 메인이 탭을 닫으며 넘긴 webview 를 닫는다).
+    handOffBrowser(id);
+    if (ROLE === "aggregate") return sendBrowsersCmd({ op: "popOut", id });
+    const item = get().items[id];
+    if (!item) return;
+    openBrowserWindow(item);
+    if (get().tabIds.includes(id)) return get().closeBrowser(id);
+    const ts = useTerminals.getState();
+    const tab = ts.terminals.find((t) => collectByContent(t.layout, "browser").includes(id));
+    if (tab) ts.closePane(tab.id, id);
+    get().removePane(id);
+  },
 
   closeBrowser: (id) => {
     if (ROLE === "aggregate") return sendBrowsersCmd({ op: "closeBrowser", id });
@@ -535,6 +556,7 @@ if (ROLE === "main")
     if (c.op === "openBrowser")
       bs.openBrowser(c.projectId, c.url, c.preview, { id: c.id, title: c.title, activate: false });
     else if (c.op === "closeBrowser") bs.closeBrowser(c.id);
+    else if (c.op === "popOut") bs.popOut(c.id);
     else if (c.op === "setUrl") bs.setUrl(c.id, c.url);
     else if (c.op === "ensurePane") bs.ensurePane(c.id, c.projectId, c.url);
     else if (c.op === "setBookmark") bs.setBookmark(c.url, c.title, c.on);

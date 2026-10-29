@@ -221,6 +221,7 @@ export function AggregateTerminals() {
   const browserTabIds = useBrowsers((s) => s.tabIds);
   const openBrowserTab = useBrowsers((s) => s.openBrowser);
   const closeBrowserTab = useBrowsers((s) => s.closeBrowser);
+  const popOutBrowser = useBrowsers((s) => s.popOut);
   // 드래그로 조절한 그리드 트랙(shape별 fr 배열) — ui 스토어에 영속돼 여닫아도 유지된다.
   const aggregateTracks = useUi((s) => s.aggregateTracks);
   const setAggregateTracks = useUi((s) => s.setAggregateTracks);
@@ -1120,9 +1121,11 @@ export function AggregateTerminals() {
           onNewClaude={() => addAgentTerminal(chipMenu.cell.projectId, "claude")}
           onNewOpenCode={() => addAgentTerminal(chipMenu.cell.projectId, "opencode")}
           onFloat={
-            chipMenu.cell.kind === "terminal" && chipMenu.cell.tabId != null
-              ? () => floatPane(chipMenu.cell.tabId!, chipMenu.cell.id)
-              : undefined
+            chipMenu.cell.kind === "browser"
+              ? () => popOutBrowser(chipMenu.cell.id)
+              : chipMenu.cell.tabId != null
+                ? () => floatPane(chipMenu.cell.tabId!, chipMenu.cell.id)
+                : undefined
           }
           onCloseCell={() => {
             const c = chipMenu.cell;
