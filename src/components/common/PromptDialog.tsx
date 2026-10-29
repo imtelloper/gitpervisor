@@ -3,6 +3,21 @@ import { useEffect, useRef, useState } from "react";
 import { useMessages } from "../../i18n/ui-language";
 import { useUi } from "../../stores/ui";
 
+/** 닫히면 열 때 포커스가 있던 곳으로 되돌린다 — 그대로 두면 BODY 에 남아 연 화면의 단축키(Ctrl+S·Delete)가 죽는다. */
+export function useReturnFocus(open: boolean) {
+  const opener = useRef<Element | null>(null);
+  // 렌더 중에 잡는다 — 커밋 단계의 autoFocus·입력 포커스가 옮긴 뒤면 다이얼로그 자신이 잡힌다.
+  if (open && !opener.current) opener.current = document.activeElement;
+  useEffect(() => {
+    if (open) return;
+    const el = opener.current;
+    opener.current = null;
+    // 확인 동작이 포커스를 다른 데로 옮겼으면(새 창·편집기) 빼앗지 않는다.
+    if (el instanceof HTMLElement && el.isConnected && document.activeElement === document.body)
+      el.focus({ preventScroll: true });
+  }, [open]);
+}
+
 /** 전역 텍스트 입력 다이얼로그 호스트 — useUi.askPrompt 로 띄운다 (새 폴더 이름·다른 이름 저장 등). */
 export function PromptHost() {
   const msg = useMessages();
@@ -11,6 +26,7 @@ export function PromptHost() {
 
   const [value, setValue] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
+  useReturnFocus(!!prompt);
 
   // 새 요청이 뜰 때마다 기본값으로 초기화하고 입력에 포커스(파일명은 확장자 앞까지 선택).
   useEffect(() => {

@@ -14,6 +14,7 @@ export const PDF_TOOLS: readonly RailItem["id"][] = [
   "arrow",
   "pen",
   "highlight",
+  "image", // 도구가 아니라 한 번의 동작 — ToolRail 이 onPlaceImage 를 부른다(M3 T2)
 ];
 
 /** 기본 페인트 — 값이 문서 단위라 pt 다(설계 Q5 본문 14pt). */

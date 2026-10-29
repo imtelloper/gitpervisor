@@ -24,3 +24,8 @@
 [data-pdf-annotating] .annotationLayer * {
   pointer-events: none !important;
 }
+
+/* 마크업 도구(M3 T1): 텍스트 레이어만 다시 포인터를 받아 글자를 끌어 고른다(오버레이는 그동안 비활성). */
+[data-pdf-annotating][data-pdf-markup] .textLayer {
+  pointer-events: auto !important;
+}

@@ -1,11 +1,13 @@
 import { useMessages } from "../../i18n/ui-language";
 import { useUi } from "../../stores/ui";
+import { useReturnFocus } from "./PromptDialog";
 
 /** 전역 확인 다이얼로그 호스트 — useUi.askConfirm 으로 띄운다 */
 export function ConfirmHost() {
   const msg = useMessages();
   const confirm = useUi((s) => s.confirm);
   const closeConfirm = useUi((s) => s.closeConfirm);
+  useReturnFocus(!!confirm);
 
   if (!confirm) return null;
 

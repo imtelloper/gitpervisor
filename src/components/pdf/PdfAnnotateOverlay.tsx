@@ -15,7 +15,7 @@ import { createPortal } from "react-dom";
 import type { EventBus, PDFViewer } from "pdfjs-dist/legacy/web/pdf_viewer.mjs";
 
 import type { ChromeScreen } from "../../lib/annotate/chrome";
-import { imageStore } from "../../lib/annotate/imageStore";
+import { ensureAssets, imageStore } from "../../lib/annotate/imageStore";
 import { renderScene } from "../../lib/annotate/render";
 import { resolveScene } from "../../lib/annotate/scene";
 import type { Guide } from "../../lib/annotate/snap";
@@ -29,6 +29,9 @@ import ChromeOverlay, { type ChromeOverlayHandle } from "../image/ChromeOverlay"
 const VIEWPORT_MARGIN_CSS = 96;
 /** 크롬 여백(css px) — 페이지 가장자리 객체의 핸들·HUD 가 SVG 경계에서 잘리지 않게. */
 const CHROME_PAD = 24;
+/** 좌우는 더 좁게 — pdf.js 폭 맞춤(auto·page-width)은 좌우 합쳐 SCROLLBAR_PADDING 40px 만 남겨 테두리를 빼면 한쪽 ≈19px 다.
+ *  그보다 넓으면 그 여백을 넘친 만큼 주석 모드에만 가로 스크롤바가 생긴다. 핸들은 가장자리 밖으로 4px(HANDLE/2)이면 충분하다. */
+const CHROME_PAD_X = 16;
 /** 마지막 scalechanging 뒤 이만큼 조용하면 백킹을 새 배율로 다시 잡는다 — 휠 노치마다 씬 전량 재렌더가 돌지 않게. */
 const SETTLE_MS = 150;
 const NO_GUIDES: readonly Guide[] = [];
@@ -337,6 +340,7 @@ function ActiveLayer({
   const bounds = useMemo(() => ({ width: info.w, height: info.h }), [info.w, info.h]);
   const scene = useMemo(() => resolveScene(doc), [doc]);
   const store = useMemo(() => imageStore(doc), [doc]);
+  const assetsVer = useAssetsVer(doc);
   const selectedIds = useMemo(() => selected.filter((id) => id !== "__base"), [selected]);
   // viewport 는 레이어 다시 그리기 effect 의 의존성이다 — 값이 같으면 참조도 같아야 한다.
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -344,9 +348,9 @@ function ActiveLayer({
   const screen = useMemo<ChromeScreen>(
     () => ({
       scale: geo.displayScale,
-      x: CHROME_PAD,
+      x: CHROME_PAD_X,
       y: CHROME_PAD,
-      w: geo.cssW + 2 * CHROME_PAD,
+      w: geo.cssW + 2 * CHROME_PAD_X,
       h: geo.cssH + 2 * CHROME_PAD,
       ow: info.w,
       oh: info.h,
@@ -370,7 +374,7 @@ function ActiveLayer({
           filterStr="none"
           objects={doc.objects}
           store={store}
-          assetsVer={0}
+          assetsVer={assetsVer}
           scene={scene}
           chrome={chromeTap}
           screen={screen}
@@ -393,17 +397,32 @@ function ActiveLayer({
           onSelectionChange={ui.select}
         />
       </div>
-      <div className="pointer-events-none absolute" style={{ inset: -CHROME_PAD }}>
+      <div className="pointer-events-none absolute" style={{ inset: `${-CHROME_PAD}px ${-CHROME_PAD_X}px` }}>
         <ChromeOverlay ref={chromeRef} onGuideCommit={NOOP} snapForGuide={keepPos} />
       </div>
     </>
   );
 }
 
+/** 이미지 에셋 디코드가 끝나면 오른다 — 첫 그림은 회색 자리표시라 한 번 다시 그려야 한다(이미지 편집기와 같은 규칙). */
+function useAssetsVer(doc: EditorDoc): number {
+  const [ver, bump] = useReducer((v: number) => v + 1, 0);
+  useEffect(() => {
+    let alive = true;
+    void ensureAssets(doc).then(() => alive && bump());
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc.assets]);
+  return ver;
+}
+
 /** 비활성 페이지의 정적 오버레이 — 활성 레이어와 같은 변환 규칙, 포인터 없음. */
 function StaticOverlay({ doc, geo }: { doc: EditorDoc; geo: Geo }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const v = geo.viewport;
+  const assetsVer = useAssetsVer(doc);
   useLayoutEffect(() => {
     const cv = ref.current;
     if (!cv) return;
@@ -417,7 +436,7 @@ function StaticOverlay({ doc, geo }: { doc: EditorDoc; geo: Geo }) {
     );
     // geo.key 가 백킹 크기·배율·viewport 를 전부 담는다 — 줌 도중(settle 전)에는 다시 그리지 않는다.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doc, geo.key]);
+  }, [doc, geo.key, assetsVer]);
   const ds = geo.displayScale;
   return (
     <canvas

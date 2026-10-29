@@ -17,7 +17,7 @@ import type {
 
 import { objectAnchor } from "../annotate/geometry";
 import { arrowHeadTriangle, headAnchors } from "../annotate/paint";
-import type { Fill, GeomNode, Node, TextNode } from "../annotate/types";
+import type { AssetId, EditorDoc, Fill, GeomNode, Node, TextNode } from "../annotate/types";
 import { toPathObject } from "../annotate/vector/convert";
 import { toPathCmds, type PathCmd } from "../annotate/vector/path";
 import type { Affine, PdfFont, PdfPageInfo, PdfTextLine } from "./model";
@@ -140,6 +140,7 @@ function n(v: number): string {
   const r = Math.round(v * 1e4) / 1e4;
   return r === 0 ? "0" : String(r);
 }
+export { n as pdfNum };
 
 /** `#RGB`/`#RGBA`/`#RRGGBB`/`#RRGGBBAA` → [r,g,b] 0–1. 알파는 Fill.opacity 가 따로 든다. */
 export function rgbOf(hex: string): [number, number, number] {
@@ -334,14 +335,86 @@ export interface WriteCtx {
   textLines: (node: TextNode) => PdfTextLine[];
   /** 텍스트 노드가 있을 때만 한 번 임베드한다(서브셋은 이 저장에서 encodeText 한 글리프만 담긴다). */
   textFont: () => Promise<PDFFont>;
+  /** 이미지 채우기 노드(T2 Stamp)의 에셋 — 노드 JSON 은 assetId 만 들고 바이트는 페이지 문서 assets 에 있다. */
+  asset?: (id: AssetId) => EditorDoc["assets"][AssetId] | undefined;
+}
+
+// ── 이미지 Stamp(M3 T2) ──────────────────────────────────────────────────────
+
+/** 원본 에셋 스트림 키 — 다시 열 때 규칙 1이 이 바이트로 assets 를 되살린다(노드 JSON 에 base64 를 넣지 않는다). */
+export const GPV_ASSET = "GPV_Asset";
+const IMAGE_KEY = "GpvIm";
+
+export function imageFillOf(node: Node): Extract<Fill, { type: "image" }> | null {
+  if (node.kind !== "rect") return null;
+  for (const f of node.fills) if (f.visible && f.type === "image") return f;
+  return null;
+}
+
+function base64ToBytes(b64: string): Uint8Array {
+  const s = atob(b64);
+  const out = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
+  return out;
+}
+
+/**
+ * 이미지 XObject 를 문서에 임베드하고 그 그리기 연산을 만든다. PNG·JPEG 만 — 그 밖 형식은 화면이 넣을 때 PNG 로 바꾼다.
+ * 배치는 화면(paint.ts patternOf)과 같다: fill = 덮기(넘치는 쪽 잘림)·fit = 맞춤·stretch = 축마다, 셋 다 가운데 정렬.
+ * 반환 `assetRef` 는 /GPV_Asset — JPEG 는 XObject 가 원본 바이트 그대로(DCTDecode)라 그 ref 를, PNG 는 pdf-lib 이
+ * 픽셀로 풀어 다시 압축하므로 원본 PNG 를 담은 별도 스트림을 쓴다.
+ */
+async function imageOps(
+  c: WriteCtx,
+  node: Extract<PdfNode, { kind: "rect" }>,
+  fill: Extract<Fill, { type: "image" }>,
+): Promise<{ ops: string; resources: Lit; assetRef: PDFRef }> {
+  const a = c.asset?.(fill.assetId);
+  if (!a) throw new Error(`write: image node ${node.id} asset ${fill.assetId} is missing`);
+  const bytes = base64ToBytes(a.data);
+  const ctx = c.doc.context;
+  let img;
+  let assetRef: PDFRef;
+  if (a.mime === "image/jpeg") {
+    img = await c.doc.embedJpg(bytes);
+    assetRef = img.ref;
+  } else if (a.mime === "image/png") {
+    img = await c.doc.embedPng(bytes);
+    assetRef = ctx.register(ctx.stream(bytes, { Width: img.width, Height: img.height }));
+  } else {
+    throw new Error(`write: image node ${node.id} has unsupported type ${a.mime} (PNG/JPEG only)`);
+  }
+  const kx = node.w / img.width;
+  const ky = node.h / img.height;
+  const uniform = fill.mode === "stretch" ? null : fill.mode === "fill" ? Math.max(kx, ky) : Math.min(kx, ky);
+  const dw = img.width * (uniform ?? kx);
+  const dh = img.height * (uniform ?? ky);
+  const ox = node.x + (node.w - dw) / 2;
+  const oy = node.y + (node.h - dh) / 2;
+  const ops = [
+    "q",
+    // 불투명도는 shapeAppearance 의 GS0(ca = node.opacity — 이미지 노드는 단색 채움이 없다)을 같이 쓴다.
+    ...(node.opacity < 1 ? ["/GS0 gs"] : []),
+    `${n(node.x)} ${n(node.y)} ${n(node.w)} ${n(node.h)} re W n`,
+    // 이미지 공간 (0,1)이 첫 행(위)이다 — y-down page space 에서는 위아래를 뒤집어 놓는다.
+    `${n(dw)} 0 0 ${n(-dh)} ${n(ox)} ${n(oy + dh)} cm`,
+    `/${IMAGE_KEY} Do`,
+    "Q",
+  ].join("\n");
+  return {
+    ops,
+    resources: { XObject: { [IMAGE_KEY]: img.ref } },
+    assetRef,
+  };
 }
 
 /** 우리가 값을 정하는 키 — 다른 앱 주석을 고칠 때 이 밖의 키(/T 작성자·/Popup·모르는 키)는 보존한다(§6.3). */
 const MANAGED = [
   "Type", "Subtype", "Rect", "NM", "F", "M", "P", "C", "IC", "CA", "ca", "BS", "Border", "BE", "RD",
   "L", "LE", "LL", "LLE", "LLO", "Cap", "IT", "InkList", "AP", "AS", "DA", "DS", "RC", "Q",
-  GPV_NODE, GPV_AP_HASH,
+  GPV_NODE, GPV_AP_HASH, GPV_ASSET,
 ];
+export const MANAGED_KEYS: readonly string[] = MANAGED;
 
 function subtypeOf(node: PdfNode): string {
   switch (node.kind) {
@@ -384,6 +457,15 @@ export async function buildAnnotDict(
     node.kind === "text"
       ? textAppearance(node, c.textLines(node), await c.textFont())
       : shapeAppearance(node);
+  const imgFill = node.kind === "rect" ? imageFillOf(node) : null;
+  const img = imgFill && node.kind === "rect" ? await imageOps(c, node, imgFill) : null;
+  if (img && node.kind === "rect") {
+    // 이미지 먼저, 테두리(있으면)는 그 위에 — 화면 렌더와 같은 순서.
+    ap.content = `${img.ops}
+${ap.content}`;
+    ap.resources = { ...ap.resources, ...img.resources };
+    ap.pts.push(node.x, node.y, node.x + node.w, node.y + node.h);
+  }
   const b = boundsOf(local, ap.pts) ?? (() => {
     const [x, y] = apply(local, 0, 0);
     return [x, y, x, y] as [number, number, number, number];
@@ -417,7 +499,7 @@ export async function buildAnnotDict(
   }
   const set = (k: string, v: PDFObject) => dict.set(N(k), v);
   set("Type", N("Annot"));
-  set("Subtype", N(subtypeOf(node)));
+  set("Subtype", N(img ? "Stamp" : subtypeOf(node)));
   set("Rect", ctx.obj(rect));
   set("NM", lib.PDFHexString.fromText(node.id));
   set("F", ctx.obj(node.visible ? 4 : 4 | 2));
@@ -443,6 +525,10 @@ export async function buildAnnotDict(
   switch (node.kind) {
     case "rect":
     case "ellipse": {
+      if (img) {
+        set(GPV_ASSET, img.assetRef);
+        break;
+      }
       if (fill) set("IC", ctx.obj(rgbOf(fill.color)));
       // /RD = /Rect 와 실제 도형(선 바깥 가장자리) 사이 — 다른 앱이 표준 키로 다시 그릴 때 같은 자리에 그린다.
       const sw = (stroke ? node.strokeWidth / 2 : 0) * scale;

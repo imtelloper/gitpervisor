@@ -19,7 +19,7 @@ async function embedProbe(bytes: Uint8Array): Promise<void> {
     postscriptName: facePostscriptName(fontkit.default, bytes),
   });
   // 새 문서라 PDFPage 헬퍼를 써도 된다 — L2 가 막는 것은 기존 페이지의 콘텐츠 정규화다.
-  doc.addPage().drawText("가A", { font, size: 12 });
+  doc.addPage().drawText("가A", { font, size: 12 }); // i18n-ok: 임베드 검사용 글리프, UI 아님
   await doc.save();
 }
 

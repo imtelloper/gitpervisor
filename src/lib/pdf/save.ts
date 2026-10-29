@@ -9,7 +9,9 @@ import { currentLocale } from "../../i18n/locale-state";
 import { messagesFor } from "../../i18n/messages";
 import type { EditorDoc, TextNode } from "../annotate/types";
 import { ipc, type IpcError } from "../ipc";
-import type { PdfFont, PdfLedger, PdfPageInfo, PdfTextLine } from "./model";
+import { buildMarkupDict } from "./markup";
+import type { PageOp, PdfFont, PdfLedger, PdfMarkup, PdfPageInfo, PdfTextLine } from "./model";
+import { applyPageOpsToDoc, type ReadPdfSource } from "./pages";
 import {
   annotEntries,
   buildAnnotDict,
@@ -27,6 +29,10 @@ export interface SaveModel {
   /** 텍스트 노드의 줄 — 화면이 layoutText 로 계산해 넘긴다(Node 검사에서는 손으로 준다) */
   textLines: (node: TextNode) => PdfTextLine[];
   font: PdfFont | null;
+  /** 페이지 관리 연산(M4) — 주석과 **같은** 증분 하나로 페이지 트리에 적용한다. `infos` 는 연산 뒤 순서다. */
+  pageOps?: readonly PageOp[];
+  /** 텍스트 마크업(M3) — 노드와 같은 장부(refs·saved·pageOf)를 쓴다. */
+  markups?: readonly PdfMarkup[];
 }
 
 // ── 바이트 수준 ─────────────────────────────────────────────────────────────
@@ -148,37 +154,56 @@ function ensureAnnot(lib: PdfLib, page: PDFPage, ref: PDFRef): void {
 export async function buildIncrement(
   bytes: Uint8Array,
   m: SaveModel,
+  readSource?: ReadPdfSource,
 ): Promise<{ inc: Uint8Array; ledger: PdfLedger }> {
   const lib = await import("@cantoo/pdf-lib");
   const doc = await loadForIncrement(lib, bytes);
-  const pages = doc.getPages();
+  const orig = doc.getPages();
+  // 장부의 페이지 key → 파일 페이지. 삭제된 원본 페이지도 남겨 둔다(그 위 주석을 지울 때 찾지 않게 — 아래 gone).
+  const pageByKey = new Map(orig.map((p) => [p.ref.toString(), p]));
+  let pages = orig;
+  if (m.pageOps?.length) {
+    const placed = await applyPageOpsToDoc(lib, doc, m.pageOps, readSource);
+    const bad = placed.findIndex((x, i) => x.key !== m.infos[i]?.key);
+    if (bad >= 0 || placed.length !== m.infos.length) {
+      throw new Error(`buildIncrement: page keys disagree with page ops at index ${bad} (file ${placed.length}, infos ${m.infos.length})`);
+    }
+    pages = placed.map((x) => x.page);
+  }
   if (pages.length !== m.infos.length || m.pages.length !== m.infos.length) {
     throw new Error(
       `buildIncrement: page count mismatch (file ${pages.length}, infos ${m.infos.length}, docs ${m.pages.length})`,
     );
   }
+  // 연산이 없으면 index 로 맞춘다 — 외부 앱이 파일을 통째로 다시 써 객체 번호가 바뀐 판(덮어쓰기 저장)도 종전처럼 받는다.
+  m.infos.forEach((info, i) => pageByKey.set(info.key, pages[i]));
   let font: Promise<PDFFont> | null = null;
   const wc: WriteCtx = {
     lib,
     doc,
     textLines: m.textLines,
     textFont: () => (font ??= embedTextFont(lib, doc, m.font)),
+    asset: (id) => {
+      for (const d of m.pages) if (d.assets[id]) return d.assets[id];
+      return undefined;
+    },
   };
   const ledger: PdfLedger = { refs: new Map(), saved: new Map(), pageOf: new Map() };
   const live = new Set<string>();
 
   for (let i = 0; i < pages.length; i++) {
     const page = pages[i];
+    const key = m.infos[i].key;
     for (const node of m.pages[i].objects) {
       if (!isPdfNode(node)) {
         throw new Error(`buildIncrement: node ${node.id} kind "${node.kind}" cannot be saved as a PDF annotation`);
       }
       live.add(node.id);
       const refStr = m.ledger.refs.get(node.id);
-      const prevPage = m.ledger.pageOf.get(node.id);
+      const prevKey = m.ledger.pageOf.get(node.id);
       ledger.saved.set(node.id, node);
-      ledger.pageOf.set(node.id, i);
-      if (refStr && m.ledger.saved.get(node.id) === node && prevPage === i) {
+      ledger.pageOf.set(node.id, key);
+      if (refStr && m.ledger.saved.get(node.id) === node && prevKey === key) {
         ledger.refs.set(node.id, refStr);
         continue;
       }
@@ -189,9 +214,8 @@ export async function buildIncrement(
         const dict = await buildAnnotDict(wc, node, m.infos[i], page.ref, base);
         doc.context.assign(ref, dict);
         doc.context.snapshot?.markRefForSave(ref);
-        if (prevPage !== undefined && prevPage !== i && pages[prevPage]) {
-          removeAnnots(lib, pages[prevPage], [ref], false);
-        }
+        const prevPage = prevKey !== undefined && prevKey !== key ? pageByKey.get(prevKey) : undefined;
+        if (prevPage) removeAnnots(lib, prevPage, [ref], false);
         ensureAnnot(lib, page, ref);
         ledger.refs.set(node.id, refStr);
       } else {
@@ -203,14 +227,44 @@ export async function buildIncrement(
     }
   }
 
-  const gone = new Map<number, PDFRef[]>();
+  for (const mk of m.markups ?? []) {
+    const i = m.infos.findIndex((x) => x.key === mk.pageKey);
+    // 페이지째 지운 마크업은 live 에 넣지 않는다 — 아래 gone 이 노드와 같은 규칙으로 처리한다.
+    if (i < 0) continue;
+    const page = pages[i];
+    live.add(mk.id);
+    ledger.saved.set(mk.id, mk);
+    ledger.pageOf.set(mk.id, mk.pageKey);
+    const refStr = m.ledger.refs.get(mk.id);
+    if (refStr && m.ledger.saved.get(mk.id) === mk && m.ledger.pageOf.get(mk.id) === mk.pageKey) {
+      ledger.refs.set(mk.id, refStr);
+      continue;
+    }
+    if (refStr) {
+      const ref = parseRef(lib, refStr);
+      const base = doc.context.lookupMaybe(ref, lib.PDFDict) ?? null;
+      doc.context.assign(ref, buildMarkupDict(lib, doc, mk, m.infos[i], page.ref, base));
+      doc.context.snapshot?.markRefForSave(ref);
+      ensureAnnot(lib, page, ref);
+      ledger.refs.set(mk.id, refStr);
+    } else {
+      const ref = doc.context.register(buildMarkupDict(lib, doc, mk, m.infos[i], page.ref, null));
+      ensureAnnot(lib, page, ref);
+      ledger.refs.set(mk.id, ref.toString());
+    }
+  }
+
+  const gone = new Map<PDFPage, PDFRef[]>();
   for (const [id, refStr] of m.ledger.refs) {
     if (live.has(id)) continue;
-    const p = m.ledger.pageOf.get(id);
-    if (p === undefined || !pages[p]) throw new Error(`buildIncrement: deleted node ${id} has no page in ledger`);
+    const k = m.ledger.pageOf.get(id);
+    if (k === undefined) throw new Error(`buildIncrement: deleted node ${id} has no page in ledger`);
+    const p = pageByKey.get(k);
+    // 페이지째 삭제됐다(M4) — 트리에서 빠진 페이지의 /Annots 를 고쳐 봐야 증분만 커진다.
+    if (!p) continue;
     gone.set(p, [...(gone.get(p) ?? []), parseRef(lib, refStr)]);
   }
-  for (const [p, refs] of gone) removeAnnots(lib, pages[p], refs, true);
+  for (const [p, refs] of gone) removeAnnots(lib, p, refs, true);
 
   return { inc: await incrementOf(doc, bytes), ledger };
 }
@@ -243,12 +297,20 @@ export async function savePdf(
   return { stamp, ledger };
 }
 
-export function isDirty(pages: EditorDoc[], ledger: PdfLedger): boolean {
-  let count = 0;
-  for (let i = 0; i < pages.length; i++) {
-    for (const node of pages[i].objects) {
+export function isDirty(
+  pages: EditorDoc[],
+  ledger: PdfLedger,
+  pageOps: readonly PageOp[] = [],
+  markups: readonly PdfMarkup[] = [],
+): boolean {
+  if (pageOps.length) return true;
+  let count = markups.length;
+  if (markups.some((mk) => ledger.saved.get(mk.id) !== mk)) return true;
+  // 페이지 소속(pageOf)은 보지 않는다 — 노드가 페이지를 옮기는 길은 복제(새 id)·회전(새 참조)뿐이라 위 두 판정이 잡는다.
+  for (const page of pages) {
+    for (const node of page.objects) {
       count++;
-      if (ledger.saved.get(node.id) !== node || ledger.pageOf.get(node.id) !== i) return true;
+      if (ledger.saved.get(node.id) !== node) return true;
     }
   }
   return count !== ledger.saved.size;

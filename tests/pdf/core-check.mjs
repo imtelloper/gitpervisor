@@ -76,8 +76,9 @@ async function pageInfos(bytes) {
   const doc = await task.promise;
   const infos = [];
   for (let i = 1; i <= doc.numPages; i++) {
-    const vp = (await doc.getPage(i)).getViewport({ scale: 1 });
-    infos.push({ index: i - 1, w: vp.width, h: vp.height, toPage: [...vp.transform] });
+    const page = await doc.getPage(i);
+    const vp = page.getViewport({ scale: 1 });
+    infos.push({ index: i - 1, key: `${page.ref.num} ${page.ref.gen} R`, w: vp.width, h: vp.height, toPage: [...vp.transform] });
   }
   await task.destroy();
   return infos;

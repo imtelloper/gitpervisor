@@ -54,7 +54,7 @@ import {
   type TextNode,
 } from "../../lib/annotate/types";
 import { IS_DOC_WINDOW } from "../../lib/floating";
-import { errorMessage, ipc, isIpcError, type DiffTarget } from "../../lib/ipc";
+import { errorMessage, ipc, isIpcError, type AssetBytes, type DiffTarget } from "../../lib/ipc";
 import {
   emptyLedger,
   type Affine,
@@ -63,7 +63,10 @@ import {
   type PdfPageInfo,
   type PdfTextLine,
 } from "../../lib/pdf/model";
+import { createDraftSaver, readPdfDraft, restoreDraft, type PdfDraft } from "../../lib/pdf/draft";
 import { loadPdfjs, type PdfDocOpts, type Pdfjs } from "../../lib/pdf/pdfjs";
+import type { SaveModel } from "../../lib/pdf/save";
+import type { PageOp } from "../../lib/pdf/model";
 import { isMod, modLabel } from "../../lib/platform";
 import { WHEEL_STEP } from "../../lib/zoom";
 import { useImageEditorUi, type Tool } from "../../stores/imageEditor";
@@ -74,10 +77,18 @@ import { TBtn } from "../diff/ImageView";
 import type { AnnotationLayerHandle } from "../image/AnnotationLayer";
 import ToolRail from "../image/ToolRail";
 import PdfAnnotateOverlay from "./PdfAnnotateOverlay";
+import PdfMarkupLayer, { fileToAssetBytes, PdfMarkupTools, toPdfImageBytes, visibleCenter } from "./PdfMarkupLayer";
+import PdfSignaturePad from "./PdfSignaturePad";
+import { acquireAsset } from "../../lib/annotate/assets";
+import { signatureToPathNode, type MarkupSubtype, type SignatureStrokes } from "../../lib/pdf/markup";
+import type { PdfMarkup } from "../../lib/pdf/model";
+import { newImageNode } from "../image/annotation/draft";
+import PdfExportMenu, { createPdfExport } from "./PdfExportMenu";
 import { PDF_PAINT, PDF_TOOLS } from "./pdfAnnotateTools";
 import PdfFindBar from "./PdfFindBar";
 import PdfOutline from "./PdfOutline";
 import PdfPropsBar, { applyPdfPaint, applyPdfPaintDefaults, type PdfPaintChange } from "./PdfPropsBar";
+import PdfPagesGrid from "./PdfPagesGrid";
 import PdfThumbs from "./PdfThumbs";
 
 // ponytail: 인스턴스당 metadata IPC 0.67회/s(background 레인). 문제가 되면 repo://changed 로컬 listen 을
@@ -159,7 +170,7 @@ interface Ctl {
 
 // ── 주석 세션 ───────────────────────────────────────────────────────────────
 
-type ViewMode = "view" | "annotate";
+type ViewMode = "view" | "annotate" | "pages";
 type EditBlock = "encrypted" | "restricted" | null;
 
 /** 주석 편집 상태 한 벌 — undo 는 페이지 배열 스냅샷(엔진이 바뀐 노드만 새 참조라 싸다). 장부는 히스토리 밖이다(§6.1). */
@@ -170,11 +181,33 @@ interface AnnSession {
   font: PdfFont | null;
   /** 장부가 가리키는 디스크 판 — 저장의 expectedStamp. */
   stamp: string;
-  past: EditorDoc[][];
-  future: EditorDoc[][];
+  /** 텍스트 마크업(M3) — 노드 트리 밖, 페이지 key 소속. */
+  markups: PdfMarkup[];
+  /** 페이지 관리 연산(M4) — 저장 때 주석과 같은 증분으로 적용한다. `infos`·`pages` 는 이미 연산 뒤 순서다. */
+  pageOps: PageOp[];
+  /** 연산 전 표시 바이트(작업 사본 또는 원본) — 화면은 이것에 pageOps 를 메모리 안에서 적용해 다시 싣는다. */
+  base: Uint8Array;
+  /** `base` 의 페이지 key(표시 순서) — 그리드 썸네일이 연산 전 문서에서 그 페이지를 찾는다. */
+  baseKeys: string[];
+  past: AnnSnap[];
+  future: AnnSnap[];
 }
 
+/** undo 1칸 — 노드와 마크업을 함께 되돌린다(계약 75 「모델 변경」). */
+interface AnnSnap {
+  pages: EditorDoc[];
+  markups: PdfMarkup[];
+  infos: PdfPageInfo[];
+  pageOps: PageOp[];
+}
+const snapOf = (s: AnnSession): AnnSnap => ({ pages: s.pages, markups: s.markups, infos: s.infos, pageOps: s.pageOps });
+const NO_OPS: readonly PageOp[] = [];
+const sameOps = (a: readonly PageOp[], b: readonly PageOp[]) => a === b || (!a.length && !b.length);
+
 const HISTORY_CAP = 200;
+/** 놓을 때 서명 폭(pt) — 서명란 한 칸 크기. 놓은 뒤 크기조절로 바꾼다. */
+const SIGNATURE_WIDTH_PT = 160;
+const SIGNATURE_INK = "#0D1B4C";
 
 // ponytail: 창 메모리 초안 — 탭을 옮겼다 와도 남지만 앱을 끄면 사라진다. 세션 간 복구는 M3 사이드카(설계 §8.3).
 const drafts = new Map<string, AnnSession>();
@@ -185,6 +218,10 @@ interface PdfCore {
   savePdf: typeof import("../../lib/pdf/save").savePdf;
   isDirty: typeof import("../../lib/pdf/save").isDirty;
   ensurePdfFont: typeof import("../../lib/pdf/fonts").ensurePdfFont;
+  applyPageOp: typeof import("../../lib/pdf/pages").applyPageOp;
+  replayPageOps: typeof import("../../lib/pdf/pages").replayPageOps;
+  displayBytes: typeof import("../../lib/pdf/pages").displayBytes;
+  extractPagesToFile: typeof import("../../lib/pdf/pages").extractPagesToFile;
 }
 let corePromise: Promise<PdfCore> | null = null;
 /** 세션이 있으면 반드시 채워져 있다(세션은 코어를 받은 뒤에만 생긴다) — 렌더 중 dirty 판정용. */
@@ -194,13 +231,18 @@ function loadPdfCore(): Promise<PdfCore> {
     import("../../lib/pdf/import"),
     import("../../lib/pdf/save"),
     import("../../lib/pdf/fonts"),
+    import("../../lib/pdf/pages"),
   ]).then(
-    ([i, s, f]) =>
+    ([i, s, f, pg]) =>
       (coreLoaded = {
         importAnnotations: i.importAnnotations,
         savePdf: s.savePdf,
         isDirty: s.isDirty,
         ensurePdfFont: f.ensurePdfFont,
+        applyPageOp: pg.applyPageOp,
+        replayPageOps: pg.replayPageOps,
+        displayBytes: pg.displayBytes,
+        extractPagesToFile: pg.extractPagesToFile,
       }),
     (e: unknown) => {
       corePromise = null; // 청크 로드 실패는 다음 진입에서 다시 시도
@@ -210,7 +252,7 @@ function loadPdfCore(): Promise<PdfCore> {
   return corePromise;
 }
 
-const sessionDirty = (s: AnnSession | null) => !!s && !!coreLoaded && coreLoaded.isDirty(s.pages, s.ledger);
+const sessionDirty = (s: AnnSession | null) => !!s && !!coreLoaded && coreLoaded.isDirty(s.pages, s.ledger, s.pageOps, s.markups);
 
 /**
  * 텍스트 노드의 저장 줄 — 화면 렌더(render.ts drawText)가 fillText 하는 런 하나 = PDF 줄 하나. 레이아웃 좌표는
@@ -225,6 +267,11 @@ function pdfTextLines(node: TextNode): PdfTextLine[] {
     if (line.marker) out.push({ text: line.marker.text, x: node.x + line.marker.x, baseline: node.y + line.baseline });
   }
   return out;
+}
+
+/** 저장 모델 — 일반 저장과 저장 변형(PdfExportMenu)이 같은 것을 써야 증분이 같다. */
+function saveModelOf(s: AnnSession, ledger: PdfLedger = s.ledger): SaveModel {
+  return { infos: s.infos, pages: s.pages, ledger, textLines: pdfTextLines, font: s.font, markups: s.markups, pageOps: s.pageOps };
 }
 
 /**
@@ -298,7 +345,12 @@ interface PdfAnnotateDev {
     banner: "external" | "restored" | null;
     stamp: string | null;
     historyDepth: { past: number; future: number };
+    /** 표시 순서 페이지 key·쌓인 페이지 연산 수(M4). */
+    pageKeys: string[];
+    pageOps: number;
     lastSave: LastSave | null;
+    /** 텍스트 마크업 수(M3). */
+    markups: number;
   };
   enterAnnotate(): Promise<void>;
   leaveAnnotate(): void;
@@ -414,12 +466,34 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
   const savingRef = useRef(false);
   const [banner, setBanner] = useState<{ kind: "external"; stamp: string } | { kind: "restored" } | null>(null);
   const [editBlock, setEditBlock] = useState<EditBlock>(null);
+  // 마크업 도구(T1)·선택 마크업·서명 패드·놓을 서명(T3) — 노드 도구(useImageEditorUi.tool)와 따로 산다.
+  const [markTool, setMarkTool] = useState<MarkupSubtype | null>(null);
+  const [markSel, setMarkSel] = useState<string | null>(null);
+  const [sigPad, setSigPad] = useState(false);
+  const [sigPlace, setSigPlace] = useState<SignatureStrokes | null>(null);
   const layerRef = useRef<AnnotationLayerHandle | null>(null);
   const tool = useImageEditorUi((s) => s.tool);
+  // 노드 도구를 바꿨다(레일·키) = 마크업·서명 놓기를 그만둔다. 마크업 버튼은 tool 을 건드리지 않아 서로 끄지 않는다.
+  useEffect(() => {
+    setMarkTool(null);
+    setSigPlace(null);
+  }, [tool]);
+  useEffect(() => {
+    if (!markTool) setMarkSel(null);
+  }, [markTool]);
   const selectedIds = useImageEditorUi((s) => s.selectedIds);
   const askConfirm = useUi((s) => s.askConfirm);
   const annotating = annMode === "annotate" && sess !== null;
   const dirty = sessionDirty(sess);
+  // pdf.js 가 지금 보여 주는 바이트에 적용된 페이지 연산(M4). 페이지 모드에서는 연산 전(NO_OPS)을 보여 그리드가
+  // 그 문서로 썸네일을 그리고, 그 밖에서는 세션의 pageOps 를 적용한 바이트를 보인다 — 오버레이 infos 와 짝이 맞아야 한다.
+  const shownOpsRef = useRef<readonly PageOp[]>(NO_OPS);
+  const [shownOps, setShownOps] = useState<readonly PageOp[]>(NO_OPS);
+  const markShown = (ops: readonly PageOp[]) => {
+    shownOpsRef.current = ops;
+    setShownOps(ops);
+  };
+  const pageViewSynced = !!sess && annMode !== "pages" && sameOps(sess.pageOps, shownOps);
   // 폴링(effect 클로저)이 부르는 주석 훅 — 렌더마다 최신 클로저로 바꿔 끼운다.
   const annHooks = useRef<{ hold(): boolean; onHeld(stamp: string): void; onReloaded(): void }>({
     hold: () => false,
@@ -427,6 +501,12 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
     onReloaded: () => {},
   });
   const annDev = useRef<PdfAnnotateDev | null>(null);
+  // 세션 간 초안(T5) — 메모리 초안(drafts)은 같은 창 탭 이동용, 이것은 앱 재시작·강제 종료용.
+  const [draftSaver] = useState(() =>
+    createDraftSaver(projectId, path, (e) => pushToast("error", currentMessages().pdf.draft.saveFailed(errorMessage(e)))),
+  );
+  const [diskDraft, setDiskDraft] = useState<PdfDraft | null>(null);
+  const restoreDraftRef = useRef<PdfDraft | null>(null);
 
   const setStatus = (s: PdfStatus, err: string | null = null) => {
     live.status = s;
@@ -915,8 +995,11 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
         if (!d) throw new Error(currentMessages().pdf.view.openFailed);
         return Promise.all(
           Array.from({ length: d.numPages }, async (_, i): Promise<PdfPageInfo> => {
-            const vp = (await d.getPage(i + 1)).getViewport({ scale: 1 });
-            return { index: i, w: vp.width, h: vp.height, toPage: [...vp.transform] as Affine };
+            const page = await d.getPage(i + 1);
+            const vp = page.getViewport({ scale: 1 });
+            const ref = page.ref;
+            if (!ref) throw new Error(`pageInfos: page ${i + 1} has no object reference`);
+            return { index: i, key: `${ref.num} ${ref.gen} R`, w: vp.width, h: vp.height, toPage: [...vp.transform] as Affine };
           }),
         );
       },
@@ -995,11 +1078,20 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
   const selIds = (): ObjId[] =>
     useImageEditorUi.getState().selectedIds.filter((id): id is ObjId => id !== "__base");
 
+  // 저장 중에는 커밋을 받지 않는다(커밋 함수·undo·redo·페이지 연산이 모두 여기서 막힌다). 페이지 연산·덮어쓰기·정리 저장은
+  // 끝나고 세션을 디스크에서 다시 가져오는데, 그 사이 커밋은 파일에 없어 말없이 사라지고 사이드카 초안도 함께 지워졌다.
+  const editLocked = () => savingRef.current;
+
   /** 문서 전체 스냅샷 1칸 = 커밋 1회. */
   const commitPages = (pages: EditorDoc[]) => {
     const s = sessRef.current;
-    if (!s) return;
-    setSess({ ...s, pages, past: [...s.past, s.pages].slice(-HISTORY_CAP), future: [] });
+    if (!s || editLocked()) return;
+    setSess({ ...s, pages, past: [...s.past, snapOf(s)].slice(-HISTORY_CAP), future: [] });
+  };
+  const commitMarkups = (markups: PdfMarkup[]) => {
+    const s = sessRef.current;
+    if (!s || editLocked()) return;
+    setSess({ ...s, markups, past: [...s.past, snapOf(s)].slice(-HISTORY_CAP), future: [] });
   };
   const commitPageNodes = (page: number, objects: Node[]) => {
     const s = sessRef.current;
@@ -1012,17 +1104,25 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
     // 펜 드래프트 중이면 마지막 정점만 무른다 — 문서 undo 로 새면 그리기 전 편집이 대신 사라진다.
     if (layerRef.current?.handleUndo()) return;
     const s = sessRef.current;
-    if (!s?.past.length) return;
+    if (!s?.past.length || editLocked()) return;
     useImageEditorUi.getState().select([]);
-    setSess({ ...s, pages: s.past[s.past.length - 1], past: s.past.slice(0, -1), future: [s.pages, ...s.future] });
+    setMarkSel(null);
+    setSess({ ...s, ...s.past[s.past.length - 1], past: s.past.slice(0, -1), future: [snapOf(s), ...s.future] });
   };
   const redo = () => {
     const s = sessRef.current;
-    if (!s?.future.length) return;
+    if (!s?.future.length || editLocked()) return;
     useImageEditorUi.getState().select([]);
-    setSess({ ...s, pages: s.future[0], past: [...s.past, s.pages].slice(-HISTORY_CAP), future: s.future.slice(1) });
+    setMarkSel(null);
+    setSess({ ...s, ...s.future[0], past: [...s.past, snapOf(s)].slice(-HISTORY_CAP), future: s.future.slice(1) });
   };
   const removeSel = () => {
+    const ms = sessRef.current?.markups;
+    if (markSel && ms) {
+      commitMarkups(ms.filter((m) => m.id !== markSel));
+      setMarkSel(null);
+      return;
+    }
     const ids = selIds();
     if (!ids.length) return;
     commitPageNodes(activeRef.current, treeRemove(activeObjects(), ids));
@@ -1058,6 +1158,15 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
   };
 
   const changePaint = (c: PdfPaintChange) => {
+    const ms = sessRef.current?.markups;
+    if (markSel && ms && (c.stroke !== undefined || c.opacity !== undefined)) {
+      commitMarkups(
+        ms.map((m) =>
+          m.id === markSel ? { ...m, color: c.stroke ?? m.color, opacity: c.opacity ?? m.opacity } : m,
+        ),
+      );
+      return;
+    }
     setPaint((p) => applyPdfPaintDefaults(p, c));
     if (c.opacity !== undefined) setOpacity(c.opacity);
     const ids = new Set(selIds());
@@ -1123,7 +1232,10 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
         const infos = await c.pageInfos();
         const r = await core.importAnnotations(bytes.slice(), infos, font);
         // 편집 가능 주석을 뺀 작업 사본 — 오버레이와 pdf.js 가 같은 주석을 두 번 그리지 않게.
-        if (r.workingCopy) await c.showBytes(r.workingCopy, s0);
+        if (r.workingCopy) await c.showBytes(r.workingCopy.slice(), s0);
+        markShown(NO_OPS);
+        const base = r.workingCopy ?? bytes;
+        const baseKeys = infos.map((i) => i.key);
         c.markSeen(s0);
         let next: AnnSession = {
           infos,
@@ -1131,6 +1243,10 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
           ledger: r.ledger,
           font,
           stamp: s0,
+          markups: r.markups,
+          pageOps: [],
+          base,
+          baseKeys,
           past: [],
           future: [],
         };
@@ -1138,8 +1254,20 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
         drafts.delete(draftKey);
         let restored = false;
         // 같은 판에서 만든 초안만 — 판이 바뀌었으면 장부(refs)가 엉뚱한 객체를 가리킨다.
-        if (d && d.stamp === s0 && d.pages.length === infos.length) {
-          next = { ...d, infos, font };
+        if (d && d.stamp === s0 && d.baseKeys.join("\n") === baseKeys.join("\n")) {
+          // 페이지 연산이 있으면 infos 는 연산 뒤 것이 맞다 — 화면은 동기화 effect 가 다시 싣는다.
+          next = { ...d, infos: d.pageOps.length ? d.infos : infos, font };
+          restored = true;
+        }
+        const dd = restoreDraftRef.current;
+        restoreDraftRef.current = null;
+        // 사이드카는 saved(노드 참조)를 못 담는다 — 같은 판을 방금 가져온 장부에서 ref 로 다시 잇는다(draft.ts).
+        // 초안에 페이지 연산이 있으면 연산 뒤 infos 는 그 바이트를 실제로 열어 잰다(다른 PDF 삽입 크기는 초안에 없다).
+        const ddInfos =
+          !restored && dd?.stamp === s0 && dd.pageOps.length ? await infosAfterOps(c, core, base, baseKeys, dd.pageOps, s0) : infos;
+        if (!restored && dd && dd.stamp === s0 && dd.pages.length === ddInfos.length) {
+          const rd = restoreDraft(dd, r.ledger);
+          next = { ...next, pages: rd.pages.map((p) => ({ ...p, objects: withPdfFont(p.objects, font) })), ledger: rd.ledger, markups: rd.markups, infos: ddInfos, pageOps: rd.pageOps };
           restored = true;
         }
         useImageEditorUi.getState().reset(); // 창 싱글턴 편집기 UI 잔재를 한 번 비운다(도구도 select 로)
@@ -1162,11 +1290,89 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
     }
   };
 
+  /** 레일 '이미지'·붙여넣기(T2) — 활성 페이지의 보이는 가운데에 놓고 선택한다. 획득·상한은 이미지 편집기와 같은 acquireAsset. */
+  const placeImage = async (src: AssetBytes | null) => {
+    try {
+      const picked = src ?? (await ipc.assetPickFile());
+      if (!picked) return;
+      const bytes = await toPdfImageBytes(picked);
+      const s = sessRef.current;
+      const v = ctl.current?.viewer;
+      const sc = scrollRef.current;
+      const i = activeRef.current;
+      if (!s?.pages[i] || !v || !sc) return;
+      const got = await acquireAsset(s.pages[i], bytes);
+      const info = s.infos[i];
+      // 이미지 px = 1pt 로 놓되 페이지의 60% 를 넘으면 줄인다 — 스크린샷 원본 크기는 대개 페이지보다 크다.
+      const fit = Math.min(1, (info.w * 0.6) / got.w, (info.h * 0.6) / got.h);
+      const w = got.w * fit;
+      const h = got.h * fit;
+      const c = visibleCenter(v, sc, info, i);
+      const node = newImageNode({ x: c.x - w / 2, y: c.y - h / 2, w, h, assetId: got.id, opacity: 1 });
+      const cur = sessRef.current;
+      if (!cur?.pages[i]) return;
+      commitPages(
+        cur.pages.map((d, k) => (k === i ? { ...d, assets: { ...d.assets, ...got.assets }, objects: [...d.objects, node] } : d)),
+      );
+      setMarkTool(null);
+      useImageEditorUi.getState().setTool("select");
+      useImageEditorUi.getState().select([node.id]);
+    } catch (e) {
+      pushToast("error", currentMessages().pdf.markup.imageFailed(errorMessage(e)));
+    }
+  };
+
+  /** 서명 놓기(T3) — 누른 자리를 가운데로, 폭 SIGNATURE_WIDTH_PT 의 path 노드 하나. 놓은 뒤 선택해 바로 옮기고 키울 수 있게. */
+  const placeSignature = (page: number, x: number, y: number) => {
+    const sig = sigPlace;
+    if (!sig) return;
+    setSigPlace(null);
+    switchPage(page);
+    const s = sessRef.current;
+    if (!s?.pages[page]) return;
+    const node = signatureToPathNode(sig, x, y, SIGNATURE_WIDTH_PT, SIGNATURE_INK, 1.5);
+    commitPageNodes(page, [...s.pages[page].objects, node]);
+    useImageEditorUi.getState().setTool("select");
+    useImageEditorUi.getState().select([node.id]);
+    // 놓기 누름은 스크롤 컨테이너 캡처에서 멈춘다 — React 는 포털(페이지 div) 안 대상의 이벤트를 포털 컨테이너에서
+    // 디스패치하므로 루트 onPointerDownCapture 의 포커스 회수가 돌지 않는다. 그대로 두면 Ctrl+S·Delete 가 죽는다.
+    focusRoot();
+  };
+
   const leaveAnnotate = () => {
     if (useImageEditorUi.getState().textEditing) layerRef.current?.handleEscape();
     useImageEditorUi.getState().select([]);
     setMode("view");
   };
+
+  const exportActions = createPdfExport({
+    projectId,
+    path,
+    current: () => {
+      const s = sessRef.current;
+      if (!s) return { model: null, stamp: live.lastStamp };
+      return { model: sessionDirty(s) ? saveModelOf(s) : null, stamp: s.stamp };
+    },
+    // 정리 저장만 이 길로 온다 — 일반 저장처럼 저장 중으로 표시해 그동안 커밋을 막는다(editLocked).
+    exclusive: async (fn) => {
+      savingRef.current = true;
+      setSaving(true);
+      try {
+        return await (ctl.current ? ctl.current.exclusive(fn) : fn());
+      } finally {
+        savingRef.current = false;
+        setSaving(false);
+      }
+    },
+    onRewritten: (stamp, ledger) => {
+      ctl.current?.markSeen(stamp); // 자기 저장으로 재로드되지 않게(일반 저장과 같다)
+      // 정리 저장은 객체 번호를 보존한다(check-export.mjs) — 장부 refs 는 새 파일에서도 그대로 유효하다.
+      const cur = sessRef.current;
+      if (cur?.pageOps.length) return void reloadAfterPageOps();
+      if (cur) setSess({ ...cur, ledger: ledger ?? cur.ledger, stamp });
+    },
+    busy: () => savingRef.current,
+  });
 
   /** @param override 외부 변경 확인창에서 '그래도 저장' — 디스크 새 판 위에 장부 없이(전부 새 주석으로) 쓴다(설계 §7.3). */
   const save = async (override = false): Promise<LastSave | null> => {
@@ -1177,6 +1383,7 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
     if (useImageEditorUi.getState().textEditing) layerRef.current?.handleEscape();
     savingRef.current = true;
     setSaving(true);
+    const pre = sessRef.current;
     let result: LastSave;
     try {
       const stamp = await c.exclusive(async () => {
@@ -1204,15 +1411,9 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
             ledger.pageOf.set(id, page);
           }
         }
-        const r = await core.savePdf(projectId, path, expected, {
-          infos: s.infos,
-          pages: s.pages,
-          ledger,
-          textLines: pdfTextLines,
-          font: s.font,
-        });
+        const r = await core.savePdf(projectId, path, expected, saveModelOf(s, ledger));
         c.markSeen(r.stamp); // 자기 저장으로 재로드되지 않게
-        // 저장하는 동안 더 그린 것은 장부의 saved 와 참조가 달라 다음 저장에서 changed 로 잡힌다.
+        // 저장 중 커밋은 막혀 있다(editLocked) — cur 는 저장한 s 와 같은 편집이다.
         const cur = sessRef.current ?? s;
         setSess({ ...cur, ledger: r.ledger, stamp: r.stamp });
         return r.stamp;
@@ -1220,6 +1421,7 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
       result = { ok: true, stamp, at: Date.now() };
       setBanner((b) => (b?.kind === "external" ? null : b));
       pushToast("success", currentMessages().pdf.annotate.saved);
+      exportActions.suggestAfterSave(pre.pages, pre.ledger, pre.markups);
     } catch (e) {
       result = { ok: false, error: errorMessage(e), at: Date.now() };
       const t = currentMessages().pdf.annotate;
@@ -1243,9 +1445,113 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
       discardSession();
       if (wasAnnotating) await enterAnnotate();
       else ctl.current?.retry();
-    }
+    } else if (result.ok && pre.pageOps.length) await reloadAfterPageOps();
     return result;
   };
+
+  // ── 페이지 관리(M4) ──
+  const tp = msg.pdf.pages;
+
+  /** 연산을 적용한 바이트를 실제로 열어 잰 infos(key 는 연산 규칙). 초안 복원처럼 삽입 크기를 모를 때. 화면도 그 바이트가 된다. */
+  const infosAfterOps = async (
+    c: Ctl,
+    core: PdfCore,
+    base: Uint8Array,
+    baseKeys: string[],
+    ops: readonly PageOp[],
+    stamp: string,
+  ): Promise<PdfPageInfo[]> => {
+    await c.showBytes(await core.displayBytes(base, ops), stamp);
+    markShown(ops);
+    const keys = core.replayPageOps(baseKeys, ops).map((x) => x.key);
+    const got = await c.pageInfos();
+    if (got.length !== keys.length) throw new Error(`infosAfterOps: ${got.length} pages shown, ${keys.length} expected`);
+    return got.map((g, i) => ({ ...g, key: keys[i] }));
+  };
+
+  /** 페이지 연산을 쓴 판은 객체 번호·순서가 바뀌었다 — 장부·key 를 디스크에서 다시 가져온다(덮어쓰기 저장과 같은 길). */
+  const reloadAfterPageOps = async () => {
+    const was = modeRef.current;
+    discardSession();
+    if (was === "view") return ctl.current?.retry();
+    await enterAnnotate();
+    if (was === "pages" && sessRef.current) setMode("pages");
+  };
+
+  const commitPageOp = (op: PageOp, inserted?: PdfPageInfo[]) => {
+    const s = sessRef.current;
+    const core = coreLoaded;
+    if (!s || !core || editLocked()) return;
+    let st: ReturnType<PdfCore["applyPageOp"]>;
+    try {
+      st = core.applyPageOp({ infos: s.infos, pages: s.pages, markups: s.markups }, op, inserted);
+    } catch (e) {
+      pushToast("error", tp.applyFailed(errorMessage(e)));
+      return;
+    }
+    setSess({ ...s, ...st, pageOps: [...s.pageOps, op], past: [...s.past, snapOf(s)].slice(-HISTORY_CAP), future: [] });
+  };
+
+  const enterPages = async () => {
+    if (!sessRef.current) await enterAnnotate();
+    if (!sessRef.current) return;
+    if (useImageEditorUi.getState().textEditing) layerRef.current?.handleEscape();
+    useImageEditorUi.getState().select([]);
+    setMode("pages");
+  };
+
+  const extractSelected = (keys: string[]) => {
+    const core = coreLoaded;
+    if (!core || !keys.length) return;
+    const slash = path.lastIndexOf("/");
+    const dir = path.slice(0, slash + 1);
+    const stem = path.slice(slash + 1).replace(/\.pdf$/i, "");
+    useUi.getState().askPrompt({
+      title: tp.extractTitle,
+      label: tp.extractLabel,
+      defaultValue: `${stem}-pages.pdf`,
+      confirmLabel: tp.extractConfirm,
+      validate: (v) => {
+        const n = v.trim();
+        if (!n) return tp.nameRequired;
+        return /[\\/]/.test(n) || n.includes("..") ? tp.nameInvalid : null;
+      },
+      onConfirm: (v) => {
+        const s = sessRef.current;
+        const c = ctl.current;
+        if (!s || !c) return;
+        const name = /\.pdf$/i.test(v.trim()) ? v.trim() : `${v.trim()}.pdf`;
+        const out = dir + name;
+        c.exclusive(() => core.extractPagesToFile(projectId, path, s.stamp, saveModelOf(s), keys, out)).then(
+          () => pushToast("success", currentMessages().pdf.pages.extracted(out)),
+          (e: unknown) => pushToast("error", currentMessages().pdf.pages.extractFailed(errorMessage(e))),
+        );
+      },
+    });
+  };
+
+  // 화면 ↔ 페이지 연산 동기화 — 페이지 모드에 들고 날 때, 페이지 모드 밖에서 undo 가 연산을 되돌릴 때 한 번씩 다시 싣는다.
+  // 겹친 호출은 exclusive 로 줄 세우고, 각 호출은 돌 때의 최신 세션을 본다(마지막 호출이 이긴다).
+  useEffect(() => {
+    const s = sess;
+    const core = coreLoaded;
+    const c = ctl.current;
+    if (!s || !core || !c) return;
+    if (sameOps(annMode === "pages" ? NO_OPS : s.pageOps, shownOpsRef.current)) return;
+    c.exclusive(async () => {
+      const cur = sessRef.current;
+      if (!cur || cur.base !== s.base) return; // 세션이 바뀌었다 — 새 세션의 진입이 화면을 맞춘다
+      const want = modeRef.current === "pages" ? NO_OPS : cur.pageOps;
+      if (sameOps(want, shownOpsRef.current)) return;
+      await c.showBytes(await core.displayBytes(cur.base, want), cur.stamp);
+      markShown(want);
+      if (activeRef.current >= cur.infos.length) {
+        activeRef.current = Math.max(0, cur.infos.length - 1);
+        setActive(activeRef.current);
+      }
+    }).catch((e: unknown) => pushToast("error", currentMessages().pdf.pages.applyFailed(errorMessage(e))));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sess?.pageOps, sess?.base, annMode]);
 
   const reloadDiscard = () => {
     const wasAnnotating = modeRef.current === "annotate";
@@ -1322,7 +1628,10 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
           banner: banner?.kind ?? null,
           stamp: s?.stamp ?? null,
           historyDepth: { past: s?.past.length ?? 0, future: s?.future.length ?? 0 },
+          pageKeys: s ? s.infos.map((i) => i.key) : [],
+          pageOps: s?.pageOps.length ?? 0,
           lastSave: live.lastSave,
+          markups: s?.markups.length ?? 0,
         };
       },
       enterAnnotate,
@@ -1358,6 +1667,69 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
+
+  // 사이드카 초안 자동 보관 — 편집이 있으면 2초 디바운스로 쓰고, 저장·버림으로 깨끗해지면 지운다.
+  // 디스크 초안을 묻는 중(배너)에는 지우지 않는다 — 주석 모드에 들어가기만 했는데 초안이 사라지면 안 된다.
+  const prevSessRef = useRef<AnnSession | null>(null);
+  useEffect(() => {
+    const prev = prevSessRef.current;
+    prevSessRef.current = sess;
+    if (sess && sessionDirty(sess)) {
+      restoreDraftRef.current = null;
+      setDiskDraft(null); // 새로 편집했다(또는 초안을 복원했다) — 옛 초안은 곧 이 편집으로 덮인다
+      draftSaver.schedule(() => {
+        const s = sessRef.current;
+        if (!s || !sessionDirty(s)) return null;
+        return { stamp: s.stamp, pages: s.pages, markups: s.markups, pageOps: s.pageOps, ledger: s.ledger };
+      });
+    } else if ((sess || prev) && !diskDraft) void draftSaver.clear();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sess]);
+  useEffect(() => () => void draftSaver.flush(), [draftSaver]);
+
+  // 디스크 초안 — 같은 판(stamp)이면 배너로 묻고, 판이 바뀌었으면 refs 가 엉뚱한 객체를 가리키므로 지운다(설계 §8.3).
+  // 같은 창 메모리 초안이 있으면 그쪽이 더 정확하다(장부 참조·undo 까지) — autoEnter 가 복원한다.
+  const hadMemDraft = useRef(drafts.has(draftKey));
+  const diskDraftChecked = useRef(false);
+  useEffect(() => {
+    if (status !== "ready" || diskDraftChecked.current) return;
+    diskDraftChecked.current = true;
+    // 지난 마운트가 이 파일 초안을 썼다 — 여기서 곧장 저장해도 clear 가 그것을 지우게.
+    if (hadMemDraft.current) return void draftSaver.markStored();
+    void (async () => {
+      try {
+        const d = await readPdfDraft(projectId, path);
+        if (!d) return;
+        draftSaver.markStored();
+        if (d.stamp === (await ipc.fileStamp(projectId, path))) {
+          // 배너의 복원뿐 아니라 [주석]·[페이지] 탭으로 들어가도 복원한다 — 탭으로 들어가면 배너가 사라지고 첫 편집이
+          // 사이드카를 덮어 강제 종료 전 편집이 영영 사라졌다.
+          restoreDraftRef.current = d;
+          setDiskDraft(d);
+        } else await draftSaver.clear();
+      } catch (e) {
+        pushToast("error", currentMessages().pdf.draft.readFailed(errorMessage(e)));
+        // 모양이 깨진 초안은 다시 읽어도 같다 — 지운다. IPC 실패(일시적일 수 있다)면 남긴다.
+        if (!isIpcError(e)) {
+          draftSaver.markStored();
+          void draftSaver.clear();
+        }
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status]);
+  const restoreDiskDraft = () => {
+    restoreDraftRef.current = diskDraft;
+    // 초안 확인보다 먼저 주석 모드에 들어가 깨끗한 세션이 있다 — 버리고 초안으로 다시 들어간다(배너는 깨끗할 때만 보인다).
+    // diskDraft 는 남긴다: 복원이 안 되면 배너와 사이드카가 그대로 있어야 한다. 복원되면 편집 effect 가 비운다.
+    if (sessRef.current) discardSession();
+    void enterAnnotate();
+  };
+  const discardDiskDraft = () => {
+    restoreDraftRef.current = null;
+    setDiskDraft(null);
+    void draftSaver.clear();
+  };
 
   // 초안이 있는 파일을 다시 열면 주석 모드로 곧장 — 보기 모드로 열면 편집이 사라진 것처럼 보인다.
   const autoEnter = useRef(drafts.has(draftKey));
@@ -1426,6 +1798,14 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
     const tag = (e.target as HTMLElement).tagName;
     // Esc 계층(설계 §8.1): 텍스트 확정 → 드래프트 취소 → 선택 도구로 → 선택 해제 → 검색바 닫기.
     // 입력 칸(찾기·속성 숫자)의 Esc 는 그 칸 몫이라 레이어로 보내지 않는다.
+    if (e.key === "Escape" && annotating && (sigPlace || markTool || markSel)) {
+      e.preventDefault();
+      e.stopPropagation();
+      setSigPlace(null);
+      setMarkSel(null);
+      if (!markSel) setMarkTool(null); // 선택 해제가 먼저, 다음 Esc 가 도구를 끈다(노드 Esc 계층과 같은 순서)
+      return;
+    }
     if (e.key === "Escape" && tag !== "INPUT" && annKeysOn() && layerRef.current?.handleEscape()) {
       e.preventDefault();
       e.stopPropagation();
@@ -1443,7 +1823,7 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
       const ui = useImageEditorUi.getState();
       const id = matchShortcut(e.nativeEvent, {
         mode: ui.mode,
-        sel: selIds().length,
+        sel: selIds().length + (markSel ? 1 : 0),
         selKinds: new Set(),
         textEditing: ui.textEditing,
       });
@@ -1492,6 +1872,17 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
       data-pdf-status={status}
       onKeyDown={onKeyDown}
       onKeyUp={onKeyUp}
+      onPaste={(e) => {
+        // 클립보드 이미지(T2) — 입력 칸 붙여넣기는 그 칸 몫이다.
+        const tag = (e.target as HTMLElement).tagName;
+        if (!annotating || tag === "INPUT" || tag === "TEXTAREA") return;
+        const f = [...e.clipboardData.files].find((x) => x.type.startsWith("image/"));
+        if (!f) return;
+        e.preventDefault();
+        void fileToAssetBytes(f).then(placeImage, (err: unknown) =>
+          pushToast("error", currentMessages().pdf.markup.imageFailed(errorMessage(err))),
+        );
+      }}
       onPointerDownCapture={() => {
         // 주석 키는 이 루트 onKeyDown 으로만 온다 — 오버레이를 눌렀는데 포커스가 바깥에 남으면 도구 키가 죽는다.
         if (annotating && !rootRef.current?.contains(document.activeElement)) focusRoot();
@@ -1513,9 +1904,9 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
         <div role="group" aria-label={ta.modeGroup} className="flex shrink-0 overflow-hidden rounded border border-edge">
           <button
             data-pdf-mode="view"
-            aria-pressed={!annotating}
+            aria-pressed={!annotating && annMode !== "pages"}
             onClick={leaveAnnotate}
-            className={`px-2 leading-5 ${!annotating ? "bg-raised text-fg" : "hover:text-fg"}`}
+            className={`px-2 leading-5 ${!annotating && annMode !== "pages" ? "bg-raised text-fg" : "hover:text-fg"}`}
           >
             {ta.modeView}
           </button>
@@ -1542,6 +1933,19 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
               }`}
             >
               {ta.modeAnnotate}
+            </button>
+          </span>
+          <span title={editBlock === "restricted" ? ta.blockedRestricted : editBlock === "encrypted" ? ta.blockedEncrypted : tp.modeTitle} className="flex">
+            <button
+              data-pdf-mode="pages"
+              aria-pressed={annMode === "pages" && sess !== null}
+              disabled={editBlock !== null || status !== "ready" || entering}
+              onClick={() => void enterPages()}
+              className={`border-l border-edge px-2 leading-5 disabled:opacity-50 ${
+                annMode === "pages" && sess ? "bg-raised text-fg" : "enabled:hover:text-fg"
+              }`}
+            >
+              {tp.mode}
             </button>
           </span>
         </div>
@@ -1612,6 +2016,7 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
             <span className="@max-sm:hidden">{saving ? ta.saving : ta.save}</span>
           </button>
         )}
+        {status === "ready" && <PdfExportMenu exp={exportActions} disabled={saving} />}
         <TBtn
           data-pdf-find-toggle
           label={msg.pdf.view.find(modLabel)}
@@ -1630,6 +2035,30 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
           className="shrink-0 border-b border-edge bg-panel px-3 py-1 text-xs text-fg-dim"
         >
           {msg.pdf.view.worktreeNote}
+        </div>
+      )}
+
+      {diskDraft && !dirty && (
+        <div
+          data-pdf-banner="draft"
+          className="flex shrink-0 items-center gap-2 border-b border-edge bg-panel px-3 py-1 text-xs text-fg-muted"
+        >
+          <span className="min-w-0 flex-1 truncate">{msg.pdf.draft.banner}</span>
+          <button
+            data-pdf-draft-restore
+            disabled={!!editBlock}
+            onClick={restoreDiskDraft}
+            className="shrink-0 rounded border border-edge px-2 py-0.5 enabled:hover:bg-raised enabled:hover:text-fg disabled:opacity-50"
+          >
+            {msg.pdf.draft.restore}
+          </button>
+          <button
+            data-pdf-draft-discard
+            onClick={discardDiskDraft}
+            className="shrink-0 rounded border border-edge px-2 py-0.5 hover:bg-raised hover:text-fg"
+          >
+            {msg.pdf.draft.discard}
+          </button>
         </div>
       )}
 
@@ -1734,7 +2163,34 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
         )}
 
         {annotating && (
-          <ToolRail tools={railTools} paint={paint} onFocusRoot={focusRoot} onPlaceImage={() => {}} />
+          <>
+            <ToolRail
+              tools={railTools}
+              paint={paint}
+              onFocusRoot={() => {
+                // 레일을 눌렀다 = 마크업·서명 도구를 그만둔다(같은 도구를 다시 눌러 tool 이 안 바뀌는 경우도).
+                setMarkTool(null);
+                setSigPlace(null);
+                focusRoot();
+              }}
+              onPlaceImage={() => void placeImage(null)}
+            />
+            <PdfMarkupTools
+              tool={markTool}
+              placing={sigPlace !== null}
+              onTool={(t) => {
+                setMarkTool(t);
+                setSigPlace(null);
+                setMarkSel(null);
+                useImageEditorUi.getState().select([]);
+                focusRoot();
+              }}
+              onSignature={() => {
+                setMarkTool(null);
+                setSigPad(true);
+              }}
+            />
+          </>
         )}
 
         <div className="relative min-w-0 flex-1">
@@ -1744,13 +2200,14 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
             ref={scrollRef}
             data-pdf-scroll
             data-pdf-annotating={annotating ? "" : undefined}
+            data-pdf-markup={annotating && markTool ? "" : undefined}
             tabIndex={0}
             className="absolute inset-0 overflow-auto bg-base outline-none"
           >
             <div ref={innerRef} className="pdfViewer" />
           </div>
 
-          {sess && ctl.current?.viewer && ctl.current.bus && scrollRef.current && (
+          {sess && pageViewSynced && ctl.current?.viewer && ctl.current.bus && scrollRef.current && (
             <PdfAnnotateOverlay
               viewer={ctl.current.viewer}
               bus={ctl.current.bus}
@@ -1758,13 +2215,61 @@ export default function PdfView({ projectId, path, mode, selectionRef }: PdfView
               infos={sess.infos}
               pages={sess.pages}
               active={active}
-              interactive={annotating}
+              interactive={annotating && !markTool}
               tool={layerTool}
               paint={paint}
               opacity={opacity}
               layerRef={layerRef}
               onCommit={commitPageNodes}
               onActivate={switchPage}
+            />
+          )}
+
+          {sess && pageViewSynced && ctl.current?.viewer && ctl.current.bus && scrollRef.current && (
+            <PdfMarkupLayer
+              viewer={ctl.current.viewer}
+              bus={ctl.current.bus}
+              container={scrollRef.current}
+              infos={sess.infos}
+              markups={sess.markups}
+              selectedId={markSel}
+              tool={annotating ? markTool : null}
+              placing={annotating && sigPlace !== null}
+              onAdd={(ms) => {
+                const cur = sessRef.current;
+                if (cur) commitMarkups([...cur.markups, ...ms]);
+              }}
+              onSelect={setMarkSel}
+              onPlace={placeSignature}
+            />
+          )}
+
+          {sigPad && (
+            <PdfSignaturePad
+              onClose={() => {
+                setSigPad(false);
+                focusRoot();
+              }}
+              onPlace={(sig) => {
+                setSigPad(false);
+                setSigPlace(sig);
+                pushToast("info", msg.pdf.markup.placeHint);
+                focusRoot();
+              }}
+            />
+          )}
+
+          {annMode === "pages" && sess && doc && coreLoaded && sameOps(shownOps, NO_OPS) && (
+            <PdfPagesGrid
+              doc={doc}
+              baseKeys={sess.baseKeys}
+              slots={coreLoaded.replayPageOps(sess.baseKeys, sess.pageOps)}
+              infos={sess.infos}
+              projectId={projectId}
+              onOp={commitPageOp}
+              onExtract={extractSelected}
+              onUndo={undo}
+              onRedo={redo}
             />
           )}
 

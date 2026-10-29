@@ -432,6 +432,8 @@ function AnnotationLayerImpl(
     props.scale,
     props.displayScale,
     props.filterStr,
+    // 이미지 에셋 디코드 완료 — 없으면 회색 자리표시가 다음 편집 전까지 남는다.
+    props.assetsVer,
     props.cropRect,
     props.cropMode,
     props.bounds,

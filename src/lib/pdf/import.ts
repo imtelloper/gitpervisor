@@ -12,10 +12,11 @@ import { currentLocale } from "../../i18n/locale-state";
 import { messagesFor } from "../../i18n/messages";
 import { normalizeDoc } from "../annotate/schema";
 import { DEFAULT_FONT_FAMILY, solidFill, type EditorDoc, type Node } from "../annotate/types";
-import { emptyLedger, type PdfFont, type PdfLedger, type PdfPageInfo } from "./model";
+import { isMarkupSubtype, markupFromJson, quadBoxes, quadsOfRects } from "./markup";
+import { emptyLedger, type PdfFont, type PdfLedger, type PdfMarkup, type PdfPageInfo } from "./model";
 import { incrementOf, loadForIncrement, removeAnnots } from "./save";
 import { apply, boundsOf } from "./space";
-import { annotEntries, fnv1aHex, GPV_AP_HASH, GPV_NODE, isPdfNode, type PdfLib } from "./write";
+import { annotEntries, fnv1aHex, GPV_AP_HASH, GPV_ASSET, GPV_NODE, isPdfNode, type PdfLib } from "./write";
 
 export interface ImportResult {
   pages: EditorDoc[];            // pages.length === infos.length. 편집 가능 주석이 노드로 들어 있다
@@ -24,6 +25,8 @@ export interface ImportResult {
   workingCopy: Uint8Array | null;
   /** 텍스트 노드 중 폰트가 없어 기본 폰트로 바꾼 수 등 — 사용자 안내용 */
   notes: string[];
+  /** 텍스트 마크업(M3) — 노드처럼 장부에 올리고 작업 사본에서 뺀다. */
+  markups: PdfMarkup[];
 }
 
 type Rec = Record<string, unknown>;
@@ -213,6 +216,53 @@ function rule2(lib: PdfLib, d: PDFDict, info: PdfPageInfo, font: PdfFont | null)
   return null;
 }
 
+/** 규칙 2 — 다른 앱의 Highlight/Underline/StrikeOut. /QuadPoints 가 없거나 8의 배수가 아니면 null(규칙 3). */
+function markupRule2(lib: PdfLib, d: PDFDict, info: PdfPageInfo, subtype: PdfMarkup["subtype"]): PdfMarkup | null {
+  const N = (s: string) => lib.PDFName.of(s);
+  const q = nums(lib, d.lookupMaybe(N("QuadPoints"), lib.PDFArray));
+  if (!q.length || q.length % 8 !== 0) return null;
+  return {
+    id: textOf(lib, d.get(N("NM"))) ?? "",
+    pageKey: info.key,
+    subtype,
+    // quad 점 순서는 앱마다 다르다(Acrobat 은 좌상·우상·좌하·우하, 스펙 문구는 반시계) — 그대로 받으면 화면 polygon·다시 쓴
+    // AP 가 나비넥타이가 되고 밑줄이 대각선이 된다. pdf.js(getQuadPoints)처럼 quad 마다 외접 상자로 다시 세운다.
+    // ponytail: 기울어진 글자 quad 는 외접 상자로 넓어진다(pdf.js 와 같다) — 필요해지면 가장 긴 변을 글자 방향으로 세운다.
+    quads: quadsOfRects(quadBoxes(toPagePts(info, q))),
+    color: colorOf(lib, d.lookupMaybe(N("C"), lib.PDFArray)) ?? "#FFFF00",
+    opacity: d.lookupMaybe(N("CA"), lib.PDFNumber)?.asNumber() ?? 1,
+  };
+}
+
+function bytesToBase64(b: Uint8Array): string {
+  let s = "";
+  for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode(...b.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+/**
+ * 규칙 1 이미지 노드(T2 Stamp)의 에셋을 /GPV_Asset 스트림에서 되살린다. 스트림이 DCTDecode 면 JPEG 원본 바이트다
+ * (write.ts imageOps). 이미지 채우기가 있는데 에셋을 못 찾으면 false — 저장할 수 없는 노드라 편집 대상에서 뺀다.
+ */
+function restoreAsset(lib: PdfLib, d: PDFDict, raw: Rec, assets: EditorDoc["assets"]): boolean {
+  const fills = Array.isArray(raw.fills) ? raw.fills : [];
+  const ids = fills.flatMap((f: unknown) => {
+    const r = typeof f === "object" && f !== null ? (f as Rec) : null; // 외부 데이터 경계
+    return r && r.type === "image" && typeof r.assetId === "string" ? [r.assetId] : [];
+  });
+  if (!ids.length) return true;
+  const N = (s: string) => lib.PDFName.of(s);
+  const ref = d.get(N(GPV_ASSET));
+  const st = ref ? d.context.lookup(ref) : undefined;
+  if (!(st instanceof lib.PDFRawStream)) return false;
+  const w = st.dict.lookupMaybe(N("Width"), lib.PDFNumber)?.asNumber() ?? 0;
+  const h = st.dict.lookupMaybe(N("Height"), lib.PDFNumber)?.asNumber() ?? 0;
+  const mime = st.dict.get(N("Filter")) === N("DCTDecode") ? "image/jpeg" : "image/png";
+  const data = bytesToBase64(st.contents);
+  for (const id of ids) assets[id] = { mime, w, h, data };
+  return true;
+}
+
 /**
  * 파일 바이트와 페이지 정보(pdf.js viewport) → 편집 노드·장부·작업 사본.
  * 암호화 문서는 호출 전에 화면이 막는다(§7.4) — 여기서는 다시 판정하지 않는다.
@@ -233,16 +283,36 @@ export async function importAnnotations(
   const pages: EditorDoc[] = [];
   const taken: PDFRef[][] = [];
   let fontless = 0;
+  const markups: PdfMarkup[] = [];
 
   for (let i = 0; i < pdfPages.length; i++) {
     const raws: Rec[] = [];
     const refOf = new Map<string, PDFRef>();
+    const assets: EditorDoc["assets"] = {};
+    const markRefs: PDFRef[] = [];
     for (const e of annotEntries(lib, pdfPages[i])) {
       // 직접 사전 주석은 ref 가 없어 장부에 못 올린다 — 고칠 방법이 없으니 규칙 3.
       if (!(e instanceof lib.PDFRef)) continue;
       const d = doc.context.lookupMaybe(e, lib.PDFDict);
       if (!d) continue;
-      const raw = rule1(lib, d) ?? rule2(lib, d, infos[i], font);
+      const sub = d.get(lib.PDFName.of("Subtype"));
+      const subName = sub instanceof lib.PDFName ? sub.decodeText() : "";
+      if (isMarkupSubtype(subName)) {
+        const mk = markupFromJson(rule1(lib, d), infos[i].key) ?? markupRule2(lib, d, infos[i], subName);
+        if (!mk) continue;
+        const mid = mk.id && !seen.has(mk.id) ? mk.id : crypto.randomUUID();
+        seen.add(mid);
+        const m = { ...mk, id: mid };
+        markups.push(m);
+        markRefs.push(e);
+        ledger.refs.set(mid, e.toString());
+        ledger.saved.set(mid, m);
+        ledger.pageOf.set(mid, infos[i].key);
+        continue;
+      }
+      const r1 = rule1(lib, d);
+      if (r1 && !restoreAsset(lib, d, r1, assets)) continue;
+      const raw = r1 ?? rule2(lib, d, infos[i], font);
       if (!raw) continue;
       const nm = textOf(lib, d.get(lib.PDFName.of("NM")));
       let id = typeof raw.id === "string" && raw.id ? raw.id : (nm ?? "");
@@ -251,7 +321,7 @@ export async function importAnnotations(
       raws.push({ ...raw, id, parentId: null });
       refOf.set(id, e);
     }
-    const ed = normalizeDoc({ objects: raws });
+    const ed = normalizeDoc({ objects: raws, assets });
     const objects: Node[] = [];
     const kept: PDFRef[] = [];
     for (const node of ed.objects) {
@@ -270,10 +340,10 @@ export async function importAnnotations(
       kept.push(ref);
       ledger.refs.set(out.id, ref.toString());
       ledger.saved.set(out.id, out);
-      ledger.pageOf.set(out.id, i);
+      ledger.pageOf.set(out.id, infos[i].key);
     }
     pages.push({ ...ed, objects });
-    taken.push(kept);
+    taken.push([...kept, ...markRefs]);
   }
 
   let workingCopy: Uint8Array | null = null;
@@ -289,5 +359,5 @@ export async function importAnnotations(
   }
 
   const notes = fontless ? [messagesFor(currentLocale()).pdf.core.textFontReplaced(fontless)] : [];
-  return { pages, ledger, workingCopy, notes };
+  return { pages, ledger, workingCopy, notes, markups };
 }
