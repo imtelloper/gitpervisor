@@ -15,6 +15,22 @@ import { splitPath } from "./frameCapture";
 const PRESETS = [1, 2, 5, 10];
 const FORMATS: VideoFramesFormat[] = ["jpg", "png"];
 
+/** 녹화기 이름의 시작 시각(`…_261030_082600-…`, `…20261030_082600…`) → `datetime-local` 값. 없으면 null. */
+function osdStartFromName(stem: string): string | null {
+  const m = /(?<!\d)(\d{8}|\d{6})[_-](\d{2})(\d{2})(\d{2})(?!\d)/.exec(stem);
+  if (!m) return null;
+  const d = m[1].length === 6 ? `20${m[1]}` : m[1];
+  const v = `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}T${m[2]}:${m[3]}:${m[4]}`;
+  return parseOsdStart(v) === null ? null : v;
+}
+
+/** `datetime-local` 값 → 초. 시간대 없는 벽시계를 UTC 인 척 센다 — 백엔드가 gmtime 으로 그대로 그린다(video.rs frames_osd_filter).
+ *  범위(1970~2999년)는 백엔드와 같다. */
+function parseOsdStart(v: string): number | null {
+  const ms = Date.parse(`${v}Z`);
+  return Number.isFinite(ms) && ms >= 0 && ms < Date.UTC(3000, 0, 1) ? Math.floor(ms / 1000) : null;
+}
+
 export function FrameExtractButton({
   projectId,
   path,
@@ -43,6 +59,10 @@ export function FrameExtractButton({
   const [pos, setPos] = useState<{ right: number; top: number } | null>(null);
   const [intervalText, setIntervalText] = useState("2");
   const [format, setFormat] = useState<VideoFramesFormat>("jpg");
+  const nameStart = osdStartFromName(splitPath(path).stem);
+  const [osdOn, setOsdOn] = useState(false);
+  const [osdStart, setOsdStart] = useState(nameStart ?? "");
+  const osdSecs = osdOn ? parseOsdStart(osdStart) : null;
   const btnRef = useRef<HTMLButtonElement>(null);
   useOccludesWebview(!!pos);
 
@@ -60,10 +80,11 @@ export function FrameExtractButton({
   };
 
   const interval = Number(intervalText);
-  const valid = intervalText.trim() !== "" && interval >= 0.1 && interval <= 3600;
+  const intervalOk = intervalText.trim() !== "" && interval >= 0.1 && interval <= 3600;
+  const valid = intervalOk && (!osdOn || osdSecs !== null);
   const percent = mine ? Math.floor(job.percent) : 0;
   // 미리보기용 이름 — 실제 이름은 백엔드가 고르고(video.rs frames_folder_base + 중복이면 _2…) 완료 토스트에 뜬다.
-  const folder = `${splitPath(path).stem}_frames_${valid ? interval : "?"}s`;
+  const folder = `${splitPath(path).stem}_frames_${intervalOk ? interval : "?"}s`;
 
   return (
     <>
@@ -170,13 +191,39 @@ export function FrameExtractButton({
                       {f}
                     </button>
                   ))}
-                  {valid && knownMs > 0 && (
+                  {intervalOk && knownMs > 0 && (
                     <span className="ml-auto tabular-nums text-fg">
                       {t.estimate(expectedFrameCount(knownMs, interval))}
                     </span>
                   )}
                 </div>
-                {!valid && <div className="text-danger">{t.intervalInvalid}</div>}
+                <div className="flex items-center gap-2">
+                  <span className="w-10 shrink-0">{t.osd}</span>
+                  <label className="flex items-center gap-1.5 hover:text-fg">
+                    <input
+                      type="checkbox"
+                      checked={osdOn}
+                      onChange={(e) => setOsdOn(e.target.checked)}
+                      className="shrink-0 accent-accent"
+                    />
+                    {t.osdToggle}
+                  </label>
+                </div>
+                {osdOn && (
+                  <div className="space-y-1 pl-12">
+                    <input
+                      type="datetime-local"
+                      step={1}
+                      value={osdStart}
+                      onChange={(e) => setOsdStart(e.target.value)}
+                      className="w-full rounded border border-edge bg-base px-1.5 py-0.5 text-fg tabular-nums"
+                    />
+                    <div className={`text-[11px] leading-4 ${osdSecs === null ? "text-danger" : "text-fg-dim"}`}>
+                      {osdSecs === null ? t.osdInvalid : t.osdHint(nameStart !== null && osdStart === nameStart)}
+                    </div>
+                  </div>
+                )}
+                {!intervalOk && <div className="text-danger">{t.intervalInvalid}</div>}
                 <div className="space-y-0.5 text-[11px] leading-4 text-fg-dim">
                   <div className="break-all">{t.where(folder)}</div>
                   <div className="break-all">{t.naming(`${splitPath(path).stem}_01h23m45s.${format}`)}</div>
@@ -191,6 +238,7 @@ export function FrameExtractButton({
                       intervalSecs: interval,
                       format,
                       durationMs: knownMs,
+                      osdStartSecs: osdSecs,
                       qc,
                     })
                   }

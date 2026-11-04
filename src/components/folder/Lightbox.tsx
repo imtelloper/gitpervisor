@@ -1,8 +1,9 @@
-import { X } from "lucide-react";
+import { Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { useMessages } from "../../i18n/ui-language";
 import { ipc } from "../../lib/ipc";
+import { isMac } from "../../lib/platform";
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -18,6 +19,7 @@ export function Lightbox({
   total,
   onClose,
   onStep,
+  onTrash,
 }: {
   path: string;
   name: string;
@@ -25,6 +27,8 @@ export function Lightbox({
   total: number;
   onClose: () => void;
   onStep: (d: number) => void;
+  /** 있으면 휴지통 버튼과 키 안내가 붙는다 — 키(Delete)는 다른 키처럼 쓰는 쪽이 건다. */
+  onTrash?: () => void;
 }) {
   const msg = useMessages();
   const [src, setSrc] = useState<string | null>(null);
@@ -54,7 +58,21 @@ export function Lightbox({
         <span className="shrink-0 text-fg-dim">
           {index + 1} / {total}
         </span>
-        <span className="ml-auto shrink-0 text-fg-dim">{msg.folder.lightbox.keysHint}</span>
+        <span className="ml-auto shrink-0 text-fg-dim">
+          {onTrash ? msg.folder.lightbox.keysHintTrash(isMac ? "⌘⌫" : "Del") : msg.folder.lightbox.keysHint}
+        </span>
+        {onTrash && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation(); // 바깥(배경) 클릭 = 닫기
+              onTrash();
+            }}
+            title={msg.folder.peek.menuTrash}
+            className="shrink-0 rounded p-1 hover:bg-raised hover:text-danger"
+          >
+            <Trash2 size={13} />
+          </button>
+        )}
         <button onClick={onClose} className="shrink-0 rounded p-1 hover:bg-raised hover:text-fg">
           <X size={13} />
         </button>

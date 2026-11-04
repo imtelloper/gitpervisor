@@ -46,6 +46,7 @@ interface VideoFramesState {
     intervalSecs: number;
     format: VideoFramesFormat;
     durationMs: number;
+    osdStartSecs: number | null;
     qc: QueryClient;
   }) => Promise<void>;
   cancel: () => void;
@@ -53,7 +54,7 @@ interface VideoFramesState {
 
 export const useVideoFrames = create<VideoFramesState>((set, get) => ({
   job: null,
-  run: ({ jobId, projectId, srcRel, intervalSecs, format, durationMs, qc }) => new Promise<void>((resolve) => {
+  run: ({ jobId, projectId, srcRel, intervalSecs, format, durationMs, osdStartSecs, qc }) => new Promise<void>((resolve) => {
     set({
       job: {
         projectId,
@@ -93,6 +94,7 @@ export const useVideoFrames = create<VideoFramesState>((set, get) => ({
         intervalSecs,
         format,
         Math.max(0, Math.round(durationMs)), // Rust u64 — 소수면 역직렬화가 거절한다
+        osdStartSecs,
         (e) => {
           if (e.phase !== "progress") return finish(e);
           if (ended) return;

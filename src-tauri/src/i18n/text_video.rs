@@ -363,6 +363,13 @@ pub fn video_frames_source_read_failed(path: &dyn Display, err: &dyn Display) ->
     }
 }
 
+pub fn video_frames_osd_start_invalid() -> &'static str {
+    match lang() {
+        Lang::Ko => "OSD 시작 시각은 1970년 ~ 2999년 사이여야 합니다",
+        Lang::En => "The OSD start time must be between 1970 and 2999",
+    }
+}
+
 pub fn video_frames_none_extracted() -> &'static str {
     match lang() {
         Lang::Ko => "추출된 프레임이 없습니다 — 영상 스트림이 없거나 읽을 수 없는 파일입니다",

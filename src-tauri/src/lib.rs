@@ -1830,6 +1830,7 @@ mod tests {
             // (2026-09-17 설치본 멈춤 조사).
             ("commands/lsp.rs", "lsp_start"),
             ("claude_usage.rs", "last_agent_message"),
+            ("claude_usage.rs", "claude_usage"), // 네트워크(계정 사용량 API)
             ("commands/terminal.rs", "term_paste"),
             ("proc_icons.rs", "get_process_icons"),
             ("notifications.rs", "notify_os"),

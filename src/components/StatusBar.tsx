@@ -24,7 +24,6 @@ export function StatusBar({ project }: { project: Project | null }) {
 
   return (
     <footer className="relative flex h-6 shrink-0 items-center gap-3 border-t border-edge bg-panel px-3 text-[11px] text-fg-dim">
-      <ClaudeUsageBar />
       {project ? (
         <>
           <span className="min-w-0 truncate select-text font-mono">
@@ -48,6 +47,7 @@ export function StatusBar({ project }: { project: Project | null }) {
       ) : (
         <span className="mr-auto">Gitpervisor</span>
       )}
+      <ClaudeUsageBar />
       {/* 맨 오른쪽 — 긴 작업(사본·프레임 추출·내보내기·자막)을 한곳에서 본다. */}
       <TaskCenter />
     </footer>
@@ -150,7 +150,7 @@ function EncodingPicker({ projectId }: { projectId: string }) {
 function usedColor(p: number): string {
   return p >= 80 ? "text-danger" : p >= 50 ? "text-warn" : "text-add";
 }
-// 리셋까지 남은 시간 — "3h 7m" / "16h 7m" / "7m". 지났거나 없으면 빈 문자열.
+// 리셋까지 남은 시간 — "3h 7m" / "16h 7m" / "7m". 지났거나 없으면 빈 문자열(부모 상태바가 30초마다 다시 그려 줄어든다).
 function resetIn(resetsAt: number | null): string {
   if (!resetsAt) return "";
   const s = resetsAt - Math.floor(Date.now() / 1000);
@@ -169,38 +169,39 @@ function usageKeyLabel(key: string, msg: Messages): string | undefined {
       return msg.app.statusBar.usageWindowWeekly;
     case "seven_day_opus":
       return "Opus";
+    case "seven_day_sonnet":
+      return "Sonnet";
     default:
       return undefined;
   }
 }
-function windowTail(w: UsageWindow, msg: Messages): string {
-  return resetIn(w.resetsAt) || usageKeyLabel(w.key, msg) || w.key;
+/** 리셋 시각이 지난 창은 새 창이다 — 다음 조회 전이라도 0% 로 보인다(옛 수치가 리셋 뒤에도 남아 보이지 않게). */
+function usedNow(w: UsageWindow, nowSec: number): number {
+  return w.resetsAt && w.resetsAt <= nowSec ? 0 : Math.max(0, Math.round(w.usedPercentage));
 }
 
-/** 좌측 하단 Claude 사용량 바 — statusline.js가 떨군 rate_limits를 "X% 사용 3h 7m · …"로.
- *  파일 없음/오래됨(6시간 초과)/빈 창이면 아무것도 렌더하지 않는다. */
+/** 우측 하단 Claude 계정 사용량 — "5시간 12% ↻2h 3m · 주간 81% ↻41h 13m"(statusline 의 5h·7d 와 같은 값).
+ *  데이터 없음/오래됨(6시간 초과)/빈 창이면 아무것도 렌더하지 않는다. */
 function ClaudeUsageBar() {
   const msg = useMessages();
   const { data } = useClaudeUsage();
   if (!data || data.windows.length === 0) return null;
-  // 6시간 넘게 갱신 안 됐으면(Claude Code 미사용) 숨긴다 — 오래된 수치 오해 방지.
-  const ageSec = Math.floor(Date.now() / 1000) - data.updatedAt;
-  if (data.updatedAt > 0 && ageSec > 6 * 3600) return null;
+  const nowSec = Math.floor(Date.now() / 1000);
+  // 6시간 넘게 못 받았으면(토큰 만료·오프라인) 숨긴다 — 오래된 수치 오해 방지.
+  if (data.updatedAt > 0 && nowSec - data.updatedAt > 6 * 3600) return null;
 
   return (
-    <span
-      className="flex shrink-0 items-center gap-1.5"
-      title={msg.app.statusBar.usageTitle}
-    >
+    <span className="flex shrink-0 items-center gap-1.5" title={msg.app.statusBar.usageTitle}>
       <Gauge size={11} className="shrink-0 text-fg-muted" />
       {data.windows.map((w, i) => {
-        const pct = Math.max(0, Math.round(w.usedPercentage));
-        const tail = windowTail(w, msg);
+        const pct = usedNow(w, nowSec);
+        const reset = resetIn(w.resetsAt);
         return (
           <span key={w.key} className="flex items-center gap-1">
             {i > 0 && <span className="text-fg-dim/60">·</span>}
+            <span className="text-fg-dim">{usageKeyLabel(w.key, msg) ?? w.key}</span>
             <span className={usedColor(pct)}>{pct}%</span>
-            <span className="text-fg-dim">{msg.app.statusBar.usageUsed(tail)}</span>
+            {reset && <span className="text-fg-dim/80">↻{reset}</span>}
           </span>
         );
       })}

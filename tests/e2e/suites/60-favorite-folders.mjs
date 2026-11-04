@@ -378,15 +378,18 @@ export async function run({ cdp, report: r }) {
       const outside = join(tmpdir(), `gpv-fav-outside-${Date.now()}.txt`);
       writeFileSync(outside, "must survive");
 
-      const denied = await cdp.try("fav_delete", { path: outside });
+      // 안쪽 파일을 섞어 보낸다 — 여러 개는 전부 검사한 뒤 보내므로 **안쪽 것도** 지워지면 안 된다.
+      const denied = await cdp.try("fav_delete", { paths: [victim, outside] });
       r.check(
-        "⑥-b fav_delete: 허용 루트 **밖** 파일은 거부한다",
-        !denied.ok && existsSync(outside),
-        denied.ok ? "허용됨 — 게이트가 없다" : `code=${denied.code} 파일생존=${existsSync(outside)}`,
+        "⑥-b fav_delete: 허용 루트 **밖** 파일이 하나라도 섞이면 통째로 거부한다",
+        !denied.ok && existsSync(outside) && existsSync(victim),
+        denied.ok
+          ? "허용됨 — 게이트가 없다"
+          : `code=${denied.code} 밖생존=${existsSync(outside)} 안생존=${existsSync(victim)}`,
       );
       rmSync(outside, { force: true });
 
-      const del = await cdp.try("fav_delete", { path: victim });
+      const del = await cdp.try("fav_delete", { paths: [victim] });
       r.check(
         "⑥-b fav_delete: 허용 루트 **안** 파일은 지워진다",
         del.ok && !existsSync(victim),

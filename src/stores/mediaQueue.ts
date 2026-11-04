@@ -48,6 +48,8 @@ export interface FramesTask extends TaskBase {
   intervalSecs: number;
   format: VideoFramesFormat;
   durationMs: number;
+  /** 있으면 장마다 OSD(벽시계 시각) — ipc.videoExtractFrames 참고. */
+  osdStartSecs: number | null;
   /** 끝난 뒤 트리·상태 갱신용 — 시작한 창의 것. */
   qc: QueryClient;
 }
@@ -141,6 +143,7 @@ function pump() {
         intervalSecs: head.intervalSecs,
         format: head.format,
         durationMs: head.durationMs,
+        osdStartSecs: head.osdStartSecs,
         qc: head.qc,
       })
       .then(() => done(null));

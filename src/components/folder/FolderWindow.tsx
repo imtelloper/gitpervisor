@@ -1,5 +1,5 @@
 import { emit } from "@tauri-apps/api/event";
-import { isMod } from "../../lib/platform";
+import { isMac, isMod } from "../../lib/platform";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   ClipboardPaste,
@@ -16,6 +16,7 @@ import {
   Pencil,
   RotateCw,
   Search,
+  Trash2,
   X,
 } from "lucide-react";
 import {
@@ -97,6 +98,10 @@ export default function FolderWindow({
    *  정렬이 최신 먼저) 강조·Ctrl+C·Enter 가 말없이 옆 파일로 옮겨 간다. 스크린샷 경로를 Claude 에
    *  넘기는 바로 그 동선에서 엉뚱한 경로가 나간다. */
   const [sel, setSel] = useState<Sel>(NO_SEL);
+  /** 다중 선택(이름) — 드래그 상자·Ctrl/Shift+클릭이 채운다. 비어 있으면 커서 한 칸이 선택이다. */
+  const [picked, setPicked] = useState<ReadonlySet<string>>(NO_PICK);
+  /** 드래그 상자가 시작될 때의 선택 — Ctrl+드래그는 여기에 더하고, 그냥 드래그는 비우고 시작한다. */
+  const marqueeBase = useRef<ReadonlySet<string>>(NO_PICK);
   /** 라이트박스에 열린 이미지의 **이름** — 같은 이유로 인덱스가 아니다. */
   const [lightbox, setLightbox] = useState<string | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; entry: FavEntry } | null>(
@@ -124,8 +129,14 @@ export default function FolderWindow({
   useEffect(() => {
     setEntries(null);
     setSel(NO_SEL); // 폴더가 바뀌면 선택은 처음부터
+    setPicked(NO_PICK);
     void load();
   }, [load]);
+  /** 지금 보고 있는 폴더 — 늦게 끝난 삭제가 다른 폴더로 옮겨 간 뒤에 옛 폴더 목록을 다시 읽어 덮지 않게. */
+  const dirNow = useRef(dir);
+  useEffect(() => {
+    dirNow.current = dir;
+  }, [dir]);
 
   // **창에 포커스가 돌아오면 다시 읽는다.** 스크린샷은 이 창이 뒤에 있을 때 찍히고, 보려면
   // 이 창을 클릭한다 — 그 클릭이 곧 갱신 신호다. 파일 워처를 거는 것보다 정확히 필요한 만큼이다.
@@ -182,6 +193,69 @@ export default function FolderWindow({
       if (e) setSel({ name: e.name, index: i });
     },
     [shown],
+  );
+
+  /** 칸 클릭(빈 자리면 -1). Shift = 커서부터 거기까지(커서는 기준점으로 남는다), Ctrl/⌘ = 하나씩 넣고 빼기. */
+  const clickItem = useCallback(
+    (i: number, mods: { mod: boolean; shift: boolean }) => {
+      const e = shown[i];
+      if (!e) {
+        if (!mods.mod && !mods.shift) setPicked(NO_PICK);
+        return;
+      }
+      if (mods.shift) {
+        const [lo, hi] = cursor < i ? [cursor, i] : [i, cursor];
+        setPicked(new Set(shown.slice(lo, hi + 1).map((x) => x.name)));
+        return;
+      }
+      if (mods.mod) {
+        setPicked((p) => {
+          // 처음 Ctrl+클릭이면 직접 골라 둔 커서 칸도 선택에 든다(탐색기와 같다).
+          const n = new Set(p.size === 0 && sel.name !== null && shown[cursor] ? [shown[cursor].name] : p);
+          if (n.has(e.name)) n.delete(e.name);
+          else n.add(e.name);
+          return n;
+        });
+      } else setPicked(NO_PICK);
+      select(i);
+    },
+    [shown, cursor, sel.name, select],
+  );
+
+  /** 우클릭 — 선택 안의 칸이면 선택을 그대로 두고(메뉴의 휴지통이 선택 전체에 간다), 밖이면 그 칸 하나로. */
+  const contextItem = useCallback(
+    (i: number, x: number, y: number) => {
+      const e = shown[i];
+      if (!e) return;
+      if (!picked.has(e.name)) setPicked(NO_PICK);
+      select(i);
+      setMenu({ x, y, entry: e });
+    },
+    [shown, picked, select],
+  );
+
+  const marqueeStart = useCallback(
+    (additive: boolean) => {
+      marqueeBase.current = additive ? picked : NO_PICK;
+    },
+    [picked],
+  );
+  const marquee = useCallback(
+    (hits: number[]) => {
+      const n = new Set(marqueeBase.current);
+      for (const i of hits) if (shown[i]) n.add(shown[i].name);
+      setPicked(n);
+    },
+    [shown],
+  );
+
+  /** 다중 선택 중 지금 보이는 것 — 검색·필터로 가려진 이름은 지우지 않는다. */
+  const pickedShown = useMemo(() => (picked.size ? shown.filter((e) => picked.has(e.name)) : []), [shown, picked]);
+  /** Delete 가 지울 것 — 다중 선택, 없으면 **직접 고른** 커서 한 칸. 아직 아무것도 안 골랐으면(NO_SEL — 강조는 맨 앞을
+   *  따라갈 뿐이다) 없다: 창을 열자마자 누른 Delete 에 최신 파일이 말없이 사라지면 안 된다. */
+  const trashTargets = useMemo(
+    () => (picked.size ? pickedShown : sel.name !== null && shown[cursor] ? [shown[cursor]] : []),
+    [picked.size, pickedShown, sel.name, shown, cursor],
   );
 
   const lbIndex = lightbox === null ? -1 : images.findIndex((e) => e.name === lightbox);
@@ -287,17 +361,54 @@ export default function FolderWindow({
     [dir, join, load],
   );
 
+  /** **휴지통으로** 보낸다(fav_delete) — 확인창 없이. 탐색기의 Delete 와 같고, 되돌릴 수 있어서 그렇게 둔다. 목록에서는
+   *  먼저 지운다(응답을 기다리면 지운 칸이 한 박자 남아 같은 파일에 Delete 를 두 번 누르게 된다). 실패하면 디스크를 다시
+   *  읽는다 — 여러 개 중 일부만 옮겨졌을 수 있어 "전부 되돌리기"는 틀린 그림이다. */
+  const trashEntries = useCallback(
+    (list: FavEntry[]) => {
+      if (!list.length) return;
+      const names = new Set(list.map((e) => e.name));
+      setEntries((cur) => cur && cur.filter((e) => !names.has(e.name)));
+      setPicked(NO_PICK);
+      const t = currentMessages().folder;
+      void ipc
+        .favDelete(list.map((e) => join(dir, e.name)))
+        .then(() =>
+          useUi
+            .getState()
+            .pushToast("success", list.length === 1 ? t.peek.trashed(list[0].name) : t.window.trashedMany(list.length)),
+        )
+        .catch((err) => {
+          useUi.getState().pushToast("error", errText(err));
+          if (dirNow.current === dir) void load();
+        });
+    },
+    [dir, join, load],
+  );
+
+  /** 라이트박스에서 지우면 닫지 않고 다음 장(끝이면 앞 장)으로 넘어간다 — 한 장씩 보며 골라내는 동선. */
+  const trashLightbox = useCallback(() => {
+    const i = images.findIndex((e) => e.name === lightbox);
+    if (i < 0) return;
+    setLightbox((images[i + 1] ?? images[i - 1])?.name ?? null);
+    trashEntries([images[i]]);
+  }, [images, lightbox, trashEntries]);
+
   // ---- 키보드 ----
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
       const typing =
         ev.target instanceof HTMLInputElement ||
         ev.target instanceof HTMLTextAreaElement;
+      // 누르고 있어도 한 번 — 자동 반복으로 여러 장이 연달아 사라지면 안 된다.
+      const trashKey = ev.key === "Delete" || (isMac && ev.metaKey && ev.key === "Backspace");
       if (lightbox !== null) {
         if (ev.key === "Escape") setLightbox(null);
         else if (ev.key === "ArrowRight") stepLightbox(1);
         else if (ev.key === "ArrowLeft") stepLightbox(-1);
-        else return;
+        else if (trashKey) {
+          if (!ev.repeat) trashLightbox();
+        } else return;
         ev.preventDefault();
         return;
       }
@@ -307,6 +418,20 @@ export default function FolderWindow({
         return;
       }
       if (typing) return;
+      if (trashKey) {
+        ev.preventDefault();
+        if (!ev.repeat && !useUi.getState().prompt) trashEntries(trashTargets);
+        return;
+      }
+      if (ev.key === "Escape" && picked.size) {
+        setPicked(NO_PICK);
+        return;
+      }
+      if (isMod(ev) && ev.key.toLowerCase() === "a") {
+        ev.preventDefault();
+        setPicked(new Set(shown.map((e) => e.name)));
+        return;
+      }
       if (ev.key === "F2" && !isMod(ev) && !ev.altKey && !ev.shiftKey) {
         const e = shown[cursor];
         if (e && !useUi.getState().prompt) {
@@ -348,7 +473,8 @@ export default function FolderWindow({
       ev.preventDefault();
       // 목록 모드는 ←→도 한 칸씩(열이 하나라 위아래와 같다).
       const delta = step || row * (view.mode === "list" ? 1 : 0) || row;
-      // 새 자리를 계산해 **이름**으로 적는다(위 sel 주석).
+      // 새 자리를 계산해 **이름**으로 적는다(위 sel 주석). 다중 선택은 접는다(탐색기와 같다).
+      setPicked(NO_PICK);
       setSel((s) => {
         const i = Math.max(0, Math.min(shown.length - 1, cursorOf(shown, s) + delta));
         return shown[i] ? { name: shown[i].name, index: i } : s;
@@ -357,7 +483,22 @@ export default function FolderWindow({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [lightbox, stepLightbox, shown, cursor, view.mode, load, goUp, openEntry, copyPath, renameEntry]);
+  }, [
+    lightbox,
+    stepLightbox,
+    trashLightbox,
+    trashEntries,
+    trashTargets,
+    picked.size,
+    shown,
+    cursor,
+    view.mode,
+    load,
+    goUp,
+    openEntry,
+    copyPath,
+    renameEntry,
+  ]);
 
   const crumbs = useMemo(() => {
     const rootName = root.replace(/[\\/]+$/, "").split(SEP).filter(Boolean).pop() ?? root;
@@ -394,6 +535,7 @@ export default function FolderWindow({
           })
         }
         count={shown.length}
+        pickedCount={pickedShown.length}
       />
 
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto">
@@ -419,9 +561,13 @@ export default function FolderWindow({
           <ListView
             items={shown}
             cursor={cursor}
-            onCursor={select}
+            scrollRef={scrollRef}
+            picked={picked}
+            onClickItem={clickItem}
             onOpen={openEntry}
-            onMenu={(x, y, e) => setMenu({ x, y, entry: e })}
+            onContextItem={contextItem}
+            onMarqueeStart={marqueeStart}
+            onMarquee={marquee}
           />
         ) : (
           <GridView
@@ -433,9 +579,12 @@ export default function FolderWindow({
             cursor={cursor}
             reveal={reveal}
             scrollRef={scrollRef}
-            onCursor={select}
+            picked={picked}
+            onClickItem={clickItem}
             onOpen={openEntry}
-            onMenu={(x, y, e) => setMenu({ x, y, entry: e })}
+            onContextItem={contextItem}
+            onMarqueeStart={marqueeStart}
+            onMarquee={marquee}
           />
         )}
       </div>
@@ -450,6 +599,8 @@ export default function FolderWindow({
           onCopyVideoTime={copyVideoTime}
           onPastePath={() => pastePath(menu.entry)}
           onRename={() => renameEntry(menu.entry)}
+          trashCount={picked.has(menu.entry.name) ? pickedShown.length : 1}
+          onTrash={() => trashEntries(picked.has(menu.entry.name) ? pickedShown : [menu.entry])}
           onOpen={() =>
             void ipc.favOpen(join(dir, menu.entry.name), "default").catch(() => {
               useUi.getState().pushToast("error", msg.folder.window.openFailed);
@@ -471,6 +622,7 @@ export default function FolderWindow({
           total={images.length}
           onClose={() => setLightbox(null)}
           onStep={stepLightbox}
+          onTrash={trashLightbox}
         />
       )}
 
@@ -554,6 +706,7 @@ interface Sel {
   index: number;
 }
 const NO_SEL: Sel = { name: null, index: 0 };
+const NO_PICK: ReadonlySet<string> = new Set();
 /** 선택이 지금 목록의 몇 번째인가. 이름이 없으면(삭제·필터) 마지막 자리 — 끝을 넘지 않게. 아직 안
  *  골랐으면(NO_SEL) 늘 0 = 맨 앞(최신). */
 const cursorOf = (list: FavEntry[], s: Sel) => {
@@ -592,6 +745,7 @@ function Toolbar({
   onRefresh,
   onReveal,
   count,
+  pickedCount,
 }: {
   crumbs: string[];
   onCrumb: (i: number) => void;
@@ -602,6 +756,7 @@ function Toolbar({
   onRefresh: () => void;
   onReveal: () => void;
   count: number;
+  pickedCount: number;
 }) {
   const msg = useMessages();
   return (
@@ -621,6 +776,9 @@ function Toolbar({
           </span>
         ))}
         <span className="ml-1 shrink-0 text-fg-dim">{msg.folder.window.itemCount(count)}</span>
+        {pickedCount > 0 && (
+          <span className="ml-1 shrink-0 text-accent">· {msg.folder.window.pickedCount(pickedCount)}</span>
+        )}
       </div>
 
       <div className="flex shrink-0 items-center gap-1 rounded border border-edge px-1.5 py-0.5">
@@ -703,6 +861,179 @@ const GAP = 8;
 const PAD = 8;
 /** 칸 아래 이름 줄 높이(px). 가상 그리드는 행 높이가 고정이어야 스크롤 위치로 행을 계산한다. */
 const NAME_H = 24;
+/** 드래그 상자가 이만큼(px) 가장자리에 다가가면 그쪽으로 스크롤한다. */
+const EDGE_SCROLL = 24;
+
+/** 드래그 상자(내용 좌표)에 걸친 칸 번호 — 칸 사이 틈만 덮으면 걸리지 않는다. */
+function gridHits(
+  r: { x1: number; y1: number; x2: number; y2: number },
+  n: number,
+  cols: number,
+  colW: number,
+  rowH: number,
+  tileH: number,
+): number[] {
+  const hits: number[] = [];
+  const last = Math.floor((r.y2 - PAD) / rowH);
+  for (let row = Math.max(0, Math.floor((r.y1 - PAD) / rowH)); row <= last; row++) {
+    const top = PAD + row * rowH;
+    if (r.y2 < top || r.y1 > top + tileH) continue;
+    for (let col = 0; col < cols; col++) {
+      const left = PAD + col * (colW + GAP);
+      const i = row * cols + col;
+      if (i < n && r.x2 >= left && r.x1 <= left + colW) hits.push(i);
+    }
+  }
+  return hits;
+}
+
+interface MarqueeRect {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+}
+interface Marquee {
+  band: { x: number; y: number; w: number; h: number } | null;
+  onMouseDown: (ev: React.MouseEvent<HTMLDivElement>) => void;
+  /** 드래그 끝에 따라온 click 이면 true(한 번만) — 그 click 은 칸 선택이 아니다. */
+  swallow: () => boolean;
+}
+
+/**
+ * 드래그 상자 — 그리드·목록 공용. 칸 위에서 시작해도 된다(칸 사이 틈이 8px 라 빈 자리에서만 받으면 거의 못 쓴다). 4px 넘게
+ * 움직여야 상자이고, 그 뒤의 click 은 삼킨다. 걸린 칸은 `hitTest`(상자를 놓은 요소 기준 내용 좌표)가 고른다 — 가상 그리드는
+ * 화면 밖 칸이 DOM 에 없어 계산으로 판정한다. 상자는 내용 좌표라 스크롤해도 시작점이 내용에 붙어 있고, 가장자리에 대면
+ * 그쪽으로 스크롤한다(860장 폴더를 한 번에 훑는 동선).
+ */
+function useMarqueeDrag(
+  scrollRef: RefObject<HTMLDivElement | null>,
+  hitTest: (r: MarqueeRect, host: HTMLElement) => number[],
+  onMarqueeStart: (additive: boolean) => void,
+  onMarquee: (hits: number[]) => void,
+): Marquee {
+  const [band, setBand] = useState<Marquee["band"]>(null);
+  const swallowClick = useRef(false);
+  /** 드래그 도중 바뀔 수 있는 것 — 창 포커스로 목록이 다시 읽히면 칸 수·배치가 바뀐다. */
+  const live = useRef({ hitTest, onMarquee });
+  live.current = { hitTest, onMarquee };
+  const endDrag = useRef<(() => void) | null>(null);
+  useEffect(() => () => endDrag.current?.(), []);
+
+  const onMouseDown = (ev: React.MouseEvent<HTMLDivElement>) => {
+    swallowClick.current = false;
+    if (ev.button !== 0 || ev.shiftKey) return;
+    const host = ev.currentTarget;
+    const sc = scrollRef.current;
+    const r0 = host.getBoundingClientRect();
+    const sx = ev.clientX - r0.left;
+    const sy = ev.clientY - r0.top;
+    const additive = isMod(ev);
+    let cx = ev.clientX;
+    let cy = ev.clientY;
+    let started = false;
+    let raf = 0;
+    let lastKey = "";
+    const update = () => {
+      const r = host.getBoundingClientRect();
+      // 내용 밖으로는 늘리지 않는다 — 상자가 내용보다 길어지면 스크롤 영역이 따라 늘어 자동 스크롤이 끝없이 내려간다.
+      const x = Math.max(0, Math.min(r.width, cx - r.left));
+      const y = Math.max(0, Math.min(r.height, cy - r.top));
+      const rect = { x1: Math.min(sx, x), y1: Math.min(sy, y), x2: Math.max(sx, x), y2: Math.max(sy, y) };
+      setBand({ x: rect.x1, y: rect.y1, w: rect.x2 - rect.x1, h: rect.y2 - rect.y1 });
+      const hits = live.current.hitTest(rect, host);
+      const key = `${hits.length}:${hits[0]}:${hits[hits.length - 1]}`; // 걸린 칸은 늘 이어진 덩어리다
+      if (key !== lastKey) {
+        lastKey = key;
+        live.current.onMarquee(hits);
+      }
+    };
+    const autoScroll = () => {
+      if (sc) {
+        const sr = sc.getBoundingClientRect();
+        const d =
+          cy < sr.top + EDGE_SCROLL ? cy - sr.top - EDGE_SCROLL : cy > sr.bottom - EDGE_SCROLL ? cy - sr.bottom + EDGE_SCROLL : 0;
+        if (d) sc.scrollTop += Math.max(-40, Math.min(40, d / 2)); // 스크롤 이벤트가 update 를 부른다
+      }
+      raf = requestAnimationFrame(autoScroll);
+    };
+    const move = (e: MouseEvent) => {
+      cx = e.clientX;
+      cy = e.clientY;
+      if (!started) {
+        if (Math.hypot(cx - ev.clientX, cy - ev.clientY) < 4) return;
+        started = true;
+        onMarqueeStart(additive);
+        sc?.addEventListener("scroll", update);
+        raf = requestAnimationFrame(autoScroll);
+      }
+      update();
+    };
+    const end = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", end);
+      sc?.removeEventListener("scroll", update);
+      cancelAnimationFrame(raf);
+      endDrag.current = null;
+      if (started) {
+        swallowClick.current = true;
+        setBand(null);
+      }
+    };
+    endDrag.current?.();
+    endDrag.current = end;
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", end);
+  };
+  const swallow = () => {
+    const s = swallowClick.current;
+    swallowClick.current = false;
+    return s;
+  };
+  return { band, onMouseDown, swallow };
+}
+
+function MarqueeBand({ band }: { band: Marquee["band"] }) {
+  if (!band) return null;
+  return (
+    <div
+      className="pointer-events-none absolute z-10 rounded-sm border border-accent bg-accent/10"
+      style={{ left: band.x, top: band.y, width: band.w, height: band.h }}
+    />
+  );
+}
+
+/** 칸·행 마우스 처리 — 칸마다 핸들러를 달지 않고 바깥에서 `data-i` 로 받는다(스크롤마다 새로 그려지는 칸이 `memo` 를 깨지 않게). */
+function itemMouseHandlers(
+  items: FavEntry[],
+  marquee: Marquee,
+  onClickItem: (i: number, mods: { mod: boolean; shift: boolean }) => void,
+  onOpen: (e: FavEntry) => void,
+  onContextItem: (i: number, x: number, y: number) => void,
+) {
+  const at = (ev: React.MouseEvent) => {
+    const el = ev.target instanceof Element ? ev.target.closest<HTMLElement>("[data-i]") : null;
+    const i = el ? Number(el.dataset.i) : -1;
+    return items[i] ? i : -1;
+  };
+  return {
+    onMouseDown: marquee.onMouseDown,
+    onClick: (ev: React.MouseEvent) => {
+      if (!marquee.swallow()) onClickItem(at(ev), { mod: isMod(ev), shift: ev.shiftKey });
+    },
+    onDoubleClick: (ev: React.MouseEvent) => {
+      const i = at(ev);
+      if (i >= 0) onOpen(items[i]);
+    },
+    onContextMenu: (ev: React.MouseEvent) => {
+      const i = at(ev);
+      if (i < 0) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      onContextItem(i, ev.clientX, ev.clientY);
+    },
+  };
+}
 
 /**
  * 가상 그리드 — 보이는 행 ± 한 화면(행 수)만 DOM 에 그리고 전체 높이는 바깥 상자가 잡는다. 위아래 한 화면은
@@ -725,9 +1056,12 @@ function GridView({
   cursor,
   reveal,
   scrollRef,
-  onCursor,
+  picked,
+  onClickItem,
   onOpen,
-  onMenu,
+  onContextItem,
+  onMarqueeStart,
+  onMarquee,
 }: {
   items: FavEntry[];
   dir: string;
@@ -738,9 +1072,14 @@ function GridView({
   cursor: number;
   reveal: number;
   scrollRef: RefObject<HTMLDivElement | null>;
-  onCursor: (i: number) => void;
+  picked: ReadonlySet<string>;
+  onClickItem: (i: number, mods: { mod: boolean; shift: boolean }) => void;
   onOpen: (e: FavEntry) => void;
-  onMenu: (x: number, y: number, e: FavEntry) => void;
+  onContextItem: (i: number, x: number, y: number) => void;
+  /** 드래그 상자 시작 — `additive` = Ctrl/⌘ 드래그(기존 선택에 더한다). */
+  onMarqueeStart: (additive: boolean) => void;
+  /** 상자에 걸친 칸 번호 — 바뀔 때만 부른다. */
+  onMarquee: (hits: number[]) => void;
 }) {
   const token = useFavThumbToken();
   const [box, setBox] = useState({ w: 0, h: 0 });
@@ -751,6 +1090,7 @@ function GridView({
   const rowH = tileH + GAP;
   const cols = Math.max(1, Math.floor((box.w - 2 * PAD + GAP) / (tile + GAP)));
   const rows = Math.ceil(items.length / cols);
+  const colW = (box.w - 2 * PAD - (cols - 1) * GAP) / cols; // 1fr 열 폭 — 그리드와 같은 식
 
   useLayoutEffect(() => {
     const sc = scrollRef.current;
@@ -841,33 +1181,21 @@ function GridView({
   // 창을 닫거나 목록 보기로 바꾸면 멈춘다(창을 닫으면 페이지째 사라지지만 목록 보기는 같은 페이지다).
   useEffect(() => () => prefetchFavThumbs([], 0, -1), []);
 
-  const at = (ev: React.MouseEvent) => {
-    const el = ev.target instanceof Element ? ev.target.closest<HTMLElement>("[data-i]") : null;
-    const i = el ? Number(el.dataset.i) : -1;
-    return items[i] ? i : -1;
-  };
+  const marquee = useMarqueeDrag(
+    scrollRef,
+    (r) => gridHits(r, items.length, cols, colW, rowH, tileH),
+    onMarqueeStart,
+    onMarquee,
+  );
 
   return (
     <div
-      className="relative"
-      style={{ height: rows ? PAD * 2 + rows * rowH - GAP : 0 }}
-      onClick={(ev) => {
-        const i = at(ev);
-        if (i >= 0) onCursor(i);
-      }}
-      onDoubleClick={(ev) => {
-        const i = at(ev);
-        if (i >= 0) onOpen(items[i]);
-      }}
-      onContextMenu={(ev) => {
-        const i = at(ev);
-        if (i < 0) return;
-        ev.preventDefault();
-        ev.stopPropagation();
-        onCursor(i);
-        onMenu(ev.clientX, ev.clientY, items[i]);
-      }}
+      // 칸이 적어도 아래 빈 자리에서 상자를 시작할 수 있게 화면 높이만큼은 잡는다.
+      className="relative select-none"
+      style={{ height: rows ? PAD * 2 + rows * rowH - GAP : 0, minHeight: "100%" }}
+      {...itemMouseHandlers(items, marquee, onClickItem, onOpen, onContextItem)}
     >
+      <MarqueeBand band={marquee.band} />
       <div
         className="absolute grid"
         style={{
@@ -885,7 +1213,7 @@ function GridView({
             key={thumbKey(e)}
             e={e}
             i={start + k}
-            selected={start + k === cursor}
+            selected={picked.size ? picked.has(e.name) : start + k === cursor}
             size={tile}
             url={urls[start + k]}
           />
@@ -985,18 +1313,48 @@ const thumbKey = (e: FavEntry) => `${e.name}|${e.mtimeMs}|${e.size}`;
 function ListView({
   items,
   cursor,
-  onCursor,
+  scrollRef,
+  picked,
+  onClickItem,
   onOpen,
-  onMenu,
+  onContextItem,
+  onMarqueeStart,
+  onMarquee,
 }: {
   items: FavEntry[];
   cursor: number;
-  onCursor: (i: number) => void;
+  scrollRef: RefObject<HTMLDivElement | null>;
+  picked: ReadonlySet<string>;
+  onClickItem: (i: number, mods: { mod: boolean; shift: boolean }) => void;
   onOpen: (e: FavEntry) => void;
-  onMenu: (x: number, y: number, e: FavEntry) => void;
+  onContextItem: (i: number, x: number, y: number) => void;
+  onMarqueeStart: (additive: boolean) => void;
+  onMarquee: (hits: number[]) => void;
 }) {
   const msg = useMessages();
+  // 행은 다 그려져 있고 높이가 같다 — 첫 행 자리·높이로 상자가 걸친 행 범위를 낸다(가로는 보지 않는다, 행이 폭 전체다).
+  const marquee = useMarqueeDrag(
+    scrollRef,
+    (r, host) => {
+      const first = host.querySelector<HTMLElement>('tr[data-i="0"]');
+      if (!first) return [];
+      const fr = first.getBoundingClientRect();
+      const top0 = fr.top - host.getBoundingClientRect().top;
+      const lo = Math.max(0, Math.floor((r.y1 - top0) / fr.height));
+      const hi = Math.min(items.length - 1, Math.floor((r.y2 - top0) / fr.height));
+      return hi < lo ? [] : Array.from({ length: hi - lo + 1 }, (_, k) => lo + k);
+    },
+    onMarqueeStart,
+    onMarquee,
+  );
   return (
+    // select-none — Shift+클릭·드래그가 행 글자를 긁어 선택하지 않게. 표 아래 빈 자리에서도 상자를 시작할 수 있게 화면 높이만큼.
+    <div
+      className="relative select-none"
+      style={{ minHeight: "100%" }}
+      {...itemMouseHandlers(items, marquee, onClickItem, onOpen, onContextItem)}
+    >
+      <MarqueeBand band={marquee.band} />
     <table className="w-full text-[12px]">
       <thead className="sticky top-0 bg-panel text-[11px] text-fg-dim">
         <tr>
@@ -1009,15 +1367,10 @@ function ListView({
         {items.map((e, i) => (
           <tr
             key={e.name}
-            onClick={() => onCursor(i)}
-            onDoubleClick={() => onOpen(e)}
-            onContextMenu={(ev) => {
-              ev.preventDefault();
-              ev.stopPropagation();
-              onCursor(i);
-              onMenu(ev.clientX, ev.clientY, e);
-            }}
-            className={`cursor-default ${i === cursor ? "bg-raised text-fg" : "text-fg-muted hover:bg-raised"}`}
+            data-i={i}
+            className={`cursor-default ${
+              (picked.size ? picked.has(e.name) : i === cursor) ? "bg-raised text-fg" : "text-fg-muted hover:bg-raised"
+            }`}
           >
             <td className="flex items-center gap-1.5 truncate px-2 py-1">
               {e.isDir ? (
@@ -1035,6 +1388,7 @@ function ListView({
         ))}
       </tbody>
     </table>
+    </div>
   );
 }
 
@@ -1057,6 +1411,8 @@ function ItemMenu({
   onCopyVideoTime,
   onPastePath,
   onRename,
+  trashCount,
+  onTrash,
   onOpen,
   onReveal,
 }: {
@@ -1068,6 +1424,9 @@ function ItemMenu({
   onCopyVideoTime: (time: string) => void;
   onPastePath: () => void;
   onRename: () => void;
+  /** 휴지통이 지울 개수 — 다중 선택 안의 칸을 우클릭했으면 선택 전체. */
+  trashCount: number;
+  onTrash: () => void;
   onOpen: () => void;
   onReveal: () => void;
 }) {
@@ -1092,10 +1451,10 @@ function ItemMenu({
   return (
     <div
       className="fixed z-50 min-w-52 rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl"
-      // 항목 5줄 × 31.5 + 헤더 24.5 + 패딩 ≈ 192(영상 시각 줄이 있으면 +32). PaneMenu 와 같은 클램프 규칙.
+      // 항목 6줄 × 31.5 + 헤더 24.5 + 구분선 둘 + 패딩 ≈ 232(영상 시각 줄이 있으면 +32). PaneMenu 와 같은 클램프 규칙.
       style={{
         left: Math.min(x, window.innerWidth - 220),
-        top: Math.max(0, Math.min(y, window.innerHeight - (videoTime ? 224 : 192))),
+        top: Math.max(0, Math.min(y, window.innerHeight - (videoTime ? 264 : 232))),
       }}
       onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
@@ -1118,6 +1477,14 @@ function ItemMenu({
       <Row icon={<Pencil size={14} />} label={msg.folder.window.menuRename} hint="F2" onClick={run(onRename)} />
       <Row icon={<ExternalLink size={14} />} label={msg.folder.menuOpenDefault} onClick={run(onOpen)} />
       <Row icon={<FolderOpen size={14} />} label={msg.folder.menuReveal} onClick={run(onReveal)} />
+      <div className="my-1 border-t border-edge" />
+      <Row
+        icon={<Trash2 size={14} />}
+        label={trashCount > 1 ? msg.folder.window.menuTrashMany(trashCount) : msg.folder.peek.menuTrash}
+        hint={isMac ? "⌘⌫" : "Del"}
+        danger
+        onClick={run(onTrash)}
+      />
     </div>
   );
 }
@@ -1128,17 +1495,21 @@ function Row({
   icon,
   label,
   hint,
+  danger,
   onClick,
 }: {
   icon: React.ReactNode;
   label: string;
   hint?: string;
+  danger?: boolean;
   onClick: () => void;
 }) {
   return (
     <button
       onClick={onClick}
-      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-fg-muted hover:bg-raised hover:text-fg"
+      className={`flex w-full items-center gap-2 px-3 py-1.5 text-left ${
+        danger ? "text-danger hover:bg-raised" : "text-fg-muted hover:bg-raised hover:text-fg"
+      }`}
     >
       <span className="shrink-0">{icon}</span>
       <span className="min-w-0 flex-1 truncate">{label}</span>

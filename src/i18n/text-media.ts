@@ -333,6 +333,11 @@ const ko = {
     naming: (example: string) => `파일 이름에 영상 시각(시h분m초s)이 들어갑니다 — 예: ${example}`,
     start: "추출 시작",
     intervalInvalid: "간격은 0.1초 ~ 3600초 사이로 입력하세요",
+    osd: "OSD",
+    osdToggle: "왼쪽 위에 촬영 시각 찍기",
+    osdHint: (fromName: boolean) =>
+      `영상 시작(0초) 시각${fromName ? " — 파일 이름에서 읽었습니다" : ""}. 장마다 여기에 영상 시각을 더해 찍습니다`,
+    osdInvalid: "시작 시각을 1970년 ~ 2999년 사이로 입력하세요",
     running: (frames: number, expected: number, percent: number) =>
       `${frames} / 약 ${expected}장 · ${percent}%`,
     runningNoTotal: (frames: number) => `${frames}장 추출됨 — 영상 길이를 몰라 진행률은 표시하지 않습니다`,
@@ -703,6 +708,11 @@ export const mediaText = defineText(ko, {
       naming: (example) => `File names carry the video time (h/m/s) — e.g. ${example}`,
       start: "Start extraction",
       intervalInvalid: "Enter an interval between 0.1 and 3600 seconds",
+      osd: "OSD",
+      osdToggle: "Stamp the recording time in the top-left",
+      osdHint: (fromName) =>
+        `Time at the start of the video (0 s)${fromName ? " — read from the file name" : ""}. Each frame gets this plus its video time`,
+      osdInvalid: "Enter a start time between 1970 and 2999",
       running: (frames, expected, percent) => `${frames} / about ${expected} · ${percent}%`,
       runningNoTotal: (frames) => `${frames} frames extracted — video length unknown, so no percentage`,
       runningNoExpected: (frames, percent) => `${frames} frames extracted · ${percent}%`,

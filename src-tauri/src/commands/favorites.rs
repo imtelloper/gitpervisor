@@ -171,7 +171,9 @@ fn kind_of(name: &str, is_dir: bool) -> &'static str {
         .unwrap_or("")
         .to_ascii_lowercase();
     match ext.as_str() {
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg" => "image",
+        // 웹뷰·image 크레이트가 못 여는 것(heic·avif·tif…)은 ffmpeg 로 바꿔 보인다(still_image.rs).
+        "png" | "jpg" | "jpeg" | "jfif" | "gif" | "webp" | "bmp" | "svg" | "ico" | "heic" | "heif" | "hif" | "avif"
+        | "tif" | "tiff" | "tga" | "psd" | "dds" | "exr" | "qoi" | "jxl" => "image",
         "mp4" | "mov" | "webm" | "mkv" | "avi" => "video",
         _ => "other",
     }
@@ -256,6 +258,24 @@ pub(crate) async fn thumb_jpeg(
     let hit = run_blocking(move || hit_path.and_then(|p| std::fs::read(p).ok())).await?;
     if let Some(bytes) = hit {
         return Ok(bytes);
+    }
+    let sniff = file.clone();
+    if run_blocking(move || needs_ffmpeg(&sniff)).await? {
+        let state = app.state::<AppState>();
+        let bin = super::video::find_ffmpeg(app, state.inner())?;
+        let buf = super::still_image::still_to_jpeg(&bin, &file, edge, 4).await?;
+        if let Some(p) = cache {
+            let bytes = buf.clone();
+            // 캐시 기록 실패는 치명적이지 않다 — 다음번에 다시 만들 뿐이다.
+            run_blocking(move || {
+                if let Some(parent) = p.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = write_atomic(&p, &bytes);
+            })
+            .await?;
+        }
+        return Ok(buf);
     }
     let probe = file.clone();
     let slots = run_blocking(move || decode_slots_for(image_dims(&probe))).await?;
@@ -500,23 +520,59 @@ pub struct FavBytes {
 }
 
 /// 라이트박스가 쓰는 원본. 썸네일과 달리 파일 그대로이므로 한도를 건다.
+///
+/// 웹뷰가 못 그리는 형식(HEIC·AVIF·TIFF…, 확장자가 jpeg 여도 내용이 HEIC 면)은 ffmpeg 로 JPEG 로 바꿔 보낸다 — 긴 변
+/// 4096 까지(4K 사진은 원래 크기 그대로). 바꾼 결과는 원본 크기 한도를 받지 않는다(원본은 ffmpeg 가 프로세스 밖에서 읽는다).
 #[tauri::command(async)]
-pub fn fav_read(state: State<'_, AppState>, path: String) -> Result<FavBytes, IpcError> {
+pub async fn fav_read(app: AppHandle, state: State<'_, AppState>, path: String) -> Result<FavBytes, IpcError> {
     let file = allowed(&state, &path)?;
-    let meta = std::fs::metadata(&file)
-        .map_err(|e| IpcError::new(ErrorCode::NotFound, text_files::could_not_read_file(e)))?;
-    if meta.len() > MAX_READ_BYTES {
-        return Err(IpcError::new(
-            ErrorCode::Io,
-            text_files::fav_read_too_large_25mb(),
-        ));
+    let sniff = file.clone();
+    if !run_blocking(move || webview_shows(&sniff)).await? {
+        let bin = super::video::find_ffmpeg(&app, state.inner())?;
+        let jpg = super::still_image::still_to_jpeg(&bin, &file, 4096, 2).await?;
+        return Ok(FavBytes { mime: "image/jpeg".into(), base64: B64.encode(&jpg) });
     }
-    let bytes = std::fs::read(&file)
-        .map_err(|e| IpcError::new(ErrorCode::Io, text_files::could_not_read_file(e)))?;
-    Ok(FavBytes {
-        mime: mime_of(&file).to_string(),
-        base64: B64.encode(&bytes),
+    run_blocking(move || {
+        let meta = std::fs::metadata(&file)
+            .map_err(|e| IpcError::new(ErrorCode::NotFound, text_files::could_not_read_file(e)))?;
+        if meta.len() > MAX_READ_BYTES {
+            return Err(IpcError::new(ErrorCode::Io, text_files::fav_read_too_large_25mb()));
+        }
+        let bytes = std::fs::read(&file)
+            .map_err(|e| IpcError::new(ErrorCode::Io, text_files::could_not_read_file(e)))?;
+        Ok(FavBytes { mime: mime_of(&file).to_string(), base64: B64.encode(&bytes) })
     })
+    .await?
+}
+
+/// ISO-BMFF 정지 이미지(HEIC·HEIF·AVIF)인가 — 4~8 바이트가 `ftyp`. 확장자가 jpeg 인 HEIC(휴대폰 내보내기)도 잡는다.
+fn is_isobmff(file: &Path) -> bool {
+    use std::io::Read;
+    let mut head = [0u8; 8];
+    File::open(file).and_then(|mut f| f.read_exact(&mut head)).is_ok() && &head[4..8] == b"ftyp"
+}
+
+fn ext_lower(file: &Path) -> String {
+    file.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase()
+}
+
+/// 웹뷰 `<img>` 가 그대로 그리는가(세 OS 웹뷰 공통 — WebKitGTK 는 HEIC·AVIF 를 못 그린다).
+fn webview_shows(file: &Path) -> bool {
+    matches!(ext_lower(file).as_str(), "png" | "jpg" | "jpeg" | "jfif" | "gif" | "webp" | "bmp" | "svg" | "ico")
+        && !is_isobmff(file)
+}
+
+/// 썸네일을 ffmpeg 로 만들어야 하는가 — image 크레이트가 내용으로 형식을 못 알아보거나(heic·avif), 알아봐도 이 빌드에
+/// 그 디코더가 없을 때(tif·ico). svg 는 ffmpeg 도 못 그려 종전처럼 아이콘으로 남긴다(실패마다 ffmpeg 를 띄우지 않게).
+fn needs_ffmpeg(file: &Path) -> bool {
+    if ext_lower(file) == "svg" {
+        return false;
+    }
+    if is_isobmff(file) {
+        return true;
+    }
+    let format = image::ImageReader::open(file).and_then(|r| r.with_guessed_format()).ok().and_then(|r| r.format());
+    !format.is_some_and(|f| f.reading_enabled())
 }
 
 fn mime_of(p: &Path) -> &'static str {
@@ -528,11 +584,12 @@ fn mime_of(p: &Path) -> &'static str {
         .as_str()
     {
         "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
+        "jpg" | "jpeg" | "jfif" => "image/jpeg",
         "gif" => "image/gif",
         "webp" => "image/webp",
         "bmp" => "image/bmp",
         "svg" => "image/svg+xml",
+        "ico" => "image/x-icon",
         _ => "application/octet-stream",
     }
 }
@@ -568,11 +625,22 @@ pub fn fav_open(state: State<'_, AppState>, path: String, how: String) -> Result
 ///
 /// 허용 루트 검사는 다른 `fav_*` 와 **같은 `allowed`** 를 쓴다. 이 커맨드만 따로 검사하면
 /// 루트 규칙이 두 벌이 되고, 파괴적인 쪽이 느슨해지는 건 시간 문제다.
+///
+/// 여러 개(폴더 창의 다중 선택)는 **전부 검사한 뒤** 한 번에 보낸다 — 하나라도 루트 밖이면 아무것도 지우지 않는다.
+/// 한 번에 보내는 이유: Windows 는 휴지통 이동 하나가 셸 작업 하나라, 수백 장을 하나씩 부르면 그만큼 느리다.
 #[tauri::command(async)]
-pub fn fav_delete(state: State<'_, AppState>, path: String) -> Result<(), IpcError> {
-    let p = allowed(&state, &path)?;
-    trash::delete(&p)
+pub fn fav_delete(state: State<'_, AppState>, paths: Vec<String>) -> Result<(), IpcError> {
+    let (favs, projects) = roots(&state);
+    let ps = fav_delete_targets(&paths, &favs, &projects)?;
+    if ps.is_empty() {
+        return Ok(());
+    }
+    trash::delete_all(&ps)
         .map_err(|e| IpcError::new(ErrorCode::Io, text_files::fav_trash_failed(e)))
+}
+
+fn fav_delete_targets(paths: &[String], favs: &[String], projects: &[String]) -> Result<Vec<PathBuf>, IpcError> {
+    paths.iter().map(|p| allowed_in(Path::new(p), favs, projects)).collect()
 }
 
 /// 즐겨찾기 폴더 창의 이름 바꾸기 — 같은 폴더 안에서 이름만 바꾸고 새 절대경로를 돌려준다.
@@ -847,16 +915,33 @@ mod tests {
         assert!(!EDGES.contains(&256));
     }
 
+    /// image 로 분류한 것은 웹뷰가 원본을 그리거나(mime 필수 — 없으면 라이트박스가 octet-stream data URL 을 받아 빈 화면)
+    /// ffmpeg 로 바꾼다. 판정은 확장자가 아니라 내용도 본다 — 확장자만 jpeg 인 HEIC 는 웹뷰가 못 그린다.
     #[test]
-    fn mime_covers_every_kind_image_extension() {
-        for ext in ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"] {
+    fn image_kinds_are_shown_raw_or_converted() {
+        for ext in ["png", "jpg", "jpeg", "jfif", "gif", "webp", "bmp", "svg", "ico"] {
             let p = PathBuf::from(format!("x.{ext}"));
-            assert_ne!(
-                mime_of(&p),
-                "application/octet-stream",
-                "{ext} 는 kind_of 가 image 로 분류하는데 mime 이 없다"
-            );
+            assert_eq!(kind_of(&format!("x.{ext}"), false), "image");
+            assert_ne!(mime_of(&p), "application/octet-stream", "{ext}: 웹뷰가 그리는데 mime 이 없다");
         }
+        for ext in ["heic", "HEIC", "heif", "avif", "tif", "tiff"] {
+            assert_eq!(kind_of(&format!("x.{ext}"), false), "image", "{ext}");
+        }
+        let dir = scratch("kinds");
+        std::fs::create_dir_all(&dir).unwrap();
+        let heic_as_jpeg = dir.join("IMG.jpeg");
+        std::fs::write(&heic_as_jpeg, b"\0\0\0\x18ftypheic\0\0\0\0mif1heic").unwrap();
+        assert!(!webview_shows(&heic_as_jpeg) && needs_ffmpeg(&heic_as_jpeg), "내용이 HEIC 면 확장자와 무관하게 변환");
+        let png = dir.join("a.png");
+        std::fs::write(&png, b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR").unwrap();
+        assert!(webview_shows(&png) && !needs_ffmpeg(&png), "PNG 는 종전 길(image 크레이트·원본)");
+        let tif = dir.join("a.tif");
+        std::fs::write(&tif, b"II*\0\x08\0\0\0").unwrap();
+        assert!(!webview_shows(&tif) && needs_ffmpeg(&tif), "이 빌드엔 TIFF 디코더가 없다 → ffmpeg");
+        let svg = dir.join("a.svg");
+        std::fs::write(&svg, b"<svg xmlns='http://www.w3.org/2000/svg'/>").unwrap();
+        assert!(webview_shows(&svg) && !needs_ffmpeg(&svg), "svg 는 ffmpeg 도 못 그린다 — 띄우지 않는다");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 폴더 창 이름 바꾸기 — 상위 폴더가 루트 안이어야 하고(루트 자신·루트 밖 거부), 새 이름은 한 성분만,
@@ -952,6 +1037,13 @@ mod tests {
         // 즐겨찾기로 등록된 곳은 종전 그대로(.git 규칙은 프로젝트 판정에만 붙는다).
         let favs = vec![base.to_string_lossy().to_string()];
         assert!(allowed_in(&outside, &favs, &projects).is_ok(), "즐겨찾기 안");
+
+        // 여러 개 삭제는 전부 통과해야 넘긴다 — 하나라도 밖이면 통째로 거부(안쪽 파일도 지우지 않는다).
+        let s = |p: &Path| p.to_string_lossy().to_string();
+        assert_eq!(fav_delete_targets(&[s(&file), s(&proj)], &[], &projects).unwrap().len(), 2);
+        assert!(fav_delete_targets(&[s(&file), s(&outside)], &[], &projects).is_err(), "밖이 하나 섞임");
+        assert!(fav_delete_targets(&[s(&file), s(&hook)], &[], &projects).is_err(), ".git 이 하나 섞임");
+        assert!(fav_delete_targets(&[], &[], &projects).unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&base);
     }
 

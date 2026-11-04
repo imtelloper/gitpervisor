@@ -999,7 +999,7 @@ export interface SystemInfo {
   notes: string[]; // 수집 실패 항목 사유("CIM: 시간 초과" 등)
 }
 
-// ---- Claude 사용량(rate_limits) — 좌측 하단 usage 바 ----
+// ---- Claude 사용량(rate_limits) — 우측 하단 usage 바 ----
 export interface UsageWindow {
   key: string; // five_hour / seven_day / seven_day_opus …
   usedPercentage: number;
@@ -1007,7 +1007,7 @@ export interface UsageWindow {
 }
 export interface ClaudeUsage {
   windows: UsageWindow[];
-  updatedAt: number; // 파일 마지막 갱신 epoch초 (오래되면 숨김)
+  updatedAt: number; // 마지막으로 받은 epoch초 (오래되면 숨김)
 }
 
 // ---- 파일 트리 ----
@@ -1604,8 +1604,9 @@ export const ipc = {
   favOpen: (path: string, how: "default" | "reveal") =>
     callMutating<void>("fav_open", { path, how }),
   /** **휴지통으로** 보낸다(영구 삭제 아님) — 확인창 없이 나가는 동선이라 되돌릴 수 있어야 한다.
-   *  백엔드가 다른 `fav_*` 와 같은 허용 루트 검사를 거친다(commands/favorites.rs `fav_delete`). */
-  favDelete: (path: string) => callMutating<void>("fav_delete", { path }),
+   *  백엔드가 다른 `fav_*` 와 같은 허용 루트 검사를 거친다(commands/favorites.rs `fav_delete`). 여러 개는 전부 검사한 뒤
+   *  한 번에 보낸다 — 하나라도 루트 밖이면 아무것도 지우지 않는다. */
+  favDelete: (paths: string[]) => callMutating<void>("fav_delete", { paths }),
   /** 같은 폴더 안에서 이름만 바꾼다 — 새 절대경로를 돌려준다(commands/favorites.rs `fav_rename`). */
   favRename: (path: string, newName: string) => callMutating<string>("fav_rename", { path, newName }),
   // 파일트리에서 실행 파일 더블클릭 → OS 기본 실행기로 띄운다(프론트가 확인 후 호출).
@@ -1881,13 +1882,15 @@ export const ipc = {
     intervalSecs: number,
     format: VideoFramesFormat,
     durationMs: number,
+    /** 영상 0초 지점의 벽시계 시각(시간대 없이 UTC 로 센 초) — 있으면 장마다 왼쪽 위에 시각을 찍는다(video.rs frames_osd_filter). */
+    osdStartSecs: number | null,
     onEvent: (e: VideoFramesEvent) => void,
   ) => {
     const onProgress = new Channel<VideoFramesEvent>();
     onProgress.onmessage = onEvent;
     return callMutating<VideoFramesDone>(
       "video_extract_frames",
-      { projectId, jobId, relPath, intervalSecs, format, durationMs, onProgress },
+      { projectId, jobId, relPath, intervalSecs, format, durationMs, osdStartSecs, onProgress },
       6 * 60 * 60_000,
     );
   },
@@ -2140,12 +2143,13 @@ export const ipc = {
   captureToClipboard: (id: string, rect: CaptureRect) =>
     invoke<void>("capture_to_clipboard", { id, rect }),
   captureCancel: (id: string) => invoke<void>("capture_cancel", { id }),
-  // Claude 사용량 — statusline.js가 떨군 ~/.claude/gitpervisor-usage.json을 읽어 반환(없으면 null).
+  // Claude 계정 사용량 — 계정 사용량 API(1분 캐시), 못 쓰면 statusline.js 다리 파일(claude_usage.rs). 없으면 null.
+  // 시한은 백엔드 HTTP 시한(8초)보다 넉넉히.
   claudeUsage: () =>
     call<ClaudeUsage | null>(
       "claude_usage",
       {},
-      { lane: "background", attempts: 1, timeoutMs: 3000 },
+      { lane: "background", attempts: 1, timeoutMs: 12_000 },
     ),
   // 작업 완료 알림 본문용 — 프로젝트 최신 세션 트랜스크립트의 마지막 AI 텍스트(없으면 null).
   lastAgentMessage: (projectPath: string) =>

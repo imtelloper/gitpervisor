@@ -454,14 +454,14 @@ export function useStatus(projectId: string | null) {
   };
 }
 
-/** Claude 사용량(rate_limits) — statusline.js가 떨군 파일을 읽어 좌측 하단 바에 표시.
- *  파일은 Claude Code가 statusline을 갱신할 때마다 바뀌므로 60초 폴링이면 충분. */
+/** Claude 계정 사용량(rate_limits) — 우측 하단 바. 백엔드가 성공은 1분, 실패는 15초 캐시한다 — 30초마다 물으면 실패
+ *  뒤에도 곧 다시 뜨고, 성공 뒤에는 API 를 1분에 한 번만 친다. */
 export function useClaudeUsage() {
   return useQuery({
     queryKey: ["claude-usage"],
     queryFn: ipc.claudeUsage,
-    refetchInterval: 60_000,
-    staleTime: 30_000,
+    refetchInterval: 30_000,
+    staleTime: 15_000,
     retry: false,
   });
 }

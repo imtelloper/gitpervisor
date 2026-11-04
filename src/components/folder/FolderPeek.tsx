@@ -153,7 +153,7 @@ export function FolderPeek({ path, onMouseEnter }: { path: string; onMouseEnter?
     setFiles((cur) => cur?.filter((e) => e.name !== name) ?? cur);
     setMenu(null);
     void ipc
-      .favDelete(join(name))
+      .favDelete([join(name)])
       .then(() => toast("success", msg.folder.peek.trashed(name)))
       .catch((e) => {
         setFiles(before ?? null);

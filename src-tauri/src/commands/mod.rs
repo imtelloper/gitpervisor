@@ -28,6 +28,7 @@ mod quarantine;
 mod search;
 mod settings;
 mod status;
+mod still_image;
 mod sync;
 mod terminal;
 mod thumb_protocol;

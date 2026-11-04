@@ -196,7 +196,7 @@ pub(crate) fn find_ffmpeg(app: &AppHandle, state: &AppState) -> Result<FfmpegBin
 ///
 /// stdout은 **바이트 그대로** 돌려준다. 필름스트립 JPEG·PCM 파형처럼 바이너리를 파이프로
 /// 받는 호출자가 있어서, from_utf8_lossy를 여기서 걸면 그 바이트가 U+FFFD로 망가진다.
-async fn run_capture_bytes<S: AsRef<std::ffi::OsStr>>(
+pub(crate) async fn run_capture_bytes<S: AsRef<std::ffi::OsStr>>(
     bin: &Path,
     args: &[S],
     timeout_secs: u64,
@@ -1844,12 +1844,14 @@ enum FramesInput<'a> {
 /// `-start_number 0`이라 `frame_000123`은 123×간격 초 지점이다(name_frames_by_time이 시각 이름으로 바꾼다).
 /// `V:0`은 커버 아트(attached pic)를 뺀 영상 스트림 — frame_seek_secs와 같은 이유.
 /// `pattern`은 image2 패턴이라 경로의 `%`는 호출부가 `%%`로 이스케이프해 넘긴다.
+/// `osd`는 frames_osd_filter가 만든 필터 — 디코드 경로의 끝(CPU 형식으로 내려받은 뒤)에 붙는다.
 fn build_frames_args(
     input: FramesInput,
     decode: FramesDecode,
     pattern: &str,
     interval: f64,
     format: FramesFormat,
+    osd: Option<&str>,
 ) -> Vec<String> {
     let mut args: Vec<String> = ["-hide_banner", "-nostdin", "-loglevel", "error", "-progress", "pipe:1"]
         .iter()
@@ -1870,12 +1872,68 @@ fn build_frames_args(
         // 어긋난다(2026-09-30 실측 PSNR 34dB). 이렇게 두면 JPEG·PNG 모두 CPU 경로와 비트까지 같다.
         vf.push_str(",hwdownload,format=nv12,format=yuv420p");
     }
+    if let Some(osd) = osd {
+        vf.push(',');
+        vf.push_str(osd);
+    }
     args.extend(["-vf".into(), vf, "-start_number".into(), "0".into()]);
     if format == FramesFormat::Jpg {
         args.extend(["-q:v".into(), "2".into()]); // 2 = mjpeg 최고 화질 쪽(1~31) — 학습 데이터용으로 뭉개지지 않게
     }
     args.extend(["-f".into(), "image2".into(), pattern.into()]);
     args
+}
+
+/// OSD 시작 시각 범위(초) — 1970 ~ 2999년. Windows의 gmtime은 3000년 이후를 못 그린다.
+const FRAMES_OSD_MAX_START: i64 = 32_503_679_999;
+
+/// 장마다 왼쪽 위에 `YYYY-MM-DD HH:MM:SS`(= 영상 0초 시각 + 그 장의 영상 시각)를 찍는 필터.
+///
+/// - 시작 시각은 시간대 없는 벽시계다. 그것을 UTC인 척 초로 받아 `gmtime`으로 그린다 — 입력한 숫자가 그대로 찍힌다(현지
+///   시간대·서머타임을 거치지 않는다). drawtext의 기본 형식이 `%Y-%m-%d %H:%M:%S`라 형식 인자(콜론 이스케이프)가 없다.
+/// - `setpts`로 k번째 장의 시각을 k×간격에 못 박는다 — 파일 이름(frame_time_name)과 같은 식. fps 출력의 pts는 원본
+///   타임스탬프에서 와서(첫 pts·반올림) 번호×간격과 같다는 보장이 없다. 같은 식에 묶어 두면 이름과 OSD가 어긋날 수 없다.
+/// - 글꼴은 경로로 준다 — gyan(Windows) 빌드는 fontconfig 설정이 없어 글꼴 이름으로는 못 찾는다. 경로의 `:`는 옵션 구분자라
+///   `\:`로, 따옴표가 든 경로는 이스케이프하지 않고 fontconfig 기본 글꼴에 맡긴다(시스템 글꼴 폴더라 사실상 없다).
+fn frames_osd_filter(start_secs: i64, interval: f64, font: Option<&Path>) -> String {
+    let font = font
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .filter(|s| !s.contains('\''))
+        .map_or(String::new(), |s| format!("fontfile='{}':", s.replace(':', "\\:")));
+    // 간격이 소수면 밀리초까지(파일 이름 frame_time_name 과 같은 규칙). strftime 엔 초 아래가 없어 eif 로 붙인다 — t 는 위
+    // setpts 가 박은 번호×간격. 형식 인자의 콜론은 세 번 풀린다(필터 그래프 → 옵션 `\\\:`→`\:` → drawtext 인자 `\:`→`:`).
+    let text = if interval.fract() == 0.0 {
+        format!(r"%{{pts\:gmtime\:{start_secs}}}")
+    } else {
+        format!(r"%{{pts\:gmtime\:{start_secs}\:%Y-%m-%d %H\\\:%M\\\:%S}}.%{{eif\:mod(round(t*1000),1000)\:d\:3}}")
+    };
+    format!(
+        "setpts=N*{interval}/TB,drawtext={font}text='{text}':\
+         x=min(w\\,h)/40:y=min(w\\,h)/40:fontsize=min(w\\,h)/20:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=8"
+    )
+}
+
+/// OSD 글꼴 — 고정폭이라 장마다 숫자가 바뀌어도 글자 자리가 흔들리지 않는다. 못 찾으면 None(ffmpeg의 fontconfig 기본).
+fn frames_osd_font() -> Option<PathBuf> {
+    #[cfg(windows)]
+    let candidates: Vec<PathBuf> = {
+        let win = std::env::var_os("WINDIR").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
+        vec![win.join(r"Fonts\consola.ttf"), win.join(r"Fonts\cour.ttf")]
+    };
+    #[cfg(target_os = "macos")]
+    let candidates: Vec<PathBuf> =
+        ["/System/Library/Fonts/Menlo.ttc", "/System/Library/Fonts/Monaco.ttf"].map(PathBuf::from).to_vec();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let candidates: Vec<PathBuf> = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+        "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+        "/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSansMono.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+    ]
+    .map(PathBuf::from)
+    .to_vec();
+    candidates.into_iter().find(|p| p.is_file())
 }
 
 /// 플레이어가 아직 길이를 모를 때 ffprobe로 잰다 — 조각 fMP4처럼 메타데이터가 늦게 오는 파일에서 시작하면 프론트가
@@ -1919,10 +1977,12 @@ pub async fn video_extract_frames(
     format: FramesFormat,
     // 진행률 분모 — 프론트가 이미 probe 해 둔 길이. 0이면 퍼센트 없이 장 수만 간다.
     duration_ms: u64,
+    // 있으면 장마다 OSD(벽시계 시각)를 찍는다 — 영상 0초 지점의 시각(frames_osd_filter).
+    osd_start_secs: Option<i64>,
     on_progress: Channel<FramesEvent>,
 ) -> Result<FramesDone, IpcError> {
     let outcome = video_extract_frames_inner(
-        &app, &state, &project_id, &job_id, &rel_path, interval_secs, format, duration_ms, &on_progress,
+        &app, &state, &project_id, &job_id, &rel_path, interval_secs, format, duration_ms, osd_start_secs, &on_progress,
     )
     .await;
     let last = match &outcome {
@@ -1945,6 +2005,7 @@ async fn video_extract_frames_inner(
     interval: f64,
     format: FramesFormat,
     duration_ms: u64,
+    osd_start_secs: Option<i64>,
     chan: &Channel<FramesEvent>,
 ) -> Result<FramesDone, IpcError> {
     if !interval.is_finite() || !(FRAMES_MIN_INTERVAL..=FRAMES_MAX_INTERVAL).contains(&interval) {
@@ -1953,6 +2014,10 @@ async fn video_extract_frames_inner(
             text_video::video_frames_interval_invalid(FRAMES_MIN_INTERVAL, FRAMES_MAX_INTERVAL),
         ));
     }
+    if osd_start_secs.is_some_and(|s| !(0..=FRAMES_OSD_MAX_START).contains(&s)) {
+        return Err(IpcError::new(ErrorCode::Io, text_video::video_frames_osd_start_invalid()));
+    }
+    let osd = osd_start_secs.map(|s| frames_osd_filter(s, interval, frames_osd_font().as_deref()));
     let repo = project_path(state, project_id)?;
     let bin = find_ffmpeg(app, state.inner())?;
     let src = super::tree::resolve_in_repo(&repo, rel_path)?;
@@ -1972,8 +2037,8 @@ async fn video_extract_frames_inner(
     let _guard = JobGuard { jobs: Arc::clone(&jobs), job_id: job_id.to_string() };
     let decodes = frames_decode_candidates(&bin.ffmpeg).await;
     extract_frames_in(
-        &bin.ffmpeg, bin.ffprobe.as_deref(), &src, rel_path, decodes, interval, format, duration_ms, job_id, &jobs,
-        &mut cancel_rx, chan,
+        &bin.ffmpeg, bin.ffprobe.as_deref(), &src, rel_path, decodes, interval, format, osd.as_deref(), duration_ms,
+        job_id, &jobs, &mut cancel_rx, chan,
     )
     .await
 }
@@ -1988,6 +2053,7 @@ async fn extract_frames_in(
     decodes: &[FramesDecode],
     interval: f64,
     format: FramesFormat,
+    osd: Option<&str>,
     duration_ms: u64,
     job_id: &str,
     jobs: &Arc<Mutex<HashMap<String, VideoJob>>>,
@@ -2028,7 +2094,7 @@ async fn extract_frames_in(
             return Err(IpcError::new(ErrorCode::Io, text_video::video_frames_none_extracted()));
         };
         let ran = run_frames_ffmpeg(
-            ffmpeg, src, pipe_len, decode, &tmp, interval, format, duration_ms, job_id, jobs, cancel_rx, chan,
+            ffmpeg, src, pipe_len, decode, &tmp, interval, format, osd, duration_ms, job_id, jobs, cancel_rx, chan,
         )
         .await;
         let tail = match ran {
@@ -2197,6 +2263,7 @@ async fn run_frames_ffmpeg(
     tmp: &Path,
     interval: f64,
     format: FramesFormat,
+    osd: Option<&str>,
     duration_ms: u64,
     job_id: &str,
     jobs: &Arc<Mutex<HashMap<String, VideoJob>>>,
@@ -2211,7 +2278,7 @@ async fn run_frames_ffmpeg(
     );
     let src_arg = src.display().to_string();
     let input = if pipe_len.is_some() { FramesInput::Pipe } else { FramesInput::File(&src_arg) };
-    let args = build_frames_args(input, decode, &pattern, interval, format);
+    let args = build_frames_args(input, decode, &pattern, interval, format, osd);
     let sent = Arc::new(AtomicU64::new(0));
     let (mut child, pump) = spawn_frames_ffmpeg(ffmpeg, &args, pipe_len.map(|_| src), &sent)?;
     if let Some(pid) = child.id() {
@@ -4034,7 +4101,7 @@ mod tests {
 
     #[test]
     fn frames_args_by_format() {
-        let jpg = build_frames_args(FramesInput::File("in.mp4"), FramesDecode::Cpu, "out/frame_%06d.jpg", 2.0, FramesFormat::Jpg);
+        let jpg = build_frames_args(FramesInput::File("in.mp4"), FramesDecode::Cpu, "out/frame_%06d.jpg", 2.0, FramesFormat::Jpg, None);
         let at = |k: &str| jpg.iter().position(|a| a == k).map(|i| jpg[i + 1].as_str());
         assert_eq!(at("-i"), Some("in.mp4"));
         assert_eq!(at("-vf"), Some("fps=0.500000"));
@@ -4043,7 +4110,7 @@ mod tests {
         assert_eq!(at("-q:v"), Some("2"));
         assert!(!jpg.iter().any(|a| a.starts_with("-hwaccel")), "CPU 경로 = 예전 인자 그대로");
         assert_eq!(jpg.last().map(String::as_str), Some("out/frame_%06d.jpg"));
-        let png = build_frames_args(FramesInput::File("in.mp4"), FramesDecode::Cpu, "o/frame_%06d.png", 0.5, FramesFormat::Png);
+        let png = build_frames_args(FramesInput::File("in.mp4"), FramesDecode::Cpu, "o/frame_%06d.png", 0.5, FramesFormat::Png, None);
         assert!(!png.iter().any(|a| a == "-q:v"), "PNG 는 무손실이라 화질 인자가 없다");
         assert!(png.iter().any(|a| a == "fps=2.000000"));
         assert_eq!(parse_progress_frame("frame=123"), Some(123));
@@ -4062,7 +4129,7 @@ mod tests {
             (FramesDecode::Vaapi, "vaapi", "vaapi"),
         ];
         for (decode, accel, out) in hw {
-            let a = build_frames_args(FramesInput::Pipe, decode, "o/frame_%06d.jpg", 2.0, FramesFormat::Jpg);
+            let a = build_frames_args(FramesInput::Pipe, decode, "o/frame_%06d.jpg", 2.0, FramesFormat::Jpg, None);
             let pos = |k: &str| a.iter().position(|x| x == k).unwrap_or_else(|| panic!("{decode:?}: {k} 없음 {a:?}"));
             assert_eq!(a[pos("-hwaccel") + 1], accel);
             assert_eq!(a[pos("-hwaccel_output_format") + 1], out);
@@ -4074,12 +4141,31 @@ mod tests {
             assert_eq!(a[pos("-vf") + 1], "fps=0.500000,hwdownload,format=nv12,format=yuv420p");
             assert_eq!(a[pos("-start_number") + 1], "0");
         }
-        let cpu = build_frames_args(FramesInput::Pipe, FramesDecode::Cpu, "o/frame_%06d.png", 1.0, FramesFormat::Png);
+        let cpu = build_frames_args(FramesInput::Pipe, FramesDecode::Cpu, "o/frame_%06d.png", 1.0, FramesFormat::Png, None);
         assert!(cpu.windows(2).any(|w| w == ["-i", "pipe:0"]) && cpu.windows(2).any(|w| w == ["-vf", "fps=1.000000"]));
         // 어느 OS든 하드웨어 후보가 앞, CPU가 맨 끝(모든 폴백이 닿는 자리)
         let (last, hw_first) = FRAMES_DECODE_ORDER.split_last().expect("후보");
         assert_eq!(*last, FramesDecode::Cpu);
         assert!(!hw_first.is_empty() && hw_first.iter().all(|d| d.hw().is_some()), "{FRAMES_DECODE_ORDER:?}");
+    }
+
+    #[test]
+    fn frames_osd_filter_text_font_and_place() {
+        let f = frames_osd_filter(1_793_262_360, 2.0, Some(Path::new(r"C:\Windows\Fonts\consola.ttf")));
+        assert!(f.starts_with("setpts=N*2/TB,drawtext=fontfile='C\\:/Windows/Fonts/consola.ttf':"), "{f}");
+        assert!(f.contains(":text='%{pts\\:gmtime\\:1793262360}':"), "{f}");
+        assert!(frames_osd_filter(0, 2.0, None).starts_with("setpts=N*2/TB,drawtext=text='%{pts\\:gmtime\\:0}':"));
+        // 소수 간격은 밀리초까지 — 형식 인자의 콜론은 `\\\:`(옵션 단계에서 `\:` 로 풀려 drawtext 에 닿는다)
+        let ms = frames_osd_filter(0, 0.5, None);
+        assert!(
+            ms.contains(r"text='%{pts\:gmtime\:0\:%Y-%m-%d %H\\\:%M\\\:%S}.%{eif\:mod(round(t*1000),1000)\:d\:3}':"),
+            "{ms}"
+        );
+        // 따옴표 든 글꼴 경로는 넣지 않는다 — 필터 문법이 깨진다
+        assert!(!frames_osd_filter(0, 1.0, Some(Path::new("/f/it's.ttf"))).contains("fontfile"));
+        // 하드웨어 경로에서는 CPU 형식으로 내려받은 **뒤**에 그린다
+        let a = build_frames_args(FramesInput::Pipe, FramesDecode::Cuda, "o/frame_%06d.jpg", 2.0, FramesFormat::Jpg, Some("OSD"));
+        assert_eq!(a[a.iter().position(|x| x == "-vf").unwrap() + 1], "fps=0.500000,hwdownload,format=nv12,format=yuv420p,OSD");
     }
 
     #[test]
@@ -4193,7 +4279,7 @@ mod tests {
         let (_keep_cancel_open, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
         let chan = Channel::new(|_| Ok(()));
         let done =
-            extract_frames_in(ffmpeg, None, src, "x/a.mp4", decodes, interval, format, 0, "t", &jobs, &mut cancel_rx, &chan)
+            extract_frames_in(ffmpeg, None, src, "x/a.mp4", decodes, interval, format, None, 0, "t", &jobs, &mut cancel_rx, &chan)
                 .await?;
         let out = src.parent().unwrap().join(done.out_rel.rsplit('/').next().unwrap());
         let mut names: Vec<String> =
@@ -4255,6 +4341,78 @@ mod tests {
             }
         }
         frames_no_temp_left(&at);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// OSD — 검은 원본이라 왼쪽 위 밝은 픽셀은 OSD뿐이다. 장 수는 OSD 없을 때와 같고(setpts가 장을 늘리거나 버리지 않는다),
+    /// 장마다 글자(초)가 바뀌고, 같은 번호의 장은 파일 입력·파이프 입력에서 같은 글자다(시각 = 번호×간격).
+    #[tokio::test]
+    #[ignore = "PATH의 ffmpeg 필요"]
+    async fn frames_real_osd_stamps_time_per_frame() {
+        let ffmpeg = crate::tools::runner::find_on_path("ffmpeg").expect("ffmpeg");
+        let dir = std::env::temp_dir().join(format!("gpv-frames-osd-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (plain, frag) = (dir.join("a.mp4"), dir.join("f.mp4"));
+        frames_make_src(&ffmpeg, &plain, "color=black:s=640x360:r=30:d=4", "yuv420p", false, &[]).await;
+        frames_make_src(&ffmpeg, &frag, "color=black:s=640x360:r=30:d=4", "yuv420p", true, &[]).await;
+        let osd = frames_osd_filter(1_793_262_360, 1.0, frames_osd_font().as_deref());
+        // OSD 자리(fontsize 18 · 시작 9px) — 회색조 바이트
+        let corner = |p: PathBuf| {
+            let ffmpeg = ffmpeg.clone();
+            async move {
+                let p = p.display().to_string();
+                let one = ["-v", "error", "-i", p.as_str(), "-vf", "format=gray,crop=240:36:0:0", "-f", "rawvideo", "-"];
+                run_capture_bytes(&ffmpeg, &one, 30).await.unwrap().1
+            }
+        };
+        let mut per_input = Vec::new();
+        for src in [&plain, &frag] {
+            let jobs = Arc::new(Mutex::new(HashMap::new()));
+            let (_keep, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
+            let chan = Channel::new(|_| Ok(()));
+            let done = extract_frames_in(
+                &ffmpeg, None, src, "x/a.mp4", &[FramesDecode::Cpu], 1.0, FramesFormat::Png, Some(&osd), 0, "t", &jobs,
+                &mut cancel_rx, &chan,
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{}: {}", src.display(), e.message));
+            assert_eq!(done.count, 4, "{}", src.display());
+            let out = dir.join(done.out_rel.rsplit('/').next().unwrap());
+            let stem = src.file_stem().unwrap().to_string_lossy().into_owned();
+            let mut crops = Vec::new();
+            for k in 0..4 {
+                let c = corner(out.join(frame_time_name(&stem, k, 1.0, "png"))).await;
+                assert!(c.iter().copied().max().unwrap_or(0) > 200, "{} #{k}: 왼쪽 위에 글자가 없다", src.display());
+                crops.push(c);
+            }
+            assert!(crops.windows(2).all(|w| w[0] != w[1]), "{}: 장마다 시각이 바뀌어야 한다", src.display());
+            per_input.push(crops);
+            std::fs::remove_dir_all(&out).unwrap();
+        }
+        assert_eq!(per_input[0], per_input[1], "같은 번호의 장은 입력 경로와 무관하게 같은 시각이어야 한다");
+        // 0.5초 간격 — 0번·1번 장은 같은 초라 밀리초가 없으면 글자가 같다
+        {
+            let half = frames_osd_filter(1_793_262_360, 0.5, frames_osd_font().as_deref());
+            let jobs = Arc::new(Mutex::new(HashMap::new()));
+            let (_keep, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
+            let chan = Channel::new(|_| Ok(()));
+            let done = extract_frames_in(
+                &ffmpeg, None, &plain, "x/a.mp4", &[FramesDecode::Cpu], 0.5, FramesFormat::Png, Some(&half), 0, "t", &jobs,
+                &mut cancel_rx, &chan,
+            )
+            .await
+            .unwrap_or_else(|e| panic!("0.5s: {}", e.message));
+            let out = dir.join(done.out_rel.rsplit('/').next().unwrap());
+            let c0 = corner(out.join(frame_time_name("a", 0, 0.5, "png"))).await;
+            let c1 = corner(out.join(frame_time_name("a", 1, 0.5, "png"))).await;
+            assert!(c0.iter().copied().max().unwrap_or(0) > 200, "0.5s: 글자가 없다(필터 이스케이프가 깨졌다)");
+            assert_ne!(c0, c1, "0.5초 간격의 0·1번 장은 밀리초(.000/.500)로 갈려야 한다");
+            std::fs::remove_dir_all(&out).unwrap();
+        }
+        // 대조군 — OSD 없이 뽑으면 그 자리가 검다(위의 밝은 픽셀이 OSD 것임을 확인)
+        let (out, names) = frames_run_core(&ffmpeg, &plain, &[FramesDecode::Cpu], 1.0, FramesFormat::Png).await.unwrap();
+        assert!(corner(out.join(&names[0])).await.iter().all(|&v| v < 40), "OSD 없이도 밝다 — 원본이 검지 않다");
+        frames_no_temp_left(&dir);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -4368,7 +4526,8 @@ mod tests {
         let chan = Channel::new(|_| Ok(()));
         let started = std::time::Instant::now();
         let run = extract_frames_in(
-            &ffmpeg, None, &frag, "f.mp4", &[FramesDecode::Cpu], 0.5, FramesFormat::Png, 0, "t", &jobs, &mut cancel_rx, &chan,
+            &ffmpeg, None, &frag, "f.mp4", &[FramesDecode::Cpu], 0.5, FramesFormat::Png, None, 0, "t", &jobs, &mut cancel_rx,
+            &chan,
         );
         let cancel = async {
             tokio::time::sleep(Duration::from_millis(500)).await;
@@ -4408,7 +4567,7 @@ mod tests {
         let pattern = format!("{}{}frame_%06d.jpg", out.display().to_string().replace('%', "%%"), std::path::MAIN_SEPARATOR);
         let src_s = src.display().to_string();
         let input = if fragmented { FramesInput::Pipe } else { FramesInput::File(&src_s) };
-        let mut args = build_frames_args(input, decodes[0], &pattern, interval, FramesFormat::Jpg);
+        let mut args = build_frames_args(input, decodes[0], &pattern, interval, FramesFormat::Jpg, None);
         let at = args.len() - 3; // `-f image2 <패턴>` 앞 = 출력 옵션 자리
         args.splice(at..at, ["-t".to_string(), secs.clone()]);
         let sent = Arc::new(AtomicU64::new(0));

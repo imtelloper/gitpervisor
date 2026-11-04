@@ -6,7 +6,7 @@ export const isLinux = /Linux/.test(navigator.userAgent);
 export const isWindows = /Windows/i.test(navigator.userAgent);
 
 /** 플랫폼 표준 모디파이어 — mac=metaKey(Cmd), 그 외=ctrlKey(Ctrl) */
-export function isMod(e: KeyboardEvent): boolean {
+export function isMod(e: Pick<KeyboardEvent, "metaKey" | "ctrlKey">): boolean {
   return isMac ? e.metaKey : e.ctrlKey;
 }
 

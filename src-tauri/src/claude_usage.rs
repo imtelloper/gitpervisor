@@ -1,12 +1,14 @@
-//! Claude 사용량(rate_limits) — 좌측 하단 상태바의 usage 바.
+//! Claude 사용량(rate_limits) — 우측 하단 상태바의 usage 바.
 //!
-//! 사용률(%)은 Claude Code가 statusline 스크립트 stdin으로만 넘겨주는 값이라 직접 읽을 API·파일이
-//! 없다. 그래서 사용자의 `~/.claude/statusline.js`가 매 갱신 시 rate_limits를
-//! `~/.claude/gitpervisor-usage.json`으로 떨궈두고(그 다리는 statusline.js에 있음), 여기서 그 파일을
-//! 읽어 파싱해 돌려준다. 파일이 없거나(다리 미설치·Claude Code 미사용) 파싱 실패면 None.
+//! 1순위는 계정 사용량 API(Claude Code 의 `/usage` 가 묻는 그 엔드포인트) — 로그인 토큰은 Claude Code 가 저장해 둔 것을
+//! 읽기만 한다. 예전엔 사용자의 `~/.claude/statusline.js` 가 rate_limits 를 `~/.claude/gitpervisor-usage.json` 으로 떨궈
+//! 두는 다리에만 기댔는데, statusline.js 를 바꾸면서 다리가 빠져 바가 2026-09-04 이후 조용히 사라져 있었다(2026-11-04
+//! 발견). 다리 파일은 API 를 못 쓸 때(토큰 없음·네트워크)의 폴백으로 남긴다.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -52,11 +54,192 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
 }
 
 /// 표시 순서 — 세션(5h) → 주간(7d) → 모델별, 그 외는 뒤로.
-const ORDER: &[&str] = &["five_hour", "seven_day", "seven_day_opus", "seven_day_oauth"];
+const ORDER: &[&str] = &["five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet", "seven_day_oauth"];
 
-/// 좌측 하단 usage 바가 폴링하는 커맨드. 파일 없음·파싱 실패면 None(바를 숨긴다).
-#[tauri::command]
-pub fn claude_usage() -> Option<ClaudeUsage> {
+/// 상태바가 폴링하는 커맨드. API → 다리 파일 순. 둘 다 없으면 None(바를 숨긴다).
+#[tauri::command(async)]
+pub async fn claude_usage() -> Option<ClaudeUsage> {
+    match api_usage().await {
+        Some(u) => Some(u),
+        None => bridge_file_usage(),
+    }
+}
+
+// ── 계정 사용량 API ─────────────────────────────────────────────────────────
+
+/// 문서화되지 않은 엔드포인트다 — 바뀌면 조회가 실패하고 다리 파일로 떨어질 뿐 앱은 멀쩡하다.
+const USAGE_API: &str = "https://api.anthropic.com/api/oauth/usage";
+/// 사용률은 대화 한 번에 1~2%씩 움직인다 — 1분이면 충분하고, 이 엔드포인트를 자주 치면 429 가 난다.
+const API_TTL: Duration = Duration::from_secs(60);
+/// 실패는 곧 다시 묻는다 — 앱을 켠 직후 첫 요청이 연결 오류로 떨어지는 일이 실제로 있었다(2026-11-04, 바로 다음 요청은 성공).
+const API_RETRY: Duration = Duration::from_secs(15);
+/// 응답 가운데 보이는 창 — 나머지 키(내부 코드명·크레딧)는 버린다.
+const API_WINDOWS: &[&str] = &["five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"];
+
+#[derive(Default)]
+struct ApiCache {
+    /// 이때까지는 다시 묻지 않는다.
+    next: Option<Instant>,
+    /// 마지막 성공 — 한 번 실패했다고(네트워크 순단) 바를 지우지 않는다. 오래되면 프론트가 숨긴다(updated_at).
+    last: Option<ClaudeUsage>,
+    /// 같은 실패를 1분마다 로그에 쌓지 않게 — 달라졌을 때만 남긴다.
+    last_err: Option<String>,
+}
+
+static API_CACHE: Mutex<ApiCache> = Mutex::new(ApiCache { next: None, last: None, last_err: None });
+
+async fn api_usage() -> Option<ClaudeUsage> {
+    {
+        let c = API_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if c.next.is_some_and(|t| Instant::now() < t) {
+            return c.last.clone();
+        }
+    }
+    let fetched = fetch_api_usage().await;
+    let mut c = API_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    c.next = Some(Instant::now() + if fetched.is_ok() { API_TTL } else { API_RETRY });
+    match fetched {
+        Ok(u) => {
+            c.last = Some(u);
+            c.last_err = None;
+        }
+        Err(e) => {
+            if c.last_err.as_deref() != Some(e.as_str()) {
+                log::info!("[claude-usage] 사용량 API 조회 실패 — {e}");
+                c.last_err = Some(e);
+            }
+        }
+    }
+    c.last.clone()
+}
+
+async fn fetch_api_usage() -> Result<ClaudeUsage, String> {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    let token = oauth_token().await?;
+    let client = CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(8))
+            .user_agent(concat!("gitpervisor/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .unwrap_or_default()
+    });
+    let resp = client
+        .get(USAGE_API)
+        .bearer_auth(token)
+        .header("anthropic-beta", "oauth-2025-04-20")
+        .send()
+        .await
+        .map_err(|e| format!("request: {e}"))?;
+    let status = resp.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        // Claude Code 가 토큰을 새로 받았을 수 있다 — 다음 조회 때 다시 읽는다.
+        *TOKEN.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+    if !status.is_success() {
+        return Err(format!("HTTP {status}"));
+    }
+    let body: serde_json::Value = resp.json().await.map_err(|e| format!("body: {e}"))?;
+    Ok(parse_api_usage(&body, chrono::Utc::now().timestamp()))
+}
+
+/// `{"five_hour":{"utilization":78.0,"resets_at":"2026-11-05T23:00:00.08+00:00"},"seven_day":null,…}` → 창 목록.
+fn parse_api_usage(body: &serde_json::Value, now: i64) -> ClaudeUsage {
+    let windows = API_WINDOWS
+        .iter()
+        .filter_map(|key| {
+            let w = body.get(*key)?;
+            Some(UsageWindow {
+                key: (*key).to_string(),
+                used_percentage: w.get("utilization")?.as_f64()? as f32,
+                resets_at: w
+                    .get("resets_at")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|d| d.timestamp()),
+            })
+        })
+        .collect();
+    ClaudeUsage { windows, updated_at: now }
+}
+
+#[derive(Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct OauthCreds {
+    access_token: String,
+    /// epoch ms
+    #[serde(default)]
+    expires_at: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct CredsFile {
+    #[serde(rename = "claudeAiOauth")]
+    oauth: Option<OauthCreds>,
+}
+
+/// 읽어 둔 토큰 — 만료되거나 401 이 나면 다시 읽는다. macOS 키체인은 읽을 때마다 허락 창이 뜰 수 있어 자주 읽지 않는다.
+static TOKEN: Mutex<Option<OauthCreds>> = Mutex::new(None);
+
+fn token_fresh(c: &OauthCreds, now_ms: i64) -> bool {
+    c.expires_at.is_none_or(|t| now_ms < t - 60_000)
+}
+
+async fn oauth_token() -> Result<String, String> {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    if let Some(c) = TOKEN.lock().unwrap_or_else(|e| e.into_inner()).as_ref().filter(|c| token_fresh(c, now_ms)) {
+        return Ok(c.access_token.clone());
+    }
+    let creds = read_creds().await?;
+    if !token_fresh(&creds, now_ms) {
+        // 갱신은 Claude Code 몫이다 — 우리가 refresh token 을 돌리면 Claude Code 쪽 로그인이 끊긴다.
+        return Err("token expired (refreshed when Claude Code runs next)".into());
+    }
+    *TOKEN.lock().unwrap_or_else(|e| e.into_inner()) = Some(creds.clone());
+    Ok(creds.access_token)
+}
+
+fn parse_creds(json: &str) -> Result<OauthCreds, String> {
+    serde_json::from_str::<CredsFile>(json)
+        .map_err(|e| format!("credentials: {e}"))?
+        .oauth
+        .filter(|o| !o.access_token.is_empty())
+        .ok_or_else(|| "credentials: not logged in to claude.ai".into())
+}
+
+/// Claude Code 의 설정 폴더 — `CLAUDE_CONFIG_DIR` 이 있으면 그것.
+fn claude_config_dir() -> Option<PathBuf> {
+    std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).or_else(|| home_dir().map(|h| h.join(".claude")))
+}
+
+async fn read_creds() -> Result<OauthCreds, String> {
+    let file = claude_config_dir().ok_or("no home dir")?.join(".credentials.json");
+    match tokio::fs::read_to_string(&file).await {
+        Ok(s) => parse_creds(&s),
+        #[cfg(target_os = "macos")]
+        Err(_) => keychain_creds().await,
+        #[cfg(not(target_os = "macos"))]
+        Err(e) => Err(format!("{}: {e}", file.display())),
+    }
+}
+
+/// macOS 의 Claude Code 는 토큰을 파일이 아니라 로그인 키체인에 둔다(항목 이름 `Claude Code-credentials`).
+#[cfg(target_os = "macos")]
+async fn keychain_creds() -> Result<OauthCreds, String> {
+    let mut cmd = tokio::process::Command::new("/usr/bin/security");
+    cmd.args(["find-generic-password", "-s", "Claude Code-credentials", "-w"]).kill_on_drop(true);
+    let out = tokio::time::timeout(Duration::from_secs(30), cmd.output())
+        .await
+        .map_err(|_| "keychain: timed out".to_string())?
+        .map_err(|e| format!("keychain: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("keychain: exit {}", out.status));
+    }
+    parse_creds(String::from_utf8_lossy(&out.stdout).trim())
+}
+
+// ── statusline.js 다리 파일(폴백) ────────────────────────────────────────────
+
+fn bridge_file_usage() -> Option<ClaudeUsage> {
     let path = home_dir()?.join(".claude").join("gitpervisor-usage.json");
     let data = std::fs::read_to_string(&path).ok()?;
     let file: UsageFile = serde_json::from_str(&data).ok()?;
@@ -209,6 +392,43 @@ fn scan_lines_from_end<T>(
             carry = buf;
         }
         pos = start;
+    }
+}
+
+#[cfg(test)]
+mod api_tests {
+    use super::*;
+
+    /// 2026-11-04 실제 응답에서 줄인 것 — null 창·내부 코드명 키가 섞여 온다.
+    #[test]
+    fn api_usage_keeps_known_windows_in_order() {
+        let body: serde_json::Value = serde_json::from_str(
+            r#"{"seven_day_opus":null,"five_hour":{"utilization":12.5,"resets_at":"2026-11-04T09:00:00+00:00"},
+                "seven_day":{"utilization":81.0,"resets_at":"2026-11-05T23:00:00.085337+00:00","limit_dollars":null},
+                "iguana_necktie":{"utilization":100.0,"resets_at":"2026-11-05T07:59:00+00:00"},
+                "seven_day_sonnet":{"utilization":3.0}}"#,
+        )
+        .unwrap();
+        let u = parse_api_usage(&body, 42);
+        let got: Vec<_> = u.windows.iter().map(|w| (w.key.as_str(), w.used_percentage, w.resets_at)).collect();
+        assert_eq!(
+            got,
+            [
+                ("five_hour", 12.5, Some(1_793_782_800)),
+                ("seven_day", 81.0, Some(1_793_919_600)),
+                ("seven_day_sonnet", 3.0, None),
+            ]
+        );
+        assert_eq!(u.updated_at, 42);
+    }
+
+    #[test]
+    fn creds_need_a_claude_ai_token() {
+        let c = parse_creds(r#"{"claudeAiOauth":{"accessToken":"t","expiresAt":1000000},"mcpOAuth":{}}"#).unwrap();
+        assert_eq!((c.access_token.as_str(), c.expires_at), ("t", Some(1_000_000)));
+        assert!(token_fresh(&c, 900_000) && !token_fresh(&c, 950_000), "만료 1분 전부터는 다시 읽는다");
+        assert!(parse_creds(r#"{"mcpOAuth":{}}"#).is_err(), "API 키 로그인(claude.ai 아님)이면 계정 사용량이 없다");
+        assert!(parse_creds("not json").is_err());
     }
 }
 
