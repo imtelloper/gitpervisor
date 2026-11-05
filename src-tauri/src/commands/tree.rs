@@ -120,7 +120,7 @@ pub async fn write_file(
 /// 바탕 화면이라 "비디오 폴더 밑 이미지 편집 저장"이 통째로 실패했다. 앱 로그에는 아무 단서가
 /// 없고 원인은 Defender 이벤트 로그(1123)에만 남는다 — 그래서 여기서 짚어 준다.
 /// dev 빌드와 설치본은 별개 exe 라 허용 목록에 각각 등록해야 한다.
-fn write_io_err(e: std::io::Error) -> IpcError {
+pub(crate) fn write_io_err(e: std::io::Error) -> IpcError {
     if e.kind() != std::io::ErrorKind::PermissionDenied {
         return IpcError::new(ErrorCode::Io, text_files::file_save_failed(e));
     }
@@ -496,8 +496,26 @@ pub async fn write_file_bytes(
 ) -> Result<Option<String>, IpcError> {
     let repo = project_path(&state, &project_id)?;
     let target = resolve_in_repo(&repo, &rel_path)?;
+    let bytes = checked_write_bytes(&target, &base64, overwrite, expected_stamp.as_deref()).await?;
+    tokio::fs::write(&target, bytes).await.map_err(write_io_err)?;
+    Ok(tokio::fs::metadata(&target)
+        .await
+        .ok()
+        .as_ref()
+        .and_then(crate::commands::diff::stamp_of))
+}
+
+/// `write_file_bytes` 의 쓰기 전 검사 — 통과하면 쓸 바이트를 돌려준다. 폴더 창의 `fav_write_image` 도 이것을 지나
+/// **같은 오류 계약**(Conflict·AlreadyExists·64MB·링크 거부)을 갖는다 — 이미지 편집기의 덮어쓰기·외부 변경 확인이
+/// 두 저장 경로에 똑같이 돈다. 두 벌로 두면 한쪽만 느슨해진다.
+pub(crate) async fn checked_write_bytes(
+    target: &Path,
+    base64: &str,
+    overwrite: bool,
+    expected_stamp: Option<&str>,
+) -> Result<Vec<u8>, IpcError> {
     // 최종 경로 메타는 링크를 따라가지 않고 본다 — 기존 심볼릭/정션으로 레포 밖에 쓰지 못하게.
-    if let Ok(meta) = tokio::fs::symlink_metadata(&target).await {
+    if let Ok(meta) = tokio::fs::symlink_metadata(target).await {
         if meta.file_type().is_symlink() {
             return Err(IpcError::new(ErrorCode::Io, text_files::cannot_write_symlink()));
         }
@@ -505,7 +523,7 @@ pub async fn write_file_bytes(
             return Err(IpcError::new(ErrorCode::Io, text_files::cannot_write_directory()));
         }
         // 이미 뜬 메타를 그대로 쓴다 — 검사 때문에 파일을 되읽지 않는다.
-        if let Some(want) = expected_stamp.as_deref() {
+        if let Some(want) = expected_stamp {
             match crate::commands::diff::stamp_of(&meta) {
                 Some(now) if now != want => {
                     return Err(IpcError::new(
@@ -534,12 +552,7 @@ pub async fn write_file_bytes(
     if bytes.len() > MAX_WRITE_BYTES {
         return Err(IpcError::new(ErrorCode::Io, text_files::write_bytes_too_large_64mb()));
     }
-    tokio::fs::write(&target, bytes).await.map_err(write_io_err)?;
-    Ok(tokio::fs::metadata(&target)
-        .await
-        .ok()
-        .as_ref()
-        .and_then(crate::commands::diff::stamp_of))
+    Ok(bytes)
 }
 
 /// 한 프로젝트 루트의 결과(또는 오류) — 배치 프리페치용.

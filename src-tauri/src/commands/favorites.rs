@@ -517,7 +517,15 @@ fn prune_thumb_cache(dir: &Path, now: SystemTime) -> usize {
 pub struct FavBytes {
     pub mime: String,
     pub base64: String,
+    /// **원본 파일**의 정체(`diff::stamp_of` — `read_file_base64` 와 같은 값). 변환본(HEIC→JPEG)이어도 원본 것이다 —
+    /// 편집기·"회전한 대로 저장"이 `fav_write_image` 의 `expected_stamp` 로 되돌려 준다(태스크 76 D10).
+    pub stamp: Option<String>,
 }
+
+/// 웹뷰가 못 그리는 형식을 뷰어용으로 바꿀 때의 긴 변·mjpeg 품질(2 = 좋은 쪽). 글자 인식도 **같은 그림**을 읽어야
+/// 글자 상자가 화면 그림 위에 맞는다(fav_ocr_image).
+const LIGHTBOX_MAX_EDGE: u32 = 4096;
+const LIGHTBOX_JPEG_Q: u8 = 2;
 
 /// 라이트박스가 쓰는 원본. 썸네일과 달리 파일 그대로이므로 한도를 건다.
 ///
@@ -528,9 +536,17 @@ pub async fn fav_read(app: AppHandle, state: State<'_, AppState>, path: String) 
     let file = allowed(&state, &path)?;
     let sniff = file.clone();
     if !run_blocking(move || webview_shows(&sniff)).await? {
+        // 스탬프는 변환 **전에** 뜬다 — 변환하는 사이에 바뀌었으면 저장 때 충돌로 잡히게.
+        let meta = tokio::fs::metadata(&file)
+            .await
+            .map_err(|e| IpcError::new(ErrorCode::NotFound, text_files::could_not_read_file(e)))?;
         let bin = super::video::find_ffmpeg(&app, state.inner())?;
-        let jpg = super::still_image::still_to_jpeg(&bin, &file, 4096, 2).await?;
-        return Ok(FavBytes { mime: "image/jpeg".into(), base64: B64.encode(&jpg) });
+        let jpg = super::still_image::still_to_jpeg(&bin, &file, LIGHTBOX_MAX_EDGE, LIGHTBOX_JPEG_Q).await?;
+        return Ok(FavBytes {
+            mime: "image/jpeg".into(),
+            base64: B64.encode(&jpg),
+            stamp: super::diff::stamp_of(&meta),
+        });
     }
     run_blocking(move || {
         let meta = std::fs::metadata(&file)
@@ -540,7 +556,11 @@ pub async fn fav_read(app: AppHandle, state: State<'_, AppState>, path: String) 
         }
         let bytes = std::fs::read(&file)
             .map_err(|e| IpcError::new(ErrorCode::Io, text_files::could_not_read_file(e)))?;
-        Ok(FavBytes { mime: mime_of(&file).to_string(), base64: B64.encode(&bytes) })
+        Ok(FavBytes {
+            mime: mime_of(&file).to_string(),
+            base64: B64.encode(&bytes),
+            stamp: super::diff::stamp_of(&meta),
+        })
     })
     .await?
 }
@@ -592,6 +612,157 @@ fn mime_of(p: &Path) -> &'static str {
         "ico" => "image/x-icon",
         _ => "application/octet-stream",
     }
+}
+
+// ---- 사진 뷰어: 정보 · 글자 인식 (태스크 76 D6·D7) ---------------------------------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FavImageInfo {
+    /// 내용으로 가른 형식(JPEG·PNG·HEIC…) — 못 가르면 확장자 대문자.
+    pub format: String,
+    /// **보이는 방향**(EXIF 회전 반영) 기준 치수. image 크레이트가 헤더를 못 읽는 형식(HEIC 등)은 None —
+    /// 프론트가 디코드한 그림 크기로 채운다.
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub bytes: u64,
+    pub modified_ms: u64,
+    pub exif: Option<super::exif::ExifSummary>,
+}
+
+/// 사진 뷰어 정보 패널·아래 줄의 형식·해상도. 파일 앞 1MB 만 읽는다(EXIF 는 거기 있다).
+#[tauri::command(async)]
+pub fn fav_image_info(state: State<'_, AppState>, path: String) -> Result<FavImageInfo, IpcError> {
+    let file = allowed(&state, &path)?;
+    image_info(&file)
+}
+
+fn image_info(file: &Path) -> Result<FavImageInfo, IpcError> {
+    use std::io::Read;
+    let read_err = |e: std::io::Error| IpcError::new(ErrorCode::Io, text_files::could_not_read_file(e));
+    let meta = std::fs::metadata(file).map_err(read_err)?;
+    let mut head = Vec::new();
+    File::open(file)
+        .and_then(|f| f.take(super::exif::EXIF_SCAN_BYTES).read_to_end(&mut head))
+        .map_err(read_err)?;
+    let exif = super::exif::parse_exif(&head);
+    // 웹뷰는 EXIF 방향대로 돌려 그린다 — 옆으로 눕힌 방향(5~8)이면 헤더의 가로·세로가 화면과 뒤바뀐다.
+    let sideways = matches!(exif.as_ref().and_then(|e| e.orientation), Some(5..=8));
+    let dims = image_dims(file).map(|(w, h)| if sideways { (h, w) } else { (w, h) });
+    Ok(FavImageInfo {
+        format: format_label(file, &head),
+        width: dims.map(|d| d.0),
+        height: dims.map(|d| d.1),
+        bytes: meta.len(),
+        modified_ms: mtime_ms(&meta),
+        exif,
+    })
+}
+
+/// 형식 이름 — ISO-BMFF 는 ftyp 브랜드로 HEIC/AVIF, 그 밖은 image 의 내용 스니핑, 둘 다 모르면 확장자.
+/// 확장자만 jpeg 인 HEIC(휴대폰 내보내기)가 "JPEG" 로 보이면 "왜 다른 앱에서 안 열리지"가 된다.
+fn format_label(file: &Path, head: &[u8]) -> String {
+    if head.get(4..8) == Some(b"ftyp") {
+        let declared = u32::from_be_bytes([head[0], head[1], head[2], head[3]]) as usize;
+        // 상자가 선언보다 짧게 잘렸으면 브랜드는 대표 브랜드만 본다(아래 get 이 None).
+        let brands = head.get(8..declared.min(head.len())).unwrap_or(&head[8..8]);
+        let avif = brands.chunks_exact(4).any(|b| b == b"avif" || b == b"avis");
+        return if avif { "AVIF" } else { "HEIC" }.to_string();
+    }
+    match image::guess_format(head) {
+        Ok(f) => format!("{f:?}").to_ascii_uppercase(),
+        Err(_) => ext_lower(file).to_ascii_uppercase(),
+    }
+}
+
+/// 사진 뷰어의 [글자 인식] — `ocr_image` 와 같은 파이프라인(크기 상한 → 디코드 → 두 패스 인식)을 절대경로로.
+///
+/// 상자 좌표는 **뷰어가 보는 그림의 px** 여야 뷰어가 그대로 얹는다. 그래서 웹뷰가 못 그리는 형식은 `fav_read` 와
+/// 같은 변환(긴 변 4096·q2 — 바꾸면 둘 다 바꿔라)을 거치고, JPEG 는 EXIF 방향을 픽셀에 적용한다: 웹뷰는 방향대로
+/// 돌려 그리는데 image 크레이트는 돌리지 않고 풀어, 세로 사진을 옆으로 누운 채 읽고 상자도 어긋난다.
+#[tauri::command(async)]
+pub async fn fav_ocr_image(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<super::ocr::OcrResult, IpcError> {
+    use crate::i18n::text_git_net;
+    let file = allowed(&state, &path)?;
+    let sniff = file.clone();
+    let bytes = if run_blocking(move || webview_shows(&sniff)).await? {
+        // 크기를 먼저 본다 — 읽고 나서 거절하면 거대 파일도 일단 메모리에 올렸다가 버린다.
+        let meta = tokio::fs::metadata(&file)
+            .await
+            .map_err(|e| IpcError::new(ErrorCode::Io, text_git_net::ocr_file_stat_failed(&path, e)))?;
+        if meta.len() > super::diff::MAX_IMAGE_BYTES as u64 {
+            return Err(IpcError::new(ErrorCode::Io, text_git_net::ocr_file_too_large()));
+        }
+        tokio::fs::read(&file)
+            .await
+            .map_err(|e| IpcError::new(ErrorCode::Io, text_git_net::ocr_file_read_failed(&path, e)))?
+    } else {
+        // ffmpeg 변환본은 이미 바로 선 그림이고 EXIF 가 없다(still_image.rs 의 회전 적용) — decode_upright 가 손대지 않는다.
+        let bin = super::video::find_ffmpeg(&app, state.inner())?;
+        super::still_image::still_to_jpeg(&bin, &file, LIGHTBOX_MAX_EDGE, LIGHTBOX_JPEG_Q).await?
+    };
+    let img = tokio::task::spawn_blocking(move || super::ocr::decode_upright(&bytes))
+        .await
+        .map_err(super::ocr::join_err)??;
+    super::ocr::recognize_two_pass(img).await
+}
+
+// ---- 사진 쓰기: 편집기 경로 모드 · 회전한 대로 저장 (태스크 76 D10·D11) ----------------------
+
+/// 폴더 창의 이미지 편집기(경로 모드)와 사진 뷰어 "회전한 대로 저장"의 저장 — `write_file_bytes` 의 절대경로판.
+/// 오류 계약(`Conflict`·`AlreadyExists`·64MB·링크 거부)과 반환(쓴 직후의 새 stamp)이 같다(`tree::checked_write_bytes`).
+/// 다른 점은 쓰기가 원자적이라는 것 하나 — 이 창이 다루는 것은 레포 밖 사진(되돌릴 git 이 없다)이라, 도중에 죽어
+/// 잘린 원본이 남으면 안 된다.
+#[tauri::command(async)]
+pub async fn fav_write_image(
+    state: State<'_, AppState>,
+    path: String,
+    base64: String,
+    overwrite: bool,
+    expected_stamp: Option<String>,
+) -> Result<Option<String>, IpcError> {
+    let (favs, projects) = roots(&state);
+    write_image_in(&path, &base64, overwrite, expected_stamp.as_deref(), &favs, &projects).await
+}
+
+/// `fav_write_image` 의 본체 — `State` 없이 테스트할 수 있게 떼어 냈다.
+///
+/// 게이트는 **상위 폴더**에 건다 — 대상은 아직 없을 수 있다(다른 이름으로 저장). 이름 성분은 트리·`fav_rename` 과 같은
+/// 규칙(구분자·`..`·`.git`·예약 장치명)이고, 이름은 다듬지 않고 받은 그대로 쓴다(다듬으면 다른 파일을 덮을 수 있다).
+/// 읽기 게이트(`allowed_in`)는 즐겨찾기 아래의 `.git` 을 열어 두지만 쓰기는 상위 경로 어디에도 `.git` 을 받지 않는다 —
+/// 트리 커맨드와 같은 규칙이고, 사진 저장이 훅을 심는 통로가 되면 안 된다.
+async fn write_image_in(
+    path: &str,
+    base64: &str,
+    overwrite: bool,
+    expected_stamp: Option<&str>,
+    favs: &[String],
+    projects: &[String],
+) -> Result<Option<String>, IpcError> {
+    let raw = Path::new(path);
+    let (Some(parent), Some(name)) = (raw.parent(), raw.file_name().and_then(|n| n.to_str())) else {
+        return Err(IpcError::new(ErrorCode::Io, text_files::invalid_path()));
+    };
+    super::tree::validate_new_name(name)?;
+    super::tree::validate_rel_file(name)?;
+    let dir = allowed_in(parent, favs, projects)?;
+    if dir.components().any(
+        |c| matches!(c, std::path::Component::Normal(os) if super::tree::is_dotgit_component(os)),
+    ) {
+        return Err(IpcError::new(ErrorCode::Io, text_files::invalid_path()));
+    }
+    let target = dir.join(name);
+    let bytes = super::tree::checked_write_bytes(&target, base64, overwrite, expected_stamp).await?;
+    let dest = target.clone();
+    run_blocking(move || write_atomic(&dest, &bytes))
+        .await?
+        .map_err(super::tree::write_io_err)?;
+    // 메타를 못 읽으면 None — 다음 저장의 충돌 검사를 건너뛸 뿐이다(`write_file_bytes` 와 같다).
+    Ok(tokio::fs::metadata(&target).await.ok().as_ref().and_then(super::diff::stamp_of))
 }
 
 // ---- OS 로 넘기기 -------------------------------------------------------------------
@@ -1373,6 +1544,166 @@ mod tests {
             gnome_screenshots_dir(Some(base.join("gone")), &home),
             home.join("Pictures")
         );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 경로를 받는 커맨드는 전부 **첫 줄에서** 게이트(`allowed`·`roots`)를 지난다 — 새 커맨드(정보·글자 인식)가 검사를
+    /// 빠뜨리면 그 통로가 파일시스템 전체를 읽는다. 게이트를 지우거나 뒤로 미루면 그 커맨드 이름으로 실패한다.
+    #[test]
+    fn every_path_command_checks_the_gate_first() {
+        let src = include_str!("favorites.rs");
+        let body = &src[..src.find("#[cfg(test)]").unwrap()];
+        let mut checked = Vec::new();
+        for chunk in body.split("#[tauri::command").skip(1) {
+            let open = chunk.find('{').unwrap();
+            let sig = &chunk[..open];
+            if !(sig.contains("path: String") || sig.contains("paths: Vec<String>")) {
+                continue;
+            }
+            let first = chunk[open + 1..]
+                .lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty() && !l.starts_with("//") && !l.starts_with("use "))
+                .unwrap();
+            assert!(
+                first.contains("allowed(&state, &path)?") || first.contains("roots(&state)"),
+                "게이트가 첫 줄이 아니다: {sig}\n첫 줄: {first}"
+            );
+            checked.push(sig.split("fn ").nth(1).and_then(|s| s.split('(').next()).unwrap_or(sig).to_string());
+        }
+        for name in [
+            "fav_list",
+            "fav_read",
+            "fav_open",
+            "fav_delete",
+            "fav_rename",
+            "fav_image_info",
+            "fav_ocr_image",
+            "fav_write_image",
+        ] {
+            assert!(checked.iter().any(|c| c == name), "{name} 이 검사 대상에 없다: {checked:?}");
+        }
+    }
+
+    /// JPEG 앞에 EXIF(APP1, 방향 `o`)를 끼운 바이트.
+    fn jpeg_with_orientation(w: u32, h: u32, o: u8) -> Vec<u8> {
+        let mut jpeg = Vec::new();
+        image::DynamicImage::new_rgb8(w, h)
+            .write_to(&mut std::io::Cursor::new(&mut jpeg), image::ImageFormat::Jpeg)
+            .unwrap();
+        // II*\0 · IFD0@8 · 1항목(0x0112 SHORT 1 = o) · 다음 IFD 없음
+        let mut tiff = b"II*\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0".to_vec();
+        tiff.extend([o, 0, 0, 0, 0, 0, 0, 0]);
+        let mut app1 = b"Exif\0\0".to_vec();
+        app1.extend(tiff);
+        let len = (app1.len() + 2) as u16;
+        let mut out = vec![0xFF, 0xD8, 0xFF, 0xE1];
+        out.extend(len.to_be_bytes());
+        out.extend(app1);
+        out.extend(&jpeg[2..]);
+        out
+    }
+
+    /// 정보: 형식은 내용으로(확장자만 jpeg 인 HEIC 는 HEIC), 치수는 보이는 방향(EXIF 6 이면 가로·세로가 뒤바뀐다).
+    #[test]
+    fn image_info_sniffs_format_and_orients_dimensions() {
+        let dir = scratch("image-info");
+        let shot = dir.join("shot.jpg");
+        std::fs::write(&shot, jpeg_with_orientation(40, 30, 6)).unwrap();
+        let info = image_info(&shot).unwrap();
+        assert_eq!(info.format, "JPEG");
+        assert_eq!((info.width, info.height), (Some(30), Some(40)), "방향 6 = 옆으로 누운 원본");
+        assert_eq!(info.exif.as_ref().and_then(|e| e.orientation), Some(6));
+        assert_eq!(info.bytes, std::fs::metadata(&shot).unwrap().len());
+
+        let upright = dir.join("up.jpg");
+        std::fs::write(&upright, jpeg_with_orientation(40, 30, 1)).unwrap();
+        assert_eq!((image_info(&upright).unwrap().width, image_info(&upright).unwrap().height), (Some(40), Some(30)));
+
+        let heic = dir.join("IMG.jpeg");
+        std::fs::write(&heic, b"\0\0\0\x18ftypheic\0\0\0\0mif1heic").unwrap();
+        let info = image_info(&heic).unwrap();
+        assert_eq!((info.format.as_str(), info.width, info.exif.is_none()), ("HEIC", None, true));
+        assert_eq!(format_label(&heic, b"\0\0\0\x1cftypmif1\0\0\0\0mif1avifmiaf"), "AVIF", "호환 브랜드에 avif");
+        assert_eq!(format_label(Path::new("x.svg"), b"<svg xmlns="), "SVG", "못 가르면 확장자");
+        assert!(image_info(&dir.join("gone.png")).is_err());
+
+        let json = serde_json::to_value(image_info(&shot).unwrap()).unwrap();
+        for key in ["format", "width", "height", "bytes", "modifiedMs", "exif"] {
+            assert!(json.get(key).is_some(), "IPC 계약 키 {key} 가 없다: {json}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 사진 쓰기(편집기 경로 모드·회전 저장) — 게이트는 상위 폴더, 이름 성분은 트리 규칙, 오류 계약은 `write_file_bytes` 와 같다.
+    #[tokio::test]
+    async fn fav_write_image_gates_and_keeps_the_write_contract() {
+        let base = scratch("fav-write");
+        let root = base.join("root");
+        let outside = base.join("outside");
+        let proj = base.join("proj");
+        for d in [&root, &outside, &root.join(".git"), &proj.join(".git").join("hooks"), &root.join("dir.png")] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let favs = vec![root.to_string_lossy().to_string()];
+        let projects = vec![proj.to_string_lossy().to_string()];
+        let s = |p: &Path| p.to_string_lossy().to_string();
+        let b64 = |b: &[u8]| B64.encode(b);
+        let write = |p: PathBuf, bytes: &'static [u8], overwrite: bool, stamp: Option<String>| {
+            let (favs, projects) = (favs.clone(), projects.clone());
+            async move { write_image_in(&s(&p), &b64(bytes), overwrite, stamp.as_deref(), &favs, &projects).await }
+        };
+
+        // 새 파일 — 쓴 바이트가 그대로, 돌려준 stamp 는 디스크의 것과 같다.
+        let shot = root.join("shot.png");
+        let stamp = write(shot.clone(), b"first", false, None).await.unwrap();
+        assert_eq!(std::fs::read(&shot).unwrap(), b"first");
+        assert_eq!(stamp, super::super::diff::stamp_of(&std::fs::metadata(&shot).unwrap()));
+        assert!(stamp.is_some());
+
+        // 있는데 overwrite=false → AlreadyExists, 원본 그대로.
+        let err = write(shot.clone(), b"second", false, None).await.unwrap_err();
+        assert_eq!(err.code, ErrorCode::AlreadyExists);
+        assert_eq!(std::fs::read(&shot).unwrap(), b"first");
+
+        // 읽은 뒤 남이 바꿨으면(옛 stamp) → Conflict, 남의 변경을 덮지 않는다.
+        std::fs::write(&shot, b"changed elsewhere").unwrap();
+        let err = write(shot.clone(), b"mine", true, stamp.clone()).await.unwrap_err();
+        assert_eq!(err.code, ErrorCode::Conflict);
+        assert_eq!(std::fs::read(&shot).unwrap(), b"changed elsewhere");
+
+        // 맞는 stamp 로 덮어쓰기 → 성공, 새 stamp 로 다음 저장도 통과.
+        let now = super::super::diff::stamp_of(&std::fs::metadata(&shot).unwrap());
+        let next = write(shot.clone(), b"mine", true, now).await.unwrap();
+        assert_eq!(std::fs::read(&shot).unwrap(), b"mine");
+        write(shot.clone(), b"mine again", true, next).await.unwrap();
+        assert_eq!(std::fs::read(&shot).unwrap(), b"mine again");
+
+        // 게이트: 루트 밖 · 상위가 .git(즐겨찾기 아래도) · 프로젝트의 .git · 디렉터리 대상.
+        assert!(write(outside.join("x.png"), b"x", false, None).await.is_err(), "루트 밖");
+        assert!(!outside.join("x.png").exists());
+        assert!(write(root.join(".git").join("x.png"), b"x", false, None).await.is_err(), "즐겨찾기 아래 .git");
+        assert!(
+            write(proj.join(".git").join("hooks").join("pre-commit"), b"x", false, None).await.is_err(),
+            "프로젝트 .git"
+        );
+        assert!(write(root.join("dir.png"), b"x", true, None).await.is_err(), "디렉터리에 쓰지 않는다");
+        // 이름 성분: .git · .. · 예약 장치명 · 8.3 단축 .git
+        for bad in [".git", "..", "CON.png", "nul", "git~1"] {
+            let p = format!("{}{}{bad}", s(&root), std::path::MAIN_SEPARATOR);
+            let r = write_image_in(&p, &b64(b"x"), true, None, &favs, &projects).await;
+            assert!(r.is_err(), "이름 {bad:?} 는 거부");
+        }
+        // 프로젝트 안(.git 밖)은 쓴다 — 폴더 창의 프로젝트 모드.
+        write(proj.join("p.png"), b"p", false, None).await.unwrap();
+        assert_eq!(std::fs::read(proj.join("p.png")).unwrap(), b"p");
+        // 임시 파일이 남지 않는다(원자적 쓰기).
+        let leftovers: Vec<_> = std::fs::read_dir(&root)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "임시 파일이 남았다");
         let _ = std::fs::remove_dir_all(&base);
     }
 }

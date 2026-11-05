@@ -12,6 +12,7 @@ import {
   History,
   Palette,
   Sparkles,
+  Tag,
   Trash2,
   X,
 } from "lucide-react";
@@ -19,7 +20,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { fmtTime } from "../../i18n/format-locale";
-import { useMessages } from "../../i18n/ui-language";
+import { currentMessages, useMessages } from "../../i18n/ui-language";
 import { launchAgentInTerminal, type TerminalAgent } from "../../lib/agent-launch";
 import { copyText } from "../../lib/clipboard";
 import { relativeTime } from "../../lib/format";
@@ -28,6 +29,7 @@ import { prefetchGitDialog } from "../../queries";
 import { useOccludesWebview } from "../../stores/occlusion";
 import { usePromptHistory, type PromptEntry } from "../../stores/promptHistory";
 import { useTermThemes } from "../../stores/termThemes";
+import { SESSION_TITLE_MAX, useTermTitles } from "../../stores/termTitles";
 import { collectByContent, useTerminals } from "../../stores/terminals";
 import { useUi } from "../../stores/ui";
 
@@ -296,6 +298,99 @@ export function PromptLogButton({ termId }: { termId: string }) {
       {count > 0 && (
         <span className="text-[9px] leading-none tabular-nums">{count}</span>
       )}
+    </button>
+  );
+}
+
+/**
+ * 세션 제목 — 셀 헤더 가운데. 시간이 지나면 "이게 뭐 하던 세션이었지?"를 잊는다(2026-11-05 요청).
+ * 표시는 **글자 크기만 한 버튼**이다: 헤더 전체가 셀 이동 드래그 손잡이인데 그 드래그는 button·input 위에서는
+ * 시작하지 않는다(AggregateTerminals startMove) — 가운데를 통째로 잡아먹지 않고 제목 자리만 클릭 편집이 된다.
+ * 제목이 없으면 헤더에 마우스를 올렸을 때만 "+ 세션 제목"이 보인다.
+ */
+export function SessionTitle({ termId }: { termId: string }) {
+  const msg = useMessages();
+  const title = useTermTitles((s) => s.byTerminal[termId] ?? "");
+  const [draft, setDraft] = useState<string | null>(null);
+  const commit = () => {
+    if (draft !== null) useTermTitles.getState().setTitle(termId, draft);
+    setDraft(null);
+  };
+  // 감싼 칸은 남는 폭을 다 갖는 가운데 칸(드래그 손잡이로 남는다). 제목이 있거나 고치는 중이면 최소 폭을 잡아 둔다 —
+  // 좁은 셀(~300px)에서는 왼쪽 "프로젝트 · 터미널 N" 과 오른쪽 아이콘이 자리를 다 먹어 제목이 0px 로 사라졌다. 이름표보다
+  // 사용자가 붙인 제목이 그 세션을 더 잘 말하므로 왼쪽이 먼저 줄어든다.
+  const wrap = `flex min-w-0 flex-1 justify-center ${title || draft !== null ? "min-w-[5rem]" : ""}`;
+  if (draft !== null)
+    return (
+      <div className={wrap}>
+        <input
+          autoFocus
+          value={draft}
+          maxLength={SESSION_TITLE_MAX}
+          placeholder={msg.git.termSession.sessionTitlePlaceholder}
+          onChange={(e) => setDraft(e.target.value)}
+          onFocus={(e) => e.currentTarget.select()}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            // 창 단축키(Esc 로 모아보기 닫기 등)·터미널로 새지 않게.
+            e.stopPropagation();
+            if (e.key === "Enter") commit();
+            else if (e.key === "Escape") setDraft(null);
+          }}
+          className="h-5 w-full max-w-[28rem] min-w-0 rounded border border-accent bg-base px-1.5 text-center text-[11px] text-fg outline-none placeholder:text-fg-dim"
+        />
+      </div>
+    );
+  return (
+    <div className={wrap}>
+      <button
+        onClick={() => setDraft(title)}
+        // 잘려 보일 수 있다 — 툴팁에 전체 제목을 둔다.
+        title={title ? `${title}\n${msg.git.termSession.sessionTitleEditTitle}` : msg.git.termSession.sessionTitleEditTitle}
+        className={
+          title
+            ? "min-w-0 max-w-full truncate rounded px-1.5 font-medium text-accent hover:bg-raised"
+            : "min-w-0 max-w-full truncate rounded px-1.5 text-fg-dim opacity-0 hover:bg-raised hover:text-fg group-hover/cell:opacity-100 focus-visible:opacity-100"
+        }
+      >
+        {title || msg.git.termSession.sessionTitleAdd}
+      </button>
+    </div>
+  );
+}
+
+/** 세션 제목을 대화상자로 묻는다 — 헤더 줄이 없는 곳(작업 화면 터미널 패널·탭 메뉴)이 쓴다. 비우면 지운다. */
+export function askSessionTitle(termId: string): void {
+  const t = currentMessages().git.termSession;
+  useUi.getState().askPrompt({
+    title: t.sessionTitlePromptTitle,
+    label: t.sessionTitlePromptLabel,
+    placeholder: t.sessionTitlePlaceholder,
+    defaultValue: useTermTitles.getState().byTerminal[termId] ?? "",
+    confirmLabel: t.sessionTitleSave,
+    allowEmpty: true,
+    validate: (v) => (v.trim().length > SESSION_TITLE_MAX ? t.sessionTitleTooLong(SESSION_TITLE_MAX) : null),
+    onConfirm: (v) => useTermTitles.getState().setTitle(termId, v),
+  });
+}
+
+/**
+ * 작업 화면 터미널 패널의 호버 버튼 줄에 붙는 세션 제목 칩 — 분할된 패널마다 자기 제목이 있어 패널 위에서 보이고
+ * 고칠 수 있어야 한다(탭에는 활성 패널 것만 보인다). 제목이 없으면 아이콘만.
+ */
+export function SessionTitleChip({ termId }: { termId: string }) {
+  const msg = useMessages();
+  const title = useTermTitles((s) => s.byTerminal[termId] ?? "");
+  return (
+    <button
+      onClick={() => askSessionTitle(termId)}
+      title={title ? `${title}\n${msg.git.termSession.sessionTitleEditTitle}` : msg.git.termSession.sessionTitleEditTitle}
+      className={`flex min-w-0 shrink items-center gap-1 rounded p-0.5 ${
+        title ? "max-w-[16rem] text-accent hover:bg-raised" : "text-fg-dim hover:bg-raised hover:text-fg"
+      }`}
+    >
+      <Tag size={12} className="shrink-0" />
+      {title && <span className="truncate text-[11px] font-medium">{title}</span>}
     </button>
   );
 }

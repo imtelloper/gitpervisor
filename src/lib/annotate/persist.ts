@@ -15,6 +15,7 @@ import { currentMessages } from "../../i18n/ui-language";
 import { ipc, isIpcError } from "../ipc";
 import type { DocHistory, HistoryLogEntry } from "./history";
 import {
+  normalizeDoc,
   parseImageDoc,
   serializeImageDoc,
   type ImageDocEnvelope,
@@ -243,7 +244,10 @@ export function useImageDocPersist(
   const loadSnapshot = useCallback(
     async (i: number): Promise<EditorDoc | null> => {
       const file = await readSnapshots();
-      return file.items[i]?.doc ?? null;
+      const d = file.items[i]?.doc;
+      // 경계를 지나게 한다 — 필드가 나중에 붙은 문서(76 톤 필드 이전 스냅샷)가 `undefined` 를 든 채
+      // 편집기로 들어가면 슬라이더가 비고 그 값이 다시 저장된다.
+      return d ? normalizeDoc(d) : null;
     },
     [readSnapshots],
   );

@@ -5,6 +5,7 @@ mod check;
 mod diagnostics;
 mod diff;
 mod disk;
+mod exif;
 mod favorites;
 mod fonts;
 mod file_kinds;

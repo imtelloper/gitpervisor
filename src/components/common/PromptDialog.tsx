@@ -46,7 +46,7 @@ export function PromptHost() {
   if (!prompt) return null;
 
   const error = prompt.validate ? prompt.validate(value) : null;
-  const canSubmit = value.trim().length > 0 && !error;
+  const canSubmit = (prompt.allowEmpty || value.trim().length > 0) && !error;
 
   const submit = () => {
     if (!canSubmit) return;

@@ -142,6 +142,10 @@ const ko = {
     closeFailedMessage:
       "이 창의 편집 내용을 파일로 남기지 못했습니다. 그래도 닫으면 마지막 저장 이후 변경분을 잃습니다.",
     closeFailedConfirm: "그래도 닫기",
+    discardTitle: "편집 내용 버리기",
+    discardMessage:
+      "저장되지 않은 편집이 있습니다. 폴더에서 연 사진은 편집 내용이 따로 남지 않아, 닫으면 사라집니다.",
+    discardConfirm: "버리고 닫기",
     createComponentTitle: "컴포넌트 만들기",
     createComponentLabel: "이름에 '/' 를 넣으면 앞부분이 섹션이 됩니다 (예: 주석 / 번호 뱃지).",
     createComponentDefaultName: "새 컴포넌트",
@@ -235,7 +239,7 @@ const ko = {
     rotateCcw90: "반시계 방향 90° 회전",
     rotateCw90: "시계 방향 90° 회전",
     backgroundImage: "배경 이미지",
-    colorAdjustTitle: "색 보정 — 밝기 · 대비 · 채도",
+    colorAdjustTitle: "색 보정 — 빛 · 색 · 효과 · 필터",
     colorAdjust: "색 보정",
     originalSize: (w: number, h: number) => `원본 크기 ${w} × ${h}`,
   },
@@ -449,6 +453,10 @@ export const imageEditorText = defineText(ko, {
       closeFailedMessage:
         "The edits in this window couldn't be written to a file. If you close anyway, changes since the last save will be lost.",
       closeFailedConfirm: "Close anyway",
+      discardTitle: "Discard edits",
+      discardMessage:
+        "Discard unsaved edits? Edits to a photo opened from a folder aren't kept anywhere else, so closing loses them.",
+      discardConfirm: "Discard and close",
       createComponentTitle: "Create component",
       createComponentLabel:
         "Put '/' in the name to file it under a section (e.g. Annotations / Number badge).",
@@ -542,7 +550,7 @@ export const imageEditorText = defineText(ko, {
       rotateCcw90: "Rotate 90° counterclockwise",
       rotateCw90: "Rotate 90° clockwise",
       backgroundImage: "Background image",
-      colorAdjustTitle: "Adjust color — brightness · contrast · saturation",
+      colorAdjustTitle: "Adjust color — light · color · effects · filter",
       colorAdjust: "Adjust color",
       originalSize: (w, h) => `Original size ${w} × ${h}`,
     },

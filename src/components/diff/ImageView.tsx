@@ -1,5 +1,4 @@
 import {
-  Copy,
   ExternalLink,
   FileWarning,
   Maximize,
@@ -8,12 +7,10 @@ import {
   Plus,
   Scan,
   ScanText,
-  X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useMessages } from "../../i18n/ui-language";
-import { copyWithToast } from "../../lib/clipboard";
 import type { OcrResult } from "../../lib/ipc";
 import { errorMessage, ipc, isIpcError } from "../../lib/ipc";
 import { useDir, useFileImage } from "../../queries";
@@ -23,18 +20,12 @@ import { joinPath, parentDir } from "../../lib/path";
 import { WHEEL_STEP, zoomAt, type View } from "../../lib/zoom";
 import { useUi } from "../../stores/ui";
 import { EmptyState } from "../common/EmptyState";
+import { OcrPanel } from "./OcrPanel";
 
 // 줌 상수·수학은 lib/zoom.ts 가 단일 소스다(이미지 편집기와 공유 — 두 벌로 두면 갈라진다).
 const BTN_STEP = 1.4; // 버튼·키보드는 한 번에 더 크게 움직여야 답답하지 않다
 // 이 배율을 넘으면 보간을 끄고 픽셀을 그대로 보여준다(아이콘·픽셀아트가 뭉개지지 않게).
 const PIXELATE_FROM = 2;
-
-// 어느 OS 엔진이 읽었는지 — 품질 차이가 큰데(태스크 68 §2.2) 결과만 보면 알 수 없다.
-const OCR_ENGINE_LABEL: Record<OcrResult["engine"], string> = {
-  windows_ocr: "Windows OCR",
-  apple_vision: "Apple Vision",
-  tesseract_cli: "tesseract",
-};
 
 /**
  * 같은 폴더의 형제 이미지 내비게이션(↑↓·←→). 트리와 **같은 목록**(백엔드 dirs-first 자연 정렬)에서
@@ -486,81 +477,6 @@ function ZoomableImage({
             }}
           />
         )}
-      </div>
-    </div>
-  );
-}
-
-/** 글자 추출 결과 패널 — 이미지 오른쪽 칼럼. 뷰어 분할(태스크 64)엔 최소 폭이 없어
- *  `max-w-[40%]`로 이미지가 실오라기가 되는 것만 막는다(아래로 쌓는 반응형은 없다). */
-function OcrPanel({
-  result,
-  onHoverLine,
-  onClose,
-}: {
-  result: OcrResult;
-  onHoverLine: (i: number | null) => void;
-  onClose: () => void;
-}) {
-  const msg = useMessages();
-  return (
-    <div
-      data-ocr-panel
-      className="flex w-80 max-w-[40%] shrink-0 flex-col border-l border-edge bg-panel text-xs"
-    >
-      <div className="flex h-8 shrink-0 items-center gap-1 border-b border-edge px-3 text-fg-dim">
-        <span data-ocr-meta className="min-w-0 flex-1 truncate">
-          {OCR_ENGINE_LABEL[result.engine]} · {result.languages.join(", ")} ·{" "}
-          {msg.git.imageView.ocrLineCount(result.lines.length)}
-        </span>
-        <TBtn label={msg.git.imageView.close} onClick={onClose} data-ocr-close>
-          <X size={13} />
-        </TBtn>
-      </div>
-
-      {/* 줄 사이를 가로질러 드래그 선택할 수 있어야 한다 — 그래서 select-text 이고 버튼이 아니다. */}
-      <div
-        className="min-h-0 flex-1 select-text overflow-y-auto px-2 py-1.5"
-        onMouseLeave={() => onHoverLine(null)}
-      >
-        {result.lines.length === 0 ? (
-          <div data-ocr-empty className="px-1 py-3 text-center text-fg-muted">
-            {msg.git.imageView.ocrEmpty}
-          </div>
-        ) : (
-          result.lines.map((line, i) => (
-            <div
-              key={i}
-              data-ocr-line={i}
-              onMouseEnter={() => onHoverLine(i)}
-              className="whitespace-pre-wrap break-all rounded px-1 py-0.5 leading-5 text-fg hover:bg-raised"
-            >
-              {line.text}
-            </div>
-          ))
-        )}
-      </div>
-
-      {/* 품질에 영향을 준 사실은 숨기지 않는다 — 안 보이면 사용자는 "OCR이 고장"으로 읽는다(§5 R1). */}
-      {result.warnings.length > 0 && (
-        <div className="shrink-0 border-t border-edge px-3 py-1.5 text-warn">
-          {result.warnings.map((w, i) => (
-            <div key={i} data-ocr-warning className="leading-5">
-              {w}
-            </div>
-          ))}
-        </div>
-      )}
-
-      <div className="shrink-0 border-t border-edge px-3 py-2">
-        <button
-          data-ocr-copy
-          onClick={() => copyWithToast(result.text)}
-          disabled={result.text === ""}
-          className="flex w-full items-center justify-center gap-1.5 rounded border border-edge px-2 py-1.5 text-fg-muted hover:bg-raised hover:text-fg disabled:hover:bg-transparent disabled:hover:text-fg-muted"
-        >
-          <Copy size={13} /> {msg.git.imageView.copyAll}
-        </button>
       </div>
     </div>
   );

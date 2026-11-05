@@ -33,6 +33,7 @@ import { useImageEditorUi, type Mode, type Tool } from "../../stores/imageEditor
 import { sceneOfNodes, type Scene } from "../../lib/annotate/scene";
 import { objectAABB, objectAnchor, objectBBox, selectBox } from "../../lib/annotate/geometry";
 import type { Guide, Measure } from "../../lib/annotate/snap";
+import { toneKey, type ToneRecipe } from "../../lib/annotate/tone";
 import { remove as removeNodes } from "../../lib/annotate/tree";
 import {
   newObjId,
@@ -182,6 +183,11 @@ export interface AnnotationLayerProps {
   zoom?: number;
   /** 이미지에만 걸리는 색보정 필터 — 모자이크 샘플이 출력과 같은 픽셀을 보도록 여기서도 쓴다. */
   filterStr: string;
+  /**
+   * 이미지에만 걸리는 톤 패스(76 D12). 출력과 **같은 레시피**를 받아야 WYSIWYG 다 — 호출부가
+   * 값이 그대로면 같은 객체를 넘긴다(아래 다시 그리기 effect 의 의존성이다). PDF 는 넘기지 않는다.
+   */
+  tone?: ToneRecipe | null;
   objects: readonly Node[];
   /** 이미지 페인트 소스의 디코드 캐시(39 §3.6). 없으면 이미지 채우기가 안 그려진다. */
   store: ImageStore;
@@ -311,7 +317,7 @@ function AnnotationLayerImpl(
     if (editingRef.current) excluded.add(editingRef.current.obj.id);
     const v = s.viewport;
     // 뷰포트는 크기가 같아도 원점만 옮겨질 수 있다 — 키에 넣지 않으면 옛 영역 픽셀이 굳는다.
-    const key = `${s.backW}x${s.backH}|${s.scale}|${s.filterStr}|${s.assetsVer}${v ? `|${v.x},${v.y},${v.width},${v.height}` : ""}|${[...excluded].join(",")}`;
+    const key = `${s.backW}x${s.backH}|${s.scale}|${s.filterStr}|${s.tone ? toneKey(s.tone) : ""}|${s.assetsVer}${v ? `|${v.x},${v.y},${v.width},${v.height}` : ""}|${[...excluded].join(",")}`;
     if (
       cacheRef.current &&
       cacheSrcRef.current === s.objects &&
@@ -338,6 +344,7 @@ function AnnotationLayerImpl(
       image: s.background,
       background: "image",
       filter: s.filterStr,
+      tone: s.tone,
       skipIds: excluded,
       store: s.store,
     });
@@ -432,6 +439,7 @@ function AnnotationLayerImpl(
     props.scale,
     props.displayScale,
     props.filterStr,
+    props.tone,
     // 이미지 에셋 디코드 완료 — 없으면 회색 자리표시가 다음 편집 전까지 남는다.
     props.assetsVer,
     props.cropRect,

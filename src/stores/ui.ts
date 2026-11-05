@@ -45,6 +45,8 @@ export interface PromptRequest {
   confirmLabel?: string;
   /** 입력값 검증 — 오류 메시지를 반환하면 확인이 막힌다(null이면 통과). */
   validate?: (value: string) => string | null;
+  /** 빈 값으로도 확인할 수 있다 — "비우면 지움" 인 입력(세션 제목). 기본은 빈 값을 막는다. */
+  allowEmpty?: boolean;
   onConfirm: (value: string) => void;
 }
 
@@ -211,6 +213,11 @@ export interface UiState {
    * **바깥 레포 루트 기준 상대경로로 써서 엉뚱한 파일을 만든다**(설계 D1).
    */
   imageEditorRepoId: string | null;
+  /**
+   * 경로 모드(태스크 76 D10) — `imageEditorPath` 가 **절대경로**이고 프로젝트 없이 읽고 쓴다(`fav_read`·`fav_write_image`).
+   * 폴더 창의 [편집]이 연다. 닫거나 프로젝트 모드로 열면 false 로 돌아간다.
+   */
+  imageEditorAbs: boolean;
   toasts: Toast[];
   confirm: ConfirmRequest | null;
   prompt: PromptRequest | null;
@@ -281,6 +288,8 @@ export interface UiState {
   closePrompt: () => void;
   /** repoId: 임베디드 저장소 파일이면 그 저장소의 합성 id(생략하면 선택 프로젝트로 라우팅). */
   openImageEditor: (path: string, repoId?: string) => void;
+  /** 경로 모드로 연다 — 절대경로(위 `imageEditorAbs`). */
+  openImageEditorAbs: (absPath: string) => void;
   closeImageEditor: () => void;
   /** 터미널 세션 헤더의 Git 버튼이 여는 변경·로그 모달 대상(태스크 55). null = 닫힘. */
   gitDialog: { projectId: string; tab?: "changes" | "log" } | null;
@@ -601,6 +610,7 @@ export const useUi = create<UiState>((set) => ({
   projectColorsOn: localStorage.getItem("gp:project-colors") !== "0",
   imageEditorPath: null,
   imageEditorRepoId: null,
+  imageEditorAbs: false,
   toasts: [],
   confirm: null,
   prompt: null,
@@ -637,6 +647,7 @@ export const useUi = create<UiState>((set) => ({
         // repoId도 함께 지운다 — 안 지우면 다음 편집이 스테일 repoId를 물고 간다(설계 §7.2).
         imageEditorPath: null,
         imageEditorRepoId: null,
+        imageEditorAbs: false,
       };
     });
   },
@@ -967,9 +978,11 @@ export const useUi = create<UiState>((set) => ({
   askPrompt: (req) => set({ prompt: req }),
   closePrompt: () => set({ prompt: null }),
   openImageEditor: (path, repoId) =>
-    set({ imageEditorPath: path, imageEditorRepoId: repoId ?? null }),
+    set({ imageEditorPath: path, imageEditorRepoId: repoId ?? null, imageEditorAbs: false }),
+  openImageEditorAbs: (absPath) =>
+    set({ imageEditorPath: absPath, imageEditorRepoId: null, imageEditorAbs: true }),
   closeImageEditor: () =>
-    set({ imageEditorPath: null, imageEditorRepoId: null }),
+    set({ imageEditorPath: null, imageEditorRepoId: null, imageEditorAbs: false }),
   gitDialog: null,
   openGitDialog: (projectId, tab) => set({ gitDialog: { projectId, tab } }),
   closeGitDialog: () => set({ gitDialog: null }),

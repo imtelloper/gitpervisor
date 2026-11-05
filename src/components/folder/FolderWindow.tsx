@@ -20,7 +20,9 @@ import {
   X,
 } from "lucide-react";
 import {
+  lazy,
   memo,
+  Suspense,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -47,12 +49,17 @@ import { openDocWindow } from "../../lib/floating";
 import { ipc, type FavEntry } from "../../lib/ipc";
 import { validateEntryName } from "../../lib/path";
 import { useUi } from "../../stores/ui";
+import { ConfirmHost } from "../common/ConfirmDialog";
 import { EmptyState } from "../common/EmptyState";
 import { PromptHost } from "../common/PromptDialog";
 import { Toasts } from "../common/Toast";
 import { FloatTitleBar } from "../FloatTitleBar";
-import { Lightbox } from "./Lightbox";
+import { PhotoViewer } from "./PhotoViewer";
 import { modLabel } from "../../lib/platform";
+
+/** 이미지 편집기(경로 모드, 태스크 76 D10). **lazy 여야 한다** — DocWindow 와 같은 이유로, 정적 import 면 편집기 전체가
+ *  폴더 창 청크에 인라인돼 편집을 안 해도 그 값을 낸다. App·DocWindow 와 같은 모듈이라 청크를 공유한다. */
+const ImageEditor = lazy(() => import("../image/ImageEditor"));
 
 /**
  * 즐겨찾기 폴더 창 (태스크 66) — 스크린샷·다운로드 폴더를 빠르게 훑어보는 창.
@@ -114,6 +121,8 @@ export default function FolderWindow({
   const [reveal, setReveal] = useState(0);
 
   useEffect(() => writeView(root, view), [root, view]);
+  /** 이 창에서 연 이미지 편집기(경로 모드) — 떠 있으면 뷰어를 내리고 키를 넘기지 않는다. */
+  const imageEditorPath = useUi((s) => s.imageEditorPath);
 
   const load = useCallback(async () => {
     try {
@@ -137,6 +146,18 @@ export default function FolderWindow({
   useEffect(() => {
     dirNow.current = dir;
   }, [dir]);
+
+  // 편집기를 닫으면 다시 읽는다 — 저장했으면 스탬프가 바뀌어 썸네일·뷰어가 새 파일을 보인다(뷰어는 `version` 으로
+  // 다시 읽는다). 다른 이름으로 저장했으면 새 파일이 목록에 생기고 뷰어는 원본에 남는다(이름으로 붙들고 있다).
+  // 취소했으면 같은 목록을 한 번 더 읽을 뿐이다.
+  const editorWasOpen = useRef(false);
+  useEffect(() => {
+    if (imageEditorPath) editorWasOpen.current = true;
+    else if (editorWasOpen.current) {
+      editorWasOpen.current = false;
+      void load();
+    }
+  }, [imageEditorPath, load]);
 
   // **창에 포커스가 돌아오면 다시 읽는다.** 스크린샷은 이 창이 뒤에 있을 때 찍히고, 보려면
   // 이 창을 클릭한다 — 그 클릭이 곧 갱신 신호다. 파일 워처를 거는 것보다 정확히 필요한 만큼이다.
@@ -272,6 +293,17 @@ export default function FolderWindow({
     [images],
   );
 
+  /** 프로젝트 모드에서 항목의 레포 상대경로(`/` 구분) — 트리가 뷰어·편집기에 넘기는 것과 같은 꼴. */
+  const relOf = useCallback(
+    (name: string) =>
+      join(dir, name)
+        .slice(root.replace(/[\\/]+$/, "").length)
+        .split(/[\\/]/)
+        .filter(Boolean)
+        .join("/"),
+    [dir, join, root],
+  );
+
   const openEntry = useCallback(
     (e: FavEntry) => {
       if (e.isDir) {
@@ -283,13 +315,8 @@ export default function FolderWindow({
         return;
       }
       if (projectId) {
-        // 트리가 넘기는 것과 같은 레포 상대경로(`/` 구분) — 트리 더블클릭처럼 동영상은 넓게 연다.
-        const rel = join(dir, e.name)
-          .slice(root.replace(/[\\/]+$/, "").length)
-          .split(/[\\/]/)
-          .filter(Boolean)
-          .join("/");
-        openDocWindow(projectId, rel, e.kind === "video" ? { size: [1180, 860] } : undefined);
+        // 트리 더블클릭처럼 동영상은 넓게 연다.
+        openDocWindow(projectId, relOf(e.name), e.kind === "video" ? { size: [1180, 860] } : undefined);
         return;
       }
       void ipc.favOpen(join(dir, e.name), "default").catch((err) =>
@@ -298,7 +325,7 @@ export default function FolderWindow({
           .pushToast("error", currentMessages().folder.window.openFailedWithReason(errText(err))),
       );
     },
-    [dir, images, join, projectId, root],
+    [dir, images, join, projectId, relOf],
   );
 
   const goUp = useCallback(() => {
@@ -397,12 +424,18 @@ export default function FolderWindow({
   // ---- 키보드 ----
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
+      // 편집기·확인창이 떠 있으면 그 아래의 뷰어·목록은 키를 받지 않는다 — Delete·←→ 가 편집 중인(또는 회전 저장을
+      // 묻는 중인) 사진을 지우거나 넘기면 안 된다.
+      const ui = useUi.getState();
+      if (ui.imageEditorPath || ui.confirm) return;
       const typing =
         ev.target instanceof HTMLInputElement ||
         ev.target instanceof HTMLTextAreaElement;
       // 누르고 있어도 한 번 — 자동 반복으로 여러 장이 연달아 사라지면 안 된다.
       const trashKey = ev.key === "Delete" || (isMac && ev.metaKey && ev.key === "Backspace");
       if (lightbox !== null) {
+        // 뷰어 위 입력창(⋯ › 이름 바꾸기)에서 친 ←→·Delete 가 장을 넘기거나 파일을 지우면 안 된다. 배율 슬라이더는 입력란이 아니다.
+        if (typing && !(ev.target instanceof HTMLInputElement && ev.target.type === "range")) return;
         if (ev.key === "Escape") setLightbox(null);
         else if (ev.key === "ArrowRight") stepLightbox(1);
         else if (ev.key === "ArrowLeft") stepLightbox(-1);
@@ -614,20 +647,34 @@ export default function FolderWindow({
         />
       )}
 
-      {lbIndex >= 0 && (
-        <Lightbox
+      {/* 편집기가 떠 있는 동안은 그리지 않는다 — 뷰어의 캡처 키 리스너(R·Space·Ctrl+C)가 편집기 아래에서 돌면 안 된다.
+          닫히면 다시 마운트돼 저장된 파일을 새로 읽는다. */}
+      {lbIndex >= 0 && !imageEditorPath && (
+        <PhotoViewer
           path={join(dir, images[lbIndex].name)}
+          version={`${images[lbIndex].mtimeMs}:${images[lbIndex].size}`}
           name={images[lbIndex].name}
           index={lbIndex}
           total={images.length}
           onClose={() => setLightbox(null)}
           onStep={stepLightbox}
           onTrash={trashLightbox}
+          onRename={() => renameEntry(images[lbIndex])}
+          filmstrip={{ images, pathOf: (n) => join(dir, n) }}
+          // 이 창 안에서 경로 모드로 연다 — 즐겨찾기·프로젝트 폴더 모두(프로젝트 루트도 `fav_*` 게이트가 받는다).
+          onEdit={() => useUi.getState().openImageEditorAbs(join(dir, images[lbIndex].name))}
+          onFileChanged={() => void load()}
         />
       )}
 
       <Toasts />
+      <ConfirmHost />
       <PromptHost />
+      {imageEditorPath && (
+        <Suspense fallback={null}>
+          <ImageEditor />
+        </Suspense>
+      )}
     </div>
   );
 }

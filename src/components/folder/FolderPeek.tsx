@@ -15,7 +15,7 @@ import { copyText } from "../../lib/clipboard";
 import { favThumbUrl, useFavThumbToken } from "../../lib/fav-thumb";
 import { ipc, type FavEntry } from "../../lib/ipc";
 import { useUi } from "../../stores/ui";
-import { Lightbox } from "./Lightbox";
+import { PhotoViewer } from "./PhotoViewer";
 
 /** 미리보기에 그릴 최대 개수 — **최신 순으로** 자른다. 패널이 스크롤되므로 한 화면에 들어갈
  *  필요는 없지만, 무제한이면 폴더가 수백 장일 때(실제 스크린샷 폴더가 225장) 썸네일 요청이
@@ -248,17 +248,19 @@ export function FolderPeek({ path, onMouseEnter }: { path: string; onMouseEnter?
 
       {lbIndex >= 0 &&
         // body 로 포털한다 — 패널이 화면 밖으로 밀려 `transform` 이 걸리면 그 안의 `fixed` 는 창이 아니라
-        // 패널 기준이 된다. 감싸는 z-[70] 은 드롭다운(z-50) 위에 올리기 위해서다. React 이벤트는 포털도
-        // 컴포넌트 트리를 따라 오르므로 드롭다운의 클릭 차단·mouseleave 판정은 그대로 먹는다.
+        // 패널 기준이 된다. 감싸는 z-[52] 는 드롭다운(z-50) 위·토스트(z-[55])·확인 대화상자(z-[60]) 아래 — z-[70] 이던
+        // 때는 뷰어가 토스트("이미지를 복사했습니다" 등)를 덮어 결과가 안 보였다. React 이벤트는 포털도 컴포넌트 트리를
+        // 따라 오르므로 드롭다운의 클릭 차단·mouseleave 판정은 그대로 먹는다.
         createPortal(
-          <div className="fixed inset-0 z-[70]">
-            <Lightbox
+          <div className="fixed inset-0 z-[52]">
+            <PhotoViewer
               path={join(images[lbIndex].name)}
               name={images[lbIndex].name}
               index={lbIndex}
               total={images.length}
               onClose={() => setLightbox(null)}
               onStep={stepLightbox}
+              filmstrip={{ images, pathOf: join }}
             />
           </div>,
           document.body,

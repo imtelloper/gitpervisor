@@ -212,7 +212,7 @@ fn parse_tsv(tsv: &str) -> Vec<OcrLine> {
 
 // ════════════════════════════ 공용 파이프라인 ════════════════════════════
 
-fn join_err(e: tokio::task::JoinError) -> IpcError {
+pub(crate) fn join_err(e: tokio::task::JoinError) -> IpcError {
     IpcError::new(ErrorCode::Io, text_git_net::ocr_job_interrupted(e))
 }
 
@@ -227,7 +227,7 @@ fn decode_err(e: image::ImageError) -> IpcError {
 
 /// 바이트 → RGBA. **헤더만 먼저 읽어** 픽셀 수를 거른다 — 디코드하고 나서 거절하면 50MP짜리
 /// 200MB 버퍼를 일단 잡았다가 버리게 된다(read_file_base64가 크기를 먼저 보는 것과 같은 이유).
-fn decode_rgba(bytes: &[u8]) -> Result<image::RgbaImage, IpcError> {
+pub(crate) fn decode_rgba(bytes: &[u8]) -> Result<image::RgbaImage, IpcError> {
     let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|e| IpcError::new(ErrorCode::Io, text_git_net::ocr_image_format_detect_failed(e)))?;
@@ -241,6 +241,28 @@ fn decode_rgba(bytes: &[u8]) -> Result<image::RgbaImage, IpcError> {
     Ok(image::load_from_memory(bytes)
         .map_err(decode_err)?
         .into_rgba8())
+}
+
+/// `decode_rgba` + JPEG 의 EXIF 방향대로 세운 그림. 웹뷰는 `<img>` 를 EXIF 방향대로 돌려 그리므로 글자 상자 좌표도 선
+/// 그림 기준이어야 한다 — 안 세우면 옆으로 찍은 사진에서 상자가 엉뚱한 자리에 그려지고 누운 글자는 아예 못 읽는다.
+pub(crate) fn decode_upright(bytes: &[u8]) -> Result<image::RgbaImage, IpcError> {
+    let img = decode_rgba(bytes)?;
+    let orientation = if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        let head = &bytes[..bytes.len().min(super::exif::EXIF_SCAN_BYTES as usize)];
+        super::exif::parse_exif(head).and_then(|e| e.orientation)
+    } else {
+        None
+    };
+    Ok(
+        match orientation.and_then(|o| u8::try_from(o).ok()).and_then(image::metadata::Orientation::from_exif) {
+            Some(o) => {
+                let mut d = image::DynamicImage::ImageRgba8(img);
+                d.apply_orientation(o);
+                d.into_rgba8()
+            }
+            None => img,
+        },
+    )
 }
 
 /// 엔진에 넘길 PNG. 1× 패스도 원본 바이트 대신 이걸 쓴다 — 2× 패스는 픽셀이 바뀌어 어차피
@@ -652,7 +674,7 @@ pub async fn ocr_image(
     let bytes = tokio::fs::read(&full)
         .await
         .map_err(|e| IpcError::new(ErrorCode::Io, text_git_net::ocr_file_read_failed(&rel_path, e)))?;
-    let img = tokio::task::spawn_blocking(move || decode_rgba(&bytes))
+    let img = tokio::task::spawn_blocking(move || decode_upright(&bytes))
         .await
         .map_err(join_err)??;
     recognize_two_pass(img).await

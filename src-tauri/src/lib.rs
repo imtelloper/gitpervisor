@@ -1373,6 +1373,9 @@ pub fn run() {
             commands::fav_open,
             commands::fav_delete,
             commands::fav_rename,
+            commands::fav_image_info,
+            commands::fav_ocr_image,
+            commands::fav_write_image,
             commands::browser_open,
             commands::browser_navigate,
             commands::browser_set_bounds,
@@ -1835,6 +1838,8 @@ mod tests {
             ("proc_icons.rs", "get_process_icons"),
             ("notifications.rs", "notify_os"),
             ("commands/ocr.rs", "ocr_image"),
+            ("commands/favorites.rs", "fav_ocr_image"),
+            ("commands/favorites.rs", "fav_write_image"), // 최대 64MB 디코드·원자적 쓰기
             // 태스크 72 — 외부 프로세스(whisper-cli·ffmpeg)·다운로드·디스크 스캔·레포 쓰기.
             ("stt/acquire.rs", "stt_status"),
             ("stt/acquire.rs", "stt_runtime_ensure"),

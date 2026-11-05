@@ -35,6 +35,7 @@ import {
   renderRegion,
 } from "../../lib/annotate/render";
 import { resolveScene, sceneOfNodes } from "../../lib/annotate/scene";
+import { resolveTone, TONE_DEFAULTS } from "../../lib/annotate/tone";
 import {
   detachAllInstances,
   detachInstance,
@@ -169,6 +170,7 @@ import { currentMessages, useMessages } from "../../i18n/ui-language";
 import { copyFailMessage, copyImage, copyText } from "../../lib/clipboard";
 import { IS_DOC_WINDOW } from "../../lib/floating";
 import { errorMessage, ipc, isIpcError } from "../../lib/ipc";
+import { jpegExifSegmentFromBase64, withJpegExif } from "../../lib/jpeg-exif";
 import {
   clampScale,
   IDENTITY_VIEW,
@@ -177,7 +179,8 @@ import {
   zoomTo,
   type View,
 } from "../../lib/zoom";
-import { useSaveImage } from "../../queries";
+import { isWindows } from "../../lib/platform";
+import { useSaveImage, useSaveImageAbs } from "../../queries";
 import { useImageLibrary } from "../../stores/imageLibrary";
 import { useUi } from "../../stores/ui";
 import {
@@ -631,19 +634,35 @@ export default function ImageEditor() {
   const path = useUi((s) => s.imageEditorPath);
   const editorRepoId = useUi((s) => s.imageEditorRepoId);
   const selectedProjectId = useUi((s) => s.selectedProjectId);
+  /** 경로 모드(태스크 76 D10) — `path` 가 절대경로, 읽기·저장은 `fav_*`, 사이드카·프로젝트 이름은 없다. */
+  const absMode = useUi((s) => s.imageEditorAbs);
   // 임베디드 저장소 파일이면 그 저장소 id로 읽고 써야 한다 — 경로만 믿으면 바깥 레포에
-  // 엉뚱한 파일을 만든다(설계 D1).
-  const projectId = editorRepoId ?? selectedProjectId;
+  // 엉뚱한 파일을 만든다(설계 D1). 경로 모드는 프로젝트가 없다 — 폴더 창에 남아 있는 선택 프로젝트를
+  // 물면 제목줄에 엉뚱한 프로젝트 이름이 붙는다.
+  const projectId = absMode ? null : editorRepoId ?? selectedProjectId;
   const close = useUi((s) => s.closeImageEditor);
   const askPrompt = useUi((s) => s.askPrompt);
   const askConfirm = useUi((s) => s.askConfirm);
   const pushToast = useUi((s) => s.pushToast);
   const saveImage = useSaveImage(projectId ?? "");
+  const saveImageAbs = useSaveImageAbs();
+  const saver = absMode ? saveImageAbs : saveImage;
+  /** 경로의 마지막 구분자 자리. 경로 모드의 Windows 절대경로는 `\` 로 온다 — 프로젝트 모드(레포 상대경로)는 종전대로 `/` 만. */
+  const lastSep = (p: string) =>
+    absMode && isWindows ? Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\")) : p.lastIndexOf("/");
+  const nameOf = (p: string) => p.slice(lastSep(p) + 1);
 
   const [img, setImg] = useState<HTMLImageElement | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   /** 읽은 시점의 원본 파일 정체 — 제자리 저장에서만 되돌려 준다(§ 무성 덮어쓰기 방지). */
   const stampRef = useRef<string | null>(null);
+  /** 경로 모드 원본의 Exif(방향 1로 고친 것) — JPEG 로 저장할 때 옮겨 심는다. 캔버스 인코딩은 메타데이터를 전부 버린다. */
+  const exifRef = useRef<Uint8Array | null>(null);
+  /**
+   * 이미지를 연 직후의 문서. 경로 모드는 사이드카가 없어 닫으면 편집이 그대로 사라지므로, 지금 문서가 이것과
+   * **다른 참조**면 닫기 전에 묻는다 — 되돌리기는 스냅샷 참조를 돌려주므로 끝까지 되돌리면 다시 같아진다.
+   */
+  const loadedDocRef = useRef<EditorDoc | null>(null);
 
   // ── 편집 문서(히스토리 스냅샷 단위, §5.1) ──
   const [doc, setDoc] = useState<EditorDoc>(EMPTY_DOC);
@@ -1079,13 +1098,21 @@ export default function ImageEditor() {
 
   // ── 원본 로드 ──
   useEffect(() => {
-    if (!projectId || !path) return;
+    if (!path) return;
+    // 경로 모드는 절대경로를 폴더 창 게이트(`fav_read`)로 읽는다 — HEIC 등은 JPEG 변환본, stamp 는 원본 것.
+    const read = absMode
+      ? () => ipc.favRead(path)
+      : projectId
+        ? () => ipc.readFileBase64(projectId, path)
+        : null;
+    if (!read) return;
     let alive = true;
     setImg(null);
     setLoadErr(null);
+    exifRef.current = null;
     void (async () => {
       try {
-        const { mime, base64, stamp } = await ipc.readFileBase64(projectId, path);
+        const { mime, base64, stamp } = await read();
         const image = await loadImage(`data:${mime};base64,${base64}`);
         if (!image.naturalWidth || !image.naturalHeight) {
           throw new Error(currentMessages().imageEditor.loadError.unknownSize);
@@ -1112,6 +1139,8 @@ export default function ImageEditor() {
           // 이 스탬프가 "내가 편집을 시작한 그 파일"의 정체다. 저장할 때 되돌려 주면
           // 그 사이 남이 바꿨는지 Rust 가 판정한다(무성 덮어쓰기 방지).
           stampRef.current = stamp ?? null;
+          // HEIC 등은 fav_read 가 준 변환본(ffmpeg JPEG — Exif 없음)이라 null 이 된다.
+          exifRef.current = absMode ? jpegExifSegmentFromBase64(base64) : null;
           setImg(image);
           setFormat(formatOfPath(path) ?? "png");
         }
@@ -1122,7 +1151,7 @@ export default function ImageEditor() {
     return () => {
       alive = false;
     };
-  }, [projectId, path]);
+  }, [projectId, path, absMode]);
 
   // 새 이미지가 들어오면 문서와 히스토리를 통째로 초기화한다.
   useEffect(() => {
@@ -1133,6 +1162,7 @@ export default function ImageEditor() {
       outH: img.naturalHeight,
     };
     docRef.current = d;
+    loadedDocRef.current = d;
     histRef.current.reset(d);
     setDoc(d);
     setHistVer((v) => v + 1);
@@ -1178,6 +1208,21 @@ export default function ImageEditor() {
   const oriented = useMemo(
     () => (img ? buildOriented(img, rotation, flipH, flipV, straighten) : null),
     [img, rotation, flipH, flipV, straighten],
+  );
+
+  // 톤 패스(76 D12) — 프리뷰가 이 값을, 저장·복사가 같은 `resolveTone` 을 지난다(WYSIWYG).
+  // 메모는 필드 단위다: 주석 커밋으로 doc 이 바뀔 때마다 새 객체가 나오면 프리뷰가 쓸데없이 다시 칠한다.
+  const { exposure, highlights, shadows, warmth, tint, vignette, filterPreset, filterAmount } = doc;
+  const tone = useMemo(
+    () =>
+      oriented
+        ? resolveTone(
+            { exposure, highlights, shadows, warmth, tint, vignette, filterPreset, filterAmount, crop },
+            oriented.width,
+            oriented.height,
+          )
+        : null,
+    [exposure, highlights, shadows, warmth, tint, vignette, filterPreset, filterAmount, crop, oriented],
   );
 
   // ── 캔버스 크기 계산(두 캔버스가 항상 같은 값을 쓴다, §4.3) ────────────────
@@ -1619,6 +1664,7 @@ export default function ImageEditor() {
       brightness: 100,
       contrast: 100,
       saturate: 100,
+      ...TONE_DEFAULTS,
     });
     setCropMode(false);
   };
@@ -1676,15 +1722,17 @@ export default function ImageEditor() {
       outH,
       background: opaqueBg ? "#ffffff" : "image",
       filter: filterStr,
+      tone: resolveTone(d, base.width, base.height),
       image: base,
       store: storeRef.current,
     });
   };
 
-  const dir = path && path.includes("/") ? path.slice(0, path.lastIndexOf("/") + 1) : "";
+  // 구분자는 원본 경로의 것을 그대로 남긴다(dir 이 끝 구분자까지 든다).
+  const dir = path && lastSep(path) >= 0 ? path.slice(0, lastSep(path) + 1) : "";
   const baseNoExt = (() => {
     if (!path) return "image";
-    const b = path.split("/").pop() ?? path;
+    const b = nameOf(path);
     const d = b.lastIndexOf(".");
     return d > 0 ? b.slice(0, d) : b;
   })();
@@ -1694,7 +1742,7 @@ export default function ImageEditor() {
    *   같은 CONFLICT 가 무한 반복되지 않는다.
    */
   const writeTo = (relPath: string, overwrite: boolean, ignoreStamp = false) => {
-    if (!oriented || !projectId) return;
+    if (!oriented || (!projectId && !absMode)) return;
     // 스탬프는 **읽은 그 파일에 제자리로 쓸 때만** 의미가 있다. 다른 이름으로 저장은 대상이
     // 다른 파일이라 이 스탬프와 아무 관계가 없다 — 붙이면 항상 충돌한다.
     const stamp =
@@ -1704,9 +1752,11 @@ export default function ImageEditor() {
     // 에셋 디코드를 먼저 끝낸다 — 안 그러면 회색 자리가 저장 파일에 그대로 굳는다(39 §3.6).
     void ensureAssets(docRef.current)
       .then(() => encodeCanvas(renderOutput(), format, quality))
-      .then((bytes) => {
+      .then((encoded) => {
+        // 경로 모드 JPEG 는 원본 촬영 정보를 옮겨 심는다(제자리·다른 이름 모두 — 둘 다 그 사진이다).
+        const bytes = absMode && format === "jpeg" ? withJpegExif(encoded, exifRef.current) : encoded;
         const base64 = bytesToBase64(bytes);
-        saveImage.mutate(
+        saver.mutate(
           { relPath, base64, overwrite, expectedStamp: stamp },
           {
             onSuccess: () => {
@@ -1716,10 +1766,7 @@ export default function ImageEditor() {
               if (projectId && path && relPath === path) {
                 void persistRef.current?.deleteDoc();
               }
-              pushToast(
-                "success",
-                currentMessages().imageEditor.toast.saved(relPath.split("/").pop() ?? ""),
-              );
+              pushToast("success", currentMessages().imageEditor.toast.saved(nameOf(relPath)));
               close();
             },
             onError: (e) => {
@@ -1728,7 +1775,7 @@ export default function ImageEditor() {
               if (isIpcError(e) && e.code === "ALREADY_EXISTS") {
                 askConfirm({
                   title: t.overwriteTitle,
-                  message: t.overwriteMessage(relPath.split("/").pop() ?? ""),
+                  message: t.overwriteMessage(nameOf(relPath)),
                   detail: relPath,
                   confirmLabel: t.overwriteConfirm,
                   danger: true,
@@ -1865,13 +1912,37 @@ export default function ImageEditor() {
 
   // ── 닫기 · Esc 계층(§5.4) ─────────────────────────────────────────────────
 
+  /** 경로 모드에서 연 뒤로 바뀐 것이 있는가 — 크롭 세션의 라이브 직선화·회전도 센다(화면에 보이는 변경이다). */
+  const pathEditsUnsaved = () =>
+    loadedDocRef.current !== null && docRef.current !== loadedDocRef.current;
+  const askDiscardPathEdits = (onConfirm: () => void) => {
+    const t = currentMessages().imageEditor.dialog;
+    askConfirm({
+      title: t.discardTitle,
+      message: t.discardMessage,
+      confirmLabel: t.discardConfirm,
+      danger: true,
+      onConfirm,
+    });
+  };
 
   /**
    * 닫기 — 확인하지 않는다. 편집 문서는 사이드카에 남고 다음에 열 때 그대로 돌아온다.
    * 저장에 실패했을 때만(충돌·IO) 물어본다 — 그때는 진짜로 잃을 수 있기 때문이다.
+   * 경로 모드만 예외다: 사이드카가 없어 닫으면 편집이 사라지므로, 바뀐 것이 있으면 먼저 묻는다.
    */
   const requestClose = useCallback(() => {
     if (busyRef.current) return;
+    if (absMode) {
+      // 크롭 세션은 확인한 **뒤에** 버린다 — "취소"(계속 편집)로 돌아오면 하던 세션이 그대로 있어야 한다.
+      const leave = () => {
+        cropApi.cropCancel();
+        close();
+      };
+      if (pathEditsUnsaved()) askDiscardPathEdits(leave);
+      else leave();
+      return;
+    }
     // 크롭 세션 중이면 **먼저 되돌린다**(48 §6). 세션 문서는 아직 적용된 적 없는 라이브 값인데,
     // 그대로 flush 하면 다음에 열었을 때 누른 적 없는 직선화·크롭이 걸린 채로 뜬다.
     cropApi.cropCancel();
@@ -1890,7 +1961,7 @@ export default function ImageEditor() {
       }
       close();
     })();
-  }, [askConfirm, close, cropApi]);
+  }, [absMode, askConfirm, close, cropApi]);
 
   /**
    * doc 창의 X(FloatTitleBar → `win.close()`)는 편집기의 닫기 가드를 지나지 않는다 —
@@ -1907,6 +1978,13 @@ export default function ImageEditor() {
     let dead = false;
     void win
       .onCloseRequested((e) => {
+        // 경로 모드(폴더 창)는 flush 할 사이드카가 없다 — 바뀐 것이 있으면 묻고, 확인해야 창을 없앤다.
+        if (absMode) {
+          if (!pathEditsUnsaved()) return;
+          e.preventDefault();
+          askDiscardPathEdits(() => void win.destroy());
+          return;
+        }
         const p = persistRef.current;
         if (!p || p.state === "clean") return;
         e.preventDefault();
@@ -1939,7 +2017,7 @@ export default function ImageEditor() {
       dead = true;
       off?.();
     };
-  }, [askConfirm, cropApi]);
+  }, [absMode, askConfirm, cropApi]);
 
   // 붙여넣기 한 곳 — 객체(`gpv-anno:` 텍스트, 42 §3.4)와 이미지 파일(→ 에셋 + 이미지 채우기
   // 사각형, 41 §3.5)을 함께 받는다. Ctrl+V 는 단축키 표에 **없다**: 브라우저가 만드는 paste
@@ -3267,6 +3345,7 @@ export default function ImageEditor() {
           image: img,
           background: "image",
           filter: filterStrRef.current,
+          tone: resolveTone(docRef.current, img.width, img.height),
           store: storeRef.current,
         });
         const x = Math.round((win.x - work.x) * devScale);
@@ -3469,7 +3548,7 @@ export default function ImageEditor() {
   const histEntries = histRef.current.entries;
   const histCursor = histRef.current.cursor;
   /** 배경 행 문구(시안 `배경 — 대시보드.png`)는 확장자까지 붙은 파일명이다. */
-  const baseFile = path.split("/").pop() ?? path;
+  const baseFile = nameOf(path);
 
   return (
     // 루트 클래스 `fixed inset-0 z-50` 는 **그대로 두어야 한다** — e2e 30·34·35 가 이 선택자로
@@ -3490,7 +3569,8 @@ export default function ImageEditor() {
       <EditorTitleBar
         projectId={projectId ?? null}
         path={path}
-        dirty={persist.state !== "clean"}
+        // 경로 모드엔 사이드카가 없어 persist.state 가 늘 clean 이다 — 닫기 경고와 같은 기준(연 뒤 문서가 바뀌었나)을 쓴다.
+        dirty={absMode ? loadedDocRef.current !== null && doc !== loadedDocRef.current : persist.state !== "clean"}
         zoom={screenScale}
         onZoom={zoomPreset}
         canUndo={canUndo}
@@ -3661,6 +3741,7 @@ export default function ImageEditor() {
                     displayScale={screenScale}
                     zoom={view.scale}
                     filterStr={filterStr}
+                    tone={tone}
                     objects={doc.objects}
                     store={store}
                     assetsVer={assetsVer}
@@ -3823,6 +3904,7 @@ export default function ImageEditor() {
                 doc={doc}
                 onPatch={(patch, live) => (live ? patchLive(patch) : patchDoc(patch))}
                 onEditEnd={endLive}
+                thumbSource={oriented}
                 cropSection={
                   <CropInspectorSection
                     session={cropSession}

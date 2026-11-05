@@ -454,7 +454,7 @@ export function useStatus(projectId: string | null) {
   };
 }
 
-/** Claude 계정 사용량(rate_limits) — 우측 하단 바. 백엔드가 성공은 1분, 실패는 15초 캐시한다 — 30초마다 물으면 실패
+/** Claude 계정 사용량(rate_limits) — 우측 하단 바. 백엔드가 성공은 3분, 연결 실패는 15초, 429 는 Retry-After(기본 10분) 동안 캐시한다 — 30초마다 물으면 실패
  *  뒤에도 곧 다시 뜨고, 성공 뒤에는 API 를 1분에 한 번만 친다. */
 export function useClaudeUsage() {
   return useQuery({
@@ -1261,6 +1261,15 @@ export function useSaveImage(projectId: string) {
       void qc.invalidateQueries({ queryKey: ["diff"] });
       void qc.invalidateQueries({ queryKey: ["file-image"] });
     },
+  });
+}
+
+/** `useSaveImage` 의 경로 모드판(태스크 76 D10) — 절대경로로 쓴다. 무효화할 프로젝트 쿼리가 없다: 폴더 창은 편집기가
+ *  닫히면 목록을 다시 읽고, 프로젝트 안 파일이면 워처가 메인 창에 알린다. */
+export function useSaveImageAbs() {
+  return useMutation({
+    mutationFn: (v: { relPath: string; base64: string; overwrite: boolean; expectedStamp?: string }) =>
+      ipc.favWriteImage(v.relPath, v.base64, v.overwrite, v.expectedStamp),
   });
 }
 

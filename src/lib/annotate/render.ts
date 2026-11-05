@@ -41,6 +41,7 @@ import { layerPool, type LayerPool } from "./layers";
 import { fillPaint, gradientOf, strokePaint } from "./paint";
 import { imageStore, type ImageStore } from "./imageStore";
 import type { MaskScope, Scene, SceneContainer } from "./scene";
+import { applyTone, toneFrameOn, toneKey, type ToneRecipe } from "./tone";
 import {
   BADGE_RADIUS_SCALE,
   DEFAULT_FONT_FAMILY,
@@ -66,6 +67,8 @@ export interface RenderOpts {
   background?: "image" | "transparent" | string;
   /** 이미지에만 거는 조정 필터(밝기·대비·채도). 주석에는 물들지 않는다(D2). */
   filter?: string;
+  /** 이미지에만 거는 톤 패스(76 D12 — `tone.ts`). null·생략이면 종전 경로 그대로다. */
+  tone?: ToneRecipe | null;
   /** 텍스트 편집 중인 노드 — textarea 오버레이가 대신 보여 준다. */
   skipId?: ObjId;
   /** 라이브 미리보기로 따로 그리는 노드들(커밋 캐시에서 뺀다). */
@@ -99,7 +102,68 @@ export function releaseScratch(): void {
   pool?.releaseAll();
   pool = null;
   poolBytes = 0;
+  tonedCv = null;
+  tonedSrc = null;
+  tonedKey = "";
   releaseEffectScratch();
+}
+
+// ── 톤 레이어(76 D12) ───────────────────────────────────────────────────────
+
+/**
+ * 톤 패스를 거친 이미지 한 장(대상 캔버스 크기, 이미지 밖은 투명). **한 장만 기억한다** — 프리뷰는
+ * 주석을 커밋할 때마다 씬 전체를 다시 그리는데, 그때마다 픽셀 패스(백킹 1800px 에 수십 ms)를 다시
+ * 돌면 획 하나가 그만큼 늦게 붙는다. 키는 원본 참조·크기·변환·CSS 필터·톤 값 전부다.
+ */
+let tonedCv: HTMLCanvasElement | null = null;
+let tonedSrc: CanvasImageSource | null = null;
+let tonedKey = "";
+
+/** `getImageData` 한 번에 읽는 상한(px). 프리뷰·출력 타일은 한 번에, 타일을 못 타는 큰 단발 출력만 띠로 나뉜다. */
+const TONE_BAND_PX = 2048 * 2048;
+
+function tonedImage(
+  w: number,
+  h: number,
+  image: CanvasImageSource,
+  t: SceneTransform,
+  filter: string,
+  tone: ToneRecipe,
+): HTMLCanvasElement {
+  const key = `${w}x${h}|${t.tx},${t.ty},${t.sx},${t.sy}|${filter}|${toneKey(tone)}`;
+  if (tonedCv && tonedSrc === image && tonedKey === key) return tonedCv;
+  // 비율 해제 리사이즈처럼 타일을 못 타는 큰 단발 출력은 기억하지 않는다 — 기억하면 창 수명 동안
+  // 출력 크기 그대로 붙잡힌다.
+  const keep = w * h <= MAX_DETAIL_PX;
+  let cv: HTMLCanvasElement;
+  if (keep) {
+    if (!tonedCv) tonedCv = document.createElement("canvas");
+    cv = tonedCv;
+    tonedKey = ""; // 굽는 도중 던지면 반쯤 구운 캔버스가 적중하지 않게
+  } else {
+    cv = document.createElement("canvas");
+  }
+  cv.width = w; // 같은 값이어도 재대입이 곧 초기화(규격)
+  cv.height = h;
+  const c = cv.getContext("2d")!;
+  c.filter = filter;
+  applySceneTransform(c, t);
+  c.drawImage(image, 0, 0);
+  c.setTransform(1, 0, 0, 1, 0, 0);
+  c.filter = "none";
+  const frame = toneFrameOn(tone, t);
+  const band = Math.max(1, Math.floor(TONE_BAND_PX / Math.max(1, w)));
+  for (let y = 0; y < h; y += band) {
+    const rows = Math.min(band, h - y);
+    const im = c.getImageData(0, y, w, rows);
+    applyTone(im.data, w, rows, y, tone, frame);
+    c.putImageData(im, 0, y);
+  }
+  if (keep) {
+    tonedSrc = image;
+    tonedKey = key;
+  }
+  return cv;
 }
 
 // ── 진입 ────────────────────────────────────────────────────────────────────
@@ -128,14 +192,25 @@ export function renderScene(
   ctx.restore();
 
   if (o.image && bg !== "transparent") {
+    const filter = o.filter && o.filter !== "none" ? o.filter : "none";
+    // 톤 패스는 이미지 한 장에만 걸려야 한다(주석·jpeg 흰 바탕·마스크 밖에 물들지 않게) — 그래서
+    // 대상 캔버스를 읽어 고치지 않고 따로 구워 얹는다. 마스크 클립은 얹을 때 걸린다.
+    const toned = o.tone
+      ? tonedImage(ctx.canvas.width, ctx.canvas.height, o.image, t, filter, o.tone)
+      : null;
     ctx.save();
     // 벡터 모양으로 이미지 자르기(시안 ⑦) — 클립을 먼저 걸고 이미지를 그린다.
     if (scene.imageMask) applyImageMask(ctx, scene, t);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    // 조정은 **여기 한 곳**에서만 걸린다(D2: 주석에 물들지 않는다).
-    ctx.filter = o.filter && o.filter !== "none" ? o.filter : "none";
-    applySceneTransform(ctx, t);
-    ctx.drawImage(o.image, 0, 0);
+    if (toned) {
+      ctx.filter = "none"; // CSS 필터는 톤 레이어에 이미 구워져 있다 — 두 번 먹으면 안 된다
+      ctx.drawImage(toned, 0, 0);
+    } else {
+      // 조정은 **여기 한 곳**에서만 걸린다(D2: 주석에 물들지 않는다).
+      ctx.filter = filter;
+      applySceneTransform(ctx, t);
+      ctx.drawImage(o.image, 0, 0);
+    }
     ctx.restore();
   }
 
@@ -713,6 +788,7 @@ export function renderOutput(
     nodeIds?: readonly ObjId[];
     background: RenderOpts["background"];
     filter?: string;
+    tone?: ToneRecipe | null;
     tileDevicePx?: number;
     image: CanvasImageSource;
     store?: ImageStore;
@@ -739,7 +815,14 @@ export function renderOutput(
       ctx,
       scene,
       { tx: -sx, ty: -sy, sx: scale, sy: scaleY },
-      { image: o.image, background: o.background, filter: o.filter, nodeIds: o.nodeIds, store: o.store },
+      {
+        image: o.image,
+        background: o.background,
+        filter: o.filter,
+        tone: o.tone,
+        nodeIds: o.nodeIds,
+        store: o.store,
+      },
     );
     return out;
   }
@@ -757,6 +840,7 @@ export function renderOutput(
         image: o.image,
         background: o.background,
         filter: o.filter,
+        tone: o.tone,
         nodeIds: o.nodeIds,
         store: o.store,
         imageSize: img ?? undefined,

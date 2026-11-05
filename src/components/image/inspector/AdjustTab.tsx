@@ -16,26 +16,83 @@
 //
 // 배경: DOCS/task/45-image-inspector-popovers.md §3.3
 
-import type { ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 import { FlipHorizontal, FlipVertical, RotateCcw, RotateCw } from "lucide-react";
 
 import type { Messages } from "../../../i18n/messages";
 import { useMessages } from "../../../i18n/ui-language";
-import type { EditorDoc } from "../../../lib/annotate/types";
+import { applyTone, resolveTone, TONE_DEFAULTS, toneFrameOn } from "../../../lib/annotate/tone";
+import { FILTER_PRESETS, type EditorDoc, type FilterPreset } from "../../../lib/annotate/types";
 import { useImageEditorUi } from "../../../stores/imageEditor";
 import { SnapSection } from "../SnapSection";
 
 /** 이 탭이 읽는 문서 필드만. 문서 전체를 받으면 주석 하나만 바뀌어도 여기가 다시 그려진다. */
 type AdjustDoc = Pick<
   EditorDoc,
-  "outW" | "outH" | "brightness" | "contrast" | "saturate" | "flipH" | "flipV"
+  | "outW"
+  | "outH"
+  | "brightness"
+  | "contrast"
+  | "saturate"
+  | "flipH"
+  | "flipV"
+  | ToneSliderKey
+  | "filterPreset"
+  | "filterAmount"
 >;
+
+/** 76 D12 톤 슬라이더(−100..100, 0 = 그대로). */
+type ToneSliderKey = "exposure" | "highlights" | "shadows" | "warmth" | "tint" | "vignette";
+
+function tonePatch(key: ToneSliderKey, v: number): Partial<EditorDoc> {
+  const p: Partial<EditorDoc> = {};
+  p[key] = v;
+  return p;
+}
+
+/** 프리셋 썸네일 한 변(px). */
+const THUMB_PX = 48;
+
+/**
+ * 프리셋 썸네일 — 지금 방향의 이미지를 정사각으로 잘라 **프리셋만** 건다(슬라이더 값은 섞지 않는다:
+ * 사진 앱처럼 "이 필터를 고르면 어떤 느낌인가"를 보여 주는 자리다). 출력과 같은 `applyTone` 이다.
+ */
+function presetThumbs(src: HTMLCanvasElement): Map<FilterPreset, string> | null {
+  const s = Math.min(src.width, src.height);
+  if (s <= 0) return null;
+  const cv = document.createElement("canvas");
+  cv.width = THUMB_PX;
+  cv.height = THUMB_PX;
+  const ctx = cv.getContext("2d");
+  if (!ctx) return null;
+  ctx.drawImage(src, (src.width - s) / 2, (src.height - s) / 2, s, s, 0, 0, THUMB_PX, THUMB_PX);
+  let base: Uint8ClampedArray;
+  try {
+    base = ctx.getImageData(0, 0, THUMB_PX, THUMB_PX).data;
+  } catch {
+    // 오염된 캔버스(교차 출처)면 읽을 수 없다 — 썸네일 없이 글자 버튼으로 남는다(렌더 중 예외로
+    // 인스펙터 전체가 내려가는 것보다 낫다).
+    return null;
+  }
+  const out = new Map<FilterPreset, string>();
+  for (const id of FILTER_PRESETS) {
+    const im = ctx.createImageData(THUMB_PX, THUMB_PX);
+    im.data.set(base);
+    const r = resolveTone({ ...TONE_DEFAULTS, filterPreset: id, crop: null }, THUMB_PX, THUMB_PX);
+    if (r) applyTone(im.data, THUMB_PX, THUMB_PX, 0, r, toneFrameOn(r, { tx: 0, ty: 0, sx: 1, sy: 1 }));
+    ctx.putImageData(im, 0, 0);
+    out.set(id, cv.toDataURL());
+  }
+  return out;
+}
 
 export interface AdjustTabProps {
   doc: AdjustDoc;
   /** 색 보정 라이브 틱 — `patchLive`(첫 틱만 commit, 이후 replace)로 드래그 1회 = 1칸. */
   onPatch(patch: Partial<EditorDoc>, live?: boolean): void;
   onEditEnd(): void;
+  /** 프리셋 썸네일 원본(방향이 적용된 캔버스). 없으면 글자 버튼만. */
+  thumbSource: HTMLCanvasElement | null;
   /**
    * 크롭 섹션(48 `CropInspectorSection`) — **노드로 받는다.** 세션·`CropApi`·문서 전체를
    * 알아야 그릴 수 있는데, 이 탭은 셋 다 필요 없다. 소유자(ImageEditor)가 만들어 꽂는 편이
@@ -65,6 +122,7 @@ export function AdjustTab({
   doc,
   onPatch,
   onEditEnd,
+  thumbSource,
   cropSection,
   onRotateImage,
   onFlipImage,
@@ -74,8 +132,22 @@ export function AdjustTab({
   onLockRatio,
 }: AdjustTabProps) {
   const msg = useMessages();
+  const a = msg.imageInspector.adjust;
   const pixelPreview = useImageEditorUi((s) => s.pixelPreview);
   const setPixelPreview = useImageEditorUi((s) => s.setPixelPreview);
+  // 원본(방향) 캔버스가 바뀔 때만 다시 만든다 — 슬라이더 틱·주석 커밋과 무관하다.
+  const thumbs = useMemo(() => (thumbSource ? presetThumbs(thumbSource) : null), [thumbSource]);
+
+  const toneSlider = (key: ToneSliderKey, label: string) => (
+    <Slider
+      label={label}
+      value={doc[key]}
+      min={-100}
+      max={100}
+      onChange={(v) => onPatch(tonePatch(key, v), true)}
+      onEnd={onEditEnd}
+    />
+  );
 
   return (
     <div>
@@ -132,25 +204,84 @@ export function AdjustTab({
         </div>
       </Section>
 
-      <Section title={msg.imageInspector.adjust.colorTitle}>
+      {/* 밝기가 이 탭의 **첫 range** 여야 한다 — e2e 40 (45 ins-13c) 가 `querySelector('input[type="range"]')`
+          로 밝기를 끈다. 순서는 사진 앱(밝기 · 노출 · 대비 · 밝은 영역 · 어두운 영역)과도 같다. */}
+      <Section title={a.lightTitle}>
         <Slider
-          label={msg.imageInspector.adjust.brightness}
+          label={a.brightness}
           value={doc.brightness}
           onChange={(v) => onPatch({ brightness: v }, true)}
           onEnd={onEditEnd}
         />
+        {toneSlider("exposure", a.exposure)}
         <Slider
-          label={msg.imageInspector.adjust.contrast}
+          label={a.contrast}
           value={doc.contrast}
           onChange={(v) => onPatch({ contrast: v }, true)}
           onEnd={onEditEnd}
         />
+        {toneSlider("highlights", a.highlights)}
+        {toneSlider("shadows", a.shadows)}
+      </Section>
+
+      <Section title={a.colorTitle}>
         <Slider
-          label={msg.imageInspector.adjust.saturation}
+          label={a.saturation}
           value={doc.saturate}
           onChange={(v) => onPatch({ saturate: v }, true)}
           onEnd={onEditEnd}
         />
+        {toneSlider("warmth", a.warmth)}
+        {toneSlider("tint", a.tint)}
+      </Section>
+
+      <Section title={a.effectTitle}>{toneSlider("vignette", a.vignette)}</Section>
+
+      <Section title={a.filterTitle}>
+        <div className="grid grid-cols-4 gap-1.5">
+          {FILTER_PRESETS.map((id) => {
+            const on = doc.filterPreset === id;
+            const src = thumbs?.get(id);
+            return (
+              <button
+                key={id}
+                aria-pressed={on}
+                // 다른 프리셋으로 갈아타면 강도는 100 으로 — 앞 프리셋에서 줄여 둔 값이 남으면 새 필터가
+                // "안 먹는다"로 보인다. 프리셋·강도가 한 커밋이라 되돌리기 한 번이면 함께 돌아온다.
+                onClick={() => {
+                  if (!on) onPatch({ filterPreset: id, filterAmount: 100 });
+                }}
+                className={`flex flex-col items-center gap-0.5 rounded p-0.5 text-[10px] ${
+                  on ? "bg-accent/20 text-accent" : "text-fg-muted hover:bg-raised hover:text-fg"
+                }`}
+              >
+                {src ? (
+                  <img
+                    src={src}
+                    alt=""
+                    draggable={false}
+                    className="aspect-square w-full max-w-14 rounded-sm object-cover"
+                  />
+                ) : (
+                  <span className="aspect-square w-full max-w-14 rounded-sm bg-raised" />
+                )}
+                <span className="w-full truncate text-center">{a.filterPresets[id]}</span>
+              </button>
+            );
+          })}
+        </div>
+        {doc.filterPreset !== "none" && (
+          <div className="mt-2">
+            <Slider
+              label={a.filterAmount}
+              value={doc.filterAmount}
+              min={0}
+              max={100}
+              onChange={(v) => onPatch({ filterAmount: v }, true)}
+              onEnd={onEditEnd}
+            />
+          </div>
+        )}
       </Section>
 
       <Section title={msg.imageInspector.adjust.sizeTitle}>

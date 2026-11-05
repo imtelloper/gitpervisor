@@ -53,6 +53,7 @@ import { EmptyState } from "../common/EmptyState";
 import ImageView from "./ImageView";
 import MediaView from "./MediaView";
 import MarkdownView from "./MarkdownView";
+import { HtmlLiveView } from "./HtmlLiveView";
 
 // PDF 뷰어는 lazy — 이 파일은 유휴 선로딩(main.tsx)되므로 정적 import면 pdf.js가 앱 시작마다 실린다.
 const PdfView = lazy(() => import("../pdf/PdfView"));
@@ -305,6 +306,8 @@ export default function DiffViewer({
   const ownViewer = opensInOwnViewer(target.path);
   const isMarkdown =
     isFileView && !isImageView && !isMediaView && languageOf(target.path) === "markdown";
+  // HTML 은 [바로보기]로 브라우저처럼 렌더해 본다(HtmlLiveView) — 원본 편집기는 숨겨 둘 뿐 그대로 둔다.
+  const isHtml = isFileView && !ownViewer && /\.(html?|xhtml)$/i.test(target.path);
   // 인코딩을 확정하지 못했다(어떤 인코딩으로도 깨끗이 못 읽음) — 저장하면 읽으면서 잃은
   // 바이트가 그대로 디스크에 박히므로 **읽기 전용**으로 연다(설계 B.3). placeholder(직전 파일
   // 데이터)로는 판정하지 않는다 — 파일 전환 순간에 엉뚱한 파일이 잠긴다.
@@ -726,6 +729,8 @@ export default function DiffViewer({
   // .md 파일은 기본 미리보기(렌더). 파일이 바뀌면 다시 미리보기로 돌아간다.
   const [mdRaw, setMdRaw] = useState(false);
   useEffect(() => setMdRaw(false), [editorKey]);
+  const [htmlLive, setHtmlLive] = useState(false);
+  useEffect(() => setHtmlLive(false), [editorKey]);
 
   // 파일 전환 시 "펼쳐진 채 잠깐 보였다가 접히는" 깜빡임을 없앤다:
   // 대상이 바뀌면 에디터를 숨기고(opacity-0), 접기가 적용된 뒤 다시 보여준다.
@@ -835,6 +840,18 @@ export default function DiffViewer({
             {mdRaw ? <Eye size={14} /> : <Code2 size={14} />}
           </button>
         )}
+        {isHtml && (
+          <button
+            onClick={() => setHtmlLive((v) => !v)}
+            title={htmlLive ? msg.git.diff.htmlSourceTitle : msg.git.diff.htmlLiveTitle}
+            className={`flex shrink-0 items-center gap-1 rounded px-2 py-0.5 text-xs hover:bg-raised ${
+              htmlLive ? "bg-raised text-accent" : "text-fg-dim hover:text-fg"
+            }`}
+          >
+            {htmlLive ? <Code2 size={13} /> : <Eye size={13} />}
+            {htmlLive ? msg.git.diff.htmlSource : msg.git.diff.htmlLive}
+          </button>
+        )}
         {!isFileView && !isImageView && !isMediaView && !isOfficeView && !isPdfView && (
           <button
             onClick={toggleDiffCollapse}
@@ -853,7 +870,7 @@ export default function DiffViewer({
           </button>
         )}
         {/* Monaco로 글자를 보는 화면에서만 — 이미지·미디어·Office·PDF·마크다운 미리보기엔 의미가 없다. */}
-        {!isImageView && !isMediaView && !isOfficeView && !isPdfView && !(isMarkdown && !mdRaw) && (
+        {!isImageView && !isMediaView && !isOfficeView && !isPdfView && !(isMarkdown && !mdRaw) && !htmlLive && (
           <button
             onClick={toggleWordWrap}
             title={wordWrap ? msg.git.diff.wordWrapOffTitle : msg.git.diff.wordWrapOnTitle}
@@ -940,17 +957,25 @@ export default function DiffViewer({
         ) : diff && isMarkdown && !mdRaw ? (
           <MarkdownView content={diff.newContent ?? ""} />
         ) : diff && isFileView ? (
-          <Editor
-            key={editorKey}
-            defaultValue={diff.newContent ?? ""}
-            language={languageOf(path)}
-            theme={monacoTheme}
-            options={fileOptions}
-            onMount={onFileMount}
-            loading={
-              <span className="text-xs text-fg-dim">{msg.git.diff.editorLoading}</span>
-            }
-          />
+          <>
+            {/* 바로보기 중에도 편집기는 숨기기만 한다 — 언마운트하면 저장 안 한 편집이 사라진다. */}
+            <div className={htmlLive ? "hidden" : "h-full"}>
+              <Editor
+                key={editorKey}
+                defaultValue={diff.newContent ?? ""}
+                language={languageOf(path)}
+                theme={monacoTheme}
+                options={fileOptions}
+                onMount={onFileMount}
+                loading={
+                  <span className="text-xs text-fg-dim">{msg.git.diff.editorLoading}</span>
+                }
+              />
+            </div>
+            {htmlLive && (
+              <HtmlLiveView projectId={projectId} path={path} version={diff.newContent} dirty={dirty} />
+            )}
+          </>
         ) : diff ? (
           <div
             className={`h-full ${pendingCollapse ? "opacity-0" : "opacity-100"}`}

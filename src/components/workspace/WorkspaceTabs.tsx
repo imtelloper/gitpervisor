@@ -7,6 +7,7 @@ import {
   Plus,
   Send,
   Sparkles,
+  Tag,
   Terminal as TerminalIcon,
   X,
 } from "lucide-react";
@@ -21,10 +22,12 @@ import { useApiClient } from "../../stores/apiclient";
 import { useBrowsers } from "../../stores/browser";
 import { useOccludesWebview } from "../../stores/occlusion";
 import { collectPanes, useTerminals } from "../../stores/terminals";
+import { useTermTitles } from "../../stores/termTitles";
 import { selectActiveDiff, useUi } from "../../stores/ui";
 import { BrowserPane } from "./BrowserPane";
 import { Favicon } from "./Favicon";
 import { PaneTreeRoot } from "./PaneTree";
+import { askSessionTitle } from "./TermSessionControls";
 import { MenuItem as PaneMenuItem } from "./TerminalPane";
 import { ViewerTab } from "./ViewerTab";
 
@@ -43,6 +46,7 @@ const ApiClientTab = lazy(() =>
 export function WorkspaceTabs({ projectId }: { projectId: string }) {
   const allTerminals = useTerminals((s) => s.terminals);
   const terminals = allTerminals.filter((t) => t.projectId === projectId);
+  const sessionTitles = useTermTitles((s) => s.byTerminal);
   const active = useTerminals((s) => s.activeTab[projectId]) ?? "viewer";
   const setActiveTab = useTerminals((s) => s.setActiveTab);
   const openTerminal = useTerminals((s) => s.openTerminal);
@@ -126,6 +130,8 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
             active={active === t.id}
             icon={<TerminalIcon size={13} />}
             label={t.title}
+            // 분할 탭이면 활성 패널의 제목 — 패널마다의 제목은 그 패널의 호버 칩에 보인다.
+            sub={sessionTitles[t.activePaneId]}
             extraClass={tabAgentClass(t)}
             onClick={() => setActiveTab(projectId, t.id)}
             onClose={() => closeTab(t.id)}
@@ -236,6 +242,9 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
           onCloseTab={() =>
             tabMenu.kind === "terminal" ? closeTab(tabMenu.tabId) : closeBrowser(tabMenu.id)
           }
+          onSessionTitle={
+            tabMenu.kind === "terminal" ? () => askSessionTitle(tabMenu.paneId) : undefined
+          }
         />
       )}
     </section>
@@ -250,6 +259,7 @@ function TabMenu({
   onClose,
   onFloat,
   onCloseTab,
+  onSessionTitle,
 }: {
   x: number;
   y: number;
@@ -257,6 +267,8 @@ function TabMenu({
   onClose: () => void;
   onFloat: () => void;
   onCloseTab: () => void;
+  /** 터미널 탭만 — 활성 패널의 세션 제목. */
+  onSessionTitle?: () => void;
 }) {
   const msg = useMessages();
   useEffect(() => {
@@ -285,6 +297,9 @@ function TabMenu({
     >
       <div className="truncate px-3 py-1 text-[11px] text-fg-dim">{title}</div>
       <div className="my-1 border-t border-edge" />
+      {onSessionTitle && (
+        <PaneMenuItem icon={<Tag size={14} />} label={msg.git.termSession.sessionTitleMenu} onClick={run(onSessionTitle)} />
+      )}
       <PaneMenuItem
         icon={<ExternalLink size={14} />}
         label={msg.git.paneMenu.popOut}
@@ -423,6 +438,7 @@ function TabChip({
   active,
   icon,
   label,
+  sub,
   dim,
   extraClass,
   onClick,
@@ -432,6 +448,8 @@ function TabChip({
   active: boolean;
   icon: React.ReactNode;
   label: string;
+  /** 탭 이름 뒤에 붙는 사용자 제목(세션 제목) — 길면 잘리고 전체는 툴팁에. */
+  sub?: string;
   dim?: boolean;
   /** ai-working/ai-done 등 추가 클래스 (무지개 배경) */
   extraClass?: string;
@@ -444,13 +462,14 @@ function TabChip({
     <div
       onClick={onClick}
       onContextMenu={onContextMenu}
-      title={label}
+      title={sub ? `${label} · ${sub}` : label}
       className={`group flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded px-2 text-xs ${
         active ? "bg-raised text-fg" : "text-fg-muted hover:bg-raised/60 hover:text-fg"
       } ${dim ? "opacity-60" : ""} ${extraClass ?? ""}`}
     >
       <span className="shrink-0">{icon}</span>
       <span className="whitespace-nowrap">{label}</span>
+      {sub && <span className="max-w-[12rem] truncate font-medium text-accent">{sub}</span>}
       {onClose && (
         <button
           onClick={(e) => {

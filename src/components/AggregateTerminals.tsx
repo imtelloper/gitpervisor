@@ -69,6 +69,7 @@ import {
   PromptHistoryButton,
   PromptLogButton,
   PromptSidePanel,
+  SessionTitle,
   ThemeButton,
 } from "./workspace/TermSessionControls";
 import { MenuItem, TermClipboardItems } from "./workspace/TerminalPane";
@@ -1650,10 +1651,12 @@ function AggregateCell({
         <StatusIcon status={status} />
         {/* h-6 헤더라 14px — 16px은 빡빡하다(태스크 54). */}
         <ProjectLogo projectId={meta.projectId} size={14} />
-        <span className="min-w-0 flex-1 truncate">
+        <span className="min-w-0 shrink truncate">
           <span className="font-medium text-fg">{meta.projName}</span>
           <span className="text-fg-dim"> · {meta.title}</span>
         </span>
+        {/* 가운데 — 세션 제목(제목 버튼만 클릭 편집, 나머지 칸은 드래그 손잡이). */}
+        <SessionTitle termId={meta.id} />
         <AgentLaunchButton termId={meta.id} />
         <ThemeButton termId={meta.id} />
         <PromptLogButton termId={meta.id} />

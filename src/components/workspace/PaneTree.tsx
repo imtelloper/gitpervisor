@@ -16,6 +16,7 @@ import {
   FileTreeButton,
   GitDialogButton,
   PromptLogButton,
+  SessionTitleChip,
   ThemeButton,
 } from "./TermSessionControls";
 import { TerminalPane } from "./TerminalPane";
@@ -150,6 +151,7 @@ function LeafView({
         fontSize={fontSize}
         controls={
           <>
+            <SessionTitleChip termId={leaf.paneId} />
             <AgentLaunchButton termId={leaf.paneId} />
             <ThemeButton termId={leaf.paneId} />
             <PromptLogButton termId={leaf.paneId} />

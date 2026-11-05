@@ -343,6 +343,38 @@ export interface FavEntry {
   kind: "dir" | "image" | "video" | "other";
 }
 
+/** 사진 EXIF 요약 (commands/exif.rs `ExifSummary`). 파일에 없는 태그는 **키째** 빠진다. */
+export interface ExifSummary {
+  /** `YYYY-MM-DD HH:MM:SS` — 시간대 없음(카메라 시계 그대로). */
+  takenAt?: string;
+  make?: string;
+  model?: string;
+  lens?: string;
+  /** 노출 시간(초). */
+  exposure?: number;
+  fNumber?: number;
+  iso?: number;
+  /** 초점 거리(mm). */
+  focalLength?: number;
+  /** 1~8(TIFF 규약). */
+  orientation?: number;
+  /** 십진 도 — 남위·서경은 음수. */
+  gpsLat?: number;
+  gpsLon?: number;
+}
+
+/** 사진 뷰어 정보 (commands/favorites.rs `fav_image_info`). */
+export interface FavImageInfo {
+  /** 내용으로 가른 형식(JPEG·PNG·HEIC…), 못 가르면 확장자 대문자. */
+  format: string;
+  /** 보이는 방향 기준. 백엔드가 헤더를 못 읽는 형식(HEIC 등)은 null — 디코드한 그림 크기로 채운다. */
+  width: number | null;
+  height: number | null;
+  bytes: number;
+  modifiedMs: number;
+  exif: ExifSummary | null;
+}
+
 /** 포맷 결과 (commands/format.rs format_source). */
 export interface FormatResult {
   formatted: string | null;
@@ -1599,8 +1631,14 @@ export const ipc = {
   /** 썸네일 스킴(`gpvthumb`) URL 에 붙일 토큰 — 프로세스마다 하나. URL 은 `lib/fav-thumb.ts` 가 만든다
    *  (썸네일 자체는 IPC 를 타지 않는다 — commands/thumb_protocol.rs). */
   favThumbToken: () => call<string>("fav_thumb_token"),
-  /** 라이트박스 원본 — 썸네일이 아니라 파일 그대로(크기 한도는 백엔드). */
+  /** 라이트박스 원본 — 썸네일이 아니라 파일 그대로(크기 한도는 백엔드). `stamp` 는 **원본** 것(HEIC 변환본이어도) —
+   *  `favWriteImage` 의 `expectedStamp` 로 되돌려 준다. */
   favRead: (path: string) => call<FileBytes>("fav_read", { path }),
+  /** 이미지 편집기 경로 모드·사진 뷰어 "회전한 대로 저장"(태스크 76 D10·D11) — `writeFileBytes` 의 절대경로판.
+   *  오류 계약(ALREADY_EXISTS·CONFLICT)과 반환(새 stamp)이 같아 편집기의 덮어쓰기·외부 변경 확인이 그대로 돈다.
+   *  상위 폴더가 허용 루트 안이어야 한다(commands/favorites.rs `fav_write_image`). */
+  favWriteImage: (path: string, base64: string, overwrite: boolean, expectedStamp?: string) =>
+    callMutating<string | null>("fav_write_image", { path, base64, overwrite, expectedStamp }, 60_000),
   favOpen: (path: string, how: "default" | "reveal") =>
     callMutating<void>("fav_open", { path, how }),
   /** **휴지통으로** 보낸다(영구 삭제 아님) — 확인창 없이 나가는 동선이라 되돌릴 수 있어야 한다.
@@ -1609,6 +1647,12 @@ export const ipc = {
   favDelete: (paths: string[]) => callMutating<void>("fav_delete", { paths }),
   /** 같은 폴더 안에서 이름만 바꾼다 — 새 절대경로를 돌려준다(commands/favorites.rs `fav_rename`). */
   favRename: (path: string, newName: string) => callMutating<string>("fav_rename", { path, newName }),
+  /** 사진 뷰어 정보 패널 — 형식·치수·크기·EXIF(commands/favorites.rs `fav_image_info`). 파일 앞 1MB 만 읽는다. */
+  favImageInfo: (path: string) => call<FavImageInfo>("fav_image_info", { path }),
+  /** 사진 뷰어 [글자 인식] — `ocrImage` 의 절대경로판. HEIC 등은 ffmpeg 변환이 앞에 붙어 더 넉넉히 기다리고,
+   *  재시도는 같은 무거운 작업을 두 번 돌릴 뿐이라 끈다. 상자는 뷰어가 보는 그림(`favRead`)의 px 다. */
+  favOcrImage: (path: string) =>
+    call<OcrResult>("fav_ocr_image", { path }, { timeoutMs: 90_000, attempts: 1 }),
   // 파일트리에서 실행 파일 더블클릭 → OS 기본 실행기로 띄운다(프론트가 확인 후 호출).
   runExecutable: (projectId: string, relPath: string) =>
     callMutating<void>("run_executable", { projectId, relPath }),
@@ -2143,7 +2187,7 @@ export const ipc = {
   captureToClipboard: (id: string, rect: CaptureRect) =>
     invoke<void>("capture_to_clipboard", { id, rect }),
   captureCancel: (id: string) => invoke<void>("capture_cancel", { id }),
-  // Claude 계정 사용량 — 계정 사용량 API(1분 캐시), 못 쓰면 statusline.js 다리 파일(claude_usage.rs). 없으면 null.
+  // Claude 계정 사용량 — 계정 사용량 API(3분 캐시, 429 면 더 쉰다), 못 쓰면 statusline.js 다리 파일(claude_usage.rs). 없으면 null.
   // 시한은 백엔드 HTTP 시한(8초)보다 넉넉히.
   claudeUsage: () =>
     call<ClaudeUsage | null>(

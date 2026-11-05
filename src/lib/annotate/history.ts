@@ -231,7 +231,15 @@ export function describeChange(prev: EditorDoc, next: EditorDoc): string {
   if (
     prev.brightness !== next.brightness ||
     prev.contrast !== next.contrast ||
-    prev.saturate !== next.saturate
+    prev.saturate !== next.saturate ||
+    prev.exposure !== next.exposure ||
+    prev.highlights !== next.highlights ||
+    prev.shadows !== next.shadows ||
+    prev.warmth !== next.warmth ||
+    prev.tint !== next.tint ||
+    prev.vignette !== next.vignette ||
+    prev.filterPreset !== next.filterPreset ||
+    prev.filterAmount !== next.filterAmount
   ) {
     return t.colorAdjust;
   }

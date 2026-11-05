@@ -9,8 +9,10 @@
 
 import { currentMessages } from "../../i18n/ui-language";
 import { STYLE_DETACH_KEYS, type StyleSlot } from "./styles";
+import { TONE_DEFAULTS } from "./tone";
 import {
   BLEND_MODES,
+  FILTER_PRESETS,
   DEFAULT_FONT_FAMILY,
   DEFAULT_MOSAIC_MODE,
   DEFAULT_MOSAIC_STRENGTH,
@@ -550,6 +552,15 @@ export function normalizeDoc(input: unknown, foreignOut?: unknown[]): EditorDoc 
     brightness: num(r.brightness, 100),
     contrast: num(r.contrast, 100),
     saturate: num(r.saturate, 100),
+    // 76 D12 톤 필드 — 필드가 없는 옛 문서는 "변화 없음"으로 읽힌다(버전을 올리지 않는 덧붙임).
+    exposure: num(r.exposure, TONE_DEFAULTS.exposure),
+    highlights: num(r.highlights, TONE_DEFAULTS.highlights),
+    shadows: num(r.shadows, TONE_DEFAULTS.shadows),
+    warmth: num(r.warmth, TONE_DEFAULTS.warmth),
+    tint: num(r.tint, TONE_DEFAULTS.tint),
+    vignette: num(r.vignette, TONE_DEFAULTS.vignette),
+    filterPreset: pick(r.filterPreset, FILTER_PRESETS, TONE_DEFAULTS.filterPreset),
+    filterAmount: num(r.filterAmount, TONE_DEFAULTS.filterAmount),
   };
 }
 

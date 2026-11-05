@@ -404,6 +404,19 @@ export type NodeKind = Node["kind"];
 /** 컨테이너 kind — 자식을 갖는 노드. */
 export type ContainerKind = "group" | "frame" | "instance";
 
+/** 필터 프리셋(태스크 76 D12). 레시피는 `tone.ts` 의 `PRESET_RECIPES` 에 있다. */
+export const FILTER_PRESETS = [
+  "none",
+  "mono",
+  "sepia",
+  "vivid",
+  "warm",
+  "cool",
+  "vintage",
+  "fade",
+] as const;
+export type FilterPreset = (typeof FILTER_PRESETS)[number];
+
 /**
  * 히스토리에 스냅샷되는 편집 문서 전체.
  *
@@ -430,6 +443,19 @@ export interface EditorDoc {
   brightness: number;
   contrast: number;
   saturate: number;
+  /**
+   * 톤 필드(태스크 76 D12) — 슬라이더 −100..100, 0 = 그대로. 위 셋(CSS 필터)과 달리 `tone.ts`
+   * 픽셀 패스가 읽는다. 비네트는 양수가 가장자리를 어둡게, 음수가 밝게.
+   */
+  exposure: number;
+  highlights: number;
+  shadows: number;
+  warmth: number;
+  tint: number;
+  vignette: number;
+  filterPreset: FilterPreset;
+  /** 프리셋 강도(0..100). */
+  filterAmount: number;
 }
 
 /**
