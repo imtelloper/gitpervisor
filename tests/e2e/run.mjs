@@ -528,6 +528,10 @@ async function main() {
   fix = createFixture();
   const project = await cdp.invoke("add_project", { path: fix.repo }, { timeoutMs: 30000 });
   fix.projectId = project.id;
+  // 원시 invoke 라 앱의 프로젝트 목록 캐시는 모른다 — 안 알리면 `selected` 가 비어 프로젝트에 딸린 화면
+  // (KeyboardShortcuts 등)이 마운트되지 않는다. 앞 스위트가 우연히 목록을 다시 읽어 줄 때만 통과하던 순서
+  // 의존이었다(2026-11-05: 40 (c-3~5) 가 회차 맨 앞일 때만 실패).
+  await cdp.eval(`window.__gpv?.queryClient?.invalidateQueries({ queryKey: ["projects"] })`).catch(() => {});
   console.log(`  픽스처: ${fix.repo}  →  projectId ${fix.projectId}\n`);
 
   // 스위트 순차 실행(공유 앱·픽스처 → 직렬). 한 스위트가 throw 해도 다음으로 진행.
