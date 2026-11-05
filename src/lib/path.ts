@@ -15,6 +15,12 @@ export function parentDir(rel: string): string {
 
 /** 파일·폴더 새 이름 검증 — 빈 이름·경로 구분자·`..` 거부. 통과면 null. 파일 트리와 폴더 창이 같이 쓴다
  *  (최종 판정은 백엔드 `validate_new_name` — 여기는 입력창이 미리 막는 몫). */
+/** 경로 여러 개를 한 줄로 — Claude 프롬프트·셸에 그대로 붙여 넣게 공백으로 잇고, 공백이 든 경로만 따옴표로 감싼다
+ *  (하나일 때도 같은 규칙이라 붙여넣기·복사가 같은 모양이다). */
+export function joinPathsForPrompt(paths: string[]): string {
+  return paths.map((p) => (/\s/.test(p) ? `"${p}"` : p)).join(" ");
+}
+
 export function validateEntryName(v: string): string | null {
   const t = v.trim();
   const m = currentMessages().tree.nameValidation;

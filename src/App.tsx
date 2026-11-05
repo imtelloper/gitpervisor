@@ -36,6 +36,7 @@ import { WorkspaceTabs } from "./components/workspace/WorkspaceTabs";
 import { currentMessages, useMessages } from "./i18n/ui-language";
 import { useAgentNotifications } from "./lib/agent-notify";
 import { useReportSchedule } from "./lib/report-schedule";
+import { joinPathsForPrompt } from "./lib/path";
 import { getTerminal, listTerminals, refreshTerminalThemes } from "./lib/terminal";
 import {
   useProjectRootsPrefetch,
@@ -154,7 +155,8 @@ export default function App() {
    * 셸이 즉시 실행하지 않게 한다. 공백이 있으면 따옴표로 감싼다(경로에 공백은 흔하다).
    */
   useEffect(() => {
-    const un = listen<{ path: string }>("fav:paste-path", (e) => {
+    // 폴더 창·미리보기에서 여러 장을 골라 보내면 `paths`(공백으로 이어 한 번에 붙인다).
+    const un = listen<{ path?: string; paths?: string[] }>("fav:paste-path", (e) => {
       const ts = useTerminals.getState();
       const tabId = ts.activeTab[useUi.getState().selectedProjectId ?? ""];
       const tab = ts.terminals.find((t) => t.id === tabId);
@@ -169,8 +171,9 @@ export default function App() {
         useUi.getState().pushToast("error", currentMessages().windows.app.pastePathNoTerminal);
         return;
       }
-      const p = e.payload.path;
-      inst.term.paste(/\s/.test(p) ? `"${p}"` : p);
+      const paths = e.payload.paths ?? (e.payload.path ? [e.payload.path] : []);
+      if (!paths.length) return;
+      inst.term.paste(joinPathsForPrompt(paths));
       inst.term.focus();
     });
     return () => void un.then((f) => f());

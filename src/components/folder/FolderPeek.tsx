@@ -1,11 +1,15 @@
+import { emit } from "@tauri-apps/api/event";
 import {
+  Check,
   Copy,
   ExternalLink,
   FileText,
   Film,
   FolderOpen,
   Image as ImageIcon,
+  SquareTerminal,
   Trash2,
+  X,
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -14,8 +18,26 @@ import { useMessages } from "../../i18n/ui-language";
 import { copyText } from "../../lib/clipboard";
 import { favThumbUrl, useFavThumbToken } from "../../lib/fav-thumb";
 import { ipc, type FavEntry } from "../../lib/ipc";
+import { joinPathsForPrompt } from "../../lib/path";
+import { isMod } from "../../lib/platform";
 import { useUi } from "../../stores/ui";
 import { PhotoViewer } from "./PhotoViewer";
+import { MarqueeBand, useMarqueeDrag, type MarqueeRect } from "./useMarqueeDrag";
+
+const NO_PICK: ReadonlySet<string> = new Set();
+
+/** 칸이 40개뿐이고 전부 DOM 에 있어 화면 좌표로 바로 판정한다(창의 가상 그리드는 계산으로 한다). */
+function peekHits(r: MarqueeRect, host: HTMLElement): number[] {
+  const hr = host.getBoundingClientRect();
+  const hits: number[] = [];
+  host.querySelectorAll<HTMLElement>("[data-pi]").forEach((el) => {
+    const b = el.getBoundingClientRect();
+    const x = b.left - hr.left;
+    const y = b.top - hr.top;
+    if (x < r.x2 && x + b.width > r.x1 && y < r.y2 && y + b.height > r.y1) hits.push(Number(el.dataset.pi));
+  });
+  return hits;
+}
 
 /** 미리보기에 그릴 최대 개수 — **최신 순으로** 자른다. 패널이 스크롤되므로 한 화면에 들어갈
  *  필요는 없지만, 무제한이면 폴더가 수백 장일 때(실제 스크린샷 폴더가 225장) 썸네일 요청이
@@ -56,6 +78,22 @@ export function FolderPeek({ path, onMouseEnter }: { path: string; onMouseEnter?
   );
   /** 라이트박스에 연 이미지의 **이름** — 창과 같은 규칙(인덱스로 들면 지웠을 때 옆 파일로 옮겨 간다). */
   const [lightbox, setLightbox] = useState<string | null>(null);
+  /** 여러 장 고르기(드래그 상자·Ctrl+클릭) — 이름으로 든다(창과 같은 규칙). 스크린샷 여러 장을 한 번에 Claude 에 넘기는 동선. */
+  const [picked, setPicked] = useState<ReadonlySet<string>>(NO_PICK);
+  const pickBase = useRef<ReadonlySet<string>>(NO_PICK);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const marquee = useMarqueeDrag(
+    scrollRef,
+    peekHits,
+    (additive) => {
+      pickBase.current = additive ? picked : NO_PICK;
+    },
+    (hits) => {
+      const next = new Set(pickBase.current);
+      for (const i of hits) if (files?.[i]) next.add(files[i].name);
+      setPicked(next);
+    },
+  );
 
   /** 왼쪽으로 밀어낸 픽셀 — 패널이 680px 이라 창이 좁으면 `right-full` 만으로는 화면 밖으로
    *  나가 **아무것도 안 보인다**(초판 256px 때는 드물었지만 지금은 폭 ~950px 미만이면 걸린다).
@@ -82,6 +120,7 @@ export function FolderPeek({ path, onMouseEnter }: { path: string; onMouseEnter?
     setError(null);
     setMenu(null);
     setLightbox(null);
+    setPicked(NO_PICK);
     ipc
       .favList(path)
       .then((list) => {
@@ -132,13 +171,21 @@ export function FolderPeek({ path, onMouseEnter }: { path: string; onMouseEnter?
   const toast = (kind: "success" | "error", message: string) =>
     useUi.getState().pushToast(kind, message);
 
-  const copy = (name: string) =>
-    void copyText(join(name)).then((ok) =>
+  // 여러 개는 공백으로 이은 한 줄 — 폴더 창의 copyPaths 와 같은 모양(그대로 Claude 프롬프트에 붙는다).
+  const copy = (names: string[]) =>
+    void copyText(joinPathsForPrompt(names.map(join))).then((ok) =>
       toast(
         ok ? "success" : "error",
-        ok ? msg.folder.copyPathDone : msg.folder.copyFailed,
+        ok ? (names.length > 1 ? msg.folder.copyPathsDone(names.length) : msg.folder.copyPathDone) : msg.folder.copyFailed,
       ),
     );
+
+  const pasteToTerminal = (names: string[]) => void emit("fav:paste-path", { paths: names.map(join) });
+
+  /** 메뉴·단축키가 다룰 대상 — 고른 칸 안을 눌렀으면 고른 전부(보이는 순서), 아니면 그 칸 하나. */
+  const targetsOf = (name: string) =>
+    picked.has(name) ? (files ?? []).filter((e) => picked.has(e.name)).map((e) => e.name) : [name];
+  const pickedNames = (files ?? []).filter((e) => picked.has(e.name)).map((e) => e.name);
 
   const open = (name: string, how: "default" | "reveal") =>
     void ipc
@@ -148,18 +195,45 @@ export function FolderPeek({ path, onMouseEnter }: { path: string; onMouseEnter?
   /** 확인창을 두지 않는다 — 이 패널의 존재 이유가 "한 번에 끝내기"다. 대신 **휴지통으로** 가고
    *  (백엔드 `fav_delete`), 토스트가 그 사실을 말한다. 목록에서는 즉시 지운다(응답을 기다리면
    *  지워진 칸이 한 박자 남아 같은 파일을 두 번 누르게 된다). 실패하면 되돌린다. */
-  const remove = (name: string) => {
+  const remove = (names: string[]) => {
+    if (!names.length) return;
     const before = files;
-    setFiles((cur) => cur?.filter((e) => e.name !== name) ?? cur);
+    const gone = new Set(names);
+    setFiles((cur) => cur?.filter((e) => !gone.has(e.name)) ?? cur);
+    setPicked((cur) => (cur.size ? new Set([...cur].filter((n) => !gone.has(n))) : cur));
     setMenu(null);
     void ipc
-      .favDelete([join(name)])
-      .then(() => toast("success", msg.folder.peek.trashed(name)))
+      .favDelete(names.map(join))
+      .then(() =>
+        toast(
+          "success",
+          names.length > 1 ? msg.folder.window.trashedMany(names.length) : msg.folder.peek.trashed(names[0]),
+        ),
+      )
       .catch((e) => {
         setFiles(before ?? null);
         toast("error", e instanceof Error ? e.message : String(e));
       });
   };
+
+  // 고른 게 있을 때만 키를 먹는다 — 캡처 단계라 드롭다운의 Esc=닫기·터미널의 Ctrl+C 보다 먼저 받는다. 패널은 호버하는
+  // 동안에만 떠 있으므로 그 사이 Ctrl+C 가 터미널에 안 가는 건 의도다(고른 칸 복사가 지금 할 일).
+  useEffect(() => {
+    // 메뉴가 떠 있으면 Esc 는 메뉴 닫기다(PeekMenu 가 받는다) — 여기서 먼저 먹으면 선택만 풀리고 메뉴는 남는다.
+    if (!picked.size || lightbox !== null || menu) return;
+    const onKey = (ev: KeyboardEvent) => {
+      const t = ev.target as HTMLElement | null;
+      if (t?.closest("input, textarea:not(.xterm-helper-textarea), [contenteditable=true]")) return;
+      if (isMod(ev) && ev.key.toLowerCase() === "c") copy(pickedNames);
+      else if (ev.key === "Delete") remove(pickedNames);
+      else if (ev.key === "Escape") setPicked(NO_PICK);
+      else return;
+      ev.preventDefault();
+      ev.stopPropagation();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  });
 
   return (
     // `right-full` = 드롭다운 **바로 왼쪽에 붙인다**. 틈을 두면 그리로 포인터가 빠지는 순간
@@ -194,20 +268,38 @@ export function FolderPeek({ path, onMouseEnter }: { path: string; onMouseEnter?
 
       {!!files?.length && (
         // 스크롤은 **그리드만** 한다 — 경로 헤더와 아래 안내는 붙박이다.
-        <div className="grid min-h-0 grid-cols-3 gap-2 overflow-y-auto pr-1">
-          {files.map((e) => (
-            <div key={e.name} className="group/peek relative">
+        <div ref={scrollRef} className="min-h-0 overflow-y-auto pr-1">
+          {/* 드래그 상자 호스트 — 스크롤 안쪽이라 상자가 내용 좌표에 붙는다. select-none: 드래그가 파일 이름을 긁지 않게. */}
+          <div className="relative grid select-none grid-cols-3 gap-2" onMouseDown={marquee.onMouseDown}>
+          <MarqueeBand band={marquee.band} />
+          {files.map((e, i) => (
+            <div key={e.name} data-pi={i} className="group/peek relative">
               <button
-                // 더블클릭의 두 번째 클릭(detail=2)은 복사하지 않는다 — 토스트가 두 번 뜬다.
-                onClick={(ev) => ev.detail < 2 && copy(e.name)}
-                onDoubleClick={() => e.kind === "image" && setLightbox(e.name)}
+                onClick={(ev) => {
+                  if (marquee.swallow()) return;
+                  if (isMod(ev)) {
+                    const next = new Set(picked);
+                    if (!next.delete(e.name)) next.add(e.name);
+                    setPicked(next);
+                    return;
+                  }
+                  // 그냥 클릭은 종전 그대로 그 한 장 복사 — 골라 둔 게 있으면 풀고(탐색기와 같은 규칙).
+                  if (picked.size) setPicked(NO_PICK);
+                  // 더블클릭의 두 번째 클릭(detail=2)은 복사하지 않는다 — 토스트가 두 번 뜬다.
+                  if (ev.detail < 2) copy([e.name]);
+                }}
+                onDoubleClick={(ev) => !isMod(ev) && e.kind === "image" && setLightbox(e.name)}
                 onContextMenu={(ev) => {
                   ev.preventDefault();
                   ev.stopPropagation();
                   setMenu({ x: ev.clientX, y: ev.clientY, name: e.name });
                 }}
                 title={msg.folder.peek.itemTitle(e.name, e.kind === "image")}
-                className="flex w-full min-w-0 flex-col items-stretch gap-1 rounded border border-edge/60 p-1 hover:border-accent hover:bg-raised"
+                className={`flex w-full min-w-0 flex-col items-stretch gap-1 rounded border p-1 ${
+                  picked.has(e.name)
+                    ? "border-accent bg-accent/10 ring-1 ring-accent"
+                    : "border-edge/60 hover:border-accent hover:bg-raised"
+                }`}
               >
                 <span className="relative flex h-36 w-full items-center justify-center overflow-hidden rounded bg-base">
                   <PeekThumb
@@ -219,9 +311,17 @@ export function FolderPeek({ path, onMouseEnter }: { path: string; onMouseEnter?
                         : undefined
                     }
                   />
-                  <span className="absolute inset-0 hidden items-center justify-center bg-base/70 group-hover/peek:flex">
-                    <Copy size={20} className="text-accent" />
-                  </span>
+                  {/* 고르는 중엔 "복사" 덮개를 띄우지 않는다 — 클릭이 복사가 아닐 수 있다(Ctrl+클릭). */}
+                  {!picked.size && (
+                    <span className="absolute inset-0 hidden items-center justify-center bg-base/70 group-hover/peek:flex">
+                      <Copy size={20} className="text-accent" />
+                    </span>
+                  )}
+                  {picked.has(e.name) && (
+                    <span className="absolute left-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-accent text-white shadow">
+                      <Check size={13} strokeWidth={3} />
+                    </span>
+                  )}
                 </span>
                 <span className="w-full truncate px-0.5 text-left text-[11px] text-fg-muted">
                   {e.name}
@@ -230,7 +330,8 @@ export function FolderPeek({ path, onMouseEnter }: { path: string; onMouseEnter?
               {/* 삭제는 **버튼 밖**에 둔다 — 안에 중첩하면 클릭이 위 버튼(경로 복사)으로 새어
                   파일이 안 지워지고 경로만 복사된다. 호버할 때만 보인다. */}
               <button
-                onClick={() => remove(e.name)}
+                onClick={() => remove([e.name])}
+                onMouseDown={(ev) => ev.stopPropagation()}
                 title={msg.folder.peek.trashTitle(e.name)}
                 className="absolute right-1.5 top-1.5 hidden rounded bg-panel/90 p-1 text-fg-dim hover:text-danger group-hover/peek:block"
               >
@@ -238,13 +339,30 @@ export function FolderPeek({ path, onMouseEnter }: { path: string; onMouseEnter?
               </button>
             </div>
           ))}
+          </div>
         </div>
       )}
 
-      {/* 클릭이 무엇을 하는지 한 줄로 말한다 — 안 말하면 "왜 창이 안 열리지"가 된다. */}
-      <div className="shrink-0 px-1 pt-2 text-[11px] text-fg-dim">
-        {msg.folder.peek.footerHint}
-      </div>
+      {picked.size ? (
+        // 고르면 안내 줄 자리가 할 일 막대로 바뀐다 — 고른 다음 할 일이 우클릭 메뉴 안에 숨어 있으면 못 찾는다.
+        <div className="flex shrink-0 items-center gap-1 px-1 pt-2 text-[12px]">
+          <span className="mr-auto font-medium text-accent">{msg.folder.window.pickedCount(pickedNames.length)}</span>
+          <PeekBarButton icon={<Copy size={13} />} label={msg.folder.menuCopyPath} title={msg.folder.peek.pickCopyTitle} onClick={() => copy(pickedNames)} />
+          <PeekBarButton
+            icon={<SquareTerminal size={13} />}
+            label={msg.folder.peek.pickPaste}
+            title={msg.folder.peek.pickPasteTitle}
+            onClick={() => pasteToTerminal(pickedNames)}
+          />
+          <PeekBarButton icon={<Trash2 size={13} />} title={msg.folder.peek.pickTrashTitle} danger onClick={() => remove(pickedNames)} />
+          <PeekBarButton icon={<X size={13} />} title={msg.folder.peek.pickClearTitle} onClick={() => setPicked(NO_PICK)} />
+        </div>
+      ) : (
+        // 클릭이 무엇을 하는지 한 줄로 말한다 — 안 말하면 "왜 창이 안 열리지"가 된다.
+        <div className="shrink-0 px-1 pt-2 text-[11px] text-fg-dim">
+          {msg.folder.peek.footerHint}
+        </div>
+      )}
 
       {lbIndex >= 0 &&
         // body 로 포털한다 — 패널이 화면 밖으로 밀려 `transform` 이 걸리면 그 안의 `fixed` 는 창이 아니라
@@ -271,11 +389,13 @@ export function FolderPeek({ path, onMouseEnter }: { path: string; onMouseEnter?
           x={menu.x}
           y={menu.y}
           name={menu.name}
+          count={targetsOf(menu.name).length}
           onClose={() => setMenu(null)}
-          onCopy={() => copy(menu.name)}
+          onCopy={() => copy(targetsOf(menu.name))}
+          onPaste={() => pasteToTerminal(targetsOf(menu.name))}
           onOpen={() => open(menu.name, "default")}
           onReveal={() => open(menu.name, "reveal")}
-          onDelete={() => remove(menu.name)}
+          onDelete={() => remove(targetsOf(menu.name))}
         />
       )}
     </div>
@@ -300,6 +420,8 @@ function PeekThumb({ kind, url }: { kind: FavEntry["kind"]; url: string | undefi
           src={url}
           alt=""
           decoding="async"
+          // 이미지 위에서 시작한 드래그가 HTML 끌어 놓기로 새면 드래그 상자가 안 그려진다.
+          draggable={false}
           onLoad={() => setLoad("ok")}
           onError={() => setLoad("fail")}
           className={`absolute inset-0 h-full w-full object-cover ${load === "ok" ? "" : "invisible"}`}
@@ -315,8 +437,10 @@ function PeekMenu({
   x,
   y,
   name,
+  count,
   onClose,
   onCopy,
+  onPaste,
   onOpen,
   onReveal,
   onDelete,
@@ -324,8 +448,11 @@ function PeekMenu({
   x: number;
   y: number;
   name: string;
+  /** 메뉴가 다룰 개수 — 고른 칸 안을 우클릭했으면 고른 전부. 열기·위치 보기는 누른 칸 하나다. */
+  count: number;
   onClose: () => void;
   onCopy: () => void;
+  onPaste: () => void;
   onOpen: () => void;
   onReveal: () => void;
   onDelete: () => void;
@@ -333,12 +460,18 @@ function PeekMenu({
   const msg = useMessages();
   useEffect(() => {
     const close = () => onClose();
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    // 캡처 단계에서 먹는다 — 버블이면 드롭다운(TitleBar)의 Esc=닫기도 같이 떠 패널째 닫히고 골라 둔 칸이 날아간다.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      onClose();
+    };
     window.addEventListener("click", close);
-    window.addEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
     return () => {
       window.removeEventListener("click", close);
-      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keydown", onKey, true);
     };
   }, [onClose]);
 
@@ -352,15 +485,26 @@ function PeekMenu({
       className="fixed z-[60] min-w-52 rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl"
       style={{
         left: Math.min(x, window.innerWidth - 220),
-        // 항목 4 × 31.5 + 구분선 8.7 + 헤더 22 + 패딩 9 ≈ 166 → 여유를 둬 176.
-        top: Math.max(0, Math.min(y, window.innerHeight - 176)),
+        // 항목 5 × 31.5 + 구분선 8.7 + 헤더 22 + 패딩 9 ≈ 197 → 여유를 둬 208.
+        top: Math.max(0, Math.min(y, window.innerHeight - 208)),
       }}
       onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
     >
-      <div className="truncate px-3 py-1 text-[11px] text-fg-dim">{name}</div>
+      <div className="truncate px-3 py-1 text-[11px] text-fg-dim">
+        {count > 1 ? msg.folder.window.pickedCount(count) : name}
+      </div>
       <div className="my-1 border-t border-edge" />
-      <PeekRow icon={<Copy size={14} />} label={msg.folder.menuCopyPath} onClick={run(onCopy)} />
+      <PeekRow
+        icon={<Copy size={14} />}
+        label={count > 1 ? msg.folder.window.menuCopyPathMany(count) : msg.folder.menuCopyPath}
+        onClick={run(onCopy)}
+      />
+      <PeekRow
+        icon={<SquareTerminal size={14} />}
+        label={count > 1 ? msg.folder.window.menuPasteToTerminalMany(count) : msg.folder.window.menuPasteToTerminal}
+        onClick={run(onPaste)}
+      />
       <PeekRow
         icon={<ExternalLink size={14} />}
         label={msg.folder.menuOpenDefault}
@@ -374,11 +518,38 @@ function PeekMenu({
       <div className="my-1 border-t border-edge" />
       <PeekRow
         icon={<Trash2 size={14} />}
-        label={msg.folder.peek.menuTrash}
+        label={count > 1 ? msg.folder.window.menuTrashMany(count) : msg.folder.peek.menuTrash}
         danger
         onClick={run(onDelete)}
       />
     </div>
+  );
+}
+
+function PeekBarButton({
+  icon,
+  label,
+  title,
+  danger,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  label?: string;
+  title: string;
+  danger?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      className={`flex items-center gap-1 rounded border border-edge px-2 py-1 ${
+        danger ? "text-fg-dim hover:border-danger hover:text-danger" : "text-fg-muted hover:border-accent hover:text-fg"
+      }`}
+    >
+      {icon}
+      {label && <span>{label}</span>}
+    </button>
   );
 }
 

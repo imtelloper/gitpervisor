@@ -47,7 +47,7 @@ import {
 } from "../../lib/fav-thumb";
 import { openDocWindow } from "../../lib/floating";
 import { ipc, type FavEntry } from "../../lib/ipc";
-import { validateEntryName } from "../../lib/path";
+import { joinPathsForPrompt, validateEntryName } from "../../lib/path";
 import { useUi } from "../../stores/ui";
 import { ConfirmHost } from "../common/ConfirmDialog";
 import { EmptyState } from "../common/EmptyState";
@@ -335,11 +335,18 @@ export default function FolderWindow({
     if (cut > 0) setDir(dir.slice(0, cut));
   }, [dir, root, SEP]);
 
-  const copyPath = useCallback(
-    (e: FavEntry) => {
-      void copyText(join(dir, e.name)).then((ok) => {
+  /** 여러 개면 공백으로 이어 한 줄로(joinPathsForPrompt) — 그대로 Claude 프롬프트에 붙여 넣는 동선이다. */
+  const copyPaths = useCallback(
+    (list: FavEntry[]) => {
+      if (!list.length) return;
+      void copyText(joinPathsForPrompt(list.map((e) => join(dir, e.name)))).then((ok) => {
         const t = currentMessages().folder;
-        useUi.getState().pushToast(ok ? "success" : "error", ok ? t.copyPathDone : t.copyFailed);
+        useUi
+          .getState()
+          .pushToast(
+            ok ? "success" : "error",
+            ok ? (list.length > 1 ? t.copyPathsDone(list.length) : t.copyPathDone) : t.copyFailed,
+          );
       });
     },
     [dir, join],
@@ -354,9 +361,9 @@ export default function FolderWindow({
 
   /** 메인 창의 활성 터미널에 경로를 넣는다 — 스크린샷을 Claude 프롬프트에 붙이는 그 동선.
    *  이 창엔 터미널이 없으므로 이벤트로 넘긴다(App.tsx 가 받는다). */
-  const pastePath = useCallback(
-    (e: FavEntry) => {
-      void emit("fav:paste-path", { path: join(dir, e.name) });
+  const pastePaths = useCallback(
+    (list: FavEntry[]) => {
+      if (list.length) void emit("fav:paste-path", { paths: list.map((e) => join(dir, e.name)) });
     },
     [dir, join],
   );
@@ -480,10 +487,11 @@ export default function FolderWindow({
         return;
       }
       if (isMod(ev) && ev.key.toLowerCase() === "c") {
-        const e = shown[cursor];
-        if (e) {
+        // 여러 장을 골라 두었으면 전부 — 아니면 커서 한 칸(종전 그대로).
+        const list = picked.size ? pickedShown : shown[cursor] ? [shown[cursor]] : [];
+        if (list.length) {
           ev.preventDefault();
-          copyPath(e);
+          copyPaths(list);
         }
         return;
       }
@@ -530,7 +538,8 @@ export default function FolderWindow({
     load,
     goUp,
     openEntry,
-    copyPath,
+    copyPaths,
+    pickedShown,
     renameEntry,
   ]);
 
@@ -629,11 +638,11 @@ export default function FolderWindow({
           y={menu.y}
           entry={menu.entry}
           onClose={() => setMenu(null)}
-          onCopyPath={() => copyPath(menu.entry)}
+          onCopyPath={() => copyPaths(picked.has(menu.entry.name) ? pickedShown : [menu.entry])}
           onCopyVideoTime={copyVideoTime}
-          onPastePath={() => pastePath(menu.entry)}
+          onPastePath={() => pastePaths(picked.has(menu.entry.name) ? pickedShown : [menu.entry])}
           onRename={() => renameEntry(menu.entry)}
-          trashCount={picked.has(menu.entry.name) ? pickedShown.length : 1}
+          count={picked.has(menu.entry.name) ? pickedShown.length : 1}
           onTrash={() => trashEntries(picked.has(menu.entry.name) ? pickedShown : [menu.entry])}
           onOpen={() =>
             void ipc.favOpen(join(dir, menu.entry.name), "default").catch(() => {
@@ -1341,7 +1350,7 @@ function ItemMenu({
   onCopyVideoTime,
   onPastePath,
   onRename,
-  trashCount,
+  count,
   onTrash,
   onOpen,
   onReveal,
@@ -1354,8 +1363,8 @@ function ItemMenu({
   onCopyVideoTime: (time: string) => void;
   onPastePath: () => void;
   onRename: () => void;
-  /** 휴지통이 지울 개수 — 다중 선택 안의 칸을 우클릭했으면 선택 전체. */
-  trashCount: number;
+  /** 메뉴가 적용될 개수(경로 복사·붙여넣기·휴지통) — 다중 선택 안의 칸을 우클릭했으면 선택 전체. */
+  count: number;
   onTrash: () => void;
   onOpen: () => void;
   onReveal: () => void;
@@ -1391,7 +1400,12 @@ function ItemMenu({
     >
       <div className="truncate px-3 py-1 text-[11px] text-fg-dim">{entry.name}</div>
       <div className="my-1 border-t border-edge" />
-      <Row icon={<Copy size={14} />} label={msg.folder.menuCopyPath} hint={`${modLabel}+C`} onClick={run(onCopyPath)} />
+      <Row
+        icon={<Copy size={14} />}
+        label={count > 1 ? msg.folder.window.menuCopyPathMany(count) : msg.folder.menuCopyPath}
+        hint={`${modLabel}+C`}
+        onClick={run(onCopyPath)}
+      />
       {videoTime && (
         <Row
           icon={<Clock size={14} />}
@@ -1401,7 +1415,7 @@ function ItemMenu({
       )}
       <Row
         icon={<ClipboardPaste size={14} />}
-        label={msg.folder.window.menuPasteToTerminal}
+        label={count > 1 ? msg.folder.window.menuPasteToTerminalMany(count) : msg.folder.window.menuPasteToTerminal}
         onClick={run(onPastePath)}
       />
       <Row icon={<Pencil size={14} />} label={msg.folder.window.menuRename} hint="F2" onClick={run(onRename)} />
@@ -1410,7 +1424,7 @@ function ItemMenu({
       <div className="my-1 border-t border-edge" />
       <Row
         icon={<Trash2 size={14} />}
-        label={trashCount > 1 ? msg.folder.window.menuTrashMany(trashCount) : msg.folder.peek.menuTrash}
+        label={count > 1 ? msg.folder.window.menuTrashMany(count) : msg.folder.peek.menuTrash}
         hint={isMac ? "⌘⌫" : "Del"}
         danger
         onClick={run(onTrash)}

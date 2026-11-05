@@ -6,6 +6,7 @@ import { plural } from "./format-locale";
 const ko = {
   // 호버 미리보기(FolderPeek)와 폴더 창(FolderWindow)이 같은 일에 같은 문구를 쓴다.
   copyPathDone: "경로를 복사했습니다",
+  copyPathsDone: (n: number) => `경로 ${n}개를 복사했습니다`,
   copyFailed: "복사에 실패했습니다",
   loading: "읽는 중…",
   menuCopyPath: "경로 복사",
@@ -18,8 +19,14 @@ const ko = {
     itemTitle: (name: string, isImage: boolean) =>
       `${name}\n클릭: 경로 복사${isImage ? " · 더블클릭: 크게 보기" : ""} · 우클릭: 메뉴`,
     trashTitle: (name: string) => `휴지통으로 보내기 — ${name}`,
-    footerHint: "클릭: 경로 복사 · 더블클릭: 이미지 크게 보기 · 우클릭: 메뉴 · 폴더 이름 클릭: 창으로 열기",
+    footerHint: "클릭: 경로 복사 · 드래그·Ctrl+클릭: 여러 개 선택 · 더블클릭: 크게 보기 · 우클릭: 메뉴 · 폴더 이름: 창으로 열기",
     menuTrash: "휴지통으로 보내기",
+    pickCopyTitle: "선택한 경로를 한 줄로 복사 (Ctrl+C)",
+    pickPaste: "터미널에 붙여넣기",
+    pickPasteTitle: "선택한 경로를 지금 터미널 입력줄에 붙여 넣습니다",
+    pickTrashTitle: "선택한 파일을 휴지통으로 (Delete)",
+    pickClear: "선택 해제",
+    pickClearTitle: "선택 해제 (Esc)",
   },
   window: {
     badge: "폴더",
@@ -48,6 +55,8 @@ const ko = {
     columnSize: "크기",
     columnModified: "수정",
     menuPasteToTerminal: "터미널에 경로 붙여넣기",
+    menuCopyPathMany: (n: number) => `경로 복사 (${n}개)`,
+    menuPasteToTerminalMany: (n: number) => `터미널에 경로 붙여넣기 (${n}개)`,
     menuCopyVideoTime: (time: string) => `영상 시각 복사 (${time})`,
     copyVideoTimeDone: "영상 시각을 복사했습니다",
     menuRename: "이름 바꾸기",
@@ -122,6 +131,7 @@ const ko = {
 export const folderText = defineText(ko, {
   en: {
     copyPathDone: "Path copied",
+    copyPathsDone: (n) => `Copied ${n} ${plural(n, "path", "paths")}`,
     copyFailed: "Couldn't copy",
     loading: "Reading…",
     menuCopyPath: "Copy path",
@@ -134,8 +144,14 @@ export const folderText = defineText(ko, {
       itemTitle: (name, isImage) =>
         `${name}\nClick: copy path${isImage ? " · Double-click: enlarge" : ""} · Right-click: menu`,
       trashTitle: (name) => `Move to trash — ${name}`,
-      footerHint: "Click: copy path · Double-click: enlarge image · Right-click: menu · Click folder name: open in window",
+      footerHint: "Click: copy path · Drag/Ctrl+click: select several · Double-click: enlarge · Right-click: menu · Folder name: open in window",
       menuTrash: "Move to trash",
+      pickCopyTitle: "Copy the selected paths as one line (Ctrl+C)",
+      pickPaste: "Paste into terminal",
+      pickPasteTitle: "Paste the selected paths into the active terminal prompt",
+      pickTrashTitle: "Move the selected files to trash (Delete)",
+      pickClear: "Clear",
+      pickClearTitle: "Clear selection (Esc)",
     },
     window: {
       badge: "Folder",
@@ -164,6 +180,8 @@ export const folderText = defineText(ko, {
       columnSize: "Size",
       columnModified: "Modified",
       menuPasteToTerminal: "Paste path into terminal",
+      menuCopyPathMany: (n) => `Copy ${n} paths`,
+      menuPasteToTerminalMany: (n) => `Paste ${n} paths into terminal`,
       menuCopyVideoTime: (time) => `Copy video time (${time})`,
       copyVideoTimeDone: "Video time copied",
       menuRename: "Rename",
