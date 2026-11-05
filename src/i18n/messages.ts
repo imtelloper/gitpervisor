@@ -32,6 +32,7 @@ import { pccareStartupText } from "./text-pccare-startup";
 import { pccareServicesText } from "./text-pccare-services";
 import { pccareProgramsText } from "./text-pccare-programs";
 import { pccareToolsText } from "./text-pccare-tools";
+import { sessionsText } from "./text-sessions";
 
 export function messagesFor(locale: Locale) {
   return {
@@ -63,6 +64,7 @@ export function messagesFor(locale: Locale) {
     pccareServices: pccareServicesText[locale],
     pccarePrograms: pccareProgramsText[locale],
     pccareTools: pccareToolsText[locale],
+    sessions: sessionsText[locale],
   };
 }
 

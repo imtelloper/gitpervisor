@@ -1,4 +1,4 @@
-//! LSP 획득·HTML 프리뷰·HLS·열기·포매터·도구 실행·격리 해제·검색 문구 — 문구 하나 = 함수 하나, 모든 `Lang`을 `match`로 적는다(DOCS/i18n-design.md §4.4).
+//! LSP 획득·HTML 프리뷰·HLS·열기·포매터·도구 실행·격리 해제·검색·Claude 세션 기록 문구 — 문구 하나 = 함수 하나, 모든 `Lang`을 `match`로 적는다(DOCS/i18n-design.md §4.4).
 //! 빠진 언어는 컴파일 오류다. 정적 문구는 `&'static str`, 보간이 있으면 `String`을 돌려준다.
 
 use super::{lang, Lang};
@@ -525,5 +525,42 @@ pub fn opencode_config_write_failed(path: &str, err: &dyn Display) -> String {
     match lang() {
         Lang::Ko => format!("OpenCode 설정 파일 쓰기 실패 ({path}): {err}"),
         Lang::En => format!("Failed to write OpenCode config ({path}): {err}"),
+    }
+}
+
+// ── claude_sessions.rs — Claude Code 세션 기록 ──────────────────────────────
+
+pub fn claude_config_dir_not_found() -> &'static str {
+    match lang() {
+        Lang::Ko => "Claude 설정 폴더를 찾을 수 없습니다 — 홈 디렉토리를 알 수 없습니다",
+        Lang::En => "Claude config folder not found — home directory is unknown",
+    }
+}
+
+pub fn claude_session_bad_path() -> &'static str {
+    match lang() {
+        Lang::Ko => "잘못된 세션 경로입니다 — 프로젝트 폴더와 세션 ID는 경로 성분 하나여야 합니다",
+        Lang::En => "Invalid session path — project folder and session ID must each be a single path component",
+    }
+}
+
+pub fn claude_session_not_found(id: &str) -> String {
+    match lang() {
+        Lang::Ko => format!("세션 기록 파일이 없습니다: {id}"),
+        Lang::En => format!("Session transcript not found: {id}"),
+    }
+}
+
+pub fn claude_session_read_failed(path: &str, err: &dyn Display) -> String {
+    match lang() {
+        Lang::Ko => format!("세션 기록을 읽지 못했습니다 ({path}): {err}"),
+        Lang::En => format!("Failed to read session transcripts ({path}): {err}"),
+    }
+}
+
+pub fn claude_sessions_scan_failed(err: &dyn Display) -> String {
+    match lang() {
+        Lang::Ko => format!("Claude 세션 기록 스캔 실패: {err}"),
+        Lang::En => format!("Failed to scan Claude sessions: {err}"),
     }
 }

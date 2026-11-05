@@ -69,6 +69,7 @@ import {
   PromptHistoryButton,
   PromptLogButton,
   PromptSidePanel,
+  SessionHistoryButton,
   SessionTitle,
   ThemeButton,
 } from "./workspace/TermSessionControls";
@@ -1660,6 +1661,7 @@ function AggregateCell({
         <AgentLaunchButton termId={meta.id} />
         <ThemeButton termId={meta.id} />
         <PromptLogButton termId={meta.id} />
+        <SessionHistoryButton termId={meta.id} projectId={meta.projectId} />
         <GitDialogButton projectId={meta.projectId} />
         <FileTreeButton projectId={meta.projectId} />
         <button

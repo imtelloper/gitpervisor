@@ -30,6 +30,7 @@ import { TitleBar } from "./components/TitleBar";
 import { HealthBanner } from "./components/common/HealthBanner";
 import { bumpLaunchCount, StarPrompt } from "./components/common/StarPrompt";
 import { Toolbar } from "./components/toolbar/Toolbar";
+import { SessionHistoryDialog } from "./components/sessions/SessionHistoryDialog";
 import { FileTreeDialog } from "./components/tree/FileTreeDialog";
 import { FileTreePanel } from "./components/tree/FileTreePanel";
 import { WorkspaceTabs } from "./components/workspace/WorkspaceTabs";
@@ -257,6 +258,7 @@ export default function App() {
           <MemoDialog />
           <GitDialog />
           <FileTreeDialog />
+          <SessionHistoryDialog />
           <ConnectionDialog />
           {/* 제품 경로는 별도 doc 창으로 옮겼지만(ImageView·파일트리 → openDocWindow) 이 마운트는
               **지우면 안 된다**: e2e 30-image-annotate 가 메인 창에서 useUi.openImageEditor 를

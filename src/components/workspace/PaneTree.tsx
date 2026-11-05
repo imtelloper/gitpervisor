@@ -16,6 +16,7 @@ import {
   FileTreeButton,
   GitDialogButton,
   PromptLogButton,
+  SessionHistoryButton,
   SessionTitleChip,
   ThemeButton,
 } from "./TermSessionControls";
@@ -155,6 +156,7 @@ function LeafView({
             <AgentLaunchButton termId={leaf.paneId} />
             <ThemeButton termId={leaf.paneId} />
             <PromptLogButton termId={leaf.paneId} />
+            <SessionHistoryButton termId={leaf.paneId} projectId={tab.projectId} />
             <GitDialogButton projectId={tab.projectId} />
             <FileTreeButton projectId={tab.projectId} />
             <span className="mx-0.5 h-3 w-px bg-edge" />

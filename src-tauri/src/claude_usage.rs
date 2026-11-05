@@ -224,7 +224,7 @@ fn parse_creds(json: &str) -> Result<OauthCreds, String> {
 }
 
 /// Claude Code 의 설정 폴더 — `CLAUDE_CONFIG_DIR` 이 있으면 그것.
-fn claude_config_dir() -> Option<PathBuf> {
+pub(crate) fn claude_config_dir() -> Option<PathBuf> {
     std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).or_else(|| home_dir().map(|h| h.join(".claude")))
 }
 
@@ -357,7 +357,7 @@ fn assistant_snippet(line: &str) -> Option<String> {
 /// 파일을 **끝에서부터** 한 줄씩(뒤→앞) `f` 에 넘기고 처음 `Some` 을 돌려준다. 64KB 블록으로 거꾸로
 /// 읽으므로 답이 끝 근처에 있으면 파일 크기와 무관하게 몇 블록만 읽는다. 블록 경계에 걸친 줄은 앞
 /// 블록과 이어 붙인 뒤에야 넘긴다(한 줄이 수 MB 인 tool_result 도 온전히 한 줄로 본다).
-fn scan_lines_from_end<T>(
+pub(crate) fn scan_lines_from_end<T>(
     path: &std::path::Path,
     mut f: impl FnMut(&str) -> Option<T>,
 ) -> Option<T> {

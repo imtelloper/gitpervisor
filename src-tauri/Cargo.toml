@@ -38,6 +38,8 @@ dunce = "1.0.5"
 tokio = { version = "1.52.3", features = ["process", "time", "macros", "net", "sync"] }
 uuid = { version = "1.23.3", features = ["v4"] }
 chrono = "0.4.45"
+# 세션 기록(claude_sessions.rs)이 1GB 넘는 전사에서 줄 종류를 바이트로 찾는다 — 이미 트리에 있는 크레이트다.
+memchr = "2"
 futures = "0.3.32"
 notify-debouncer-full = "0.7.0"
 portable-pty = "0.8.1"

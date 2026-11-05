@@ -1047,6 +1047,48 @@ export interface ClaudeUsage {
   updatedAt: number; // 마지막으로 받은 epoch초 (오래되면 숨김)
 }
 
+// ---- Claude Code 세션 기록(claude_sessions.rs · DOCS/task/77) ----
+// 선택 필드는 Rust Option — 직렬화 설정에 따라 빠지거나 null 로 오므로 둘 다 받는다.
+export interface ClaudeSession {
+  id: string;
+  /** `~/.claude/projects` 아래 인코딩된 폴더 이름 — 상세·위치 열기의 경로 성분. */
+  projectDir: string;
+  title?: string | null;
+  cwd?: string | null;
+  gitBranch?: string | null;
+  model?: string | null;
+  version?: string | null;
+  firstPrompt?: string | null; // ≤300자
+  lastPrompt?: string | null; // ≤300자
+  lastAgentText?: string | null; // ≤400자
+  messageCount: number;
+  humanPromptCount: number;
+  subagentCount: number;
+  startedAtMs?: number | null;
+  updatedAtMs: number; // 파일 mtime
+  sizeBytes: number;
+}
+export interface ClaudeSessionList {
+  sessions: ClaudeSession[];
+  scannedFiles: number;
+  scannedAtMs: number;
+}
+export interface ClaudeSessionTurn {
+  role: "user" | "assistant";
+  text: string; // ≤1500자
+  timestampMs?: number | null;
+}
+export interface ClaudeSessionDetail {
+  firstPrompt: string; // ≤4000자
+  recent: ClaudeSessionTurn[]; // 끝에서 텍스트 있는 대화 8개, 오래된 것부터
+  cwd?: string | null;
+  gitBranch?: string | null;
+  accountUuid?: string | null;
+  subagents: { id: string; description?: string | null }[];
+  /** 작업 경로가 지금도 폴더로 있는가 — 없으면 이어서 열어도 cd 가 실패한다(이어서 버튼을 막는다). */
+  cwdExists: boolean;
+}
+
 // ---- 파일 트리 ----
 export interface DirEntry {
   name: string;
@@ -2207,6 +2249,15 @@ export const ipc = {
       { projectPath },
       { lane: "background", attempts: 1, timeoutMs: 3000 },
     ),
+  // Claude Code 세션 기록 — 첫 스캔은 기록 전체(GB 단위)를 훑어 몇 초 걸린다(이후는 바뀐 파일만).
+  // 재시도는 백엔드 스캔을 두 번 돌리므로 1회.
+  claudeSessionsList: () =>
+    call<ClaudeSessionList>("claude_sessions_list", {}, { attempts: 1, timeoutMs: 90_000 }),
+  claudeSessionDetail: (projectDir: string, id: string) =>
+    call<ClaudeSessionDetail>("claude_session_detail", { projectDir, id }, { attempts: 1, timeoutMs: 20_000 }),
+  // 탐색기를 띄우는 부작용이 있다 — 재시도하면 창이 두 번 뜬다(revealPath 와 같은 이유).
+  claudeSessionReveal: (projectDir: string, id: string) =>
+    callMutating<void>("claude_session_reveal", { projectDir, id }),
 
   // ---- 변경 커맨드 (재시도 없음) ----
   stageFiles: (projectId: string, paths: string[]) =>

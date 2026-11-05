@@ -7,6 +7,7 @@ import { Toasts } from "./components/common/Toast";
 import { TranslateHost } from "./components/common/TranslateCard";
 import { FloatTitleBar } from "./components/FloatTitleBar";
 import { GitDialog } from "./components/git/GitDialog";
+import { SessionHistoryDialog } from "./components/sessions/SessionHistoryDialog";
 import { FileTreeDialog } from "./components/tree/FileTreeDialog";
 import { useMessages } from "./i18n/ui-language";
 import { announceAggregateWindow } from "./lib/aggregate-window";
@@ -60,6 +61,8 @@ export function AggregateWindow() {
       <GitDialog />
       {/* 셀 헤더의 파일 트리 버튼이 여는 모달 — 이 창엔 사이드바가 없어 유일한 동선이다(태스크 62). */}
       <FileTreeDialog />
+      {/* 셀 헤더의 세션 기록 버튼이 여는 Claude 세션 기록 — 같은 이유(창마다 useUi)로 이 창에도 둔다(태스크 77). */}
+      <SessionHistoryDialog />
       {/* 칩 메뉴의 '선택 영역 번역' 카드도 이 창 안에 뜬다(태스크 61). */}
       <TranslateHost />
     </div>

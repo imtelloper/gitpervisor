@@ -2126,6 +2126,7 @@ dependencies = [
  "lettre",
  "libc",
  "log",
+ "memchr",
  "mongodb",
  "notify-debouncer-full",
  "objc2",

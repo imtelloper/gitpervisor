@@ -1,3 +1,4 @@
+mod claude_sessions;
 mod claude_usage;
 mod commands;
 mod db;
@@ -1452,6 +1453,9 @@ pub fn run() {
             pc_care::cleanup::cleanup_run,
             claude_usage::claude_usage,
             claude_usage::last_agent_message,
+            claude_sessions::claude_sessions_list,
+            claude_sessions::claude_session_detail,
+            claude_sessions::claude_session_reveal,
             db::db_list_connections,
             db::db_save_connection,
             db::db_delete_connection,
@@ -1834,6 +1838,10 @@ mod tests {
             ("commands/lsp.rs", "lsp_start"),
             ("claude_usage.rs", "last_agent_message"),
             ("claude_usage.rs", "claude_usage"), // 네트워크(계정 사용량 API)
+            // 태스크 77 — 세션 기록 전체(GB 단위)를 훑는다.
+            ("claude_sessions.rs", "claude_sessions_list"),
+            ("claude_sessions.rs", "claude_session_detail"),
+            ("claude_sessions.rs", "claude_session_reveal"),
             ("commands/terminal.rs", "term_paste"),
             ("proc_icons.rs", "get_process_icons"),
             ("notifications.rs", "notify_os"),

@@ -300,7 +300,7 @@ const INJECTED_PREFIXES: &[&str] = &[
 
 /// 사람이 친 요청만 남긴다 — 앱이 끼운 줄은 None. 슬래시 명령(`<command-name>/x</command-name>…`)은
 /// 인자가 있으면 `"/x 인자"` 로(인자가 곧 요청이다), 없으면 None(`/clear` 같은 조작은 작업 내용이 아니다).
-fn typed_request(text: &str) -> Option<String> {
+pub(crate) fn typed_request(text: &str) -> Option<String> {
     if text.is_empty() || INJECTED_PREFIXES.iter().any(|p| text.starts_with(p)) {
         return None;
     }

@@ -300,6 +300,10 @@ export interface UiState {
   fileTreeDialog: { projectId: string } | null;
   openFileTreeDialog: (projectId: string) => void;
   closeFileTreeDialog: () => void;
+  /** 터미널 세션 헤더의 세션 기록 버튼이 여는 Claude 세션 기록 대화상자(태스크 77) — 버튼을 누른 세션. null = 닫힘. */
+  sessionHistory: { termId: string; projectId: string } | null;
+  openSessionHistory: (termId: string, projectId: string) => void;
+  closeSessionHistory: () => void;
   /**
    * 선택 텍스트 번역 카드(태스크 61). null = 닫힘.
    * **selectBlockingOverlay에는 넣지 않는다** — 화면을 덮지 않는 카드라, 점유는 TranslateHost가
@@ -426,6 +430,7 @@ export const selectBlockingOverlay = (s: UiState): boolean =>
   !!s.imageEditorPath ||
   !!s.gitDialog ||
   !!s.fileTreeDialog ||
+  !!s.sessionHistory ||
   !!s.confirm ||
   !!s.prompt;
 
@@ -989,6 +994,9 @@ export const useUi = create<UiState>((set) => ({
   fileTreeDialog: null,
   openFileTreeDialog: (projectId) => set({ fileTreeDialog: { projectId } }),
   closeFileTreeDialog: () => set({ fileTreeDialog: null }),
+  sessionHistory: null,
+  openSessionHistory: (termId, projectId) => set({ sessionHistory: { termId, projectId } }),
+  closeSessionHistory: () => set({ sessionHistory: null }),
   translate: null,
   openTranslate: (req) => set({ translate: req }),
   closeTranslate: () => set({ translate: null }),

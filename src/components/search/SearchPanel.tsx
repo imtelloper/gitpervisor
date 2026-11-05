@@ -213,7 +213,7 @@ function Highlighted({ text, query, opts }: { text: string; query: string; opts:
   );
 }
 
-function splitHighlights(
+export function splitHighlights(
   text: string,
   query: string,
   opts: { regex: boolean; caseSensitive: boolean },

@@ -10,6 +10,7 @@ import {
   FolderTree,
   GitBranch,
   History,
+  MessagesSquare,
   Palette,
   Sparkles,
   Tag,
@@ -26,6 +27,7 @@ import { copyText } from "../../lib/clipboard";
 import { relativeTime } from "../../lib/format";
 import { TERM_SCHEMES } from "../../lib/term-color-schemes";
 import { prefetchGitDialog } from "../../queries";
+import { prefetchSessionList } from "../sessions/SessionHistoryDialog";
 import { useOccludesWebview } from "../../stores/occlusion";
 import { usePromptHistory, type PromptEntry } from "../../stores/promptHistory";
 import { useTermThemes } from "../../stores/termThemes";
@@ -412,6 +414,29 @@ export function GitDialogButton({ projectId }: { projectId: string }) {
       className="flex shrink-0 items-center rounded p-0.5 text-fg-dim hover:bg-raised hover:text-fg"
     >
       <GitBranch size={12} />
+    </button>
+  );
+}
+
+/**
+ * Claude Code 세션 기록 대화상자(SessionHistoryDialog, 태스크 77)를 여는 버튼. 범위 "이 프로젝트"와
+ * "이 터미널에서 이어서"가 버튼을 누른 세션을 기준으로 하므로 termId·projectId 를 둘 다 넘긴다.
+ */
+export function SessionHistoryButton({ termId, projectId }: { termId: string; projectId: string }) {
+  const msg = useMessages();
+  const open = useUi((s) => s.openSessionHistory);
+  const isOpen = useUi((s) => s.sessionHistory?.termId === termId);
+  const qc = useQueryClient();
+  return (
+    <button
+      onPointerEnter={() => prefetchSessionList(qc)}
+      onClick={() => open(termId, projectId)}
+      title={msg.sessions.buttonTitle}
+      className={`flex shrink-0 items-center rounded p-0.5 ${
+        isOpen ? "bg-raised text-accent" : "text-fg-dim hover:bg-raised hover:text-fg"
+      }`}
+    >
+      <MessagesSquare size={12} />
     </button>
   );
 }
