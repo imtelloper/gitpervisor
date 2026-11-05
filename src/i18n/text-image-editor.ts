@@ -161,6 +161,7 @@ const ko = {
     roundTripSvg: "SVG → PNG 래스터화되어 저장됩니다",
     roundTripGif: "첫 프레임만 편집·저장됩니다",
     roundTripPng: "PNG로 저장됩니다",
+    roundTripJpg: "JPG로 저장됩니다",
     roundTripTitle: "원본 포맷으로 되돌려 저장할 수 없습니다",
     imageChangedBanner:
       "편집 문서를 저장한 뒤 원본 이미지가 바뀌었습니다 — 크롭과 출력 크기를 초기화했습니다.",
@@ -472,6 +473,7 @@ export const imageEditorText = defineText(ko, {
       roundTripSvg: "Saved as a rasterized PNG (SVG → PNG)",
       roundTripGif: "Only the first frame is edited and saved",
       roundTripPng: "Saved as PNG",
+      roundTripJpg: "Saved as JPG",
       roundTripTitle: "Can't be saved back in the original format",
       imageChangedBanner:
         "The original image changed after the edit document was saved — crop and output size were reset.",

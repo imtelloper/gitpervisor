@@ -92,10 +92,8 @@ const ko = {
     rotateSaveNeedsRotation: "보기를 돌리거나 뒤집은 뒤에 쓸 수 있습니다",
     rotateSaveUnsupported: "이 형식은 같은 형식으로 다시 쓸 수 없습니다 — [편집]에서 돌린 뒤 다른 형식으로 저장하세요",
     rotateSaveConfirmTitle: "회전한 대로 저장",
-    rotateSaveConfirmMessage: (format: string, keepsExif: boolean) =>
-      keepsExif
-        ? `${format} 파일은 다시 압축되어 화질이 조금 떨어집니다. 촬영 정보(EXIF)는 그대로 남깁니다. 원본 파일을 덮어씁니다.`
-        : `${format} 파일은 다시 압축되어 화질이 조금 떨어지고 촬영 정보(EXIF)가 빠집니다. 원본 파일을 덮어씁니다.`,
+    rotateSaveConfirmMessage: (format: string) =>
+      `${format} 파일은 다시 압축되어 화질이 조금 떨어집니다. 촬영 정보(EXIF)는 그대로 남깁니다. 원본 파일을 덮어씁니다.`,
     rotateSaveConfirm: "덮어쓰기",
     rotateSaveDone: (name: string) => `회전한 대로 저장했습니다 — ${name}`,
     rotateSaveConflict: "그 사이 파일이 디스크에서 바뀌어 저장하지 않았습니다 — 다시 읽었으니 확인한 뒤 다시 저장하세요",
@@ -209,10 +207,8 @@ export const folderText = defineText(ko, {
       rotateSaveNeedsRotation: "Rotate or flip the view first",
       rotateSaveUnsupported: "This format can't be written back as-is — rotate it in Edit and save in another format",
       rotateSaveConfirmTitle: "Save as rotated",
-      rotateSaveConfirmMessage: (format, keepsExif) =>
-        keepsExif
-          ? `${format} files are re-compressed, so quality drops slightly. Camera details (EXIF) are kept. The original file is overwritten.`
-          : `${format} files are re-compressed, so quality drops slightly and camera details (EXIF) are removed. The original file is overwritten.`,
+      rotateSaveConfirmMessage: (format) =>
+        `${format} files are re-compressed, so quality drops slightly. Camera details (EXIF) are kept. The original file is overwritten.`,
       rotateSaveConfirm: "Overwrite",
       rotateSaveDone: (name) => `Saved as rotated — ${name}`,
       rotateSaveConflict: "The file changed on disk, so it wasn't saved — it has been reloaded; check it and save again",

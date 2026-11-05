@@ -34,8 +34,9 @@ import { copyFailMessage, copyImage, copyWithToast } from "../../lib/clipboard";
 import { formatBytes } from "../../lib/format";
 import { bytesToBase64, encodeCanvas, type ImgFormat } from "../../lib/image-codec";
 import { errorMessage, ipc, isIpcError, type FavEntry, type FavImageInfo, type OcrResult } from "../../lib/ipc";
-import { jpegExifSegmentFromBase64, withJpegExif } from "../../lib/jpeg-exif";
+import { jpegExifTiffFromBase64, withJpegExif } from "../../lib/jpeg-exif";
 import { isMac, isMod, modLabel } from "../../lib/platform";
+import { webpExifTiffFromBase64, withWebpExif } from "../../lib/webp-exif";
 import { useUi } from "../../stores/ui";
 import { OcrPanel } from "../diff/OcrPanel";
 import { Filmstrip } from "./Filmstrip";
@@ -297,18 +298,20 @@ export function PhotoViewer({
     stopSlides();
     const p = path;
     const shownName = name;
-    /** 지금 보이는 그림의 원본(`fav_read` base64) — JPEG 는 여기서 Exif 를 떠 새 파일에 옮겨 심는다. */
-    const original = src;
+    /** 지금 보이는 그림의 원본(`fav_read` base64) — JPEG·WebP 는 여기서 EXIF 를 떠 새 파일에 옮겨 심는다. */
+    const original = src ? src.slice(src.indexOf(",") + 1) : null;
     const go = () => {
       setRotSaving(true);
       // 원본 해상도로 다시 그려 같은 형식으로 — 손실 형식은 사진 앱과 같은 품질(0.92).
       void Promise.resolve()
-        .then(() => encodeCanvas(shownCanvas(img, rot, flipX, flipY), rotFmt, 92))
-        .then((bytes) =>
-          rotFmt === "jpeg" && original
-            ? withJpegExif(bytes, jpegExifSegmentFromBase64(original.slice(original.indexOf(",") + 1)))
-            : bytes,
-        )
+        .then(async () => {
+          const canvas = shownCanvas(img, rot, flipX, flipY);
+          const bytes = await encodeCanvas(canvas, rotFmt, 92);
+          if (!original) return bytes;
+          if (rotFmt === "jpeg") return withJpegExif(bytes, jpegExifTiffFromBase64(original), canvas.width, canvas.height);
+          if (rotFmt === "webp") return withWebpExif(bytes, webpExifTiffFromBase64(original), canvas.width, canvas.height);
+          return bytes;
+        })
         .then((bytes) => ipc.favWriteImage(p, bytesToBase64(bytes), true, stampRef.current ?? undefined))
         .then(() => {
           // 파일이 이제 그 방향이다 — 보기 회전을 그대로 두면 한 번 더 돌아 보인다.
@@ -331,11 +334,11 @@ export function PhotoViewer({
       go();
       return;
     }
-    // 손실 형식은 다시 압축된다(EXIF 는 JPEG 만 옮겨 심고 WebP 는 빠진다) — 원본을 덮기 전에 묻는다.
+    // 손실 형식은 다시 압축된다(EXIF 는 옮겨 심는다) — 원본을 덮기 전에 묻는다.
     const lb = currentMessages().folder.lightbox;
     useUi.getState().askConfirm({
       title: lb.rotateSaveConfirmTitle,
-      message: lb.rotateSaveConfirmMessage(rotFmt === "jpeg" ? "JPEG" : "WebP", rotFmt === "jpeg"),
+      message: lb.rotateSaveConfirmMessage(rotFmt === "jpeg" ? "JPEG" : "WebP"),
       detail: p,
       confirmLabel: lb.rotateSaveConfirm,
       danger: true,

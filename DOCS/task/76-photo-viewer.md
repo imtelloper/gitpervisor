@@ -151,6 +151,10 @@ A ∥ C 를 먼저, B 를 뒤에(B 는 A 의 폴더 창·뷰어와 C 의 편집�
   X·Esc·닫기 단축키·창 X — 기준은 "연 뒤 문서가 바뀌었나"), 제목 표시줄 "편집됨"도 같은 기준. JPEG 회전 저장·경로 모드 JPEG 저장은
   원본 EXIF(APP1)를 옮겨 심고 Orientation=1·썸네일(IFD1) 연결 끊기(`lib/jpeg-exif.ts`). 이미지 뷰어 OCR 도 EXIF 방향대로 세워
   읽는다(`ocr.rs decode_upright`, 폴더 뷰어와 공용). 타이틀바 미리보기 뷰어가 토스트를 덮던 z 순서 수정.
-- **알려진 한계**: 옆으로 누운 글자는 OCR 이 못 읽는다(엔진 한계 — 사진 앱도 같은 방향으로 보인다). HEIC 편집 저장은 PNG 형제
-  파일(원본 HEIC 는 덮지 않음, EXIF 없음). WebP 회전 저장·프로젝트 모드 편집 저장은 EXIF 를 잃는다. 옮겨 심은 EXIF 의 PixelX/Y
-  Dimension·ColorSpace(Display P3 → sRGB 출력)는 원본 값 그대로다. 미실측: macOS·Linux(전체 화면·OCR 엔진·`ctx.filter`).
+- **후속 2(EXIF 한계 해소)**: 주고받는 단위를 EXIF TIFF 블록으로 통일 — `lib/jpeg-exif.ts`(APP1)·`lib/webp-exif.ts`(신규,
+  단순 형식 → `VP8X`+`EXIF` 청크)·`fav_read` 의 `exifTiff`(변환본일 때 원본 HEIC 의 블록, `exif.rs exif_tiff_block`). 심을 때
+  Orientation=1·IFD1 끊기·PixelX/YDimension=새 크기(SHORT 에 안 들어가면 같은 칸을 LONG 으로)·ColorSpace=1(sRGB). 프로젝트 모드
+  편집 저장도 옮겨 심고, WebP 회전 저장·편집 저장도 EXIF 를 남긴다. 경로 모드에서 원본 형식으로 못 쓰는 사진(HEIC·TIFF 변환본)은
+  기본 저장 형식이 JPEG(형제 `이름.jpg`, 원본은 덮지 않음).
+- **알려진 한계**: 옆으로 누운 글자는 OCR 이 못 읽는다(엔진 한계 — 사진 앱도 같은 방향으로 보인다). 원본 ICC 프로필은 옮기지 않는다
+  (출력은 sRGB — ColorSpace=1 로 맞춤). 미실측: macOS·Linux(전체 화면·OCR 엔진·`ctx.filter`).

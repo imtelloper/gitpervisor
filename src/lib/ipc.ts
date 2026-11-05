@@ -99,6 +99,11 @@ export interface FileBytes {
    * 저장이 CONFLICT 로 거절된다. 메타를 못 읽는 환경에서는 없을 수 있다.
    */
   stamp?: string;
+  /**
+   * `fav_read` 가 변환본(HEIC→JPEG)을 줄 때만: 원본 EXIF 의 TIFF 블록(base64, Rust `exif_tiff`). 변환본엔 메타데이터가
+   * 없어서 편집기가 JPEG 로 저장할 때 이것을 옮겨 심는다(`lib/jpeg-exif.ts`). 원본 그대로 줄 때는 없다.
+   */
+  exifTiff?: string;
 }
 
 /**

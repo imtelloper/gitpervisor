@@ -46,8 +46,27 @@ pub struct ExifSummary {
     pub gps_lon: Option<f64>,
 }
 
+/// 옮겨 심을 TIFF 블록의 상한 — JPEG APP1 세그먼트에 `Exif\0\0` 과 함께 들어가야 한다(길이 칸 16비트: 65535 − 2 − 6).
+pub(crate) const MAX_EXIF_TIFF_BYTES: usize = 65_527;
+
 /// 파일 앞부분 바이트에서 EXIF 를 찾아 요약한다. 못 찾거나 쓸 태그가 하나도 없으면 None.
 pub(crate) fn parse_exif(buf: &[u8]) -> Option<ExifSummary> {
+    tiff_candidates(buf).into_iter().find_map(|i| summary_at(&buf[i..]))
+}
+
+/// 원본의 EXIF TIFF 블록(`II*\0`/`MM\0*` 부터) — 다시 인코딩한 사진에 옮겨 심을 몫(태스크 76 후속: HEIC → JPEG 저장).
+/// 끝은 IFD0·Exif·GPS·Interop IFD 와 그 값들이 끝나는 자리다(HEIC 의 Exif 항목은 길이를 iloc 에만 적어 두어 뒤따르는
+/// 바이트로는 끝을 모른다). 썸네일 IFD1 은 넣지 않는다 — 옮겨 심는 쪽이 링크를 끊는다. 값 하나라도 밖을 가리키거나
+/// 상한을 넘으면 None — 반쯤 잘린 블록을 심으면 읽는 쪽이 남의 바이트를 태그 값으로 읽는다.
+pub(crate) fn exif_tiff_block(buf: &[u8]) -> Option<&[u8]> {
+    tiff_candidates(buf).into_iter().find_map(|i| {
+        let n = tiff_extent(&buf[i..])?;
+        (n <= MAX_EXIF_TIFF_BYTES).then(|| &buf[i..i + n])
+    })
+}
+
+/// TIFF 헤더 모양이 나오는 자리들, 믿을 만한 순서로 `MAX_CANDIDATES` 개까지.
+fn tiff_candidates(buf: &[u8]) -> Vec<usize> {
     let mut cands: Vec<usize> = buf
         .windows(4)
         .enumerate()
@@ -57,7 +76,58 @@ pub(crate) fn parse_exif(buf: &[u8]) -> Option<ExifSummary> {
     // `Exif\0\0` 바로 뒤의 헤더를 먼저 본다 — APP1 과 HEIC 의 Exif 항목이 다 그 모양이고, 압축 데이터 속 우연한
     // 헤더 모양보다 훨씬 믿을 만하다. 정렬이 안정적이라 같은 부류 안에서는 앞쪽이 먼저다(원본 TIFF 는 0번).
     cands.sort_by_key(|&i| !(i >= 6 && &buf[i - 6..i] == b"Exif\0\0"));
-    cands.into_iter().take(MAX_CANDIDATES).find_map(|i| summary_at(&buf[i..]))
+    cands.truncate(MAX_CANDIDATES);
+    cands
+}
+
+/// `d` 가 TIFF 헤더로 시작할 때 블록이 끝나는 자리(배타). 어느 IFD·값이든 `d` 밖으로 나가면 None.
+fn tiff_extent(d: &[u8]) -> Option<usize> {
+    let le = match d.get(..4)? {
+        b"II*\0" => true,
+        b"MM\0*" => false,
+        _ => return None,
+    };
+    let t = Tiff { d, le };
+    let mut end = 8;
+    let mut walk = |off: usize| -> Option<Vec<Entry>> {
+        let ifd = t.ifd(off)?;
+        // 다음 IFD 칸(4바이트)까지 — 옮겨 심는 쪽이 IFD0 의 그 칸을 0 으로 고쳐 쓴다.
+        let ifd_end = off + 2 + ifd.len() * 12 + 4;
+        if ifd_end > d.len() {
+            return None;
+        }
+        end = end.max(ifd_end);
+        for e in &ifd {
+            // 모르는 형식은 아무도 못 읽는다 — 크기를 모르니 끝 계산에서도 뺀다.
+            let Some(unit) = type_unit(e.typ) else { continue };
+            let len = usize::try_from(e.count).ok()?.checked_mul(unit)?;
+            end = end.max(t.value_at(e)?.checked_add(len)?);
+        }
+        Some(ifd)
+    };
+    let ifd0 = walk(usize::try_from(t.u32_at(4)?).ok()?)?;
+    let sub = |ifd: &[Entry], tag| find(ifd, tag).and_then(|e| t.uint(e)).and_then(|o| usize::try_from(o).ok());
+    if let Some(o) = sub(&ifd0, 0x8769) {
+        let exif = walk(o)?;
+        if let Some(o) = sub(&exif, 0xA005) {
+            walk(o)?;
+        }
+    }
+    if let Some(o) = sub(&ifd0, 0x8825) {
+        walk(o)?;
+    }
+    Some(end)
+}
+
+/// TIFF 형식 하나의 바이트 수(1~13). 그 밖은 None.
+fn type_unit(typ: u16) -> Option<usize> {
+    match typ {
+        1 | 2 | 6 | 7 => Some(1),
+        3 | 8 => Some(2),
+        4 | 9 | 11 | 13 => Some(4),
+        5 | 10 | 12 => Some(8),
+        _ => None,
+    }
 }
 
 struct Tiff<'a> {
@@ -101,14 +171,7 @@ impl Tiff<'_> {
 
     /// 값 바이트의 시작 자리 — 4바이트 이하면 항목 안, 넘으면 오프셋이 가리키는 곳. 끝까지 데이터 안이어야 한다.
     fn value_at(&self, e: &Entry) -> Option<usize> {
-        let unit = match e.typ {
-            1 | 2 | 6 | 7 => 1,
-            3 | 8 => 2,
-            4 | 9 => 4,
-            5 | 10 => 8,
-            _ => return None,
-        };
-        let len = usize::try_from(e.count).ok()?.checked_mul(unit)?;
+        let len = usize::try_from(e.count).ok()?.checked_mul(type_unit(e.typ)?)?;
         let off = if len <= 4 { e.at } else { usize::try_from(self.u32_at(e.at)?).ok()? };
         (off.checked_add(len)? <= self.d.len()).then_some(off)
     }
@@ -391,6 +454,39 @@ mod tests {
         assert_eq!(s.orientation, Some(6));
     }
 
+    /// HEIC 처럼 TIFF 블록 뒤에 다른 바이트가 이어져도 블록만 정확히 잘라 낸다. 값 하나라도 밖을 가리키면 통째로 None.
+    #[test]
+    fn exif_tiff_block_cuts_exactly_and_rejects_broken() {
+        for le in [true, false] {
+            let tiff = camera_tiff(le);
+            let mut file = b"\0\0\0\x18ftypheic\0\0\0\0mif1heic\0\0\0\x06Exif\0\0".to_vec();
+            let at = file.len();
+            file.extend(&tiff);
+            file.extend(b"mdat-image-bytes-follow".repeat(50));
+            let block = exif_tiff_block(&file).unwrap_or_else(|| panic!("le={le}: 못 찾았다"));
+            assert_eq!(block, &file[at..at + tiff.len()], "le={le}: 블록 끝 = 마지막 값의 끝");
+            assert_eq!(parse_exif(block).and_then(|s| s.orientation), Some(6), "잘라 낸 블록만으로 읽힌다");
+        }
+
+        // 꼬리가 잘려 마지막 값(GPS 가 아니라 IFD0 의 긴 값)이 밖으로 나간다 → 반쯤 잘린 블록을 내주지 않는다
+        let tiff = camera_tiff(true);
+        assert_eq!(exif_tiff_block(&tiff[..tiff.len() - 1]), None);
+        assert_eq!(exif_tiff_block(b"no exif here"), None);
+
+        // Exif IFD 를 가리키는 값이 밖 → 부분만 옮기지 않는다
+        let mut b = Builder::new(true);
+        let ifd0 = b.ifd(&[b.ascii(0x010F, "Apple"), b.long(0x8769, 0xFFFF_0000)]);
+        b.set_ifd0(ifd0);
+        assert_eq!(exif_tiff_block(&b.buf), None);
+
+        // JPEG APP1 에 못 들어가는 크기는 내주지 않는다
+        let mut b = Builder::new(false);
+        let big = "x".repeat(MAX_EXIF_TIFF_BYTES);
+        let ifd0 = b.ifd(&[b.ascii(0x010E, &big)]);
+        b.set_ifd0(ifd0);
+        assert_eq!(exif_tiff_block(&b.buf), None);
+    }
+
     #[test]
     fn exif_date_normalizes_and_drops_blank() {
         assert_eq!(exif_date("2024:05:01 12:34:56").as_deref(), Some("2024-05-01 12:34:56"));
@@ -418,7 +514,8 @@ mod tests {
                 .take(EXIF_SCAN_BYTES)
                 .read_to_end(&mut head)
                 .unwrap();
-            println!("{name}: {:?}", parse_exif(&head));
+            let block = exif_tiff_block(&head).map(|b| (b.as_ptr() as usize - head.as_ptr() as usize, b.len()));
+            println!("{name}: {:?} · TIFF 블록(자리, 길이) {block:?}", parse_exif(&head));
         }
     }
 }

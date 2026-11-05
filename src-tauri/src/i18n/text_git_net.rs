@@ -190,6 +190,13 @@ pub fn ocr_upscaled_warning() -> &'static str {
     }
 }
 
+pub fn ocr_rotated_warning(degrees: u32) -> String {
+    match lang() {
+        Lang::Ko => format!("글자가 누워 있어 그림을 {degrees}° 돌려 읽음"),
+        Lang::En => format!("Text was sideways; read with the image rotated {degrees}°"),
+    }
+}
+
 pub fn ocr_job_interrupted(err: impl Display) -> String {
     match lang() {
         Lang::Ko => format!("글자 추출 작업이 중단됐습니다: {err}"),

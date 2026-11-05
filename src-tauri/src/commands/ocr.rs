@@ -331,6 +331,70 @@ pub(crate) async fn recognize_two_pass(img: image::RgbaImage) -> Result<OcrResul
     })
 }
 
+/// 이만큼 읽히면 그 방향으로 충분하다 — 돌려 보지 않는다(정상 사진·스크린샷은 여기서 끝나 비용이 늘지 않는다).
+const OCR_ENOUGH_CHARS: usize = 4;
+
+/// 읽힌 양 — 글자·숫자만 센다. 누운 글자를 억지로 읽으면 기호·한두 글자 부스러기가 나와 줄 수로는 못 가른다.
+fn ocr_score(r: &OcrResult) -> usize {
+    r.text.chars().filter(|c| c.is_alphanumeric()).count()
+}
+
+/// 돌린 그림(시계 방향 `deg`°) 위의 상자를 원래 그림(`w`×`h`) 좌표로 되돌린다. 화면은 원래 그림을 그리므로 상자도
+/// 그 기준이어야 한다 — 누운 글줄은 세로로 긴 상자가 된다.
+fn unrotate_box(b: OcrBox, deg: u32, w: f32, h: f32) -> OcrBox {
+    match deg {
+        // rotate90: 원래 (x, y) → 돌린 (h − y, x)
+        90 => OcrBox { x: b.y, y: h - b.x - b.w, w: b.h, h: b.w },
+        180 => OcrBox { x: w - b.x - b.w, y: h - b.y - b.h, w: b.w, h: b.h },
+        // rotate270: 원래 (x, y) → 돌린 (y, w − x)
+        270 => OcrBox { x: w - b.y - b.h, y: b.x, w: b.h, h: b.w },
+        _ => b,
+    }
+}
+
+/// `recognize_two_pass` + 방향 찾기 — 원래 방향에서 거의 못 읽으면 90°·270°·180°로 돌려 다시 읽고 가장 많이 읽힌 쪽을
+/// 고른다. 책상 위를 내려찍은 사진은 폰이 기록한 방향이 제각각이라 바로 세워도 글자가 누워 있다(2026-11-05 실사용:
+/// iPhone 사진 0줄). 줄 순서는 돌린 그림의 읽기 순서 그대로 두고 상자만 되돌린다 — 원래 좌표로 다시 정렬하면 누운 글의
+/// 줄 순서가 뒤섞인다.
+pub(crate) async fn recognize_any_orientation(img: image::RgbaImage) -> Result<OcrResult, IpcError> {
+    let src = std::sync::Arc::new(img);
+    let base = recognize_two_pass((*src).clone()).await?;
+    if ocr_score(&base) >= OCR_ENOUGH_CHARS {
+        return Ok(base);
+    }
+    let (w, h) = (src.width() as f32, src.height() as f32);
+    let mut best: Option<(u32, OcrResult)> = None;
+    for deg in [90u32, 270, 180] {
+        let s = src.clone();
+        let turned = tokio::task::spawn_blocking(move || match deg {
+            90 => image::imageops::rotate90(&*s),
+            270 => image::imageops::rotate270(&*s),
+            _ => image::imageops::rotate180(&*s),
+        })
+        .await
+        .map_err(join_err)?;
+        let r = recognize_two_pass(turned).await?;
+        let score = ocr_score(&r);
+        let better = best.as_ref().map_or(score > ocr_score(&base), |(_, b)| score > ocr_score(b));
+        if better {
+            best = Some((deg, r));
+        }
+        // 일찍 멈추지 않는다 — 틀린 방향도 엉터리 글자를 넉넉히 내놓아(IMG_1475 90°: "eö10)l 비 öPelhd…" 20자) 첫
+        // 그럴듯한 방향에서 멈추면 그것을 고른다. 셋을 다 비교해야 바른 방향(270°, 28자)이 이긴다. 대가는 누운 사진에서만
+        // 드는 ~11초다(바로 선 사진은 위에서 끝난다).
+    }
+    Ok(match best {
+        Some((deg, mut r)) => {
+            for line in &mut r.lines {
+                line.r#box = unrotate_box(line.r#box, deg, w, h);
+            }
+            r.warnings.push(text_git_net::ocr_rotated_warning(deg));
+            r
+        }
+        None => base,
+    })
+}
+
 // ════════════════════════════ Windows — Windows.Media.Ocr ════════════════════════════
 
 #[cfg(windows)]
@@ -677,7 +741,7 @@ pub async fn ocr_image(
     let img = tokio::task::spawn_blocking(move || decode_upright(&bytes))
         .await
         .map_err(join_err)??;
-    recognize_two_pass(img).await
+    recognize_any_orientation(img).await
 }
 
 #[cfg(test)]
@@ -715,6 +779,45 @@ mod tests {
         assert_eq!(json["lines"][0]["box"]["x"], 1.0);
         assert_eq!(json["lines"][0]["box"]["h"], 20.0);
         assert!(json["warnings"][0].as_str().is_some_and(|w| w.contains("2배")));
+    }
+
+    /// 돌린 그림에서 찾은 상자를 되돌리면 원래 그림의 그 자리다 — 실제 `imageops::rotate*` 결과로 확인한다(공식만 믿지 않게).
+    #[test]
+    fn unrotate_box_matches_imageops_rotations() {
+        let (w, h) = (7u32, 4u32);
+        let mut img = image::RgbaImage::new(w, h);
+        // 2×1 표식 — (2,1)~(3,1)
+        img.put_pixel(2, 1, image::Rgba([255, 0, 0, 255]));
+        img.put_pixel(3, 1, image::Rgba([255, 0, 0, 255]));
+        let mark = |im: &image::RgbaImage| {
+            let pts: Vec<(u32, u32)> = im.enumerate_pixels().filter(|p| p.2[0] == 255).map(|p| (p.0, p.1)).collect();
+            let (x0, y0) = (pts.iter().map(|p| p.0).min().unwrap(), pts.iter().map(|p| p.1).min().unwrap());
+            let (x1, y1) = (pts.iter().map(|p| p.0).max().unwrap(), pts.iter().map(|p| p.1).max().unwrap());
+            OcrBox { x: x0 as f32, y: y0 as f32, w: (x1 - x0 + 1) as f32, h: (y1 - y0 + 1) as f32 }
+        };
+        let want = mark(&img);
+        for deg in [90u32, 180, 270] {
+            let turned = match deg {
+                90 => image::imageops::rotate90(&img),
+                180 => image::imageops::rotate180(&img),
+                _ => image::imageops::rotate270(&img),
+            };
+            assert_eq!(unrotate_box(mark(&turned), deg, w as f32, h as f32), want, "{deg}°");
+        }
+    }
+
+    #[test]
+    fn ocr_score_counts_letters_and_digits_only() {
+        let r = |t: &str| OcrResult {
+            engine: OcrEngineKind::WindowsOcr,
+            languages: vec![],
+            lines: vec![],
+            text: t.into(),
+            warnings: vec![],
+        };
+        assert_eq!(ocr_score(&r("— · /\n|")), 0, "누운 글자를 억지로 읽은 기호 부스러기는 0");
+        assert_eq!(ocr_score(&r("Made in Korea 10:37")), 15);
+        assert_eq!(ocr_score(&r("한글 12")), 4);
     }
 
     #[test]

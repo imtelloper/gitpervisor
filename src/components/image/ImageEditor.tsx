@@ -170,7 +170,8 @@ import { currentMessages, useMessages } from "../../i18n/ui-language";
 import { copyFailMessage, copyImage, copyText } from "../../lib/clipboard";
 import { IS_DOC_WINDOW } from "../../lib/floating";
 import { errorMessage, ipc, isIpcError } from "../../lib/ipc";
-import { jpegExifSegmentFromBase64, withJpegExif } from "../../lib/jpeg-exif";
+import { jpegExifTiffFromBase64, withJpegExif } from "../../lib/jpeg-exif";
+import { webpExifTiffFromBase64, withWebpExif } from "../../lib/webp-exif";
 import {
   clampScale,
   IDENTITY_VIEW,
@@ -284,15 +285,19 @@ const COMPONENT_THUMB_MAX = 96;
 /** 빈 문서 — 경계(normalizeDoc)가 만든다. 필드를 두 곳에서 셀 이유가 없다(37 §4). */
 const EMPTY_DOC: EditorDoc = normalizeDoc({});
 
-/** 확장자 → 비-라운드트립 경고 문구(설계 D3, §6.3). 라운드트립 가능한 포맷이면 null. */
-function roundTripWarning(msg: Messages, path: string): string | null {
+/**
+ * 확장자 → 비-라운드트립 경고 문구(설계 D3, §6.3). 라운드트립 가능한 포맷이면 null.
+ * `fallback` 은 원본 형식으로 못 쓸 때 고른 저장 형식 — 읽기 전(null)에는 아직 모르니 말하지 않는다.
+ */
+function roundTripWarning(msg: Messages, path: string, fallback: "png" | "jpeg" | null): string | null {
   const t = msg.imageEditor.editor;
   const base = path.split("/").pop() ?? path;
   const dot = base.lastIndexOf(".");
   const ext = dot > 0 ? base.slice(dot + 1).toLowerCase() : "";
   if (ext === "svg") return t.roundTripSvg;
   if (ext === "gif") return t.roundTripGif;
-  return formatOfPath(path) === null ? t.roundTripPng : null;
+  if (formatOfPath(path) !== null || !fallback) return null;
+  return fallback === "jpeg" ? t.roundTripJpg : t.roundTripPng;
 }
 
 // ── 액션 맵(45 §4) ──────────────────────────────────────────────────────────
@@ -656,8 +661,11 @@ export default function ImageEditor() {
   const [loadErr, setLoadErr] = useState<string | null>(null);
   /** 읽은 시점의 원본 파일 정체 — 제자리 저장에서만 되돌려 준다(§ 무성 덮어쓰기 방지). */
   const stampRef = useRef<string | null>(null);
-  /** 경로 모드 원본의 Exif(방향 1로 고친 것) — JPEG 로 저장할 때 옮겨 심는다. 캔버스 인코딩은 메타데이터를 전부 버린다. */
+  /** 원본의 EXIF TIFF 블록(JPEG APP1·WebP EXIF 청크·HEIC 는 `fav_read` 의 `exifTiff`) — JPEG·WebP 로 저장할 때 옮겨
+   *  심는다. 캔버스 인코딩은 메타데이터를 전부 버린다. */
   const exifRef = useRef<Uint8Array | null>(null);
+  /** 원본 형식으로 다시 쓸 수 없을 때의 저장 형식 — 읽은 뒤에 정해진다(경고 문구가 따라간다). */
+  const [fallbackFormat, setFallbackFormat] = useState<"png" | "jpeg" | null>(null);
   /**
    * 이미지를 연 직후의 문서. 경로 모드는 사이드카가 없어 닫으면 편집이 그대로 사라지므로, 지금 문서가 이것과
    * **다른 참조**면 닫기 전에 묻는다 — 되돌리기는 스냅샷 참조를 돌려주므로 끝까지 되돌리면 다시 같아진다.
@@ -1109,10 +1117,11 @@ export default function ImageEditor() {
     let alive = true;
     setImg(null);
     setLoadErr(null);
+    setFallbackFormat(null);
     exifRef.current = null;
     void (async () => {
       try {
-        const { mime, base64, stamp } = await read();
+        const { mime, base64, stamp, exifTiff } = await read();
         const image = await loadImage(`data:${mime};base64,${base64}`);
         if (!image.naturalWidth || !image.naturalHeight) {
           throw new Error(currentMessages().imageEditor.loadError.unknownSize);
@@ -1139,10 +1148,16 @@ export default function ImageEditor() {
           // 이 스탬프가 "내가 편집을 시작한 그 파일"의 정체다. 저장할 때 되돌려 주면
           // 그 사이 남이 바꿨는지 Rust 가 판정한다(무성 덮어쓰기 방지).
           stampRef.current = stamp ?? null;
-          // HEIC 등은 fav_read 가 준 변환본(ffmpeg JPEG — Exif 없음)이라 null 이 된다.
-          exifRef.current = absMode ? jpegExifSegmentFromBase64(base64) : null;
+          // HEIC 등은 fav_read 가 준 변환본(ffmpeg JPEG — EXIF 없음)이라 원본의 블록을 따로 받는다.
+          exifRef.current = exifTiff
+            ? Uint8Array.from(atob(exifTiff), (c) => c.charCodeAt(0))
+            : jpegExifTiffFromBase64(base64) ?? webpExifTiffFromBase64(base64);
+          // 경로 모드에서 JPEG 로 받은 원본 형식 밖 파일(HEIC·TIFF 변환본·jfif)은 사진이다 — PNG 로 쓰면 몇 배로 커진다.
+          // 원본(HEIC)은 같은 형식 인코더가 없어 덮지 않고 형제 `이름.jpg` 가 된다(saveInPlace 의 형식 비교).
+          const fallback = absMode && mime === "image/jpeg" ? "jpeg" : "png";
+          setFallbackFormat(fallback);
           setImg(image);
-          setFormat(formatOfPath(path) ?? "png");
+          setFormat(formatOfPath(path) ?? fallback);
         }
       } catch (e) {
         if (alive) setLoadErr(errorMessage(e));
@@ -1751,10 +1766,15 @@ export default function ImageEditor() {
     // renderOutput()은 동기지만 encodeCanvas는 avif에서 wasm을 동적 로드하므로 프라미스로 처리.
     // 에셋 디코드를 먼저 끝낸다 — 안 그러면 회색 자리가 저장 파일에 그대로 굳는다(39 §3.6).
     void ensureAssets(docRef.current)
-      .then(() => encodeCanvas(renderOutput(), format, quality))
-      .then((encoded) => {
-        // 경로 모드 JPEG 는 원본 촬영 정보를 옮겨 심는다(제자리·다른 이름 모두 — 둘 다 그 사진이다).
-        const bytes = absMode && format === "jpeg" ? withJpegExif(encoded, exifRef.current) : encoded;
+      .then(async () => {
+        const out = renderOutput();
+        const encoded = await encodeCanvas(out, format, quality);
+        // 원본 촬영 정보를 옮겨 심는다(제자리·다른 이름 모두 — 둘 다 그 사진이다). 크기·방향은 새 그림 것으로 고친다.
+        if (format === "jpeg") return withJpegExif(encoded, exifRef.current, out.width, out.height);
+        if (format === "webp") return withWebpExif(encoded, exifRef.current, out.width, out.height);
+        return encoded;
+      })
+      .then((bytes) => {
         const base64 = bytesToBase64(bytes);
         saver.mutate(
           { relPath, base64, overwrite, expectedStamp: stamp },
@@ -3539,7 +3559,7 @@ export default function ImageEditor() {
 
   if (!path) return null;
 
-  const warn = roundTripWarning(msg, path);
+  const warn = roundTripWarning(msg, path, fallbackFormat);
   const canUndo = histRef.current.canUndo;
   const canRedo = histRef.current.canRedo;
   void histVer; // 히스토리 깊이 변화로 리렌더되게 하는 의존(값 자체는 쓰지 않는다)

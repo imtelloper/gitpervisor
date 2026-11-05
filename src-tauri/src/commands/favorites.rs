@@ -520,6 +520,19 @@ pub struct FavBytes {
     /// **원본 파일**의 정체(`diff::stamp_of` — `read_file_base64` 와 같은 값). 변환본(HEIC→JPEG)이어도 원본 것이다 —
     /// 편집기·"회전한 대로 저장"이 `fav_write_image` 의 `expected_stamp` 로 되돌려 준다(태스크 76 D10).
     pub stamp: Option<String>,
+    /// 변환본(HEIC→JPEG)일 때만: 원본 EXIF 의 TIFF 블록(base64, `exif::exif_tiff_block`). ffmpeg JPEG 에는 메타데이터가
+    /// 없어서, 편집기가 JPEG 로 저장할 때 이것을 APP1 로 옮겨 심는다. 원본 그대로 보낼 때는 프론트가 원본 바이트에서 직접 뜬다.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exif_tiff: Option<String>,
+}
+
+/// 원본 앞부분의 EXIF TIFF 블록(base64). 못 읽으면 None — 메타데이터 때문에 사진 열기를 실패시키지 않는다
+/// (같은 파일을 ffmpeg 가 방금 읽었으니 읽기 오류는 여기까지 거의 안 온다).
+fn exif_tiff_b64(file: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut head = Vec::new();
+    File::open(file).and_then(|f| f.take(super::exif::EXIF_SCAN_BYTES).read_to_end(&mut head)).ok()?;
+    super::exif::exif_tiff_block(&head).map(|b| B64.encode(b))
 }
 
 /// 웹뷰가 못 그리는 형식을 뷰어용으로 바꿀 때의 긴 변·mjpeg 품질(2 = 좋은 쪽). 글자 인식도 **같은 그림**을 읽어야
@@ -542,10 +555,12 @@ pub async fn fav_read(app: AppHandle, state: State<'_, AppState>, path: String) 
             .map_err(|e| IpcError::new(ErrorCode::NotFound, text_files::could_not_read_file(e)))?;
         let bin = super::video::find_ffmpeg(&app, state.inner())?;
         let jpg = super::still_image::still_to_jpeg(&bin, &file, LIGHTBOX_MAX_EDGE, LIGHTBOX_JPEG_Q).await?;
+        let exif_file = file.clone();
         return Ok(FavBytes {
             mime: "image/jpeg".into(),
             base64: B64.encode(&jpg),
             stamp: super::diff::stamp_of(&meta),
+            exif_tiff: run_blocking(move || exif_tiff_b64(&exif_file)).await?,
         });
     }
     run_blocking(move || {
@@ -560,6 +575,7 @@ pub async fn fav_read(app: AppHandle, state: State<'_, AppState>, path: String) 
             mime: mime_of(&file).to_string(),
             base64: B64.encode(&bytes),
             stamp: super::diff::stamp_of(&meta),
+            exif_tiff: None,
         })
     })
     .await?
@@ -708,7 +724,7 @@ pub async fn fav_ocr_image(
     let img = tokio::task::spawn_blocking(move || super::ocr::decode_upright(&bytes))
         .await
         .map_err(super::ocr::join_err)??;
-    super::ocr::recognize_two_pass(img).await
+    super::ocr::recognize_any_orientation(img).await
 }
 
 // ---- 사진 쓰기: 편집기 경로 모드 · 회전한 대로 저장 (태스크 76 D10·D11) ----------------------
