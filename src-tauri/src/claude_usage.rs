@@ -69,10 +69,13 @@ pub async fn claude_usage() -> Option<ClaudeUsage> {
 
 /// 문서화되지 않은 엔드포인트다 — 바뀌면 조회가 실패하고 다리 파일로 떨어질 뿐 앱은 멀쩡하다.
 const USAGE_API: &str = "https://api.anthropic.com/api/oauth/usage";
-/// 사용률은 대화 한 번에 1~2%씩 움직인다 — 1분이면 충분하고, 이 엔드포인트를 자주 치면 429 가 난다.
-const API_TTL: Duration = Duration::from_secs(60);
-/// 실패는 곧 다시 묻는다 — 앱을 켠 직후 첫 요청이 연결 오류로 떨어지는 일이 실제로 있었다(2026-11-04, 바로 다음 요청은 성공).
+/// 사용률은 대화 한 번에 1~2%씩 움직인다 — 3분이면 충분하다. 1분이던 때 429 가 났다(2026-11-05): 같은 계정 토큰으로
+/// 설치본·dev 앱·e2e 앱이 **프로세스마다** 따로 묻는다. 리셋까지 남은 시간은 프론트가 30초마다 줄여 그린다.
+const API_TTL: Duration = Duration::from_secs(180);
+/// 연결 오류는 곧 다시 묻는다 — 앱을 켠 직후 첫 요청이 연결 오류로 떨어지는 일이 실제로 있었다(2026-11-04, 바로 다음 요청은 성공).
 const API_RETRY: Duration = Duration::from_secs(15);
+/// 429 인데 `Retry-After` 가 없으면 이만큼 쉰다 — 15초 재시도로 두드리면 제한이 풀리지 않는다.
+const API_BACKOFF_429: Duration = Duration::from_secs(600);
 /// 응답 가운데 보이는 창 — 나머지 키(내부 코드명·크레딧)는 버린다.
 const API_WINDOWS: &[&str] = &["five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"];
 
@@ -97,15 +100,16 @@ async fn api_usage() -> Option<ClaudeUsage> {
     }
     let fetched = fetch_api_usage().await;
     let mut c = API_CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    c.next = Some(Instant::now() + if fetched.is_ok() { API_TTL } else { API_RETRY });
     match fetched {
         Ok(u) => {
+            c.next = Some(Instant::now() + API_TTL);
             c.last = Some(u);
             c.last_err = None;
         }
-        Err(e) => {
+        Err((e, wait)) => {
+            c.next = Some(Instant::now() + wait);
             if c.last_err.as_deref() != Some(e.as_str()) {
-                log::info!("[claude-usage] 사용량 API 조회 실패 — {e}");
+                log::info!("[claude-usage] 사용량 API 조회 실패 — {e} (다음 조회 {}초 뒤)", wait.as_secs());
                 c.last_err = Some(e);
             }
         }
@@ -113,9 +117,18 @@ async fn api_usage() -> Option<ClaudeUsage> {
     c.last.clone()
 }
 
-async fn fetch_api_usage() -> Result<ClaudeUsage, String> {
+/// 429 의 쉬는 시간 — `Retry-After`(초)를 따르되 1~30분으로 자른다(0·터무니없는 값에 두드리거나 영영 멈추지 않게).
+fn backoff_429(retry_after: Option<&str>) -> Duration {
+    retry_after
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map_or(API_BACKOFF_429, |s| Duration::from_secs(s.clamp(60, 1800)))
+}
+
+/// 실패는 (사유, 다음 조회까지 쉴 시간).
+async fn fetch_api_usage() -> Result<ClaudeUsage, (String, Duration)> {
+    let retry = |e: String| (e, API_RETRY);
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    let token = oauth_token().await?;
+    let token = oauth_token().await.map_err(retry)?;
     let client = CLIENT.get_or_init(|| {
         reqwest::Client::builder()
             .timeout(Duration::from_secs(8))
@@ -129,16 +142,20 @@ async fn fetch_api_usage() -> Result<ClaudeUsage, String> {
         .header("anthropic-beta", "oauth-2025-04-20")
         .send()
         .await
-        .map_err(|e| format!("request: {e}"))?;
+        .map_err(|e| retry(format!("request: {e}")))?;
     let status = resp.status();
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        let after = resp.headers().get(reqwest::header::RETRY_AFTER).and_then(|v| v.to_str().ok());
+        return Err((format!("HTTP {status}"), backoff_429(after)));
+    }
     if status == reqwest::StatusCode::UNAUTHORIZED {
         // Claude Code 가 토큰을 새로 받았을 수 있다 — 다음 조회 때 다시 읽는다.
         *TOKEN.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
     if !status.is_success() {
-        return Err(format!("HTTP {status}"));
+        return Err(retry(format!("HTTP {status}")));
     }
-    let body: serde_json::Value = resp.json().await.map_err(|e| format!("body: {e}"))?;
+    let body: serde_json::Value = resp.json().await.map_err(|e| retry(format!("body: {e}")))?;
     Ok(parse_api_usage(&body, chrono::Utc::now().timestamp()))
 }
 
@@ -420,6 +437,16 @@ mod api_tests {
             ]
         );
         assert_eq!(u.updated_at, 42);
+    }
+
+    #[test]
+    fn rate_limit_backs_off_instead_of_hammering() {
+        assert_eq!(backoff_429(None), API_BACKOFF_429);
+        assert_eq!(backoff_429(Some("120")), Duration::from_secs(120));
+        assert_eq!(backoff_429(Some("0")), Duration::from_secs(60), "0 이면 바로 다시 두드린다");
+        assert_eq!(backoff_429(Some("99999")), Duration::from_secs(1800), "영영 멈추지 않게");
+        assert_eq!(backoff_429(Some("Wed, 21 Oct 2026 07:28:00 GMT")), API_BACKOFF_429, "날짜 형식은 기본값");
+        assert!(backoff_429(None) > API_RETRY && API_TTL >= Duration::from_secs(180));
     }
 
     #[test]
