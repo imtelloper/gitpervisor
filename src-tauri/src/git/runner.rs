@@ -77,8 +77,18 @@ fn find_git() -> Option<PathBuf> {
     .find(|p| p.is_file())
 }
 
+/// unstage·discard가 `git restore`를 쓴다 — 그보다 낮은 git은 "알 수 없는 명령"으로 실패한다.
+#[cfg(not(windows))]
+const MIN_GIT_VERSION: (u32, u32) = (2, 23);
+
+/// PATH 첫 git이 아니라 **충분히 새 git**을 고른다. macOS에 옛 git-osx-installer(2018, 2.18)가
+/// `/usr/local/bin`에 남아 있으면 터미널에서 띄운 앱(dev·테스트)이 그걸 집어 스테이지 해제·변경 취소가
+/// 깨졌다(2026-11-05). Dock에서 띄우면 PATH가 짧아 `/usr/bin/git`(Apple 2.50)이 잡혀 멀쩡하다.
+/// 첫 후보가 충분히 새면 다른 후보는 건드리지 않는다 — CLT가 없는 Mac에서 `/usr/bin/git` shim을 돌리면
+/// 설치 대화상자가 뜬다.
 #[cfg(not(windows))]
 fn find_git() -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
     if let Ok(out) = std::process::Command::new("sh")
         .args(["-c", "command -v git"])
         .output()
@@ -86,23 +96,52 @@ fn find_git() -> Option<PathBuf> {
         if out.status.success() {
             let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
             if !line.is_empty() {
-                let p = PathBuf::from(line);
-                if p.is_file() {
-                    return Some(p);
-                }
+                candidates.push(PathBuf::from(line));
             }
         }
     }
     // GUI에서 launchd로 실행될 때 PATH가 빈약해 `command -v`가 실패하는 케이스 대비
-    [
+    for p in [
         "/opt/homebrew/bin/git",
         "/usr/local/bin/git",
         "/usr/bin/git",
         "/usr/local/git/current/bin/git",
-    ]
-    .iter()
-    .map(PathBuf::from)
-    .find(|p| p.is_file())
+    ] {
+        candidates.push(PathBuf::from(p));
+    }
+    candidates.retain(|p| p.is_file());
+    candidates.dedup();
+    pick_git(&candidates, git_version_of)
+}
+
+#[cfg(not(windows))]
+fn git_version_of(path: &Path) -> Option<(u32, u32)> {
+    let out = std::process::Command::new(path).arg("--version").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    parse_git_version(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// 후보 순서대로 버전을 물어 첫 번째로 `MIN_GIT_VERSION` 이상인 것을 쓴다. 모두 낮거나 버전을 못 읽으면
+/// 종전처럼 첫 후보 — 없는 것보다는 낫고, 설정의 git 경로로 덮을 수 있다.
+#[cfg(not(windows))]
+fn pick_git(candidates: &[PathBuf], version_of: impl Fn(&Path) -> Option<(u32, u32)>) -> Option<PathBuf> {
+    candidates
+        .iter()
+        .find(|p| version_of(p).is_some_and(|v| v >= MIN_GIT_VERSION))
+        .or_else(|| candidates.first())
+        .cloned()
+}
+
+/// `git version 2.50.1 (Apple Git-155)` → (2, 50)
+#[cfg(not(windows))]
+fn parse_git_version(text: &str) -> Option<(u32, u32)> {
+    let ver = text.trim().strip_prefix("git version ")?;
+    let mut parts = ver.split(|c: char| !c.is_ascii_digit());
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    Some((major, minor))
 }
 
 /// 모든 git 실행의 단일 관문. 인자는 배열로만 받는다 — 셸 문자열 조합 금지.
@@ -352,5 +391,37 @@ fn kill_group(pid: Option<u32>) {
                 libc::killpg(pid as i32, libc::SIGKILL);
             }
         }
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_git_version_reads_major_minor() {
+        assert_eq!(parse_git_version("git version 2.50.1 (Apple Git-155)\n"), Some((2, 50)));
+        assert_eq!(parse_git_version("git version 2.18.0"), Some((2, 18)));
+        assert_eq!(parse_git_version("git version 2.45.2.windows.1"), Some((2, 45)));
+        assert_eq!(parse_git_version("xcrun: error: invalid active developer path"), None);
+    }
+
+    #[test]
+    fn pick_git_skips_too_old_and_falls_back_to_first() {
+        let old = PathBuf::from("/usr/local/bin/git");
+        let new = PathBuf::from("/usr/bin/git");
+        let version = |p: &Path| if p == old.as_path() { Some((2, 18)) } else { Some((2, 50)) };
+        assert_eq!(pick_git(&[old.clone(), new.clone()], version), Some(new.clone()));
+        // 버전을 묻는 것은 첫 충분한 후보에서 멈춘다 — 뒤 후보(CLT 없는 /usr/bin/git shim)를 깨우지 않는다.
+        let asked = std::cell::RefCell::new(Vec::new());
+        let counting = |p: &Path| {
+            asked.borrow_mut().push(p.to_path_buf());
+            Some((2, 50))
+        };
+        assert_eq!(pick_git(&[new.clone(), old.clone()], counting), Some(new.clone()));
+        assert_eq!(asked.borrow().len(), 1);
+        // 모두 낮거나 버전을 못 읽으면 종전처럼 첫 후보.
+        assert_eq!(pick_git(&[old.clone(), new.clone()], |_| None), Some(old.clone()));
+        assert_eq!(pick_git(&[], |_| Some((2, 50))), None);
     }
 }

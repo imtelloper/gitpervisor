@@ -1132,7 +1132,9 @@ mod tests {
         assert!(webview_shows(&png) && !needs_ffmpeg(&png), "PNG 는 종전 길(image 크레이트·원본)");
         let tif = dir.join("a.tif");
         std::fs::write(&tif, b"II*\0\x08\0\0\0").unwrap();
-        assert!(!webview_shows(&tif) && needs_ffmpeg(&tif), "이 빌드엔 TIFF 디코더가 없다 → ffmpeg");
+        // macOS 는 arboard(core-graphics)가 클립보드 TIFF 때문에 image 의 tiff 피처를 켠다 — 그 빌드는 썸네일을 직접 만든다.
+        assert!(!webview_shows(&tif), "웹뷰는 TIFF 를 공통으로 못 그린다고 본다 → 라이트박스는 ffmpeg");
+        assert_eq!(needs_ffmpeg(&tif), !image::ImageFormat::Tiff.reading_enabled(), "TIFF 디코더가 없는 빌드만 ffmpeg");
         let svg = dir.join("a.svg");
         std::fs::write(&svg, b"<svg xmlns='http://www.w3.org/2000/svg'/>").unwrap();
         assert!(webview_shows(&svg) && !needs_ffmpeg(&svg), "svg 는 ffmpeg 도 못 그린다 — 띄우지 않는다");
