@@ -161,6 +161,12 @@ const ko = {
     unzoomCellTitle: "원래 크기로 — 그리드로 돌아갑니다",
     zoomCellTitle: "확대 — 이 터미널만 화면 가득 봅니다",
     zoomedPill: "확대 보기 중 · 눌러서 축소",
+    zoomWidthLabel: { third: "1/3", half: "1/2", full: "전체" },
+    zoomWidthTitle: {
+      third: "화면 1/3 폭으로 확대 — 세로는 꽉 차게, 나머지 칸은 그대로",
+      half: "화면 절반 폭으로 확대 — 세로는 꽉 차게, 나머지 칸은 그대로",
+      full: "화면 전체로 확대",
+    },
     closeTerminalCellTitle: "터미널 닫기 (프로세스 종료)",
   },
 };
@@ -320,6 +326,12 @@ export const appText = defineText(ko, {
       unzoomCellTitle: "Original size — back to the grid",
       zoomCellTitle: "Zoom — fill the screen with this terminal",
       zoomedPill: "Zoomed · click to restore",
+      zoomWidthLabel: { third: "1/3", half: "1/2", full: "Full" },
+      zoomWidthTitle: {
+        third: "Zoom to 1/3 width — full height, other cells stay visible",
+        half: "Zoom to half width — full height, other cells stay visible",
+        full: "Zoom to fill the screen",
+      },
       closeTerminalCellTitle: "Close terminal (terminates process)",
     },
   },

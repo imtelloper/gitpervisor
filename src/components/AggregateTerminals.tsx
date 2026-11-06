@@ -171,6 +171,20 @@ const MOVE_THRESHOLD = 4;
 const HIDDEN_KEY = "gp:aggregate-hidden";
 const ZOOM_KEY = AGGREGATE_ZOOM_KEY;
 
+// 확대 폭 — 세로는 늘 꽉 차고 폭만 고른다. 넓은 화면에서 "전체"면 Claude TUI 줄이 짧아 오른쪽이 텅 빈다
+// (2026-11-06 사용자 지적). 1/3·1/2 는 다른 칸을 가리지 않고 남겨 둔다.
+type ZoomWidth = "third" | "half" | "full";
+const ZOOM_WIDTHS: { width: ZoomWidth; frac: number }[] = [
+  { width: "third", frac: 1 / 3 },
+  { width: "half", frac: 1 / 2 },
+  { width: "full", frac: 1 },
+];
+const ZOOM_WIDTH_KEY = "gp:aggregate-zoom-width";
+function readZoomWidth(): ZoomWidth {
+  const v = localStorage.getItem(ZOOM_WIDTH_KEY);
+  return v === "third" || v === "half" ? v : "full";
+}
+
 /** 마운트 때 한 번 읽는다. hidden=null 은 "기록 없음" — 그때만 Claude 활동 기준으로 고른다. */
 function readRestoredCells(): { hidden: ReadonlySet<string> | null; zoom: string | null } {
   try {
@@ -325,6 +339,7 @@ export function AggregateTerminals() {
   const [zoomed, setZoomed] = useState<string | null>(() =>
     restored.zoom && selected.has(restored.zoom) ? restored.zoom : null,
   );
+  const [zoomWidth, setZoomWidth] = useState<ZoomWidth>(readZoomWidth);
   const initedRef = useRef(all.length > 0);
   useEffect(() => {
     if (initedRef.current || all.length === 0) return;
@@ -368,10 +383,11 @@ export function AggregateTerminals() {
       localStorage.setItem(HIDDEN_KEY, JSON.stringify(all.filter((c) => !selected.has(c.id)).map((c) => c.id)));
       if (zoomed) localStorage.setItem(ZOOM_KEY, zoomed);
       else localStorage.removeItem(ZOOM_KEY);
+      localStorage.setItem(ZOOM_WIDTH_KEY, zoomWidth);
     } catch (e) {
       console.warn("[aggregate] 숨김·확대 저장 실패 — 이번 실행 동안만 유지된다:", e);
     }
-  }, [all, selected, zoomed]);
+  }, [all, selected, zoomed, zoomWidth]);
 
   // 사라진 터미널/브라우저는 선택에서 제거
   useEffect(() => {
@@ -470,7 +486,12 @@ export function AggregateTerminals() {
   const { hold: holdLayoutOpen, schedule: scheduleLayoutClose } = useDelayedClose(() =>
     setLayoutMenu(null),
   );
-  useOccludesWebview(!!chipMenu || !!groupMenu || !!layoutMenu);
+  // 칸 헤더 확대 아이콘 호버 = 폭 고르기 팝오버(자동배치 팝오버와 같은 지연 닫기).
+  const [zoomMenu, setZoomMenu] = useState<{ id: string; right: number; top: number } | null>(null);
+  const { hold: holdZoomMenu, schedule: scheduleZoomMenuClose } = useDelayedClose(() =>
+    setZoomMenu(null),
+  );
+  useOccludesWebview(!!chipMenu || !!groupMenu || !!layoutMenu || !!zoomMenu);
 
   const ordered = useMemo(() => applyCellOrder(all, aggregateOrder), [all, aggregateOrder]);
   const shown = ordered.filter((t) => selected.has(t.id));
@@ -896,20 +917,23 @@ export function AggregateTerminals() {
                 const leftFrac =
                   cellFr[r].slice(0, c).reduce((a, b) => a + b, 0) / sumC;
                 const isZoomed = zoomedId === t.id;
-                // 확대 중: 대상은 그리드 전면(z-30), 나머지는 invisible — 슬롯 크기를
-                // 그대로 두어 xterm 리핏·webview 재배치를 일으키지 않는다. 네이티브
+                const left = `calc(${GAP + c * GAP}px + ${leftFrac} * (100% - ${fixedH}px))`;
+                // 확대 중: 대상은 세로 꽉 차게 위로(z-30), 폭은 zoomWidth — 제 칸 왼쪽에서 시작하되
+                // 오른쪽 끝을 넘으면 안으로 당긴다(전체면 늘 왼쪽 끝). 전체일 때만 나머지를 invisible —
+                // 슬롯 크기를 그대로 두어 xterm 리핏·webview 재배치를 일으키지 않는다. 네이티브
                 // webview는 CSS로 안 숨으므로 브라우저 셀은 suspended로 별도 숨김.
+                const zoomW = `calc(${ZOOM_WIDTHS.find((z) => z.width === zoomWidth)?.frac ?? 1} * (100% - ${GAP * 2}px))`;
                 const style = isZoomed
                   ? {
                       top: GAP,
-                      left: GAP,
-                      width: `calc(100% - ${GAP * 2}px)`,
+                      left: `min(${left}, calc(100% - ${GAP}px - ${zoomW}))`,
+                      width: zoomW,
                       height: `calc(100% - ${GAP * 2}px)`,
                     }
                   : {
                       top,
                       height,
-                      left: `calc(${GAP + c * GAP}px + ${leftFrac} * (100% - ${fixedH}px))`,
+                      left,
                       width: `calc(${cellFr[r][c] / sumC} * (100% - ${fixedH}px))`,
                     };
                 return (
@@ -919,8 +943,8 @@ export function AggregateTerminals() {
                     data-agg-cell={t.id}
                     // 칩 호버 강조 — 어느 칩이 이 셀인지 짝을 보여준다(ring은 셀 밖으로 그려져
                     // xterm 크기를 건드리지 않는다 = 리핏 없음).
-                    className={`absolute${isZoomed ? " z-30" : ""}${
-                      zoomedId && !isZoomed ? " invisible" : ""
+                    className={`absolute${isZoomed ? " z-30 rounded shadow-2xl" : ""}${
+                      zoomedId && !isZoomed && zoomWidth === "full" ? " invisible" : ""
                     }${hovered.has(t.id) ? " rounded ring-2 ring-accent" : ""}${
                       moving?.id === t.id ? " opacity-60" : ""
                     }`}
@@ -963,7 +987,15 @@ export function AggregateTerminals() {
                         meta={t}
                         fontSize={fontSize}
                         zoomed={isZoomed}
-                        onZoom={() => setZoomed(isZoomed ? null : t.id)}
+                        onZoom={() => {
+                          setZoomMenu(null);
+                          setZoomed(isZoomed ? null : t.id);
+                        }}
+                        onZoomHover={(rect) => {
+                          holdZoomMenu();
+                          setZoomMenu({ id: t.id, right: window.innerWidth - rect.right, top: rect.bottom + 4 });
+                        }}
+                        onZoomLeave={scheduleZoomMenuClose}
                         // 경계가 컨테이너 가장자리면 재분배할 이웃이 없다 — 핸들 생략.
                         // 확대 중엔 트랙 경계가 화면에 없으므로 핸들도 없다.
                         canRight={!isZoomed && c < len - 1}
@@ -1117,6 +1149,41 @@ export function AggregateTerminals() {
               }`}
             >
               <Icon size={14} />
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* 확대 폭 팝오버 — 고르면 그 칸을 그 폭으로 확대(이미 확대 중이면 폭만 바꾼다). 고른 폭은 다음 확대
+          (아이콘 클릭·칩 메뉴)에도 그대로 쓴다. 자동배치 팝오버처럼 아이콘 아래 우측 정렬. */}
+      {zoomMenu && shown.some((t) => t.id === zoomMenu.id) && (
+        <div
+          className="fixed z-50 flex items-center gap-1 rounded-md border border-edge bg-panel p-1 shadow-xl"
+          style={{ right: zoomMenu.right, top: zoomMenu.top }}
+          onMouseEnter={holdZoomMenu}
+          onMouseLeave={scheduleZoomMenuClose}
+        >
+          {ZOOM_WIDTHS.map(({ width, frac }) => (
+            <button
+              key={width}
+              data-agg-zoom-width={width}
+              title={msg.app.aggregate.zoomWidthTitle[width]}
+              onClick={() => {
+                setZoomWidth(width);
+                setZoomed(zoomMenu.id);
+                setZoomMenu(null);
+              }}
+              className={`flex items-center gap-1.5 rounded px-1.5 py-1 text-[11px] ${
+                zoomedId === zoomMenu.id && zoomWidth === width
+                  ? "bg-raised text-accent"
+                  : "text-fg-muted hover:bg-raised hover:text-fg"
+              }`}
+            >
+              <svg width="16" height="11" viewBox="0 0 16 11" aria-hidden className="shrink-0">
+                <rect x="0.5" y="0.5" width="15" height="10" rx="1.5" fill="none" stroke="currentColor" opacity="0.5" />
+                <rect x="2" y="2" width={12 * frac} height="7" rx="0.5" fill="currentColor" />
+              </svg>
+              {msg.app.aggregate.zoomWidthLabel[width]}
             </button>
           ))}
         </div>
@@ -1624,6 +1691,8 @@ function AggregateCell({
   fontSize,
   zoomed,
   onZoom,
+  onZoomHover,
+  onZoomLeave,
   canRight,
   canBottom,
   onResizeStart,
@@ -1635,6 +1704,9 @@ function AggregateCell({
   fontSize: number;
   zoomed: boolean;
   onZoom: () => void;
+  /** 확대 아이콘 호버 — 폭 고르기 팝오버를 그 아이콘 아래에 연다(AggregateTerminals zoomMenu). */
+  onZoomHover: (rect: DOMRect) => void;
+  onZoomLeave: () => void;
   canRight: boolean;
   canBottom: boolean;
   onResizeStart: (e: React.PointerEvent, axis: "x" | "y" | "both") => void;
@@ -1710,17 +1782,23 @@ function AggregateCell({
         <SessionHistoryButton termId={meta.id} projectId={meta.projectId} />
         <GitDialogButton projectId={meta.projectId} />
         <FileTreeButton projectId={meta.projectId} />
-        <button
-          onClick={onZoom}
-          title={
-            zoomed
-              ? msg.app.aggregate.unzoomCellTitle
-              : msg.app.aggregate.zoomCellTitle
-          }
-          className="shrink-0 rounded p-0.5 text-fg-dim hover:bg-raised hover:text-fg"
+        <span
+          className="flex shrink-0"
+          onMouseEnter={(e) => onZoomHover(e.currentTarget.getBoundingClientRect())}
+          onMouseLeave={onZoomLeave}
         >
-          {zoomed ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
-        </button>
+          <button
+            onClick={onZoom}
+            title={
+              zoomed
+                ? msg.app.aggregate.unzoomCellTitle
+                : msg.app.aggregate.zoomCellTitle
+            }
+            className="rounded p-0.5 text-fg-dim hover:bg-raised hover:text-fg"
+          >
+            {zoomed ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
+          </button>
+        </span>
         <HideButton onClick={onHide} title={msg.app.aggregate.hideTerminalTitle} />
         <button
           onClick={onClose}
