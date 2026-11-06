@@ -299,23 +299,23 @@ fn classify(
     } else if let Some(e) = crash_ev {
         (
             "crash",
-            crate::i18n::text_system::prev_session_crash(&e.text),
+            crate::i18n::text_system::prev_session_crash(&e.text()),
         )
     } else if let Some(e) = power_ev {
         (
             "power",
-            crate::i18n::text_system::prev_session_power(&e.text),
+            crate::i18n::text_system::prev_session_power(&e.text()),
         )
     } else if let Some(e) = reboot_ev {
         (
             "reboot",
-            crate::i18n::text_system::prev_session_windows_restart(&e.text),
+            crate::i18n::text_system::prev_session_windows_restart(&e.text()),
         )
     } else if pressured || !exhaust.is_empty() {
         let mut m = oom_message(&rec.last);
         for e in &exhaust {
             m.push(' ');
-            m.push_str(&e.text);
+            m.push_str(&e.text());
         }
         ("oom", m)
     } else {
@@ -329,7 +329,7 @@ fn classify(
         verdict: verdict.into(),
         message,
         record: Some(rec.clone()),
-        os_events: events.iter().map(|e| e.text.clone()).collect(),
+        os_events: events.iter().map(|e| e.text()).collect(),
     }
 }
 
@@ -443,7 +443,7 @@ mod tests {
             own_app,
             at: None,
             pid: None,
-            text: text.into(),
+            source: super::super::winlog::EventSource::Fixed(text.into()),
         }
     }
 

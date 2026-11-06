@@ -33,8 +33,29 @@ pub struct OsEvent {
     /// (gitpervisor.exe)을 쓰고 이 저장소는 나란히 띄우는 게 기본 워크플로다(CLAUDE.md) —
     /// 이벤트 로그는 머신 전역이라 exe 이름만으로는 절대 가를 수 없다.
     pub pid: Option<u32>,
-    /// 사용자에게 그대로 보여줄 한 줄(파싱 시점의 UI 언어).
-    pub text: String,
+    /// 사건 원문 — 문장은 [`OsEvent::text`] 가 부를 때마다 **지금 UI 언어로** 만든다. 파싱 때 만든 문장을 저장하면 앱을 켤 때의
+    /// 언어로 굳어, 언어를 바꿔도 "지난 실행" 배너의 이벤트 줄만 옛 언어로 남는다(2026-11-06 실제 AppHang 뒤 e2e 66 이 잡았다).
+    pub(crate) source: EventSource,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum EventSource {
+    /// wevtutil 이 준 `<Event>` 조각 하나.
+    Xml(String),
+    /// 테스트가 만든 고정 문장.
+    #[cfg(test)]
+    Fixed(String),
+}
+
+impl OsEvent {
+    /// 사용자에게 보여 줄 한 줄 — 지금 UI 언어.
+    pub fn text(&self) -> String {
+        match &self.source {
+            EventSource::Xml(chunk) => render(self.id, chunk, self.at).map(|(_, t)| t).unwrap_or_default(),
+            #[cfg(test)]
+            EventSource::Fixed(t) => t.clone(),
+        }
+    }
 }
 
 /// 사건 시각 주변의 Application/System 이벤트를 조회해 UI 언어 한 줄들로 돌려준다.
@@ -267,106 +288,113 @@ pub fn parse(xml: &str) -> Vec<OsEvent> {
         let at = attr(chunk, "SystemTime")
             .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
             .map(|t| t.with_timezone(&Utc));
-        let d = data_items(chunk);
-        let when = stamp(at);
-
-        let (own_app, text) = match id {
-            // Application Error — `<Data>`에 이름이 없다. [0]=exe, [6]=예외 코드.
-            1000 => {
-                let exe = nth(&d, 0);
-                if !is_ours(&exe) && !is_webview(&exe) {
-                    continue;
-                }
-                // 실물은 "c0000409"처럼 0x 없이 온다. 붙어 오는 경우도 있어 한 번 벗겨 둔다.
-                let code = nth(&d, 6);
-                let code = code.trim().trim_start_matches("0x").to_string();
-                let note = exception_note(&code);
-                let head = if is_webview(&exe) {
-                    crate::i18n::text_system::winlog_webview2_crash_head()
-                } else {
-                    crate::i18n::text_system::winlog_app_crash_head()
-                };
-                let note = if note.is_empty() {
-                    String::new()
-                } else {
-                    format!(" — {note}")
-                };
-                (
-                    is_ours(&exe),
-                    crate::i18n::text_system::winlog_app_error_event(head, &exe, &code, &note, &when),
-                )
-            }
-            // Windows Error Reporting — P1=exe, EventName=버킷 종류(APPCRASH 등).
-            1001 => {
-                let exe = named(&d, "P1");
-                if !is_ours(&exe) && !is_webview(&exe) {
-                    continue;
-                }
-                let kind = named(&d, "EventName");
-                (
-                    is_ours(&exe),
-                    crate::i18n::text_system::winlog_wer_event(&exe, &kind, &when).replace("  ", " "),
-                )
-            }
-            // Application Hang — [0]=exe.
-            1002 => {
-                let exe = nth(&d, 0);
-                if !is_ours(&exe) && !is_webview(&exe) {
-                    continue;
-                }
-                (
-                    is_ours(&exe),
-                    crate::i18n::text_system::winlog_hang_event(&exe, &when),
-                )
-            }
-            6008 => (
-                false,
-                crate::i18n::text_system::winlog_unexpected_shutdown_event(&when),
-            ),
-            41 => {
-                let bug = named(&d, "BugcheckCode");
-                let note = if bug.trim() == "0" {
-                    crate::i18n::text_system::winlog_bugcheck_zero_note()
-                } else {
-                    crate::i18n::text_system::winlog_bugcheck_bluescreen_note()
-                };
-                (
-                    false,
-                    crate::i18n::text_system::winlog_kernel_power_event(&bug, note, &when),
-                )
-            }
-            1074 => {
-                let who = named(&d, "param1");
-                let reason = named(&d, "param3");
-                let reason = readable(&reason)
-                    .map(crate::i18n::text_system::winlog_shutdown_reason)
-                    .unwrap_or_default();
-                (
-                    false,
-                    crate::i18n::text_system::winlog_shutdown_request_event(&who, &reason, &when),
-                )
-            }
-            // Resource-Exhaustion-Detector — 커밋 한도 고갈. 상위 소비 프로세스가 함께 실린다.
-            2004 => (
-                false,
-                crate::i18n::text_system::winlog_commit_exhausted_event(&top_consumers(chunk), &when),
-            ),
-            _ => continue,
+        // 거르기(남의 앱 이벤트·모르는 ID)와 내 앱 여부는 언어와 무관하다 — 문장은 버리고 원문을 둔다.
+        let Some((own_app, _)) = render(id, chunk, at) else {
+            continue;
         };
         // Application Error 1000의 [8] = faulting process id(16진). 같은 exe 이름을 쓰는
         // 다른 인스턴스(dev ↔ 설치본)의 크래시를 가려내는 유일한 판별자다.
         let pid = (id == 1000)
-            .then(|| u32::from_str_radix(nth(&d, 8).trim().trim_start_matches("0x"), 16).ok())
+            .then(|| u32::from_str_radix(nth(&data_items(chunk), 8).trim().trim_start_matches("0x"), 16).ok())
             .flatten();
         out.push(OsEvent {
             id,
             own_app,
             at,
             pid,
-            text,
+            source: EventSource::Xml(chunk.to_string()),
         });
     }
     out
+}
+
+/// 이벤트 한 건을 (내 앱 이벤트인가, 지금 UI 언어 한 줄)로. 관심 없는 이벤트(남의 앱 크래시·모르는 ID)는 None.
+fn render(id: u32, chunk: &str, at: Option<DateTime<Utc>>) -> Option<(bool, String)> {
+    let d = data_items(chunk);
+    let when = stamp(at);
+    Some(match id {
+        // Application Error — `<Data>`에 이름이 없다. [0]=exe, [6]=예외 코드.
+        1000 => {
+            let exe = nth(&d, 0);
+            if !is_ours(&exe) && !is_webview(&exe) {
+                return None;
+            }
+            // 실물은 "c0000409"처럼 0x 없이 온다. 붙어 오는 경우도 있어 한 번 벗겨 둔다.
+            let code = nth(&d, 6);
+            let code = code.trim().trim_start_matches("0x").to_string();
+            let note = exception_note(&code);
+            let head = if is_webview(&exe) {
+                crate::i18n::text_system::winlog_webview2_crash_head()
+            } else {
+                crate::i18n::text_system::winlog_app_crash_head()
+            };
+            let note = if note.is_empty() {
+                String::new()
+            } else {
+                format!(" — {note}")
+            };
+            (
+                is_ours(&exe),
+                crate::i18n::text_system::winlog_app_error_event(head, &exe, &code, &note, &when),
+            )
+        }
+        // Windows Error Reporting — P1=exe, EventName=버킷 종류(APPCRASH 등).
+        1001 => {
+            let exe = named(&d, "P1");
+            if !is_ours(&exe) && !is_webview(&exe) {
+                return None;
+            }
+            let kind = named(&d, "EventName");
+            (
+                is_ours(&exe),
+                crate::i18n::text_system::winlog_wer_event(&exe, &kind, &when).replace("  ", " "),
+            )
+        }
+        // Application Hang — [0]=exe.
+        1002 => {
+            let exe = nth(&d, 0);
+            if !is_ours(&exe) && !is_webview(&exe) {
+                return None;
+            }
+            (
+                is_ours(&exe),
+                crate::i18n::text_system::winlog_hang_event(&exe, &when),
+            )
+        }
+        6008 => (
+            false,
+            crate::i18n::text_system::winlog_unexpected_shutdown_event(&when),
+        ),
+        41 => {
+            let bug = named(&d, "BugcheckCode");
+            let note = if bug.trim() == "0" {
+                crate::i18n::text_system::winlog_bugcheck_zero_note()
+            } else {
+                crate::i18n::text_system::winlog_bugcheck_bluescreen_note()
+            };
+            (
+                false,
+                crate::i18n::text_system::winlog_kernel_power_event(&bug, note, &when),
+            )
+        }
+        1074 => {
+            let who = named(&d, "param1");
+            let reason = named(&d, "param3");
+            let reason = readable(&reason)
+                .map(crate::i18n::text_system::winlog_shutdown_reason)
+                .unwrap_or_default();
+            (
+                false,
+                crate::i18n::text_system::winlog_shutdown_request_event(&who, &reason, &when),
+            )
+        }
+        // Resource-Exhaustion-Detector — 커밋 한도 고갈. 상위 소비 프로세스가 함께 실린다.
+        2004 => (
+            false,
+            crate::i18n::text_system::winlog_commit_exhausted_event(&top_consumers(chunk), &when),
+        ),
+        _ => return None,
+    })
 }
 
 /// 2004의 `<ProcessInfo><Process_N><Name>…<CommitCharge>…` 에서 상위 소비자 3개.
@@ -422,9 +450,11 @@ mod tests {
         assert_eq!(ev.len(), 1, "{ev:?}");
         assert_eq!(ev[0].id, 2004);
         // 상위 3개가 커밋 큰 순으로, 빈 슬롯(Name="")은 빠져야 한다.
-        assert!(ev[0].text.contains("warp.exe 28.4GB"), "{}", ev[0].text);
-        assert!(ev[0].text.contains("python.exe 7.6GB"), "{}", ev[0].text);
-        assert!(!ev[0].text.contains("정보 없음"), "{}", ev[0].text);
+        // 문장이 아니라 원문을 들고 있어야 언어를 바꾼 뒤에도 새 언어로 다시 만든다(파싱 때 굳히면 켤 때 언어로 남는다).
+        assert!(matches!(ev[0].source, EventSource::Xml(_)), "{:?}", ev[0].source);
+        assert!(ev[0].text().contains("warp.exe 28.4GB"), "{}", ev[0].text());
+        assert!(ev[0].text().contains("python.exe 7.6GB"), "{}", ev[0].text());
+        assert!(!ev[0].text().contains("정보 없음"), "{}", ev[0].text());
         assert!(ev[0].at.is_some());
     }
 
@@ -435,11 +465,11 @@ mod tests {
         let ev = parse(REAL_SYSTEM);
         let ids: Vec<u32> = ev.iter().map(|e| e.id).collect();
         assert_eq!(ids, vec![41, 6008, 1074], "{ev:?}");
-        assert!(ev[0].text.contains("전원 차단"), "{}", ev[0].text);
-        assert!(ev[1].text.contains("예기치 않게"), "{}", ev[1].text);
+        assert!(ev[0].text().contains("전원 차단"), "{}", ev[0].text());
+        assert!(ev[1].text().contains("예기치 않게"), "{}", ev[1].text());
         // 깨진 한국어 사유는 문구에 넣지 않는다(모듈 주석 — wevtutil 출력은 UTF-8이 아니다).
-        assert!(ev[2].text.contains("StartMenuExperienceHost.exe"), "{}", ev[2].text);
-        assert!(!ev[2].text.contains('\u{FFFD}'), "{}", ev[2].text);
+        assert!(ev[2].text().contains("StartMenuExperienceHost.exe"), "{}", ev[2].text());
+        assert!(!ev[2].text().contains('\u{FFFD}'), "{}", ev[2].text());
     }
 
     /// 0xC0000409 = Rust 할당 실패 abort. 이 해석이 없으면 "그냥 크래시"로만 보인다.
@@ -448,8 +478,8 @@ mod tests {
         let ev = parse(APPCRASH_1000);
         assert_eq!(ev.len(), 1, "{ev:?}");
         assert!(ev[0].own_app, "우리 앱 이벤트인데 own_app이 false다");
-        assert!(ev[0].text.contains("0xc0000409"), "{}", ev[0].text);
-        assert!(ev[0].text.contains("Rust 할당 실패"), "{}", ev[0].text);
+        assert!(ev[0].text().contains("0xc0000409"), "{}", ev[0].text());
+        assert!(ev[0].text().contains("Rust 할당 실패"), "{}", ev[0].text());
         // [8]="3f10" = faulting process id(16진). dev/설치본을 가르는 유일한 판별자다.
         assert_eq!(ev[0].pid, Some(0x3f10), "{ev:?}");
     }
@@ -461,7 +491,7 @@ mod tests {
             own_app: false,
             at: Some(base() + chrono::Duration::seconds(offset_secs)),
             pid: None,
-            text: format!("{id}@{offset_secs}s"),
+            source: EventSource::Fixed(format!("{id}@{offset_secs}s")),
         }
     }
 
@@ -502,7 +532,7 @@ mod tests {
     fn narrow_sorts_nearest_first() {
         let ev = narrow(vec![at_ev(41, 40 * 3600), at_ev(41, 600)], base());
         assert_eq!(ev.len(), 2, "{ev:?}");
-        assert!(ev[0].text.starts_with("41@600s"), "{ev:?}");
+        assert!(ev[0].text().starts_with("41@600s"), "{ev:?}");
     }
 
     /// 1074는 사건 당시에 기록된다 — ±15분 밖은 버린다(기존 규칙 유지).
@@ -510,7 +540,7 @@ mod tests {
     fn narrow_keeps_shutdown_request_only_near_incident() {
         let ev = narrow(vec![at_ev(1074, 3 * 3600), at_ev(1074, 60)], base());
         assert_eq!(ev.len(), 1, "{ev:?}");
-        assert!(ev[0].text.starts_with("1074@60s"), "{ev:?}");
+        assert!(ev[0].text().starts_with("1074@60s"), "{ev:?}");
     }
 
     /// Application 이벤트는 XPath가 이미 양쪽 경계를 걸었으므로 시각을 못 읽어도 남긴다.
@@ -537,7 +567,7 @@ mod tests {
         let ev = parse(&xml);
         assert_eq!(ev.len(), 1);
         assert!(!ev[0].own_app);
-        assert!(ev[0].text.contains("Chromium OOM"), "{}", ev[0].text);
+        assert!(ev[0].text().contains("Chromium OOM"), "{}", ev[0].text());
     }
 
     /// 파서가 쓰레기 입력에 패닉하면 시작 경로가 통째로 죽는다(창 생성 전이다).
