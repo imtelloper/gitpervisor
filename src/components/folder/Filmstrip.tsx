@@ -1,7 +1,7 @@
 import { Image as ImageIcon } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
 
-import { favThumbUrl, useFavThumbToken } from "../../lib/fav-thumb";
+import { favThumbUrl, useFavThumbToken, useThumbImgRetry } from "../../lib/fav-thumb";
 import type { FavEntry } from "../../lib/ipc";
 
 /** 칸 한 변(px)·칸 사이·양끝 여백. 칸 폭이 고정이라 스크롤 위치만으로 보이는 범위를 계산한다. */
@@ -11,9 +11,12 @@ const PAD = 8;
 const STEP = CELL + GAP;
 /** 보이는 범위 양옆으로 더 그려 두는 칸 수 — 빨리 밀어도 빈 칸이 비치지 않게. */
 const OVERSCAN = 8;
+/** 칸(56px)엔 128 이면 되지만 그리드 기본(중간, 192)·타이틀바 미리보기와 같은 크기여야 디스크 캐시를 같이 쓴다 —
+ *  128 이면 뷰어를 여는 순간 칸 25개를 새로 해독해 큰 그림 앞에 줄을 섰다(태스크 79 실측 7초). */
+const FILMSTRIP_EDGE = 192;
 
 /**
- * 사진 뷰어 아래 필름스트립(설계 D4). 썸네일은 그리드와 같은 스킴·크기(128)라 캐시를 같이 쓴다.
+ * 사진 뷰어 아래 필름스트립(설계 D4). 썸네일은 그리드와 같은 스킴·크기(192)라 캐시를 같이 쓴다.
  *
  * 보이는 칸만 DOM 에 그린다 — 폴더 창 그리드와 같은 이유다: 3천 장 폴더에서 칸 전부를 그리면 썸네일 요청이 그만큼
  * 한꺼번에 나간다(`loading="lazy"` 는 가로 스크롤 상자 안에서 믿을 수 없다).
@@ -67,7 +70,7 @@ export function Filmstrip({
         // 이름|mtime|크기 — 같은 이름으로 다시 쓴 파일은 새 칸(새 썸네일 URL·실패 상태 초기화). 그리드 thumbKey 와 같다.
         key={`${e.name}|${e.mtimeMs}|${e.size}`}
         name={e.name}
-        url={token ? favThumbUrl(pathOf(e.name), e, 128, token) : undefined}
+        url={token ? favThumbUrl(pathOf(e.name), e, FILMSTRIP_EDGE, token) : undefined}
         left={PAD + i * STEP}
         current={i === index}
         onClick={() => onPick(i)}
@@ -105,7 +108,7 @@ function Cell({
   current: boolean;
   onClick: () => void;
 }) {
-  const [failed, setFailed] = useState(false);
+  const retry = useThumbImgRetry(url);
   return (
     <button
       title={name}
@@ -115,14 +118,15 @@ function Cell({
         current ? "border-accent ring-1 ring-accent" : "border-edge opacity-60 hover:opacity-100"
       }`}
     >
-      {url && !failed ? (
+      {url && retry.attempt !== null ? (
         // alt 는 비운다 — e2e 60 이 `img[alt="<이름>"]` 로 뷰어 본 그림을 찾는다(썸네일이 먼저 걸리면 안 된다).
         <img
+          key={retry.attempt}
           src={url}
           alt=""
           decoding="async"
           draggable={false}
-          onError={() => setFailed(true)}
+          onError={retry.onError}
           className="h-full w-full object-cover"
         />
       ) : (

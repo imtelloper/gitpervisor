@@ -60,8 +60,19 @@ export function favThumbUrl(path: string, e: FavEntry, edge: ThumbEdge, token: s
 /** 한 번 뜬 썸네일 URL. ponytail: 창이 떠 있는 동안 URL 문자열만 쌓인다(장당 ~200B — 10만 장에 ~20MB).
  *  넘치면 이것도 LRU 로. */
 const thumbLoaded = new Set<string>();
-/** 못 만드는 형식(svg·손상 → 4xx). URL 에 파일 스탬프가 들어 있어 다시 쓴 파일은 새 URL 로 다시 시도된다. */
+/** 못 만드는 형식(svg·손상 → 4xx). URL 에 파일 스탬프가 들어 있어 다시 쓴 파일은 새 URL 로 다시 시도된다.
+ *  다시 받기(아래)까지 실패한 URL 만 든다. */
 const thumbFailed = new Set<string>();
+
+/** 실패한 썸네일을 다시 받기 전 기다림. 부하 중 일시 실패(해독 줄에서 시한 초과 등)로 칸이 창이 떠 있는 내내 아이콘으로
+ *  남지 않게 URL 마다 **한 번만** 다시 받는다 — svg 처럼 정말 못 만드는 형식은 두 번째에도 실패해 그대로 아이콘이다. */
+export const THUMB_RETRY_MS = 1500;
+/** 이미 한 번 다시 받은(또는 받기로 한) URL. */
+const thumbRetried = new Set<string>();
+/** 다시 받을 때를 기다리는 URL — 그동안 미리 받기 순서가 다시 집지 않게. */
+const thumbRetryWaiting = new Set<string>();
+/** 기다림이 끝나 다시 받을 URL — 미리 받기가 목록 순서보다 먼저 집는다. */
+let thumbRetryReady: string[] = [];
 /** 받은 `Image` 를 쥐고 있는 LRU(삽입 순서 = 오래된 순). 쥐고 있는 동안은 브라우저 메모리 캐시에 남아, 같은 URL 의
  *  새 `<img>` 가 그 자리에서 `complete` 다 — 놓으면 다시 읽는 한 박자가 빈 칸으로 비친다(아이콘은 아니다).
  *
@@ -116,6 +127,7 @@ const PREFETCH_SLOTS = 8;
 const PREFETCH_SPAN = 3000;
 
 let prefetchUrls: readonly (string | undefined)[] = [];
+let prefetchKeep = new Set<string | undefined>();
 let prefetchOrder: number[] = [];
 let prefetchPos = 0;
 const prefetchInflight = new Map<string, HTMLImageElement>();
@@ -133,7 +145,8 @@ export function prefetchFavThumbs(
 ): void {
   if (urls !== prefetchUrls) {
     prefetchUrls = urls;
-    const keep = new Set(urls);
+    const keep = (prefetchKeep = new Set(urls));
+    thumbRetryReady = thumbRetryReady.filter((u) => keep.has(u));
     for (const [url, img] of prefetchInflight) {
       if (keep.has(url)) continue;
       img.onload = img.onerror = null;
@@ -161,9 +174,16 @@ function nearFirst(n: number, first: number, last: number, span: number): number
 }
 
 function pumpPrefetch(): void {
-  while (prefetchInflight.size < PREFETCH_SLOTS && prefetchPos < prefetchOrder.length) {
-    const url = prefetchUrls[prefetchOrder[prefetchPos++]];
-    if (url === undefined || thumbLoaded.has(url) || thumbFailed.has(url) || prefetchInflight.has(url)) continue;
+  while (prefetchInflight.size < PREFETCH_SLOTS && (thumbRetryReady.length || prefetchPos < prefetchOrder.length)) {
+    const url = thumbRetryReady.shift() ?? prefetchUrls[prefetchOrder[prefetchPos++]];
+    if (
+      url === undefined ||
+      thumbLoaded.has(url) ||
+      thumbFailed.has(url) ||
+      thumbRetryWaiting.has(url) ||
+      prefetchInflight.has(url)
+    )
+      continue;
     const img = new Image();
     prefetchInflight.set(url, img);
     img.onload = () => settleThumb(url, img, true);
@@ -183,11 +203,40 @@ function settleThumb(url: string, img: HTMLImageElement, ok: boolean): void {
       const oldest = thumbKept.keys().next();
       if (!oldest.done) thumbKept.delete(oldest.value);
     }
+  } else if (!thumbRetried.has(url)) {
+    // 기다리는 동안 상태는 "wait" 그대로다(칸은 아이콘).
+    thumbRetried.add(url);
+    thumbRetryWaiting.add(url);
+    window.setTimeout(() => {
+      thumbRetryWaiting.delete(url);
+      // 그새 다른 폴더·크기로 옮겼으면 버린다 — 그 목록이 다시 오면 보통 순서로 받고, 그때 실패하면 곧 thumbFailed 다.
+      if (prefetchKeep.has(url)) thumbRetryReady.push(url);
+      pumpPrefetch();
+    }, THUMB_RETRY_MS);
   } else {
     thumbFailed.add(url);
   }
   thumbListeners.get(url)?.forEach((cb) => cb());
   pumpPrefetch();
+}
+
+type ThumbImgPhase = "first" | "wait" | "again" | "fail";
+
+/**
+ * `<img>` 가 스스로 받는 칸(필름스트립·타이틀바 미리보기)의 실패 처리 — 미리 받기와 같은 규칙(실패하면 THUMB_RETRY_MS 뒤
+ * 한 번만 다시). `attempt` 를 `<img>` 의 key 로 쓴다: React 는 같은 src 를 DOM 에 다시 넣지 않아서, 새 `<img>` 를 만들어야
+ * 요청이 다시 나간다. `attempt === null` 이면(기다리는 중·끝내 실패) 칸은 아이콘을 그린다.
+ */
+export function useThumbImgRetry(url: string | undefined): { attempt: 0 | 1 | null; onError: () => void } {
+  const [s, setS] = useState<{ url: string | undefined; phase: ThumbImgPhase }>({ url, phase: "first" });
+  const phase: ThumbImgPhase = s.url === url ? s.phase : "first";
+  useEffect(() => {
+    if (phase !== "wait") return;
+    const t = window.setTimeout(() => setS({ url, phase: "again" }), THUMB_RETRY_MS);
+    return () => window.clearTimeout(t);
+  }, [phase, url]);
+  const onError = () => setS({ url, phase: phase === "first" ? "wait" : "fail" });
+  return { attempt: phase === "first" ? 0 : phase === "again" ? 1 : null, onError };
 }
 
 if (import.meta.env.DEV) {

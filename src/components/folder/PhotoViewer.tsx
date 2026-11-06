@@ -27,10 +27,11 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { currentMessages, useMessages } from "../../i18n/ui-language";
 import { copyFailMessage, copyImage, copyWithToast } from "../../lib/clipboard";
+import { favThumbUrl, useFavThumbToken } from "../../lib/fav-thumb";
 import { formatBytes } from "../../lib/format";
 import { bytesToBase64, encodeCanvas, type ImgFormat } from "../../lib/image-codec";
 import { errorMessage, ipc, isIpcError, type FavEntry, type FavImageInfo, type OcrResult } from "../../lib/ipc";
@@ -41,7 +42,8 @@ import { useUi } from "../../stores/ui";
 import { OcrPanel } from "../diff/OcrPanel";
 import { Filmstrip } from "./Filmstrip";
 import { PhotoInfoPanel } from "./PhotoInfoPanel";
-import { PHOTO_MAX_SCALE, PHOTO_MIN_SCALE, photoTransform, usePhotoZoom } from "./usePhotoZoom";
+import { PHOTO_MAX_SCALE, PHOTO_MIN_SCALE, photoFitScale, photoTransform, usePhotoZoom } from "./usePhotoZoom";
+import { useViewerImage, viewerImageTarget } from "./useViewerImage";
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const toast = (kind: "success" | "error", message: string) => useUi.getState().pushToast(kind, message);
@@ -86,6 +88,28 @@ function shownCanvas(img: HTMLImageElement, rot: number, flipX: boolean, flipY: 
   ctx.rotate((rot * Math.PI) / 180);
   ctx.drawImage(img, -w / 2, -h / 2);
   return c;
+}
+
+/** 큰 그림을 기다리는 동안 썸네일을 큰 그림 맞춤과 같은 자리·크기로. 배율을 transform 이 아니라 크기로 거는 것은 흐림을
+ *  화면 px 로 두려고다 — transform 의 scale 은 blur 반경까지 키운다(320 을 4배로 늘리면 2px 가 8px). `origLong` = 원본 긴 변
+ *  (헤더를 못 읽는 형식은 Infinity) — 상자보다 작은 원본은 맞춤도 원본 크기라 썸네일을 그보다 키우지 않는다. */
+/** 백엔드가 JPEG 로 변환해 주는 형식(HEIC·HEIF·AVIF) — 썸네일이 이미 서 있고, 큰 그림을 읽는 데 시간이 든다. */
+const CONVERTED_STILL = /\.(heic|heif|hif|avif)$/i;
+
+/** 뷰어 메모리 캐시의 무게 = base64 길이. */
+const base64Weight = (v: { base64: string }) => v.base64.length;
+
+function standInFor(
+  thumb: { w: number; h: number },
+  box: { w: number; h: number },
+  rot: number,
+  flipX: boolean,
+  flipY: boolean,
+  origLong: number,
+): { size: { w: number; h: number }; transform: string } {
+  const s = photoFitScale(thumb, box, rot, origLong / Math.max(thumb.w, thumb.h));
+  const size = { w: thumb.w * s, h: thumb.h * s };
+  return { size, transform: photoTransform({ scale: 1, x: box.w / 2, y: box.h / 2 }, size, rot, flipX, flipY) };
 }
 
 /**
@@ -147,9 +171,28 @@ export function PhotoViewer({
 }) {
   const msg = useMessages();
   const t = msg.folder.lightbox;
-  const [src, setSrc] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
+  const seq = filmstrip?.images;
+  /** 지금 장의 목록 항목(mtime·크기) — 큰 그림 캐시 키와 기다리는 동안 띄울 썸네일 URL 에 쓴다. */
+  const entry = seq?.[index]?.name === name ? seq[index] : undefined;
+  const cur = viewerImageTarget(path, entry, version);
+  // 진행 방향 — 다음에 미리 읽을 이웃. 자리가 그대로인 장 바뀜(지우기·이름 바꾸기)은 방향을 두고 간다.
+  const [dir, setDir] = useState({ index, d: 1 });
+  if (dir.index !== index) setDir({ index, d: index > dir.index ? 1 : -1 });
+  const aheadEntry = seq?.[index + dir.d];
+  // 미리 읽기는 변환이 필요한 형식만 — JPEG·PNG 는 원본을 통째로(최대 25MB) 받아 오므로 미리 읽으면 쓰지도 않을 IPC 만 무겁다.
+  const ahead =
+    filmstrip && aheadEntry && CONVERTED_STILL.test(aheadEntry.name)
+      ? viewerImageTarget(filmstrip.pathOf(aheadEntry.name), aheadEntry)
+      : null;
+  /** 그려진 큰 그림의 크기 — 장 키에 묶어, 다른 장으로 넘어간 첫 렌더에 옛 크기가 새 그림에 걸리지 않게. */
+  const [drawn, setDrawn] = useState<{ key: string; size: { w: number; h: number } } | null>(null);
+  const natural = drawn?.key === cur.key ? drawn.size : null;
+  const image = useViewerImage(ipc.favRead, cur, ahead, natural !== null, base64Weight);
+  const bytes = image.value;
+  const src = useMemo(() => (bytes ? `data:${bytes.mime};base64,${bytes.base64}` : null), [bytes]);
+  /** 웹뷰가 디코드하지 못한 장의 키. */
+  const [undecodable, setUndecodable] = useState<string | null>(null);
+  const err = undecodable === cur.key ? msg.git.imageView.unsupportedTitle : image.error ? errText(image.error) : null;
   const [rot, setRot] = useState(0);
   const [flipX, setFlipX] = useState(false);
   const [flipY, setFlipY] = useState(false);
@@ -168,34 +211,26 @@ export function PhotoViewer({
   /** 늦게 끝난 글자 인식이 다른 장으로 넘어간 뒤에 결과를 덮지 않게. */
   const pathNow = useRef(path);
   pathNow.current = path;
-  /** 읽은 원본의 정체 — 회전 저장이 되돌려 줘 그 사이 밖에서 바뀌었으면 덮지 않는다(`fav_write_image` CONFLICT). */
-  const stampRef = useRef<string | null>(null);
   const [rotSaving, setRotSaving] = useState(false);
 
   const stopSlides = useCallback(() => setPlaying(false), []);
-  const zoom = usePhotoZoom(boxRef, natural, rot, `${path}|${version ?? ""}`, stopSlides);
+  const zoom = usePhotoZoom(boxRef, natural, rot, cur.key, stopSlides);
 
   useEffect(() => {
-    let alive = true;
-    stampRef.current = null;
-    setSrc(null);
-    setErr(null);
-    setNatural(null);
     setOcr(null);
     setHoverOcrLine(null);
     setSide((s) => (s === "ocr" ? null : s)); // 정보 패널은 장을 넘겨도 열어 둔다(사진 앱과 같다)
-    void ipc
-      .favRead(path)
-      .then((b) => {
-        if (!alive) return;
-        stampRef.current = b.stamp ?? null;
-        setSrc(`data:${b.mime};base64,${b.base64}`);
-      })
-      .catch((e) => alive && setErr(errText(e)));
-    return () => {
-      alive = false;
-    };
-  }, [path, version]);
+  }, [cur.key]);
+
+  // ---- 큰 그림을 기다리는 동안: 썸네일(320 — HEIC 도 내장 썸네일이라 싸다)을 큰 그림이 설 자리에 흐리게 ----
+  const thumbToken = useFavThumbToken();
+  // 변환 형식만 — 백엔드 썸네일은 EXIF 방향을 적용하지 않아(JPEG·WebP) 세로 사진이 누운 채로 비쳤다가 바로 서는 걸 장마다 보게 된다.
+  // HEIC·AVIF 썸네일은 디코더가 이미 세워서 준다.
+  const thumbUrl =
+    thumbToken && entry && CONVERTED_STILL.test(name) ? favThumbUrl(path, entry, 320, thumbToken) : undefined;
+  /** 받은 썸네일 크기(null = 못 받음) — URL 에 묶는다. */
+  const [thumbGot, setThumbGot] = useState<{ url: string; size: { w: number; h: number } | null } | null>(null);
+  const thumbSize = thumbGot && thumbGot.url === thumbUrl ? thumbGot.size : undefined;
 
   // 아래 줄의 형식·크기도 여기서 나온다 — 패널이 닫혀 있어도 읽는다(앞 1MB 라 싸다).
   useEffect(() => {
@@ -299,20 +334,22 @@ export function PhotoViewer({
     const p = path;
     const shownName = name;
     /** 지금 보이는 그림의 원본(`fav_read` base64) — JPEG·WebP 는 여기서 EXIF 를 떠 새 파일에 옮겨 심는다. */
-    const original = src ? src.slice(src.indexOf(",") + 1) : null;
+    const original = bytes?.base64 ?? null;
+    /** 읽은 원본의 정체 — 그 사이 밖에서 바뀌었으면 덮지 않는다(`fav_write_image` CONFLICT). */
+    const stamp = bytes?.stamp;
     const go = () => {
       setRotSaving(true);
       // 원본 해상도로 다시 그려 같은 형식으로 — 손실 형식은 사진 앱과 같은 품질(0.92).
       void Promise.resolve()
         .then(async () => {
           const canvas = shownCanvas(img, rot, flipX, flipY);
-          const bytes = await encodeCanvas(canvas, rotFmt, 92);
-          if (!original) return bytes;
-          if (rotFmt === "jpeg") return withJpegExif(bytes, jpegExifTiffFromBase64(original), canvas.width, canvas.height);
-          if (rotFmt === "webp") return withWebpExif(bytes, webpExifTiffFromBase64(original), canvas.width, canvas.height);
-          return bytes;
+          const enc = await encodeCanvas(canvas, rotFmt, 92);
+          if (!original) return enc;
+          if (rotFmt === "jpeg") return withJpegExif(enc, jpegExifTiffFromBase64(original), canvas.width, canvas.height);
+          if (rotFmt === "webp") return withWebpExif(enc, webpExifTiffFromBase64(original), canvas.width, canvas.height);
+          return enc;
         })
-        .then((bytes) => ipc.favWriteImage(p, bytesToBase64(bytes), true, stampRef.current ?? undefined))
+        .then((out) => ipc.favWriteImage(p, bytesToBase64(out), true, stamp))
         .then(() => {
           // 파일이 이제 그 방향이다 — 보기 회전을 그대로 두면 한 번 더 돌아 보인다.
           setRot(0);
@@ -425,6 +462,10 @@ export function PhotoViewer({
   /** 보이는 그림의 치수(설계 D3 — 디코드한 크기, HEIC 는 변환본 = 원본 크기). 아직 못 그렸으면 백엔드 헤더 값. */
   const dims = natural ?? (info?.width && info.height ? { w: info.width, h: info.height } : null);
   const format = info?.format ?? ""; // 확장자 폴백은 백엔드가 한다(`fav_image_info`)
+  const thumbStand =
+    !natural && thumbSize && zoom.box.w > 0 && zoom.box.h > 0
+      ? standInFor(thumbSize, zoom.box, rot, flipX, flipY, info?.width && info.height ? Math.max(info.width, info.height) : Infinity)
+      : null;
 
   return (
     <div className="fixed inset-0 z-40 flex flex-col bg-base/95" onContextMenu={(e) => e.preventDefault()}>
@@ -524,28 +565,58 @@ export function PhotoViewer({
         >
           {err ? (
             <div className="absolute inset-0 flex items-center justify-center p-4 text-center text-xs text-danger">{err}</div>
-          ) : src ? (
+          ) : (
             <>
-              <img
-                ref={imgRef}
-                src={src}
-                alt={name}
-                draggable={false}
-                onLoad={(e) => setNatural({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })}
-                // 웹뷰가 디코드하지 못했다 — onLoad 가 영영 안 와 빈 화면만 남지 않게.
-                onError={() => setErr(msg.git.imageView.unsupportedTitle)}
-                style={{
-                  width: natural?.w,
-                  height: natural?.h,
-                  transformOrigin: "0 0",
-                  transform,
-                  imageRendering: view && view.scale >= PIXELATE_FROM ? "pixelated" : "auto",
-                  // 크기를 알기 전엔 숨긴다 — 원본 크기로 한 프레임 번쩍이지 않게.
-                  visibility: transform ? "visible" : "hidden",
-                }}
-                className="absolute left-0 top-0 max-w-none"
-              />
-              {hoverBox && transform && natural && (
+              {thumbUrl && !natural && thumbSize !== null && (
+                // 큰 그림이 그려지는 렌더에 사라진다 — 위에 남아 클릭·e2e 60 의 elementFromPoint 를 가로채지 않게.
+                <img
+                  key={thumbUrl}
+                  src={thumbUrl}
+                  alt=""
+                  draggable={false}
+                  onLoad={(e) =>
+                    setThumbGot({ url: thumbUrl, size: { w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight } })
+                  }
+                  onError={() => setThumbGot({ url: thumbUrl, size: null })}
+                  style={
+                    thumbStand
+                      ? {
+                          width: thumbStand.size.w,
+                          height: thumbStand.size.h,
+                          transformOrigin: "0 0",
+                          transform: thumbStand.transform,
+                        }
+                      : { visibility: "hidden" }
+                  }
+                  className="pointer-events-none absolute left-0 top-0 max-w-none blur-[2px]"
+                />
+              )}
+              {src && (
+                // 장마다 새 `<img>` — 옛 그림이 새 장의 자리·크기로 한 프레임 비치지 않게(그동안은 위 썸네일이 보인다).
+                <img
+                  key={cur.key}
+                  ref={imgRef}
+                  src={src}
+                  alt={name}
+                  draggable={false}
+                  onLoad={(e) =>
+                    setDrawn({ key: cur.key, size: { w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight } })
+                  }
+                  // 웹뷰가 디코드하지 못했다 — onLoad 가 영영 안 와 빈 화면만 남지 않게.
+                  onError={() => setUndecodable(cur.key)}
+                  style={{
+                    width: natural?.w,
+                    height: natural?.h,
+                    transformOrigin: "0 0",
+                    transform,
+                    imageRendering: view && view.scale >= PIXELATE_FROM ? "pixelated" : "auto",
+                    // 크기를 알기 전엔 숨긴다 — 원본 크기로 한 프레임 번쩍이지 않게.
+                    visibility: transform ? "visible" : "hidden",
+                  }}
+                  className="absolute left-0 top-0 max-w-none"
+                />
+              )}
+              {src && hoverBox && transform && natural && (
                 // 그림과 같은 transform·크기의 형제 — 상자가 줌·회전·뒤집기를 좌표 계산 없이 따라간다(태스크 68 §3.6).
                 <div
                   aria-hidden
@@ -559,9 +630,12 @@ export function PhotoViewer({
                   />
                 </div>
               )}
+              {!natural && (
+                <div className="pointer-events-none absolute left-1/2 top-2 -translate-x-1/2 rounded bg-panel/80 px-2 py-0.5 text-[11px] text-fg-dim">
+                  {msg.folder.loading}
+                </div>
+              )}
             </>
-          ) : (
-            <div className="absolute inset-0 flex items-center justify-center text-xs text-fg-dim">{msg.folder.loading}</div>
           )}
           {/* 이전·다음 — 그림 가운데를 덮지 않게 양 끝에만. 끝에서는 멈춘다(순환 없음). */}
           {index > 0 && (

@@ -34,9 +34,25 @@ export function photoTransform(
   return `translate(${v.x}px, ${v.y}px) scale(${v.scale * (flipX ? -1 : 1)}, ${v.scale * (flipY ? -1 : 1)}) rotate(${rot}deg) translate(${-natural.w / 2}px, ${-natural.h / 2}px)`;
 }
 
+/** 맞춤 배율 — 옆으로 돌렸으면(90·270) 가로세로를 바꿔 잰다. 그림은 `max` 1(원본보다 키우지 않는다), 큰 그림을 기다리는
+ *  동안의 썸네일(태스크 79)은 큰 그림이 설 자리만큼 키운다. */
+export function photoFitScale(
+  natural: { w: number; h: number },
+  box: { w: number; h: number },
+  rot: number,
+  max: number,
+): number {
+  const side = rot % 180 !== 0;
+  const w = side ? natural.h : natural.w;
+  const h = side ? natural.w : natural.h;
+  return clampPhotoScale(Math.min(max, Math.max(1, box.w - FIT_PAD) / w, Math.max(1, box.h - FIT_PAD) / h));
+}
+
 export interface PhotoZoom {
   /** x·y = **그림 중심**의 상자 좌표. 그림 크기를 아직 모르면 null(그림을 숨긴다). */
   view: View | null;
+  /** 그림 상자 크기(px) — 측정 전엔 0×0. */
+  box: { w: number; h: number };
   /** 맞춤 상태 — 창 크기·회전이 바뀌어도 맞춤을 다시 계산한다. */
   fitted: boolean;
   dragging: boolean;
@@ -90,11 +106,7 @@ export function usePhotoZoom(
   // 원본보다 키우지는 않는다(종전 라이트박스와 같다) — 작은 스크린샷이 흐릿하게 부풀지 않게.
   const fitView = useMemo<View | null>(() => {
     if (!natural || box.w <= 0 || box.h <= 0) return null;
-    const side = rot % 180 !== 0;
-    const w = side ? natural.h : natural.w;
-    const h = side ? natural.w : natural.h;
-    const scale = clampPhotoScale(Math.min(1, Math.max(1, box.w - FIT_PAD) / w, Math.max(1, box.h - FIT_PAD) / h));
-    return { scale, x: box.w / 2, y: box.h / 2 };
+    return { scale: photoFitScale(natural, box, rot, 1), x: box.w / 2, y: box.h / 2 };
   }, [natural, box, rot]);
 
   const view = natural ? (free ?? fitView) : null;
@@ -169,5 +181,5 @@ export function usePhotoZoom(
     },
   };
 
-  return { view, fitted: free === null, dragging, zoomIn, zoomOut, zoomTo, fit, bind };
+  return { view, box, fitted: free === null, dragging, zoomIn, zoomOut, zoomTo, fit, bind };
 }

@@ -1690,8 +1690,9 @@ export const ipc = {
    *  (썸네일 자체는 IPC 를 타지 않는다 — commands/thumb_protocol.rs). */
   favThumbToken: () => call<string>("fav_thumb_token"),
   /** 라이트박스 원본 — 썸네일이 아니라 파일 그대로(크기 한도는 백엔드). `stamp` 는 **원본** 것(HEIC 변환본이어도) —
-   *  `favWriteImage` 의 `expectedStamp` 로 되돌려 준다. */
-  favRead: (path: string) => call<FileBytes>("fav_read", { path }),
+   *  `favWriteImage` 의 `expectedStamp` 로 되돌려 준다.
+   *  재시도 끔·60초(태스크 79): HEIC 4096 해독이 줄에 서면 8초를 넘기는데, 재시도는 같은 해독을 한 번 더 줄 세울 뿐이다. */
+  favRead: (path: string) => call<FileBytes>("fav_read", { path }, { timeoutMs: 60_000, attempts: 1 }),
   /** 이미지 편집기 경로 모드·사진 뷰어 "회전한 대로 저장"(태스크 76 D10·D11) — `writeFileBytes` 의 절대경로판.
    *  오류 계약(ALREADY_EXISTS·CONFLICT)과 반환(새 stamp)이 같아 편집기의 덮어쓰기·외부 변경 확인이 그대로 돈다.
    *  상위 폴더가 허용 루트 안이어야 한다(commands/favorites.rs `fav_write_image`). */

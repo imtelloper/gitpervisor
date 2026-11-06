@@ -16,7 +16,7 @@ import { createPortal } from "react-dom";
 
 import { useMessages } from "../../i18n/ui-language";
 import { copyText } from "../../lib/clipboard";
-import { favThumbUrl, useFavThumbToken } from "../../lib/fav-thumb";
+import { favThumbUrl, useFavThumbToken, useThumbImgRetry } from "../../lib/fav-thumb";
 import { ipc, type FavEntry } from "../../lib/ipc";
 import { joinPathsForPrompt } from "../../lib/path";
 import { isMod } from "../../lib/platform";
@@ -404,10 +404,11 @@ export function FolderPeek({ path, onMouseEnter }: { path: string; onMouseEnter?
 
 /** 칸 썸네일 — 뜰 때까지(또는 못 만드는 형식이면 끝까지) 종류 아이콘. 칸은 이미 `relative` 다. */
 function PeekThumb({ kind, url }: { kind: FavEntry["kind"]; url: string | undefined }) {
-  const [load, setLoad] = useState<"wait" | "ok" | "fail">("wait");
+  const [loaded, setLoaded] = useState(false);
+  const retry = useThumbImgRetry(url);
   return (
     <>
-      {load !== "ok" &&
+      {!loaded &&
         (kind === "video" ? (
           <Film size={22} className="text-fg-dim" />
         ) : kind === "image" ? (
@@ -415,16 +416,17 @@ function PeekThumb({ kind, url }: { kind: FavEntry["kind"]; url: string | undefi
         ) : (
           <FileText size={22} className="text-fg-dim" />
         ))}
-      {url && load !== "fail" && (
+      {url && retry.attempt !== null && (
         <img
+          key={retry.attempt}
           src={url}
           alt=""
           decoding="async"
           // 이미지 위에서 시작한 드래그가 HTML 끌어 놓기로 새면 드래그 상자가 안 그려진다.
           draggable={false}
-          onLoad={() => setLoad("ok")}
-          onError={() => setLoad("fail")}
-          className={`absolute inset-0 h-full w-full object-cover ${load === "ok" ? "" : "invisible"}`}
+          onLoad={() => setLoaded(true)}
+          onError={retry.onError}
+          className={`absolute inset-0 h-full w-full object-cover ${loaded ? "" : "invisible"}`}
         />
       )}
     </>

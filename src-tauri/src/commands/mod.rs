@@ -30,6 +30,8 @@ mod search;
 mod settings;
 mod status;
 mod still_image;
+#[cfg(windows)]
+mod still_image_wic;
 mod sync;
 mod terminal;
 mod thumb_protocol;

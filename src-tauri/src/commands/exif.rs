@@ -5,9 +5,12 @@
 //! ffprobe 회전과 일치). **깨진 EXIF 는 "없음"이지 오류가 아니다** — 오프셋·개수를 전부 범위 검사하고, 어긋나면 그
 //! 태그(또는 그 후보 헤더)만 버린다. IFD 체인(다음 IFD)은 따라가지 않는다 — 순환 링크로 끝없이 돌 길이 없다.
 
+use std::path::Path;
+
 use serde::Serialize;
 
-/// 앞에서 이만큼만 훑는다 — JPEG 의 APP1 은 64KB 안이고, HEIC 의 Exif 항목도 실측상 앞부분에 있다.
+/// 앞에서 이만큼만 훑는다 — JPEG 의 APP1 은 64KB 안이고, HEIC 의 Exif 항목도 대개 앞부분에 있다(아니면
+/// `exif_in_head_or_heif_tail` 이 끝에서 같은 만큼 더 본다).
 pub(crate) const EXIF_SCAN_BYTES: u64 = 1024 * 1024;
 
 /// TIFF 헤더 후보를 이만큼까지만 시험한다 — 압축 데이터 속 우연한 `II*\0` 가 많아도 일이 불어나지 않게.
@@ -63,6 +66,26 @@ pub(crate) fn exif_tiff_block(buf: &[u8]) -> Option<&[u8]> {
         let n = tiff_extent(&buf[i..])?;
         (n <= MAX_EXIF_TIFF_BYTES).then(|| &buf[i..i + n])
     })
+}
+
+/// `head`(파일 앞 `EXIF_SCAN_BYTES`)에서 `find`, 못 찾았고 HEIF(ISO-BMFF)면 파일 끝 `EXIF_SCAN_BYTES` 에서 한 번 더.
+/// 다시 저장된 HEIC 는 Exif 항목을 파일 끝(실측 96% 지점, 44장 중 4장)에 `Exif\0\0` 머리 없이 TIFF 헤더부터 둔다 —
+/// 헤더 모양은 자리와 무관하게 찾으므로(`tiff_candidates`) 끝 바이트를 그대로 넘기면 된다.
+pub(crate) fn exif_in_head_or_heif_tail<T>(file: &Path, head: &[u8], find: impl Fn(&[u8]) -> Option<T>) -> Option<T> {
+    use std::io::{Read, Seek, SeekFrom};
+    if let Some(found) = find(head) {
+        return Some(found);
+    }
+    if head.get(4..8) != Some(b"ftyp") || (head.len() as u64) < EXIF_SCAN_BYTES {
+        return None;
+    }
+    // 끝을 못 읽으면 "EXIF 없음" — 메타데이터 때문에 사진 열기·정보 패널을 실패시키지 않는다(모듈 머리의 원칙).
+    let mut f = std::fs::File::open(file).ok()?;
+    let len = f.metadata().ok()?.len();
+    f.seek(SeekFrom::Start(len.saturating_sub(EXIF_SCAN_BYTES))).ok()?;
+    let mut tail = Vec::new();
+    f.take(EXIF_SCAN_BYTES).read_to_end(&mut tail).ok()?;
+    find(&tail)
 }
 
 /// TIFF 헤더 모양이 나오는 자리들, 믿을 만한 순서로 `MAX_CANDIDATES` 개까지.
@@ -487,6 +510,33 @@ mod tests {
         assert_eq!(exif_tiff_block(&b.buf), None);
     }
 
+    /// 다시 저장된 HEIC 처럼 Exif(머리 `Exif\0\0` 없는 TIFF)가 앞 1MiB 밖, 파일 끝에만 있다 — 끝을 안 보면 첫 단언이
+    /// None 으로 깨진다. HEIF 가 아니면(JPEG 등) 끝을 보지 않는다.
+    #[test]
+    fn exif_in_heif_tail_is_found_when_head_has_none() {
+        let tiff = camera_tiff(false);
+        let mut heic = b"\0\0\0\x18ftypheic\0\0\0\0mif1heic".to_vec();
+        heic.resize(EXIF_SCAN_BYTES as usize * 3 / 2, 0);
+        heic.extend(&tiff);
+        heic.resize(heic.len() + 100_000, 0);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("resaved.heic");
+        std::fs::write(&path, &heic).unwrap();
+        let head = &heic[..EXIF_SCAN_BYTES as usize];
+        assert_eq!(parse_exif(head), None, "앞부분엔 없다(전제)");
+
+        let s = exif_in_head_or_heif_tail(&path, head, parse_exif).expect("끝에서 찾는다");
+        assert_eq!((s.make.as_deref(), s.orientation), (Some("Apple"), Some(6)));
+        let block = exif_in_head_or_heif_tail(&path, head, |b| exif_tiff_block(b).map(<[u8]>::to_vec));
+        assert_eq!(block.as_deref(), Some(&tiff[..]), "옮겨 심을 블록도 끝에서 정확히");
+
+        let mut not_heif = heic.clone();
+        not_heif[4..8].copy_from_slice(b"xxxx");
+        let other = dir.path().join("other.bin");
+        std::fs::write(&other, &not_heif).unwrap();
+        assert_eq!(exif_in_head_or_heif_tail(&other, &not_heif[..EXIF_SCAN_BYTES as usize], parse_exif), None);
+    }
+
     #[test]
     fn exif_date_normalizes_and_drops_blank() {
         assert_eq!(exif_date("2024:05:01 12:34:56").as_deref(), Some("2024-05-01 12:34:56"));
@@ -507,15 +557,15 @@ mod tests {
     fn exif_real_photos() {
         use std::io::Read;
         let dir = r"C:\Users\GreatHoon\Downloads\drive-download-20261104T060517Z-1-001";
-        for name in ["IMG_1475.jpeg", "IMG_1490.HEIC"] {
+        // IMG_1487·1500 은 다시 저장돼 Exif 가 파일 끝(96%)에 있다 — 끝까지 봐야 나온다.
+        for name in ["IMG_1475.jpeg", "IMG_1490.HEIC", "IMG_1487.HEIC", "IMG_1500.HEIC"] {
+            let path = std::path::Path::new(dir).join(name);
             let mut head = Vec::new();
-            std::fs::File::open(std::path::Path::new(dir).join(name))
-                .unwrap()
-                .take(EXIF_SCAN_BYTES)
-                .read_to_end(&mut head)
-                .unwrap();
+            std::fs::File::open(&path).unwrap().take(EXIF_SCAN_BYTES).read_to_end(&mut head).unwrap();
             let block = exif_tiff_block(&head).map(|b| (b.as_ptr() as usize - head.as_ptr() as usize, b.len()));
-            println!("{name}: {:?} · TIFF 블록(자리, 길이) {block:?}", parse_exif(&head));
+            let found = exif_in_head_or_heif_tail(&path, &head, parse_exif);
+            println!("{name}: {found:?} · 앞부분 TIFF 블록(자리, 길이) {block:?}");
+            assert!(found.is_some_and(|e| e.make.is_some()), "{name}: EXIF 를 못 찾았다");
         }
     }
 }

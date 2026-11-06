@@ -28,6 +28,7 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, State};
 use tokio::sync::Semaphore;
 
+use super::still_image::StillLane;
 use crate::error::{ErrorCode, IpcError};
 use crate::git::types::FavoriteFolder;
 use crate::i18n::text_files;
@@ -262,8 +263,9 @@ pub(crate) async fn thumb_jpeg(
     let sniff = file.clone();
     if run_blocking(move || needs_ffmpeg(&sniff)).await? {
         let state = app.state::<AppState>();
-        let bin = super::video::find_ffmpeg(app, state.inner())?;
-        let buf = super::still_image::still_to_jpeg(&bin, &file, edge, 4).await?;
+        // Windows 의 HEIC 썸네일(≤320)은 그 안에서 WIC 가 먼저 한다 — ffmpeg 는 그게 못 했을 때만 찾는다.
+        let find = || super::video::find_ffmpeg(app, state.inner());
+        let buf = super::still_image::still_to_jpeg(find, &file, edge, 4, StillLane::Thumb).await?;
         if let Some(p) = cache {
             let bytes = buf.clone();
             // 캐시 기록 실패는 치명적이지 않다 — 다음번에 다시 만들 뿐이다.
@@ -526,13 +528,13 @@ pub struct FavBytes {
     pub exif_tiff: Option<String>,
 }
 
-/// 원본 앞부분의 EXIF TIFF 블록(base64). 못 읽으면 None — 메타데이터 때문에 사진 열기를 실패시키지 않는다
-/// (같은 파일을 ffmpeg 가 방금 읽었으니 읽기 오류는 여기까지 거의 안 온다).
+/// 원본의 EXIF TIFF 블록(base64 — 앞부분, HEIF 면 끝부분까지). 못 읽으면 None — 메타데이터 때문에 사진 열기를 실패시키지
+/// 않는다(같은 파일을 ffmpeg 가 방금 읽었으니 읽기 오류는 여기까지 거의 안 온다).
 fn exif_tiff_b64(file: &Path) -> Option<String> {
     use std::io::Read;
     let mut head = Vec::new();
     File::open(file).and_then(|f| f.take(super::exif::EXIF_SCAN_BYTES).read_to_end(&mut head)).ok()?;
-    super::exif::exif_tiff_block(&head).map(|b| B64.encode(b))
+    super::exif::exif_in_head_or_heif_tail(file, &head, |b| super::exif::exif_tiff_block(b).map(|t| B64.encode(t)))
 }
 
 /// 웹뷰가 못 그리는 형식을 뷰어용으로 바꿀 때의 긴 변·mjpeg 품질(2 = 좋은 쪽). 글자 인식도 **같은 그림**을 읽어야
@@ -553,8 +555,8 @@ pub async fn fav_read(app: AppHandle, state: State<'_, AppState>, path: String) 
         let meta = tokio::fs::metadata(&file)
             .await
             .map_err(|e| IpcError::new(ErrorCode::NotFound, text_files::could_not_read_file(e)))?;
-        let bin = super::video::find_ffmpeg(&app, state.inner())?;
-        let jpg = super::still_image::still_to_jpeg(&bin, &file, LIGHTBOX_MAX_EDGE, LIGHTBOX_JPEG_Q).await?;
+        let find = || super::video::find_ffmpeg(&app, state.inner());
+        let jpg = super::still_image::still_to_jpeg(find, &file, LIGHTBOX_MAX_EDGE, LIGHTBOX_JPEG_Q, StillLane::View).await?;
         let exif_file = file.clone();
         return Ok(FavBytes {
             mime: "image/jpeg".into(),
@@ -646,7 +648,7 @@ pub struct FavImageInfo {
     pub exif: Option<super::exif::ExifSummary>,
 }
 
-/// 사진 뷰어 정보 패널·아래 줄의 형식·해상도. 파일 앞 1MB 만 읽는다(EXIF 는 거기 있다).
+/// 사진 뷰어 정보 패널·아래 줄의 형식·해상도. 파일 앞 1MB 만 읽는다(EXIF 는 거기 있다 — 다시 저장된 HEIC 는 끝 1MB).
 #[tauri::command(async)]
 pub fn fav_image_info(state: State<'_, AppState>, path: String) -> Result<FavImageInfo, IpcError> {
     let file = allowed(&state, &path)?;
@@ -661,7 +663,7 @@ fn image_info(file: &Path) -> Result<FavImageInfo, IpcError> {
     File::open(file)
         .and_then(|f| f.take(super::exif::EXIF_SCAN_BYTES).read_to_end(&mut head))
         .map_err(read_err)?;
-    let exif = super::exif::parse_exif(&head);
+    let exif = super::exif::exif_in_head_or_heif_tail(file, &head, super::exif::parse_exif);
     // 웹뷰는 EXIF 방향대로 돌려 그린다 — 옆으로 눕힌 방향(5~8)이면 헤더의 가로·세로가 화면과 뒤바뀐다.
     let sideways = matches!(exif.as_ref().and_then(|e| e.orientation), Some(5..=8));
     let dims = image_dims(file).map(|(w, h)| if sideways { (h, w) } else { (w, h) });
@@ -675,15 +677,21 @@ fn image_info(file: &Path) -> Result<FavImageInfo, IpcError> {
     })
 }
 
+/// ftyp 브랜드(대표·호환)에 AVIF 가 있는가 — `head` 는 4~8 바이트가 `ftyp` 인 파일 머리. WIC 썸네일도 이걸로 코덱 갈래를
+/// 가른다(`still_image_wic.rs`).
+pub(crate) fn ftyp_is_avif(head: &[u8]) -> bool {
+    let Some(size) = head.get(..4) else { return false };
+    let declared = u32::from_be_bytes([size[0], size[1], size[2], size[3]]) as usize;
+    // 상자가 선언보다 짧게 잘렸으면 브랜드는 대표 브랜드만 본다(아래 get 이 None).
+    let brands = head.get(8..declared.min(head.len())).unwrap_or(&[]);
+    brands.chunks_exact(4).any(|b| b == b"avif" || b == b"avis")
+}
+
 /// 형식 이름 — ISO-BMFF 는 ftyp 브랜드로 HEIC/AVIF, 그 밖은 image 의 내용 스니핑, 둘 다 모르면 확장자.
 /// 확장자만 jpeg 인 HEIC(휴대폰 내보내기)가 "JPEG" 로 보이면 "왜 다른 앱에서 안 열리지"가 된다.
 fn format_label(file: &Path, head: &[u8]) -> String {
     if head.get(4..8) == Some(b"ftyp") {
-        let declared = u32::from_be_bytes([head[0], head[1], head[2], head[3]]) as usize;
-        // 상자가 선언보다 짧게 잘렸으면 브랜드는 대표 브랜드만 본다(아래 get 이 None).
-        let brands = head.get(8..declared.min(head.len())).unwrap_or(&head[8..8]);
-        let avif = brands.chunks_exact(4).any(|b| b == b"avif" || b == b"avis");
-        return if avif { "AVIF" } else { "HEIC" }.to_string();
+        return if ftyp_is_avif(head) { "AVIF" } else { "HEIC" }.to_string();
     }
     match image::guess_format(head) {
         Ok(f) => format!("{f:?}").to_ascii_uppercase(),
@@ -718,8 +726,8 @@ pub async fn fav_ocr_image(
             .map_err(|e| IpcError::new(ErrorCode::Io, text_git_net::ocr_file_read_failed(&path, e)))?
     } else {
         // ffmpeg 변환본은 이미 바로 선 그림이고 EXIF 가 없다(still_image.rs 의 회전 적용) — decode_upright 가 손대지 않는다.
-        let bin = super::video::find_ffmpeg(&app, state.inner())?;
-        super::still_image::still_to_jpeg(&bin, &file, LIGHTBOX_MAX_EDGE, LIGHTBOX_JPEG_Q).await?
+        let find = || super::video::find_ffmpeg(&app, state.inner());
+        super::still_image::still_to_jpeg(find, &file, LIGHTBOX_MAX_EDGE, LIGHTBOX_JPEG_Q, StillLane::View).await?
     };
     let img = tokio::task::spawn_blocking(move || super::ocr::decode_upright(&bytes))
         .await
