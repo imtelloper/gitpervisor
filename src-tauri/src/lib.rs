@@ -1,3 +1,4 @@
+mod claude_resume;
 mod claude_sessions;
 mod claude_usage;
 mod commands;
@@ -624,13 +625,30 @@ async fn open_sysmon_window(app: tauri::AppHandle, origin: String) -> Result<(),
 /// 라벨이 `float-`로 시작하지 **않는** 것이 중요하다: Destroyed 핸들러의 float 분기가 PTY를
 /// 종료시키는데, 이 창은 메인이 만든 PTY에 붙기만 하므로 닫혀도 세션이 살아 있어야 한다
 /// (닫으면 메인 창이 다시 이어받는다).
+///
+/// `geom` = 지난번 이 창의 자리(물리 px, 태스크 78 D3) — 지금 모니터 중 하나와 충분히 겹칠 때만 쓴다.
 #[tauri::command]
-async fn open_aggregate_window(app: tauri::AppHandle, origin: String) -> Result<(), String> {
+async fn open_aggregate_window(
+    app: tauri::AppHandle,
+    origin: String,
+    geom: Option<AggregateWindowGeom>,
+) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("aggregate") {
         focus_window(&win);
         return Ok(());
     }
     let url = tauri::Url::parse(&origin).map_err(|e| i18n::text_system::window_origin_invalid(e))?;
+    // 모니터 목록은 메인 스레드 클로저 밖에서 읽는다 — 안에서 부르면 이벤트 루프에 자기 자신을 기다리는 요청을 보낸다.
+    let place = geom.filter(|g| {
+        let monitors: Vec<(i32, i32, u32, u32)> = match app.available_monitors() {
+            Ok(ms) => ms.iter().map(|m| (m.position().x, m.position().y, m.size().width, m.size().height)).collect(),
+            Err(e) => {
+                log::warn!("[aggregate] 모니터 목록 실패 — 기본 자리로 엽니다: {e}");
+                Vec::new()
+            }
+        };
+        geom_on_screen(g, &monitors)
+    });
     let app2 = app.clone();
     app.run_on_main_thread(move || {
         let r = WebviewWindowBuilder::new(&app2, "aggregate", WebviewUrl::External(url))
@@ -638,17 +656,71 @@ async fn open_aggregate_window(app: tauri::AppHandle, origin: String) -> Result<
             .inner_size(1100.0, 720.0)
             .min_inner_size(520.0, 320.0)
             .center()
+            // 지난 자리로 옮길 때는 숨긴 채 만든다 — 가운데에 한 번 그렸다가 뛰는 게 보인다.
+            .visible(place.is_none())
             // OS 기본 타이틀바 제거 — 프론트의 FloatTitleBar로 대체 (리사이즈 유지)
             .decorations(false)
             .background_color(tauri::window::Color(30, 31, 34, 255))
             .gpv_webview_env()
             .build();
-        if let Err(e) = r {
-            log::error!("모아보기 창 생성 실패: {e}");
+        match (r, place) {
+            (Err(e), _) => log::error!("모아보기 창 생성 실패: {e}"),
+            (Ok(win), Some(g)) => place_aggregate_window(&win, g),
+            (Ok(_), None) => {}
         }
     })
     .map_err(|e| i18n::text_system::window_aggregate_schedule_failed(e))?;
     Ok(())
+}
+
+/// 모아보기 별도 창의 자리 — 물리 px(위치 = 바깥 왼쪽 위, 크기 = 안쪽). 프런트 `AggregateWindowGeom` 과 같은 모양.
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AggregateWindowGeom {
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+    maximized: bool,
+}
+
+/// 어느 모니터와 가로 100px 이상 겹치고 **제목줄(창 위쪽 32px)이 그 모니터 안에** 있는가. 모니터를 뺐거나 배치를 바꾼 뒤
+/// 옛 자리에 띄우면 화면 밖 창이 되고, 커스텀 타이틀바(decorations(false) + FloatTitleBar)라 제목줄이 화면 밖이면 끌어올
+/// 방법이 없다 — 창 아래쪽만 100px 걸쳐도 통과시키던 판정은 위 모니터를 뺀 경우 창을 그대로 못 쓰게 만들었다.
+/// 최대화된 창은 모니터보다 8px 위에서 시작한다(Windows) — 16px 여유. `monitors` = (x, y, w, h) 물리 px.
+fn geom_on_screen(g: &AggregateWindowGeom, monitors: &[(i32, i32, u32, u32)]) -> bool {
+    const MIN_OVERLAP: i64 = 100;
+    const TITLE_STRIP: i64 = 32;
+    const MAXIMIZED_SLACK: i64 = 16;
+    let span = |a: i32, alen: u32, b: i32, blen: u32| {
+        (i64::from(a) + i64::from(alen)).min(i64::from(b) + i64::from(blen)) - i64::from(a).max(i64::from(b))
+    };
+    let top = i64::from(g.y);
+    monitors.iter().any(|&(mx, my, mw, mh)| {
+        span(g.x, g.w, mx, mw) >= MIN_OVERLAP
+            && top >= i64::from(my) - MAXIMIZED_SLACK
+            && top + TITLE_STRIP <= i64::from(my) + i64::from(mh)
+    })
+}
+
+/// 물리 px 그대로 놓는다 — 논리 크기로 바꾸면 배율이 다른 모니터 사이에서 어긋난다. 위치를 먼저 옮겨야 배율이 다른
+/// 모니터로 넘어갈 때 OS 가 고친 크기(WM_DPICHANGED)를 뒤의 크기 지정이 덮는다.
+fn place_aggregate_window(win: &tauri::WebviewWindow, g: AggregateWindowGeom) {
+    if let Err(e) = win.set_position(tauri::PhysicalPosition::new(g.x, g.y)) {
+        log::warn!("[aggregate] 위치 복원 실패: {e}");
+    }
+    if let Err(e) = win.set_size(tauri::PhysicalSize::new(g.w, g.h)) {
+        log::warn!("[aggregate] 크기 복원 실패: {e}");
+    }
+    if g.maximized {
+        if let Err(e) = win.maximize() {
+            log::warn!("[aggregate] 최대화 복원 실패: {e}");
+        }
+    }
+    if let Err(e) = win.show() {
+        log::error!("[aggregate] 창 표시 실패: {e}");
+    }
+    focus_window(win);
 }
 
 /// 파일 하나를 별도 OS 창으로 띄운다(파일트리 우클릭 → 새 창으로 열기).
@@ -984,6 +1056,8 @@ pub(crate) fn shutdown_children(app: &tauri::AppHandle) {
         // 규모는 정리 전에 읽어 둔다(로그 전용). try_lock — 여기서 기다리면 종료만 늦어진다.
         n_term = state.terminals.try_lock().ok().map(|g| g.len());
         n_lsp = state.lsp.try_lock().ok().map(|g| g.len());
+        // 터미널↔Claude 대응표는 PTY 를 죽이기 **전에** 찍는다 — 죽이면 Claude 도 죽고 레지스트리 파일이 사라진다(태스크 78).
+        shutdown_step("claude-resume", || claude_resume::snapshot_for_shutdown(state));
         // 자식 **프로세스**부터 보낸다(좀비 셸/서버 방지, 설계 §16.8 + 태스크 17).
         shutdown_step("terminals", || commands::kill_all(state));
         shutdown_step("lsp", || commands::lsp_kill_all(state));
@@ -1241,6 +1315,8 @@ pub fn run() {
             // 바인드만 하고 accept는 자기 스레드라 setup을 막지 않는다. 기본 꺼짐(DOCS/mcp-server-design.md).
             mcp::apply(app.handle(), &settings);
             app.manage(AppState::new(projects.clone(), settings, notes, reports));
+            // 재시작 때 이어서 열 Claude 세션 — 지난 기록을 읽고 20초 주기 스냅샷을 시작한다(태스크 78).
+            claude_resume::start(app.handle());
             // LSP 유휴 서버 리퍼 — 10분 방치된 언어 서버 종료(태스크 17 §3.4).
             commands::lsp_spawn_idle_reaper(app.handle().clone());
             // 로컬 LLM 유휴 리퍼 — 10분 방치된 llama-server 종료(태스크 59 §3.3).
@@ -1456,6 +1532,8 @@ pub fn run() {
             claude_sessions::claude_sessions_list,
             claude_sessions::claude_session_detail,
             claude_sessions::claude_session_reveal,
+            claude_resume::claude_resume_take,
+            claude_resume::claude_resume_forget,
             db::db_list_connections,
             db::db_save_connection,
             db::db_delete_connection,
@@ -1600,11 +1678,14 @@ pub fn run() {
                     // 이벤트는 창이 죽는 중의 비동기 IPC라 유실됐고, 그러면 메인이 터미널을 "다른
                     // 창에서 표시 중"으로 접은 채 갇힌다(lib/aggregate-window.ts § 열림 상태).
                     // PTY는 건드리지 않는다 — 메인이 다시 이어받는다.
+                    // `shutdown` = 종료 정리가 닫은 것 — 메인은 그때 "사용자가 닫음"으로 기록하지 않아야
+                    // 다음 실행에서 이 창을 되살린다(태스크 78 D3).
                     shutdown_step("aggregate-close", || {
+                        let shutdown = SHUTDOWN_DONE.load(std::sync::atomic::Ordering::SeqCst);
                         let _ = window.emit_to(
                             "main",
                             "aggregate-window://state",
-                            serde_json::json!({ "open": false }),
+                            serde_json::json!({ "open": false, "shutdown": shutdown }),
                         );
                     });
                 }
@@ -1691,6 +1772,28 @@ mod tests {
         );
         assert!(!"aggregate".starts_with(FLOAT_LABEL_PREFIX));
         assert!(!"sysmon".starts_with(FLOAT_LABEL_PREFIX));
+    }
+
+    /// 지난 자리는 지금 모니터와 가로 100px 이상 겹치고 제목줄이 그 모니터 안일 때만 쓴다(태스크 78 D3).
+    #[test]
+    fn aggregate_geom_needs_100px_on_some_monitor() {
+        let g = |x, y, w, h| AggregateWindowGeom { x, y, w, h, maximized: false };
+        // 주 모니터 1920×1080 + 왼쪽 보조 모니터 2560×1440(배율이 달라 물리 좌표가 음수다).
+        let mons = [(0, 0, 1920, 1080), (-2560, -200, 2560, 1440)];
+        assert!(geom_on_screen(&g(100, 100, 1100, 720), &mons));
+        assert!(geom_on_screen(&g(-2000, 0, 1100, 720), &mons), "보조 모니터");
+        assert!(geom_on_screen(&g(1820, 980, 1100, 720), &mons), "딱 100px 겹침");
+        assert!(!geom_on_screen(&g(1821, 100, 1100, 720), &mons), "가로 99px");
+        assert!(geom_on_screen(&g(100, 1048, 1100, 720), &mons), "제목줄 32px 가 화면 맨 아래에 걸림 — 끌어올 수 있다");
+        assert!(!geom_on_screen(&g(100, 1049, 1100, 720), &mons), "제목줄이 화면 아래로 잘림");
+        // 위에 있던 모니터를 뺐다 — 창 아래 100px 만 주 모니터에 걸치고 제목줄은 화면 밖.
+        assert!(!geom_on_screen(&g(200, -900, 1100, 1000), &[(0, 0, 1920, 1080)]), "제목줄이 화면 위로 나감");
+        assert!(!geom_on_screen(&g(5000, 100, 1100, 720), &mons), "뺀 모니터 자리");
+        assert!(!geom_on_screen(&g(100, 100, 50, 50), &mons), "너무 작으면 100px 이 안 된다");
+        assert!(!geom_on_screen(&g(100, 100, 1100, 720), &[]), "모니터 목록을 못 읽으면 기본 자리");
+        // 최대화된 창은 모니터보다 8px 씩 크게 걸친다(Windows).
+        assert!(geom_on_screen(&g(-8, -8, 1936, 1096), &mons));
+        assert!(!geom_on_screen(&g(i32::MAX, i32::MAX, u32::MAX, u32::MAX), &mons), "넘침 없이 거절");
     }
 
     /// 풀 창 하나가 두 종류를 받는다(태스크 73) — **문서 창을 닫을 때 PTY를 죽이면 안 된다.**
@@ -1842,6 +1945,9 @@ mod tests {
             ("claude_sessions.rs", "claude_sessions_list"),
             ("claude_sessions.rs", "claude_session_detail"),
             ("claude_sessions.rs", "claude_session_reveal"),
+            // 태스크 78 — 레지스트리 읽기 + 프로세스 표(Toolhelp·OpenProcess).
+            ("claude_resume.rs", "claude_resume_take"),
+            ("claude_resume.rs", "claude_resume_forget"),
             ("commands/terminal.rs", "term_paste"),
             ("proc_icons.rs", "get_process_icons"),
             ("notifications.rs", "notify_os"),

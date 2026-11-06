@@ -278,6 +278,8 @@ export interface Settings {
   terminalStartAgent: "" | "claude" | "opencode";
   /** OpenCode가 처음 고를 모델 — "local"은 설정 › AI의 로컬 모델(llm/relay.rs 중계) */
   opencodeModel: "free" | "local";
+  /** 앱을 다시 켜면 터미널마다 지난번 Claude 세션을 `claude --resume` 으로 다시 연다(DOCS/task/78). 기본 true */
+  resumeClaudeOnRestart: boolean;
   notifyMode: NotifyMode;
   // ---- AI 완료 외부 알림 (Slack 웹훅 / SMTP email) ----
   // 시크릿(웹훅 URL·SMTP 비번)은 여기 두지 않고 OS 키링에 저장한다(notifySetSecret).
@@ -1087,6 +1089,15 @@ export interface ClaudeSessionDetail {
   subagents: { id: string; description?: string | null }[];
   /** 작업 경로가 지금도 폴더로 있는가 — 없으면 이어서 열어도 cd 가 실패한다(이어서 버튼을 막는다). */
   cwdExists: boolean;
+}
+
+// ---- 재시작 뒤 Claude 세션 이어서 열기(claude_resume.rs · DOCS/task/78) ----
+// 지난 실행에서 그 터미널(termId = paneId)에 떠 있던 Claude 세션. cwd = Claude 를 띄운 위치.
+export interface ClaudeResumeRec {
+  sessionId: string;
+  cwd: string;
+  name?: string | null;
+  updatedAtMs: number;
 }
 
 // ---- 파일 트리 ----
@@ -2258,6 +2269,11 @@ export const ipc = {
   // 탐색기를 띄우는 부작용이 있다 — 재시도하면 창이 두 번 뜬다(revealPath 와 같은 이유).
   claudeSessionReveal: (projectDir: string, id: string) =>
     callMutating<void>("claude_session_reveal", { projectDir, id }),
+  // 꺼내면 백엔드가 지운다(1회성) — 재시도하면 두 번째는 null 이라 이어서 열기를 잃는다.
+  claudeResumeTake: (termId: string) =>
+    callMutating<ClaudeResumeRec | null>("claude_resume_take", { termId }),
+  claudeResumeForget: (termId: string) =>
+    callMutating<void>("claude_resume_forget", { termId }),
 
   // ---- 변경 커맨드 (재시도 없음) ----
   stageFiles: (projectId: string, paths: string[]) =>

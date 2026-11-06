@@ -168,7 +168,7 @@ export function modelLabel(model: string | null | undefined): string | null {
   return model.replace(/^claude-/, "").replace(/-\d{8}$/, "");
 }
 
-const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // cwd 는 셸 한 줄에 큰따옴표로 들어간다 — 큰따옴표·백틱·$(pwsh·bash 확장)·!(bash 히스토리)·%(cmd 변수)·제어 문자는
 // 따옴표로 막을 수 없다. 이런 경로는 드물어서 고치지 않고 거절한다. 정규식에 따옴표 글자를 직접 쓰지 않는 건
 // 다국어 가드 스캐너(e2e 66)가 그것을 문자열 시작으로 읽기 때문이다.

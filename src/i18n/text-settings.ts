@@ -121,6 +121,9 @@ const ko = {
       "OpenCode를 열 때 처음 고를 모델. 로컬 모델은 설정 › AI에서 받은 모델을 앱이 띄워 연결합니다 — 코드가 밖으로 나가지 않지만 작은 모델이라 느리고 약합니다. OpenCode 안에서 /models 로 언제든 바꿀 수 있습니다",
     opencodeModelFree: "OpenCode 무료 모델 (클라우드)",
     opencodeModelLocal: "앱 로컬 모델 (설정 › AI)",
+    resumeClaudeOnRestart: "재시작하면 Claude 세션 이어서 열기",
+    resumeClaudeOnRestartHint:
+      "앱을 다시 켜면 터미널마다 하던 Claude 세션을 claude --resume 으로 다시 엽니다",
   },
   notify: {
     modeLabel: "AI 작업 완료 알림",
@@ -373,6 +376,10 @@ const ko = {
     terminalFontSize: { label: "터미널 폰트 크기", keywords: ["폰트", "크기", "터미널"] },
     terminalStartAgent: { label: "새 터미널 시작", keywords: ["에이전트", "기본", "새 터미널", "분할", "오픈코드", "클로드"] },
     opencodeModel: { label: "OpenCode 모델", keywords: ["오픈코드", "로컬", "모델", "무료", "llm"] },
+    resumeClaudeOnRestart: {
+      label: "재시작하면 Claude 세션 이어서 열기",
+      keywords: ["클로드", "세션", "재시작", "이어서", "복원", "업데이트", "resume"],
+    },
     notifyMode: { label: "AI 작업 완료 알림", keywords: ["알림", "완료"] },
     slackEnabled: { label: "Slack 알림", keywords: ["웹훅"] },
     slackSecret: { label: "Slack 웹훅 URL", keywords: ["웹훅"] },
@@ -547,6 +554,9 @@ export const settingsText = defineText(ko, {
         "The model OpenCode starts with. The local model runs the one downloaded in Settings › AI inside the app — your code stays on this machine, but small models are slower and weaker. Switch any time with /models inside OpenCode",
       opencodeModelFree: "OpenCode free models (cloud)",
       opencodeModelLocal: "App local model (Settings › AI)",
+      resumeClaudeOnRestart: "Reopen Claude sessions after restart",
+      resumeClaudeOnRestartHint:
+        "When the app starts again, each terminal reopens the Claude session it was running with claude --resume",
     },
     notify: {
       modeLabel: "AI task completion alerts",
@@ -798,6 +808,10 @@ export const settingsText = defineText(ko, {
       terminalFontSize: { label: "Terminal font size", keywords: ["font", "terminal"] },
       terminalStartAgent: { label: "New terminal starts", keywords: ["agent", "default", "opencode", "claude", "split"] },
       opencodeModel: { label: "OpenCode model", keywords: ["opencode", "local", "model", "free", "llm"] },
+      resumeClaudeOnRestart: {
+        label: "Reopen Claude sessions after restart",
+        keywords: ["claude", "session", "restart", "resume", "restore", "update"],
+      },
       notifyMode: { label: "AI task completion alerts", keywords: ["notify", "ai", "os"] },
       slackEnabled: { label: "Slack alerts", keywords: ["slack", "webhook"] },
       slackSecret: { label: "Slack webhook URL", keywords: ["slack", "url"] },

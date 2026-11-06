@@ -241,6 +241,8 @@ pub struct Settings {
     /// 종류를 고르지 않고 여는 새 터미널(단축키·분할·우클릭 "새 터미널")이 띄울 에이전트:
     /// "" (셸만) | "claude" | "opencode". 모르는 값은 프론트가 셸로 본다(lib/agent-launch.ts).
     pub terminal_start_agent: String,
+    /// 앱을 다시 켜면 터미널마다 돌던 Claude Code 세션을 `claude --resume` 으로 이어서 연다(태스크 78). 기본 켬.
+    pub resume_claude_on_restart: bool,
     /// OpenCode가 처음 고를 모델: "free"(OpenCode 무료 클라우드 모델) | "local"(설정 › AI의 로컬 모델 —
     /// `llm/relay.rs` 중계로 붙는다). 어느 쪽이든 OpenCode 안에서 `/models`로 바꿀 수 있다.
     pub opencode_model: String,
@@ -339,6 +341,7 @@ impl Default for Settings {
             terminal_shell: None,
             terminal_font_size: 13,
             terminal_start_agent: String::new(),
+            resume_claude_on_restart: true,
             opencode_model: "free".to_string(),
             notify_mode: "project-inactive".to_string(),
             slack_enabled: false,

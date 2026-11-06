@@ -38,6 +38,7 @@ import {
   snapshotSelection,
   unmountTerminalView,
 } from "../lib/terminal";
+import { AGGREGATE_ZOOM_KEY } from "../lib/aggregate-window";
 import { agentOf, runWithAgent, type TerminalAgent } from "../lib/agent-launch";
 import { translateRequest } from "../lib/translate";
 import {
@@ -165,6 +166,31 @@ function swapCellOrder(ids: readonly string[], a: string, b: string): string[] {
 /** 셀 이동을 시작하는 끌기 거리(px) — 헤더를 그냥 누르거나 살짝 떨린 것은 이동이 아니다. */
 const MOVE_THRESHOLD = 4;
 
+// 재시작해도 하던 그대로(태스크 78 D3). 선택이 아니라 **숨긴** 칸을 적는다 — 모아보기를 닫은 사이 생긴
+// 새 터미널은 저절로 보이게. 메인 안 모아보기와 별도 창이 같은 키를 쓰지만 둘은 동시에 열리지 않는다.
+const HIDDEN_KEY = "gp:aggregate-hidden";
+const ZOOM_KEY = AGGREGATE_ZOOM_KEY;
+
+/** 마운트 때 한 번 읽는다. hidden=null 은 "기록 없음" — 그때만 Claude 활동 기준으로 고른다. */
+function readRestoredCells(): { hidden: ReadonlySet<string> | null; zoom: string | null } {
+  try {
+    const v: unknown = JSON.parse(localStorage.getItem(HIDDEN_KEY) || "null");
+    return {
+      hidden: Array.isArray(v) ? new Set(v.filter((x): x is string => typeof x === "string")) : null,
+      zoom: localStorage.getItem(ZOOM_KEY),
+    };
+  } catch {
+    return { hidden: null, zoom: null }; // 손상 값 — 기록이 없을 때처럼 고른다
+  }
+}
+
+/** 처음 보여 줄 칸 — 숨긴 기록이 있으면 그것만 빼고, 없으면 클로드 활동(working/done) 있는 터미널, 그것도 없으면 전부. */
+function initialSelection(all: readonly CellMeta[], hidden: ReadonlySet<string> | null): Set<string> {
+  if (hidden) return new Set(all.filter((c) => !hidden.has(c.id)).map((c) => c.id));
+  const active = all.filter((t) => t.status).map((t) => t.id);
+  return new Set(active.length ? active : all.map((t) => t.id));
+}
+
 /** hover 팝오버 지연 닫기 — 트리거→팝오버로 건너뛰는 4px 공백에서 닫히지 않게 ms 유예.
  *  묶음 칩 드롭다운과 자동배치 팝오버가 같은 로직을 쓴다. 언마운트 시 타이머 정리. */
 function useDelayedClose(close: () => void, ms = 150) {
@@ -288,19 +314,25 @@ export function AggregateTerminals() {
     return out.map((c) => ({ ...c, color: colors.get(c.projName) ?? NO_COLOR }));
   }, [terminals, projects, byTerminal, browserItems, browserTabIds, colors, msg]);
 
-  // 선택 집합 — 최초엔 클로드 활동(working/done) 있는 터미널만. 없으면 전부(브라우저 포함).
-  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  // 선택 집합 — 지난번에 숨긴 칸만 빼고 연다(initialSelection). 칸이 아직 없으면 생길 때 정한다(아래 효과).
+  const [restored] = useState(readRestoredCells);
+  const [selected, setSelected] = useState<Set<string>>(() =>
+    all.length ? initialSelection(all, restored.hidden) : new Set(),
+  );
   // 확대(줌) 중인 터미널 셀 — 그리드 전면을 혼자 덮는다. 나머지 셀은 언마운트하지 않고
   // invisible로만 숨긴다: 언마운트하면 터미널 재부착·브라우저 리로드가 일어나고, 크기를
-  // 바꾸면 xterm 리핏이 연쇄된다. 크기 불변이면 둘 다 없다.
-  const [zoomed, setZoomed] = useState<string | null>(null);
-  const initedRef = useRef(false);
+  // 바꾸면 xterm 리핏이 연쇄된다. 크기 불변이면 둘 다 없다. 지난번 확대도 그 칸이 보일 때만 되살린다.
+  const [zoomed, setZoomed] = useState<string | null>(() =>
+    restored.zoom && selected.has(restored.zoom) ? restored.zoom : null,
+  );
+  const initedRef = useRef(all.length > 0);
   useEffect(() => {
     if (initedRef.current || all.length === 0) return;
     initedRef.current = true;
-    const active = all.filter((t) => t.status).map((t) => t.id);
-    setSelected(new Set(active.length ? active : all.map((t) => t.id)));
-  }, [all]);
+    const next = initialSelection(all, restored.hidden);
+    setSelected(next);
+    if (restored.zoom && next.has(restored.zoom)) setZoomed(restored.zoom);
+  }, [all, restored]);
 
   // 모아보기가 열린 동안 밖에서 새로 생긴 항목(파일트리 ".html → 브라우저로 열기" 등)은
   // 자동으로 그리드에 편입한다 — 안 그러면 방금 연 것이 모아보기에 가려 보이지 않는다.
@@ -315,7 +347,8 @@ export function AggregateTerminals() {
     // 처리했으므로 detach만 한다. 메인 창에선 closePane/floatPane이 먼저 정리해 no-op이다.
     if (prev) [...prev].filter((id) => !ids.has(id)).forEach((id) => detachTerminalKeepPty(id));
     if (!prev || !initedRef.current) return;
-    const added = [...ids].filter((id) => !prev.has(id));
+    // 지난번에 숨긴 칸이 뒤늦게 나타난 것은 편입하지 않는다 — 숨김을 되살린 의미가 없어진다.
+    const added = [...ids].filter((id) => !prev.has(id) && !restored.hidden?.has(id));
     if (added.length === 0) return;
     setSelected((sel) => {
       const next = new Set(sel);
@@ -326,6 +359,19 @@ export function AggregateTerminals() {
     // 확대 상태에서 그대로 재발하기 때문(이 효과가 존재하는 이유와 동일).
     setZoomed(null);
   }, [all]);
+
+  // 숨김·확대를 적는다(숨김 = 지금 있는 칸 − 선택). 초기 선택 전엔 적지 않는다 — 칸이 아직 없을 때
+  // 빈 값으로 덮으면 지난번 기록이 사라진다.
+  useEffect(() => {
+    if (!initedRef.current) return;
+    try {
+      localStorage.setItem(HIDDEN_KEY, JSON.stringify(all.filter((c) => !selected.has(c.id)).map((c) => c.id)));
+      if (zoomed) localStorage.setItem(ZOOM_KEY, zoomed);
+      else localStorage.removeItem(ZOOM_KEY);
+    } catch (e) {
+      console.warn("[aggregate] 숨김·확대 저장 실패 — 이번 실행 동안만 유지된다:", e);
+    }
+  }, [all, selected, zoomed]);
 
   // 사라진 터미널/브라우저는 선택에서 제거
   useEffect(() => {

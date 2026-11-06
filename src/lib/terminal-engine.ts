@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { info as logInfo } from "@tauri-apps/plugin-log";
+import { info as logInfo, warn as logWarn } from "@tauri-apps/plugin-log";
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
@@ -12,7 +12,7 @@ import { collectPanes, useTerminals } from "../stores/terminals";
 import { useTermThemes } from "../stores/termThemes";
 import { useUi } from "../stores/ui";
 import { copyFailMessage, copyText } from "./clipboard";
-import { errorMessage } from "./ipc";
+import { errorMessage, ipc } from "./ipc";
 import { isMod, isWindows } from "./platform";
 import { capturePtyInput } from "./prompt-capture";
 import { termSchemeOf } from "./term-color-schemes";
@@ -20,6 +20,7 @@ import {
   attachOutputChannel,
   copyTerminalText,
   ensureExitListener,
+  formatClaudeResume,
   formatLaunch,
   pasteIntoTerminal,
   registry,
@@ -508,6 +509,23 @@ if (import.meta.env.DEV) {
  *  Claude Code는 셋을 **다 켠다**(`?1000h ?1002h ?1003h ?1006h`). 이 중 하나라도 켜지거나
  *  꺼지면 선택 스태시를 버린다. 1006(SGR)은 인코딩이라 추적 자체를 켜지 않으므로 뺀다. */
 const MOUSE_TRACKING_MODES = [1000, 1002, 1003];
+
+// 재개(태스크 78)는 실패해도 터미널은 그대로 연다 — 대신 흔적은 남긴다(왜 안 이어졌는지 로그로만 알 수 있다).
+function warnResume(line: string): void {
+  void logWarn(`[claude-resume] ${line}`).catch((e: unknown) =>
+    console.warn("[claude-resume]", line, e),
+  );
+}
+
+// 셸이 시작하는 폴더 = term_open 이 쓰는 프로젝트 경로. 모르면 "" — formatClaudeResume 이 그때는 늘 이동한다(맞되 한 줄 더).
+async function projectRootOf(projectId: string): Promise<string> {
+  try {
+    return (await ipc.listProjects()).find((p) => p.id === projectId)?.path ?? "";
+  } catch (e) {
+    warnResume(`프로젝트 경로 조회 실패 — 이동을 생략하지 않는다: ${errorMessage(e)}`); // i18n-ok: 로그
+    return "";
+  }
+}
 
 /** xterm 인스턴스를 만들고 PTY를 띄운다. 이미 있으면 기존 것을 반환(멱등).
  *  attach=true면 새 PTY를 spawn하지 않고 살아있는 세션에 출력만 재연결(term_attach) —
@@ -1017,14 +1035,13 @@ export function createTerminalImpl(opts: {
     if (writeChains.get(opts.id) === opened) flushPending(opts.id);
   });
 
-  // 예약된 초기 입력("Claude Code 세션으로 새 터미널" — lib/terminal.ts queueInitialInput)을
-  // 이 창이 소비한다. attach는 남의 세션을 이어받는 것뿐이라 소비하지 않는다 — open한 창이 보낸다.
-  const initial = opts.attach ? null : takeInitialInput(opts.id);
-  if (initial) {
-    // **셸이 프롬프트를 찍은 뒤에** 보낸다. 프롬프트 전에 쓰면 셸 초기화가 삼킬 수 있다
-    // (pwsh PSReadLine). 단 `onWriteParsed` 첫 발화 = 셸 출력이 아니다 — Windows ConPTY는
-    // spawn 직후 `\x1b[?9001h`를 무조건 보낸다(:238-243). 그 발화에 보내면 우리가 피하려던
-    // 극초기 구간 그대로다. 그래서 **화면에 글자가 생겼는지**로 판정한다.
+  // 첫 입력을 **셸이 프롬프트를 찍은 뒤에** 보낸다. 프롬프트 전에 쓰면 셸 초기화가 삼킬 수 있다
+  // (pwsh PSReadLine). 단 `onWriteParsed` 첫 발화 = 셸 출력이 아니다 — Windows ConPTY는
+  // spawn 직후 `\x1b[?9001h`를 무조건 보낸다(:238-243). 그 발화에 보내면 우리가 피하려던
+  // 극초기 구간 그대로다. 그래서 **화면에 글자가 생겼는지**로 판정한다.
+  // 입력은 **실제로 뜬 셸**의 문법으로 만든다 — term_open이 폴백으로 다른 셸을 골랐을 수 있어
+  // 예약 시점엔 알 수 없다(lib/terminal.ts formatLaunch·formatClaudeResume). null이면 안 보낸다.
+  const sendAfterPrompt = (compose: (shell: string) => string | null) => {
     let off: { dispose: () => void } | null = null;
     let timer = 0;
     const send = () => {
@@ -1033,16 +1050,11 @@ export function createTerminalImpl(opts: {
       clearTimeout(timer);
       // 실패한 open에는 보내지 않는다 — 세션이 없어 쓰기는 버려지고 프롬프트 기록에 유령
       // 항목만 남는다(실패 배너 writeln 자체가 파싱을 유발해 여기까지 온다).
-      // 관리형 실행(LaunchSpec)은 **실제로 뜬 셸**의 문법으로 만든다 — term_open이 폴백으로
-      // 다른 셸을 골랐을 수 있어 예약 시점엔 알 수 없다(lib/terminal.ts formatLaunch).
       void startCmd.then(
-        (opened) =>
-          ptyWrite(
-            opts.id,
-            typeof initial === "string"
-              ? initial
-              : formatLaunch(initial, (opened as { shell?: string } | null)?.shell ?? ""),
-          ),
+        (opened) => {
+          const data = compose((opened as { shell?: string } | null)?.shell ?? "");
+          if (data) ptyWrite(opts.id, data);
+        },
         () => {},
       );
     };
@@ -1054,11 +1066,54 @@ export function createTerminalImpl(opts: {
       }
       return false;
     };
+    // 재개는 take 응답 뒤에 걸리므로 그 사이 프롬프트가 이미 찍혔을 수 있다.
+    if (hasGlyph()) {
+      send();
+      return;
+    }
     off = term.onWriteParsed(() => {
       if (hasGlyph()) send();
     });
-    // 끝내 아무 글자도 안 찍는 셸(조용한 초기화)에서도 명령을 잃지 않게 상한을 둔다.
-    timer = window.setTimeout(send, 3000);
+    // 끝내 아무 글자도 안 찍는 셸(조용한 초기화)에서도 명령을 잃지 않게 상한을 둔다. 3초는 **셸이 뜬 뒤부터** 센다 —
+    // 부팅 때 모아보기 칸이 한꺼번에 셸을 띄우면 term_open 자체가 3초를 넘겨(실측 ≈4.5s), 생성 시점부터 세면 프롬프트
+    // 전에 써서 PSReadLine 초기화가 재개 명령을 삼킨다(재개는 이미 꺼냈으니 그대로 사라진다).
+    void startCmd.then(
+      () => {
+        if (off) timer = window.setTimeout(send, 3000);
+      },
+      () => {},
+    );
+  };
+
+  // 예약된 초기 입력("Claude Code 세션으로 새 터미널" — lib/terminal.ts queueInitialInput)을
+  // 이 창이 소비한다. attach는 남의 세션을 이어받는 것뿐이라 소비하지 않는다 — open한 창이 보낸다.
+  // 재개(지난 실행에서 이 터미널에 떠 있던 Claude — 태스크 78)도 같은 규칙: open한 창이 한 번만 꺼낸다.
+  const initial = opts.attach ? null : takeInitialInput(opts.id);
+  if (initial) {
+    sendAfterPrompt((shell) =>
+      typeof initial === "string" ? initial : formatLaunch(initial, shell),
+    );
+    // 방금 사용자가 명시적으로 띄운 것이 이긴다 — 남은 재개는 버린다(다음 open에서 엉뚱하게 살아나지 않게).
+    void ipc.claudeResumeForget(opts.id).catch((e: unknown) =>
+      warnResume(`forget 실패 term=${opts.id.slice(0, 8)}: ${errorMessage(e)}`), // i18n-ok: 로그
+    );
+  } else if (!opts.attach) {
+    void ipc
+      .claudeResumeTake(opts.id)
+      .then(async (rec) => {
+        // 그 사이 닫힌 터미널이면 보낼 곳이 없다(닫기가 dropPane → forget 으로 백엔드 기록도 지운다).
+        if (!rec || registry.get(opts.id) !== inst) return;
+        const root = await projectRootOf(opts.projectId);
+        sendAfterPrompt((shell) => {
+          const line = formatClaudeResume(rec, shell, root);
+          if (!line)
+            warnResume(`셸 한 줄로 못 옮기는 세션이라 건너뜀 term=${opts.id.slice(0, 8)} shell=${shell}`); // i18n-ok: 로그
+          return line;
+        });
+      })
+      .catch((e: unknown) =>
+          warnResume(`take 실패 term=${opts.id.slice(0, 8)}: ${errorMessage(e)}`), // i18n-ok: 로그
+      );
   }
 
   // 입력 → PTY stdin

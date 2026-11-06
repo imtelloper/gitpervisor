@@ -146,7 +146,8 @@ export interface UiState {
   /** 터미널 모아보기(여러 터미널 한 화면 분할) 모드 */
   aggregateOpen: boolean;
   /** 모아보기가 **별도 창**으로 떠 있는가 — 그 창이 PTY 출력을 가져가므로(소비자 1개) 메인 창은
-   *  터미널 패널을 접고 "다른 창에서 표시 중"으로 알린다. 전이 상태, 영속 없음. */
+   *  터미널 패널을 접고 "다른 창에서 표시 중"으로 알린다. 전이 상태 — 재시작 복원은 main.tsx 가
+   *  `gp:aggregate-view` 로 첫 렌더 전에 정한다(aggregateOpen 도 같다, 태스크 78). */
   aggregateWindowOpen: boolean;
   setAggregateWindowOpen: (open: boolean) => void;
   /**

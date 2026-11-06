@@ -293,6 +293,17 @@ pub(crate) fn term_snapshots(state: &AppState) -> Vec<TermSnapshot> {
         .collect()
 }
 
+/// (termId, 셸 pid — 0 은 모름) 전부. Claude 세션 이어서 열기(claude_resume.rs)가 프로세스 계보를 이 셸까지 거슬러 올라간다.
+pub(crate) fn term_shell_pids(state: &AppState) -> Vec<(String, u32)> {
+    state
+        .terminals
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .map(|(id, s)| (id.clone(), u32::try_from(s.pid).unwrap_or(0)))
+        .collect()
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TermExit {

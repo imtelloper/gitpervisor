@@ -16,7 +16,12 @@ import { initUiLanguage } from "./i18n/ui-language";
 import { installMacCopyInterceptor } from "./lib/clipboard";
 import { attachLogoEvents, attachRepoEvents } from "./lib/events";
 import { setupErrorLogging } from "./lib/logging";
-import { watchAggregateWindow } from "./lib/aggregate-window";
+import {
+  readAggregateView,
+  restoreAggregateWindow,
+  saveAggregateView,
+  watchAggregateWindow,
+} from "./lib/aggregate-window";
 import { armEngagementTracking } from "./lib/engagement";
 import {
   docTarget,
@@ -380,9 +385,21 @@ if (label === "aggregate") {
   // 실행한다 — 보조 창이 공유 localStorage(gp:browser)를 스테일 스냅샷으로 덮지 않게.
   initPreviewRemint();
 
+  // 모아보기를 지난번 그대로 되살린다(태스크 78 D3) — **첫 렌더 전에** 정한다. 별도 창이면 메인 터미널을
+  // 미리 접어 둬야 메인이 PTY 를 먼저 열어 그 창과 같은 터미널을 두 번 여는 경합이 없다(TerminalPane takenByWindow).
+  const bootAggregateView = readAggregateView();
+  if (bootAggregateView === "main") useUi.getState().setAggregateOpen(true);
+  else if (bootAggregateView === "window") useUi.getState().setAggregateWindowOpen(true);
+  // 어디 열려 있는지는 상태가 바뀔 때마다 적는다 — 여닫는 경로(버튼·단축키·파일 열기·창 닫기)가 여럿이라 한곳에서.
+  // 종료가 별도 창을 닫은 것은 saveAggregateView 가 걸러 낸다(lib/aggregate-window.ts shutdownSeen).
+  useUi.subscribe((s, prev) => {
+    if (s.aggregateOpen === prev.aggregateOpen && s.aggregateWindowOpen === prev.aggregateWindowOpen) return;
+    saveAggregateView(s.aggregateWindowOpen ? "window" : s.aggregateOpen ? "main" : null);
+  });
+
   // 모아보기 별도 창의 열림/닫힘 추적 — 그 창이 PTY 출력을 가져가므로(소비자 1개) 열려 있는
   // 동안 메인은 터미널 패널을 접고, 닫히면 원래 채널로 다시 붙여 이어받는다.
-  watchAggregateWindow((open) => {
+  const onAggregateWindow = (open: boolean) => {
     const ui = useUi.getState();
     if (ui.aggregateWindowOpen === open) return;
     ui.setAggregateWindowOpen(open);
@@ -393,7 +410,12 @@ if (label === "aggregate") {
     } else {
       reattachAllTerminals();
     }
-  });
+  };
+  watchAggregateWindow(onAggregateWindow);
+  if (bootAggregateView === "window")
+    void restoreAggregateWindow().then((ok) => {
+      if (!ok) onAggregateWindow(false); // 메인이 터미널을 도로 맡고, 구독이 키를 지운다
+    });
 
   // E2E용 — dev에서 queryClient도 노출한다(테스트가 프로젝트 목록을 갱신해 픽스처를 인지).
   if (import.meta.env.DEV) {

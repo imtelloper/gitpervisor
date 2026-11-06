@@ -4,6 +4,7 @@ import { create } from "zustand";
 
 import { currentMessages } from "../i18n/ui-language";
 import { openFloatingWindow } from "../lib/floating";
+import { errorMessage, ipc } from "../lib/ipc";
 import {
   collectPanes,
   removePane,
@@ -22,6 +23,10 @@ import { useTermTitles } from "./termTitles";
  *  잔재가 쌓이지 않게). 셸만 되살리는 "재시작"은 disposeTerminal만 부르므로 셋 다 남는다(의도). */
 function dropPane(paneId: string): void {
   disposeTerminal(paneId);
+  // 영영 닫은 터미널의 "재시작하면 이어서 열 Claude 세션"도 버린다(태스크 78) — 실패해도 닫기는 그대로 진행한다.
+  void ipc.claudeResumeForget(paneId).catch((e: unknown) =>
+    console.warn(`[claude-resume] forget 실패 term=${paneId.slice(0, 8)}: ${errorMessage(e)}`),
+  );
   usePromptHistory.getState().clear(paneId);
   useTermThemes.getState().clear(paneId);
   useTermTitles.getState().clear(paneId);

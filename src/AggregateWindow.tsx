@@ -10,7 +10,7 @@ import { GitDialog } from "./components/git/GitDialog";
 import { SessionHistoryDialog } from "./components/sessions/SessionHistoryDialog";
 import { FileTreeDialog } from "./components/tree/FileTreeDialog";
 import { useMessages } from "./i18n/ui-language";
-import { announceAggregateWindow } from "./lib/aggregate-window";
+import { announceAggregateWindow, persistAggregateWindowGeom } from "./lib/aggregate-window";
 import { refreshTerminalThemes } from "./lib/terminal";
 import { useSettings } from "./queries";
 
@@ -35,6 +35,9 @@ export function AggregateWindow() {
   useEffect(() => {
     announceAggregateWindow(true);
   }, []);
+
+  // 위치·크기·최대화를 적어 둔다 — 다음에 열 때(재시작 포함) 같은 모니터·같은 자리로 연다(태스크 78 D3).
+  useEffect(() => persistAggregateWindowGeom(), []);
 
   // 이 창에도 저장된 테마 적용 — attach된 xterm은 생성 시 테마가 박제라 확정값으로 재적용한다.
   useEffect(() => {

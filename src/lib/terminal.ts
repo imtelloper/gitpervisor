@@ -4,10 +4,11 @@ import { warn as logWarn } from "@tauri-apps/plugin-log";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { Terminal } from "@xterm/xterm";
 
+import { pathKey, SESSION_ID } from "../components/sessions/session-history";
 import { currentMessages } from "../i18n/ui-language";
 import { useUi } from "../stores/ui";
 import { copyFailMessage, copyText, readClipboardText } from "./clipboard";
-import { errorMessage } from "./ipc";
+import { type ClaudeResumeRec, errorMessage } from "./ipc";
 import { isMac } from "./platform";
 import { forgetPtyInput } from "./prompt-capture";
 import { noteTerminalOutput } from "./terminal-perf-log";
@@ -209,6 +210,40 @@ export function formatLaunch(spec: LaunchSpec, shell: string): string {
   const q = (s: string) => `'${s.split("'").join("'\\''")}'`;
   const sets = env.map(([k, v]) => `${k}=${q(v)} `).join("");
   return `${sets}${q(spec.exe)}\r`;
+}
+
+/** 재시작 뒤 그 터미널의 Claude 세션을 다시 여는 입력(태스크 78 D2) — `formatLaunch` 처럼 **실제로 뜬 셸** 문법.
+ *  `claude --resume` 은 다른 폴더에서 열면 거절하므로("different directory") 셸이 시작한 폴더(`startDir`, 프로젝트
+ *  루트)와 다르면 먼저 이동한다. 따옴표로 막을 수 없는 경로는 null — 아무것도 안 보낸다(엉뚱한 명령보다 빈 셸이 낫다).
+ *  - pwsh/powershell: 작은따옴표 문자열은 `'` 말고도 ‘ ’ ‚ ‛ 를 따옴표로 읽는다 → 넷 다 두 번 써서 닫히지 않게.
+ *    `-LiteralPath` 라 `[ ]` 가 와일드카드로 안 읽힌다.
+ *  - cmd: `"` 는 못 넣고 `%`(변수)·`!`(지연 확장)는 따옴표 안에서도 펼쳐진다 → 있으면 null.
+ *  - 그 외: `'` 는 `'\''`, `--` 로 `-` 로 시작하는 경로가 옵션이 되지 않게. */
+export function formatClaudeResume(
+  rec: Pick<ClaudeResumeRec, "sessionId" | "cwd">,
+  shell: string,
+  startDir: string,
+): string | null {
+  if (!SESSION_ID.test(rec.sessionId)) return null;
+  const cwd = rec.cwd;
+  if (!cwd || /[\x00-\x1f\x7f]/.test(cwd)) return null;
+  const resume = `claude --resume ${rec.sessionId}\r`;
+  if (startDir && pathKey(cwd) === pathKey(startDir)) return resume;
+  const base = (shell.split(/[\\/]/).pop() ?? "").toLowerCase().replace(/\.exe$/, "");
+  if (base === "pwsh" || base === "powershell") {
+    // 정규식에 따옴표 글자를 직접 쓰지 않는다 — 다국어 가드 스캐너(e2e 66)가 문자열 시작으로 읽는다.
+    return `Set-Location -LiteralPath '${cwd.replace(/[\x27\u2018-\u201b]/g, "$&$&")}'\r${resume}`;
+  }
+  if (base === "cmd") {
+    if (/[\x22%!]/.test(cwd)) return null;
+    return `cd /d "${cwd}"\r${resume}`;
+  }
+  if (base === "fish") {
+    // fish 의 작은따옴표는 `\'`·`\\` 를 이스케이프로 읽는다 — POSIX 식 `'\''` 를 쓰면 `a\'` 같은 폴더 이름이 따옴표를 닫고
+    // 뒤를 명령으로 실행한다(검토에서 재현). fish 는 작은따옴표 안의 백슬래시 이스케이프를 허용하므로 둘 다 앞에 `\`.
+    return `cd -- '${cwd.replace(/[\x5c\x27]/g, "\\$&")}'\r${resume}`;
+  }
+  return `cd -- '${cwd.split("'").join("'\\''")}'\r${resume}`;
 }
 
 /** 예약된 초기 입력 — `paneId → {명령, 예약시각}`.

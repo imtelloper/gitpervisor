@@ -317,8 +317,36 @@ function listLeftover(root) {
   }
 }
 
+// 재시작 복원 키(태스크 78 D3) — 모아보기 숨김·확대·열림 위치·별도 창 위치. 앞 스위트가 남긴 값이 다음 스위트의
+// 모아보기 첫 선택을 바꾸고(숨긴 칸이 안 보인다), 회차 끝에 남으면 다음 기동이 모아보기·별도 창을 저절로 연다.
+// 회차를 사용자의 dev 앱에 붙여 돌릴 수도 있다(GPV_E2E_PORT) — 시작 때 값을 받아 두고 정리 끝에 그대로 되돌린다.
+const RESTORE_KEYS = ["gp:aggregate-hidden", "gp:aggregate-zoom", "gp:aggregate-view", "gp:aggregate-window-geom"];
+let savedRestoreKeys = null;
+async function saveRestoreKeys() {
+  savedRestoreKeys = await cdp
+    .eval(`Object.fromEntries((${JSON.stringify(RESTORE_KEYS)}).map((k) => [k, localStorage.getItem(k)]))`)
+    .catch((e) => {
+      console.error("재시작 복원 키 백업 경고:", e.message);
+      return null;
+    });
+}
+async function clearRestoreKeys() {
+  await cdp
+    .eval(`(${JSON.stringify(RESTORE_KEYS)}).forEach((k) => localStorage.removeItem(k))`)
+    .catch((e) => console.error("재시작 복원 키 정리 경고:", e.message));
+}
+async function restoreRestoreKeys() {
+  if (!savedRestoreKeys) return; // 백업 실패 — 지운 상태로 둔다(다음 기동이 기본 모아보기로 열릴 뿐)
+  await cdp
+    .eval(
+      `Object.entries(${JSON.stringify(savedRestoreKeys)}).forEach(([k, v]) => v === null ? localStorage.removeItem(k) : localStorage.setItem(k, v))`,
+    )
+    .catch((e) => console.error("재시작 복원 키 되돌리기 경고:", e.message));
+}
+
 async function teardown() {
   report.suite("정리 · 사용자 상태 복원 검증");
+  await restoreRestoreKeys();
   // 1) 테스트가 만든 자원 강제 정리(방어적 — 스위트가 이미 닫았어도 무해). cdp.try 는 throw 하지 않는다.
   for (const [cmd, args] of [
     ["term_close", { termId: "gpv-e2e-term" }],
@@ -475,6 +503,7 @@ async function main() {
     .catch((e) => ({ err: e.message }));
   if (!hooks?.gpv || !hooks?.monaco) report.info(`앱 dev 훅이 덜 떴다 — ${JSON.stringify(hooks)}`);
   snapshot = await takeSnapshot();
+  await saveRestoreKeys();
   console.log(`  스냅샷: 프로젝트 ${snapshot.projectIds.length} · DB연결 ${snapshot.dbConnIds.length} · 메모키 ${snapshot.notesKeys.length} · 테마 ${snapshot.settings.theme}`);
 
   // 러너가 도는 동안 주기 배경 fetch를 끈다. fetch_one 은 git fetch 내내 프로젝트 op 락을 쥐므로
@@ -587,6 +616,7 @@ async function main() {
     }
     report.suite(mod.name || path);
     if (shard) await restoreMainWebviewFocus();
+    await clearRestoreKeys();
     try {
       await mod.run({ cdp, report, fix, snapshot, port: cdp.cdpPort, devPort: cdp.devPort });
     } catch (e) {

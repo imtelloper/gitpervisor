@@ -87,6 +87,7 @@ export const SETTINGS_INDEX: SettingIndexEntry[] = [
   { category: "terminal", key: "terminalFontSize" },
   { category: "terminal", key: "terminalStartAgent" },
   { category: "terminal", key: "opencodeModel" },
+  { category: "terminal", key: "resumeClaudeOnRestart" },
   // 알림
   { category: "notify", key: "notifyMode" },
   { category: "notify", key: "slackEnabled" },

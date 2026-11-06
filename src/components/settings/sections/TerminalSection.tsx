@@ -1,4 +1,4 @@
-// 터미널 설정 (태스크 18) — 셸·폰트 크기·새 터미널 시작 에이전트.
+// 터미널 설정 (태스크 18) — 셸·폰트 크기·새 터미널 시작 에이전트·재시작 뒤 Claude 이어서 열기(태스크 78).
 import { useMessages } from "../../../i18n/ui-language";
 import type { Settings } from "../../../lib/ipc";
 import { Field, Hl, inputCls, type SectionProps } from "./shared";
@@ -47,6 +47,22 @@ export function TerminalSection({ form, update, hl }: SectionProps) {
             <option value="local">{msg.settings.terminal.opencodeModelLocal}</option>
           </select>
         </Field>
+      </Hl>
+      <Hl id="resumeClaudeOnRestart" hl={hl}>
+        <label className="flex cursor-pointer items-start gap-2">
+          <input
+            type="checkbox"
+            checked={form.resumeClaudeOnRestart}
+            onChange={(e) => update("resumeClaudeOnRestart", e.target.checked)}
+            className="mt-0.5 accent-accent"
+          />
+          <span>
+            {msg.settings.terminal.resumeClaudeOnRestart}
+            <span className="mt-0.5 block text-[11px] text-fg-muted">
+              {msg.settings.terminal.resumeClaudeOnRestartHint}
+            </span>
+          </span>
+        </label>
       </Hl>
       <Hl id="terminalFontSize" hl={hl}>
         <Field
