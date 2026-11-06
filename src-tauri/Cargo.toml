@@ -194,3 +194,9 @@ codegen-units = 1
 lto = "thin"
 strip = true
 
+
+# tao 0.35.3(tauri =2.11.2 가 고정) 의 Windows 키보드 교착(tao#1379)을 고친 사본 — 2026-11-06 설치본이 한/영(오른쪽 Alt) 키를
+# 뗄 때 UI 스레드가 자기 잠금을 기다리며 90분 멈췄다(덤프로 확인). 고친 곳은 vendor/tao/src/platform_impl/windows/event_loop.rs 의
+# "[gitpervisor 패치]" 두 군데뿐(lock → try_lock). tauri 를 2.12+(tao 0.36+, 상류에서 고침)로 올리면 이 절과 vendor/tao 를 지운다.
+[patch.crates-io]
+tao = { path = "vendor/tao" }
