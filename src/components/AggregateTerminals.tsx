@@ -144,6 +144,48 @@ function shapeFor(mode: AggregateLayout, n: number) {
   return { cols, rows, rowLens };
 }
 
+/** 1/3·1/2 확대 배치 — 확대 칸은 제 쪽 가장자리에 세로 꽉 찬 한 열, 나머지 칸은 남은 폭에 같은 모드로 균등하게
+ *  다시 깐다(겹쳐 덮지 않는다). 값은 그리드 컨테이너 기준 CSS calc. 트랙 비율(aggregateTracks)은 건드리지 않아
+ *  확대를 풀면 그대로 돌아간다. */
+function sideBySideLayout(
+  rest: readonly string[],
+  zoomed: string,
+  zoomOnLeft: boolean,
+  frac: number,
+  mode: AggregateLayout,
+): Map<string, { top: string; left: string; width: string; height: string }> {
+  const avail = `(100% - ${GAP * 3}px)`;
+  const zoomW = `${frac} * ${avail}`;
+  const restW = `${1 - frac} * ${avail}`;
+  const restLeft = zoomOnLeft ? `${GAP * 2}px + ${zoomW}` : `${GAP}px`;
+  const out = new Map([
+    [
+      zoomed,
+      {
+        top: `${GAP}px`,
+        height: `calc(100% - ${GAP * 2}px)`,
+        left: zoomOnLeft ? `${GAP}px` : `calc(${GAP * 2}px + ${restW})`,
+        width: `calc(${zoomW})`,
+      },
+    ],
+  ]);
+  if (rest.length === 0) return out;
+  const { cols, rows, rowLens } = shapeFor(mode, rest.length);
+  const rowH = `(100% - ${GAP * (rows + 1)}px) / ${rows}`;
+  rest.forEach((id, i) => {
+    const r = Math.floor(i / cols);
+    const c = i % cols;
+    const cellW = `(${restW} - ${GAP * (rowLens[r] - 1)}px) / ${rowLens[r]}`;
+    out.set(id, {
+      top: `calc(${GAP * (r + 1)}px + ${r} * ${rowH})`,
+      height: `calc(${rowH})`,
+      left: `calc(${restLeft} + ${c} * (${cellW} + ${GAP}px))`,
+      width: `calc(${cellW})`,
+    });
+  });
+  return out;
+}
+
 /** 저장된 순서(aggregateOrder)를 입힌다 — 순서에 있는 셀은 그 순서로, 없는 셀(새로 연 것)은 기본 순서
  *  그대로 뒤에. Array#sort는 stable이라 순서에 없는 셀끼리는 프로젝트 이름순이 유지된다. */
 function applyCellOrder<T extends { id: string }>(cells: T[], order: readonly string[]): T[] {
@@ -172,7 +214,7 @@ const HIDDEN_KEY = "gp:aggregate-hidden";
 const ZOOM_KEY = AGGREGATE_ZOOM_KEY;
 
 // 확대 폭 — 세로는 늘 꽉 차고 폭만 고른다. 넓은 화면에서 "전체"면 Claude TUI 줄이 짧아 오른쪽이 텅 빈다
-// (2026-11-06 사용자 지적). 1/3·1/2 는 다른 칸을 가리지 않고 남겨 둔다.
+// (2026-11-06 사용자 지적). 1/3·1/2 는 나머지 칸을 남은 폭으로 줄여 나란히 둔다(sideBySideLayout).
 type ZoomWidth = "third" | "half" | "full";
 const ZOOM_WIDTHS: { width: ZoomWidth; frac: number }[] = [
   { width: "third", frac: 1 / 3 },
@@ -504,6 +546,19 @@ export function AggregateTerminals() {
   }, [zoomed, all, selected]);
   const n = shown.length;
   const { cols, rows, rowLens } = shapeFor(layout, n);
+  // 1/3·1/2 확대면 나란히 배치(전체 확대는 아래 렌더에서 그리드를 덮는다). 확대 칸은 원래 열이 왼쪽 절반이면 왼쪽에.
+  const zoomIdx = zoomedId ? shown.findIndex((t) => t.id === zoomedId) : -1;
+  const zoomFrac = ZOOM_WIDTHS.find((z) => z.width === zoomWidth)?.frac ?? 1;
+  const sideBySide =
+    zoomedId && zoomFrac < 1
+      ? sideBySideLayout(
+          shown.filter((t) => t.id !== zoomedId).map((t) => t.id),
+          zoomedId,
+          zoomIdx % cols < rowLens[Math.floor(zoomIdx / cols)] / 2,
+          zoomFrac,
+          layout,
+        )
+      : null;
 
   // 버튼이 사라져도(n ≤ 1로 언마운트) React는 mouseleave를 주지 않는다 — 스테일 팝오버를
   // 안 지우면 셀이 다시 늘 때 호버도 없이 팝오버가 나타난다(확대 스테일 정리와 같은 이유).
@@ -917,25 +972,23 @@ export function AggregateTerminals() {
                 const leftFrac =
                   cellFr[r].slice(0, c).reduce((a, b) => a + b, 0) / sumC;
                 const isZoomed = zoomedId === t.id;
-                const left = `calc(${GAP + c * GAP}px + ${leftFrac} * (100% - ${fixedH}px))`;
-                // 확대 중: 대상은 세로 꽉 차게 위로(z-30), 폭은 zoomWidth — 제 칸 왼쪽에서 시작하되
-                // 오른쪽 끝을 넘으면 안으로 당긴다(전체면 늘 왼쪽 끝). 전체일 때만 나머지를 invisible —
-                // 슬롯 크기를 그대로 두어 xterm 리핏·webview 재배치를 일으키지 않는다. 네이티브
+                // 전체 확대: 대상은 그리드 전면(z-30), 나머지는 invisible — 슬롯 크기를
+                // 그대로 두어 xterm 리핏·webview 재배치를 일으키지 않는다. 네이티브
                 // webview는 CSS로 안 숨으므로 브라우저 셀은 suspended로 별도 숨김.
-                const zoomW = `calc(${ZOOM_WIDTHS.find((z) => z.width === zoomWidth)?.frac ?? 1} * (100% - ${GAP * 2}px))`;
-                const style = isZoomed
+                // 1/3·1/2 확대: sideBySide 좌표(나머지 칸은 남은 폭으로 줄어든다 — 리핏은 의도).
+                const style = sideBySide?.get(t.id) ?? (isZoomed
                   ? {
                       top: GAP,
-                      left: `min(${left}, calc(100% - ${GAP}px - ${zoomW}))`,
-                      width: zoomW,
+                      left: GAP,
+                      width: `calc(100% - ${GAP * 2}px)`,
                       height: `calc(100% - ${GAP * 2}px)`,
                     }
                   : {
                       top,
                       height,
-                      left,
+                      left: `calc(${GAP + c * GAP}px + ${leftFrac} * (100% - ${fixedH}px))`,
                       width: `calc(${cellFr[r][c] / sumC} * (100% - ${fixedH}px))`,
-                    };
+                    });
                 return (
                   <div
                     key={t.id}
@@ -943,8 +996,8 @@ export function AggregateTerminals() {
                     data-agg-cell={t.id}
                     // 칩 호버 강조 — 어느 칩이 이 셀인지 짝을 보여준다(ring은 셀 밖으로 그려져
                     // xterm 크기를 건드리지 않는다 = 리핏 없음).
-                    className={`absolute${isZoomed ? " z-30 rounded shadow-2xl" : ""}${
-                      zoomedId && !isZoomed && zoomWidth === "full" ? " invisible" : ""
+                    className={`absolute${isZoomed ? " z-30" : ""}${
+                      zoomedId && !isZoomed && !sideBySide ? " invisible" : ""
                     }${hovered.has(t.id) ? " rounded ring-2 ring-accent" : ""}${
                       moving?.id === t.id ? " opacity-60" : ""
                     }`}
@@ -963,16 +1016,16 @@ export function AggregateTerminals() {
                         meta={t}
                         // 드래그 중엔 네이티브 webview 숨김+iframe 포인터 차단, 드롭다운
                         // 열림 중엔 fixed 메뉴가 webview에 가려지지 않게 숨긴다.
-                        // 다른 셀 확대 중에도 숨긴다 — 네이티브 webview는 DOM 위에 떠서
-                        // invisible로는 확대된 터미널을 가리는 것을 못 막는다.
-                        suspended={resizing || !!moving || (zoomedId !== null && !isZoomed)}
+                        // 다른 셀 전체 확대 중에도 숨긴다 — 네이티브 webview는 DOM 위에 떠서
+                        // invisible로는 확대된 터미널을 가리는 것을 못 막는다. 나란히 확대는 겹치지 않아 그대로 보인다.
+                        suspended={resizing || !!moving || (zoomedId !== null && !isZoomed && !sideBySide)}
                         zoomed={isZoomed}
                         onUnzoom={() => setZoomed(null)}
                         // 칩 토글로 셀이 "크기 그대로 위치만" 밀리면 ResizeObserver가 못
-                        // 잡는다 — 슬롯 좌표가 바뀔 때 bounds를 재동기화하게 한다.
-                        layoutKey={`${n}:${r}:${c}`}
-                        canRight={c < len - 1}
-                        canBottom={r < rowsOfCells.length - 1}
+                        // 잡는다 — 슬롯 좌표가 바뀔 때 bounds를 재동기화하게 한다(나란히 확대도 슬롯이 바뀐다).
+                        layoutKey={`${n}:${r}:${c}:${sideBySide ? `${zoomedId}:${zoomWidth}` : ""}`}
+                        canRight={!zoomedId && c < len - 1}
+                        canBottom={!zoomedId && r < rowsOfCells.length - 1}
                         onResizeStart={(e, axis) => startResize(e, r, c, axis)}
                         onMoveStart={(e) => startMove(e, t.id)}
                         // 숨기기 = 상단 칩 선택 해제와 같다 — 브라우저는 그대로 살아 있다.
@@ -997,9 +1050,9 @@ export function AggregateTerminals() {
                         }}
                         onZoomLeave={scheduleZoomMenuClose}
                         // 경계가 컨테이너 가장자리면 재분배할 이웃이 없다 — 핸들 생략.
-                        // 확대 중엔 트랙 경계가 화면에 없으므로 핸들도 없다.
-                        canRight={!isZoomed && c < len - 1}
-                        canBottom={!isZoomed && r < rowsOfCells.length - 1}
+                        // 확대 중엔(나란히 포함) 트랙 경계가 화면에 없으므로 핸들도 없다.
+                        canRight={!zoomedId && c < len - 1}
+                        canBottom={!zoomedId && r < rowsOfCells.length - 1}
                         onResizeStart={(e, axis) => startResize(e, r, c, axis)}
                         onMoveStart={(e) => startMove(e, t.id)}
                         // 숨기기 = 상단 칩 선택 해제와 같다 — 셸은 계속 돌아간다.
