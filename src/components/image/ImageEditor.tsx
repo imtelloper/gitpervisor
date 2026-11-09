@@ -1152,9 +1152,10 @@ export default function ImageEditor() {
           exifRef.current = exifTiff
             ? Uint8Array.from(atob(exifTiff), (c) => c.charCodeAt(0))
             : jpegExifTiffFromBase64(base64) ?? webpExifTiffFromBase64(base64);
-          // 경로 모드에서 JPEG 로 받은 원본 형식 밖 파일(HEIC·TIFF 변환본·jfif)은 사진이다 — PNG 로 쓰면 몇 배로 커진다.
+          // JPEG 로 받은 원본 형식 밖 파일(HEIC·TIFF 변환본·jfif)은 사진이다 — PNG 로 쓰면 몇 배로 커진다.
           // 원본(HEIC)은 같은 형식 인코더가 없어 덮지 않고 형제 `이름.jpg` 가 된다(saveInPlace 의 형식 비교).
-          const fallback = absMode && mime === "image/jpeg" ? "jpeg" : "png";
+          // 프로젝트 모드도 `read_file_base64` 가 HEIC 를 변환본으로 준다(2026-11-09).
+          const fallback = mime === "image/jpeg" ? "jpeg" : "png";
           setFallbackFormat(fallback);
           setImg(image);
           setFormat(formatOfPath(path) ?? fallback);

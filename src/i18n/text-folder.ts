@@ -99,7 +99,10 @@ const ko = {
     rotateSave: "회전한 대로 저장",
     rotateSaveTitle: "보이는 방향(회전·뒤집기)대로 파일을 다시 씁니다",
     rotateSaveNeedsRotation: "보기를 돌리거나 뒤집은 뒤에 쓸 수 있습니다",
-    rotateSaveUnsupported: "이 형식은 같은 형식으로 다시 쓸 수 없습니다 — [편집]에서 돌린 뒤 다른 형식으로 저장하세요",
+    rotateSaveShort: "저장",
+    rotateSaveSiblingTitle: (name: string) =>
+      `보이는 방향(회전·뒤집기)대로 ${name} 을(를) 새로 만듭니다 — 이 형식은 같은 형식으로 다시 쓸 수 없어 원본은 그대로 둡니다`,
+    rotateSaveSiblingExists: (name: string) => `${name} 이(가) 이미 있습니다. 회전한 그림으로 덮어쓸까요?`,
     rotateSaveConfirmTitle: "회전한 대로 저장",
     rotateSaveConfirmMessage: (format: string) =>
       `${format} 파일은 다시 압축되어 화질이 조금 떨어집니다. 촬영 정보(EXIF)는 그대로 남깁니다. 원본 파일을 덮어씁니다.`,
@@ -223,7 +226,10 @@ export const folderText = defineText(ko, {
       rotateSave: "Save as rotated",
       rotateSaveTitle: "Rewrite the file the way it's shown (rotation and flips)",
       rotateSaveNeedsRotation: "Rotate or flip the view first",
-      rotateSaveUnsupported: "This format can't be written back as-is — rotate it in Edit and save in another format",
+      rotateSaveShort: "Save",
+      rotateSaveSiblingTitle: (name) =>
+        `Create ${name} the way it's shown (rotation and flips) — this format can't be written back, so the original is kept`,
+      rotateSaveSiblingExists: (name) => `${name} already exists. Overwrite it with the rotated image?`,
       rotateSaveConfirmTitle: "Save as rotated",
       rotateSaveConfirmMessage: (format) =>
         `${format} files are re-compressed, so quality drops slightly. Camera details (EXIF) are kept. The original file is overwritten.`,

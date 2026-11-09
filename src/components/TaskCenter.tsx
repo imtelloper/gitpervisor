@@ -9,6 +9,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMessages } from "../i18n/ui-language";
 import { errorMessage, ipc } from "../lib/ipc";
 import { useCaptionDoc } from "../stores/captionDoc";
+import { cancelImageConvertJob, useImageConvertJobs } from "../stores/imageConvertJobs";
 import { useMediaQueue } from "../stores/mediaQueue";
 import { useOccludesWebview } from "../stores/occlusion";
 import { useUi } from "../stores/ui";
@@ -38,6 +39,7 @@ export function TaskCenter() {
   const split = useVideoSplit((s) => s.batch);
   const exports = useVideoJobs((s) => s.jobs);
   const entries = useCaptionDoc((s) => s.entries);
+  const converts = useImageConvertJobs((s) => s.jobs);
   const [open, setOpen] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
   // 펼친 목록이 내장 브라우저(네이티브 webview)에 가리지 않게.
@@ -107,8 +109,18 @@ export function TaskCenter() {
           onCancel: () => useCaptionDoc.getState().cancelTranslate(key),
         });
     }
+    for (const j of converts)
+      out.push({
+        key: `convert:${j.id}`,
+        kind: t.kindImageConvert,
+        name: j.current,
+        pct: j.total > 0 ? (j.done / j.total) * 100 : 0,
+        detail: j.cancelled ? t.imageConvertCancelling : t.imageConvertDetail(j.done, j.total, j.format, j.failed),
+        cancelLabel: t.cancel,
+        onCancel: () => cancelImageConvertJob(j.id),
+      });
     return out;
-  }, [queue, frames, split, exports, entries, t, pushToast]);
+  }, [queue, frames, split, exports, entries, converts, t, pushToast]);
 
   // 바깥 클릭·Esc로 닫는다(다른 상태바 팝오버와 같은 규칙).
   useEffect(() => {

@@ -70,6 +70,9 @@ function readStrip(): boolean {
 }
 
 type Side = "info" | "ocr" | null;
+/** 한 장의 보기 회전·뒤집기. */
+type ViewXf = { rot: number; flipX: boolean; flipY: boolean };
+const NO_XF: ViewXf = { rot: 0, flipX: false, flipY: false };
 type Menu = "more" | "open" | "zoom" | null;
 
 /** 보이는 그대로(보기 회전·뒤집기 포함) 원본 해상도 캔버스 — 그림과 같은 순서(뒤집기는 회전 뒤, 화면 기준)로 그린다.
@@ -133,8 +136,9 @@ function rotateSaveFormat(name: string, sniffed: string | undefined): Extract<Im
  * 여기서 먹는다(전체 화면 끄기·메뉴 닫기) — 그래서 리스너가 window **캡처**이고 마운트 때 한 번만 건다: 미리보기의
  * 캡처 리스너는 렌더마다 다시 걸리므로 늘 이것보다 뒤에 돈다.
  *
- * 회전·뒤집기는 **보기만** 바꾸고(파일은 그대로) 닫을 때까지 장을 넘겨도 유지된다 — 옆으로 누운 카메라 프레임
- * 수백 장을 넘겨 볼 때 장마다 다시 돌리지 않게. 파일을 돌려 저장하려면 [편집](이미지 편집기).
+ * 회전·뒤집기는 **보기만** 바꾸고(파일은 그대로) **그 장에만** 걸린다 — 장을 넘기면 다음 장은 원래 방향, 돌아오면
+ * 돌려 둔 방향 그대로(닫으면 잊는다). 2026-11-09 사용자 지적: 한 장을 돌리면 다른 사진까지 돌아갔다. 돌린 대로 파일에
+ * 남기려면 툴바의 [회전한 대로 저장].
  */
 export function PhotoViewer({
   path,
@@ -193,9 +197,9 @@ export function PhotoViewer({
   /** 웹뷰가 디코드하지 못한 장의 키. */
   const [undecodable, setUndecodable] = useState<string | null>(null);
   const err = undecodable === cur.key ? msg.git.imageView.unsupportedTitle : image.error ? errText(image.error) : null;
-  const [rot, setRot] = useState(0);
-  const [flipX, setFlipX] = useState(false);
-  const [flipY, setFlipY] = useState(false);
+  const [xfs, setXfs] = useState<Record<string, ViewXf>>({});
+  const { rot, flipX, flipY } = xfs[path] ?? NO_XF;
+  const patchXf = (p: string, f: (x: ViewXf) => ViewXf) => setXfs((m) => ({ ...m, [p]: f(m[p] ?? NO_XF) }));
   const [info, setInfo] = useState<FavImageInfo | null>(null);
   const [infoErr, setInfoErr] = useState<string | null>(null);
   const [side, setSide] = useState<Side>(null);
@@ -312,7 +316,7 @@ export function PhotoViewer({
   // ---- 동작 ----
   const rotate = (d: 90 | 270) => {
     stopSlides();
-    setRot((r) => (r + d) % 360);
+    patchXf(path, (x) => ({ ...x, rot: (x.rot + d) % 360 }));
   };
 
   const copyShown = () => {
@@ -325,37 +329,49 @@ export function PhotoViewer({
   };
 
   // ---- 회전한 대로 저장 (설계 D11) ----
+  // 같은 형식으로 다시 쓸 수 있으면 그 파일을 덮고, 아니면(HEIC 등 — 캔버스에 인코더가 없다) 옆에 `이름.jpg` 를 만든다.
+  // ponytail: 형제 JPEG 은 뷰어가 받은 변환본(긴 변 4096)에서 그린다 — 24MP 이상 HEIC 는 줄어든다, 필요하면 원본 해상도 해독을 따로.
   const rotFmt = rotateSaveFormat(name, info?.format);
   const transformed = rot !== 0 || flipX || flipY;
+  const saveFmt = rotFmt ?? "jpeg";
+  const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1;
+  const baseName = path.slice(cut);
+  const stem = baseName.includes(".") ? baseName.slice(0, baseName.lastIndexOf(".")) : baseName;
+  const saveTarget = rotFmt ? path : `${path.slice(0, cut)}${stem}.jpg`;
+  const saveInPlace = saveTarget === path;
   const saveRotated = () => {
     const img = imgRef.current;
-    if (!img?.naturalWidth || !rotFmt || !transformed || !onFileChanged) return;
+    if (!img?.naturalWidth || !transformed || !onFileChanged) return;
     stopSlides();
     const p = path;
-    const shownName = name;
+    const target = saveTarget;
+    const inPlace = saveInPlace;
+    const fmt = saveFmt;
+    const xf = { rot, flipX, flipY };
+    const doneName = target.slice(Math.max(target.lastIndexOf("/"), target.lastIndexOf("\\")) + 1);
     /** 지금 보이는 그림의 원본(`fav_read` base64) — JPEG·WebP 는 여기서 EXIF 를 떠 새 파일에 옮겨 심는다. */
     const original = bytes?.base64 ?? null;
+    /** 변환본(HEIC→JPEG)이면 원본 EXIF 는 따로 온다. */
+    const exifTiff = bytes?.exifTiff ? Uint8Array.from(atob(bytes.exifTiff), (c) => c.charCodeAt(0)) : null;
     /** 읽은 원본의 정체 — 그 사이 밖에서 바뀌었으면 덮지 않는다(`fav_write_image` CONFLICT). */
     const stamp = bytes?.stamp;
-    const go = () => {
+    const encode = async () => {
+      // 원본 해상도로 다시 그려 — 손실 형식은 사진 앱과 같은 품질(0.92).
+      const canvas = shownCanvas(img, xf.rot, xf.flipX, xf.flipY);
+      const enc = await encodeCanvas(canvas, fmt, 92);
+      const tiff = exifTiff ?? (original && fmt === "jpeg" ? jpegExifTiffFromBase64(original) : null);
+      if (fmt === "jpeg") return withJpegExif(enc, tiff, canvas.width, canvas.height);
+      if (fmt === "webp" && original) return withWebpExif(enc, webpExifTiffFromBase64(original), canvas.width, canvas.height);
+      return enc;
+    };
+    const go = (overwrite: boolean) => {
       setRotSaving(true);
-      // 원본 해상도로 다시 그려 같은 형식으로 — 손실 형식은 사진 앱과 같은 품질(0.92).
-      void Promise.resolve()
-        .then(async () => {
-          const canvas = shownCanvas(img, rot, flipX, flipY);
-          const enc = await encodeCanvas(canvas, rotFmt, 92);
-          if (!original) return enc;
-          if (rotFmt === "jpeg") return withJpegExif(enc, jpegExifTiffFromBase64(original), canvas.width, canvas.height);
-          if (rotFmt === "webp") return withWebpExif(enc, webpExifTiffFromBase64(original), canvas.width, canvas.height);
-          return enc;
-        })
-        .then((out) => ipc.favWriteImage(p, bytesToBase64(out), true, stamp))
+      void encode()
+        .then((out) => ipc.favWriteImage(target, bytesToBase64(out), overwrite, inPlace ? stamp : undefined))
         .then(() => {
-          // 파일이 이제 그 방향이다 — 보기 회전을 그대로 두면 한 번 더 돌아 보인다.
-          setRot(0);
-          setFlipX(false);
-          setFlipY(false);
-          toast("success", currentMessages().folder.lightbox.rotateSaveDone(shownName));
+          // 파일이 이제 그 방향이다 — 보기 회전을 그대로 두면 한 번 더 돌아 보인다. 형제로 썼으면 원본은 그대로라 보기도 둔다.
+          if (inPlace) patchXf(p, () => NO_XF);
+          toast("success", currentMessages().folder.lightbox.rotateSaveDone(doneName));
           onFileChanged();
         })
         .catch((e) => {
@@ -363,25 +379,39 @@ export function PhotoViewer({
           if (isIpcError(e) && e.code === "CONFLICT") {
             toast("error", lb.rotateSaveConflict);
             onFileChanged(); // 디스크의 새 내용·새 정체를 다시 읽는다 — 보기 회전은 남겨 다시 저장할 수 있게
+          } else if (isIpcError(e) && e.code === "ALREADY_EXISTS") {
+            useUi.getState().askConfirm({
+              title: lb.rotateSaveConfirmTitle,
+              message: lb.rotateSaveSiblingExists(doneName),
+              detail: target,
+              confirmLabel: lb.rotateSaveConfirm,
+              danger: true,
+              onConfirm: () => go(true),
+            });
           } else toast("error", lb.rotateSaveFailed(errorMessage(e)));
         })
         .finally(() => setRotSaving(false));
     };
-    if (rotFmt === "png") {
-      go();
+    if (!inPlace || fmt === "png") {
+      go(inPlace);
       return;
     }
     // 손실 형식은 다시 압축된다(EXIF 는 옮겨 심는다) — 원본을 덮기 전에 묻는다.
     const lb = currentMessages().folder.lightbox;
     useUi.getState().askConfirm({
       title: lb.rotateSaveConfirmTitle,
-      message: lb.rotateSaveConfirmMessage(rotFmt === "jpeg" ? "JPEG" : "WebP"),
+      message: lb.rotateSaveConfirmMessage(fmt === "jpeg" ? "JPEG" : "WebP"),
       detail: p,
       confirmLabel: lb.rotateSaveConfirm,
       danger: true,
-      onConfirm: go,
+      onConfirm: () => go(true),
     });
   };
+  const rotateSaveTitle = !transformed
+    ? t.rotateSaveNeedsRotation
+    : saveInPlace
+      ? t.rotateSaveTitle
+      : t.rotateSaveSiblingTitle(saveTarget.slice(cut));
 
   const runOcr = () => {
     stopSlides();
@@ -499,6 +529,11 @@ export function PhotoViewer({
           <Btn title={t.rotateRightTitle} onClick={() => rotate(90)}>
             <RotateCw size={15} />
           </Btn>
+          {onFileChanged && transformed && (
+            <Btn title={rotateSaveTitle} onClick={() => !rotSaving && src && saveRotated()}>
+              <Save size={14} /> {t.rotateSaveShort}
+            </Btn>
+          )}
           {onTrash && (
             <Btn danger title={t.trashTitle(isMac ? "⌘⌫" : "Del")} onClick={onTrash}>
               <Trash2 size={15} />
@@ -513,14 +548,14 @@ export function PhotoViewer({
             </Btn>
             {menu === "more" && (
               <Popover place="below-left">
-                <MenuRow icon={<FlipHorizontal2 size={14} />} label={t.flipHorizontal} on={flipX} onClick={pick(() => setFlipX((v) => !v))} />
-                <MenuRow icon={<FlipVertical2 size={14} />} label={t.flipVertical} on={flipY} onClick={pick(() => setFlipY((v) => !v))} />
+                <MenuRow icon={<FlipHorizontal2 size={14} />} label={t.flipHorizontal} on={flipX} onClick={pick(() => patchXf(path, (x) => ({ ...x, flipX: !x.flipX })))} />
+                <MenuRow icon={<FlipVertical2 size={14} />} label={t.flipVertical} on={flipY} onClick={pick(() => patchXf(path, (x) => ({ ...x, flipY: !x.flipY })))} />
                 {onFileChanged && (
                   <MenuRow
                     icon={<Save size={14} />}
                     label={t.rotateSave}
-                    title={!rotFmt ? t.rotateSaveUnsupported : !transformed ? t.rotateSaveNeedsRotation : t.rotateSaveTitle}
-                    disabled={!rotFmt || !transformed || !src || rotSaving}
+                    title={rotateSaveTitle}
+                    disabled={!transformed || !src || rotSaving}
                     onClick={pick(saveRotated)}
                   />
                 )}

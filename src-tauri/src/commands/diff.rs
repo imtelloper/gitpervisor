@@ -297,9 +297,26 @@ pub(crate) fn stamp_of(meta: &std::fs::Metadata) -> Option<String> {
     Some(format!("{ms}:{}", meta.len()))
 }
 
-/// 워크트리의 파일을 그대로 읽어 (mime, base64)로 반환 — 이미지(png/jpg/webp/svg…) 미리보기용.
+/// 웹뷰가 못 그리는 사진인가 — HEIC/HEIF(확장자가 jpg 인 휴대폰 내보내기 포함)와 macOS 밖의 TIFF.
+/// AVIF 는 원본 그대로: WebView2·WKWebView 가 투명까지 그리는데 JPEG 로 바꾸면 알파가 사라진다(변환 메뉴의 PNG 도).
+fn needs_still_convert(file: &Path) -> bool {
+    match super::favorites::ext_lower(file).as_str() {
+        "avif" => false,
+        "tif" | "tiff" => !cfg!(target_os = "macos"),
+        _ => super::favorites::is_isobmff(file),
+    }
+}
+
+/// 변환본의 긴 변 한도 — 트리의 변환·편집기가 이 그림을 원본으로 쓰므로 사실상 줄이지 않는다
+/// (뷰어 한도 4096 이면 24MP 아이폰 사진 5712×4284 가 변환 때 조용히 작아진다). 16384 = 캔버스 한 변 한도.
+const PROJECT_STILL_MAX_EDGE: u32 = 16_384;
+
+/// 워크트리의 파일을 (mime, base64)로 반환 — 이미지 미리보기·트리의 이미지 변환·편집기 원본.
+/// 웹뷰가 못 그리는 형식(`needs_still_convert`)은 JPEG 변환본을 준다 — 2026-11-09 Windows 에서 HEIC 가 "표시할 수 없음",
+/// 일괄 변환은 전부 실패였다. `stamp` 는 원본 것.
 #[tauri::command]
 pub async fn read_file_base64(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     project_id: String,
     rel_path: String,
@@ -320,6 +337,15 @@ pub async fn read_file_base64(
         // 읽기 **전** 메타로 찍는다. 읽은 뒤에 찍으면 읽는 동안의 변경을 스탬프가 흡수해
         // "안 바뀐 것처럼" 보인다 — 그 창이 정확히 막으려는 대상이다.
         stamp = stamp_of(&m);
+    }
+    let sniff = full.clone();
+    let convert = tokio::task::spawn_blocking(move || needs_still_convert(&sniff))
+        .await
+        .map_err(|e| IpcError::new(ErrorCode::Io, crate::i18n::text_db::diff_file_read_failed(e)))?;
+    if convert {
+        let find = || super::video::find_ffmpeg(&app, state.inner());
+        let jpg = super::still_image::still_to_jpeg(find, &full, PROJECT_STILL_MAX_EDGE, 2, super::still_image::StillLane::View).await?;
+        return Ok(FileBytes { mime: "image/jpeg".into(), base64: B64.encode(&jpg), stamp });
     }
     let bytes = tokio::fs::read(&full)
         .await
@@ -386,6 +412,26 @@ mod tests {
         }
         // 대소문자 무관
         assert_eq!(mime_of("A.TIFF"), "image/tiff");
+    }
+
+    /// HEIC 는 내용(ftyp)으로 — 확장자가 jpg 여도 변환한다. AVIF 는 웹뷰가 알파까지 그리므로 원본 그대로.
+    #[test]
+    fn still_convert_picks_heic_by_content_and_keeps_avif() {
+        let dir = tempfile::tempdir().unwrap();
+        let heic = b"\0\0\0\x18ftypheic\0\0\0\0";
+        let jpeg = b"\xff\xd8\xff\xe0\0\x10JFIF\0";
+        for (name, bytes, want) in [
+            ("a.HEIC", &heic[..], true),
+            ("phone.jpg", &heic[..], true),
+            ("a.avif", &heic[..], false),
+            ("a.jpg", &jpeg[..], false),
+            ("a.png", b"\x89PNG\r\n\x1a\n", false),
+            ("a.tiff", b"II*\0\x08\0\0\0", !cfg!(target_os = "macos")),
+        ] {
+            let p = dir.path().join(name);
+            std::fs::write(&p, bytes).unwrap();
+            assert_eq!(needs_still_convert(&p), want, "{name}");
+        }
     }
 
     /// 상한 초과 파일은 **읽지 않고** 걸러야 한다.

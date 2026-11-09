@@ -41,7 +41,7 @@ const ko = {
   tasks: {
     button: "작업",
     buttonCount: (n: number) => `작업 ${n}`,
-    buttonTitle: "진행 중이거나 대기 중인 작업 — 사본·프레임 추출·분할 저장·내보내기·자막",
+    buttonTitle: "진행 중이거나 대기 중인 작업 — 사본·프레임 추출·분할 저장·내보내기·자막·이미지 변환",
     title: "작업",
     empty: "진행 중인 작업이 없습니다",
     kindFastCopy: "빠른 재생 사본",
@@ -50,6 +50,10 @@ const ko = {
     kindExport: "내보내기",
     kindCaptions: "자막 만들기",
     kindTranslate: "자막 번역",
+    kindImageConvert: "이미지 변환",
+    imageConvertDetail: (done: number, total: number, format: string, failed: number) =>
+      `${done} / ${total}장 → ${format}${failed ? ` · 실패 ${failed}` : ""}`,
+    imageConvertCancelling: "취소 중 — 변환 중인 장까지 마칩니다",
     queued: (ahead: number) => `대기 중 · 앞에 ${ahead}개`,
     framesDetail: (done: number, expected: number) => `${done} / 약 ${expected}장`,
     framesCount: (done: number) => `${done}장`,
@@ -207,7 +211,7 @@ export const appText = defineText(ko, {
     tasks: {
       button: "Tasks",
       buttonCount: (n) => `Tasks ${n}`,
-      buttonTitle: "Running or queued tasks — copies, frame extraction, split saves, exports, captions",
+      buttonTitle: "Running or queued tasks — copies, frame extraction, split saves, exports, captions, image conversions",
       title: "Tasks",
       empty: "No tasks running",
       kindFastCopy: "Fast-start copy",
@@ -216,6 +220,10 @@ export const appText = defineText(ko, {
       kindExport: "Export",
       kindCaptions: "Captions",
       kindTranslate: "Caption translation",
+      kindImageConvert: "Image conversion",
+      imageConvertDetail: (done: number, total: number, format: string, failed: number) =>
+        `${done} / ${total} → ${format}${failed ? ` · ${failed} failed` : ""}`,
+      imageConvertCancelling: "Cancelling — finishing the images already in progress",
       queued: (ahead) => `Queued · ${ahead} ahead`,
       framesDetail: (done, expected) => `${done} / ~${expected} frames`,
       framesCount: (done) => `${done} ${plural(done, "frame", "frames")}`,

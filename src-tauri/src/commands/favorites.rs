@@ -584,13 +584,13 @@ pub async fn fav_read(app: AppHandle, state: State<'_, AppState>, path: String) 
 }
 
 /// ISO-BMFF 정지 이미지(HEIC·HEIF·AVIF)인가 — 4~8 바이트가 `ftyp`. 확장자가 jpeg 인 HEIC(휴대폰 내보내기)도 잡는다.
-fn is_isobmff(file: &Path) -> bool {
+pub(crate) fn is_isobmff(file: &Path) -> bool {
     use std::io::Read;
     let mut head = [0u8; 8];
     File::open(file).and_then(|mut f| f.read_exact(&mut head)).is_ok() && &head[4..8] == b"ftyp"
 }
 
-fn ext_lower(file: &Path) -> String {
+pub(crate) fn ext_lower(file: &Path) -> String {
     file.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase()
 }
 

@@ -161,7 +161,7 @@ function ZoomableImage({
   const pushToast = useUi((s) => s.pushToast);
   const openImageEditor = useUi((s) => s.openImageEditor);
   // 웹뷰가 디코드하지 못한 형식 — 확장자가 목록에 있어도 엔진이 못 그릴 수 있다
-  // (TIFF·HEIC는 macOS WKWebView는 되고 Windows WebView2는 안 된다 — 실측).
+  // (HEIC·TIFF 는 `read_file_base64` 가 JPEG 로 바꿔 주지만 손상 파일·그 밖의 형식은 여기로 온다).
   // onError를 안 잡으면 onLoad가 영영 안 와 빈 화면만 남는다.
   const [decodeFailed, setDecodeFailed] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);

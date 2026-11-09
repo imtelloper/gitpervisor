@@ -75,6 +75,12 @@ import {
   useTreeKindFiles,
 } from "../../queries";
 import { isPreviewUrl, useBrowsers } from "../../stores/browser";
+import {
+  finishImageConvertJob,
+  isImageConvertCancelled,
+  startImageConvertJob,
+  updateImageConvertJob,
+} from "../../stores/imageConvertJobs";
 import { useOccludesWebview } from "../../stores/occlusion";
 import { useTerminals } from "../../stores/terminals";
 import { useTreeState } from "../../stores/treeState";
@@ -163,6 +169,22 @@ const TreeRowCtx = createContext<TreeRowApi | null>(null);
 // 플랫폼 구분은 안 한다 — 실행은 OS 기본 핸들러(open/ShellExecute)가 판단하고, 핸들러가
 // 없는 플랫폼에서는 에러 토스트로 끝난다.
 const EXEC_EXT = new Set(["exe", "bat", "cmd", "com", "msi", "dmg"]);
+
+/** 일괄 변환 동시 처리 수 — 백엔드 보기 줄(HEIC 해독)이 2칸이라 하나 더 두면 캔버스 인코딩이 다음 해독과 겹친다. */
+const CONVERT_PARALLEL = 3;
+
+/** 변환본의 형제 경로 — 같은 폴더, 확장자만 대상 형식으로. */
+function convertTargetOf(relPath: string, fmt: ImgFormat): string {
+  const slash = relPath.lastIndexOf("/");
+  const baseName = relPath.slice(slash + 1);
+  const dot = baseName.lastIndexOf(".");
+  const stem = dot > 0 ? baseName.slice(0, dot) : baseName;
+  return `${relPath.slice(0, slash + 1)}${stem}.${extOf(fmt)}`;
+}
+
+function formatLabelOf(fmt: ImgFormat): string {
+  return FORMATS.find((f) => f.id === fmt)?.label ?? fmt;
+}
 function isRunnable(name: string): boolean {
   const dot = name.lastIndexOf(".");
   return dot >= 0 && EXEC_EXT.has(name.slice(dot + 1).toLowerCase());
@@ -1318,16 +1340,12 @@ export function FileTreePanel({
     }
     ctx.drawImage(image, 0, 0);
     const bytes = await encodeCanvas(c, fmt, 90);
-    const dir = relPath.includes("/")
-      ? relPath.slice(0, relPath.lastIndexOf("/") + 1)
-      : "";
-    const baseName = relPath.split("/").pop() ?? relPath;
-    const dot = baseName.lastIndexOf(".");
-    const stem = dot > 0 ? baseName.slice(0, dot) : baseName;
+    // 일괄 변환은 3장씩 겹친다 — 24MP 캔버스 하나가 ~100MB 라 GC 를 기다리지 않고 바로 놓는다.
+    c.width = c.height = 0;
     // 애니메이션 gif 는 캔버스가 첫 프레임만 래스터화하므로 사용자에게 알린다.
     const note = /\.gif$/i.test(relPath) ? msg.tree.convert.gifFirstFrameNote : "";
     return {
-      target: `${dir}${stem}.${extOf(fmt)}`,
+      target: convertTargetOf(relPath, fmt),
       base64: bytesToBase64(bytes),
       note,
     };
@@ -1368,11 +1386,15 @@ export function FileTreePanel({
   // 단일 변환 — 같은 폴더에 형제 파일로 저장(충돌 시 덮어쓰기 확인).
   async function convert(m: TreeMenu, fmt: ImgFormat) {
     setMenu(null);
+    const jobId = startImageConvertJob(formatLabelOf(fmt), 1);
+    updateImageConvertJob(jobId, { current: m.name });
     try {
       const { target, base64, note } = await encodeImageToTarget(m.path, fmt);
       saveConverted(target, base64, note);
     } catch (e) {
       pushToast("error", errorMessage(e));
+    } finally {
+      finishImageConvertJob(jobId);
     }
   }
 
@@ -1382,29 +1404,44 @@ export function FileTreePanel({
   async function convertBatch(paths: string[], fmt: ImgFormat) {
     setMenu(null);
     const conflicts: { target: string; base64: string }[] = [];
+    // 대상 이름은 경로만으로 정해진다 — 해독 전에 배치 내 중복을 걸러 순서(앞엣것 우선)를 병렬과 무관하게 지킨다.
     const seenTargets = new Set<string>();
+    const todo = paths.filter((p) => {
+      const t = convertTargetOf(p, fmt);
+      if (seenTargets.has(t)) return false;
+      seenTargets.add(t);
+      return true;
+    });
+    const dup = paths.length - todo.length;
     let ok = 0;
     let fail = 0;
-    let dup = 0;
-    for (const p of paths) {
-      try {
-        const { target, base64 } = await encodeImageToTarget(p, fmt);
-        if (seenTargets.has(target)) {
-          dup++; // 이 배치가 이미 같은 이름으로 변환함 — 자기 자신을 덮어쓰지 않게 건너뜀
-          continue;
-        }
-        seenTargets.add(target);
+    let done = 0;
+    const jobId = startImageConvertJob(formatLabelOf(fmt), todo.length);
+    let next = 0;
+    const worker = async () => {
+      while (next < todo.length && !isImageConvertCancelled(jobId)) {
+        const p = todo[next++];
+        updateImageConvertJob(jobId, { current: p.split("/").pop() ?? p });
         try {
-          await ipc.writeFileBytes(projectId, target, base64, false);
-          ok++;
-        } catch (e) {
-          if (isIpcError(e) && e.code === "ALREADY_EXISTS")
-            conflicts.push({ target, base64 });
-          else fail++;
+          const { target, base64 } = await encodeImageToTarget(p, fmt);
+          try {
+            await ipc.writeFileBytes(projectId, target, base64, false);
+            ok++;
+          } catch (e) {
+            if (isIpcError(e) && e.code === "ALREADY_EXISTS")
+              conflicts.push({ target, base64 });
+            else fail++;
+          }
+        } catch {
+          fail++; // 디코드/인코드 실패(손상·미지원) — 건너뛴다
         }
-      } catch {
-        fail++; // 디코드/인코드 실패(손상·미지원) — 건너뛴다
+        updateImageConvertJob(jobId, { done: ++done, failed: fail });
       }
+    };
+    try {
+      await Promise.all(Array.from({ length: Math.min(CONVERT_PARALLEL, todo.length) }, worker));
+    } finally {
+      finishImageConvertJob(jobId);
     }
     if (ok) invalidateImageWrites();
     if (conflicts.length) {
