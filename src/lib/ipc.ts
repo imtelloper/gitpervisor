@@ -1704,6 +1704,8 @@ export const ipc = {
    *  백엔드가 다른 `fav_*` 와 같은 허용 루트 검사를 거친다(commands/favorites.rs `fav_delete`). 여러 개는 전부 검사한 뒤
    *  한 번에 보낸다 — 하나라도 루트 밖이면 아무것도 지우지 않는다. */
   favDelete: (paths: string[]) => callMutating<void>("fav_delete", { paths }),
+  /** 폴더 창 ⌘C — 고른 항목을 **파일로** 클립보드에 올린다(Windows 는 `text` 도 함께). commands/favorites.rs `fav_copy_files`. */
+  favCopyFiles: (paths: string[], text: string) => callMutating<void>("fav_copy_files", { paths, text }),
   /** 같은 폴더 안에서 이름만 바꾼다 — 새 절대경로를 돌려준다(commands/favorites.rs `fav_rename`). */
   favRename: (path: string, newName: string) => callMutating<string>("fav_rename", { path, newName }),
   /** 사진 뷰어 정보 패널 — 형식·치수·크기·EXIF(commands/favorites.rs `fav_image_info`). 파일 앞 1MB 만 읽는다. */

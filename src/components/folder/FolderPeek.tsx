@@ -7,6 +7,7 @@ import {
   Film,
   FolderOpen,
   Image as ImageIcon,
+  Link,
   SquareTerminal,
   Trash2,
   X,
@@ -15,7 +16,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { useMessages } from "../../i18n/ui-language";
-import { copyText } from "../../lib/clipboard";
+import { copyFilesWithToast, copyText } from "../../lib/clipboard";
 import { favThumbUrl, useFavThumbToken, useThumbImgRetry } from "../../lib/fav-thumb";
 import { ipc, type FavEntry } from "../../lib/ipc";
 import { joinPathsForPrompt } from "../../lib/path";
@@ -224,7 +225,7 @@ export function FolderPeek({ path, onMouseEnter }: { path: string; onMouseEnter?
     const onKey = (ev: KeyboardEvent) => {
       const t = ev.target as HTMLElement | null;
       if (t?.closest("input, textarea:not(.xterm-helper-textarea), [contenteditable=true]")) return;
-      if (isMod(ev) && ev.key.toLowerCase() === "c") copy(pickedNames);
+      if (isMod(ev) && ev.key.toLowerCase() === "c") copyFilesWithToast(pickedNames.map(join)); // 파일로 — 폴더 창과 같다
       else if (ev.key === "Delete") remove(pickedNames);
       else if (ev.key === "Escape") setPicked(NO_PICK);
       else return;
@@ -391,6 +392,7 @@ export function FolderPeek({ path, onMouseEnter }: { path: string; onMouseEnter?
           name={menu.name}
           count={targetsOf(menu.name).length}
           onClose={() => setMenu(null)}
+          onCopyFiles={() => copyFilesWithToast(targetsOf(menu.name).map(join))}
           onCopy={() => copy(targetsOf(menu.name))}
           onPaste={() => pasteToTerminal(targetsOf(menu.name))}
           onOpen={() => open(menu.name, "default")}
@@ -441,6 +443,7 @@ function PeekMenu({
   name,
   count,
   onClose,
+  onCopyFiles,
   onCopy,
   onPaste,
   onOpen,
@@ -453,6 +456,7 @@ function PeekMenu({
   /** 메뉴가 다룰 개수 — 고른 칸 안을 우클릭했으면 고른 전부. 열기·위치 보기는 누른 칸 하나다. */
   count: number;
   onClose: () => void;
+  onCopyFiles: () => void;
   onCopy: () => void;
   onPaste: () => void;
   onOpen: () => void;
@@ -487,8 +491,8 @@ function PeekMenu({
       className="fixed z-[60] min-w-52 rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl"
       style={{
         left: Math.min(x, window.innerWidth - 220),
-        // 항목 5 × 31.5 + 구분선 8.7 + 헤더 22 + 패딩 9 ≈ 197 → 여유를 둬 208.
-        top: Math.max(0, Math.min(y, window.innerHeight - 208)),
+        // 항목 6 × 31.5 + 구분선 8.7 + 헤더 22 + 패딩 9 ≈ 229 → 여유를 둬 240.
+        top: Math.max(0, Math.min(y, window.innerHeight - 240)),
       }}
       onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
@@ -499,6 +503,11 @@ function PeekMenu({
       <div className="my-1 border-t border-edge" />
       <PeekRow
         icon={<Copy size={14} />}
+        label={count > 1 ? msg.folder.menuCopyFilesMany(count) : msg.folder.menuCopyFiles}
+        onClick={run(onCopyFiles)}
+      />
+      <PeekRow
+        icon={<Link size={14} />}
         label={count > 1 ? msg.folder.window.menuCopyPathMany(count) : msg.folder.menuCopyPath}
         onClick={run(onCopy)}
       />

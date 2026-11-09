@@ -1449,6 +1449,7 @@ pub fn run() {
             commands::fav_read,
             commands::fav_open,
             commands::fav_delete,
+            commands::fav_copy_files,
             commands::fav_rename,
             commands::fav_image_info,
             commands::fav_ocr_image,

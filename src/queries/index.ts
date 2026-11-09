@@ -1180,17 +1180,32 @@ export function useCreateFile(projectId: string) {
 export function useDeletePath(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (relPath: string) => {
-      await ipc.deletePath(projectId, relPath);
-      // 이미지가 사라졌으면 사이드카 편집 문서도 버린다 — 안 그러면 같은 이름의 새 이미지가
-      // 나중에 그 자리에 들어왔을 때 남의 주석이 되살아난다(41 §3.1: 키는 경로 정체다).
-      await ipc.imageDocDelete(projectId, relPath).catch(() => {});
+    // 여러 개(트리 멀티선택)는 하나가 실패해도 나머지를 지운다 — 실패는 모아 한 번에 알리고, 무효화도 한 번만.
+    mutationFn: async (relPaths: string[]) => {
+      let done = 0;
+      const errors: string[] = [];
+      for (const relPath of relPaths) {
+        try {
+          await ipc.deletePath(projectId, relPath);
+        } catch (e) {
+          errors.push(`${relPath}: ${errorMessage(e)}`);
+          continue;
+        }
+        done++;
+        // 이미지가 사라졌으면 사이드카 편집 문서도 버린다 — 안 그러면 같은 이름의 새 이미지가
+        // 나중에 그 자리에 들어왔을 때 남의 주석이 되살아난다(41 §3.1: 키는 경로 정체다).
+        await ipc.imageDocDelete(projectId, relPath).catch(() => {});
+      }
+      return { done, errors };
     },
-    onSuccess: () => {
+    onSuccess: ({ done, errors }) => {
       void qc.invalidateQueries({ queryKey: ["dir"] });
       void qc.invalidateQueries({ queryKey: ["statuses"] });
       void qc.invalidateQueries({ queryKey: ["diff"] });
-      useUi.getState().pushToast("success", currentMessages().lib.mutationToast.pathDeleted);
+      const t = currentMessages().lib.mutationToast;
+      const { pushToast } = useUi.getState();
+      if (done) pushToast("success", done > 1 ? t.pathsDeleted(done) : t.pathDeleted);
+      if (errors.length) pushToast("error", t.pathsDeleteFailed(errors.length, errors[0]));
     },
     onError: (e) => useUi.getState().pushToast("error", errorMessage(e)),
   });

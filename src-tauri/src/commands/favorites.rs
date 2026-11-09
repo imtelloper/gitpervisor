@@ -838,6 +838,51 @@ fn fav_delete_targets(paths: &[String], favs: &[String], projects: &[String]) ->
     paths.iter().map(|p| allowed_in(Path::new(p), favs, projects)).collect()
 }
 
+/// 폴더 창 ⌘C — 고른 항목을 **파일로** 클립보드에 올린다. 탐색기·메신저에 붙이면 고른 개수만큼 붙는다
+/// (사용자 요청 2026-11-09: 경로 텍스트만 올라가서 3장을 골라 복사해도 파일로는 붙지 않았다).
+///
+/// Windows 는 경로 텍스트(`text`)도 같은 클립보드에 함께 둔다 — 텍스트만 받는 곳(외부 터미널의 Claude 프롬프트)이
+/// 종전처럼 경로를 받는다. 우리 터미널은 `term_paste` 가 파일 목록을 먼저 보고 경로로 바꾼다.
+/// macOS·Linux 는 arboard 가 한 번에 한 형식만 올린다 — 파일 URL 만 두고, 우리 터미널은 `term_paste` 가 읽는다.
+///
+/// 클립보드에 올리는 건 **넘어온 문자열 그대로**다 — `allowed` 의 canonicalize 결과는 Windows 에서 `\\?\` 가 붙어
+/// 탐색기가 못 받는다. 검사는 그대로 거친다(루트 밖 경로를 클립보드로 빼내는 통로가 되지 않게).
+#[tauri::command(async)]
+pub fn fav_copy_files(state: State<'_, AppState>, paths: Vec<String>, text: String) -> Result<(), IpcError> {
+    let (favs, projects) = roots(&state);
+    fav_delete_targets(&paths, &favs, &projects)?;
+    if paths.is_empty() {
+        return Ok(());
+    }
+    clipboard_set_files(&paths, &text)
+        .map_err(|e| IpcError::new(ErrorCode::Io, crate::i18n::text_git_net::clipboard_write_failed(e)))
+}
+
+#[cfg(windows)]
+fn clipboard_set_files(paths: &[String], text: &str) -> Result<(), String> {
+    use clipboard_win::{options::NoClear, raw, Clipboard};
+    // 다른 프로세스가 OpenClipboard 를 쥔 수십 ms 동안은 열리지 않는다 — capture_to_clipboard 와 같은 백오프.
+    // (clipboard-win 의 new_attempts 는 Sleep(0) 이라 그 틈을 못 넘긴다.)
+    let mut opened = Clipboard::new();
+    for i in 0..8 {
+        if opened.is_ok() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(40 + i * 10));
+        opened = Clipboard::new();
+    }
+    let _clip = opened.map_err(|e| e.to_string())?;
+    raw::empty().map_err(|e| e.to_string())?;
+    raw::set_file_list_with(paths, NoClear).map_err(|e| e.to_string())?;
+    raw::set_string_with(text, NoClear).map_err(|e| e.to_string())
+}
+
+#[cfg(not(windows))]
+fn clipboard_set_files(paths: &[String], _text: &str) -> Result<(), String> {
+    let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+    cb.set().file_list(paths).map_err(|e| e.to_string())
+}
+
 /// 즐겨찾기 폴더 창의 이름 바꾸기 — 같은 폴더 안에서 이름만 바꾸고 새 절대경로를 돌려준다.
 ///
 /// 검사는 **상위 폴더**에 `allowed` 를 건다(원본 전체를 canonicalize 하지 않는다 — `resolve_in_repo` 와 같은 이유로,

@@ -127,6 +127,8 @@ const ko = {
     folderCreated: "폴더를 만들었습니다",
     fileCreated: "파일을 만들었습니다",
     pathDeleted: "삭제했습니다",
+    pathsDeleted: (n: number) => `${n}개를 삭제했습니다`,
+    pathsDeleteFailed: (n: number, first: string) => `${n}개를 삭제하지 못했습니다 — ${first}`,
     pathRenamed: "이름을 바꿨습니다",
     committed: "커밋 완료",
     // 한국어는 원래부터 영문 키 그대로다("push 완료") — e2e 40 c-8b 가 /push/ 로 이 토스트를 찾는다.
@@ -261,6 +263,8 @@ export const libText = defineText(ko, {
       folderCreated: "Folder created",
       fileCreated: "File created",
       pathDeleted: "Deleted",
+      pathsDeleted: (n) => `Deleted ${n} items`,
+      pathsDeleteFailed: (n, first) => `Couldn't delete ${n} ${n === 1 ? "item" : "items"} — ${first}`,
       pathRenamed: "Renamed",
       committed: "Committed",
       syncOpDone: (op) => `${EN_GIT_OP[op]} complete`,

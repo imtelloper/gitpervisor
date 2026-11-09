@@ -7,6 +7,8 @@ import { warn } from "@tauri-apps/plugin-log";
 
 import { currentMessages } from "../i18n/ui-language";
 import { useUi } from "../stores/ui";
+import { errorMessage, ipc } from "./ipc";
+import { joinPathsForPrompt } from "./path";
 import { isMac, isWindows } from "./platform";
 
 // 네이티브 클립보드(arboard, Rust)를 거쳐 텍스트를 읽고 쓴다.
@@ -213,6 +215,25 @@ export function copyWithToast(text: string, okMsg = currentMessages().lib.clipbo
         run: () => copyWithToast(text, okMsg),
       });
   });
+}
+
+/** 파일을 **파일로** 클립보드에 — 폴더 창·미리보기의 ⌘C(사용자 요청 2026-11-09: 3장 골라 복사하면 탐색기·메신저에
+ *  3장이 붙어야 한다). Windows 는 경로 텍스트도 함께 실려 Claude 프롬프트에 붙이던 종전 동선이 그대로 산다.
+ *  실패 토스트의 [다시 시도]는 `copyWithToast` 와 같은 이유(A-K6). */
+export function copyFilesWithToast(paths: string[]): void {
+  if (!paths.length) return;
+  const pushToast = useUi.getState().pushToast;
+  ipc.favCopyFiles(paths, joinPathsForPrompt(paths)).then(
+    () => {
+      const t = currentMessages().folder;
+      pushToast("success", paths.length > 1 ? t.copyFilesDone(paths.length) : t.copyFileDone);
+    },
+    (e) =>
+      pushToast("error", errorMessage(e), {
+        label: currentMessages().lib.toastRetry,
+        run: () => copyFilesWithToast(paths),
+      }),
+  );
 }
 
 if (import.meta.env.DEV) {

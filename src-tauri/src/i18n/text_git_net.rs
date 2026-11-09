@@ -411,6 +411,13 @@ pub fn clipboard_read_failed(err: impl Display) -> String {
     }
 }
 
+pub fn clipboard_write_failed(err: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("클립보드에 복사하지 못했습니다 ({err})"),
+        Lang::En => format!("Failed to copy to clipboard ({err})"),
+    }
+}
+
 #[cfg(not(windows))]
 pub fn clipboard_owner_not_responding() -> &'static str {
     match lang() {

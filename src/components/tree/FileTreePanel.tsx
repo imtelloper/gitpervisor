@@ -170,6 +170,13 @@ const TreeRowCtx = createContext<TreeRowApi | null>(null);
 // 없는 플랫폼에서는 에러 토스트로 끝난다.
 const EXEC_EXT = new Set(["exe", "bat", "cmd", "com", "msi", "dmg"]);
 
+/** 우클릭한 행이 멀티선택 안이면 선택 전체를 지운다 — 고른 폴더 아래 항목은 뺀다(폴더째 지워지니 따로 부르면 NOT_FOUND). */
+function deleteTargetsOf(path: string, sel: Set<string>): string[] {
+  if (sel.size < 2 || !sel.has(path)) return [path];
+  const all = [...sel];
+  return all.filter((p) => !all.some((q) => p.startsWith(`${q}/`)));
+}
+
 /** 일괄 변환 동시 처리 수 — 백엔드 보기 줄(HEIC 해독)이 2칸이라 하나 더 두면 캔버스 인코딩이 다음 해독과 겹친다. */
 const CONVERT_PARALLEL = 3;
 
@@ -1236,16 +1243,32 @@ export function FileTreePanel({
     });
   }
 
-  // 삭제 — 파괴적이라 확인 다이얼로그를 거친다.
+  // 삭제 — 파괴적이라 확인 다이얼로그를 거친다. 멀티선택 안을 우클릭했으면 선택 전체다(사용자 지적 2026-11-09 —
+  // 여러 개를 골라 삭제해도 우클릭한 하나만 지워졌다).
   function removeEntry(m: TreeMenu) {
     setMenu(null);
+    const targets = deleteTargetsOf(m.path, treeSel);
+    if (targets.length > 1) {
+      askConfirm({
+        title: msg.tree.dialog.deleteManyTitle(targets.length),
+        message: msg.tree.dialog.deleteManyMessage(targets.length),
+        detail: targets.map(toOsPath).join("\n"),
+        confirmLabel: msg.tree.menu.delete,
+        danger: true,
+        onConfirm: () => {
+          deletePath.mutate(targets);
+          setTreeSel(new Set());
+        },
+      });
+      return;
+    }
     askConfirm({
       title: msg.tree.dialog.deleteTitle(m.isDir),
       message: msg.tree.dialog.deleteMessage(m.name),
       detail: absOf(m.path),
       confirmLabel: msg.tree.menu.delete,
       danger: true,
-      onConfirm: () => deletePath.mutate(m.path),
+      onConfirm: () => deletePath.mutate([m.path]),
     });
   }
 
@@ -1493,6 +1516,7 @@ export function FileTreePanel({
     () => [...treeSel].filter((p) => isImage(p) && !/\.svg$/i.test(p)),
     [treeSel],
   );
+  const menuDeleteCount = menu && !menu.root ? deleteTargetsOf(menu.path, treeSel).length : 1;
   const showBatch =
     !!menu &&
     !menu.isDir &&
@@ -1776,7 +1800,7 @@ export function FileTreePanel({
               />
               <MenuItem
                 icon={Trash2}
-                label={msg.tree.menu.delete}
+                label={menuDeleteCount > 1 ? msg.tree.menu.deleteMany(menuDeleteCount) : msg.tree.menu.delete}
                 danger
                 onClick={() => removeEntry(menu)}
               />

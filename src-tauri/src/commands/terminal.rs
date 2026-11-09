@@ -932,7 +932,7 @@ pub fn term_paste() -> Result<Option<String>, String> {
 
 /// Linux(X11/XWayland)·macOS: 파일→경로, 이미지→임시 PNG 경로, 그 외 텍스트.
 /// (macOS 파일 목록은 NSPasteboard로 직접 읽는다 — macos_clipboard_files. Linux의 text/uri-list는
-/// arboard 미지원이라 여전히 텍스트 폴백에 기댄다 — 파일 매니저 복사는 대부분 경로가 함께 온다.)
+/// arboard 3.5+ 의 `get().file_list()` 로 읽는다.)
 ///
 /// 반드시 async 커맨드로 메인 스레드 밖에서 실행한다: 동기 커맨드는 GTK 메인루프에서 돌고,
 /// X11 클립보드는 "소유자가 요청에 응답"하는 모델이라 웹뷰(이 앱 자신)가 복사 주체일 때
@@ -988,6 +988,20 @@ fn read_clipboard_unix() -> Result<Option<String>, String> {
     // 조용한 no-op이 아니라 사유로 올린다(clipboard.ts의 "플러그인 영구 실패"와 같은 함정).
     let mut cb = arboard::Clipboard::new()
         .map_err(|e| text_git_net::clipboard_open_failed(e))?;
+    // Linux 파일 목록(text/uri-list) — 폴더 창 ⌘C(fav_copy_files)는 이것만 올린다. 텍스트로 읽으면 빈 클립보드로 보였다.
+    #[cfg(not(target_os = "macos"))]
+    {
+        let files = cb.get().file_list().unwrap_or_default(); // 목록이 없으면 Err — 이미지·텍스트로 넘어간다
+        if !files.is_empty() {
+            return Ok(Some(
+                files
+                    .iter()
+                    .map(|p| shell_quote(&p.to_string_lossy()))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ));
+        }
+    }
     // Windows 구현과 같은 우선순위: 이미지(스크린샷) 먼저, 아니면 텍스트.
     if let Ok(img) = cb.get_image() {
         if let Some(path) = save_temp_png(&img) {

@@ -12,6 +12,7 @@ import {
   FolderSearch,
   Image as ImageIcon,
   LayoutGrid,
+  Link,
   List,
   Pencil,
   RotateCw,
@@ -35,7 +36,7 @@ import { flushSync } from "react-dom";
 
 import type { Messages } from "../../i18n/messages";
 import { currentMessages, useMessages } from "../../i18n/ui-language";
-import { copyText } from "../../lib/clipboard";
+import { copyFilesWithToast, copyText } from "../../lib/clipboard";
 import {
   favThumbUrl,
   prefetchFavThumbs,
@@ -487,11 +488,11 @@ export default function FolderWindow({
         return;
       }
       if (isMod(ev) && ev.key.toLowerCase() === "c") {
-        // 여러 장을 골라 두었으면 전부 — 아니면 커서 한 칸(종전 그대로).
+        // 여러 장을 골라 두었으면 전부 — 아니면 커서 한 칸. **파일로** 올린다(탐색기처럼 — 사용자 요청 2026-11-09).
         const list = picked.size ? pickedShown : shown[cursor] ? [shown[cursor]] : [];
         if (list.length) {
           ev.preventDefault();
-          copyPaths(list);
+          copyFilesWithToast(list.map((e) => join(dir, e.name)));
         }
         return;
       }
@@ -638,6 +639,9 @@ export default function FolderWindow({
           y={menu.y}
           entry={menu.entry}
           onClose={() => setMenu(null)}
+          onCopyFiles={() =>
+            copyFilesWithToast((picked.has(menu.entry.name) ? pickedShown : [menu.entry]).map((e) => join(dir, e.name)))
+          }
           onCopyPath={() => copyPaths(picked.has(menu.entry.name) ? pickedShown : [menu.entry])}
           onCopyVideoTime={copyVideoTime}
           onPastePath={() => pastePaths(picked.has(menu.entry.name) ? pickedShown : [menu.entry])}
@@ -1346,6 +1350,7 @@ function ItemMenu({
   y,
   entry,
   onClose,
+  onCopyFiles,
   onCopyPath,
   onCopyVideoTime,
   onPastePath,
@@ -1359,6 +1364,7 @@ function ItemMenu({
   y: number;
   entry: FavEntry;
   onClose: () => void;
+  onCopyFiles: () => void;
   onCopyPath: () => void;
   onCopyVideoTime: (time: string) => void;
   onPastePath: () => void;
@@ -1390,10 +1396,10 @@ function ItemMenu({
   return (
     <div
       className="fixed z-50 min-w-52 rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl"
-      // 항목 6줄 × 31.5 + 헤더 24.5 + 구분선 둘 + 패딩 ≈ 232(영상 시각 줄이 있으면 +32). PaneMenu 와 같은 클램프 규칙.
+      // 항목 7줄 × 31.5 + 헤더 24.5 + 구분선 둘 + 패딩 ≈ 264(영상 시각 줄이 있으면 +32). PaneMenu 와 같은 클램프 규칙.
       style={{
         left: Math.min(x, window.innerWidth - 220),
-        top: Math.max(0, Math.min(y, window.innerHeight - (videoTime ? 264 : 232))),
+        top: Math.max(0, Math.min(y, window.innerHeight - (videoTime ? 296 : 264))),
       }}
       onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
@@ -1402,8 +1408,13 @@ function ItemMenu({
       <div className="my-1 border-t border-edge" />
       <Row
         icon={<Copy size={14} />}
-        label={count > 1 ? msg.folder.window.menuCopyPathMany(count) : msg.folder.menuCopyPath}
+        label={count > 1 ? msg.folder.menuCopyFilesMany(count) : msg.folder.menuCopyFiles}
         hint={`${modLabel}+C`}
+        onClick={run(onCopyFiles)}
+      />
+      <Row
+        icon={<Link size={14} />}
+        label={count > 1 ? msg.folder.window.menuCopyPathMany(count) : msg.folder.menuCopyPath}
         onClick={run(onCopyPath)}
       />
       {videoTime && (
