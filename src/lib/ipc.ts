@@ -321,6 +321,7 @@ export interface Settings {
   /** 즐겨찾기 폴더 (태스크 66). **이 목록이 곧 백엔드의 허용 루트다** — `fav_*` 커맨드는 여기
    *  등록된 폴더 아래가 아니면 거부한다. 비어 있으면 폴더 창을 열 수 있는 경로가 없다. */
   favoriteFolders: FavoriteFolder[];
+  captureAutoSave: boolean; // 캡쳐 확정 시 스크린샷 폴더에도 PNG — 기본 true(commands/capture.rs)
   // 로컬 MCP 서버 (DOCS/mcp-server-design.md — mcp.rs)
   mcpEnabled: boolean; // 기본 false
   mcpPort: number; // 기본 47820 — 클라이언트 등록 명령에 박힌다
@@ -2245,8 +2246,9 @@ export const ipc = {
   // 웹뷰 로딩 중 검은 전체화면이, 두 번째부터는 직전 캡쳐 잔상이 보인다.
   captureOverlayReady: (id: string) => invoke<void>("capture_overlay_ready", { id }),
   // 확정 — 원본에서 잘라 클립보드로 직행하고 오버레이를 닫는다. 픽셀이 프론트를 거치지 않는다.
+  // 자동 저장이 켜져 있으면 스크린샷 폴더에 잡은 PNG 경로(내용은 반환 뒤 채워진다 — capture://saved), 아니면 null.
   captureToClipboard: (id: string, rect: CaptureRect) =>
-    invoke<void>("capture_to_clipboard", { id, rect }),
+    invoke<string | null>("capture_to_clipboard", { id, rect }),
   captureCancel: (id: string) => invoke<void>("capture_cancel", { id }),
   // Claude 계정 사용량 — 계정 사용량 API(3분 캐시, 429 면 더 쉰다), 못 쓰면 statusline.js 다리 파일(claude_usage.rs). 없으면 null.
   // 시한은 백엔드 HTTP 시한(8초)보다 넉넉히.

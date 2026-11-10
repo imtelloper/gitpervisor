@@ -1022,7 +1022,7 @@ fn shell_folder(name: &str) -> Option<PathBuf> {
 }
 
 #[cfg(windows)]
-fn screenshots_dir() -> Option<PathBuf> {
+pub(crate) fn screenshots_dir() -> Option<PathBuf> {
     // GUID 값이 없으면 **사진 폴더** 아래를 본다 — 스크린샷은 사진의 하위 알려진 폴더라, 사진이
     // OneDrive 등으로 옮겨졌으면 그 아래에 생긴다. `home\Pictures` 는 마지막 폴백이다.
     shell_folder("{B7BEDE81-DF94-4682-A7D8-57A52620B86F}")
@@ -1042,7 +1042,7 @@ fn desktop_dir() -> Option<PathBuf> {
 }
 
 #[cfg(target_os = "macos")]
-fn screenshots_dir() -> Option<PathBuf> {
+pub(crate) fn screenshots_dir() -> Option<PathBuf> {
     // 사용자가 위치를 바꿨으면 그것을 쓴다(`defaults` 가 유일한 출처다).
     let out = std::process::Command::new("defaults")
         .args(["read", "com.apple.screencapture", "location"])
@@ -1114,7 +1114,7 @@ fn gnome_screenshots_dir(xdg_pictures: Option<PathBuf>, home: &Path) -> PathBuf 
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
-fn screenshots_dir() -> Option<PathBuf> {
+pub(crate) fn screenshots_dir() -> Option<PathBuf> {
     Some(gnome_screenshots_dir(xdg_user_dir("PICTURES"), &home()?))
 }
 

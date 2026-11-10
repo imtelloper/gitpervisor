@@ -69,6 +69,18 @@ export function GeneralSection({ form, update, hl }: SectionProps) {
         </label>
       </Hl>
 
+      <Hl id="captureAutoSave" hl={hl}>
+        <label className="flex cursor-pointer items-center gap-2">
+          <input
+            type="checkbox"
+            checked={form.captureAutoSave}
+            onChange={(e) => update("captureAutoSave", e.target.checked)}
+            className="accent-accent"
+          />
+          <span>{msg.settings.general.captureAutoSave}</span>
+        </label>
+      </Hl>
+
       <Hl id="gitPath" hl={hl}>
         <Field label={msg.settings.general.gitPathLabel} hint={msg.settings.general.gitPathHint}>
           <input

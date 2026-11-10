@@ -49,6 +49,8 @@ struct Session {
     /// (릴리스 벤치로도 120ms, 디버그는 초 단위). 원본 33MB 옆의 0.7MB는 사실상 공짜다.
     preview: String,
     born: Instant,
+    /// 단축키를 누른 벽시계 시각 — 저장 파일 이름이 된다(확정 시각이 아니라 이 그림이 찍힌 순간).
+    taken: chrono::NaiveDateTime,
 }
 
 static CURRENT: Mutex<Option<Session>> = Mutex::new(None);
@@ -430,6 +432,7 @@ fn trigger_inner(app: &AppHandle) -> Result<(), IpcError> {
         my,
         preview,
         born: Instant::now(),
+        taken: chrono::Local::now().naive_local(),
     });
     arm_ttl(id.clone());
 
@@ -495,38 +498,44 @@ pub fn capture_overlay_ready(app: AppHandle, id: String) {
 }
 
 /// 확정 — 원본에서 잘라 클립보드에 넣고 오버레이를 닫는다. **픽셀이 프론트를 거치지 않는다.**
+///
+/// 설정 `capture_auto_save`(기본 켬)면 스크린샷 폴더에도 PNG 로 남기고 그 파일 경로를 돌려준다(꺼져 있거나
+/// 저장을 시작하지 못했으면 null — 클립보드 복사는 이미 성공했으니 커맨드는 실패가 아니다). 파일 내용은 반환 뒤
+/// 스레드가 채운다 — `start_save_png` 주석.
 #[tauri::command(async)]
-pub fn capture_to_clipboard(app: AppHandle, id: String, rect: RectPx) -> Result<(), IpcError> {
+pub fn capture_to_clipboard(app: AppHandle, id: String, rect: RectPx) -> Result<Option<String>, IpcError> {
     use tauri_plugin_clipboard_manager::ClipboardExt;
 
     // **세션은 전부 성공한 뒤에 소모한다.** 먼저 꺼내 놓고 크롭이나 클립보드 쓰기가 실패하면
     // 방금 찍은 화면이 조용히 사라진다 — 다시 찍을 수도 없다(이미 화면이 바뀌었다).
     // e2e 31 ⑤가 이 순서를 고정한다.
-    let (rgba, w, h, held) = {
+    let (rgba, w, h, held, taken) = {
         let cur = CURRENT.lock().unwrap_or_else(|e| e.into_inner());
         let s = cur
             .as_ref()
             .filter(|s| s.id == id)
             .ok_or_else(|| IpcError::new(ErrorCode::NotFound, crate::i18n::text_system::capture_session_expired()))?;
         let (rgba, w, h) = crop_rgba(s, rect)?; // 실패해도 세션은 그대로 남는다
-        (rgba, w, h, s.born.elapsed())
+        (rgba, w, h, s.born.elapsed(), s.taken)
     };
 
     // **클립보드는 재시도해야 한다.** Windows에서 `OpenClipboard`는 다른 프로세스가 잠깐이라도
     // 쥐고 있으면 실패한다("held by another party") — 클립보드 매니저·브라우저·터미널이 복사
     // 직후 수십 ms 동안 흔히 쥔다. 실측으로 첫 시도가 그대로 깨졌다(e2e가 잡았다).
     // 한 번 실패했다고 포기하면 방금 찍은 화면을 버리는 셈이라, 짧게 여러 번 두드린다.
-    let img = tauri::image::Image::new(&rgba, w, h);
     let mut last = None;
-    for i in 0..8 {
-        match app.clipboard().write_image(&img) {
-            Ok(()) => {
-                last = None;
-                break;
-            }
-            Err(e) => {
-                last = Some(e);
-                std::thread::sleep(std::time::Duration::from_millis(40 + i * 10));
+    {
+        let img = tauri::image::Image::new(&rgba, w, h);
+        for i in 0..8 {
+            match app.clipboard().write_image(&img) {
+                Ok(()) => {
+                    last = None;
+                    break;
+                }
+                Err(e) => {
+                    last = Some(e);
+                    std::thread::sleep(std::time::Duration::from_millis(40 + i * 10));
+                }
             }
         }
     }
@@ -540,7 +549,119 @@ pub fn capture_to_clipboard(app: AppHandle, id: String, rect: RectPx) -> Result<
     let _ = take_session(&id);
     hide_overlay(&app);
     log::info!("[capture] {w}x{h} 클립보드 복사 (세션 {}ms)", held.as_millis());
-    Ok(())
+
+    let auto_save = app
+        .state::<crate::state::AppState>()
+        .settings
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .capture_auto_save;
+    Ok(if auto_save { start_save_png(&app, rgba, w, h, taken) } else { None })
+}
+
+/// 저장 결과 — 메인 창이 토스트([폴더 열기])로 알린다(`App.tsx`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CaptureSaved {
+    path: String,
+    file_name: String,
+}
+
+/// 확정한 캡쳐를 스크린샷 폴더에 PNG 로 남긴다. 실패는 `capture://save-failed` 토스트로 — 클립보드에는 이미 있다.
+///
+/// **파일 자리는 여기서 먼저 잡고 인코딩은 스레드로 넘긴다.** 4K 한 장 PNG 인코드가 수백 ms 라(설계 §2.3 실측 667ms)
+/// 그동안 커맨드를 붙잡으면, 그사이 단축키로 다시 찍은 캡쳐를 오버레이의 늦은 응답(`finish` → `setSess(null)`)이
+/// 지운다. 자리를 먼저 잡으니 경로는 즉시 돌려줄 수 있다(e2e 31 이 그 파일 하나만 보고 지운다).
+fn start_save_png(app: &AppHandle, rgba: Vec<u8>, w: u32, h: u32, taken: chrono::NaiveDateTime) -> Option<String> {
+    let fail = |app: &AppHandle, msg: String| {
+        log::warn!("[capture] 파일 저장 실패: {msg}");
+        let _ = app.emit("capture://save-failed", msg);
+    };
+    let Some(dir) = capture_save_dir() else {
+        fail(app, crate::i18n::text_system::capture_save_dir_unknown().to_string());
+        return None;
+    };
+    let (path, file) = match reserve_screenshot_file(&dir, crate::i18n::text_system::capture_file_prefix(), taken) {
+        Ok(v) => v,
+        Err(e) => {
+            fail(app, crate::i18n::text_system::capture_save_failed(format!("{}: {e}", dir.display())));
+            return None;
+        }
+    };
+    let shown = path.to_string_lossy().into_owned();
+    let app2 = app.clone();
+    let path2 = path.clone();
+    let spawned = std::thread::Builder::new().name("capture-save".into()).spawn(move || {
+        use image::ImageEncoder as _;
+        use std::io::Write as _;
+        let mut out = std::io::BufWriter::new(file);
+        let written = image::codecs::png::PngEncoder::new(&mut out)
+            .write_image(&rgba, w, h, image::ExtendedColorType::Rgba8)
+            .map_err(|e| e.to_string())
+            .and_then(|()| out.flush().map_err(|e| e.to_string()));
+        drop(out); // 지우기 전에 핸들을 닫는다 — Windows 는 열린 파일을 못 지운다
+        match written {
+            Ok(()) => {
+                let file_name = path2.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                log::info!("[capture] {w}x{h} 저장 {}", path2.display());
+                let _ = app2.emit(
+                    "capture://saved",
+                    CaptureSaved { path: path2.to_string_lossy().into_owned(), file_name },
+                );
+            }
+            Err(e) => {
+                // 반쯤 쓴 PNG 를 남기지 않는다 — 이름만 그럴듯한 깨진 파일이 폴더에 쌓인다.
+                if let Err(rm) = std::fs::remove_file(&path2) {
+                    log::warn!("[capture] 깨진 파일 정리 실패 {}: {rm}", path2.display());
+                }
+                fail(&app2, crate::i18n::text_system::capture_save_failed(format!("{}: {e}", path2.display())));
+            }
+        }
+    });
+    if let Err(e) = spawned {
+        let _ = std::fs::remove_file(&path); // 빈 자리 파일 — 지우지 못해도 0바이트라 위 경고로 충분하다
+        fail(app, crate::i18n::text_system::capture_save_failed(e));
+        return None;
+    }
+    Some(shown)
+}
+
+/// 저장 폴더 — OS 의 스크린샷 폴더(`favorites::screenshots_dir`: Windows 는 알려진 폴더 `Screenshots`).
+///
+/// **디버그 빌드의 샤드 테스트 앱(`GPV_DATA_DIR`)은 그 데이터 폴더 아래 `screenshots` 에 쓴다.** e2e 31 이 확정할
+/// 때마다 사용자의 실제 스크린샷 폴더에 파일이 생기고, 이 개발기는 Defender "제어된 폴더 액세스"가 켜져 있어
+/// 러너(node)가 그 파일을 **지우지도 못한다**(2026-11-10 실측: 이벤트 1123 으로 차단). 릴리스엔 이 분기가 없다.
+fn capture_save_dir() -> Option<std::path::PathBuf> {
+    if cfg!(debug_assertions) {
+        if let Some(raw) = std::env::var_os("GPV_DATA_DIR") {
+            return Some(std::path::PathBuf::from(raw).join("screenshots"));
+        }
+    }
+    super::favorites::screenshots_dir()
+}
+
+/// `<머리> 2026-11-10 135521.png` 자리를 **새로 만들어** 잡는다 — Windows 캡처 도구와 같은 이름 꼴이라
+/// 같은 폴더에서 시간순으로 섞여 정렬된다(사용자 결정 2026-11-10).
+///
+/// 같은 초에 두 장이면 ` (2)`, ` (3)` … 을 붙인다. `exists()` 로 보고 쓰지 않고 `create_new` 로 연다 —
+/// 확인과 쓰기 사이에 다른 도구가 같은 이름을 만들어도 **남의 파일을 덮지 않는다.**
+fn reserve_screenshot_file(
+    dir: &std::path::Path,
+    prefix: &str,
+    taken: chrono::NaiveDateTime,
+) -> std::io::Result<(std::path::PathBuf, std::fs::File)> {
+    std::fs::create_dir_all(dir)?;
+    let stem = format!("{prefix} {}", taken.format("%Y-%m-%d %H%M%S"));
+    for n in 1..=99u32 {
+        let name = if n == 1 { format!("{stem}.png") } else { format!("{stem} ({n}).png") };
+        let path = dir.join(name);
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(f) => return Ok((path, f)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::ErrorKind::AlreadyExists.into())
 }
 
 /// 취소 — 버퍼를 놓고 오버레이를 닫는다.
@@ -578,7 +699,27 @@ mod tests {
             my: 0,
             preview: String::new(),
             born: Instant::now(),
+            taken: chrono::NaiveDateTime::default(),
         }
+    }
+
+    /// 이름이 Windows 캡처 도구 꼴이고, 같은 초의 두 번째는 ` (2)` 이며, 이미 있던 파일은 덮지 않는다.
+    #[test]
+    fn reserve_screenshot_file_names_like_windows_and_never_overwrites() {
+        let dir = std::env::temp_dir().join(format!("gpv-capture-save-{}", uuid::Uuid::new_v4()));
+        let taken = chrono::NaiveDate::from_ymd_opt(2026, 11, 10).unwrap().and_hms_opt(13, 55, 21).unwrap();
+
+        let (p1, _f1) = reserve_screenshot_file(&dir, "스크린샷", taken).unwrap();
+        assert_eq!(p1.file_name().unwrap(), "스크린샷 2026-11-10 135521.png");
+
+        // 다른 도구가 (2) 자리를 먼저 차지했다 — 그 내용을 건드리지 않고 (3) 으로 간다.
+        std::fs::write(dir.join("스크린샷 2026-11-10 135521 (2).png"), b"theirs").unwrap();
+        let (p3, _f3) = reserve_screenshot_file(&dir, "스크린샷", taken).unwrap();
+        assert_eq!(p3.file_name().unwrap(), "스크린샷 2026-11-10 135521 (3).png");
+        assert_eq!(std::fs::read(dir.join("스크린샷 2026-11-10 135521 (2).png")).unwrap(), b"theirs");
+
+        drop((_f1, _f3));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// 크롭이 요청한 자리를 정확히 집는가 — 행 스트라이드를 한 번이라도 틀리면 이미지가 비스듬해진다.

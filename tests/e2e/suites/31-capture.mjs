@@ -9,6 +9,9 @@
 //
 // 오버레이는 전체화면으로 떠서 포커스를 가져간다 → 다른 스위트를 방해하지 않게 마지막에 둔다.
 
+import { readFileSync, rmSync } from "node:fs";
+import { basename } from "node:path";
+
 export const name = "화면 캡쳐 (capture_* 커맨드 · 세션 수명)";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -59,7 +62,18 @@ export async function run({ cdp, report: r }) {
   // 개발기에서 AnyDesk가 켜져 있는 동안 `clip.exe`조차 "액세스가 거부되었습니다"로 죽었다.
   // 그걸 우리 코드의 실패로 보고하면 다음 사람이 없는 버그를 쫓는다.
   const want = { x: 10, y: 10, w: 200, h: 120 };
-  const wrote = await cdp.try("capture_to_clipboard", { id: sess.id, rect: want });
+  // 캡쳐 자동 저장(설정 기본 켬)은 **샤드 앱에서만** 켠 채로 둔다 — 샤드 앱은 자기 데이터 폴더 아래에 저장한다
+  // (capture.rs `capture_save_dir`). 떠 있는 dev 앱에 붙은 회차(run.mjs)에서 켠 채 확정하면 사용자의 실제
+  // 스크린샷 폴더에 파일이 생기고, 이 개발기는 Defender 제어된 폴더 액세스 때문에 러너가 그걸 지우지도 못한다.
+  const isolated = !!process.env.GPV_E2E_SHARD;
+  const settingsBefore = isolated ? null : await cdp.invoke("get_settings");
+  if (settingsBefore) await cdp.invoke("set_settings", { settings: { ...settingsBefore, captureAutoSave: false } });
+  let wrote;
+  try {
+    wrote = await cdp.try("capture_to_clipboard", { id: sess.id, rect: want });
+  } finally {
+    if (settingsBefore) await cdp.invoke("set_settings", { settings: settingsBefore });
+  }
   if (!wrote.ok && /클립보드/.test(wrote.message ?? "")) {
     r.skip("⑥⑦ 클립보드 확정", `이 머신의 클립보드가 다른 프로그램에 잡혀 있다 — ${wrote.message}`);
     await cdp.invoke("capture_cancel", { id: sess.id });
@@ -82,6 +96,26 @@ export async function run({ cdp, report: r }) {
     // 크롭 좌표·크기 자체는 Rust 단위 테스트가 더 촘촘히 본다(commands/capture.rs
     // `crop_picks_the_requested_rect` — 스트라이드·알파·경계). 여기서는 체인이 도는 것만 본다.
     r.skip("⑥ 클립보드 이미지 크기", "클립보드 읽기 권한 미부여(의도) — 크롭 정확도는 Rust 단위 테스트");
+  }
+
+  // 자동 저장 — 커맨드가 돌려준 경로 **하나만** 보고 지운다(와일드카드로 남의 파일을 지우지 않는다).
+  const saved = wrote.ok ? wrote.r : null;
+  if (!isolated) {
+    r.skip("⑩ 캡쳐 자동 저장", "샤드 앱이 아님 — 사용자 스크린샷 폴더에 쓰게 돼 껐다(node tests/e2e/shard.mjs 로 돌릴 때만 본다)");
+  } else try {
+    r.check("⑩ 자동 저장 = 샤드 데이터 폴더 · Windows 캡처 도구 이름 꼴", typeof saved === "string" &&
+      /[\\/]gpv-shard[^\\/]*[\\/]screenshots[\\/]/i.test(saved) &&
+      /^(스크린샷|Screenshot) \d{4}-\d{2}-\d{2} \d{6}( \(\d+\))?\.png$/.test(basename(saved)), String(saved));
+    // 내용은 반환 뒤 스레드가 채운다(capture.rs `start_save_png`) — 완성된 PNG 가 될 때까지 기다린다.
+    let dims = null;
+    for (let i = 0; i < 50 && typeof saved === "string" && !dims; i++) {
+      const b = (() => { try { return readFileSync(saved); } catch { return null; } })();
+      if (b && b.length > 24 && b.toString("latin1", 1, 4) === "PNG") dims = `${b.readUInt32BE(16)}x${b.readUInt32BE(20)}`;
+      else await sleep(100);
+    }
+    r.check("⑩' 저장된 PNG 가 요청한 크기", dims === `${want.w}x${want.h}`, `요청 ${want.w}x${want.h} · 파일 ${dims}`);
+  } finally {
+    if (typeof saved === "string") rmSync(saved, { force: true });
   }
 
   // 확정 뒤에는 버퍼가 풀려 있어야 한다(설계 R7).

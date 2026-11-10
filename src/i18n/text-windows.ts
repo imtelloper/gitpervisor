@@ -19,6 +19,8 @@ const ko = {
   },
   captureOverlay: {
     hint: "드래그해서 영역 선택 · Enter 확정 · Esc/우클릭 취소",
+    savedToast: (fileName: string) => `저장 후 클립보드에 복사했습니다 — ${fileName}`,
+    openFolder: "폴더 열기",
   },
   docWindow: {
     reportTitle: "작업 리포트",
@@ -59,6 +61,8 @@ export const windowsText = defineText(ko, {
     },
     captureOverlay: {
       hint: "Drag to select an area · Enter to confirm · Esc/right-click to cancel",
+      savedToast: (fileName) => `Saved and copied to the clipboard — ${fileName}`,
+      openFolder: "Open folder",
     },
     docWindow: {
       reportTitle: "Work report",

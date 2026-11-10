@@ -499,6 +499,12 @@ interface RecordResult { outPath: string; durationMs: number; bytes: number; tru
 
 루페·HEX·창 자동 감지·핸들 리사이즈·방향키·지연 캡쳐, 결과 라우팅 5종, `ImageEditor` 인계(§5.3).
 
+**먼저 구현된 것 — 자동 저장 (2026-11-10).** 라우팅을 고르는 대신 "클립보드 + 파일"을 함께 한다(사용자가 쓰던
+PicPick 설정이 자동 저장 + 항상 클립보드였다). 설정 `captureAutoSave`(기본 켬), 폴더는 `favorites::screenshots_dir`,
+이름은 Windows 캡처 도구 꼴 `스크린샷 2026-11-10 135521.png`(같은 초면 ` (2)`, `create_new` 로 남의 파일을 덮지 않는다),
+인코딩은 반환 뒤 스레드 → `capture://saved` 토스트([폴더 열기]). §5.4 의 `captureFileNameFormat`·`captureSaveDir` 는
+아직 없다(고정값). 디버그 샤드 앱은 `GPV_DATA_DIR/screenshots` 에 쓴다 — `capture.rs` `capture_save_dir` 주석.
+
 1. 루페 HEX가 **원본 버퍼 값과 일치**(표시용 JPEG에서 읽으면 틀린다 — 테스트로 고정).
 2. 창 자동 감지가 **DWM 확장 프레임** 기준 — 그림자 여백이 안 붙는다.
 3. "레포에 저장" 후 Changes에 **즉시** 뜬다.

@@ -69,6 +69,7 @@ export const SETTINGS_INDEX: SettingIndexEntry[] = [
   { category: "general", key: "confirmDiscard" },
   { category: "general", key: "gitPath" },
   { category: "general", key: "favoriteFolders" },
+  { category: "general", key: "captureAutoSave" },
   // 모양
   { category: "appearance", key: "theme" },
   { category: "appearance", key: "diffFontSize" },

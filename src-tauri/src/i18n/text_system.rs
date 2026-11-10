@@ -646,6 +646,28 @@ pub fn capture_clipboard_busy() -> &'static str {
     }
 }
 
+/// 저장 파일 이름의 머리 — Windows 캡처 도구가 그 언어로 붙이는 것과 같은 낱말이라 같은 폴더에서 나란히 정렬된다.
+pub fn capture_file_prefix() -> &'static str {
+    match lang() {
+        Lang::Ko => "스크린샷",
+        Lang::En => "Screenshot",
+    }
+}
+
+pub fn capture_save_dir_unknown() -> &'static str {
+    match lang() {
+        Lang::Ko => "스크린샷 폴더를 찾지 못해 파일로 저장하지 않았습니다 — 클립보드에는 복사됐습니다",
+        Lang::En => "Couldn't find the Screenshots folder, so no file was saved — it was copied to the clipboard",
+    }
+}
+
+pub fn capture_save_failed(err: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("스크린샷을 파일로 저장하지 못했습니다 — 클립보드에는 복사됐습니다 ({err})"),
+        Lang::En => format!("Couldn't save the screenshot file — it was copied to the clipboard ({err})"),
+    }
+}
+
 // ─────────────────────────── 보조 창·전역 단축키(lib.rs) ───────────────────────────
 // 창 제목은 창을 만들 때의 언어로 굳는다(보조 창은 열 때마다 새로 만든다).
 

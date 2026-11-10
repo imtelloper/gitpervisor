@@ -36,6 +36,7 @@ import { FileTreePanel } from "./components/tree/FileTreePanel";
 import { WorkspaceTabs } from "./components/workspace/WorkspaceTabs";
 import { currentMessages, useMessages } from "./i18n/ui-language";
 import { useAgentNotifications } from "./lib/agent-notify";
+import { errorMessage, ipc } from "./lib/ipc";
 import { useReportSchedule } from "./lib/report-schedule";
 import { joinPathsForPrompt } from "./lib/path";
 import { getTerminal, listTerminals, refreshTerminalThemes } from "./lib/terminal";
@@ -146,6 +147,24 @@ export default function App() {
       useUi.getState().pushToast("error", e.payload),
     );
     return () => void un.then((f) => f());
+  }, []);
+
+  // 캡쳐 자동 저장(commands/capture.rs `start_save_png`) — 저장은 오버레이가 닫힌 뒤 스레드에서 끝나므로 결과는 여기서 알린다.
+  // 실패해도 클립보드에는 이미 있다는 말이 문구에 들어 있다(그림을 잃은 게 아니다).
+  useEffect(() => {
+    const saved = listen<{ path: string; fileName: string }>("capture://saved", (e) => {
+      const t = currentMessages().windows.captureOverlay;
+      useUi.getState().pushToast("success", t.savedToast(e.payload.fileName), {
+        label: t.openFolder,
+        run: () =>
+          void ipc.revealPath(e.payload.path).catch((err) => useUi.getState().pushToast("error", errorMessage(err))),
+      });
+    });
+    const failed = listen<string>("capture://save-failed", (e) => useUi.getState().pushToast("error", e.payload));
+    return () => {
+      void saved.then((f) => f());
+      void failed.then((f) => f());
+    };
   }, []);
 
   /**
