@@ -9,8 +9,9 @@
 //
 // 오버레이는 전체화면으로 떠서 포커스를 가져간다 → 다른 스위트를 방해하지 않게 마지막에 둔다.
 
+import { execFileSync } from "node:child_process";
 import { readFileSync, rmSync } from "node:fs";
-import { basename } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 export const name = "화면 캡쳐 (capture_* 커맨드 · 세션 수명)";
 
@@ -139,5 +140,111 @@ export async function run({ cdp, report: r }) {
     r.skip("⑨ 확정 후 오버레이 숨김", "isVisible 조회 불가(권한) — 수동 확인 필요");
   } else {
     r.check("⑨ 확정 후 오버레이가 숨겨진다", visible === false, `isVisible=${visible}`);
+  }
+
+  await recordRoundTrip(cdp, r, isolated);
+}
+
+/**
+ * 화면 녹화(commands/record.rs) 왕복 — 영역 선택 세션 → 카운트다운 → ffmpeg → 일시정지·재개(구간 녹화) → 정지(`q`)
+ * → 이어 붙인 mp4 에 moov 가 있다. moov 가 없으면 재생 불가 파일이다(설계 R11 — kill 로 끝내면 이렇게 된다).
+ * 오버레이 드래그 대신 커맨드로 확정한다. 샤드 앱에서만 — 샤드 앱은 `GPV_DATA_DIR/recordings` 에 쓴다.
+ */
+async function recordRoundTrip(cdp, r, isolated) {
+  if (!isolated) {
+    r.skip("⑪ 화면 녹화", "샤드 앱이 아님 — 사용자 동영상 폴더에 쓰게 돼 건너뛴다");
+    return;
+  }
+  const tool = await cdp.invoke("video_tool_status", {});
+  if (!tool?.found) {
+    r.skip("⑪ 화면 녹화", "ffmpeg 없음 — 녹화는 ffmpeg 로 한다");
+    return;
+  }
+  const openSession = async () => {
+    await cdp.invoke("record_trigger", {});
+    for (let i = 0; i < 60; i++) {
+      const s = await cdp.invoke("capture_current", {});
+      if (s?.mode === "record") return s;
+      await sleep(100);
+    }
+    return null;
+  };
+  const waitResult = async () => {
+    for (let i = 0; i < 60; i++) {
+      const res = await cdp.eval("window.__recResult");
+      if (res) return res;
+      await sleep(250);
+    }
+    return null;
+  };
+  const listening = await cdp.eval(`(async()=>{
+    const ev = await import("/node_modules/@tauri-apps/api/event.js");
+    window.__recResult = null;
+    await ev.listen("record://saved", (e) => (window.__recResult = { kind: "saved", ...e.payload }));
+    await ev.listen("record://failed", (e) => (window.__recResult = { kind: "failed", message: e.payload }));
+    await ev.listen("record://cancelled", () => (window.__recResult = { kind: "cancelled" }));
+    return true;
+  })()`).catch(() => false);
+  r.check("⑪ 녹화 결과 이벤트 구독", listening === true);
+  if (listening !== true) return;
+  // 카운트다운은 1초로 — 기본 3초면 회차가 그만큼 늘 뿐 보는 것은 같다. 샤드 앱이라 끝나고 되돌릴 필요는 없지만 되돌린다.
+  const settings = await cdp.invoke("get_settings");
+  await cdp.invoke("set_settings", { settings: { ...settings, recordCountdownSecs: 1 } });
+  let saved = null;
+  try {
+    // ── 카운트다운 중 정지 = 취소(파일 없음)
+    const s1 = await openSession();
+    r.check("⑫ record_trigger → 녹화 모드 선택 세션", !!s1, s1 ? `${s1.width}x${s1.height}` : "없음");
+    if (!s1) return;
+    const c = await cdp.try("record_start", { id: s1.id, rect: { x: 0, y: 0, w: 321, h: 181 } });
+    r.check("⑬ record_start — 홀수 크기는 짝수로 내리고 카운트다운 1초", c.ok && c.r?.width === 320 && c.r?.height === 180 && c.r?.countdownSecs === 1,
+      c.ok ? JSON.stringify(c.r) : c.message);
+    if (!c.ok) return;
+    const pauseEarly = await cdp.try("record_pause", { paused: true });
+    r.check("⑬' 카운트다운 중 일시정지는 거절", !pauseEarly.ok, pauseEarly.message ?? "통과해버림");
+    await cdp.eval("window.__recResult = null");
+    await cdp.invoke("record_stop", {});
+    const cancelled = await waitResult();
+    r.check("⑭ 카운트다운 중 정지 = 취소(파일 없음)", cancelled?.kind === "cancelled", JSON.stringify(cancelled));
+
+    // ── 녹화 → 일시정지 → 재개 → 정지: 두 구간이 한 파일로 이어 붙는다
+    const s2 = await openSession();
+    if (!s2) return r.check("⑮ 두 번째 녹화 세션", false, "없음");
+    await cdp.eval("window.__recResult = null");
+    const started = await cdp.try("record_start", { id: s2.id, rect: { x: 0, y: 0, w: 320, h: 180 } });
+    if (!started.ok) return r.check("⑮ 두 번째 record_start", false, started.message);
+    await sleep(1000 + 1300); // 카운트다운 1초 + 첫 구간
+    const p = await cdp.try("record_pause", { paused: true });
+    r.check("⑮ 일시정지", p.ok && p.r === true, p.ok ? String(p.r) : p.message);
+    await sleep(800);
+    const q = await cdp.try("record_pause", { paused: false });
+    r.check("⑮' 재개", q.ok && q.r === false, q.ok ? String(q.r) : q.message);
+    await sleep(1300);
+    await cdp.invoke("record_stop", {});
+    const res = await waitResult();
+    saved = res?.kind === "saved" ? res.path : null;
+    r.check("⑯ 정지 → 샤드 데이터 폴더에 '화면 녹화 <날짜> <시각>.mp4'", typeof saved === "string" &&
+      /[\\/]gpv-shard[^\\/]*[\\/]recordings[\\/]/i.test(saved) &&
+      /^(화면 녹화|Screen Recording) \d{4}-\d{2}-\d{2} \d{6}( \(\d+\))?\.mp4$/.test(basename(saved)) && res.broken === false,
+      JSON.stringify(res));
+    const b = typeof saved === "string" ? readFileSync(saved) : null;
+    r.check("⑰ mp4 에 moov 가 있다(정상 종료 — 재생 가능)", !!b && b.includes("moov") && b.toString("latin1", 4, 8) === "ftyp",
+      b ? `${b.length}B` : "파일 없음");
+    // 두 구간(각 ~1.3초)을 이어 붙였으면 길이가 한 구간보다 길다. 일시정지 0.8초는 빠진다.
+    const probe = tool.probeFound && typeof saved === "string" ? join(dirname(tool.path), basename(tool.path).replace(/ffmpeg/i, "ffprobe")) : null;
+    if (probe) {
+      const dur = Number(execFileSync(probe, ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", saved]).toString().trim());
+      r.check("⑰' 일시정지 앞뒤 두 구간이 한 파일로(길이 1.6~3.6초)", dur >= 1.6 && dur <= 3.6, `${dur.toFixed(2)}s`);
+    } else {
+      r.skip("⑰' 구간 이어 붙이기 길이", "ffprobe 없음");
+    }
+    r.check("⑱ 정지 뒤 녹화 상태가 풀려 캡쳐가 다시 열린다", (await cdp.try("capture_trigger", {})).ok);
+    await sleep(800);
+    const again = await cdp.invoke("capture_current", {});
+    if (again) await cdp.invoke("capture_cancel", { id: again.id });
+    r.check("⑱' 캡쳐 세션이 실제로 생겼다", !!again && again.mode === "capture");
+  } finally {
+    await cdp.invoke("set_settings", { settings }).catch(() => {}); // 복원 실패는 샤드 앱이라 회차 뒤에 버려진다
+    if (typeof saved === "string") rmSync(saved, { force: true });
   }
 }

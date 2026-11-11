@@ -4,10 +4,10 @@ import { useEffect, useState } from "react";
 
 import type { Messages } from "../i18n/messages";
 import { useMessages } from "../i18n/ui-language";
-import type { FileDiff, Project, UsageWindow } from "../lib/ipc";
+import type { AgentUsage, FileDiff, Project, UsageWindow } from "../lib/ipc";
 import { encodingLabel } from "../lib/ipc";
 import { relativeTime } from "../lib/format";
-import { diffQueryOptions, useClaudeUsage, useProjects, useReopenWithEncoding, useStatus } from "../queries";
+import { diffQueryOptions, useClaudeUsage, useCodexUsage, useProjects, useReopenWithEncoding, useStatus } from "../queries";
 import { useAgentActivity } from "../stores/agentActivity";
 import { useUi } from "../stores/ui";
 import { TaskCenter } from "./TaskCenter";
@@ -24,6 +24,7 @@ export function StatusBar({ project }: { project: Project | null }) {
 
   return (
     <footer className="relative flex h-6 shrink-0 items-center gap-3 border-t border-edge bg-panel px-3 text-[11px] text-fg-dim">
+      <AgentUsageBars now={now} />
       {project ? (
         <>
           <span className="min-w-0 truncate select-text font-mono">
@@ -47,7 +48,6 @@ export function StatusBar({ project }: { project: Project | null }) {
       ) : (
         <span className="mr-auto">Gitpervisor</span>
       )}
-      <ClaudeUsageBar />
       {/* 맨 오른쪽 — 긴 작업(사본·프레임 추출·내보내기·자막)을 한곳에서 본다. */}
       <TaskCenter />
     </footer>
@@ -151,9 +151,9 @@ function usedColor(p: number): string {
   return p >= 80 ? "text-danger" : p >= 50 ? "text-warn" : "text-add";
 }
 // 리셋까지 남은 시간 — "3h 7m" / "16h 7m" / "7m". 지났거나 없으면 빈 문자열(부모 상태바가 30초마다 다시 그려 줄어든다).
-function resetIn(resetsAt: number | null): string {
+function resetIn(resetsAt: number | null, nowSec: number): string {
   if (!resetsAt) return "";
-  const s = resetsAt - Math.floor(Date.now() / 1000);
+  const s = resetsAt - nowSec;
   if (s <= 0) return "";
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
@@ -180,22 +180,44 @@ function usedNow(w: UsageWindow, nowSec: number): number {
   return w.resetsAt && w.resetsAt <= nowSec ? 0 : Math.max(0, Math.round(w.usedPercentage));
 }
 
-/** 우측 하단 Claude 계정 사용량 — "5시간 12% ↻2h 3m · 주간 81% ↻41h 13m"(statusline 의 5h·7d 와 같은 값).
- *  데이터 없음/오래됨(6시간 초과)/빈 창이면 아무것도 렌더하지 않는다. */
-function ClaudeUsageBar() {
+function AgentUsageBars({ now }: { now: number }) {
   const msg = useMessages();
-  const { data } = useClaudeUsage();
-  if (!data || data.windows.length === 0) return null;
-  const nowSec = Math.floor(Date.now() / 1000);
-  // 6시간 넘게 못 받았으면(토큰 만료·오프라인) 숨긴다 — 오래된 수치 오해 방지.
-  if (data.updatedAt > 0 && nowSec - data.updatedAt > 6 * 3600) return null;
+  const { data: claude } = useClaudeUsage();
+  const { data: codex } = useCodexUsage();
+  const nowSec = Math.floor(now / 1000);
+  const hasUsage = (data: AgentUsage | null | undefined): data is AgentUsage =>
+    !!data?.windows.length && (data.updatedAt <= 0 || nowSec - data.updatedAt <= 6 * 3600);
+  const showClaude = hasUsage(claude);
+  const showCodex = hasUsage(codex);
+  if (!showClaude && !showCodex) return null;
 
   return (
-    <span className="flex shrink-0 items-center gap-1.5" title={msg.app.statusBar.usageTitle}>
+    <div className="flex min-w-0 items-center gap-3 overflow-x-auto whitespace-nowrap [scrollbar-width:none]">
+      {showClaude && (
+        <UsageBar name="Claude" title={msg.app.statusBar.usageTitle} data={claude} nowSec={nowSec} />
+      )}
+      {showCodex && (
+        <UsageBar name="Codex" title={msg.app.statusBar.codexUsageTitle} data={codex} nowSec={nowSec} />
+      )}
+    </div>
+  );
+}
+
+function UsageBar({ name, title, data, nowSec }: {
+  name: string;
+  title: string;
+  data: AgentUsage;
+  nowSec: number;
+}) {
+  const msg = useMessages();
+
+  return (
+    <span className="flex shrink-0 items-center gap-1.5" title={title}>
       <Gauge size={11} className="shrink-0 text-fg-muted" />
+      <span className="text-fg-muted">{name}</span>
       {data.windows.map((w, i) => {
         const pct = usedNow(w, nowSec);
-        const reset = resetIn(w.resetsAt);
+        const reset = resetIn(w.resetsAt, nowSec);
         return (
           <span key={w.key} className="flex items-center gap-1">
             {i > 0 && <span className="text-fg-dim/60">·</span>}

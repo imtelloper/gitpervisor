@@ -323,6 +323,22 @@ pub struct Settings {
     /// 화면 캡쳐를 확정하면 클립보드에 더해 스크린샷 폴더에도 PNG 로 남긴다(commands/capture.rs). 기본 켬 —
     /// 사용자가 쓰던 캡쳐 툴(PicPick)이 "자동 저장 + 항상 클립보드" 였다(2026-11-10).
     pub capture_auto_save: bool,
+    /// 스크린샷 저장 폴더(절대경로). null/빈값 = OS 스크린샷 폴더. 상대경로는 무시한다 — 앱 작업 폴더 기준으로
+    /// 풀려 엉뚱한 곳에 쌓인다(commands/capture.rs `setting_dir`).
+    pub capture_save_dir: Option<String>,
+    // ---- 화면 녹화 (commands/record.rs, DOCS/screen-capture-design.md §5.4) ----
+    /// 녹화 저장 폴더(절대경로). null/빈값 = Windows 캡처 도구와 같은 `동영상\Screen Recordings`.
+    pub record_save_dir: Option<String>,
+    /// 30 | 60 — 그 밖의 값은 60 으로 본다. CPU 인코딩(x264·gdigrab)은 이 값과 무관하게 30 이 상한이다.
+    pub record_fps: u32,
+    /// 결과물에 마우스 커서를 그린다.
+    pub record_draw_mouse: bool,
+    /// 같이 녹음할 DirectShow 오디오 장치 표시 이름(`record_audio_devices` 가 주는 이름 그대로). null = 무음.
+    pub record_audio_device: Option<String>,
+    /// 녹화 시작 전 카운트다운(초). 0 = 바로 시작, 최대 10.
+    pub record_countdown_secs: u32,
+    /// 자동 정지 길이(분, 1..=120) — 무한 증가 방어(설계 §4.8). 일시정지한 시간은 세지 않는다.
+    pub record_max_minutes: u32,
     // ---- 로컬 MCP 서버 (DOCS/mcp-server-design.md §8) ----
     /// 기본 꺼짐 — 켜면 `127.0.0.1:<mcp_port>/mcp`에서 읽기 전용 도구를 연다(`mcp.rs`).
     pub mcp_enabled: bool,
@@ -379,6 +395,13 @@ impl Default for Settings {
             stt_language: "auto".to_string(),
             favorite_folders: Vec::new(),
             capture_auto_save: true,
+            capture_save_dir: None,
+            record_save_dir: None,
+            record_fps: 60,
+            record_draw_mouse: true,
+            record_audio_device: None,
+            record_countdown_secs: 3,
+            record_max_minutes: 10,
             mcp_enabled: false,
             mcp_port: 47820,
             mcp_token: String::new(),

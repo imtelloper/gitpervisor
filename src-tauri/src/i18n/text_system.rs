@@ -668,6 +668,94 @@ pub fn capture_save_failed(err: impl Display) -> String {
     }
 }
 
+// ─────────────────────────── 화면 녹화(commands/record.rs) ───────────────────────────
+
+/// 녹화 파일 이름의 머리 — Windows 캡처 도구의 화면 녹화 이름과 같은 낱말.
+pub fn record_file_prefix() -> &'static str {
+    match lang() {
+        Lang::Ko => "화면 녹화",
+        Lang::En => "Screen Recording",
+    }
+}
+
+pub fn record_already_running() -> &'static str {
+    match lang() {
+        Lang::Ko => "이미 녹화 중입니다",
+        Lang::En => "Already recording",
+    }
+}
+
+pub fn record_disk_low(free_mb: u64) -> String {
+    match lang() {
+        Lang::Ko => format!("디스크 여유 공간이 {free_mb}MB 라 녹화를 시작하지 않았습니다 (1GB 이상 필요)"),
+        Lang::En => format!("Recording not started — only {free_mb} MB of disk space left (1 GB required)"),
+    }
+}
+
+pub fn record_spawn_failed(err: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("녹화를 시작하지 못했습니다 ({err})"),
+        Lang::En => format!("Couldn't start recording ({err})"),
+    }
+}
+
+pub fn record_failed(detail: &str) -> String {
+    match lang() {
+        Lang::Ko => format!("녹화 파일이 만들어지지 않았습니다 — ffmpeg: {detail}"),
+        Lang::En => format!("No recording was produced — ffmpeg: {detail}"),
+    }
+}
+
+pub fn record_dir_unknown(tmp: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("동영상 폴더를 찾지 못했습니다 — 녹화 파일은 여기 있습니다: {tmp}"),
+        Lang::En => format!("Couldn't find the Videos folder — the recording is here: {tmp}"),
+    }
+}
+
+pub fn record_move_failed(tmp: impl Display, err: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("녹화 파일을 동영상 폴더로 옮기지 못했습니다 — 파일은 여기 있습니다: {tmp} ({err})"),
+        Lang::En => format!("Couldn't move the recording to the Videos folder — it is here: {tmp} ({err})"),
+    }
+}
+
+pub fn record_not_running() -> &'static str {
+    match lang() {
+        Lang::Ko => "녹화 중이 아닙니다",
+        Lang::En => "Not recording",
+    }
+}
+
+pub fn record_pause_in_countdown() -> &'static str {
+    match lang() {
+        Lang::Ko => "카운트다운 중에는 일시정지할 수 없습니다",
+        Lang::En => "Can't pause during the countdown",
+    }
+}
+
+/// 일시정지로 나뉜 조각을 하나로 잇지 못했다 — 조각은 지우지 않고 그 폴더를 알린다.
+pub fn record_concat_failed(dir: impl Display, detail: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("녹화 조각을 하나로 잇지 못했습니다 — 조각 파일은 여기 있습니다: {dir} ({detail})"),
+        Lang::En => format!("Couldn't join the recording segments — the segment files are here: {dir} ({detail})"),
+    }
+}
+
+pub fn record_audio_devices_failed(err: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("오디오 장치 목록을 읽지 못했습니다 ({err})"),
+        Lang::En => format!("Couldn't read the audio device list ({err})"),
+    }
+}
+
+pub fn record_audio_devices_timeout(secs: u64) -> String {
+    match lang() {
+        Lang::Ko => format!("오디오 장치 목록이 {secs}초 안에 오지 않았습니다"),
+        Lang::En => format!("The audio device list didn't arrive within {secs} s"),
+    }
+}
+
 // ─────────────────────────── 보조 창·전역 단축키(lib.rs) ───────────────────────────
 // 창 제목은 창을 만들 때의 언어로 굳는다(보조 창은 열 때마다 새로 만든다).
 
@@ -696,6 +784,14 @@ pub fn window_title_screen_capture() -> &'static str {
     match lang() {
         Lang::Ko => "화면 캡쳐",
         Lang::En => "Screen capture",
+    }
+}
+
+/// 녹화 영역 테두리 창(`rec-frame`) — 화면엔 테두리만 보이지만 Alt+Tab 등에 이름이 나올 수 있다.
+pub fn window_title_record_frame() -> &'static str {
+    match lang() {
+        Lang::Ko => "화면 녹화 영역",
+        Lang::En => "Recording area",
     }
 }
 
@@ -747,5 +843,12 @@ pub fn capture_hotkey_register_failed() -> &'static str {
     match lang() {
         Lang::Ko => "Ctrl+Shift+X 를 다른 프로그램이 쓰고 있어 화면 캡쳐 단축키를 등록하지 못했습니다",
         Lang::En => "Could not register the screen capture shortcut — another program is using Ctrl+Shift+X",
+    }
+}
+
+pub fn record_hotkey_register_failed() -> &'static str {
+    match lang() {
+        Lang::Ko => "Ctrl+Shift+Alt+X 를 다른 프로그램이 쓰고 있어 화면 녹화 단축키를 등록하지 못했습니다",
+        Lang::En => "Could not register the screen recording shortcut — another program is using Ctrl+Shift+Alt+X",
     }
 }

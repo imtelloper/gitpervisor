@@ -1,4 +1,4 @@
-// 설정 화면 — 대화상자 셸·검색 색인과 섹션(일반·모양·코드 도구·터미널·알림·유지보수·AI·업데이트·커스텀 테마).
+// 설정 화면 — 대화상자 셸·검색 색인과 섹션(일반·화면 캡쳐·모양·코드 도구·터미널·알림·유지보수·AI·업데이트·커스텀 테마).
 
 import { defineText } from "./define-text";
 import { fmtInt, plural } from "./format-locale";
@@ -15,7 +15,6 @@ const ko = {
       "타이틀바의 [폴더] 버튼에서 등록·삭제합니다. 등록한 폴더만 앱이 읽을 수 있습니다",
     favoriteFoldersNone: "등록된 폴더 없음",
     confirmDiscard: "변경 되돌리기·파일 삭제 전 확인 다이얼로그",
-    captureAutoSave: "화면 캡쳐(Ctrl+Shift+X)를 스크린샷 폴더에도 PNG로 저장 (클립보드 복사는 항상)",
     gitPathLabel: "git 실행 파일 경로",
     gitPathHint: "비우면 PATH에서 자동 탐색 (변경은 다음 git 작업부터 적용)",
     gitCurrent: "현재:",
@@ -322,6 +321,30 @@ const ko = {
     languageHint: "한국어만 쓰면 '한국어'로 고정하는 편이 감지 오류가 적습니다",
     deleteModelTitle: "음성 인식 모델 삭제",
   },
+  capture: {
+    hotkeys: "단축키 — Ctrl+Shift+X 캡쳐 · Ctrl+Shift+Alt+X 녹화(다시 누르면 정지)",
+    autoSave: "화면 캡쳐를 저장 폴더에도 PNG로 저장 (클립보드 복사는 항상)",
+    captureDirLabel: "캡쳐 저장 폴더",
+    recordDirLabel: "녹화 저장 폴더",
+    osDefaultDir: "(OS 기본 폴더)",
+    pickFolder: "폴더 선택",
+    pickFolderTitle: "저장 폴더 선택",
+    useDefault: "기본값",
+    fpsLabel: "녹화 프레임 (fps)",
+    fpsHint: "GPU 인코더가 없으면 CPU로 30fps 녹화합니다",
+    drawMouse: "마우스 포인터도 녹화",
+    countdownLabel: "시작 카운트다운",
+    countdownNone: "없음",
+    countdownSecs: (n: number) => `${n}초`,
+    maxMinutesLabel: "최대 길이 (분)",
+    maxMinutesHint: "1~120분 — 도달하면 멈추고 저장합니다. 파일이 4GB가 돼도 멈춥니다",
+    audioLabel: "오디오 장치",
+    audioNone: "없음 (무음)",
+    audioMissing: (name: string) => `${name} (찾을 수 없음)`,
+    audioRefresh: "새로고침",
+    audioHint:
+      "마이크를 고르면 함께 녹음합니다. 사운드 카드가 '스테레오 믹스' 장치를 제공하면 그것으로 시스템 소리를 녹음할 수 있습니다",
+  },
   mcp: {
     heading: "MCP 서버",
     intro:
@@ -342,6 +365,7 @@ const ko = {
   },
   categoryLabel: {
     general: "일반",
+    capture: "화면 캡쳐·녹화",
     appearance: "모양",
     codetools: "코드 도구",
     terminal: "터미널",
@@ -363,6 +387,16 @@ const ko = {
       keywords: ["즐겨찾기", "폴더", "스크린샷", "다운로드", "바탕화면"],
     },
     captureAutoSave: { label: "캡쳐 자동 저장", keywords: ["캡쳐", "캡처", "스크린샷", "저장", "자동"] },
+    captureSaveDir: { label: "캡쳐 저장 폴더", keywords: ["캡쳐", "캡처", "스크린샷", "폴더", "경로"] },
+    recordSaveDir: { label: "녹화 저장 폴더", keywords: ["녹화", "동영상", "폴더", "경로"] },
+    recordFps: { label: "녹화 프레임", keywords: ["녹화", "프레임", "fps"] },
+    recordDrawMouse: { label: "마우스 포인터 녹화", keywords: ["녹화", "마우스", "커서", "포인터"] },
+    recordAudioDevice: {
+      label: "녹화 오디오 장치",
+      keywords: ["녹화", "오디오", "마이크", "소리", "스테레오 믹스"],
+    },
+    recordCountdownSecs: { label: "녹화 카운트다운", keywords: ["녹화", "카운트다운", "대기"] },
+    recordMaxMinutes: { label: "녹화 최대 길이", keywords: ["녹화", "최대", "길이", "자동 정지"] },
     theme: { label: "테마", keywords: ["테마", "다크", "라이트", "색", "커스텀", "내 테마"] },
     diffFontSize: { label: "Diff 폰트 크기", keywords: ["폰트", "크기"] },
     formatterRuffPath: { label: "ruff 경로", keywords: ["포매터", "린터"] },
@@ -450,7 +484,6 @@ export const settingsText = defineText(ko, {
         "Add and remove them from the [Folders] button in the title bar. The app can only read registered folders",
       favoriteFoldersNone: "No folders registered",
       confirmDiscard: "Confirm before discarding changes or deleting files",
-      captureAutoSave: "Also save screen captures (Ctrl+Shift+X) as PNG in the Screenshots folder (always copied to the clipboard)",
       gitPathLabel: "git executable path",
       gitPathHint: "Leave empty to search PATH (changes apply from the next git operation)",
       gitCurrent: "Current:",
@@ -753,6 +786,30 @@ export const settingsText = defineText(ko, {
       languageHint: "If you only speak Korean, fixing it to Korean gives fewer detection errors",
       deleteModelTitle: "Delete speech recognition model",
     },
+    capture: {
+      hotkeys: "Shortcuts — Ctrl+Shift+X capture · Ctrl+Shift+Alt+X record (press again to stop)",
+      autoSave: "Also save screen captures as PNG in the save folder (always copied to the clipboard)",
+      captureDirLabel: "Capture folder",
+      recordDirLabel: "Recording folder",
+      osDefaultDir: "(OS default folder)",
+      pickFolder: "Choose folder",
+      pickFolderTitle: "Choose save folder",
+      useDefault: "Default",
+      fpsLabel: "Recording frame rate (fps)",
+      fpsHint: "Without a GPU encoder, recording falls back to 30 fps on the CPU",
+      drawMouse: "Record the mouse pointer",
+      countdownLabel: "Start countdown",
+      countdownNone: "None",
+      countdownSecs: (n) => `${n} s`,
+      maxMinutesLabel: "Maximum length (minutes)",
+      maxMinutesHint: "1–120 minutes — recording stops and saves when reached. It also stops at a 4 GB file",
+      audioLabel: "Audio device",
+      audioNone: "None (silent)",
+      audioMissing: (name) => `${name} (not found)`,
+      audioRefresh: "Refresh",
+      audioHint:
+        "Pick a microphone to record it too. If your sound card provides a \"Stereo Mix\" device, it records the system sound",
+    },
     mcp: {
       heading: "MCP server",
       intro:
@@ -773,6 +830,7 @@ export const settingsText = defineText(ko, {
     },
     categoryLabel: {
       general: "General",
+      capture: "Capture & recording",
       appearance: "Appearance",
       codetools: "Code tools",
       terminal: "Terminal",
@@ -791,6 +849,16 @@ export const settingsText = defineText(ko, {
         keywords: ["favorite", "folder", "screenshot", "download", "desktop"],
       },
       captureAutoSave: { label: "Auto-save captures", keywords: ["capture", "screenshot", "save", "auto"] },
+      captureSaveDir: { label: "Capture folder", keywords: ["capture", "screenshot", "folder", "path"] },
+      recordSaveDir: { label: "Recording folder", keywords: ["record", "video", "folder", "path"] },
+      recordFps: { label: "Recording frame rate", keywords: ["record", "fps", "frame"] },
+      recordDrawMouse: { label: "Record mouse pointer", keywords: ["record", "mouse", "cursor", "pointer"] },
+      recordAudioDevice: {
+        label: "Recording audio device",
+        keywords: ["record", "audio", "microphone", "mic", "sound", "stereo mix"],
+      },
+      recordCountdownSecs: { label: "Recording countdown", keywords: ["record", "countdown", "delay"] },
+      recordMaxMinutes: { label: "Maximum recording length", keywords: ["record", "max", "length", "limit", "duration"] },
       theme: { label: "Theme", keywords: ["theme", "color", "monokai", "dracula", "nord", "custom"] },
       diffFontSize: { label: "Diff font size", keywords: ["font", "size", "diff"] },
       formatterRuffPath: { label: "ruff path", keywords: ["ruff", "python", "formatter", "linter"] },

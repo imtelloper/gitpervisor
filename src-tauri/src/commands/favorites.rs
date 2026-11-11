@@ -1030,6 +1030,14 @@ pub(crate) fn screenshots_dir() -> Option<PathBuf> {
         .or_else(|| home().map(|h| h.join("Pictures").join("Screenshots")))
 }
 
+/// Windows 캡처 도구가 화면 녹화를 두는 `동영상\Screen Recordings` — 알려진 폴더 GUID 가 없어 동영상 폴더 아래로 잡는다.
+#[cfg(windows)]
+pub(crate) fn screen_recordings_dir() -> Option<PathBuf> {
+    shell_folder("My Video")
+        .or_else(|| home().map(|h| h.join("Videos")))
+        .map(|p| p.join("Screen Recordings"))
+}
+
 #[cfg(windows)]
 fn downloads_dir() -> Option<PathBuf> {
     shell_folder("{374DE290-123F-4565-9164-39C4925E467B}")

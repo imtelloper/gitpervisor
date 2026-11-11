@@ -1,4 +1,4 @@
-//! Claude 사용량(rate_limits) — 우측 하단 상태바의 usage 바.
+//! Claude 사용량(rate_limits) — 하단 상태바.
 //!
 //! 1순위는 계정 사용량 API(Claude Code 의 `/usage` 가 묻는 그 엔드포인트) — 로그인 토큰은 Claude Code 가 저장해 둔 것을
 //! 읽기만 한다. 예전엔 사용자의 `~/.claude/statusline.js` 가 rate_limits 를 `~/.claude/gitpervisor-usage.json` 으로 떨궈
@@ -25,7 +25,7 @@ pub struct UsageWindow {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ClaudeUsage {
+pub struct AgentUsage {
     pub windows: Vec<UsageWindow>,
     /// 파일이 마지막으로 갱신된 epoch초 — 프론트가 오래된 데이터를 숨기는 데 쓴다.
     pub updated_at: i64,
@@ -58,7 +58,7 @@ const ORDER: &[&str] = &["five_hour", "seven_day", "seven_day_opus", "seven_day_
 
 /// 상태바가 폴링하는 커맨드. API → 다리 파일 순. 둘 다 없으면 None(바를 숨긴다).
 #[tauri::command(async)]
-pub async fn claude_usage() -> Option<ClaudeUsage> {
+pub async fn claude_usage() -> Option<AgentUsage> {
     match api_usage().await {
         Some(u) => Some(u),
         None => bridge_file_usage(),
@@ -84,14 +84,14 @@ struct ApiCache {
     /// 이때까지는 다시 묻지 않는다.
     next: Option<Instant>,
     /// 마지막 성공 — 한 번 실패했다고(네트워크 순단) 바를 지우지 않는다. 오래되면 프론트가 숨긴다(updated_at).
-    last: Option<ClaudeUsage>,
+    last: Option<AgentUsage>,
     /// 같은 실패를 1분마다 로그에 쌓지 않게 — 달라졌을 때만 남긴다.
     last_err: Option<String>,
 }
 
 static API_CACHE: Mutex<ApiCache> = Mutex::new(ApiCache { next: None, last: None, last_err: None });
 
-async fn api_usage() -> Option<ClaudeUsage> {
+async fn api_usage() -> Option<AgentUsage> {
     {
         let c = API_CACHE.lock().unwrap_or_else(|e| e.into_inner());
         if c.next.is_some_and(|t| Instant::now() < t) {
@@ -125,7 +125,7 @@ fn backoff_429(retry_after: Option<&str>) -> Duration {
 }
 
 /// 실패는 (사유, 다음 조회까지 쉴 시간).
-async fn fetch_api_usage() -> Result<ClaudeUsage, (String, Duration)> {
+async fn fetch_api_usage() -> Result<AgentUsage, (String, Duration)> {
     let retry = |e: String| (e, API_RETRY);
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     let token = oauth_token().await.map_err(retry)?;
@@ -160,7 +160,7 @@ async fn fetch_api_usage() -> Result<ClaudeUsage, (String, Duration)> {
 }
 
 /// `{"five_hour":{"utilization":78.0,"resets_at":"2026-11-05T23:00:00.08+00:00"},"seven_day":null,…}` → 창 목록.
-fn parse_api_usage(body: &serde_json::Value, now: i64) -> ClaudeUsage {
+fn parse_api_usage(body: &serde_json::Value, now: i64) -> AgentUsage {
     let windows = API_WINDOWS
         .iter()
         .filter_map(|key| {
@@ -176,7 +176,7 @@ fn parse_api_usage(body: &serde_json::Value, now: i64) -> ClaudeUsage {
             })
         })
         .collect();
-    ClaudeUsage { windows, updated_at: now }
+    AgentUsage { windows, updated_at: now }
 }
 
 #[derive(Deserialize, Clone)]
@@ -256,7 +256,7 @@ async fn keychain_creds() -> Result<OauthCreds, String> {
 
 // ── statusline.js 다리 파일(폴백) ────────────────────────────────────────────
 
-fn bridge_file_usage() -> Option<ClaudeUsage> {
+fn bridge_file_usage() -> Option<AgentUsage> {
     let path = home_dir()?.join(".claude").join("gitpervisor-usage.json");
     let data = std::fs::read_to_string(&path).ok()?;
     let file: UsageFile = serde_json::from_str(&data).ok()?;
@@ -273,7 +273,7 @@ fn bridge_file_usage() -> Option<ClaudeUsage> {
         })
         .collect();
     windows.sort_by_key(|w| ORDER.iter().position(|k| *k == w.key).unwrap_or(usize::MAX));
-    Some(ClaudeUsage {
+    Some(AgentUsage {
         windows,
         updated_at: file.updated_at,
     })

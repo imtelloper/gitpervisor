@@ -40,6 +40,17 @@ export function Toasts() {
               {t.action.label}
             </button>
           )}
+          {t.secondary && (
+            <button
+              onClick={() => {
+                t.secondary?.run();
+                dismissToast(t.id);
+              }}
+              className="mt-0.5 shrink-0 rounded border border-accent/30 px-1.5 py-0.5 text-[11px] font-medium text-fg-muted hover:bg-accent/20 hover:text-accent"
+            >
+              {t.secondary.label}
+            </button>
+          )}
           <button
             onClick={() => dismissToast(t.id)}
             className="ml-1 mt-0.5 shrink-0 text-fg-dim hover:text-fg"

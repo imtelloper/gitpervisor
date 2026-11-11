@@ -1,5 +1,6 @@
 import {
   Bot,
+  Code2,
   Database,
   ExternalLink,
   FileText,
@@ -11,11 +12,10 @@ import {
   Terminal as TerminalIcon,
   X,
 } from "lucide-react";
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { useMessages } from "../../i18n/ui-language";
 import { openTerminalWith } from "../../lib/agent-launch";
-import { CLAUDE_LAUNCH, queueInitialInput } from "../../lib/terminal";
 import { useSettings } from "../../queries";
 import { useAgentActivity } from "../../stores/agentActivity";
 import { useApiClient } from "../../stores/apiclient";
@@ -174,12 +174,8 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
         ))}
         <NewTabControls
           onNewTerminal={() => openTerminal(projectId)}
-          // 예약 → 마운트 순서: openTerminal은 동기로 스토어를 갱신하고 pane 마운트(= PTY spawn)는
-          // 다음 커밋이라, 같은 틱의 이 예약이 항상 먼저 저장된다.
-          onNewClaude={() => {
-            const { paneId } = openTerminal(projectId);
-            queueInitialInput(paneId, CLAUDE_LAUNCH);
-          }}
+          onNewClaude={() => openTerminalWith(projectId, "claude")}
+          onNewCodex={() => openTerminalWith(projectId, "codex")}
           // 앱이 받아 둔 OpenCode를 띄운다(첫 사용이면 안내·다운로드 — lib/agent-launch.ts).
           // 이 메뉴는 종류를 고르는 곳이라 "새 터미널"은 설정 기본값과 무관하게 셸이다.
           onNewOpenCode={() => openTerminalWith(projectId, "opencode")}
@@ -321,38 +317,53 @@ function TabMenu({
 function NewTabControls({
   onNewTerminal,
   onNewClaude,
+  onNewCodex,
   onNewOpenCode,
   onNewBrowser,
   onNewApiClient,
 }: {
   onNewTerminal: () => void;
   onNewClaude: () => void;
+  onNewCodex: () => void;
   onNewOpenCode: () => void;
   onNewBrowser: () => void;
   onNewApiClient: () => void;
 }) {
   const msg = useMessages();
-  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const [menu, setMenu] = useState(false);
   // 탭줄 바로 아래가 곧 브라우저 뷰포트다 — 메뉴가 열린 동안 네이티브 webview를 숨긴다.
-  useOccludesWebview(!!menu);
+  useOccludesWebview(menu);
   const btnRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   // 탭 줄은 overflow-x-auto라 그 안의 absolute 드롭다운이 세로로 잘린다.
-  // 버튼 rect 기준 fixed 위치로 띄워 클리핑을 벗어난다(PaneMenu와 동일 패턴).
-  const toggle = () => {
-    if (menu) {
-      setMenu(null);
-      return;
-    }
-    const r = btnRef.current?.getBoundingClientRect();
-    if (r) setMenu({ x: r.left, y: r.bottom + 4 });
-  };
+  useLayoutEffect(() => {
+    const button = btnRef.current;
+    const dropdown = menuRef.current;
+    if (!menu || !button || !dropdown) return;
+
+    const position = () => {
+      const anchor = button.getBoundingClientRect();
+      const { width, height } = dropdown.getBoundingClientRect();
+      const margin = 8;
+      const gap = 4;
+      const below = anchor.bottom + gap;
+      const above = anchor.top - gap - height;
+      const top = below + height > window.innerHeight - margin && above >= margin ? above : below;
+      dropdown.style.left = `${Math.max(margin, Math.min(anchor.left, window.innerWidth - width - margin))}px`;
+      dropdown.style.top = `${Math.max(margin, Math.min(top, window.innerHeight - height - margin))}px`;
+    };
+
+    position();
+    window.addEventListener("resize", position);
+    return () => window.removeEventListener("resize", position);
+  }, [menu, msg]);
 
   return (
     <div className="flex shrink-0 items-center">
       <button
         ref={btnRef}
-        onClick={toggle}
+        onClick={() => setMenu((open) => !open)}
         title={msg.git.workspaceTabs.newTab}
         className="rounded p-1 text-fg-dim hover:bg-raised hover:text-fg"
       >
@@ -360,17 +371,17 @@ function NewTabControls({
       </button>
       {menu && (
         <>
-          <div className="fixed inset-0 z-40" onClick={() => setMenu(null)} />
+          <div className="fixed inset-0 z-40" onClick={() => setMenu(false)} />
           <div
-            className="fixed z-50 min-w-40 rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl"
-            style={{ left: menu.x, top: menu.y }}
+            ref={menuRef}
+            className="fixed left-0 top-0 z-50 w-max min-w-[min(10rem,calc(100vw-16px))] max-w-[calc(100vw-16px)] max-h-[calc(100vh-16px)] overflow-auto rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl"
           >
             <MenuItem
               icon={<TerminalIcon size={14} />}
               label={msg.git.workspaceTabs.newTerminal}
               onClick={() => {
                 onNewTerminal();
-                setMenu(null);
+                setMenu(false);
               }}
             />
             {/* 새 터미널과 같되, 셸이 뜨면 `claude`를 입력해 바로 Claude Code 세션으로 들어간다. */}
@@ -379,7 +390,15 @@ function NewTabControls({
               label={msg.git.workspaceTabs.newClaudeTerminal}
               onClick={() => {
                 onNewClaude();
-                setMenu(null);
+                setMenu(false);
+              }}
+            />
+            <MenuItem
+              icon={<Code2 size={14} />}
+              label={msg.git.workspaceTabs.newCodexTerminal}
+              onClick={() => {
+                onNewCodex();
+                setMenu(false);
               }}
             />
             {/* 앱이 관리하는 OpenCode — 설치 없이 무료 모델로 바로 쓴다(lib/opencode.ts). */}
@@ -388,7 +407,7 @@ function NewTabControls({
               label={msg.git.workspaceTabs.newOpenCodeTerminal}
               onClick={() => {
                 onNewOpenCode();
-                setMenu(null);
+                setMenu(false);
               }}
             />
             <MenuItem
@@ -396,7 +415,7 @@ function NewTabControls({
               label={msg.git.workspaceTabs.newBrowser}
               onClick={() => {
                 onNewBrowser();
-                setMenu(null);
+                setMenu(false);
               }}
             />
             <MenuItem
@@ -404,7 +423,7 @@ function NewTabControls({
               label={msg.git.workspaceTabs.newApiClient}
               onClick={() => {
                 onNewApiClient();
-                setMenu(null);
+                setMenu(false);
               }}
             />
           </div>

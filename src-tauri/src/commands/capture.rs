@@ -51,9 +51,19 @@ struct Session {
     born: Instant,
     /// 단축키를 누른 벽시계 시각 — 저장 파일 이름이 된다(확정 시각이 아니라 이 그림이 찍힌 순간).
     taken: chrono::NaiveDateTime,
+    mode: CaptureMode,
 }
 
 static CURRENT: Mutex<Option<Session>> = Mutex::new(None);
+
+/// 오버레이에서 고른 영역을 어디에 쓰나 — 정지 캡쳐(클립보드·PNG) 또는 화면 녹화(`record.rs`).
+/// 선택 UI 는 하나다(설계 §4.8: 녹화 전용 선택 UI 를 따로 만들지 않는다).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CaptureMode {
+    Capture,
+    Record,
+}
 
 /// 오버레이에 넘기는 세션 정보 — 표시용 프레임과 그 크기뿐이다.
 #[derive(Debug, Clone, Serialize)]
@@ -65,6 +75,7 @@ pub struct SessionInfo {
     pub height: u32,
     /// 표시 **전용** JPEG(q85) data URL. 최종 결과물은 여기서 뜨지 않는다(D3).
     pub preview: String,
+    pub mode: CaptureMode,
 }
 
 /// 잘라낼 영역 — **모니터 로컬 픽셀**이다(가상 데스크톱 좌표가 아니다).
@@ -277,9 +288,7 @@ fn preview_data_url(bgra: &[u8], w: u32, h: u32) -> Result<String, IpcError> {
 /// 이미지가 통째로 투명해진다 — 반드시 255로 채운다.
 fn crop_rgba(s: &Session, r: RectPx) -> Result<(Vec<u8>, u32, u32), IpcError> {
     let (x, y, w, h) = (r.x, r.y, r.w, r.h);
-    // checked_add — 프론트가 보낸 값이므로 x+w가 u32를 넘겨 감싸면 경계 검사가 통과해 버린다.
-    let within = |a: u32, len: u32, max: u32| a.checked_add(len).is_some_and(|e| e <= max);
-    if w == 0 || h == 0 || !within(x, w, s.w) || !within(y, h, s.h) {
+    if !rect_within(r, s.w, s.h) {
         return Err(IpcError::new(ErrorCode::Io, crate::i18n::text_system::capture_selection_out_of_bounds()));
     }
     let mut out = Vec::with_capacity((w as usize) * (h as usize) * 4);
@@ -293,6 +302,12 @@ fn crop_rgba(s: &Session, r: RectPx) -> Result<(Vec<u8>, u32, u32), IpcError> {
         }
     }
     Ok((out, w, h))
+}
+
+/// 프론트가 보낸 사각형이 프레임 안에 있나. checked_add — x+w가 u32를 넘겨 감싸면 경계 검사가 통과해 버린다.
+fn rect_within(r: RectPx, w: u32, h: u32) -> bool {
+    let within = |a: u32, len: u32, max: u32| a.checked_add(len).is_some_and(|e| e <= max);
+    r.w > 0 && r.h > 0 && within(r.x, r.w, w) && within(r.y, r.h, h)
 }
 
 // ─────────────────────────── 세션 ───────────────────────────
@@ -381,12 +396,12 @@ pub fn capture_release_all() {
 /// 전역 단축키 핸들러는 메인(이벤트 루프) 스레드에서 돈다. 거기서 BitBlt + JPEG 인코딩
 /// (실측 합계 ~55ms)을 하면 그동안 앱의 모든 창이 멈춘다 — 캡쳐를 빠르게 만들려다 앱을
 /// 끊기게 하는 셈이다. 창 조작만 `run_on_main_thread`로 되돌린다.
-pub fn run_capture(app: &AppHandle) {
+pub fn run_capture(app: &AppHandle, mode: CaptureMode) {
     let app = app.clone();
     std::thread::Builder::new()
         .name("capture".into())
         .spawn(move || {
-            if let Err(e) = trigger_inner(&app) {
+            if let Err(e) = trigger_inner(&app, mode) {
                 log::error!("[capture] 캡쳐 실패: {}", e.message);
                 // 오버레이가 이미 떠 있었다면 닫아 준다 — 빈 오버레이를 남기지 않는다.
                 let app2 = app.clone();
@@ -396,7 +411,7 @@ pub fn run_capture(app: &AppHandle) {
         .ok();
 }
 
-fn trigger_inner(app: &AppHandle) -> Result<(), IpcError> {
+fn trigger_inner(app: &AppHandle, mode: CaptureMode) -> Result<(), IpcError> {
     // **이미 캡쳐 중이면 아무것도 하지 않는다.** 오버레이가 화면을 덮고 있는데 다시 캡쳐하면
     // 그 오버레이가 그대로 프레임에 찍힌다(R8의 다른 얼굴). 세션은 60초 TTL이 있어 어떤
     // 경우에도 영구히 막히지 않는다.
@@ -406,6 +421,11 @@ fn trigger_inner(app: &AppHandle) -> Result<(), IpcError> {
         .is_some()
     {
         log::debug!("[capture] 이미 선택 중 — 단축키 무시");
+        return Ok(());
+    }
+    // 녹화 중엔 오버레이 창이 녹화 컨트롤 바로 쓰이고 있다 — 여기서 전체화면으로 키우면 바가 사라진다.
+    if super::record::is_recording() {
+        log::info!("[capture] 녹화 중 — 캡쳐 단축키 무시");
         return Ok(());
     }
 
@@ -422,6 +442,7 @@ fn trigger_inner(app: &AppHandle) -> Result<(), IpcError> {
         width: w,
         height: h,
         preview: preview.clone(),
+        mode,
     };
     *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = Some(Session {
         id: id.clone(),
@@ -433,6 +454,7 @@ fn trigger_inner(app: &AppHandle) -> Result<(), IpcError> {
         preview,
         born: Instant::now(),
         taken: chrono::Local::now().naive_local(),
+        mode,
     });
     arm_ttl(id.clone());
 
@@ -471,7 +493,7 @@ fn trigger_inner(app: &AppHandle) -> Result<(), IpcError> {
 /// 단축키와 같은 동작을 IPC로도 연다 — 설정 화면의 "지금 캡쳐"와 e2e가 쓴다.
 #[tauri::command(async)]
 pub fn capture_trigger(app: AppHandle) {
-    run_capture(&app);
+    run_capture(&app, CaptureMode::Capture);
 }
 
 /// 오버레이가 마운트 직후 현재 세션을 당겨 간다(emit 유실 대비 — `trigger_inner` 주석).
@@ -484,6 +506,7 @@ pub fn capture_current() -> Option<SessionInfo> {
         width: s.w,
         height: s.h,
         preview: s.preview.clone(), // 캐시본(Session::preview 주석)
+        mode: s.mode,
     })
 }
 
@@ -577,11 +600,11 @@ fn start_save_png(app: &AppHandle, rgba: Vec<u8>, w: u32, h: u32, taken: chrono:
         log::warn!("[capture] 파일 저장 실패: {msg}");
         let _ = app.emit("capture://save-failed", msg);
     };
-    let Some(dir) = capture_save_dir() else {
+    let Some(dir) = capture_save_dir(app) else {
         fail(app, crate::i18n::text_system::capture_save_dir_unknown().to_string());
         return None;
     };
-    let (path, file) = match reserve_screenshot_file(&dir, crate::i18n::text_system::capture_file_prefix(), taken) {
+    let (path, file) = match reserve_dated_file(&dir, crate::i18n::text_system::capture_file_prefix(), taken, "png") {
         Ok(v) => v,
         Err(e) => {
             fail(app, crate::i18n::text_system::capture_save_failed(format!("{}: {e}", dir.display())));
@@ -626,34 +649,66 @@ fn start_save_png(app: &AppHandle, rgba: Vec<u8>, w: u32, h: u32, taken: chrono:
     Some(shown)
 }
 
-/// 저장 폴더 — OS 의 스크린샷 폴더(`favorites::screenshots_dir`: Windows 는 알려진 폴더 `Screenshots`).
-///
-/// **디버그 빌드의 샤드 테스트 앱(`GPV_DATA_DIR`)은 그 데이터 폴더 아래 `screenshots` 에 쓴다.** e2e 31 이 확정할
-/// 때마다 사용자의 실제 스크린샷 폴더에 파일이 생기고, 이 개발기는 Defender "제어된 폴더 액세스"가 켜져 있어
-/// 러너(node)가 그 파일을 **지우지도 못한다**(2026-11-10 실측: 이벤트 1123 으로 차단). 릴리스엔 이 분기가 없다.
-fn capture_save_dir() -> Option<std::path::PathBuf> {
-    if cfg!(debug_assertions) {
-        if let Some(raw) = std::env::var_os("GPV_DATA_DIR") {
-            return Some(std::path::PathBuf::from(raw).join("screenshots"));
-        }
-    }
-    super::favorites::screenshots_dir()
+/// 저장 폴더 — 설정 `capture_save_dir`, 없으면 OS 의 스크린샷 폴더(`favorites::screenshots_dir`: Windows 는 알려진 폴더 `Screenshots`).
+fn capture_save_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
+    let setting = app
+        .state::<crate::state::AppState>()
+        .settings
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .capture_save_dir
+        .clone();
+    resolve_save_dir("screenshots", setting.as_deref(), super::favorites::screenshots_dir)
 }
 
-/// `<머리> 2026-11-10 135521.png` 자리를 **새로 만들어** 잡는다 — Windows 캡처 도구와 같은 이름 꼴이라
-/// 같은 폴더에서 시간순으로 섞여 정렬된다(사용자 결정 2026-11-10).
+/// 저장 폴더 해석(정지 캡쳐·녹화 공용) — 디버그 샤드 앱(`GPV_DATA_DIR`) > 설정 > OS 기본.
+///
+/// **디버그 빌드의 샤드 테스트 앱(`GPV_DATA_DIR`)은 설정과 무관하게 그 데이터 폴더 아래 `sub` 에 쓴다.** e2e 31 이 확정할
+/// 때마다 사용자의 실제 스크린샷 폴더에 파일이 생기고, 이 개발기는 Defender "제어된 폴더 액세스"가 켜져 있어
+/// 러너(node)가 그 파일을 **지우지도 못한다**(2026-11-10 실측: 이벤트 1123 으로 차단). 릴리스엔 이 분기가 없다.
+pub(super) fn resolve_save_dir(
+    sub: &str,
+    setting: Option<&str>,
+    os_default: impl FnOnce() -> Option<std::path::PathBuf>,
+) -> Option<std::path::PathBuf> {
+    if cfg!(debug_assertions) {
+        if let Some(raw) = std::env::var_os("GPV_DATA_DIR") {
+            return Some(std::path::PathBuf::from(raw).join(sub));
+        }
+    }
+    setting_dir(setting).or_else(os_default)
+}
+
+/// 설정에 적힌 저장 폴더 — 비었으면 None(OS 기본). 상대경로도 None: 앱 작업 폴더 기준으로 풀려 설치 폴더 같은
+/// 엉뚱한 곳에 쌓인다.
+fn setting_dir(raw: Option<&str>) -> Option<std::path::PathBuf> {
+    let t = raw?.trim();
+    if t.is_empty() {
+        return None;
+    }
+    let p = std::path::PathBuf::from(t);
+    if !p.is_absolute() {
+        log::warn!("[capture] 저장 폴더 설정이 절대경로가 아니라 무시합니다: {t}");
+        return None;
+    }
+    Some(p)
+}
+
+/// `<머리> 2026-11-10 135521.<ext>` 자리를 **새로 만들어** 잡는다 — Windows 캡처 도구와 같은 이름 꼴이라
+/// 같은 폴더에서 시간순으로 섞여 정렬된다(사용자 결정 2026-11-10). 화면 녹화(`record.rs`)도 쓴다.
 ///
 /// 같은 초에 두 장이면 ` (2)`, ` (3)` … 을 붙인다. `exists()` 로 보고 쓰지 않고 `create_new` 로 연다 —
 /// 확인과 쓰기 사이에 다른 도구가 같은 이름을 만들어도 **남의 파일을 덮지 않는다.**
-fn reserve_screenshot_file(
+pub(super) fn reserve_dated_file(
     dir: &std::path::Path,
     prefix: &str,
     taken: chrono::NaiveDateTime,
+    ext: &str,
 ) -> std::io::Result<(std::path::PathBuf, std::fs::File)> {
     std::fs::create_dir_all(dir)?;
     let stem = format!("{prefix} {}", taken.format("%Y-%m-%d %H%M%S"));
     for n in 1..=99u32 {
-        let name = if n == 1 { format!("{stem}.png") } else { format!("{stem} ({n}).png") };
+        let name = if n == 1 { format!("{stem}.{ext}") } else { format!("{stem} ({n}).{ext}") };
         let path = dir.join(name);
         match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(f) => return Ok((path, f)),
@@ -664,6 +719,21 @@ fn reserve_screenshot_file(
     Err(std::io::ErrorKind::AlreadyExists.into())
 }
 
+/// 녹화 시작 — 세션을 소모하고(원본 버퍼는 녹화에 안 쓴다) 그 모니터의 위치·크기와 단축키 시각을 넘긴다.
+pub(super) fn take_for_record(id: &str, rect: RectPx) -> Result<(i32, i32, u32, u32, chrono::NaiveDateTime), IpcError> {
+    let mut cur = CURRENT.lock().unwrap_or_else(|e| e.into_inner());
+    let s = cur
+        .as_ref()
+        .filter(|s| s.id == id)
+        .ok_or_else(|| IpcError::new(ErrorCode::NotFound, crate::i18n::text_system::capture_session_expired()))?;
+    if !rect_within(rect, s.w, s.h) {
+        return Err(IpcError::new(ErrorCode::Io, crate::i18n::text_system::capture_selection_out_of_bounds()));
+    }
+    let out = (s.mx, s.my, s.w, s.h, s.taken);
+    *cur = None;
+    Ok(out)
+}
+
 /// 취소 — 버퍼를 놓고 오버레이를 닫는다.
 #[tauri::command(async)]
 pub fn capture_cancel(app: AppHandle, id: String) -> Result<(), IpcError> {
@@ -672,7 +742,7 @@ pub fn capture_cancel(app: AppHandle, id: String) -> Result<(), IpcError> {
     Ok(())
 }
 
-fn hide_overlay(app: &AppHandle) {
+pub(super) fn hide_overlay(app: &AppHandle) {
     if let Some(w) = app.get_webview_window(CAPTURE_OVERLAY_LABEL) {
         let _ = w.hide();
     }
@@ -700,26 +770,39 @@ mod tests {
             preview: String::new(),
             born: Instant::now(),
             taken: chrono::NaiveDateTime::default(),
+            mode: CaptureMode::Capture,
         }
     }
 
     /// 이름이 Windows 캡처 도구 꼴이고, 같은 초의 두 번째는 ` (2)` 이며, 이미 있던 파일은 덮지 않는다.
     #[test]
-    fn reserve_screenshot_file_names_like_windows_and_never_overwrites() {
+    fn reserve_dated_file_names_like_windows_and_never_overwrites() {
         let dir = std::env::temp_dir().join(format!("gpv-capture-save-{}", uuid::Uuid::new_v4()));
         let taken = chrono::NaiveDate::from_ymd_opt(2026, 11, 10).unwrap().and_hms_opt(13, 55, 21).unwrap();
 
-        let (p1, _f1) = reserve_screenshot_file(&dir, "스크린샷", taken).unwrap();
+        let (p1, _f1) = reserve_dated_file(&dir, "스크린샷", taken, "png").unwrap();
         assert_eq!(p1.file_name().unwrap(), "스크린샷 2026-11-10 135521.png");
 
         // 다른 도구가 (2) 자리를 먼저 차지했다 — 그 내용을 건드리지 않고 (3) 으로 간다.
         std::fs::write(dir.join("스크린샷 2026-11-10 135521 (2).png"), b"theirs").unwrap();
-        let (p3, _f3) = reserve_screenshot_file(&dir, "스크린샷", taken).unwrap();
+        let (p3, _f3) = reserve_dated_file(&dir, "스크린샷", taken, "png").unwrap();
         assert_eq!(p3.file_name().unwrap(), "스크린샷 2026-11-10 135521 (3).png");
         assert_eq!(std::fs::read(dir.join("스크린샷 2026-11-10 135521 (2).png")).unwrap(), b"theirs");
 
         drop((_f1, _f3));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 빈 값·공백·상대경로는 OS 기본으로(None), 절대경로는 앞뒤 공백만 걷고 그대로.
+    #[test]
+    fn setting_dir_keeps_only_absolute_paths() {
+        assert_eq!(setting_dir(None), None);
+        assert_eq!(setting_dir(Some("")), None);
+        assert_eq!(setting_dir(Some("   ")), None);
+        assert_eq!(setting_dir(Some("shots")), None);
+        assert_eq!(setting_dir(Some("./shots")), None);
+        let abs = std::env::temp_dir().join("shots");
+        assert_eq!(setting_dir(Some(&format!("  {}  ", abs.display()))), Some(abs));
     }
 
     /// 크롭이 요청한 자리를 정확히 집는가 — 행 스트라이드를 한 번이라도 틀리면 이미지가 비스듬해진다.

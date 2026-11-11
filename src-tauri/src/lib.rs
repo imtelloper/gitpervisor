@@ -1,6 +1,7 @@
 mod claude_resume;
 mod claude_sessions;
 mod claude_usage;
+mod codex_usage;
 mod commands;
 mod db;
 mod disk_scan;
@@ -866,15 +867,22 @@ async fn open_doc_window(
 fn register_capture_hotkey(app: &tauri::AppHandle) {
     use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
 
-    let sc = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyX);
-    match app.global_shortcut().register(sc) {
-        Ok(()) => log::info!("[capture] 전역 단축키 Ctrl+Shift+X 등록"),
-        Err(e) => {
-            log::error!("[capture] 전역 단축키 등록 실패: {e}");
-            let _ = app.emit(
-                "capture://hotkey-error",
-                i18n::text_system::capture_hotkey_register_failed(),
-            );
+    // 둘은 따로 실패한다 — 설치본이 캡쳐 단축키를 쥐고 있어도 dev 의 녹화 단축키는 등록된다(2026-11-10 실측).
+    let keys = [
+        (Modifiers::CONTROL | Modifiers::SHIFT, "Ctrl+Shift+X", i18n::text_system::capture_hotkey_register_failed()),
+        (
+            Modifiers::CONTROL | Modifiers::SHIFT | Modifiers::ALT,
+            "Ctrl+Shift+Alt+X",
+            i18n::text_system::record_hotkey_register_failed(),
+        ),
+    ];
+    for (mods, name, failed) in keys {
+        match app.global_shortcut().register(Shortcut::new(Some(mods), Code::KeyX)) {
+            Ok(()) => log::info!("[capture] 전역 단축키 {name} 등록"),
+            Err(e) => {
+                log::error!("[capture] 전역 단축키 {name} 등록 실패: {e}");
+                let _ = app.emit("capture://hotkey-error", failed);
+            }
         }
     }
 }
@@ -916,6 +924,50 @@ pub(crate) fn ensure_capture_overlay(
         .gpv_webview_env()
         .build()
         .map_err(|e| e.to_string())
+}
+
+/// 녹화 영역 테두리 창(`rec-frame`)을 만든다 — 숨긴 채로 돌려주고, 자리·크기·표시는 `commands/record.rs` 가 한다.
+///
+/// 오버레이와 달리 **데워 두지 않는다** — 녹화하는 동안만 있고 끝나는 모든 경로에서 닫는다(웹뷰 하나가 수십 MB).
+/// 클릭 통과여야 녹화 대상 앱을 그대로 조작할 수 있고, 녹화 제외(WDA_EXCLUDEFROMCAPTURE)라 영역 경계에 1px 겹쳐도
+/// 결과물에 안 찍힌다(설계 §4.8·R14). IPC 를 안 쓰는 정적 페이지라 capability 가 필요 없다.
+///
+/// **반드시 메인 스레드에서 부른다** — 웹뷰 창 생성은 메인 스레드 전용이다.
+pub(crate) fn ensure_rec_frame(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+    if let Some(w) = app.get_webview_window(commands::REC_FRAME_LABEL) {
+        return Ok(w);
+    }
+    // 오버레이와 같은 이유로 메인 창 URL 기준(dev 는 개발서버, 설치본은 tauri://). 절대경로로 잇는다 —
+    // 메인 URL 에 경로가 붙어 있어도 루트의 `public/rec-frame.html` 을 가리키게.
+    let url = app
+        .get_webview_window("main")
+        .and_then(|w| w.url().ok())
+        .and_then(|u| u.join("/rec-frame.html").ok())
+        .map(WebviewUrl::External)
+        .unwrap_or_else(|| WebviewUrl::App("rec-frame.html".into()));
+    let builder = WebviewWindowBuilder::new(app, commands::REC_FRAME_LABEL, url)
+        .title(i18n::text_system::window_title_record_frame())
+        .visible(false)
+        // 녹화 대상 앱의 포커스를 뺏지 않는다(tao 는 첫 show 를 SW_SHOWNOACTIVATE 로 한다).
+        .focused(false)
+        .decorations(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .shadow(false)
+        .disable_drag_drop_handler()
+        .gpv_webview_env();
+    // macOS 투명 창은 `macos-private-api` 피처가 필요하다 — 녹화는 Windows 전용이라 거기선 불투명 그대로 둔다.
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.transparent(true);
+    let win = builder.build().map_err(|e| e.to_string())?;
+    if let Err(e) = win.set_ignore_cursor_events(true) {
+        log::warn!("[record] 테두리 창 클릭 통과 설정 실패: {e}");
+    }
+    if let Err(e) = win.set_content_protected(true) {
+        log::warn!("[record] 테두리 창 녹화 제외 실패: {e}");
+    }
+    Ok(win)
 }
 
 /// 플로팅 터미널 창 라벨 접두사 — 라벨이 곧 paneId 전달 통로다(open_float_window 주석 참고).
@@ -982,7 +1034,11 @@ fn reset_close_guard() {
 /// 메인 창과 수명을 같이 하는 보조 창 라벨.
 /// 메인이 사라졌는데 이 창들만 남으면 앱이 종료되지 않고 창 하나짜리 잔여 상태가 된다
 /// (macOS는 Dock에도 남는다). 팝업(`gpv-popup-*`)은 browser.rs의 popup_kill_all이 맡는다.
-const AUX_WINDOW_LABELS: [&str; 2] = ["sysmon", "aggregate"];
+/// 녹화 테두리(`rec-frame`)는 녹화가 끝나는 모든 경로에서 닫히지만 그중 하나가 빠져도 남지 않게 여기서도 걷는다.
+/// **캡쳐 오버레이(`capture`)도 여기 있어야 한다** — 한 번 만들면 숨긴 채 상주하는 창이라(재사용, 설계 D4) 빠지면 캡쳐를
+/// 한 번이라도 쓴 뒤 메인을 닫았을 때 프로세스가 창 없이 남는다. 설치본은 single-instance 라 다시 실행해도 그 유령에게
+/// 넘어가 앱이 안 열린다(2026-11-10 녹화 검증 중 발견 — M1 부터 있던 결함).
+const AUX_WINDOW_LABELS: [&str; 4] = ["sysmon", "aggregate", commands::REC_FRAME_LABEL, commands::CAPTURE_OVERLAY_LABEL];
 
 /// 메인 창이 사라질 때 같이 닫아야 하는 창인가.
 ///
@@ -1063,6 +1119,8 @@ pub(crate) fn shutdown_children(app: &tauri::AppHandle) {
         shutdown_step("lsp", || commands::lsp_kill_all(state));
         shutdown_step("llm", || llm::llm_kill_all(state));
         shutdown_step("browser", || commands::browser_kill_all(app, state));
+        // 녹화가 video 보다 먼저 — ffmpeg 를 kill 하면 mp4 가 깨진다. 여기선 `q` 로 마무리해 저장까지 한다.
+        shutdown_step("record", || commands::record_shutdown(app));
         shutdown_step("video", || commands::video_kill_all(state));
         shutdown_step("hls", commands::hls_kill_all);
         shutdown_step("capture", commands::capture_release_all);
@@ -1179,13 +1237,16 @@ pub fn run() {
     }));
     let result = builder
         .plugin(tauri_plugin_process::init())
-        // 화면 캡쳐 전역 단축키. 등록은 setup에서 하고, 여기선 눌림만 받는다.
-        // 지금 등록하는 단축키가 하나뿐이라 어느 것인지 가리지 않는다 — 늘어나면 shortcut을 본다.
+        // 화면 캡쳐(Ctrl+Shift+X)·녹화(Ctrl+Shift+Alt+X) 전역 단축키. 등록은 setup에서 하고, 여기선 눌림만 받는다.
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, _shortcut, event| {
+                .with_handler(|app, shortcut, event| {
                     if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                        commands::run_capture(app);
+                        if shortcut.mods.contains(tauri_plugin_global_shortcut::Modifiers::ALT) {
+                            commands::record_hotkey(app);
+                        } else {
+                            commands::run_capture(app, commands::CaptureMode::Capture);
+                        }
                     }
                 })
                 .build(),
@@ -1348,6 +1409,12 @@ pub fn run() {
             commands::capture_overlay_ready,
             commands::capture_to_clipboard,
             commands::capture_cancel,
+            commands::record_trigger,
+            commands::record_start,
+            commands::record_stop,
+            commands::record_pause,
+            commands::record_audio_devices,
+            commands::record_default_dirs,
             commands::list_projects,
             commands::add_project,
             commands::create_project_folder,
@@ -1529,6 +1596,7 @@ pub fn run() {
             pc_care::cleanup::cleanup_scan,
             pc_care::cleanup::cleanup_run,
             claude_usage::claude_usage,
+            codex_usage::codex_usage,
             claude_usage::last_agent_message,
             claude_sessions::claude_sessions_list,
             claude_sessions::claude_session_detail,
@@ -1761,6 +1829,8 @@ mod tests {
         assert!(is_secondary_window("float-abc123"));
         assert!(is_secondary_window("sysmon"));
         assert!(is_secondary_window("aggregate"));
+        assert!(is_secondary_window(commands::REC_FRAME_LABEL));
+        assert!(is_secondary_window(commands::CAPTURE_OVERLAY_LABEL), "숨긴 채 상주하는 캡쳐 오버레이가 남으면 프로세스가 안 끝난다");
         assert!(
             is_secondary_window("doc-abc"),
             "문서 창만 남아 앱이 안 닫히면 안 된다"

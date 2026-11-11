@@ -180,6 +180,7 @@ async function sessionExists(termId: string): Promise<boolean> {
 /** 새 터미널이 뜨자마자 PTY에 넣을 입력 — 지금은 Claude Code 세션 띄우기.
  *  `\r`이 Enter다(키 입력과 같은 경로라 셸 종류를 안 탄다). 미설치면 셸이 not found를 찍고 끝난다. */
 export const CLAUDE_LAUNCH = "claude\r";
+export const CODEX_LAUNCH = "codex\r";
 
 /** 절대경로 실행 파일 + 환경변수로 띄울 초기 명령(관리형 OpenCode — lib/opencode.ts).
  *  맨 문자열과 달리 **셸 문법이 셸마다 다르다**(따옴표·환경변수 설정). 어떤 셸이 뜰지는 term_open의

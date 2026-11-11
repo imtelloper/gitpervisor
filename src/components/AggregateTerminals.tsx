@@ -1,6 +1,7 @@
 import {
   CalendarDays,
   Bot,
+  Code2,
   CircleCheck,
   Columns3,
   ExternalLink,
@@ -480,7 +481,7 @@ export function AggregateTerminals() {
   const addTerminal = (projectId: string, initialInput?: InitialInput) => {
     initedRef.current = true;
     const { paneId } = openTerminal(projectId);
-    // 셸이 뜨면 `claude`/`opencode`를 넣어 에이전트 세션으로 들어간다. 별도 창에서도 paneId는 이 창이
+    // 셸이 뜨면 예약된 명령으로 에이전트 세션을 시작한다. 별도 창에서도 paneId는 이 창이
     // 만들므로(위임은 id를 그대로 싣는다) 예약 키가 맞고, 실제 소비는 term_open을 잡은 창이 한다.
     if (initialInput) queueInitialInput(paneId, initialInput);
     setSelected((prev) => new Set(prev).add(paneId));
@@ -1559,7 +1560,7 @@ function Chip({
 
 /** "+" 메뉴가 만들 수 있는 것 — 그리드 셀 종류 + "초기 입력만 다른" 에이전트 세션 터미널.
  *  라벨은 메뉴 행과 프로젝트 선택 머리말 두 곳이 같은 문구를 써야 해서 한 곳에 모은다. */
-type NewCellKind = PaneKind | "claude" | "opencode";
+type NewCellKind = PaneKind | TerminalAgent;
 function newCellLabel(kind: NewCellKind, msg: Messages): string {
   switch (kind) {
     case "terminal":
@@ -1568,12 +1569,14 @@ function newCellLabel(kind: NewCellKind, msg: Messages): string {
       return msg.app.aggregate.newCellBrowser;
     case "claude":
       return msg.app.aggregate.newCellClaude;
+    case "codex":
+      return msg.app.aggregate.newCellCodex;
     case "opencode":
       return msg.app.aggregate.newCellOpenCode;
   }
 }
 
-/** 새 셀 추가 — "+" 하나로 종류(터미널 / Claude Code·OpenCode 세션 터미널 / 브라우저)를 고르고,
+/** 새 셀 추가 — "+" 하나로 종류(터미널 / 에이전트 세션 터미널 / 브라우저)를 고르고,
  *  프로젝트가 여러 개면 이어서 고른다.
  *  탭 스트립의 NewTabControls와 같은 방식으로 통일했다(버튼 두 개는 무엇을 하는지 구분이 안 됐다).
  *  API 클라이언트는 그리드가 지원하는 셀 종류가 아니라 여기 메뉴엔 없다.
@@ -1666,6 +1669,11 @@ function NewCellButton({
                   icon={<Sparkles size={14} />}
                   label={newCellLabel("claude", msg)}
                   onClick={() => pickKind("claude")}
+                />
+                <MenuRow
+                  icon={<Code2 size={14} />}
+                  label={newCellLabel("codex", msg)}
+                  onClick={() => pickKind("codex")}
                 />
                 <MenuRow
                   icon={<Bot size={14} />}

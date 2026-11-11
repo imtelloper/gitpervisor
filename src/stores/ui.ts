@@ -19,11 +19,14 @@ export interface Toast {
   message: string;
   /** 선택 액션 버튼(예: "설정 열기") — 클릭 시 실행 + 토스트 닫힘. */
   action?: { label: string; run: () => void };
+  /** 두 번째 액션 버튼 — `action` 옆에 덜 눈에 띄게. */
+  secondary?: { label: string; run: () => void };
 }
 
 export interface ToastOptions {
   /** 자동 소멸까지 ms. 기본 6000. `null`이면 사용자가 X로 닫을 때까지 유지. */
   durationMs?: number | null;
+  secondary?: Toast["secondary"];
 }
 
 export interface ConfirmRequest {
@@ -964,7 +967,7 @@ export const useUi = create<UiState>((set) => ({
     }),
   pushToast: (kind, message, action, opts) => {
     const id = ++toastSeq;
-    set((s) => ({ toasts: [...s.toasts, { id, kind, message, action }] }));
+    set((s) => ({ toasts: [...s.toasts, { id, kind, message, action, secondary: opts?.secondary }] }));
     // durationMs를 넘기지 않으면 기존대로 6초. null이면 타이머를 걸지 않는다 —
     // 사용자가 X로 닫을 때까지 남는 알림(새 버전 안내 등).
     const ms = opts?.durationMs === undefined ? 6000 : opts.durationMs;

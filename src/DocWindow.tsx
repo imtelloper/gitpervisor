@@ -142,14 +142,10 @@ function ReportWindow() {
       if (disposed) un();
       else unlisten = un;
     });
-    // 프로젝트 추가·제거에는 이벤트가 없다 — 이 창이 포커스를 되찾을 때 다시 읽는다
-    // (staleTime Infinity 라 기본 refetchOnWindowFocus 로는 풀리지 않는다).
-    const refetchProjects = () => void qc.invalidateQueries({ queryKey: ["projects"] });
-    window.addEventListener("focus", refetchProjects);
+    // 프로젝트 목록은 `projects://changed` 로 따라간다(main.tsx docWindowTree 의 attachProjectsEvents).
     return () => {
       disposed = true;
       unlisten?.();
-      window.removeEventListener("focus", refetchProjects);
     };
   }, [qc]);
 

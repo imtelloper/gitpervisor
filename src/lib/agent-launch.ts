@@ -6,6 +6,7 @@ import { prepareOpenCode } from "./opencode";
 import type { SplitDir } from "./pane-tree";
 import {
   CLAUDE_LAUNCH,
+  CODEX_LAUNCH,
   formatLaunch,
   getTerminal,
   type InitialInput,
@@ -19,10 +20,10 @@ import {
 // 2/4/8 그리드는 기본값을 따르지 않는다: 한 번에 최대 7개의 에이전트가 뜨면 메모리를 크게 먹는다
 // (OpenCode 한 개가 수백 MB — 2026-08 OOM 사건 참고). 그리드는 셸로 열고 필요한 칸에서 띄운다.
 
-export type TerminalAgent = "claude" | "opencode";
+export type TerminalAgent = "claude" | "codex" | "opencode";
 
 /** 설정값 → 에이전트. 빈값·모르는 값은 null(셸만). */
-export function agentOf(v: string | null | undefined): TerminalAgent | null {
+export function agentOf(v: string | null | undefined) {
   return v === "claude" || v === "opencode" ? v : null;
 }
 
@@ -41,6 +42,7 @@ export function runWithAgent(
 ): void {
   if (!agent) return open();
   if (agent === "claude") return open(CLAUDE_LAUNCH);
+  if (agent === "codex") return open(CODEX_LAUNCH);
   void prepareOpenCode().then((spec) => {
     if (spec) open(spec);
   });
@@ -51,7 +53,7 @@ export function runWithAgent(
  *  OpenCode 줄은 셸마다 문법이 달라 이 PTY가 **실제로 띄운 셸**을 백엔드에 묻는다 — 별도 창은
  *  attach라 open 응답의 셸을 모른다. */
 export async function launchAgentInTerminal(termId: string, agent: TerminalAgent): Promise<void> {
-  let line = CLAUDE_LAUNCH;
+  let line = agent === "codex" ? CODEX_LAUNCH : CLAUDE_LAUNCH;
   if (agent === "opencode") {
     const spec = await prepareOpenCode();
     if (!spec) return; // 취소·실패 — prepareOpenCode가 이미 알렸다

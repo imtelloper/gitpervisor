@@ -154,7 +154,8 @@ clipboard-win = "5"
 # Win32_System_TaskScheduler/Com/Variant/Ole: 리소스 모니터 예약 작업 탭(pc_care/scheduled_tasks.rs) — ITaskService COM.
 # Services·RestartManager·IO·Ioctl·Registry·Wdk_Graphics_Direct3D(windows-sys): 같은 PC 관리 탭들(DOCS/pc-care-design.md).
 # Win32_Graphics_Imaging: HEIC 썸네일을 WIC 내장 썸네일로(commands/still_image_wic.rs, 태스크 79) — ffmpeg 보다 ~8배 빠르다.
-windows = { version = "0.61", features = ["Media_Ocr", "Graphics_Imaging", "Globalization", "Foundation_Collections", "Storage_Streams", "Security_Cryptography", "Win32_System_TaskScheduler", "Win32_System_Com", "Win32_System_Variant", "Win32_System_Ole", "Win32_Foundation", "Win32_Graphics_Imaging"] }
+# Win32_Graphics_Dxgi(+_Common): 화면 녹화가 모니터의 DXGI 출력 번호를 좌표로 찾는다(commands/record.rs — ffmpeg ddagrab output_idx).
+windows = { version = "0.61", features = ["Media_Ocr", "Graphics_Imaging", "Globalization", "Foundation_Collections", "Storage_Streams", "Security_Cryptography", "Win32_System_TaskScheduler", "Win32_System_Com", "Win32_System_Variant", "Win32_System_Ole", "Win32_Foundation", "Win32_Graphics_Imaging", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common"] }
 # AI 완료 OS 토스트를 앱 AUMID로 직접 띄운다 — 알림 플러그인은 dev(target/debug)에서 app_id를
 # 안 붙여 PowerShell 명의로 뜨므로, 직접 토스트 + AUMID(DisplayName/Icon) 레지스트리 등록으로 대체.
 tauri-winrt-notification = "0.7"

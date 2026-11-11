@@ -7,6 +7,7 @@
 import {
   Bot,
   Check,
+  Code2,
   FolderTree,
   GitBranch,
   History,
@@ -186,11 +187,11 @@ const HOVER_OPEN_MS = 120;
 const HOVER_CLOSE_MS = 250;
 
 /**
- * 이 터미널에 AI 세션(Claude Code·OpenCode)을 띄운다 — 지금 셸 프롬프트에 실행 줄을 입력한다
+ * 이 터미널에 AI 세션을 띄운다 — 지금 셸 프롬프트에 실행 줄을 입력한다
  * (lib/agent-launch.ts `launchAgentInTerminal`). 뭔가 돌고 있는 터미널이면 그 프로그램에 입력이 가니
  * 셸 프롬프트에서 누르는 버튼이다. 메뉴 배치는 ThemeButton과 같은 fixed(헤더가 overflow-hidden).
  *
- * 포인터를 올리기만 해도 열린다(항목이 둘뿐이라 클릭 한 번을 아낀다). 터치는 탭 직후
+ * 포인터를 올리기만 해도 열린다. 터치는 탭 직후
  * pointerleave가 와서 바로 닫혀 버리므로 호버 처리에서 뺀다(탭 = 클릭으로 연다).
  */
 export function AgentLaunchButton({ termId }: { termId: string }) {
@@ -215,9 +216,9 @@ export function AgentLaunchButton({ termId }: { termId: string }) {
     const r = btnRef.current?.getBoundingClientRect();
     if (!r) return;
     const right = Math.max(8, window.innerWidth - r.right);
-    // 두 줄(≈64px)이라 아래 여유가 모자랄 때만 위로 뒤집는다.
+    // 세 줄과 여백을 위한 공간이 아래에 부족하면 위로 뒤집는다.
     setMenu(
-      window.innerHeight - r.bottom > 80
+      window.innerHeight - r.bottom > 100
         ? { right, top: r.bottom + 4 }
         : { right, bottom: window.innerHeight - r.top + 4 },
     );
@@ -269,6 +270,7 @@ export function AgentLaunchButton({ termId }: { termId: string }) {
             style={{ right: menu.right, top: menu.top, bottom: menu.bottom }}
           >
             {row("claude", <Sparkles size={12} />, msg.git.termSession.agentLaunchClaude)}
+            {row("codex", <Code2 size={12} />, msg.git.termSession.agentLaunchCodex)}
             {row("opencode", <Bot size={12} />, msg.git.termSession.agentLaunchOpenCode)}
           </div>
         </>

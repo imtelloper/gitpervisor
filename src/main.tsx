@@ -14,7 +14,7 @@ import { SysMonitorWindow } from "./components/sysmon/SysMonitorWindow";
 import { FloatingTerminal } from "./FloatingTerminal";
 import { initUiLanguage } from "./i18n/ui-language";
 import { installMacCopyInterceptor } from "./lib/clipboard";
-import { attachLogoEvents, attachRepoEvents } from "./lib/events";
+import { attachLogoEvents, attachProjectsEvents, attachRepoEvents } from "./lib/events";
 import { setupErrorLogging } from "./lib/logging";
 import {
   readAggregateView,
@@ -240,6 +240,7 @@ armEngagementTracking(label !== "main" && label !== "");
 function docWindowTree(id: string) {
   // 뷰어가 settings·diff 쿼리를 쓰므로 자체 QueryClient로 감싼다.
   const docQc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  attachProjectsEvents(docQc);
   // e2e 61 — 문서 창 diff 0 단언용. 이름을 queryClient로 두면 34가 메인 창으로 오판한다.
   if (import.meta.env.DEV) {
     const g = (window as unknown as { __gpv?: Record<string, unknown> }).__gpv;
@@ -280,6 +281,7 @@ function docWindowTree(id: string) {
 function floatWindowTree(paneId: string) {
   // 플로팅 창도 QueryClientProvider로 감싼다 — 분할 패널 컴포넌트가 쿼리를 쓰더라도 안전하게.
   const floatQc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  attachProjectsEvents(floatQc);
   return (
     <QueryClientProvider client={floatQc}>
       <ErrorBoundary>
@@ -294,6 +296,7 @@ if (label === "aggregate") {
   const aggQc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   // 셀 헤더의 로고는 메인 창에서 지정한다 — 이 창의 캐시는 그 무효화를 못 듣는다(태스크 54 §1).
   attachLogoEvents(aggQc);
+  attachProjectsEvents(aggQc);
   renderAfterUiLanguage(
     <React.StrictMode>
       <QueryClientProvider client={aggQc}>

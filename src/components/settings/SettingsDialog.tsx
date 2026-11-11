@@ -14,6 +14,7 @@ import { useUi } from "../../stores/ui";
 import { chat } from "../../lib/llm";
 import { AiSection } from "./sections/AiSection";
 import { AppearanceSection } from "./sections/AppearanceSection";
+import { CaptureSection } from "./sections/CaptureSection";
 import { CodeToolsSection } from "./sections/CodeToolsSection";
 import { GeneralSection } from "./sections/GeneralSection";
 import { MaintenanceSection } from "./sections/MaintenanceSection";
@@ -56,6 +57,7 @@ function buildCleaned(f: Settings): Settings {
     // 음성 인식(태스크 72) — 언어 코드는 whisper -l 값이라 소문자로.
     sttModel: f.sttModel.trim() || "turbo-q5",
     sttLanguage: f.sttLanguage.trim().toLowerCase() || "auto",
+    recordMaxMinutes: Math.min(120, Math.max(1, Math.floor(f.recordMaxMinutes || 10))),
   };
 }
 
@@ -504,6 +506,7 @@ export function SettingsDialog() {
               <div className="text-[12px] text-fg-dim">{msg.settings.dialog.noResults(query)}</div>
             )}
             {category === "general" && <GeneralSection form={form} update={update} hl={hl} />}
+            {category === "capture" && <CaptureSection form={form} update={update} hl={hl} />}
             {category === "appearance" && (
               <AppearanceSection form={form} update={update} hl={hl} previewTheme={previewTheme} />
             )}

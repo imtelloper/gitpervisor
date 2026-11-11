@@ -454,12 +454,22 @@ export function useStatus(projectId: string | null) {
   };
 }
 
-/** Claude 계정 사용량(rate_limits) — 우측 하단 바. 백엔드가 성공은 3분, 연결 실패는 15초, 429 는 Retry-After(기본 10분) 동안 캐시한다 — 30초마다 물으면 실패
+/** Claude 계정 사용량(rate_limits) — 하단 상태바. 백엔드가 성공은 3분, 연결 실패는 15초, 429 는 Retry-After(기본 10분) 동안 캐시한다 — 30초마다 물으면 실패
  *  뒤에도 곧 다시 뜨고, 성공 뒤에는 API 를 1분에 한 번만 친다. */
 export function useClaudeUsage() {
   return useQuery({
     queryKey: ["claude-usage"],
     queryFn: ipc.claudeUsage,
+    refetchInterval: 30_000,
+    staleTime: 15_000,
+    retry: false,
+  });
+}
+
+export function useCodexUsage() {
+  return useQuery({
+    queryKey: ["codex-usage"],
+    queryFn: ipc.codexUsage,
     refetchInterval: 30_000,
     staleTime: 15_000,
     retry: false,

@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands::{BrowserReg, HttpReg, PreviewServers, TerminalSession};
 use crate::disk_scan::DiskScanState;
@@ -268,7 +268,13 @@ pub fn load_projects(app: &AppHandle) -> Vec<Project> {
 }
 
 pub fn save_projects(app: &AppHandle, projects: &[Project]) -> Result<(), IpcError> {
-    save_json(app, STORE_FILE, STORE_KEY, &projects, text_git_net::data_label_projects())
+    save_json(app, STORE_FILE, STORE_KEY, &projects, text_git_net::data_label_projects())?;
+    // 프론트의 프로젝트 목록은 창마다 따로 캐시되고 staleTime 이 Infinity 다 — 알리지 않으면 별도 창(모아보기
+    // float·문서·분리 터미널)은 연 시점의 목록에 얼어붙어, 그 뒤 추가한 프로젝트의 터미널 헤더가 이름 대신
+    // 대체 문구("프로젝트")로 찍힌다(2026-11-11 사용자 지적). 신호일 뿐 진실은 재조회 — 페이로드 없음.
+    // 실패해도 저장은 끝났다: 그 창은 다음 재조회 때 따라온다.
+    let _ = app.emit("projects://changed", ());
+    Ok(())
 }
 
 pub fn load_settings(app: &AppHandle) -> Settings {

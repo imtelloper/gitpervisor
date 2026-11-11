@@ -129,6 +129,17 @@ export function attachLogoEvents(qc: QueryClient) {
 }
 
 /**
+ * 프로젝트 목록 변경 구독 — 백엔드 `save_projects` 가 저장할 때마다 보낸다. `projects` 는 staleTime
+ * Infinity 라, 듣지 않는 창은 연 시점의 목록에 얼어붙는다(모아보기 별도 창의 셀 헤더가 새 프로젝트를
+ * 이름 대신 "프로젝트"로 찍던 원인). 프로젝트 목록을 읽는 모든 창이 부른다(main.tsx).
+ */
+export function attachProjectsEvents(qc: QueryClient) {
+  void listen("projects://changed", () => {
+    void qc.invalidateQueries({ queryKey: ["projects"] });
+  }).catch((e: unknown) => console.error("[projects] 목록 변경 구독 실패 — 이 창은 다시 열어야 새 프로젝트를 안다", e));
+}
+
+/**
  * 바뀐 프로젝트의 status 만 다시 재고 배치 캐시에 **끼워 넣는다**.
  *
  * 쿼리 키가 `["statuses", 전체 id 배열]` 하나라 무효화는 늘 전체 배치를 부른다. 여기서는
@@ -228,6 +239,7 @@ export function queryKeyTouchesProject(
 export function attachRepoEvents(qc: QueryClient) {
   attachVideoEvents(qc);
   attachLogoEvents(qc);
+  attachProjectsEvents(qc);
 
   // v5 기본은 visibilitychange만 본다 — 데스크톱 창은 항상 visible이라
   // 실제 포커스 복귀 갱신(설계 §9)을 위해 window focus 이벤트에 연결한다.

@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -36,11 +37,14 @@ import { FileTreePanel } from "./components/tree/FileTreePanel";
 import { WorkspaceTabs } from "./components/workspace/WorkspaceTabs";
 import { currentMessages, useMessages } from "./i18n/ui-language";
 import { useAgentNotifications } from "./lib/agent-notify";
-import { errorMessage, ipc } from "./lib/ipc";
+import { openDocWindow } from "./lib/floating";
+import { errorMessage, ipc, type Project, type RecordSaved } from "./lib/ipc";
+import { isWindows } from "./lib/platform";
 import { useReportSchedule } from "./lib/report-schedule";
 import { joinPathsForPrompt } from "./lib/path";
 import { getTerminal, listTerminals, refreshTerminalThemes } from "./lib/terminal";
 import {
+  keys,
   useProjectRootsPrefetch,
   useProjects,
   useSettings,
@@ -65,8 +69,21 @@ const PATH_MISSING_ERRORS = new Set([
   "Project path not found",
 ]);
 
+/** 절대경로가 등록된 프로젝트 안이면 그 프로젝트와 `/` 상대경로. Windows 는 대소문자·구분자가 섞여 와서 정규화해 비교한다. */
+function projectFileOf(projects: Project[] | undefined, abs: string): { projectId: string; rel: string } | null {
+  const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
+  const key = (p: string) => (isWindows ? p.toLowerCase() : p);
+  const file = norm(abs);
+  for (const p of projects ?? []) {
+    const root = norm(p.path);
+    if (key(file).startsWith(`${key(root)}/`)) return { projectId: p.id, rel: file.slice(root.length + 1) };
+  }
+  return null;
+}
+
 export default function App() {
   const msg = useMessages();
+  const qc = useQueryClient();
   // 실행 횟수는 **렌더 중** 올린다 — useEffect에 두면 자식(StarPrompt)이 이미 마운트하며
   // 증가 전 값을 읽어, 3번째 실행에서 카드가 한 박자 늦게(=다음 실행에) 뜬다.
   // 모듈 플래그로 멱등하므로 StrictMode 이중 마운트에도 1회다.
@@ -166,6 +183,41 @@ export default function App() {
       void failed.then((f) => f());
     };
   }, []);
+
+  // 화면 녹화(commands/record.rs) — 녹화 바는 정지와 함께 닫히므로 결과는 여기서 알린다.
+  // 저장 폴더가 프로젝트 안이면 [편집기에서 열기](문서 창의 동영상 편집기 — 자르기·GIF)를 앞에 둔다. 문서 창은
+  // 레포 상대경로로만 열리므로 프로젝트 밖이면 [폴더 열기]뿐이다. 깨진 파일은 편집기가 못 읽어 폴더만 준다.
+  useEffect(() => {
+    const saved = listen<RecordSaved>("record://saved", (e) => {
+      const t = currentMessages().windows.captureOverlay;
+      const { path, fileName, reason, broken, detail } = e.payload;
+      const message = broken
+        ? t.recBrokenToast(fileName, detail)
+        : reason === "maxDuration" || reason === "maxSize" || reason === "diskLow"
+          ? t.recLimitToast(reason, fileName)
+          : t.recSavedToast(fileName);
+      const openFolder = {
+        label: t.openFolder,
+        run: () => void ipc.revealPath(path).catch((err) => useUi.getState().pushToast("error", errorMessage(err))),
+      };
+      const inRepo = broken ? null : projectFileOf(qc.getQueryData<Project[]>(keys.projects), path);
+      if (inRepo) {
+        useUi.getState().pushToast(
+          "success",
+          message,
+          { label: t.openInEditor, run: () => openDocWindow(inRepo.projectId, inRepo.rel, { size: [1180, 860] }) },
+          { secondary: openFolder },
+        );
+      } else {
+        useUi.getState().pushToast(broken ? "error" : "success", message, openFolder);
+      }
+    });
+    const failed = listen<string>("record://failed", (e) => useUi.getState().pushToast("error", e.payload));
+    return () => {
+      void saved.then((f) => f());
+      void failed.then((f) => f());
+    };
+  }, [qc]);
 
   /**
    * 폴더 창(태스크 66)의 "터미널에 경로 붙여넣기" — 그 창엔 터미널이 없어 이벤트로 넘어온다.

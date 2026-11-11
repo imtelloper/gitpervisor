@@ -5,6 +5,7 @@ import type { LucideIcon } from "lucide-react";
 import {
   ArrowUpCircle,
   Bell,
+  Camera,
   Code2,
   Palette,
   SlidersHorizontal,
@@ -19,6 +20,7 @@ import type { Settings } from "../../lib/ipc";
 
 export type SettingsCategory =
   | "general"
+  | "capture"
   | "appearance"
   | "codetools"
   | "terminal"
@@ -30,6 +32,7 @@ export type SettingsCategory =
 /** 라벨은 카탈로그 `settings.categoryLabel[id]` — 언어가 실행 중에 바뀌므로 여기 담지 않는다. */
 export const CATEGORIES: { id: SettingsCategory; icon: LucideIcon }[] = [
   { id: "general", icon: SlidersHorizontal },
+  { id: "capture", icon: Camera },
   { id: "appearance", icon: Palette },
   { id: "codetools", icon: Code2 },
   { id: "terminal", icon: TerminalSquare },
@@ -69,7 +72,15 @@ export const SETTINGS_INDEX: SettingIndexEntry[] = [
   { category: "general", key: "confirmDiscard" },
   { category: "general", key: "gitPath" },
   { category: "general", key: "favoriteFolders" },
-  { category: "general", key: "captureAutoSave" },
+  // 화면 캡쳐·녹화
+  { category: "capture", key: "captureAutoSave" },
+  { category: "capture", key: "captureSaveDir" },
+  { category: "capture", key: "recordSaveDir" },
+  { category: "capture", key: "recordFps" },
+  { category: "capture", key: "recordDrawMouse" },
+  { category: "capture", key: "recordCountdownSecs" },
+  { category: "capture", key: "recordMaxMinutes" },
+  { category: "capture", key: "recordAudioDevice" },
   // 모양
   { category: "appearance", key: "theme" },
   { category: "appearance", key: "diffFontSize" },

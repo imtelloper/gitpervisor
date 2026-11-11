@@ -21,6 +21,28 @@ const ko = {
     hint: "드래그해서 영역 선택 · Enter 확정 · Esc/우클릭 취소",
     savedToast: (fileName: string) => `저장 후 클립보드에 복사했습니다 — ${fileName}`,
     openFolder: "폴더 열기",
+    recordHint: "드래그해서 녹화할 영역 선택 · 놓으면 바로 녹화 · Esc/우클릭 취소",
+    recStop: "정지",
+    recStopping: "저장 중…",
+    recCpu: "CPU",
+    recCpuTitle: "GPU 인코더를 쓸 수 없어 CPU로 녹화합니다(30fps) — 끊길 수 있습니다",
+    recStarting: "곧 녹화를 시작합니다",
+    recCancel: "취소",
+    recPause: "일시정지",
+    recResume: "다시 녹화",
+    recAudioTitle: "오디오를 함께 녹음합니다",
+    recSavedToast: (fileName: string) => `녹화를 저장했습니다 — ${fileName}`,
+    recLimitToast: (reason: "maxDuration" | "maxSize" | "diskLow", fileName: string) =>
+      `${
+        reason === "maxDuration"
+          ? "설정한 최대 길이에 도달해"
+          : reason === "maxSize"
+            ? "최대 크기(4GB)에 도달해"
+            : "디스크 여유 공간이 1GB 아래로 내려가"
+      } 녹화를 멈추고 저장했습니다 — ${fileName}`,
+    openInEditor: "편집기에서 열기",
+    recBrokenToast: (fileName: string, detail: string) =>
+      `녹화가 정상적으로 끝나지 않았습니다 — ${fileName} 이 재생되지 않을 수 있습니다${detail ? ` (${detail})` : ""}`,
   },
   docWindow: {
     reportTitle: "작업 리포트",
@@ -63,6 +85,28 @@ export const windowsText = defineText(ko, {
       hint: "Drag to select an area · Enter to confirm · Esc/right-click to cancel",
       savedToast: (fileName) => `Saved and copied to the clipboard — ${fileName}`,
       openFolder: "Open folder",
+      recordHint: "Drag to select the area to record · recording starts on release · Esc/right-click to cancel",
+      recStop: "Stop",
+      recStopping: "Saving…",
+      recCpu: "CPU",
+      recCpuTitle: "No GPU encoder available — recording on the CPU at 30 fps, playback may stutter",
+      recStarting: "Recording starts soon",
+      recCancel: "Cancel",
+      recPause: "Pause",
+      recResume: "Resume",
+      recAudioTitle: "Recording audio too",
+      recSavedToast: (fileName) => `Recording saved — ${fileName}`,
+      recLimitToast: (reason, fileName) =>
+        `${
+          reason === "maxDuration"
+            ? "Reached the maximum length set in Settings"
+            : reason === "maxSize"
+              ? "Reached the 4 GB limit"
+              : "Less than 1 GB of disk space left"
+        } — recording stopped and saved: ${fileName}`,
+      openInEditor: "Open in editor",
+      recBrokenToast: (fileName, detail) =>
+        `The recording didn't finish cleanly — ${fileName} may not play${detail ? ` (${detail})` : ""}`,
     },
     docWindow: {
       reportTitle: "Work report",

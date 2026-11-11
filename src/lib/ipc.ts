@@ -322,6 +322,14 @@ export interface Settings {
    *  등록된 폴더 아래가 아니면 거부한다. 비어 있으면 폴더 창을 열 수 있는 경로가 없다. */
   favoriteFolders: FavoriteFolder[];
   captureAutoSave: boolean; // 캡쳐 확정 시 스크린샷 폴더에도 PNG — 기본 true(commands/capture.rs)
+  // 화면 캡처·녹화 (commands/capture.rs · record.rs) — 폴더 null = OS 기본(recordDefaultDirs)
+  captureSaveDir: string | null;
+  recordSaveDir: string | null;
+  recordFps: number; // 30 | 60, 기본 60
+  recordDrawMouse: boolean; // 기본 true
+  recordAudioDevice: string | null; // DirectShow 오디오 장치 이름 — null = 무음(기본)
+  recordCountdownSecs: number; // 0 | 3 | 5 | 10, 기본 3
+  recordMaxMinutes: number; // 1..120, 기본 10
   // 로컬 MCP 서버 (DOCS/mcp-server-design.md — mcp.rs)
   mcpEnabled: boolean; // 기본 false
   mcpPort: number; // 기본 47820 — 클라이언트 등록 명령에 박힌다
@@ -1039,13 +1047,13 @@ export interface SystemInfo {
   notes: string[]; // 수집 실패 항목 사유("CIM: 시간 초과" 등)
 }
 
-// ---- Claude 사용량(rate_limits) — 우측 하단 usage 바 ----
+// ---- 에이전트 계정 사용량(rate_limits) — 하단 상태바 ----
 export interface UsageWindow {
   key: string; // five_hour / seven_day / seven_day_opus …
   usedPercentage: number;
   resetsAt: number | null; // epoch초 — 리셋까지 시간 계산용
 }
-export interface ClaudeUsage {
+export interface AgentUsage {
   windows: UsageWindow[];
   updatedAt: number; // 마지막으로 받은 epoch초 (오래되면 숨김)
 }
@@ -1224,6 +1232,43 @@ export interface CaptureSession {
   height: number;
   /** 표시 **전용** JPEG data URL. 최종 결과물은 여기서 뜨지 않는다(원본은 Rust에 남는다). */
   preview: string;
+  /** 고른 영역을 어디에 쓰나 — 정지 캡쳐 또는 화면 녹화(commands/record.rs). 선택 UI 는 같다. */
+  mode: "capture" | "record";
+}
+
+/** 녹화 시작 결과(commands/record.rs `RecordStarted`). */
+export interface RecordStarted {
+  width: number;
+  height: number;
+  /** GPU 인코더를 못 써 CPU 로 녹화한다(30fps) — 바에 표시한다. */
+  cpu: boolean;
+  /** 이만큼 센 뒤 녹화가 실제로 시작된다(0 = 바로). 그동안 record://progress 는 오지 않는다. */
+  countdownSecs: number;
+  /** 오디오 장치를 함께 녹음한다(설정 recordAudioDevice). */
+  audio: boolean;
+}
+
+/** 녹화 진행 이벤트 `record://progress` — 500ms 마다. 경과 시간은 일시정지한 시간을 뺀 값. */
+export interface RecordProgress {
+  elapsedMs: number;
+  bytes: number;
+  paused: boolean;
+}
+
+/** OS 기본 저장 폴더(설정 칸의 placeholder) — 못 찾으면 null. */
+export interface RecordDefaultDirs {
+  screenshots: string | null;
+  recordings: string | null;
+}
+
+/** 녹화 저장 이벤트 `record://saved`. */
+export interface RecordSaved {
+  path: string;
+  fileName: string;
+  reason: "user" | "maxDuration" | "maxSize" | "diskLow" | "exited";
+  /** ffmpeg 가 정상 종료하지 않았다 — 파일은 남겼지만 재생되지 않을 수 있다. */
+  broken: boolean;
+  detail: string;
 }
 
 /** 잘라낼 영역 — 프레임 버퍼 로컬 픽셀. 가상 데스크톱 좌표가 아니다(음수 원점·혼합 DPI 회피). */
@@ -2250,14 +2295,27 @@ export const ipc = {
   captureToClipboard: (id: string, rect: CaptureRect) =>
     invoke<string | null>("capture_to_clipboard", { id, rect }),
   captureCancel: (id: string) => invoke<void>("capture_cancel", { id }),
+  // ---- 화면 녹화 (commands/record.rs) ---- 녹화 단축키와 같다: 녹화 중이면 정지, 아니면 영역 선택을 연다.
+  recordTrigger: () => invoke<void>("record_trigger"),
+  // 오버레이에서 영역 확정 → ffmpeg 시작, 오버레이는 컨트롤 바로 줄어든다. 실패는 record://failed 로도 온다.
+  recordStart: (id: string, rect: CaptureRect) => invoke<RecordStarted>("record_start", { id, rect }),
+  // 정지 — ffmpeg 가 마무리할 때까지(최대 10초) 기다린다. 결과는 record://saved · record://failed.
+  // 카운트다운 중이면 취소다 — 파일 없이 record://cancelled.
+  recordStop: () => invoke<void>("record_stop"),
+  // 카운트다운 중엔 오류다(아직 녹화가 없다). 반환 = 바뀐 뒤의 일시정지 상태.
+  recordPause: (paused: boolean) => invoke<boolean>("record_pause", { paused }),
+  recordAudioDevices: () => invoke<string[]>("record_audio_devices"),
+  recordDefaultDirs: () => invoke<RecordDefaultDirs>("record_default_dirs"),
   // Claude 계정 사용량 — 계정 사용량 API(3분 캐시, 429 면 더 쉰다), 못 쓰면 statusline.js 다리 파일(claude_usage.rs). 없으면 null.
   // 시한은 백엔드 HTTP 시한(8초)보다 넉넉히.
   claudeUsage: () =>
-    call<ClaudeUsage | null>(
+    call<AgentUsage | null>(
       "claude_usage",
       {},
       { lane: "background", attempts: 1, timeoutMs: 12_000 },
     ),
+  codexUsage: () =>
+    call<AgentUsage | null>("codex_usage", {}, { lane: "background", attempts: 1, timeoutMs: 12_000 }),
   // 작업 완료 알림 본문용 — 프로젝트 최신 세션 트랜스크립트의 마지막 AI 텍스트(없으면 null).
   lastAgentMessage: (projectPath: string) =>
     call<string | null>(
