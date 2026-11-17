@@ -29,7 +29,8 @@ struct PrevInputs {
     record: Option<SessionRecord>,
     panicked: bool,
     alloc_fail: Option<u64>,
-    events: Vec<super::winlog::OsEvent>,
+    /// 시작 뒤에 늘어날 수 있다 — macOS 크래시 리포트는 크래시보다 늦게 써진다([`add_late_events`]).
+    events: Mutex<Vec<OsEvent>>,
 }
 static PREV: OnceLock<PrevInputs> = OnceLock::new();
 /// 정상 종료가 기록된 뒤로는 하트비트가 파일을 다시 건드리지 못하게 막는 빗장.
@@ -89,13 +90,17 @@ pub fn begin(log_dir: &Path, version: &str) {
     // 비정상 종료였을 때만 이벤트 로그를 본다 — 정상 시작 경로에 자식 프로세스를 붙이지 않는다.
     // 창 생성 전 메인 스레드이므로 동기 호출이지만 상한 3초(채널당)라 체감되지 않는다.
     let crashed = prev.as_ref().is_some_and(|r| !r.clean_exit);
-    let events = if crashed {
-        prev.as_ref()
-            .and_then(|r| chrono::DateTime::parse_from_rfc3339(&r.updated_at).ok())
-            .map(|t| super::winlog::query_around(t.with_timezone(&chrono::Local)))
-            .unwrap_or_default()
-    } else {
-        Vec::new()
+    let events = match prev.as_ref().filter(|_| crashed) {
+        Some(r) => chrono::DateTime::parse_from_rfc3339(&r.updated_at)
+            .ok()
+            .map(|t| {
+                let t = t.with_timezone(&chrono::Local);
+                let mut events = super::winlog::query_around(t);
+                events.extend(super::maccrash::query_around(r.pid, t));
+                events
+            })
+            .unwrap_or_default(),
+        None => Vec::new(),
     };
 
     let panicked = panic_log_near(log_dir, prev.as_ref());
@@ -116,7 +121,7 @@ pub fn begin(log_dir: &Path, version: &str) {
         record: prev,
         panicked,
         alloc_fail,
-        events,
+        events: Mutex::new(events),
     });
 
     write(&SessionRecord {
@@ -220,7 +225,7 @@ fn take_alloc_marker(log_dir: &Path, prev: Option<&SessionRecord>) -> Option<u64
     text.split("bytes=").nth(1)?.trim().parse::<u64>().ok()
 }
 
-/// 이전 세션 기록으로 비정상 종료 여부와 원인을 판정한다(순수 함수 — 테스트 대상).
+/// 이전 세션 기록으로 비정상 종료 여부와 원인을 판정한다(순수 함수 — 테스트 대상, `maccrash` 테스트도 부른다).
 ///
 /// `clean_exit == false`가 유일한 "비정상" 근거다. systemd-oomd나 커널 OOM Killer는 SIGKILL을
 /// 쓰므로 어떤 종료 훅도 돌지 않고, 패닉이 아니라 `panic.log`도 남지 않는다 — 살아있는 동안
@@ -230,7 +235,7 @@ fn take_alloc_marker(log_dir: &Path, prev: Option<&SessionRecord>) -> Option<u64
 /// 할당 실패 표식 > 패닉 로그 > OS가 기록한 앱 크래시 > 전원/재부팅 > 죽기 직전 지표(oom) > 불명.
 /// 지표(맨 아래)는 정황일 뿐이라 위의 직접 증거가 있으면 뒤로 물러나야 한다 — 전원 차단으로
 /// 꺼진 앱을 "메모리 부족"으로 단정하면 사용자가 엉뚱한 곳을 손보게 된다.
-fn classify(
+pub(super) fn classify(
     prev: Option<&SessionRecord>,
     panicked: bool,
     alloc_fail: Option<u64>,
@@ -372,7 +377,10 @@ pub fn mark_clean() {
 
 pub fn previous() -> PrevSession {
     match PREV.get() {
-        Some(i) => classify(i.record.as_ref(), i.panicked, i.alloc_fail, &i.events),
+        Some(i) => {
+            let events = i.events.lock().unwrap_or_else(|e| e.into_inner());
+            classify(i.record.as_ref(), i.panicked, i.alloc_fail, &events)
+        }
         None => PrevSession {
             crashed: false,
             verdict: "clean".into(),
@@ -381,6 +389,38 @@ pub fn previous() -> PrevSession {
             os_events: Vec::new(),
         },
     }
+}
+
+/// 시작 뒤에 도착한 근거를 더하고 다시 판정해 로그에 남긴다. 배너는 호출자가 보내는 이벤트로 다시 읽는다.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn add_late_events(found: Vec<OsEvent>) {
+    let Some(i) = PREV.get() else { return };
+    let mut events = i.events.lock().unwrap_or_else(|e| e.into_inner());
+    events.extend(found);
+    let v = classify(i.record.as_ref(), i.panicked, i.alloc_fail, &events);
+    drop(events);
+    log::warn!(
+        "[health] 지난 실행 판정 갱신: {} — {}", // i18n-ok: 로그
+        v.verdict,
+        v.message
+    );
+}
+
+/// 지난 실행이 비정상 종료였는데 그 프로세스의 크래시 기록을 아직 못 찾았으면 (pid, 마지막 하트비트 시각).
+/// 이미 더 직접적인 근거(할당 실패 표식·패닉 로그)가 있으면 기다릴 필요가 없다.
+#[cfg(target_os = "macos")]
+pub fn awaiting_crash_report() -> Option<(u32, chrono::DateTime<chrono::Local>)> {
+    let i = PREV.get()?;
+    let rec = i.record.as_ref().filter(|r| !r.clean_exit)?;
+    if i.panicked || i.alloc_fail.is_some() {
+        return None;
+    }
+    let events = i.events.lock().unwrap_or_else(|e| e.into_inner());
+    if events.iter().any(|e| e.own_app && e.id == 1000 && e.pid == Some(rec.pid)) {
+        return None;
+    }
+    let at = chrono::DateTime::parse_from_rfc3339(&rec.updated_at).ok()?;
+    Some((rec.pid, at.with_timezone(&chrono::Local)))
 }
 
 fn write(rec: &SessionRecord) {

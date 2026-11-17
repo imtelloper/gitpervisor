@@ -58,6 +58,21 @@ export function HealthBanner() {
       .catch(() => {});
   }, []);
 
+  // macOS 크래시 리포트는 크래시보다 늦게 써져서(실측 52초) 시작 때 판정이 "원인 불명"일 수 있다.
+  // 백엔드가 리포트를 찾으면 이 이벤트를 한 번 보낸다 — 닫은 카드라도 원인이 새로 밝혀졌으니 다시 띄운다.
+  useEffect(() => {
+    const un = listen("health://prev-session", () => {
+      void ipc
+        .healthPrevSession()
+        .then((p) => {
+          if (p.crashed) setPrev(p);
+        })
+        // 실패해도 판정 갱신은 백엔드 로그([health] 지난 실행 판정 갱신)에 남아 있다.
+        .catch(() => {});
+    });
+    return () => void un.then((f) => f());
+  }, []);
+
   // 진단 문구는 Rust 가 조회 시점의 UI 언어로 만든다 — 언어를 바꾸면 떠 있는 카드만 다시 읽는다.
   const locale = useUiLanguage((s) => s.locale);
   useEffect(() => {
@@ -296,7 +311,7 @@ function PrevSessionCard({ prev, onClose }: { prev: PrevSession; onClose: () => 
           )}
         </div>
       )}
-      {/* OS가 남긴 흔적(Windows 이벤트 로그) — 앱 로그에는 아무것도 안 남는 종료 경로를
+      {/* OS가 남긴 흔적(Windows 이벤트 로그 · macOS 크래시 리포트) — 앱 로그에는 아무것도 안 남는 종료 경로를
           여기서만 구분할 수 있다. 백엔드가 이미 한국어 문장으로 만들어 보낸다. */}
       {prev.osEvents && prev.osEvents.length > 0 && (
         <ul className="mt-1 space-y-0.5 pl-6 text-[11px] leading-4 text-fg-muted opacity-90">

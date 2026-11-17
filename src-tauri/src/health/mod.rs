@@ -12,6 +12,7 @@
 //!만들지 않는다(실측 샘플 1회 ~70µs = CPU 0.0035%).
 
 pub mod alloc_guard;
+pub mod maccrash;
 pub mod probe;
 pub mod session;
 pub mod ui_stall;
@@ -583,6 +584,11 @@ pub fn spawn_watchdog(app: AppHandle, version: String, started_at: String) {
 pub fn begin_session(app: &AppHandle, version: &str) {
     if let Ok(dir) = app.path().app_log_dir() {
         session::begin(&dir, version);
+        // macOS 크래시 리포트는 크래시보다 늦게 써진다 — 시작 때 못 찾았으면 잠시 기다린다(maccrash 모듈 주석).
+        #[cfg(target_os = "macos")]
+        if let Some((pid, updated_at)) = session::awaiting_crash_report() {
+            maccrash::spawn_report_waiter(app.clone(), pid, updated_at);
+        }
     }
 }
 

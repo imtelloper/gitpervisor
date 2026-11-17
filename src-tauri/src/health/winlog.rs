@@ -42,6 +42,8 @@ pub struct OsEvent {
 pub(crate) enum EventSource {
     /// wevtutil 이 준 `<Event>` 조각 하나.
     Xml(String),
+    /// macOS 크래시 리포트(`.ips`)에서 추린 것 — `health::maccrash`.
+    MacCrash(super::maccrash::MacCrashReport),
     /// 테스트가 만든 고정 문장.
     #[cfg(test)]
     Fixed(String),
@@ -52,6 +54,7 @@ impl OsEvent {
     pub fn text(&self) -> String {
         match &self.source {
             EventSource::Xml(chunk) => render(self.id, chunk, self.at).map(|(_, t)| t).unwrap_or_default(),
+            EventSource::MacCrash(r) => super::maccrash::render(r, self.at),
             #[cfg(test)]
             EventSource::Fixed(t) => t.clone(),
         }
@@ -265,7 +268,7 @@ fn is_webview(exe: &str) -> bool {
 
 /// 시각 꼬리표. 로그 타임스탬프는 UTC, 세션 기록은 로컬이라 9시간이 어긋나기 쉽다 —
 /// 사용자에게 보이는 문구는 항상 로컬 시각 + 오프셋으로 못박는다.
-fn stamp(at: Option<DateTime<Utc>>) -> String {
+pub(super) fn stamp(at: Option<DateTime<Utc>>) -> String {
     match at {
         Some(t) => format!(" @ {}", t.with_timezone(&Local).format("%Y-%m-%d %H:%M %z")),
         None => String::new(),

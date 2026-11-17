@@ -333,6 +333,30 @@ pub fn winlog_no_info() -> &'static str {
     }
 }
 
+// ─────────────────────────── macOS 크래시 리포트(health/maccrash.rs) ───────────────────────────
+
+/// `exception`·`location`은 OS가 준 식별자 그대로다. `note`·`when`은 앞 공백까지 포함한 꼬리표(비어 있을 수 있다).
+pub fn maccrash_report_event(exception: &str, location: &str, note: &str, when: &str) -> String {
+    match lang() {
+        Lang::Ko => format!("macOS 크래시 리포트: {exception}, 위치 {location}{note}{when}"),
+        Lang::En => format!("macOS crash report: {exception}, at {location}{note}{when}"),
+    }
+}
+
+pub fn maccrash_note_webkit() -> &'static str {
+    match lang() {
+        Lang::Ko => "macOS WebKit(시스템 웹 엔진) 내부 결함으로, 앱 코드 밖입니다",
+        Lang::En => "a defect inside macOS WebKit (the system web engine), outside the app's code",
+    }
+}
+
+pub fn maccrash_note_app_code() -> &'static str {
+    match lang() {
+        Lang::Ko => "앱 코드 안에서 났습니다",
+        Lang::En => "inside the app's code",
+    }
+}
+
 // ─────────────────────────── 지난 세션 판정(health/session.rs) ───────────────────────────
 
 pub fn prev_session_oom_head_windows() -> &'static str {
