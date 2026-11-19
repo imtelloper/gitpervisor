@@ -24,6 +24,10 @@ const SNAPSHOT_EVERY: Duration = Duration::from_secs(20);
 /// 꺼내 간 뒤 재개 명령(`cd` → `claude --resume`)이 돌아 레지스트리에 다시 나타날 때까지 — 그 사이 스냅샷이
 /// "PTY 는 떠 있는데 Claude 가 없다"로 보고 지우지 않게 한다.
 const INFLIGHT_TTL: Duration = Duration::from_secs(90);
+/// 기록돼 있던 Claude 가 안 보여도 이만큼은 붙든다. OS 종료·재부팅은 콘솔 프로세스(Claude)를 우리 종료 회차보다 **먼저**
+/// 죽인다 — 2026-11-19 Windows 업데이트 재부팅에서 종료 회차가 "지금 도는 Claude 0개"를 보고 열려 있던 6개를 "사용자가 끈 것"으로
+/// 지워, 다시 켜니 맨 셸만 남았다. 대가: Claude 를 끄고 이 시간 안에 앱을 끄면 다음 실행에 한 번 다시 열린다.
+const VANISH_GRACE: Duration = Duration::from_secs(60);
 /// 닫힌 터미널(`forget` 을 못 받은 것)의 찌꺼기 상한.
 /// ponytail: 기준이 Claude 의 `updatedAt` 이라 14일 넘게 손대지 않은 채 살아 있던 세션도 재시작 때 빠진다 — 문제 되면 "마지막으로 살아 있음을 본 시각"을 파일에 따로 둔다.
 const PENDING_MAX_AGE_MS: i64 = 14 * 24 * 60 * 60 * 1000;
@@ -297,13 +301,15 @@ struct Resume {
     inflight: BTreeMap<String, (ResumeRec, Instant)>,
     /// 마지막으로 파일에 쓴 내용 — 같으면 다시 쓰지 않는다.
     written: Option<BTreeMap<String, ResumeRec>>,
+    /// `written` 에 있는데 Claude 가 안 보이는 터미널 → 기록을 붙들어 둘 기한(처음 안 보인 때 + [`VANISH_GRACE`]).
+    vanished: BTreeMap<String, Instant>,
     /// 종료 직전 마지막 회차를 찍었다 — 그 뒤 주기 회차는 PTY 가 죽은 뒤라 빈 표로 덮어쓰게 된다.
     frozen: bool,
 }
 
 impl Resume {
     const fn new() -> Self {
-        Self { path: None, pending: BTreeMap::new(), inflight: BTreeMap::new(), written: None, frozen: false }
+        Self { path: None, pending: BTreeMap::new(), inflight: BTreeMap::new(), written: None, vanished: BTreeMap::new(), frozen: false }
     }
 }
 
@@ -313,12 +319,13 @@ fn fresh(rec: &ResumeRec, now_ms: i64) -> bool {
     now_ms - rec.updated_at_ms <= PENDING_MAX_AGE_MS
 }
 
-/// 스냅샷 = 지금 도는 것 ∪ (재개 중인데 아직 안 뜬 것) ∪ (지난 실행에서 넘어왔는데 PTY 가 아직 안 뜬 터미널).
-/// PTY 가 떠 있는데 Claude 가 없으면 뺀다 — 사용자가 Claude 를 끄고 셸로 돌아온 것이다.
+/// 스냅샷 = 지금 도는 것 ∪ (방금 안 보이게 된 것 — `held`) ∪ (재개 중인데 아직 안 뜬 것) ∪ (지난 실행에서 넘어왔는데 PTY 가 아직 안 뜬 터미널).
+/// PTY 가 떠 있는데 Claude 가 없으면 (`held` 유예가 끝난 뒤) 뺀다 — 사용자가 Claude 를 끄고 셸로 돌아온 것이다.
 /// **세션 하나는 터미널 하나에만** 남긴다(지금 도는 쪽이 이긴다). 안 연 탭 A 에 S1 이 남아 있는데 사용자가 S1 을 다른 터미널 B 에서
 /// 이어 열면 둘 다 기록돼, 다음 부팅에 A·B 가 같은 대화를 동시에 `--resume` 한다 — 그때는 둘 다 아직 안 떠서 레지스트리 검사로도 못 막는다.
 fn merge_snapshot(
     live: &BTreeMap<String, ResumeRec>,
+    held: &BTreeMap<String, ResumeRec>,
     open: &HashSet<&str>,
     pending: &BTreeMap<String, ResumeRec>,
     inflight: &BTreeMap<String, (ResumeRec, Instant)>,
@@ -326,9 +333,9 @@ fn merge_snapshot(
 ) -> BTreeMap<String, ResumeRec> {
     let mut out = live.clone();
     let mut sessions: HashSet<String> = live.values().map(|r| r.session_id.clone()).collect();
-    let carried = inflight
+    let carried = held
         .iter()
-        .map(|(t, (r, _))| (t, r))
+        .chain(inflight.iter().map(|(t, (r, _))| (t, r)))
         .chain(pending.iter().filter(|(t, r)| !open.contains(t.as_str()) && fresh(r, now_ms)));
     for (term, rec) in carried {
         if !out.contains_key(term) && sessions.insert(rec.session_id.clone()) {
@@ -353,7 +360,13 @@ fn snapshot_in(
     st.frozen = freeze;
     // 재개가 실제로 떴으면(live 에 잡힘) inflight 는 할 일을 다 했다 — 남겨 두면 사용자가 그 Claude 를 끈 뒤에도 기록이 살아 다음 부팅에 또 연다.
     st.inflight.retain(|t, (_, at)| !live.contains_key(t) && now.duration_since(*at) < INFLIGHT_TTL);
-    let merged = merge_snapshot(live, open, &st.pending, &st.inflight, now_ms);
+    let prev = st.written.clone().unwrap_or_default();
+    st.vanished.retain(|t, _| prev.contains_key(t) && !live.contains_key(t));
+    for t in prev.keys().filter(|t| !live.contains_key(*t)) {
+        st.vanished.entry(t.clone()).or_insert(now + VANISH_GRACE);
+    }
+    let held: BTreeMap<String, ResumeRec> = prev.into_iter().filter(|(t, _)| st.vanished.get(t).is_some_and(|until| now < *until)).collect();
+    let merged = merge_snapshot(live, &held, open, &st.pending, &st.inflight, now_ms);
     (st.written.as_ref() != Some(&merged)).then_some(merged)
 }
 
@@ -415,7 +428,13 @@ fn snapshot(state: &AppState, freeze: bool) {
     match write_file_at(&path, &merged, now_ms) {
         Ok(()) => {
             if freeze || st.written.as_ref().is_none_or(|w| !same_sessions(w, &merged)) {
-                log::info!("[claude-resume] 저장 {}개(지금 도는 Claude {}개){}", merged.len(), live.len(), if freeze { " — 종료 직전" } else { "" });
+                let held = merged.keys().filter(|t| !live.contains_key(*t) && st.vanished.contains_key(*t)).count();
+                log::info!(
+                    "[claude-resume] 저장 {}개(지금 도는 Claude {}개 · 안 보여 붙든 {held}개){}",
+                    merged.len(),
+                    live.len(),
+                    if freeze { " — 종료 직전" } else { "" }
+                );
             }
             st.written = Some(merged);
         }
@@ -503,6 +522,8 @@ fn take_in(
 }
 
 fn forget_in(st: &mut Resume, term_id: &str) -> bool {
+    // 유예도 끝낸다 — 기한을 지금으로 당기면 다음 회차가 빼고 파일을 다시 쓴다(`written` 을 직접 고치면 "안 바뀜"으로 보여 안 쓴다).
+    st.vanished.insert(term_id.to_string(), Instant::now());
     let pending = st.pending.remove(term_id).is_some();
     st.inflight.remove(term_id).is_some() || pending
 }
@@ -689,7 +710,8 @@ mod tests {
         .into_iter()
         .collect();
         let inflight: BTreeMap<String, (ResumeRec, Instant)> = [("C".to_string(), (rec("c", now_ms), Instant::now()))].into_iter().collect();
-        let merged = merge_snapshot(&live, &open, &pending, &inflight, now_ms);
+        let none = BTreeMap::new();
+        let merged = merge_snapshot(&live, &none, &open, &pending, &inflight, now_ms);
         let got: Vec<(&str, &str)> = merged.iter().map(|(t, r)| (t.as_str(), r.session_id.as_str())).collect();
         assert_eq!(got, [("A", S1), ("C", "c"), ("D", "d")]);
 
@@ -700,7 +722,7 @@ mod tests {
                 .collect();
         let dup_inflight: BTreeMap<String, (ResumeRec, Instant)> =
             [("C".to_string(), (rec(S1, now_ms), Instant::now()))].into_iter().collect();
-        let merged = merge_snapshot(&live, &open, &dup_pending, &dup_inflight, now_ms);
+        let merged = merge_snapshot(&live, &none, &open, &dup_pending, &dup_inflight, now_ms);
         let got: Vec<(&str, &str)> = merged.iter().map(|(t, r)| (t.as_str(), r.session_id.as_str())).collect();
         assert_eq!(got, [("A", S1), ("F", "f")], "live 가 이기고, 같은 세션의 inflight·pending 은 하나만");
     }
@@ -730,10 +752,45 @@ mod tests {
 
         // 종료 회차 뒤로는 PTY 가 죽어 빈 표가 나와도 쓰지 않는다.
         let empty = BTreeMap::new();
-        assert!(snapshot_in(&mut st, &empty, &HashSet::new(), now, now_ms, false).is_some(), "동결 전엔 빈 표도 바뀜이다");
+        assert!(snapshot_in(&mut st, &empty, &HashSet::new(), now, now_ms, false).is_none(), "막 사라진 것은 유예 동안 붙든다");
+        assert!(snapshot_in(&mut st, &empty, &HashSet::new(), now + VANISH_GRACE, now_ms, false).is_some(), "유예가 끝나면 빈 표도 바뀜이다");
         assert!(snapshot_in(&mut st, &live, &open, now, now_ms, true).is_none(), "마지막으로 쓴 것과 같으면 종료 회차도 안 쓴다");
         assert!(st.frozen);
         assert!(snapshot_in(&mut st, &empty, &HashSet::new(), now, now_ms, false).is_none(), "동결 뒤엔 안 쓴다");
+    }
+
+    /// 2026-11-19 Windows 업데이트 재부팅: OS 가 Claude 들을 먼저 죽이고 그 뒤 종료 회차가 돌아 "지금 도는 Claude 0개"를 봤다.
+    /// 예전 규칙(PTY 는 떠 있는데 Claude 없음 = 사용자가 끔)은 6개를 지웠다 — 다시 켜니 맨 셸만 남았다.
+    #[test]
+    fn claude_resume_os_shutdown_kills_claude_before_final_snapshot() {
+        let now = Instant::now();
+        let now_ms = 1_800_000_000_000;
+        let terms = ["A", "B", "C", "D", "E", "F"];
+        let sessions = [S1, S2, S3, "s4", "s5", "s6"];
+        let live: BTreeMap<String, ResumeRec> = terms.iter().zip(sessions).map(|(t, s)| (t.to_string(), rec(s, now_ms))).collect();
+        let open: HashSet<&str> = terms.into_iter().collect();
+        let mut st = Resume::new();
+        st.written = snapshot_in(&mut st, &live, &open, now, now_ms, false);
+
+        // 주기 회차가 그 틈에 돌아도(PTY 는 떠 있고 Claude 만 없다) 지우지 않는다.
+        let empty = BTreeMap::new();
+        assert!(snapshot_in(&mut st, &empty, &open, now + Duration::from_secs(5), now_ms, false).is_none());
+        // 셸까지 죽어 PTY 가 표에서 빠진 뒤의 종료 회차도 마찬가지.
+        assert!(snapshot_in(&mut st, &empty, &HashSet::new(), now + Duration::from_secs(20), now_ms, true).is_none(), "종료 회차가 6개를 그대로 둔다");
+        assert_eq!(st.written.as_ref().map(BTreeMap::len), Some(6));
+
+        // 사용자가 Claude 를 끈 건 유예 뒤 빠지고, 터미널을 닫은(forget) 건 바로 빠진다.
+        let mut st = Resume::new();
+        st.written = snapshot_in(&mut st, &live, &open, now, now_ms, false);
+        let quit: BTreeMap<String, ResumeRec> = live.iter().filter(|(t, _)| *t != "A").map(|(t, r)| (t.clone(), r.clone())).collect();
+        assert!(snapshot_in(&mut st, &quit, &open, now, now_ms, false).is_none());
+        let after = snapshot_in(&mut st, &quit, &open, now + VANISH_GRACE, now_ms, false).expect("유예 뒤엔 A 를 뺀다");
+        assert!(!after.contains_key("A") && after.len() == 5);
+        st.written = Some(after);
+        forget_in(&mut st, "B");
+        let closed: BTreeMap<String, ResumeRec> = quit.iter().filter(|(t, _)| *t != "B").map(|(t, r)| (t.clone(), r.clone())).collect();
+        let after = snapshot_in(&mut st, &closed, &open, now + VANISH_GRACE, now_ms, false).expect("닫은 B 는 바로 뺀다");
+        assert!(!after.contains_key("B") && after.len() == 4);
     }
 
     #[test]

@@ -92,8 +92,18 @@ export async function run({ cdp, report: r, fix }) {
     r.check("결과 클릭 → 뷰어 점프(line)", !!nav && nav.mode === "file" && nav.line >= 1, J(nav));
   } finally {
     await cdp.eval(`window.__gpv && (window.__gpv.ui.getState().setAggregateOpen(false))`).catch(() => {});
-    // search 스토어는 __gpv에 없으니 Esc 키로 패널 닫기 시도
-    await cdp.eval(`window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`).catch(() => {});
+    // 패널은 **입력칸의** onKeyDown 에서만 Esc 를 받는다(SearchPanel.tsx). 예전엔 window 에 쏴서 아무 일도 없었고, 열린 채
+    // 남은 결과 목록이 뷰어 자리를 덮어 뒤 스위트(62)의 실제 마우스 클릭이 검색 결과를 열어 PDF 를 갈아치웠다(2026-11-19).
+    const closed = await cdp
+      .eval(`(async ()=>{
+        const find=()=>[...document.querySelectorAll('input')].find(i=>/검색.*Enter/.test(i.placeholder||''));
+        const inp=find();
+        if(inp) inp.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+        for(let i=0;i<20 && find();i++) await new Promise(r=>setTimeout(r,50));
+        return !find();
+      })()`)
+      .catch(() => false);
+    r.check("정리: 검색 패널 닫힘(뒤 스위트의 뷰어 자리를 덮지 않는다)", closed === true);
     // selectProject를 selectDiff보다 **먼저** — 순서가 바뀌면 selectDiff가 아직 픽스처인
     // selectedProjectId로 사용자 파일을 activeDiffByProject/viewerTabs에 기록해 다음 스위트가 그 파일을 연다.
     await cdp.eval(`(()=>{ const u=window.__gpv.ui.getState();
