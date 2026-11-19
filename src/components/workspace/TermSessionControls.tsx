@@ -567,7 +567,6 @@ const EFFORT_COLOR: Record<string, string> = {
   high: "text-warn",
   xhigh: "text-orange-400",
   max: "text-red-400",
-  ultracode: "text-fuchsia-400",
 };
 
 /** 이 터미널에서 도는 Claude 의 모델·effort. Claude 가 없거나 첫 응답 전이면 안 그린다. */
@@ -582,6 +581,7 @@ export function ClaudeModelChip({ termId }: { termId: string }) {
     >
       <span className="text-fg">{m.model}</span>
       {m.effort && <span className={EFFORT_COLOR[m.effort] ?? "text-fg-dim"}>{m.effort}</span>}
+      {m.ultracode && <span className="text-fuchsia-400">ultracode</span>}
     </span>
   );
 }

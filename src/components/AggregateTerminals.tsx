@@ -534,6 +534,7 @@ export function AggregateTerminals() {
 
   // 칩 우클릭 메뉴 — fixed 메뉴가 브라우저 셀의 네이티브 webview에 가려지지 않게 점유 등록.
   const [chipMenu, setChipMenu] = useState<{ x: number; y: number; cell: CellMeta } | null>(null);
+  const [dbMenu, setDbMenu] = useState<{ x: number; y: number } | null>(null);
   const togglePanel = usePromptHistory((s) => s.togglePanel);
   // 열린 메뉴의 셀 하나만 구독한다 — openPanels 전체를 구독하면 어느 셀을 토글하든
   // 그리드 컨테이너가 통째로 리렌더된다(셀마다 이미 자기 상태를 구독한다).
@@ -822,6 +823,11 @@ export function AggregateTerminals() {
           {dbTab && (
             <div
               data-aggregate-db-tab
+              // 우클릭 = 터미널 칩과 같은 Float 분리(사용자 요청 2026-11-19).
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setDbMenu({ x: e.clientX, y: e.clientY });
+              }}
               className={`flex shrink-0 items-center rounded text-[11px] ${
                 dbActive
                   ? "bg-raised text-accent ring-1 ring-accent"
@@ -1249,6 +1255,11 @@ export function AggregateTerminals() {
                 onClick={() => addAgentTerminal(cells[0].projectId, "claude")}
               />
               <MenuRow
+                icon={<Code2 size={13} />}
+                label={msg.app.aggregate.codexSessionIn(groupMenu.name)}
+                onClick={() => addAgentTerminal(cells[0].projectId, "codex")}
+              />
+              <MenuRow
                 icon={<Bot size={13} />}
                 label={msg.app.aggregate.openCodeSessionIn(groupMenu.name)}
                 onClick={() => addAgentTerminal(cells[0].projectId, "opencode")}
@@ -1326,6 +1337,19 @@ export function AggregateTerminals() {
         </div>
       )}
 
+      {dbMenu && (
+        <DbChipMenu
+          x={dbMenu.x}
+          y={dbMenu.y}
+          onClose={() => setDbMenu(null)}
+          // 터미널 Float 처럼 옮긴다 — 창으로 띄우고 모아보기 탭은 닫는다(창 버튼은 탭을 남긴 채 하나 더 연다).
+          onFloat={() => {
+            openDbWindow();
+            setDbTab(false);
+          }}
+          onCloseTab={() => setDbTab(false)}
+        />
+      )}
       {chipMenu && (
         <ChipMenu
           cell={chipMenu.cell}
@@ -1371,6 +1395,7 @@ export function AggregateTerminals() {
           // stores/browser.ts browsers://cmd) — 새 터미널·Float·닫기가 여기서도 그대로 동작한다.
           onNewTerminal={() => addAgentTerminal(chipMenu.cell.projectId, startAgent)}
           onNewClaude={() => addAgentTerminal(chipMenu.cell.projectId, "claude")}
+          onNewCodex={() => addAgentTerminal(chipMenu.cell.projectId, "codex")}
           onNewOpenCode={() => addAgentTerminal(chipMenu.cell.projectId, "opencode")}
           onFloat={
             chipMenu.cell.kind === "browser"
@@ -1420,6 +1445,7 @@ function ChipMenu({
   onTranslate,
   onNewTerminal,
   onNewClaude,
+  onNewCodex,
   onNewOpenCode,
   onFloat,
   onCloseCell,
@@ -1440,6 +1466,7 @@ function ChipMenu({
   onTranslate?: () => void;
   onNewTerminal?: () => void;
   onNewClaude?: () => void;
+  onNewCodex?: () => void;
   /** 같은 프로젝트에 OpenCode 세션 셀 — `onNewTerminal`이 있을 때만 의미가 있다. */
   onNewOpenCode?: () => void;
   onFloat?: () => void;
@@ -1475,14 +1502,14 @@ function ChipMenu({
       style={{
         left: Math.min(x, window.innerWidth - 220),
         // 하단 클램프 = 메뉴 실높이. 헤더 24.5 + 항목 7 × 31.5 + 구분선 2 × 8.67 + 패딩·테두리 9.3
-        // ≈ 271 → 8 단위 올림(PaneMenu와 같은 규칙). OpenCode 세션 항목이 붙어 6 → 7항목. max(0, …)은 창이 메뉴보다 낮을 때 top이
+        // ≈ 271 → 8 단위 올림(PaneMenu와 같은 규칙). OpenCode 세션 항목이 붙어 6 → 7항목, Codex 세션으로 8항목(+32). max(0, …)은 창이 메뉴보다 낮을 때 top이
         // 음수가 되어 위쪽 항목이 잘리는 것을 막는다(별도 창은 창 크기 제한이 낮다).
         // ponytail: 항목이 또 늘면 ref 실측으로. 번역 항목(선택이 있을 때만)은 32px을 더 잡는다.
         top: Math.max(
           0,
           Math.min(
             y,
-            window.innerHeight - (onTranslate ? 312 : 280) - clipboardHeight,
+            window.innerHeight - (onTranslate ? 344 : 312) - clipboardHeight,
           ),
         ),
       }}
@@ -1542,6 +1569,13 @@ function ChipMenu({
           onClick={run(onNewClaude)}
         />
       )}
+      {onNewCodex && (
+        <MenuItem
+          icon={<Code2 size={14} />}
+          label={msg.app.aggregate.codexSessionIn(cell.projName)}
+          onClick={run(onNewCodex)}
+        />
+      )}
       {onNewOpenCode && (
         <MenuItem
           icon={<Bot size={14} />}
@@ -1568,6 +1602,50 @@ function ChipMenu({
           onClick={run(onCloseCell)}
         />
       )}
+    </div>
+  );
+}
+
+/** DB 탭 칩 우클릭 메뉴 — 닫힘 규칙은 ChipMenu 와 같다(창 클릭·Esc). */
+function DbChipMenu({
+  x,
+  y,
+  onClose,
+  onFloat,
+  onCloseTab,
+}: {
+  x: number;
+  y: number;
+  onClose: () => void;
+  onFloat: () => void;
+  onCloseTab: () => void;
+}) {
+  const msg = useMessages();
+  useEffect(() => {
+    const close = () => onClose();
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("click", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+  const run = (fn: () => void) => () => {
+    fn();
+    onClose();
+  };
+  return (
+    <div
+      data-aggregate-db-menu
+      className="fixed z-50 min-w-52 rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl"
+      // 2항목 + 패딩 ≈ 72px.
+      style={{ left: Math.min(x, window.innerWidth - 220), top: Math.max(0, Math.min(y, window.innerHeight - 80)) }}
+      onClick={(e) => e.stopPropagation()}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      <MenuItem icon={<ExternalLink size={14} />} label={msg.app.aggregate.floatToWindow} onClick={run(onFloat)} />
+      <MenuItem icon={<X size={14} />} label={msg.app.aggregate.dbTabClose} danger onClick={run(onCloseTab)} />
     </div>
   );
 }

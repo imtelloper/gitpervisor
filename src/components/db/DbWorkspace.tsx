@@ -2,7 +2,7 @@ import { ensureMonacoTheme, monaco } from "../diff/monaco-setup";
 
 import { Editor } from "@monaco-editor/react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Pencil, Play, Plus, Trash2 } from "lucide-react";
+import { Pencil, Play, Plus, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useMessages } from "../../i18n/ui-language";
@@ -26,12 +26,24 @@ function QueryEditor() {
   const setLimit = useDb((s) => s.setLimit);
   const activeDatabase = useDb((s) => s.activeDatabase);
   const activeEngine = useDb((s) => s.activeEngine);
+  const activeTabId = useDb((s) => s.activeTabId);
+  const tabs = useDb((s) => s.tabs);
   const sql = isSqlEngine(activeEngine);
   const lang = sql ? "sql" : activeEngine === "redis" ? "plaintext" : "javascript";
   const dialect = sql ? "sql" : activeEngine === "redis" ? "redis" : "mongo-js";
   const { data: settings } = useSettings();
   const theme = ensureMonacoTheme(settings?.theme);
   const queryClient = useQueryClient();
+
+  // 닫힌 탭의 Monaco 모델을 버린다(에디터는 지금 탭 모델만 언마운트 때 치운다). 여기 두는 까닭: 자식인 Editor 의
+  // 모델 교체 effect 가 먼저 돈 뒤라, 방금 닫은 활성 탭 모델이 아직 에디터에 붙은 채로 버려지지 않는다.
+  useEffect(() => {
+    const live = new Set(tabs.map((t) => queryTabUri(t.id)));
+    for (const m of monaco.editor.getModels()) {
+      const uri = m.uri.toString();
+      if (uri.startsWith("inmemory://gp-db-query/") && !live.has(uri)) m.dispose();
+    }
+  }, [tabs]);
 
   return (
     <div className="flex h-[210px] shrink-0 flex-col border-b border-edge">
@@ -78,6 +90,8 @@ function QueryEditor() {
       </div>
       <div className="min-h-0 flex-1">
         <Editor
+          // 탭마다 모델을 따로 둔다 — 탭을 오가도 실행 취소 기록·커서가 섞이지 않는다.
+          path={queryTabUri(activeTabId)}
           language={lang}
           value={queryText}
           onChange={(v) => setQuery(v ?? "")}
@@ -108,6 +122,60 @@ function QueryEditor() {
           loading={<span className="text-xs text-fg-dim">{msg.db.queryEditor.editorLoading}</span>}
         />
       </div>
+    </div>
+  );
+}
+
+const queryTabUri = (id: number) => `inmemory://gp-db-query/${id}`;
+
+/** 쿼리 탭 줄 — 테이블·프로시저를 누르면 탭이 하나씩 생긴다(사용자 요청 2026-11-19: SSMS 처럼). */
+function QueryTabs() {
+  const msg = useMessages();
+  const tabs = useDb((s) => s.tabs);
+  const activeTabId = useDb((s) => s.activeTabId);
+  const switchTab = useDb((s) => s.switchTab);
+  const closeTab = useDb((s) => s.closeTab);
+  const newTab = useDb((s) => s.newTab);
+
+  return (
+    <div className="flex h-8 shrink-0 items-stretch overflow-x-auto border-b border-edge bg-panel text-xs">
+      {tabs.map((t) => {
+        const label = t.title ?? msg.db.queryEditor.untitledTab(t.id);
+        const active = t.id === activeTabId;
+        return (
+          <div
+            key={t.id}
+            data-db-query-tab={t.id}
+            onClick={() => switchTab(t.id)}
+            onAuxClick={(e) => e.button === 1 && closeTab(t.id)}
+            title={label}
+            className={`group flex max-w-[220px] shrink-0 cursor-pointer items-center gap-1 border-r border-edge pl-3 pr-1 ${
+              active ? "bg-base text-fg" : "text-fg-muted hover:bg-raised hover:text-fg"
+            }`}
+          >
+            <span className="min-w-0 truncate">{label}</span>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                closeTab(t.id);
+              }}
+              title={msg.db.queryEditor.closeTab}
+              aria-label={msg.db.queryEditor.closeTab}
+              className={`rounded p-0.5 hover:bg-raised hover:text-fg ${active ? "" : "opacity-0 group-hover:opacity-100"}`}
+            >
+              <X size={11} />
+            </button>
+          </div>
+        );
+      })}
+      <button
+        onClick={newTab}
+        title={msg.db.queryEditor.newTab}
+        aria-label={msg.db.queryEditor.newTab}
+        className="shrink-0 px-2 text-fg-dim hover:bg-raised hover:text-fg"
+      >
+        <Plus size={13} />
+      </button>
     </div>
   );
 }
@@ -815,6 +883,7 @@ export function DbWorkspace() {
     <div ref={rootRef} className="flex h-full min-w-0">
       <DbSidebar />
       <div className="flex min-w-0 flex-1 flex-col bg-base">
+        <QueryTabs />
         <QueryEditor />
         <div className="min-h-0 flex-1">
           <ResultArea />

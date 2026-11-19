@@ -61,6 +61,9 @@ const ko = {
     run: "실행",
     runQueryAction: "쿼리 실행",
     editorLoading: "에디터 로딩 중…",
+    untitledTab: (n: number) => `쿼리 ${n}`,
+    newTab: "새 쿼리 탭",
+    closeTab: "탭 닫기 (가운데 클릭)",
   },
   resultGrid: {
     running: "실행 중…",
@@ -183,6 +186,9 @@ export const dbText = defineText(ko, {
       run: "Run",
       runQueryAction: "Run query",
       editorLoading: "Loading editor…",
+      untitledTab: (n) => `Query ${n}`,
+      newTab: "New query tab",
+      closeTab: "Close tab (middle-click)",
     },
     resultGrid: {
       running: "Running…",

@@ -1138,8 +1138,10 @@ export interface ClaudeResumeRec {
 export interface ClaudeTermModel {
   model: string;
   modelId: string;
-  /** low…max, 또는 ultracode. 외부(Claude Code 전사) 값이라 유니온으로 좁히지 않는다. */
+  /** low…max. 외부(Claude Code 전사) 값이라 유니온으로 좁히지 않는다. */
   effort?: string;
+  /** effort 와 따로 — high 에서도 켜져 있을 수 있다. */
+  ultracode: boolean;
 }
 
 // ---- 파일 트리 ----

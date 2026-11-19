@@ -2,6 +2,7 @@ import { emit } from "@tauri-apps/api/event";
 import { isMac, isMod } from "../../lib/platform";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
+  Brush,
   ClipboardPaste,
   Clock,
   Copy,
@@ -691,6 +692,12 @@ export default function FolderWindow({
           onCopyVideoTime={copyVideoTime}
           onPastePath={() => pastePaths(picked.has(menu.entry.name) ? pickedShown : [menu.entry])}
           onRename={() => renameEntry(menu.entry)}
+          // 사진 뷰어의 「편집」과 같은 자리(이 창 안 경로 모드) — 여러 개 선택이어도 우클릭한 한 장만.
+          onEdit={
+            menu.entry.kind === "image"
+              ? () => useUi.getState().openImageEditorAbs(join(dir, menu.entry.name))
+              : undefined
+          }
           count={picked.has(menu.entry.name) ? pickedShown.length : 1}
           onTrash={() => trashEntries(picked.has(menu.entry.name) ? pickedShown : [menu.entry])}
           onOpen={() =>
@@ -1506,6 +1513,7 @@ function ItemMenu({
   onCopyVideoTime,
   onPastePath,
   onRename,
+  onEdit,
   count,
   onTrash,
   onOpen,
@@ -1520,6 +1528,8 @@ function ItemMenu({
   onCopyVideoTime: (time: string) => void;
   onPastePath: () => void;
   onRename: () => void;
+  /** 이미지일 때만 — 없으면 줄을 안 그린다. */
+  onEdit?: () => void;
   /** 메뉴가 적용될 개수(경로 복사·붙여넣기·휴지통) — 다중 선택 안의 칸을 우클릭했으면 선택 전체. */
   count: number;
   onTrash: () => void;
@@ -1547,10 +1557,10 @@ function ItemMenu({
   return (
     <div
       className="fixed z-50 min-w-52 rounded-md border border-edge bg-panel py-1 text-[13px] shadow-xl"
-      // 항목 7줄 × 31.5 + 헤더 24.5 + 구분선 둘 + 패딩 ≈ 264(영상 시각 줄이 있으면 +32). PaneMenu 와 같은 클램프 규칙.
+      // 항목 7줄 × 31.5 + 헤더 24.5 + 구분선 둘 + 패딩 ≈ 264(영상 시각·편집 줄이 있으면 줄마다 +32). PaneMenu 와 같은 클램프 규칙.
       style={{
         left: Math.min(x, window.innerWidth - 220),
-        top: Math.max(0, Math.min(y, window.innerHeight - (videoTime ? 296 : 264))),
+        top: Math.max(0, Math.min(y, window.innerHeight - 264 - (videoTime ? 32 : 0) - (onEdit ? 32 : 0))),
       }}
       onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
@@ -1580,6 +1590,7 @@ function ItemMenu({
         label={count > 1 ? msg.folder.window.menuPasteToTerminalMany(count) : msg.folder.window.menuPasteToTerminal}
         onClick={run(onPastePath)}
       />
+      {onEdit && <Row icon={<Brush size={14} />} label={msg.folder.lightbox.edit} onClick={run(onEdit)} />}
       <Row icon={<Pencil size={14} />} label={msg.folder.window.menuRename} hint="F2" onClick={run(onRename)} />
       <Row icon={<ExternalLink size={14} />} label={msg.folder.menuOpenDefault} onClick={run(onOpen)} />
       <Row icon={<FolderOpen size={14} />} label={msg.folder.menuReveal} onClick={run(onReveal)} />

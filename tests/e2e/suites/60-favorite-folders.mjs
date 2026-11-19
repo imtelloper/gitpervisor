@@ -339,10 +339,10 @@ export async function run({ cdp, report: r }) {
       200,
     );
     r.check(
-      "⑥ 항목 우클릭 → 경로 복사 · 터미널에 경로 붙여넣기 · 기본 앱 · 탐색기",
+      "⑥ 이미지 우클릭 → 경로 복사 · 터미널에 경로 붙여넣기 · 편집 · 기본 앱 · 탐색기",
       rightClicked === true &&
         Array.isArray(menuHas) &&
-        ["경로 복사", "터미널에 경로 붙여넣기", "기본 앱으로 열기", "탐색기에서 보기"].every((l) =>
+        ["경로 복사", "터미널에 경로 붙여넣기", "편집", "기본 앱으로 열기", "탐색기에서 보기"].every((l) =>
           menuHas.includes(l),
         ),
       `항목=${J(menuHas)}`,
