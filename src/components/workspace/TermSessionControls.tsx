@@ -7,27 +7,34 @@
 import {
   Bot,
   Check,
+  CircleCheck,
   Code2,
   FolderTree,
   GitBranch,
+  Globe,
   History,
+  Loader2,
   MessagesSquare,
   Palette,
   Sparkles,
   Tag,
   Trash2,
   X,
+  type LucideIcon,
 } from "lucide-react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { fmtTime } from "../../i18n/format-locale";
 import { currentMessages, useMessages } from "../../i18n/ui-language";
 import { launchAgentInTerminal, type TerminalAgent } from "../../lib/agent-launch";
 import { copyText } from "../../lib/clipboard";
+import { openBrowserWindow } from "../../lib/floating";
 import { relativeTime } from "../../lib/format";
+import { errorMessage, ipc } from "../../lib/ipc";
+import { classifyMode } from "../../stores/browser";
 import { TERM_SCHEMES } from "../../lib/term-color-schemes";
-import { prefetchGitDialog } from "../../queries";
+import { prefetchGitDialog, useClaudeTermModels } from "../../queries";
 import { prefetchSessionList } from "../sessions/SessionHistoryDialog";
 import { useOccludesWebview } from "../../stores/occlusion";
 import { usePromptHistory, type PromptEntry } from "../../stores/promptHistory";
@@ -448,6 +455,137 @@ export function SessionHistoryButton({ termId, projectId }: { termId: string; pr
  * 사이드바 트리가 없으므로 여기가 유일한 동선이다(태스크 62).
  * GitDialogButton과 같은 이유로 termId가 아닌 projectId를 받는다(프로젝트 단위 기능).
  */
+const staticPagesKey = (projectId: string) => ["static-pages", projectId] as const;
+/** 걷기는 프로젝트 전체 디스크라 수 초가 걸릴 수 있다 — 같은 프로젝트를 잠깐 사이에 다시 누르면 다시 걷지 않는다. */
+const STATIC_PAGES_STALE_MS = 60_000;
+
+/** 프로젝트의 정적 `index.html` 을 브라우저 새 창으로 — 트리 우클릭 "브라우저로 열기"와 같은 미리보기 URL 이고, 창은
+ *  브라우저 탭을 "새 창으로" 뺀 것과 같은 브라우저 창이다. */
+async function openStaticPageWindow(projectId: string, relPath: string) {
+  const url = await ipc.previewLocalUrl(projectId, relPath);
+  openBrowserWindow({
+    id: crypto.randomUUID(),
+    projectId,
+    title: relPath,
+    url,
+    mode: classifyMode(url),
+    preview: { projectId, relPath },
+  });
+}
+
+/**
+ * 칸 헤더·툴바의 브라우저 버튼(사용자 요청 2026-11-17) — 이 프로젝트에서 **정적으로 열 수 있는** `index.html`
+ * (빌드 결과 `dist/`·`web/static/` 같은 것, 백엔드 `preview_static_pages`)을 새 브라우저 창으로 연다. 하나면 바로, 여럿이면
+ * 고르는 목록, 없으면 알린다. 목록은 포인터를 올릴 때 미리 받아, 없으면 버튼을 흐리게 둔다.
+ * `icon`: 메인·플로팅 칸 툴바엔 이미 지구본("이 칸을 웹으로 전환", PaneControls)이 있어 거기선 창 아이콘을 넘긴다.
+ */
+export function StaticPageButton({ projectId, icon: Icon = Globe }: { projectId: string; icon?: LucideIcon }) {
+  const msg = useMessages();
+  const qc = useQueryClient();
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [menu, setMenu] = useState<{ right: number; top: number; pages: string[] } | null>(null);
+  useOccludesWebview(!!menu);
+  useMenuDismiss(!!menu, setMenu, [btnRef, menuRef]);
+  const options = {
+    queryKey: staticPagesKey(projectId),
+    queryFn: () => ipc.previewStaticPages(projectId),
+    staleTime: STATIC_PAGES_STALE_MS,
+  };
+  // 미리 받은 결과만 읽는다(enabled:false) — 칸마다 마운트하자마자 디스크를 걷지 않게.
+  const { data: known } = useQuery({ ...options, enabled: false });
+  const none = known?.length === 0;
+  const fail = (e: unknown) => useUi.getState().pushToast("error", errorMessage(e));
+
+  const click = async () => {
+    if (menu) return setMenu(null);
+    let pages: string[];
+    try {
+      pages = await qc.fetchQuery(options);
+    } catch (e) {
+      return fail(e);
+    }
+    if (pages.length === 0) return useUi.getState().pushToast("info", msg.git.termSession.staticPageNone);
+    if (pages.length === 1) return void openStaticPageWindow(projectId, pages[0]).catch(fail);
+    const r = btnRef.current?.getBoundingClientRect();
+    if (r) setMenu({ right: Math.max(8, window.innerWidth - r.right), top: r.bottom + 4, pages });
+  };
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        onPointerEnter={() => void qc.prefetchQuery(options)}
+        onClick={() => void click()}
+        title={none ? msg.git.termSession.staticPageNoneTitle : msg.git.termSession.staticPageTitle}
+        className={`flex shrink-0 items-center rounded p-0.5 ${
+          menu ? "bg-raised text-accent" : none ? "text-fg-dim/40 hover:bg-raised" : "text-fg-dim hover:bg-raised hover:text-fg"
+        }`}
+      >
+        <Icon size={12} />
+      </button>
+      {menu && (
+        <div
+          ref={menuRef}
+          className="fixed z-50 max-w-[420px] min-w-[200px] overflow-y-auto rounded-md border border-edge bg-panel py-1 text-[12px] shadow-xl"
+          style={{ right: menu.right, top: menu.top, maxHeight: Math.max(120, window.innerHeight - menu.top - 8) }}
+        >
+          <div className="px-3 pb-1 pt-0.5 text-[11px] text-fg-dim">{msg.git.termSession.staticPagePick}</div>
+          {menu.pages.map((p) => (
+            <button
+              key={p}
+              onClick={() => {
+                setMenu(null);
+                void openStaticPageWindow(projectId, p).catch(fail);
+              }}
+              title={p}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-fg-muted hover:bg-raised hover:text-fg"
+            >
+              <Icon size={12} className="shrink-0 text-fg-dim" />
+              <span className="min-w-0 flex-1 truncate">{p}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+/** 칸 헤더 맨 앞 AI 활동 표시 — 모아보기 셀과 플로팅 창 분할 칸 헤더가 함께 쓴다. */
+export function StatusIcon({ status }: { status: "working" | "done" | undefined }) {
+  if (status === "working")
+    return <Loader2 size={11} className="shrink-0 animate-spin text-accent" />;
+  if (status === "done")
+    return <CircleCheck size={11} className="shrink-0 text-add" />;
+  return <span className="size-[7px] shrink-0 rounded-full bg-fg-dim/50" />;
+}
+
+// 상태줄(statusline.js)과 같은 색 순서 — 사용자가 이미 그 색으로 읽는다.
+const EFFORT_COLOR: Record<string, string> = {
+  low: "text-fg-dim",
+  medium: "text-add",
+  high: "text-warn",
+  xhigh: "text-orange-400",
+  max: "text-red-400",
+  ultracode: "text-fuchsia-400",
+};
+
+/** 이 터미널에서 도는 Claude 의 모델·effort. Claude 가 없거나 첫 응답 전이면 안 그린다. */
+export function ClaudeModelChip({ termId }: { termId: string }) {
+  const msg = useMessages();
+  const m = useClaudeTermModels().data?.[termId];
+  if (!m) return null;
+  return (
+    <span
+      title={msg.git.termSession.claudeModelTitle(m.modelId, m.effort)}
+      className="flex shrink-0 items-center gap-1 rounded bg-black/20 px-1 font-mono text-[10px] leading-4"
+    >
+      <span className="text-fg">{m.model}</span>
+      {m.effort && <span className={EFFORT_COLOR[m.effort] ?? "text-fg-dim"}>{m.effort}</span>}
+    </span>
+  );
+}
+
 export function FileTreeButton({ projectId }: { projectId: string }) {
   const msg = useMessages();
   const open = useUi((s) => s.openFileTreeDialog);

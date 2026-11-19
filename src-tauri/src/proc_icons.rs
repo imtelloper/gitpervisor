@@ -114,8 +114,9 @@ fn extract_icon_data_uri(path: &str) -> Option<String> {
 // 비Windows에는 extract_icon_data_uri 자체를 두지 않는다 — 항상 None을 주는 스텁이 있으면
 // "호출은 되지만 결과는 없는" 경로가 살아남는다. 커맨드에서 조기 반환하는 편이 정직하다.
 
+/// HICON → RGBA 는 폴더 창의 OS 파일 유형 아이콘(`commands/os_file_type_windows.rs`)도 쓴다.
 #[cfg(windows)]
-mod win {
+pub(crate) mod win {
     use windows_sys::Win32::Graphics::Gdi::{
         DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC, BITMAP, BITMAPINFO,
         BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
@@ -150,9 +151,9 @@ mod win {
     }
 
     /// HICON → RGBA. GetIconInfo로 컬러 비트맵을 얻고 GetDIBits(32bpp, top-down)로 픽셀을 뽑아
-    /// BGRA→RGBA 변환. 알파가 전부 0인 레거시(24bpp+마스크) 아이콘은 불투명(255)으로 폴백한다.
-    // ponytail: 마스크 비트맵 합성은 생략 — 32bpp ARGB(현대 앱 아이콘)만 정확, 레거시는 불투명 폴백.
-    unsafe fn hicon_to_rgba(hicon: HICON) -> Option<IconRgba> {
+    /// BGRA→RGBA 변환. 알파가 전부 0인 레거시(24bpp+마스크) 아이콘은 마스크 비트맵으로 투명도를 채운다
+    /// (마스크 검정 = 그리는 칸, 흰색 = 투명) — 셸 이미지 목록의 옛 파일 유형 아이콘에 흔하다.
+    pub(crate) unsafe fn hicon_to_rgba(hicon: HICON) -> Option<IconRgba> {
         let mut ii: ICONINFO = std::mem::zeroed();
         if GetIconInfo(hicon, &mut ii) == 0 {
             return None;
@@ -209,6 +210,15 @@ mod win {
             &mut bmi,
             DIB_RGB_COLORS,
         );
+        // 알파가 전부 0이면 마스크(1bpp)도 같은 32bpp 꼴로 뽑는다 — GetDIBits 가 변환해 준다.
+        let mask = if got != 0 && buf.chunks_exact(4).all(|px| px[3] == 0) && !ii.hbmMask.is_null() {
+            let mut m = vec![0u8; buf.len()];
+            let mut mbmi = bmi;
+            let ok = GetDIBits(hdc, ii.hbmMask, 0, h, m.as_mut_ptr() as *mut _, &mut mbmi, DIB_RGB_COLORS);
+            (ok as u32 == h).then_some(m)
+        } else {
+            None
+        };
         ReleaseDC(std::ptr::null_mut(), hdc);
         cleanup(&ii);
         if got == 0 {
@@ -224,9 +234,12 @@ mod win {
             }
         }
         if !any_alpha {
-            // 알파가 전부 0(레거시 24bpp) — 불투명 처리.
-            for px in buf.chunks_exact_mut(4) {
-                px[3] = 255;
+            // 알파가 전부 0(레거시 24bpp) — 마스크가 있으면 그걸로, 없으면 불투명.
+            for (i, px) in buf.chunks_exact_mut(4).enumerate() {
+                px[3] = match &mask {
+                    Some(m) if m[i * 4] != 0 => 0,
+                    _ => 255,
+                };
             }
         }
         Some(IconRgba { w, h, pixels: buf })

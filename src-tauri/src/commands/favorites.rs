@@ -158,6 +158,9 @@ pub struct FavEntry {
     pub is_dir: bool,
     pub size: u64,
     pub mtime_ms: u64,
+    /// 만든 시각 = 이 폴더에 들어온 시각. 다운로드·복사·압축 해제한 파일은 수정 시각이 원본 것 그대로라 "최신순"은
+    /// 둘 중 늦은 쪽을 본다(프론트 `favRecentMs`). 못 읽는 파일시스템(일부 Linux)은 0 — 수정 시각만 보게 된다.
+    pub created_ms: u64,
     /// 확장자로 가른 종류 — 프론트가 아이콘·썸네일 대상·라이트박스 순서를 이걸로 정한다.
     pub kind: &'static str,
 }
@@ -181,8 +184,12 @@ fn kind_of(name: &str, is_dir: bool) -> &'static str {
 }
 
 fn mtime_ms(meta: &std::fs::Metadata) -> u64 {
-    meta.modified()
-        .ok()
+    epoch_ms(meta.modified())
+}
+
+/// 시각을 못 읽으면 0 — 목록 한 줄의 정렬 키일 뿐이라 항목을 빼거나 목록 전체를 실패시킬 일이 아니다.
+fn epoch_ms(t: std::io::Result<std::time::SystemTime>) -> u64 {
+    t.ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
@@ -210,6 +217,7 @@ pub fn fav_list(state: State<'_, AppState>, path: String) -> Result<Vec<FavEntry
             is_dir,
             size: if is_dir { 0 } else { meta.len() },
             mtime_ms: mtime_ms(&meta),
+            created_ms: epoch_ms(meta.created()),
         });
     }
     Ok(out)
@@ -856,6 +864,21 @@ pub fn fav_copy_files(state: State<'_, AppState>, paths: Vec<String>, text: Stri
     }
     clipboard_set_files(&paths, &text)
         .map_err(|e| IpcError::new(ErrorCode::Io, crate::i18n::text_git_net::clipboard_write_failed(e)))
+}
+
+/// 폴더 창에서 고른 항목을 끌어 앱 밖·메인 창 파일 트리로 — OS 네이티브 드래그(복사만). 트리는 탐색기에서 끌어 온
+/// 파일처럼 받아 그 폴더에 복사한다(사용자 요청 2026-11-16). `fav_copy_files` 와 같은 이유로 검사만 거치고 넘어온
+/// 문자열 그대로 넘긴다(canonicalize 결과의 `\\?\` 는 받는 쪽이 못 읽는다).
+#[tauri::command(async)]
+pub async fn fav_start_os_drag(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+) -> Result<bool, IpcError> {
+    let (favs, projects) = roots(&state);
+    fav_delete_targets(&paths, &favs, &projects)?;
+    super::tree::start_native_file_drag(app, window, paths.into_iter().map(PathBuf::from).collect()).await
 }
 
 #[cfg(windows)]

@@ -4,6 +4,8 @@ import { Code2, Eye, FileQuestion, FileWarning } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ConfirmHost } from "./components/common/ConfirmDialog";
+// 정적이어도 메인 청크가 커지지 않는다 — App 이 이미 같은 모듈을 정적으로 끌어온다.
+import { ConnectionDialog } from "./components/db/ConnectionDialog";
 import { EmptyState } from "./components/common/EmptyState";
 import { PromptHost } from "./components/common/PromptDialog";
 import { Toasts } from "./components/common/Toast";
@@ -45,6 +47,10 @@ const ReportView = lazy(() =>
 );
 /** git 로그 창. 위와 **같은 이유로 lazy** — 이 뷰는 DiffViewer(→Monaco)를 끌고 온다. */
 const LogWindow = lazy(() => import("./components/log/LogWindow"));
+/** DB 창. 같은 이유로 lazy(쿼리 편집기가 Monaco) — WorkspaceTabs 와 같은 모듈이라 청크를 나눠 쓴다. */
+const DbWorkspace = lazy(() =>
+  import("./components/db/DbWorkspace").then((m) => ({ default: m.DbWorkspace })),
+);
 
 /**
  * `doc-<id>` 창의 갈림길 — 대상에 `report` 가 있으면 **작업 리포트 창**, `folder` 가 있으면
@@ -69,6 +75,9 @@ export function DocWindow({ docId }: { docId: string }) {
         />
       </Suspense>
     );
+  }
+  if (target?.db) {
+    return <DbWindow />;
   }
   if (target?.log) {
     return (
@@ -163,6 +172,29 @@ function ReportWindow() {
       </Suspense>
       {/* 요약 저장 실패 토스트(useSetReport)는 이 창의 스토어를 본다 — 호스트가 여기 없으면
           이 창에서만 아무 것도 안 뜬다(FileDocWindow 아래 주석과 같은 이유). */}
+      <Toasts />
+    </div>
+  );
+}
+
+/** DB 작업 공간 창 — 모아보기 DB 탭의 새 창 버튼. 연결 편집·테이블 삭제 확인·결과 토스트가 이 창에서 뜨므로
+ *  그 호스트들을 함께 둔다(스토어가 창마다 별개라 메인 창의 호스트가 대신 그려 주지 않는다). */
+function DbWindow() {
+  const msg = useMessages();
+  const { data: settings } = useSettings();
+  useEffect(() => {
+    if (settings?.theme) document.documentElement.dataset.theme = settings.theme;
+  }, [settings?.theme]);
+  return (
+    <div className="flex h-screen flex-col bg-base">
+      <FloatTitleBar title={msg.lib.dbWindowTitle} badge={msg.app.aggregate.dbTab} />
+      <div className="min-h-0 flex-1">
+        <Suspense fallback={<Loading />}>
+          <DbWorkspace />
+        </Suspense>
+      </div>
+      <ConnectionDialog />
+      <ConfirmHost />
       <Toasts />
     </div>
   );

@@ -44,7 +44,7 @@ use uuid::Uuid;
 use crate::commands::projects::project_path;
 use crate::commands::tree::resolve_in_repo;
 use crate::error::{ErrorCode, IpcError};
-use crate::i18n::text_tools;
+use crate::i18n::{text_files, text_tools};
 use crate::state::AppState;
 
 /// URL 경로 세그먼트에서 인코딩할 문자 — 비예약(unreserved) 밖은 전부. `/`?`#`&공백·한글 포함.
@@ -162,6 +162,104 @@ pub fn preview_local_url(
     let (port, token) = ensure_server(&state, &base)?;
     let enc = utf8_percent_encode(&file_name, PATH_SEG).to_string();
     Ok(format!("http://127.0.0.1:{port}/{enc}?t={token}"))
+}
+
+/// 프로젝트 안에서 내장 브라우저로 **정적으로** 열 수 있는 `index.html` 들(트리 상대 `/` 경로) — 모아보기 칸 헤더의
+/// 브라우저 버튼이 고른다(사용자 요청 2026-11-17). 얕은 것부터, 같은 깊이면 경로순.
+///
+/// 디스크를 직접 걷는다(`file_kinds` — gitignore 를 보지 않는다): 찾는 대상이 바로 gitignore 된 빌드 산출물
+/// (`dist/`·`static/`)이다. 번들러 원본 템플릿은 뺀다 — `preview_local_url` 로 열면 빈 화면이다(`is_static_html_entry`).
+#[tauri::command(async)]
+pub async fn preview_static_pages(state: State<'_, AppState>, project_id: String) -> Result<Vec<String>, IpcError> {
+    let repo = project_path(&state, &project_id)?;
+    tokio::task::spawn_blocking(move || static_index_pages(&repo))
+        .await
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_files::directory_read_task_failed(e)))?
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_files::directory_read_failed(e)))
+}
+
+/// 걷지 않는 폴더 — 숨김 폴더(`.next/server` 같은 프레임워크 내부 산출물·`.venv`·`.idea`)와 의존성·빌드 캐시.
+/// `target/`(cargo·maven)은 수십만 파일이라 걷기만으로 16초가 들었다(2026-11-17 실측, gitpervisor·aipervisor).
+fn static_page_skip_dir(name: &str) -> bool {
+    name.starts_with('.') || matches!(name, "node_modules" | "__pycache__" | "target")
+}
+
+fn static_index_pages(repo: &Path) -> std::io::Result<Vec<String>> {
+    let html = std::collections::HashSet::from(["html".to_string()]);
+    let found = super::file_kinds::walk_files_by_ext_skipping(
+        repo,
+        &html,
+        &std::collections::HashSet::new(),
+        &static_page_skip_dir,
+    )?;
+    let mut pages: Vec<String> = found
+        .files
+        .into_iter()
+        .map(|f| f.path)
+        .filter(|p| p.rsplit('/').next().is_some_and(|n| n.eq_ignore_ascii_case("index.html")))
+        .filter(|p| html_head(&repo.join(p)).is_some_and(|h| is_static_html_entry(&h)))
+        .collect();
+    pages.sort_by(|a, b| a.matches('/').count().cmp(&b.matches('/').count()).then_with(|| a.cmp(b)));
+    Ok(outermost_sites(pages))
+}
+
+/// 이미 고른 페이지의 폴더 **아래** index.html 은 그 사이트의 하위 페이지다 — 빼고 사이트 입구만 남긴다. 테스트
+/// 커버리지 보고서가 폴더마다 index.html 을 만들어 한 프로젝트에서 260개가 잡혔다(2026-11-17 실측, `coverage/lcov-report/**`).
+/// `pages` 는 얕은 것부터 정렬돼 있어야 한다(바깥 사이트가 먼저 남는다).
+fn outermost_sites(pages: Vec<String>) -> Vec<String> {
+    let dir_of = |p: &str| p.rsplit_once('/').map_or(String::new(), |(d, _)| d.to_string());
+    let mut kept: Vec<String> = Vec::new();
+    for p in pages {
+        let dir = dir_of(&p);
+        let nested = kept.iter().any(|k| {
+            let site = dir_of(k);
+            site.is_empty() || dir.starts_with(&format!("{site}/"))
+        });
+        if !nested {
+            kept.push(p);
+        }
+    }
+    kept
+}
+
+/// 판정에 쓸 앞부분(64KB) — `<script>` 태그는 대개 앞에 있다. 못 읽으면 None(목록에서 빠진다).
+/// 판정용으로만 읽으니 깨진 바이트는 대체 문자로 둔다(파일을 고쳐 쓰는 경로가 아니다).
+fn html_head(path: &Path) -> Option<String> {
+    let mut buf = Vec::new();
+    std::fs::File::open(path).ok()?.take(64 * 1024).read_to_end(&mut buf).ok()?;
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// 이 `index.html` 을 그 폴더를 루트로 정적 서빙했을 때 페이지가 되는가. 번들러가 빌드 때 바꿔 끼우는 **원본 템플릿**만
+/// 거른다 — Vite·Svelte·Vue 는 `<script src="/src/main.tsx">` 처럼 브라우저가 못 읽는 소스를 직접 부르고, CRA 의
+/// `public/index.html` 은 `%PUBLIC_URL%` 자리표시자를 갖는다. 빌드 결과(`dist/index.html` — `/assets/*.js`)는 통과한다.
+pub(crate) fn is_static_html_entry(html: &str) -> bool {
+    let lower = html.to_ascii_lowercase();
+    if lower.contains("%public_url%") {
+        return false;
+    }
+    const SOURCE_EXTS: [&str; 7] = [".ts", ".tsx", ".jsx", ".mts", ".cts", ".vue", ".svelte"];
+    !lower.match_indices("<script").any(|(at, _)| {
+        let tag = &lower[at..lower[at..].find('>').map_or(lower.len(), |e| at + e)];
+        script_src(tag).is_some_and(|src| {
+            let path = src.split(['?', '#']).next().unwrap_or(src);
+            SOURCE_EXTS.iter().any(|ext| path.ends_with(ext))
+        })
+    })
+}
+
+/// `<script …>` 여는 태그 안의 `src` 값(따옴표 있든 없든).
+fn script_src(tag: &str) -> Option<&str> {
+    let at = tag.match_indices("src").find(|(i, _)| {
+        // `data-src`·`srcset` 같은 다른 속성 이름의 일부가 아니어야 한다.
+        let before = tag[..*i].chars().last().is_some_and(|c| c.is_ascii_whitespace());
+        before && tag[i + 3..].trim_start().starts_with('=')
+    })?;
+    let rest = tag[at.0 + 3..].trim_start().strip_prefix('=')?.trim_start();
+    match rest.chars().next()? {
+        q @ ('"' | '\'') => rest[1..].split(q).next(),
+        _ => rest.split(|c: char| c.is_ascii_whitespace() || c == '>').next(),
+    }
 }
 
 /// base 폴더를 서빙하는 서버를 확보한다 — 살아 있으면 재사용, 아니면 새로 띄운다.
@@ -673,6 +771,71 @@ fn content_type(path: &Path) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 빌드 결과·손으로 쓴 정적 페이지는 통과, 번들러 원본 템플릿은 걸러진다 — 둘 다 단언해야 "전부 통과"·"전부 거름"
+    /// 같은 고장이 빨개진다.
+    #[test]
+    fn static_html_entry_rejects_bundler_source_templates() {
+        let vite_src = r#"<div id="root"></div><script type="module" src="/src/main.tsx"></script>"#;
+        let vite_dist = r#"<script type="module" crossorigin src="/assets/index-Bx1.js"></script>"#;
+        let hand = r#"<link rel="stylesheet" href="style.css"><script src="snapshot.js"></script>"#;
+        let cra = r#"<link rel="icon" href="%PUBLIC_URL%/favicon.ico">"#;
+        let vue = "<script type=module src=./src/main.ts?v=1></script>";
+        let svelte = r#"<SCRIPT TYPE="module" SRC='/src/main.svelte'></SCRIPT>"#;
+        let data_src = r#"<script data-src="/src/x.ts" src="app.js"></script>"#;
+        assert!(is_static_html_entry(vite_dist), "vite 빌드 결과");
+        assert!(is_static_html_entry(hand), "손으로 쓴 정적 페이지");
+        assert!(is_static_html_entry("<h1>hi</h1><script>console.log(1)</script>"), "인라인 스크립트");
+        assert!(is_static_html_entry(data_src), "src 가 아닌 속성의 .ts 는 상관없다");
+        assert!(!is_static_html_entry(vite_src), "vite 원본");
+        assert!(!is_static_html_entry(cra), "CRA public/index.html");
+        assert!(!is_static_html_entry(vue), "따옴표 없는 src + 쿼리");
+        assert!(!is_static_html_entry(svelte), "대문자 태그");
+    }
+
+    /// 걷기: 이름이 index.html 인 것만, gitignore 와 무관하게(빌드 산출물 폴더도), 원본 템플릿은 빼고, 숨김 폴더·`target`
+    /// 은 걷지 않고, 사이트 안의 하위 페이지는 입구 하나로 묶고, 얕은 것부터.
+    #[test]
+    fn static_index_pages_lists_openable_index_files_shallow_first() {
+        let root = std::env::temp_dir().join(format!("gpv-static-pages-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for (rel, body) in [
+            ("index.html", r#"<script type="module" src="/src/main.tsx"></script>"#),
+            ("web/static/index.html", r#"<script src="snapshot.js"></script>"#),
+            ("dist/index.html", r#"<script src="/assets/a.js"></script>"#),
+            ("dist/fm/index.html", "<p>dist 사이트의 하위 페이지</p>"),
+            ("web/static/other.html", "<p>x</p>"),
+            ("node_modules/pkg/index.html", "<p>x</p>"),
+            ("docs/INDEX.HTML", "<p>x</p>"),
+            ("coverage/lcov-report/index.html", "<p>x</p>"),
+            ("coverage/lcov-report/src/lib/index.html", "<p>x</p>"),
+            ("FRONTEND/.next/server/app/index.html", "<p>x</p>"),
+            ("src-tauri/target/doc/index.html", "<p>x</p>"),
+        ] {
+            let p = root.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, body).unwrap();
+        }
+        std::fs::write(root.join(".gitignore"), "dist/\nweb/static/\n").unwrap();
+        let got = static_index_pages(&root).unwrap();
+        assert_eq!(
+            got,
+            vec!["dist/index.html", "docs/INDEX.HTML", "coverage/lcov-report/index.html", "web/static/index.html"]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 루트의 정적 index.html 은 프로젝트 전체가 한 사이트라는 뜻이다 — 나머지는 그 하위 페이지다.
+    #[test]
+    fn outermost_sites_keeps_only_site_entrances() {
+        let v = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(outermost_sites(v(&["index.html", "a/index.html"])), v(&["index.html"]));
+        assert_eq!(
+            outermost_sites(v(&["out/index.html", "outer/index.html", "out/fm/index.html"])),
+            v(&["out/index.html", "outer/index.html"]),
+            "out 과 outer 는 접두만 같은 형제다"
+        );
+    }
 
     /// 서버에 GET 한 방 — keep-alive 없이 응답 전체를 읽는다(핸들러가 Connection: close다).
     ///

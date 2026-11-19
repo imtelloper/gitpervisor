@@ -122,9 +122,12 @@ export function TerminalPane({
             있으므로 hover 조건은 그대로다.
             focus-within은 팔레트 메뉴가 pane 밖으로 나갔을 때(포인터가 pane을 벗어나도) 오버레이가
             투명해지지 않게 하는 대비책이다 — 메뉴는 버튼의 형제라 부모 opacity를 그대로 받는다. */}
-        <div className="absolute right-1 top-1 z-30 flex items-center gap-0.5 rounded-md border border-edge bg-panel/95 p-0.5 opacity-0 shadow-lg transition-opacity focus-within:opacity-100 group-hover/pane:opacity-100">
-          {controls}
-        </div>
+        {/* 칸 헤더가 컨트롤을 맡은 칸(플로팅 창 분할 — PaneTree `headers`)은 빈 상자가 뜨지 않게 아예 그리지 않는다. */}
+        {controls && (
+          <div className="absolute right-1 top-1 z-30 flex items-center gap-0.5 rounded-md border border-edge bg-panel/95 p-0.5 opacity-0 shadow-lg transition-opacity focus-within:opacity-100 group-hover/pane:opacity-100">
+            {controls}
+          </div>
+        )}
       </div>
       {/* 프롬프트 컬럼 — 여닫힘은 host ResizeObserver가 xterm을 refit해 따라온다. */}
       {promptOpen && <PromptSidePanel termId={paneId} />}

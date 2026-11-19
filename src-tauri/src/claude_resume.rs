@@ -261,7 +261,7 @@ impl SysinfoTable {
 type ProcTable = SysinfoTable;
 
 /// 지금 도는 Claude 를 터미널에 붙인다. `terms` = (termId, 셸 pid — 0 은 모름).
-fn live_claude_by_term(terms: &[(String, u32)]) -> BTreeMap<String, ResumeRec> {
+pub(crate) fn live_claude_by_term(terms: &[(String, u32)]) -> BTreeMap<String, ResumeRec> {
     let shells: HashMap<u32, &str> = terms.iter().filter(|(_, p)| *p != 0).map(|(t, p)| (*p, t.as_str())).collect();
     if shells.is_empty() {
         return BTreeMap::new();

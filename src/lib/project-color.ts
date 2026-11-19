@@ -252,17 +252,58 @@ const appliedTheme = {
  * 무관하게 색이 고정된다. 화면에 보이는 부분집합으로 배정하면 충돌 밀림 결과가 매번 달라져
  * "배경색으로 프로젝트를 기억한다"가 깨진다.
  */
-export function useProjectColors(): Map<string, ProjColor> {
+export function useProjectPaletteSlots(): { pal: ProjColor[]; slots: Map<string, number> } {
   const { data: projects } = useProjects();
   const theme = useSyncExternalStore(appliedTheme.subscribe, appliedTheme.get);
   // 커스텀 테마를 편집해도 id는 그대로라(같은 id를 upsert) theme 문자열이 안 바뀐다 —
   // 정의 목록 자체를 구독해야 편집·삭제·다른 창의 storage 변경이 행 색까지 내려온다.
   const customThemes = useCustomThemes((s) => s.themes);
-  return useMemo(() => {
-    const pal = projectPalette(theme);
-    const slots = assignProjectSlots(
-      (projects ?? []).map((p) => p.name).sort((a, b) => a.localeCompare(b, "ko")),
-    );
-    return new Map([...slots].map(([n, s]) => [n, pal[s]] as const));
-  }, [projects, theme, customThemes]);
+  return useMemo(
+    () => ({
+      pal: projectPalette(theme),
+      slots: assignProjectSlots(
+        (projects ?? []).map((p) => p.name).sort((a, b) => a.localeCompare(b, "ko")),
+      ),
+    }),
+    [projects, theme, customThemes],
+  );
+}
+
+export function useProjectColors(): Map<string, ProjColor> {
+  const { pal, slots } = useProjectPaletteSlots();
+  return useMemo(() => new Map([...slots].map(([n, s]) => [n, pal[s]] as const)), [pal, slots]);
+}
+
+/**
+ * 함께 보이는 프로젝트끼리만 다시 펴는 배정(모아보기 칩·셀 헤더). 전역 배정은 등록 전체를
+ * 32칸에 펴므로 화면에 같이 뜨는 몇 개가 이웃 hue(청록·청록, 보라·보라, 빨강 셋)로 붙을 수
+ * 있었다 — 칩 8개에서 헷갈린다는 사용자 보고(실측 최소 간격 1칸 = 11°).
+ * n개를 32칸에 **균등 간격**으로 놓되, 각자 전역 슬롯(`home`)의 원형 순서를 지킨 채 시작 칸·회전을
+ * 전부 따져 `home`에서 움직인 거리 합이 가장 작은 배치를 고른다 — 간격은 항상 ⌊32/n⌋칸 이상이고,
+ * 사이드바 색과 같은 계열을 최대한 유지한다. 앞에서부터 하나씩 고르는 탐욕 배정은 7개에서도
+ * 3칸으로 무너졌다. 비용은 32·n² 이라 n ≤ 32 에서 무시할 만하다.
+ */
+export function spreadProjectSlots(
+  names: readonly string[],
+  home: ReadonlyMap<string, number>,
+): Map<string, number> {
+  const N = PROJECT_HUES.length;
+  const slotOf = (n: string) => home.get(n) ?? 0;
+  const ring = [...new Set(names)].sort((a, b) => slotOf(a) - slotOf(b) || a.localeCompare(b));
+  const n = ring.length;
+  const dist = (a: number, b: number) => Math.min((a - b + N) % N, (b - a + N) % N);
+  let best: number[] = [];
+  let bestCost = Infinity;
+  for (let off = 0; off < N; off++) {
+    const pos = ring.map((_, k) => (off + Math.round((k * N) / n)) % N);
+    for (let r = 0; r < n; r++) {
+      let cost = 0;
+      for (let j = 0; j < n && cost < bestCost; j++) cost += dist(slotOf(ring[j]), pos[(j + r) % n]);
+      if (cost < bestCost) {
+        bestCost = cost;
+        best = ring.map((_, j) => pos[(j + r) % n]);
+      }
+    }
+  }
+  return new Map(ring.map((name, j) => [name, best[j]] as const));
 }

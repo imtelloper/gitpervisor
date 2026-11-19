@@ -21,13 +21,13 @@ const ko = {
     reload: "새로고침",
   },
   gitGate: {
-    checking: "git 확인 중…",
-    notFoundTitle: "git을 찾을 수 없습니다",
-    requirement: "Gitpervisor는 시스템에 설치된 git CLI를 사용합니다 (2.35 이상 권장).",
+    notFoundTitle: "git을 찾을 수 없어 Git 기능(변경·커밋·브랜치 등)은 쓸 수 없습니다.",
+    othersStillWork: "터미널·파일·DB 같은 다른 기능은 그대로 쓸 수 있습니다.",
     // 다운로드 주소(<span>)를 사이에 둔 문장 — 어순이 언어마다 달라 앞뒤를 따로 둔다.
     installBeforeUrl: "",
     installAfterUrl: "에서 설치한 뒤 다시 시도하세요.",
     recheck: "다시 확인",
+    dismiss: "닫기",
   },
   projectPathMissing: {
     pickDialogTitle: (name: string) => `'${name}'의 새 위치 선택`,
@@ -114,6 +114,10 @@ const ko = {
     reportTabShow: "리포트 보기",
     reportTab: "리포트",
     reportTabClose: "리포트 탭 닫기",
+    dbTab: "DB",
+    dbTabShow: "DB 보기",
+    dbTabClose: "DB 탭 닫기",
+    dbTabOpenWindow: "DB 를 새 창으로 열기",
     groupChipTitle: (name: string, count: number) =>
       `${name} — 탭 ${count}개 (클릭: 전체 표시/숨김, 호버: 목록)`,
     autoLayoutTitle:
@@ -195,12 +199,12 @@ export const appText = defineText(ko, {
       reload: "Reload",
     },
     gitGate: {
-      checking: "Checking git…",
-      notFoundTitle: "git not found",
-      requirement: "Gitpervisor uses the git CLI installed on your system (2.35 or later recommended).",
+      notFoundTitle: "git not found — Git features (changes, commits, branches…) are unavailable.",
+      othersStillWork: "Terminals, files, databases and other features still work.",
       installBeforeUrl: "Install it from ",
       installAfterUrl: " and try again.",
       recheck: "Check again",
+      dismiss: "Dismiss",
     },
     projectPathMissing: {
       pickDialogTitle: (name) => `Choose new location for '${name}'`,
@@ -286,6 +290,10 @@ export const appText = defineText(ko, {
       reportTabShow: "Show report",
       reportTab: "Report",
       reportTabClose: "Close report tab",
+      dbTab: "DB",
+      dbTabShow: "Show DB",
+      dbTabClose: "Close DB tab",
+      dbTabOpenWindow: "Open DB in a new window",
       groupChipTitle: (name, count) =>
         `${name} — ${count} ${plural(count, "tab", "tabs")} (click: show/hide all, hover: list)`,
       autoLayoutTitle:

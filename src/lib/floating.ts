@@ -78,6 +78,8 @@ export interface DocTarget {
    * 위 필드들과 같은 이유로 **옵셔널이어야 한다** — 이 필드 이전에 적힌 항목이 남아 있다.
    */
   log?: string;
+  /** 있으면 이 창은 **DB 작업 공간**(연결 트리 + 쿼리 + 결과)이다. 위 필드들과 같은 이유로 옵셔널. */
+  db?: true;
   /**
    * 있으면 이 창은 **분리한 브라우저 탭**이다(탭 우클릭 → 새 창으로 분리). 메인 탭의 항목을 그대로
    * 싣는다 — 같은 id라 네이티브 webview가 이 창으로 옮겨 붙어 페이지가 새로 고쳐지지 않는다
@@ -245,6 +247,21 @@ export function openReportWindow(): void {
     size: [1240, 820],
   }).catch((e) => {
     console.error("리포트 창 생성 실패:", e);
+  });
+}
+
+/** DB 작업 공간을 **별도 OS 창**으로 연다(모아보기 DB 탭의 새 창 버튼). 리포트 창과 같은 이유로 고정 id —
+ *  다시 누르면 기존 창에 포커스만 준다. 연결은 백엔드(DbState)가 들고 있어 창이 늘어도 한 벌이다. */
+export function openDbWindow(): void {
+  const title = currentMessages().lib.dbWindowTitle;
+  putDocTarget("db", { projectId: "", path: title, db: true });
+  void invoke("open_doc_window", {
+    docId: "db",
+    title,
+    origin: window.location.origin,
+    size: [1240, 820],
+  }).catch((e) => {
+    console.error("DB 창 생성 실패:", e);
   });
 }
 

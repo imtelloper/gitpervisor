@@ -352,10 +352,12 @@ export function createPointerHandlers(ctx: PointerCtx) {
   // ── 좌표 변환 ───────────────────────────────────────────────────────────
 
   /** 클램프 **전** 좌표 — 가이드를 이미지 밖으로 끌어내 지우려면 음수/초과가 살아 있어야 한다. */
-  const rawOriented = (e: React.PointerEvent): Point =>
+  // 좌표만 쓴다 — 펜 획이 네이티브 `getCoalescedEvents()` 원소도 같은 경로로 넘긴다.
+  type ClientPt = { clientX: number; clientY: number };
+  const rawOriented = (e: ClientPt): Point =>
     clientToDoc(canvasRef.current!, e.clientX, e.clientY, p.current);
 
-  const toOriented = (e: React.PointerEvent): Point => {
+  const toOriented = (e: ClientPt): Point => {
     const q = rawOriented(e);
     const ow = p.current.bounds.width;
     const oh = p.current.bounds.height;
@@ -877,9 +879,13 @@ export function createPointerHandlers(ctx: PointerCtx) {
     if (d.mode === "draw") {
       const cur = draftRef.current;
       if (cur && (cur.kind === "pen" || cur.kind === "highlight")) {
-        // 드래프트는 커밋 전이므로 제자리 변경한다 — 이벤트마다 복제하면 O(n²).
+        // 점 배열은 제자리에 붙인다 — 이벤트마다 복제하면 O(n²).
         // 자유곡선에는 스냅을 걸지 않는다: 획이 격자에서 끊긴다.
         appendPenPoint(cur.pts, pt.x, pt.y);
+        // 노드는 얕게 새로 만든다: Path2D 메모(geometry.ts `buildObjectPath`)가 노드 **참조**를 키로 삼아, 같은 객체에
+        // 점만 붙이면 첫 프레임의 점 1~2개짜리 경로가 그리는 내내·커밋 뒤·저장본까지 재사용됐다 — 획이 점·짧은
+        // 대시로만 남았다(사용자 보고 2026-11-18). 배열은 그대로 공유하니 비용은 O(1)이다.
+        draftRef.current = { ...cur };
       } else {
         draftRef.current = makeDraft(s, d.start, snapAt(idx, pt), mods.shift);
       }
@@ -965,6 +971,15 @@ export function createPointerHandlers(ctx: PointerCtx) {
     }
     const pt = d.mode === "guide" ? rawOriented(e) : toOriented(e);
     ptRef.current = pt;
+    // 빠른 획은 move 가 프레임 단위로 합쳐져(실측: move 60개 → 18점) 거친 꺾은선이 된다 —
+    // 합쳐진 중간 점까지 넣는다. 마지막 원소는 e 자신이라 아래 applyDragAt 에서 최소 거리로 걸러진다.
+    const pen = draftRef.current;
+    if (d.mode === "draw" && (pen?.kind === "pen" || pen?.kind === "highlight")) {
+      for (const ce of e.nativeEvent.getCoalescedEvents?.() ?? []) {
+        const q = toOriented(ce);
+        appendPenPoint(pen.pts, q.x, q.y);
+      }
+    }
     applyDragAt(d, pt, { shift: e.shiftKey, alt: e.altKey, ctrl: e.ctrlKey || e.metaKey });
     schedule();
   };
@@ -1048,7 +1063,9 @@ export function createPointerHandlers(ctx: PointerCtx) {
     if (d.mode === "draw") {
       const draft = draftRef.current;
       draftRef.current = null;
-      if (draft && isDraftUsable(draft)) commitObjects([...s.objects, draft]);
+      // 펜 드래프트는 점 배열을 제자리로 키워 왔다 — 문서 노드는 불변 규약이라 배열까지 새로 떠서 넣는다.
+      if (draft && isDraftUsable(draft))
+        commitObjects([...s.objects, draft.kind === "pen" || draft.kind === "highlight" ? { ...draft, pts: [...draft.pts] } : draft]);
       schedule();
       return;
     }

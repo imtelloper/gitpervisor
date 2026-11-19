@@ -1447,6 +1447,66 @@ export async function run({ cdp, report: r, fix }) {
       r.skip("(m) 펜 데시메이션", "편집기 재개 실패");
     }
 
+    // ── (n) 펜·형광펜 획이 끄는 동안 · 놓은 뒤 · 저장본에서 **이어진 선**이다 ──
+    // 2026-11-18 사용자 보고: 끌어도 점·짧은 대시만 남았다. Path2D 메모(lib/annotate/geometry.ts `buildObjectPath`)가 노드
+    // **참조**를 키로 쓰는데 초안의 pts 를 제자리에서 늘려(annotation/pointer.ts), 첫 프레임(점 1~2개) 모양이 그리기·확정·
+    // 저장까지 재사용됐다. 모델(pts)은 멀쩡해 (m) 같은 개수 단언은 그대로 통과한다 — 여기선 궤적 위 **픽셀**을 잰다.
+    for (const tool of ["pen", "highlight"]) {
+      if (!(await openEditor(fix.projectId, SRC))) {
+        r.skip(`(n) ${tool} 획 연속성`, "편집기 재개 실패");
+        continue;
+      }
+      await cdp.eval(`window.__gpv.imageEditor.setTool(${J(tool)})`);
+      await sleep(150);
+      // 물결 한 주기(x 20→180, 4px 간격). 재는 점은 첫 두 점(점 하나로 남던 자리)을 뺀 짝수 번째.
+      const wave = [];
+      for (let x = 20; x <= 180; x += 4) wave.push([x, Math.round(100 + 40 * Math.sin(((x - 20) / 160) * Math.PI * 2))]);
+      const probe = wave.filter((_, i) => i >= 2 && i % 2 === 0);
+      // 잉크 = 흰 원본(SRC)이 아닌 픽셀. 알파로 재면 안 된다 — 이 캔버스엔 원본 이미지도 그려져 어디나 불투명이라
+      // 결함이 있어도 20/20 이 나왔다(변이 검증으로 확인).
+      const inkedOnScreen = () =>
+        cdp.eval(`(() => { let n = 0; for (const p of ${J(probe)}) { const px = window.__gpvAnno.px(1, p[0], p[1]); if (px && !(px[0] >= 251 && px[1] >= 251 && px[2] >= 251)) n++; } return n; })()`);
+      // 실제 손처럼 **끄는 사이사이 프레임이 그려지게** 3점씩 보낸다. pointerSeq 는 move 사이에 프레임을 안 기다려서,
+      // 한 번에 다 보내면 첫 그림이 점이 다 쌓인 뒤에야 그려져 이 결함이 화면에서 재현되지 않는다(변이 검증으로 확인).
+      await cdp.eval(`window.__gpvAnno.pointerSeq(${J([["down", ...wave[0]]])})`);
+      for (let i = 1; i < wave.length; i += 3) {
+        await cdp.eval(`window.__gpvAnno.pointerSeq(${J(wave.slice(i, i + 3).map((p) => ["move", ...p]))})`);
+        await cdp.eval(`window.__gpvAnno.frame()`);
+      }
+      // 놓지 않고 끈 채로 — 초안이 그려진 화면을 잰다.
+      const during = await inkedOnScreen();
+      await cdp.eval(`window.__gpvAnno.pointerSeq(${J([["up", ...wave[wave.length - 1]]])})`);
+      await sleep(300);
+      const after = await inkedOnScreen();
+      const strokes = (await getDoc()).objects.filter((o) => o.kind === tool).length;
+      const need = Math.ceil(probe.length * 0.9);
+      r.check(
+        `(n) ${tool}: 끄는 동안 궤적 위 ${probe.length}점 중 90% 이상에 잉크가 있다(점 하나로 멈추지 않는다)`,
+        during >= need,
+        `잉크 ${during}/${probe.length}`,
+      );
+      r.check(
+        `(n) ${tool}: 놓은 뒤에도 궤적 전체가 선으로 남고 획은 하나다`,
+        after >= need && strokes === 1,
+        `잉크 ${after}/${probe.length} 획=${strokes}`,
+      );
+      if (tool !== "pen") continue;
+      // 사용자 파일에는 저장본이 남는다 — 화면이 맞아도 저장 경로가 옛 모양을 쓰면 점으로 굳는다.
+      const savedN = await saveAs("e2e-anno-pen-line.png", "e2e-anno-pen-line.png");
+      created.push("e2e-anno-pen-line.png");
+      if (r.check("(n) pen: 저장", savedN.ok, savedN.ok ? "" : savedN.why)) {
+        const fN = await cdp.eval(
+          `window.__gpvAnno.readSaved(${J(fix.projectId)}, "e2e-anno-pen-line.png", ${J(probe)})`,
+        );
+        const savedInk = fN ? fN.px.filter((px) => !isWhite(px)).length : -1;
+        r.check(
+          "(n) pen: 저장본에서도 궤적 위 90% 이상에 잉크가 있다",
+          savedInk >= need,
+          `잉크 ${savedInk}/${probe.length}`,
+        );
+      }
+    }
+
     // ── (f) D1 임베디드 저장소 라우팅 — 그 저장소 "안"에 써야 한다 ──────────
     const embDir = join(fix.repo, EMB);
     let embReady = false;

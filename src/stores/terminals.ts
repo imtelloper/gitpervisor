@@ -157,13 +157,21 @@ function migrateLeafContent(node: Pane): Pane {
 
 export { collectByContent, collectPanes };
 
-/** 이 칸이 속한 탭 제목 — 분할이면 칸 번호를 붙인다. `term_open`이 Rust에 넘겨 MCP `list_terminals`가
+/** 탭 제목 — 분할이면 칸 번호를 붙인다("터미널 (1/2)"). 그 탭의 칸이 아니면 undefined.
+ *  PTY 이름(`terminalLabel`)과 플로팅 창 분할 칸 헤더(PaneTree)가 같은 이름을 쓴다. */
+function paneLabelIn(t: TermTab, paneId: string): string | undefined {
+  const panes = collectPanes(t.layout);
+  const i = panes.indexOf(paneId);
+  if (i < 0) return undefined;
+  return panes.length > 1 ? `${t.title} (${i + 1}/${panes.length})` : t.title;
+}
+
+/** 이 칸이 속한 탭 제목(`paneLabelIn`). `term_open`이 Rust에 넘겨 MCP `list_terminals`가
  *  사용자가 보는 이름으로 보여 준다. 여는 순간의 값이라 나중의 분할·닫기로 번호가 바뀌어도 따라가지 않는다. */
 export function terminalLabel(paneId: string): string | undefined {
   for (const t of useTerminals.getState().terminals) {
-    const panes = collectPanes(t.layout);
-    const i = panes.indexOf(paneId);
-    if (i >= 0) return panes.length > 1 ? `${t.title} (${i + 1}/${panes.length})` : t.title;
+    const label = paneLabelIn(t, paneId);
+    if (label !== undefined) return label;
   }
   return undefined;
 }

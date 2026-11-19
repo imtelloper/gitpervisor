@@ -859,12 +859,14 @@ export async function run({ cdp, report: r, fix }) {
       await cdp.eval(`window.__gpvVec.ed().setTool('polygon')`);
       await S(`pointerSeq([['down',40,40],['move',90,90],['move',140,140],['up',140,140]])`);
       await sleep(250);
+      // 외접원 = 정점 평균(정다각형의 중심)과 첫 정점까지의 거리 — `변 수` 재생성이 지키는 것(PathInspectorSection `sidesPatch`).
+      const circleJs = `(vs) => { const cx = vs.reduce((s, p) => s + p.x, 0) / vs.length, cy = vs.reduce((s, p) => s + p.y, 0) / vs.length;
+        return { cx, cy, r: Math.hypot(vs[0].x - cx, vs[0].y - cy) }; }`;
       const poly = await cdp.eval(`(() => {
         const o = window.__gpvVec.doc().objects[0];
         if (!o) return null;
-        const b = window.__gpvVec.ed().tree.nodeAABB(o.id);
         return { kind: o.kind, n: o.subpaths ? o.subpaths[0].verts.length : -1,
-                 closed: o.subpaths ? o.subpaths[0].closed : null, box: b };
+                 closed: o.subpaths ? o.subpaths[0].closed : null, c: o.subpaths ? (${circleJs})(o.subpaths[0].verts) : null };
       })()`);
       await S(`selectAll()`);
       await cdp.eval(`window.__gpvVec.ed().inspector.setTab('props')`);
@@ -876,15 +878,17 @@ export async function run({ cdp, report: r, fix }) {
       await sleep(250);
       const poly6 = await cdp.eval(`(() => {
         const o = window.__gpvVec.doc().objects[0];
-        const b = window.__gpvVec.ed().tree.nodeAABB(o.id);
-        return { n: o.subpaths[0].verts.length, box: b };
+        return { n: o.subpaths[0].verts.length, c: (${circleJs})(o.subpaths[0].verts) };
       })()`);
+      // 기본 5각 = 레일 아이콘(Pentagon). 옛 기본 3각일 땐 "같은 AABB(x·폭)"로 쟀는데 3각·6각은 우연히 폭이 같을 뿐이었다 —
+      // 재생성이 지키는 건 외접원이다.
+      const within1 = (a, b) => Math.abs(a - b) <= 1;
       r.check(
-        "(46 k) 다각형 도구가 정삼각형 패스를 만들고, `변 수` 6 은 **같은 AABB** 로 다시 만든다",
-        poly && poly.kind === "path" && poly.n === 3 && poly.closed === true &&
-          sides0 === "3" && poly6.n === 6 &&
-          Math.abs(poly6.box.x - poly.box.x) <= 1 && Math.abs(poly6.box.w - poly.box.w) <= 1,
-        `3각=${J(poly)} 필드=${sides0} 6각=${J(poly6)}`,
+        "(46 k) 다각형 도구가 정오각형 패스를 만들고, `변 수` 6 은 **같은 외접원**(중심·반지름)으로 다시 만든다",
+        poly && poly.kind === "path" && poly.n === 5 && poly.closed === true &&
+          sides0 === "5" && poly6.n === 6 &&
+          within1(poly6.c.cx, poly.c.cx) && within1(poly6.c.cy, poly.c.cy) && within1(poly6.c.r, poly.c.r),
+        `5각=${J(poly)} 필드=${sides0} 6각=${J(poly6)}`,
       );
 
       await setDoc({ objects: [] });

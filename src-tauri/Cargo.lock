@@ -2120,6 +2120,7 @@ dependencies = [
  "encoding_rs",
  "flate2",
  "futures",
+ "gtk",
  "image",
  "jpeg-decoder",
  "keyring",

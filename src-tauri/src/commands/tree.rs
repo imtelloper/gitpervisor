@@ -295,6 +295,226 @@ pub(crate) async fn rename_in_place(from: &Path, to: &Path, old_name: &str, new_
     Ok(())
 }
 
+/// 파일/폴더 복제 — 같은 폴더에 탐색기식 이름(`이름 - 복사본.ext`, 그다음 `이름 - 복사본 (2).ext`)으로
+/// 통째로 복사하고 새 레포-상대 경로를 돌려준다. 기존 항목은 절대 덮어쓰지 않는다.
+#[tauri::command(async)]
+pub async fn duplicate_path(
+    state: State<'_, AppState>,
+    project_id: String,
+    rel_path: String,
+) -> Result<String, IpcError> {
+    let repo = project_path(&state, &project_id)?;
+    let from = resolve_in_repo(&repo, &rel_path)?;
+    let (parent, name) = match rel_path.rfind('/') {
+        Some(i) => (&rel_path[..i], &rel_path[i + 1..]),
+        None => ("", rel_path.as_str()),
+    };
+    let meta = tokio::fs::symlink_metadata(&from)
+        .await
+        .map_err(|_| IpcError::new(ErrorCode::NotFound, text_files::target_not_found()))?;
+    let suffix = text_files::duplicate_suffix();
+    let new_name = (1..=9999)
+        .map(|n| duplicate_name(name, meta.is_dir(), suffix, n))
+        .find(|c| std::fs::symlink_metadata(from.with_file_name(c)).is_err())
+        .ok_or_else(|| IpcError::new(ErrorCode::AlreadyExists, text_files::name_already_exists()))?;
+    let to = from.with_file_name(&new_name);
+    tokio::task::spawn_blocking(move || {
+        let r = copy_entry_new(&from, &to);
+        // 반쯤 복사된 사본을 남기지 않는다. AlreadyExists 는 그 이름을 방금 남이 차지한 경우라 그건 우리 것이 아니다.
+        if r.as_ref().is_err_and(|e| e.kind() != std::io::ErrorKind::AlreadyExists) {
+            let undo = if to.is_dir() { std::fs::remove_dir_all(&to) } else { std::fs::remove_file(&to) };
+            if let Err(e) = undo {
+                log::warn!("[duplicate] leftover partial copy {}: {e}", to.display());
+            }
+        }
+        r
+    })
+    .await
+    .map_err(|e| IpcError::new(ErrorCode::Io, text_files::duplicate_failed(e)))?
+    .map_err(|e| IpcError::new(ErrorCode::Io, text_files::duplicate_failed(e)))?;
+    Ok(join_rel(parent, &new_name))
+}
+
+/// `report.pdf` → `report - 복사본.pdf`, n≥2 면 `report - 복사본 (n).pdf`. 폴더와 점으로 시작하는 이름(`.env`)은 확장자를 가르지 않는다.
+fn duplicate_name(name: &str, is_dir: bool, suffix: &str, n: u32) -> String {
+    let (stem, ext) = match name.rfind('.') {
+        Some(i) if !is_dir && i > 0 => name.split_at(i),
+        _ => (name, ""),
+    };
+    if n < 2 {
+        format!("{stem} - {suffix}{ext}")
+    } else {
+        format!("{stem} - {suffix} ({n}){ext}")
+    }
+}
+
+/// `to` 를 새로 만들며(create_new·create_dir — 있으면 실패) `from` 을 재귀 복사한다. 링크는 따라가지 않고
+/// 링크로 다시 만든다 — 따라가면 정션 순환에서 끝나지 않고, 레포 밖 내용을 끌어온다.
+fn copy_entry_new(from: &Path, to: &Path) -> std::io::Result<()> {
+    let at = |p: &Path| {
+        let p = p.display().to_string();
+        move |e: std::io::Error| std::io::Error::new(e.kind(), format!("{p}: {e}"))
+    };
+    let meta = std::fs::symlink_metadata(from).map_err(at(from))?;
+    if meta.file_type().is_symlink() {
+        let target = std::fs::read_link(from).map_err(at(from))?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, to).map_err(at(to))?;
+        #[cfg(windows)]
+        {
+            // 링크 대상이 폴더인지는 따라가 봐야 안다. 깨진 링크면 파일 링크로 만든다(대상이 없으니 어느 쪽이든 깨진 채다).
+            let dir_target = std::fs::metadata(from).is_ok_and(|m| m.is_dir());
+            let made = if dir_target {
+                std::os::windows::fs::symlink_dir(&target, to)
+            } else {
+                std::os::windows::fs::symlink_file(&target, to)
+            };
+            made.map_err(at(to))?;
+        }
+        return Ok(());
+    }
+    if meta.is_dir() {
+        std::fs::create_dir(to).map_err(at(to))?;
+        for entry in std::fs::read_dir(from).map_err(at(from))? {
+            let entry = entry.map_err(at(from))?;
+            copy_entry_new(&entry.path(), &to.join(entry.file_name()))?;
+        }
+        return Ok(());
+    }
+    let mut src = std::fs::File::open(from).map_err(at(from))?;
+    let mut dst = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(to)
+        .map_err(at(to))?;
+    std::io::copy(&mut src, &mut dst).map_err(at(to))?;
+    // 실행 비트(스크립트)·읽기 전용을 원본대로 — fs::copy 가 하던 일이다.
+    dst.set_permissions(meta.permissions()).map_err(at(to))
+}
+
+/// 이동·붙여넣기의 대상 폴더 검증 — 루트(빈 문자열)는 레포 자체. resolve_in_repo는 **상위까지만** 정규화하므로
+/// 대상 폴더 자신이 레포 밖을 가리키는 심볼릭/정션일 수 있다 — 끝까지 정규화한 뒤 레포 안임을
+/// 다시 단언한다(안 하면 그 링크 하나로 이동이 레포 밖 쓰기가 된다).
+fn resolve_dest_dir(repo: &Path, dest_dir: &str) -> Result<PathBuf, IpcError> {
+    let repo_canon = dunce::canonicalize(repo)
+        .map_err(|e| IpcError::new(ErrorCode::Io, text_files::repo_path_check_failed(e)))?;
+    let dest = if dest_dir.is_empty() {
+        repo_canon
+    } else {
+        let d = resolve_in_repo(repo, dest_dir)?;
+        let c = dunce::canonicalize(&d)
+            .map_err(|_| IpcError::new(ErrorCode::NotFound, text_files::dest_folder_not_found()))?;
+        if !c.starts_with(&repo_canon) {
+            return Err(IpcError::new(ErrorCode::Io, text_files::path_outside_repo()));
+        }
+        // 정규화 결과가 `.git` 아래로 떨어져도 거부 — 레포 안 심볼릭/정션이 `.git`(hooks 등)을
+        // 가리키면 위 렉시컬 `.git` 검사(validate_rel_file)는 우회되고, 컨테인먼트 검사는
+        // `.git`도 레포 안이라 통과한다. 훅 파일 이식은 곧 코드 실행이다.
+        if c.strip_prefix(&repo_canon).is_ok_and(|r| {
+            r.components()
+                .any(|p| matches!(p, Component::Normal(os) if is_dotgit_component(os)))
+        }) {
+            return Err(IpcError::new(ErrorCode::Io, text_files::invalid_path()));
+        }
+        c
+    };
+    if !dest.is_dir() {
+        return Err(IpcError::new(ErrorCode::Io, text_files::dest_not_a_folder()));
+    }
+    Ok(dest)
+}
+
+/// 탐색기·Finder 에서 복사한 파일(OS 클립보드의 파일 목록)을 트리의 폴더에 붙여넣는다(사용자 요청 2026-11-18).
+/// 같은 이름이 있으면 덮어쓰지 않고 복제와 같은 `이름 - 복사본.ext` 로 피한다 — 탐색기처럼 "덮어쓸까요?"를 묻는 대신
+/// 데이터를 잃지 않는 쪽을 고른다. 새로 생긴 레포-상대 경로들을 돌려준다(빈 목록 = 클립보드에 파일이 없다).
+#[tauri::command(async)]
+pub async fn paste_clipboard_files(
+    state: State<'_, AppState>,
+    project_id: String,
+    dest_dir: String,
+) -> Result<Vec<String>, IpcError> {
+    let repo = project_path(&state, &project_id)?;
+    let dest = resolve_dest_dir(&repo, &dest_dir)?;
+    let sources = read_clipboard_file_list().await?;
+    let suffix = text_files::duplicate_suffix();
+    let mut created = Vec::with_capacity(sources.len());
+    for src in sources.into_iter().map(PathBuf::from) {
+        let fail = |e: &dyn std::fmt::Display| IpcError::new(ErrorCode::Io, text_files::paste_failed(src.display(), e));
+        let meta = std::fs::symlink_metadata(&src).map_err(|e| fail(&e))?;
+        let Some(name) = src.file_name().and_then(OsStr::to_str).map(str::to_string) else {
+            return Err(fail(&text_files::invalid_path()));
+        };
+        // 폴더를 자기 안(자손)에 붙이면 복사가 방금 만든 사본을 다시 읽으며 끝없이 깊어진다.
+        if meta.is_dir() && dunce::canonicalize(&src).is_ok_and(|c| dest.starts_with(c)) {
+            return Err(IpcError::new(ErrorCode::Io, text_files::paste_folder_into_itself()));
+        }
+        let new_name = std::iter::once(name.clone())
+            .chain((1..=9999).map(|n| duplicate_name(&name, meta.is_dir(), suffix, n)))
+            .find(|c| std::fs::symlink_metadata(dest.join(c)).is_err())
+            .ok_or_else(|| IpcError::new(ErrorCode::AlreadyExists, text_files::name_already_exists()))?;
+        let to = dest.join(&new_name);
+        let from = src.clone();
+        tokio::task::spawn_blocking(move || {
+            let r = copy_entry_new(&from, &to);
+            // 반쯤 복사된 사본을 남기지 않는다(duplicate_path 와 같은 규칙).
+            if r.as_ref().is_err_and(|e| e.kind() != std::io::ErrorKind::AlreadyExists) {
+                let undo = if to.is_dir() { std::fs::remove_dir_all(&to) } else { std::fs::remove_file(&to) };
+                if let Err(e) = undo {
+                    log::warn!("[paste] leftover partial copy {}: {e}", to.display());
+                }
+            }
+            r
+        })
+        .await
+        .map_err(|e| fail(&e))?
+        .map_err(|e| fail(&e))?;
+        created.push(join_rel(&dest_dir, &new_name));
+    }
+    Ok(created)
+}
+
+/// OS 클립보드의 파일 목록(탐색기 Ctrl+C·Finder ⌘C·Linux text/uri-list). 파일이 없으면 빈 목록.
+/// 워커 스레드 + 시한 — X11 은 클립보드 소유자가 응답해야 읽히고, 그 소유자가 이 앱(웹뷰)이면 메인 루프를
+/// 기다리다 서로 막힌다(term_paste 주석). macOS 는 붙여넣기 허용 프롬프트를 사람이 누를 시간을 준다.
+async fn read_clipboard_file_list() -> Result<Vec<String>, IpcError> {
+    #[cfg(target_os = "macos")]
+    const LIMIT: Duration = Duration::from_secs(120);
+    #[cfg(not(target_os = "macos"))]
+    const LIMIT: Duration = Duration::from_secs(3);
+    let read = tokio::task::spawn_blocking(|| -> Vec<String> {
+        #[cfg(windows)]
+        {
+            // 목록 형식이 없으면 Err — 파일을 복사한 게 아니다(텍스트·이미지).
+            clipboard_win::get_clipboard(clipboard_win::formats::FileList).unwrap_or_default()
+        }
+        #[cfg(target_os = "macos")]
+        {
+            super::terminal::macos_clipboard_files()
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            match arboard::Clipboard::new() {
+                Ok(mut cb) => cb
+                    .get()
+                    .file_list()
+                    .unwrap_or_default() // 목록이 없으면 Err — 파일을 복사한 게 아니다
+                    .into_iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect(),
+                Err(e) => {
+                    log::warn!("[paste] clipboard open failed: {e}");
+                    Vec::new()
+                }
+            }
+        }
+    });
+    match tokio::time::timeout(LIMIT, read).await {
+        Ok(Ok(files)) => Ok(files),
+        Ok(Err(e)) => Err(IpcError::new(ErrorCode::Io, crate::i18n::text_git_net::clipboard_read_failed(e))),
+        Err(_) => Err(IpcError::new(ErrorCode::Io, crate::i18n::text_git_net::clipboard_owner_not_responding())),
+    }
+}
+
 /// 파일/폴더 이동 — **이름은 그대로**, 다른 폴더로 옮긴다(트리 드래그 앤 드롭용).
 /// `dest_dir`은 레포 루트 기준 대상 폴더(빈 문자열 = 루트). 성공하면 새 레포-상대 경로를
 /// 돌려준다. 기존 파일은 절대 덮어쓰지 않고(ALREADY_EXISTS), 폴더를 자기 자신/자손 안으로
@@ -321,34 +541,7 @@ pub async fn move_path(
             text_files::move_folder_into_itself(),
         ));
     }
-    // 대상 폴더 검증 — 루트(빈 문자열)는 레포 자체. resolve_in_repo는 **상위까지만** 정규화하므로
-    // 대상 폴더 자신이 레포 밖을 가리키는 심볼릭/정션일 수 있다 — 끝까지 정규화한 뒤 레포 안임을
-    // 다시 단언한다(안 하면 그 링크 하나로 이동이 레포 밖 쓰기가 된다).
-    let repo_canon = dunce::canonicalize(&repo)
-        .map_err(|e| IpcError::new(ErrorCode::Io, text_files::repo_path_check_failed(e)))?;
-    let dest = if dest_dir.is_empty() {
-        repo_canon.clone()
-    } else {
-        let d = resolve_in_repo(&repo, &dest_dir)?;
-        let c = dunce::canonicalize(&d)
-            .map_err(|_| IpcError::new(ErrorCode::NotFound, text_files::dest_folder_not_found()))?;
-        if !c.starts_with(&repo_canon) {
-            return Err(IpcError::new(ErrorCode::Io, text_files::path_outside_repo()));
-        }
-        // 정규화 결과가 `.git` 아래로 떨어져도 거부 — 레포 안 심볼릭/정션이 `.git`(hooks 등)을
-        // 가리키면 위 렉시컬 `.git` 검사(validate_rel_file)는 우회되고, 컨테인먼트 검사는
-        // `.git`도 레포 안이라 통과한다. 훅 파일 이식은 곧 코드 실행이다.
-        if c.strip_prefix(&repo_canon).is_ok_and(|r| {
-            r.components()
-                .any(|p| matches!(p, Component::Normal(os) if is_dotgit_component(os)))
-        }) {
-            return Err(IpcError::new(ErrorCode::Io, text_files::invalid_path()));
-        }
-        c
-    };
-    if !dest.is_dir() {
-        return Err(IpcError::new(ErrorCode::Io, text_files::dest_not_a_folder()));
-    }
+    let dest = resolve_dest_dir(&repo, &dest_dir)?;
     // 정규화 후 방어(심볼릭/정션으로 rel 접두 검사를 우회한 경우) — dest가 from 아래면 거부.
     if dest.starts_with(&from) {
         return Err(IpcError::new(
@@ -406,6 +599,16 @@ pub async fn start_os_file_drag(
         }
         files.push(p);
     }
+    start_native_file_drag(app, window, files).await
+}
+
+/// OS 네이티브 파일 드래그 본체 — 트리(`start_os_file_drag`)와 폴더 창(`fav_start_os_drag`)이 함께 쓴다.
+/// 경로 검사는 호출자 몫이다.
+pub(super) async fn start_native_file_drag(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    files: Vec<PathBuf>,
+) -> Result<bool, IpcError> {
     if files.is_empty() {
         return Ok(false);
     }
@@ -2011,6 +2214,33 @@ mod ignore_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn duplicate_name_keeps_extension_and_numbers_later_copies() {
+        assert_eq!(duplicate_name("report.pdf", false, "Copy", 1), "report - Copy.pdf");
+        assert_eq!(duplicate_name("report.pdf", false, "Copy", 3), "report - Copy (3).pdf");
+        assert_eq!(duplicate_name(".env", false, "Copy", 1), ".env - Copy");
+        assert_eq!(duplicate_name("v1.2", true, "Copy", 2), "v1.2 - Copy (2)");
+    }
+
+    /// 폴더는 통째로, 이미 있는 이름은 덮어쓰지 않는다(create_new) — 둘 다 깨지면 데이터가 섞이거나 사라진다.
+    #[test]
+    fn copy_entry_new_copies_tree_and_never_overwrites() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(src.join("sub")).unwrap();
+        std::fs::write(src.join("a.txt"), "A").unwrap();
+        std::fs::write(src.join("sub/b.txt"), "B").unwrap();
+        let dst = tmp.path().join("dst");
+        copy_entry_new(&src, &dst).unwrap();
+        assert_eq!(std::fs::read_to_string(dst.join("a.txt")).unwrap(), "A");
+        assert_eq!(std::fs::read_to_string(dst.join("sub/b.txt")).unwrap(), "B");
+
+        std::fs::write(tmp.path().join("keep.txt"), "KEEP").unwrap();
+        let e = copy_entry_new(&src.join("a.txt"), &tmp.path().join("keep.txt")).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(tmp.path().join("keep.txt")).unwrap(), "KEEP");
+    }
 
     /// 자릿수가 늘어나는 지점에서 사전식이 뒤집히는 것을 막는다 — 실사용 제보 그대로 재현.
     #[test]

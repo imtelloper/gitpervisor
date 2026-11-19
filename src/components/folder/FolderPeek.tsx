@@ -18,7 +18,7 @@ import { createPortal } from "react-dom";
 import { useMessages } from "../../i18n/ui-language";
 import { copyFilesWithToast, copyText } from "../../lib/clipboard";
 import { favThumbUrl, useFavThumbToken, useThumbImgRetry } from "../../lib/fav-thumb";
-import { ipc, type FavEntry } from "../../lib/ipc";
+import { favRecentMs, ipc, type FavEntry } from "../../lib/ipc";
 import { joinPathsForPrompt } from "../../lib/path";
 import { isMod } from "../../lib/platform";
 import { useUi } from "../../stores/ui";
@@ -129,7 +129,7 @@ export function FolderPeek({ path, onMouseEnter }: { path: string; onMouseEnter?
         // 디렉터리는 뺀다 — 여기서 들어갈 수단이 없고(그건 창의 일), 최신 파일을 밀어낸다.
         const recent = list
           .filter((e) => !e.isDir)
-          .sort((a, b) => b.mtimeMs - a.mtimeMs)
+          .sort((a, b) => favRecentMs(b) - favRecentMs(a))
           .slice(0, MAX);
         setFiles(recent);
       })

@@ -355,9 +355,23 @@ export interface FavEntry {
   isDir: boolean;
   size: number;
   mtimeMs: number;
+  /** 만든 시각 = 이 폴더에 들어온 시각(못 읽으면 0). */
+  createdMs: number;
   /** 확장자로 가른 종류 — 프론트가 아이콘·썸네일·라이트박스 대상을 이걸로 정한다. */
   kind: "dir" | "image" | "video" | "other";
 }
+
+/** OS 파일 유형 질의(commands/os_file_type.rs) — 폴더 일반 · 확장자(그 확장자 파일 하나가 대표) · 이 파일 자체. */
+export type OsTypeKind = "folder" | "ext" | "file";
+/** 탐색기·Finder·파일 관리자와 같은 유형 이름·아이콘(`data:image/png` URL). OS 가 못 준 칸은 null. */
+export interface OsFileType {
+  typeName: string | null;
+  icon: string | null;
+}
+
+/** "최신순"의 시각 — 수정·들어온 시각 중 늦은 것. 다운로드·복사·압축 해제한 파일은 수정 시각이 원본 것이라 그것만
+ *  보면 방금 받은 파일이 옛 날짜 자리에 묻힌다(사용자 지적 2026-11-16). 썸네일 캐시 키는 계속 `mtimeMs` 다. */
+export const favRecentMs = (e: FavEntry) => Math.max(e.mtimeMs, e.createdMs);
 
 /** 사진 EXIF 요약 (commands/exif.rs `ExifSummary`). 파일에 없는 태그는 **키째** 빠진다. */
 export interface ExifSummary {
@@ -676,6 +690,17 @@ export interface TableMeta {
   indexes: IndexInfo[];
   constraints: ConstraintInfo[];
   triggers: TriggerInfo[];
+}
+/** 결과 그리드 편집 대상 — `key`가 비어 있으면 편집 불가(이유는 `refusal`). `table`은 행 추가에도 쓴다. */
+export interface DbEditTarget {
+  table: string | null;
+  key: string[];
+  refusal: string | null;
+}
+/** 행을 겨냥하는 키 값 / 바꿀 값 — Rust `PkCell`. */
+export interface DbCellValue {
+  col: string;
+  value: unknown;
 }
 export interface ProcParam {
   name: string;
@@ -1107,6 +1132,14 @@ export interface ClaudeResumeRec {
   cwd: string;
   name?: string | null;
   updatedAtMs: number;
+}
+
+// 터미널에서 지금 도는 Claude 의 모델·effort(claude_term_model.rs) — 칸 헤더 칩.
+export interface ClaudeTermModel {
+  model: string;
+  modelId: string;
+  /** low…max, 또는 ultracode. 외부(Claude Code 전사) 값이라 유니온으로 좁히지 않는다. */
+  effort?: string;
 }
 
 // ---- 파일 트리 ----
@@ -1752,6 +1785,12 @@ export const ipc = {
   favDelete: (paths: string[]) => callMutating<void>("fav_delete", { paths }),
   /** 폴더 창 ⌘C — 고른 항목을 **파일로** 클립보드에 올린다(Windows 는 `text` 도 함께). commands/favorites.rs `fav_copy_files`. */
   favCopyFiles: (paths: string[], text: string) => callMutating<void>("fav_copy_files", { paths, text }),
+  /** 폴더 창 → 앱 밖·메인 창 트리로 OS 드래그(복사). `startOsFileDrag` 와 같은 이유로 callMutating. 왼쪽 버튼이 눌린 채 불러야 한다. */
+  favStartOsDrag: (paths: string[]) => callMutating<boolean>("fav_start_os_drag", { paths }),
+  /** 폴더 창 아이콘·유형 이름 — 질의 순서대로 돌려준다(lib/os-file-type.ts). macOS·Linux 는 메인 스레드에서 그려 첫 회가
+   *  느릴 수 있어 넉넉히 기다리고, 재시도는 같은 일을 두 번 할 뿐이라 끈다. */
+  favOsFileTypes: (queries: { path: string; kind: OsTypeKind }[], px: 32 | 256) =>
+    call<OsFileType[]>("fav_os_file_types", { queries, px }, { timeoutMs: 30_000, attempts: 1 }),
   /** 같은 폴더 안에서 이름만 바꾼다 — 새 절대경로를 돌려준다(commands/favorites.rs `fav_rename`). */
   favRename: (path: string, newName: string) => callMutating<string>("fav_rename", { path, newName }),
   /** 사진 뷰어 정보 패널 — 형식·치수·크기·EXIF(commands/favorites.rs `fav_image_info`). 파일 앞 1MB 만 읽는다. */
@@ -1768,6 +1807,10 @@ export const ipc = {
   // 폴더별 포트 캐시로 멱등이라 call(타임아웃+재시도)이 안전 — 응답 유실 시 영구 대기 방지.
   previewLocalUrl: (projectId: string, relPath: string) =>
     call<string>("preview_local_url", { projectId, relPath }),
+  /** 정적으로 열 수 있는 index.html 들(트리 상대 경로, 얕은 것부터) — commands/preview.rs `preview_static_pages`.
+   *  프로젝트 디스크를 걷어 큰 저장소는 수 초가 걸린다 — 재시도는 같은 걷기를 반복할 뿐이라 끈다. */
+  previewStaticPages: (projectId: string) =>
+    call<string[]>("preview_static_pages", { projectId }, { attempts: 1, timeoutMs: 60_000 }),
   listDir: (projectId: string, relPath: string, lane: "interactive" | "background" = "interactive") =>
     call<DirEntry[]>("list_dir", { projectId, relPath }, { lane }),
   // 여러 폴더 배치 나열 — 프로젝트 전환/시작 시 저장된 확장 상태 워밍(개별 실패는 결과에서 빠짐).
@@ -1811,6 +1854,12 @@ export const ipc = {
   // 이름 바꾸기 — 같은 폴더 안에서 이름만. 성공 시 새 레포-상대 경로를 돌려준다.
   renamePath: (projectId: string, relPath: string, newName: string) =>
     callMutating<string>("rename_path", { projectId, relPath, newName }),
+  // 복제 — 같은 폴더에 `이름 - 복사본` 으로. 새 레포-상대 경로를 돌려준다.
+  duplicatePath: (projectId: string, relPath: string) =>
+    callMutating<string>("duplicate_path", { projectId, relPath }),
+  /** 탐색기에서 복사한 파일(OS 클립보드 파일 목록)을 그 폴더에 붙여넣는다 → 새 레포-상대 경로들(빈 = 클립보드에 파일 없음). */
+  pasteClipboardFiles: (projectId: string, destDir: string) =>
+    callMutating<string[]>("paste_clipboard_files", { projectId, destDir }, 600_000),
   // 이동 — 이름 그대로 다른 폴더로(트리 드래그 앤 드롭). destDir 빈 문자열 = 루트.
   movePath: (projectId: string, relPath: string, destDir: string) =>
     callMutating<string>("move_path", { projectId, relPath, destDir }),
@@ -2089,25 +2138,14 @@ export const ipc = {
     callMutating<TableMeta>("db_table_meta", { id, database, table }, 60_000),
   dbExplain: (id: string, database: string, query: string) =>
     callMutating<string>("db_explain", { id, database, query }, 60_000),
-  dbUpdateCell: (
-    id: string,
-    database: string,
-    table: string,
-    pk: { col: string; value: unknown }[],
-    setCol: string,
-    setValue: unknown,
-  ) =>
-    callMutating<void>(
-      "db_update_cell",
-      { id, database, table, pk, setCol, setValue },
-      60_000,
-    ),
-  dbDeleteRow: (
-    id: string,
-    database: string,
-    table: string,
-    pk: { col: string; value: unknown }[],
-  ) => callMutating<void>("db_delete_row", { id, database, table, pk }, 60_000),
+  // 결과가 한 테이블의 행인지·어느 키로 행을 겨냥할지 판정(조회만). 느린 DB 메타 조회라 재시도하지 않는다.
+  dbEditTarget: (id: string, database: string, query: string, columns: string[]) =>
+    call<DbEditTarget>("db_edit_target", { id, database, query, columns }, { timeoutMs: 60_000, attempts: 1 }),
+  // 키가 정확히 한 행에 맞을 때만 바꾼다(아니면 되돌리고 오류). 셀 하나 편집도 values 한 개로 이것을 쓴다.
+  dbUpdateRow: (id: string, database: string, table: string, pk: DbCellValue[], values: DbCellValue[]) =>
+    callMutating<void>("db_update_row", { id, database, table, pk, values }, 60_000),
+  dbDeleteRow: (id: string, database: string, table: string, pk: DbCellValue[]) =>
+    callMutating<void>("db_delete_row", { id, database, table, pk }, 60_000),
   dbInsertRow: (
     id: string,
     database: string,
@@ -2119,6 +2157,9 @@ export const ipc = {
       { id, database, table, values },
       60_000,
     ),
+  // DROP TABLE — 파괴적, 재시도 금지.
+  dbDropTable: (id: string, database: string, table: string) =>
+    callMutating<void>("db_drop_table", { id, database, table }, 60_000),
   dbProcedures: (id: string, database: string) =>
     callMutating<string[]>("db_procedures", { id, database }, 60_000),
   dbProcParams: (id: string, database: string, proc: string) =>
@@ -2337,6 +2378,7 @@ export const ipc = {
     callMutating<ClaudeResumeRec | null>("claude_resume_take", { termId }),
   claudeResumeForget: (termId: string) =>
     callMutating<void>("claude_resume_forget", { termId }),
+  claudeTermModels: () => call<Record<string, ClaudeTermModel>>("claude_term_models"),
 
   // ---- 변경 커맨드 (재시도 없음) ----
   stageFiles: (projectId: string, paths: string[]) =>

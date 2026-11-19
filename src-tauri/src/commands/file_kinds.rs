@@ -72,7 +72,17 @@ pub fn walk_files_by_ext(
     list_exts: &HashSet<String>,
     count_exts: &HashSet<String>,
 ) -> std::io::Result<KindFileList> {
-    walk_files_by_ext_capped(root, list_exts, count_exts, MAX_VISITED)
+    walk_files_by_ext_capped(root, list_exts, count_exts, MAX_VISITED, &|name| SKIP_DIRS.contains(&name))
+}
+
+/// 건너뛸 폴더(이름)를 호출자가 정하는 판 — 정적 페이지 찾기(preview.rs)는 숨김 폴더·빌드 캐시까지 건너뛴다.
+pub fn walk_files_by_ext_skipping(
+    root: &Path,
+    list_exts: &HashSet<String>,
+    count_exts: &HashSet<String>,
+    skip_dir: &dyn Fn(&str) -> bool,
+) -> std::io::Result<KindFileList> {
+    walk_files_by_ext_capped(root, list_exts, count_exts, MAX_VISITED, skip_dir)
 }
 
 fn walk_files_by_ext_capped(
@@ -80,6 +90,7 @@ fn walk_files_by_ext_capped(
     list_exts: &HashSet<String>,
     count_exts: &HashSet<String>,
     max_visited: usize,
+    skip_dir: &dyn Fn(&str) -> bool,
 ) -> std::io::Result<KindFileList> {
     // 루트를 못 읽는 것은 오류다(빈 목록으로 숨기지 않는다). 하위 폴더 실패는 아래에서 건너뛴다.
     std::fs::read_dir(root)?;
@@ -109,7 +120,7 @@ fn walk_files_by_ext_capped(
                 continue;
             }
             if ft.is_dir() {
-                if !SKIP_DIRS.contains(&name.as_str()) {
+                if !skip_dir(&name) {
                     let child_rel = if rel.is_empty() { name } else { format!("{rel}/{name}") };
                     queue.push_back((entry.path(), child_rel));
                 }
@@ -221,7 +232,7 @@ mod tests {
         std::fs::create_dir_all(root.join("app/tool")).unwrap();
         std::fs::write(root.join("app/tool/x.exe"), "").unwrap();
         // 폴더 6개(app·data·tool·a·b·c) + x.exe 1개 = 7 — 그 뒤 png 몇 장에서 상한에 걸린다.
-        let got = walk_files_by_ext_capped(&root, &set(&["exe"]), &set(&["png"]), 10).unwrap();
+        let got = walk_files_by_ext_capped(&root, &set(&["exe"]), &set(&["png"]), 10, &|n| SKIP_DIRS.contains(&n)).unwrap();
         std::fs::remove_dir_all(&root).unwrap();
         assert!(got.truncated);
         let paths: Vec<&str> = got.files.iter().map(|f| f.path.as_str()).collect();

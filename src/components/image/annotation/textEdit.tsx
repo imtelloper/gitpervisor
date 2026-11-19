@@ -7,6 +7,7 @@
 
 import { useEffect, useRef } from "react";
 
+import { CHROME_COLORS } from "../../../lib/annotate/chrome";
 import { textCss, textEditBox } from "../../../lib/annotate/text-layout";
 import {
   DEFAULT_STROKE,
@@ -123,8 +124,14 @@ export function TextEditOverlay({
         }
       }}
       spellCheck={false}
-      className="absolute m-0 resize-none overflow-hidden border-0 bg-transparent p-0 outline-none"
+      className="absolute m-0 resize-none overflow-hidden border-0 bg-transparent p-0"
       style={{
+        // 편집 상자는 **보여야** 한다 — 투명·테두리 없음이면 클릭한 자리에 아무것도 안 생긴 것처럼
+        // 보여 바로 타이핑할 수 있다는 걸 모른다(사용자 보고). border 는 글자 자리를
+        // 밀어 캔버스 열과 갈라지므로 레이아웃에 안 잡히는 outline 을 쓴다. 줌 transform 안쪽이라
+        // 두께·간격을 되나눠 화면 1px 로 맞춘다.
+        outline: `${1 / Math.max(zoom ?? 1, 1e-6)}px dashed ${CHROME_COLORS.sel}`,
+        outlineOffset: `${2 / Math.max(zoom ?? 1, 1e-6)}px`,
         // 글꼴·행간·자간·정렬·줄바꿈 규칙은 통째로 DOM 열에서 온다. 여기서 하나라도
         // 덮어쓰면 캔버스 열(setupTextCtx)과 갈라진다.
         ...textCss(editing.obj, ds),

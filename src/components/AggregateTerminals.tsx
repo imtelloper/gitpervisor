@@ -2,8 +2,8 @@ import {
   CalendarDays,
   Bot,
   Code2,
-  CircleCheck,
   Columns3,
+  Database,
   ExternalLink,
   Eye,
   EyeOff,
@@ -13,7 +13,6 @@ import {
   Languages,
   Layers,
   LayoutGrid,
-  Loader2,
   Maximize2,
   Minimize2,
   Plus,
@@ -22,13 +21,18 @@ import {
   X,
 } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 
 import type { Messages } from "../i18n/messages";
 import { useMessages } from "../i18n/ui-language";
 import type { Project } from "../lib/ipc";
 import { isMac, modLabel } from "../lib/platform";
-import { NO_COLOR, useProjectColors, type ProjColor } from "../lib/project-color";
+import {
+  NO_COLOR,
+  spreadProjectSlots,
+  useProjectPaletteSlots,
+  type ProjColor,
+} from "../lib/project-color";
 import {
   attachTerminal,
   createTerminal,
@@ -41,6 +45,7 @@ import {
 } from "../lib/terminal";
 import { AGGREGATE_ZOOM_KEY } from "../lib/aggregate-window";
 import { agentOf, runWithAgent, type TerminalAgent } from "../lib/agent-launch";
+import { openDbWindow } from "../lib/floating";
 import { translateRequest } from "../lib/translate";
 import {
   FavoritesButton,
@@ -62,10 +67,13 @@ import { useOccludesWebview } from "../stores/occlusion";
 import { type AggregateLayout, useUi } from "../stores/ui";
 import { EmptyState } from "./common/EmptyState";
 import { ReportView } from "./report/ReportView";
+/** lazy — 쿼리 편집기가 Monaco 를 끌고 온다. WorkspaceTabs 와 같은 모듈이라 청크를 나눠 쓴다. */
+const DbWorkspace = lazy(() => import("./db/DbWorkspace").then((m) => ({ default: m.DbWorkspace })));
 import { ProjectLogo } from "./common/ProjectLogo";
 import { BrowserPane } from "./workspace/BrowserPane";
 import {
   AgentLaunchButton,
+  ClaudeModelChip,
   FileTreeButton,
   GitDialogButton,
   PromptHistoryButton,
@@ -73,6 +81,8 @@ import {
   PromptSidePanel,
   SessionHistoryButton,
   SessionTitle,
+  StaticPageButton,
+  StatusIcon,
   ThemeButton,
 } from "./workspace/TermSessionControls";
 import { MenuItem, TermClipboardItems } from "./workspace/TerminalPane";
@@ -288,9 +298,9 @@ export function AggregateTerminals() {
   const msg = useMessages();
   const setAggregateOpen = useUi((s) => s.setAggregateOpen);
   const { data: projects } = useProjects();
-  // 색은 **등록된 전체 프로젝트** 이름순 배정을 그대로 쓴다 — 사이드바 행과 같은 맵이라야
-  // 같은 프로젝트가 어디서든 같은 색이다(화면에 보이는 셀만으로 배정하면 색이 이동한다).
-  const colors = useProjectColors();
+  // 색은 전역 배정(사이드바와 같은 슬롯)에서 출발해, 지금 모아보기에 함께 뜬 프로젝트끼리 비슷한
+  // 색이면 그쪽만 옮긴다(spreadProjectSlots) — 칩 몇 개 안에서 청록·청록처럼 겹쳐 헷갈렸다.
+  const { pal, slots } = useProjectPaletteSlots();
   const { data: settings } = useSettings();
   const fontSize = settings?.terminalFontSize ?? 13;
   // 우클릭 "새 터미널 열기"(종류를 고르지 않는 곳)는 설정 "새 터미널 시작"을 따른다(lib/agent-launch.ts).
@@ -321,8 +331,19 @@ export function AggregateTerminals() {
   const reportActive = useUi((s) => s.reportOpen && s.aggregateReportActive);
   const setReportActive = useUi((s) => s.setAggregateReportActive);
   const closeReport = useUi((s) => s.closeReport);
+  // DB 탭 — "+" 메뉴가 만든다. 리포트와 같은 자리(그리드 위를 덮는다)이고 둘 중 하나만 앞에 온다:
+  // 리포트가 앞이면 DB 는 뒤로 숨는다(TitleBar 리포트 버튼은 이 상태를 모르고 리포트만 켠다).
+  // 모아보기를 닫으면 같이 사라진다 — 연결은 백엔드가 들고 있어 다시 열면 그대로다.
+  const [dbTab, setDbTab] = useState(false);
+  const [dbFront, setDbFront] = useState(false);
+  const dbActive = dbTab && dbFront && !reportActive;
+  const showDb = () => {
+    setReportActive(false);
+    setDbTab(true);
+    setDbFront(true);
+  };
   // 브라우저 셀의 네이티브 webview 는 DOM 위에 그려져 리포트를 가린다 — 리포트가 앞인 동안 숨긴다.
-  useOccludesWebview(reportActive);
+  useOccludesWebview(reportActive || dbActive);
 
   // 모든 셀 메타 (스토어 기준 — 반응형): 탭별 터미널·브라우저 pane + 독립 브라우저 탭.
   const all = useMemo<CellMeta[]>(() => {
@@ -368,8 +389,15 @@ export function AggregateTerminals() {
     // 어디 소속인지 읽히지 않는다(색 막대와 짝이 되는 그룹핑의 나머지 절반).
     // 이름 오름차순, 같은 프로젝트 안에서는 원래 순서 유지 — Array#sort는 stable이다.
     out.sort((a, b) => a.projName.localeCompare(b.projName, "ko"));
-    return out.map((c) => ({ ...c, color: colors.get(c.projName) ?? NO_COLOR }));
-  }, [terminals, projects, byTerminal, browserItems, browserTabIds, colors, msg]);
+    const spread = spreadProjectSlots(
+      out.map((c) => c.projName).filter((n) => slots.has(n)),
+      slots,
+    );
+    return out.map((c) => {
+      const slot = spread.get(c.projName);
+      return { ...c, color: slot === undefined ? NO_COLOR : pal[slot] };
+    });
+  }, [terminals, projects, byTerminal, browserItems, browserTabIds, pal, slots, msg]);
 
   // 선택 집합 — 지난번에 숨긴 칸만 빼고 연다(initialSelection). 칸이 아직 없으면 생길 때 정한다(아래 효과).
   const [restored] = useState(readRestoredCells);
@@ -449,8 +477,9 @@ export function AggregateTerminals() {
   /** 리포트가 앞일 때 칩을 누르면 **터미널로 돌아가기만** 한다 — 보이지 않는 그리드의 선택을
    *  바꾸면, 돌아왔을 때 방금 누른 프로젝트가 사라져 있어 고장으로 보인다. */
   const backToGridIfReport = () => {
-    if (!reportActive) return false;
+    if (!reportActive && !dbActive) return false;
     setReportActive(false);
+    setDbFront(false);
     return true;
   };
 
@@ -767,7 +796,10 @@ export function AggregateTerminals() {
               }`}
             >
               <button
-                onClick={() => setReportActive(!reportActive)}
+                onClick={() => {
+                  setDbFront(false);
+                  setReportActive(!reportActive);
+                }}
                 title={
                   reportActive
                     ? msg.app.aggregate.reportTabBackToTerminals
@@ -781,6 +813,40 @@ export function AggregateTerminals() {
                 onClick={closeReport}
                 title={msg.app.aggregate.reportTabClose}
                 aria-label={msg.app.aggregate.reportTabClose}
+                className="rounded p-1 hover:text-fg"
+              >
+                <X size={11} />
+              </button>
+            </div>
+          )}
+          {dbTab && (
+            <div
+              data-aggregate-db-tab
+              className={`flex shrink-0 items-center rounded text-[11px] ${
+                dbActive
+                  ? "bg-raised text-accent ring-1 ring-accent"
+                  : "text-fg-muted hover:bg-raised hover:text-fg"
+              }`}
+            >
+              <button
+                onClick={() => (dbActive ? setDbFront(false) : showDb())}
+                title={dbActive ? msg.app.aggregate.reportTabBackToTerminals : msg.app.aggregate.dbTabShow}
+                className="flex items-center gap-1 py-1 pl-2 pr-1"
+              >
+                <Database size={12} /> {msg.app.aggregate.dbTab}
+              </button>
+              <button
+                onClick={openDbWindow}
+                title={msg.app.aggregate.dbTabOpenWindow}
+                aria-label={msg.app.aggregate.dbTabOpenWindow}
+                className="rounded p-1 hover:text-fg"
+              >
+                <ExternalLink size={11} />
+              </button>
+              <button
+                onClick={() => setDbTab(false)}
+                title={msg.app.aggregate.dbTabClose}
+                aria-label={msg.app.aggregate.dbTabClose}
                 className="rounded p-1 hover:text-fg"
               >
                 <X size={11} />
@@ -849,7 +915,12 @@ export function AggregateTerminals() {
             (stores/terminals.ts terminals://cmd · stores/browser.ts browsers://cmd) 메인이 만들고
             결과가 storage로 돌아온다. 브라우저의 네이티브 webview는 보여 주는 창으로 옮겨 붙는다
             (commands/browser.rs place). */}
-        <NewCellButton projects={projects} onCreateTerminal={addTerminal} onCreateBrowser={addBrowser} />
+        <NewCellButton
+          projects={projects}
+          onCreateTerminal={addTerminal}
+          onCreateBrowser={addBrowser}
+          onOpenDb={showDb}
+        />
         {/* 셀 크기 균등 복구 + 모드 선택. 클릭은 지금 모드로 균등 정렬(드래그로 흐트러진 fr 비율과
             확대 상태를 함께 되돌린다 — 확대를 안 풀면 눌러도 화면이 그대로라 고장으로 보인다),
             호버는 모드 팝오버.
@@ -1090,6 +1161,18 @@ export function AggregateTerminals() {
           className="absolute inset-x-0 bottom-0 top-10 z-40 flex min-h-0 flex-col bg-base"
         >
           <ReportView />
+        </div>
+      )}
+      {/* DB — 리포트와 같은 이유로 그리드를 덮기만 한다. 탭을 닫기 전까지는 뒤로 가도 마운트를 유지해
+          쿼리 편집기 내용·결과가 그대로 남게 한다(invisible — 크기는 그대로라 Monaco 가 다시 재지 않는다). */}
+      {dbTab && (
+        <div
+          data-aggregate-db
+          className={`absolute inset-x-0 bottom-0 top-10 z-40 flex min-h-0 flex-col bg-base ${dbActive ? "" : "invisible"}`}
+        >
+          <Suspense fallback={null}>
+            <DbWorkspace />
+          </Suspense>
         </div>
       )}
 
@@ -1587,10 +1670,13 @@ function NewCellButton({
   projects,
   onCreateTerminal,
   onCreateBrowser,
+  onOpenDb,
 }: {
   projects: Project[] | undefined;
   onCreateTerminal: (projectId: string, initialInput?: InitialInput) => void;
   onCreateBrowser: (projectId: string) => void;
+  /** DB 는 프로젝트에 속하지 않아 프로젝트 고르기를 거치지 않는다. */
+  onOpenDb: () => void;
 }) {
   const msg = useMessages();
   const selectedProjectId = useUi((s) => s.selectedProjectId);
@@ -1684,6 +1770,15 @@ function NewCellButton({
                   icon={<Globe size={14} />}
                   label={newCellLabel("browser", msg)}
                   onClick={() => pickKind("browser")}
+                />
+                <div className="my-1 border-t border-edge/60" />
+                <MenuRow
+                  icon={<Database size={14} />}
+                  label={msg.app.aggregate.dbTab}
+                  onClick={() => {
+                    close();
+                    onOpenDb();
+                  }}
                 />
               </>
             ) : (
@@ -1828,13 +1923,12 @@ function AggregateCell({
         }`}
       >
         {zoomed && <UnzoomPill onClick={onZoom} />}
-        <StatusIcon status={status} />
+        {/* 대기 중 회색 점·"· 터미널 n"은 뺐다 — 정보가 없었다(사용자 지적 2026-11-17). 그 자리에 모델·effort. */}
+        {status && <StatusIcon status={status} />}
         {/* h-6 헤더라 14px — 16px은 빡빡하다(태스크 54). */}
         <ProjectLogo projectId={meta.projectId} size={14} />
-        <span className="min-w-0 shrink truncate">
-          <span className="font-medium text-fg">{meta.projName}</span>
-          <span className="text-fg-dim"> · {meta.title}</span>
-        </span>
+        <span className="min-w-0 shrink truncate font-medium text-fg">{meta.projName}</span>
+        <ClaudeModelChip termId={meta.id} />
         {/* 가운데 — 세션 제목(제목 버튼만 클릭 편집, 나머지 칸은 드래그 손잡이). */}
         <SessionTitle termId={meta.id} />
         <AgentLaunchButton termId={meta.id} />
@@ -1843,6 +1937,7 @@ function AggregateCell({
         <SessionHistoryButton termId={meta.id} projectId={meta.projectId} />
         <GitDialogButton projectId={meta.projectId} />
         <FileTreeButton projectId={meta.projectId} />
+        <StaticPageButton projectId={meta.projectId} />
         <span
           className="flex shrink-0"
           onMouseEnter={(e) => onZoomHover(e.currentTarget.getBoundingClientRect())}
@@ -2020,12 +2115,4 @@ function CellHandles({
       )}
     </>
   );
-}
-
-function StatusIcon({ status }: { status: "working" | "done" | undefined }) {
-  if (status === "working")
-    return <Loader2 size={11} className="shrink-0 animate-spin text-accent" />;
-  if (status === "done")
-    return <CircleCheck size={11} className="shrink-0 text-add" />;
-  return <span className="size-[7px] shrink-0 rounded-full bg-fg-dim/50" />;
 }

@@ -1,11 +1,13 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 import { AggregateTerminals } from "./components/AggregateTerminals";
 import { ConfirmHost } from "./components/common/ConfirmDialog";
 import { PromptHost } from "./components/common/PromptDialog";
 import { Toasts } from "./components/common/Toast";
+import { ConnectionDialog } from "./components/db/ConnectionDialog";
 import { TranslateHost } from "./components/common/TranslateCard";
 import { FloatTitleBar } from "./components/FloatTitleBar";
+import { AgentUsageBars } from "./components/StatusBar";
 import { GitDialog } from "./components/git/GitDialog";
 import { SessionHistoryDialog } from "./components/sessions/SessionHistoryDialog";
 import { FileTreeDialog } from "./components/tree/FileTreeDialog";
@@ -27,6 +29,12 @@ import { useSettings } from "./queries";
 export function AggregateWindow() {
   const msg = useMessages();
   const { data: settings } = useSettings();
+  // 사용량 막대의 리셋 남은 시간용 시계 — 메인 상태 줄과 같은 30초 간격.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(t);
+  }, []);
 
   // 열림만 여기서 알린다. "닫힘"은 Rust의 Destroyed 훅이 메인에 보낸다(lib.rs) — 예전엔 이 창의
   // beforeunload가 보냈는데, 창이 죽는 중의 비동기 IPC라 **유실**돼 메인이 "다른 창에서 표시 중"에
@@ -48,7 +56,15 @@ export function AggregateWindow() {
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-base">
-      <FloatTitleBar title={msg.windows.aggregateWindow.title} badge={msg.windows.aggregateWindow.badge} />
+      <FloatTitleBar
+        title={msg.windows.aggregateWindow.title}
+        badge={msg.windows.aggregateWindow.badge}
+        actions={
+          <div className="mr-2 flex min-w-0 shrink text-[11px] text-fg-dim">
+            <AgentUsageBars now={now} />
+          </div>
+        }
+      />
       <div className="min-h-0 flex-1">
         <AggregateTerminals />
       </div>
@@ -66,6 +82,8 @@ export function AggregateWindow() {
       <FileTreeDialog />
       {/* 셀 헤더의 세션 기록 버튼이 여는 Claude 세션 기록 — 같은 이유(창마다 useUi)로 이 창에도 둔다(태스크 77). */}
       <SessionHistoryDialog />
+      {/* "+" → DB 탭의 연결 추가·편집 — 같은 이유(창마다 useUi·useDb)로 이 창에도 둔다. */}
+      <ConnectionDialog />
       {/* 칩 메뉴의 '선택 영역 번역' 카드도 이 창 안에 뜬다(태스크 61). */}
       <TranslateHost />
     </div>

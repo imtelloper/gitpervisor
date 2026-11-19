@@ -46,7 +46,7 @@ export async function run({ cdp, report: r, fix }) {
     ["db_explain", { id: CONN_ID, database: "x", query: "select 1" }],
     ["db_procedures", { id: CONN_ID, database: "x" }],
     ["db_proc_params", { id: CONN_ID, database: "x", proc: "p" }],
-    ["db_update_cell", { id: CONN_ID, database: "x", table: "t", pk: [{ col: "id", value: 1 }], setCol: "c", setValue: 1 }],
+    ["db_update_row", { id: CONN_ID, database: "x", table: "t", pk: [{ col: "id", value: 1 }], values: [{ col: "c", value: 1 }] }],
     ["db_delete_row", { id: CONN_ID, database: "x", table: "t", pk: [{ col: "id", value: 1 }] }],
     ["db_insert_row", { id: CONN_ID, database: "x", table: "t", values: [{ col: "id", value: 1 }] }],
   ];
@@ -56,6 +56,13 @@ export async function run({ cdp, report: r, fix }) {
     // 미등록(notFound)도, 타임아웃(E2E_TIMEOUT — 등록을 증명 못 함)도 통과시키지 않는다.
     r.check(`${cmd}: 등록됨 + 비연결 시 오류`, !res.ok && !notFound && res.code !== "E2E_TIMEOUT", res.code || res.message?.slice(0, 40) || "(ok?)");
   }
+  // 편집 가능 여부 조회는 오류가 아니라 **거절 사유**로 답한다(그리드 메뉴가 비활성 이유로 보여 준다) — 이 연결은 읽기 전용이다.
+  const et = await cdp.try("db_edit_target", { id: CONN_ID, database: "x", query: "select * from t", columns: ["id"] }, { timeoutMs: 9000 });
+  r.check(
+    "db_edit_target: 읽기 전용 연결 → 키 없이 거절 사유",
+    et.ok && typeof et.r?.refusal === "string" && et.r.refusal.length > 0 && et.r.key?.length === 0,
+    JSON.stringify(et.r ?? et.code ?? et.message?.slice(0, 40)),
+  );
 
   // ── SQLite 실통합 (서버 불필요 — 파일 기반). 연결/CREATE/INSERT/SELECT/UPDATE/메타/EXPLAIN/DELETE ──
   const SQLITE_ID = "gpv-e2e-sqlite";
@@ -83,8 +90,13 @@ export async function run({ cdp, report: r, fix }) {
       JSON.stringify(sel.r?.rows),
     );
 
-    const upd = await cdp.try("db_update_cell", { id: SQLITE_ID, database: "main", table: "t", pk: [{ col: "id", value: 1 }], setCol: "name", setValue: "bob" }, { timeoutMs: 12000 });
-    r.check("sqlite: db_update_cell", upd.ok, upd.code || upd.message?.slice(0, 60) || "");
+    const upd = await cdp.try("db_update_row", { id: SQLITE_ID, database: "main", table: "t", pk: [{ col: "id", value: 1 }], values: [{ col: "name", value: "bob" }] }, { timeoutMs: 12000 });
+    const after = upd.ok ? await cdp.try("db_query", Q("SELECT name FROM t WHERE id=1"), { timeoutMs: 12000 }) : null;
+    r.check(
+      "sqlite: db_update_row(값이 실제로 바뀐다)",
+      upd.ok && after?.r?.rows?.[0]?.[0] === "bob",
+      upd.code || upd.message?.slice(0, 60) || JSON.stringify(after?.r?.rows),
+    );
 
     const meta = await cdp.try("db_table_meta", { id: SQLITE_ID, database: "main", table: "t" }, { timeoutMs: 12000 });
     r.check(

@@ -180,7 +180,8 @@ function usedNow(w: UsageWindow, nowSec: number): number {
   return w.resetsAt && w.resetsAt <= nowSec ? 0 : Math.max(0, Math.round(w.usedPercentage));
 }
 
-function AgentUsageBars({ now }: { now: number }) {
+// 모아보기 별도 창 타이틀바도 같은 막대를 쓴다(AggregateWindow) — 그 창엔 상태 줄이 없다.
+export function AgentUsageBars({ now }: { now: number }) {
   const msg = useMessages();
   const { data: claude } = useClaudeUsage();
   const { data: codex } = useCodexUsage();

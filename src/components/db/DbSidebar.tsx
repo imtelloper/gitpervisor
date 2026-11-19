@@ -12,10 +12,11 @@ import {
   Plus,
   ShieldCheck,
   Table2,
+  Trash2,
   Unplug,
   Zap,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { useMessages } from "../../i18n/ui-language";
 import type { DbConnection, DbEngine } from "../../lib/ipc";
@@ -26,10 +27,20 @@ import {
   useDbDatabases,
   useDbProcedures,
   useDbTables,
+  useDropDbTables,
   useTableMeta,
 } from "../../queries";
 import { dbKey, useDb } from "../../stores/db";
+import { useUi } from "../../stores/ui";
 import { ResizeHandle } from "../common/ResizeHandle";
+import { MenuItem } from "../workspace/TerminalPane";
+
+/** 테이블 행 클릭·우클릭 — 선택은 DB 노드 하나 안에서만 모인다(다른 DB 테이블과 섞어 지우지 않게). */
+interface TablePick {
+  selected: boolean;
+  onPick: (e: React.MouseEvent) => void;
+  onMenu: (e: React.MouseEvent) => void;
+}
 
 function EngineIcon({ engine }: { engine: DbEngine }) {
   if (engine === "mongodb")
@@ -102,11 +113,13 @@ function SqlTableNode({
   database,
   coll,
   engine,
+  pick,
 }: {
   connId: string;
   database: string;
   coll: string;
   engine: DbEngine;
+  pick: TablePick;
 }) {
   const msg = useMessages();
   const [open, setOpen] = useState(false);
@@ -116,7 +129,10 @@ function SqlTableNode({
     <>
       <div
         style={{ paddingLeft: 28 }}
-        className="flex items-center gap-1 whitespace-nowrap py-0.5 pr-2 hover:bg-raised"
+        onContextMenu={pick.onMenu}
+        className={`flex select-none items-center gap-1 whitespace-nowrap py-0.5 pr-2 ${
+          pick.selected ? "bg-accent/25" : "hover:bg-raised"
+        }`}
       >
         <button
           onClick={() => setOpen((o) => !o)}
@@ -126,7 +142,11 @@ function SqlTableNode({
           {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         </button>
         <div
-          onClick={() => void openCollection(connId, database, coll, engine)}
+          onClick={(e) => {
+            pick.onPick(e);
+            // Ctrl·Shift 클릭은 고르기만 한다 — 고를 때마다 미리보기 탭이 열리면 여러 개를 고를 수 없다.
+            if (!e.ctrlKey && !e.metaKey && !e.shiftKey) void openCollection(connId, database, coll, engine);
+          }}
           title={msg.db.sidebar.tablePreviewTitle(coll)}
           className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5"
         >
@@ -266,11 +286,13 @@ function CollNode({
   database,
   coll,
   engine,
+  pick,
 }: {
   connId: string;
   database: string;
   coll: string;
   engine: DbEngine;
+  pick: TablePick;
 }) {
   const openCollection = useDb((s) => s.openCollection);
   // SQL 엔진은 테이블을 펼쳐 컬럼/키/인덱스 표시. Mongo 컬렉션·Redis 키는 단순 리프(클릭=미리보기).
@@ -281,6 +303,7 @@ function CollNode({
         database={database}
         coll={coll}
         engine={engine}
+        pick={pick}
       />
     );
   }
@@ -306,9 +329,74 @@ function DatabaseNode({
   database: string;
   engine: DbEngine;
 }) {
+  const msg = useMessages();
   const expanded = useDb((s) => s.expandedDbs.includes(dbKey(connId, database)));
   const toggleDb = useDb((s) => s.toggleDb);
   const { data: tables, isLoading } = useDbTables(connId, database, expanded);
+  const dropTables = useDropDbTables(connId, database);
+  const [sel, setSel] = useState<Set<string>>(() => new Set());
+  const anchor = useRef<string | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!menu) return;
+    const close = (e: Event) => {
+      if (e instanceof KeyboardEvent ? e.key === "Escape" : !menuRef.current?.contains(e.target as Node)) setMenu(null);
+    };
+    // 캡처 단계 — 그리드·에디터가 전파를 끊어도 바깥 클릭으로 닫힌다.
+    window.addEventListener("pointerdown", close, true);
+    window.addEventListener("keydown", close, true);
+    return () => {
+      window.removeEventListener("pointerdown", close, true);
+      window.removeEventListener("keydown", close, true);
+    };
+  }, [menu]);
+
+  const pickOf = (coll: string): TablePick => ({
+    selected: sel.has(coll),
+    onPick: (e) => {
+      const list = tables ?? [];
+      if (e.shiftKey && anchor.current && list.includes(anchor.current)) {
+        const [a, b] = [list.indexOf(anchor.current), list.indexOf(coll)].sort((x, y) => x - y);
+        setSel(new Set(list.slice(a, b + 1)));
+        return;
+      }
+      anchor.current = coll;
+      if (e.ctrlKey || e.metaKey) {
+        setSel((prev) => {
+          const next = new Set(prev);
+          if (!next.delete(coll)) next.add(coll);
+          return next;
+        });
+      } else setSel(new Set([coll]));
+    },
+    onMenu: (e) => {
+      e.preventDefault();
+      // 선택 밖을 우클릭하면 그 하나만 — 탐색기와 같은 규칙.
+      if (!sel.has(coll)) {
+        anchor.current = coll;
+        setSel(new Set([coll]));
+      }
+      setMenu({ x: e.clientX, y: e.clientY });
+    },
+  });
+
+  const confirmDrop = () => {
+    setMenu(null);
+    // 목록 순서로 — 사라진 테이블(다른 곳에서 지움)은 뺀다.
+    const targets = (tables ?? []).filter((t) => sel.has(t));
+    if (!targets.length) return;
+    const t = msg.db.sidebar;
+    useUi.getState().askConfirm({
+      title: t.dropTablesTitle(targets.length),
+      message: t.dropTablesMessage,
+      detail: [database, ...targets.map((x) => `  ${x}`)].join("\n"),
+      confirmLabel: t.dropTablesConfirm,
+      danger: true,
+      onConfirm: () => dropTables.mutate(targets, { onSuccess: () => setSel(new Set()) }),
+    });
+  };
 
   return (
     <>
@@ -338,9 +426,24 @@ function DatabaseNode({
               database={database}
               coll={t}
               engine={engine}
+              pick={pickOf(t)}
             />
           ))
         ))}
+      {menu && (
+        <div
+          ref={menuRef}
+          style={{ left: Math.min(menu.x, window.innerWidth - 220), top: Math.min(menu.y, window.innerHeight - 48) }}
+          className="fixed z-50 min-w-[180px] rounded border border-edge bg-panel py-1 text-[12px] shadow-lg"
+        >
+          <MenuItem
+            icon={<Trash2 size={13} />}
+            label={msg.db.sidebar.dropTables(sel.size)}
+            danger
+            onClick={confirmDrop}
+          />
+        </div>
+      )}
       {expanded && isSqlEngine(engine) && (
         <ProceduresGroup connId={connId} database={database} />
       )}

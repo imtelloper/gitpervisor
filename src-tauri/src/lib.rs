@@ -1,5 +1,6 @@
 mod claude_resume;
 mod claude_sessions;
+mod claude_term_model;
 mod claude_usage;
 mod codex_usage;
 mod commands;
@@ -1461,6 +1462,8 @@ pub fn run() {
             commands::create_file,
             commands::delete_path,
             commands::rename_path,
+            commands::duplicate_path,
+            commands::paste_clipboard_files,
             commands::move_path,
             commands::start_os_file_drag,
             commands::write_file_bytes,
@@ -1517,6 +1520,9 @@ pub fn run() {
             commands::fav_open,
             commands::fav_delete,
             commands::fav_copy_files,
+            commands::fav_start_os_drag,
+            commands::fav_os_file_types,
+            commands::preview_static_pages,
             commands::fav_rename,
             commands::fav_image_info,
             commands::fav_ocr_image,
@@ -1603,6 +1609,7 @@ pub fn run() {
             claude_sessions::claude_session_reveal,
             claude_resume::claude_resume_take,
             claude_resume::claude_resume_forget,
+            claude_term_model::claude_term_models,
             db::db_list_connections,
             db::db_save_connection,
             db::db_delete_connection,
@@ -1613,8 +1620,10 @@ pub fn run() {
             db::db_query,
             db::db_table_meta,
             db::db_explain,
-            db::db_update_cell,
-            db::db_delete_row,
+            db::grid_edit::db_edit_target,
+            db::grid_edit::db_update_row,
+            db::grid_edit::db_delete_row,
+            db::db_drop_table,
             db::db_insert_row,
             db::db_procedures,
             db::db_proc_params,

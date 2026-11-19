@@ -28,6 +28,7 @@ const ko = {
     copied: "복사했습니다",
   },
   reportWindowTitle: "작업 리포트",
+  dbWindowTitle: "데이터베이스",
   relativeTime: {
     justNow: "방금 전",
     secondsAgo: (n: number) => `${n}초 전`,
@@ -130,6 +131,9 @@ const ko = {
     pathsDeleted: (n: number) => `${n}개를 삭제했습니다`,
     pathsDeleteFailed: (n: number, first: string) => `${n}개를 삭제하지 못했습니다 — ${first}`,
     pathRenamed: "이름을 바꿨습니다",
+    pathDuplicated: "복제했습니다",
+    filesPasted: (n: number) => `${n}개를 붙여넣었습니다`,
+    clipboardHasNoFiles: "클립보드에 복사한 파일이 없습니다 — 탐색기에서 파일을 복사(Ctrl+C)한 뒤 붙여넣으세요",
     committed: "커밋 완료",
     // 한국어는 원래부터 영문 키 그대로다("push 완료") — e2e 40 c-8b 가 /push/ 로 이 토스트를 찾는다.
     syncOpDone: (op: SyncOp) => `${op} 완료`,
@@ -169,6 +173,7 @@ export const libText = defineText(ko, {
       copied: "Copied",
     },
     reportWindowTitle: "Work report",
+    dbWindowTitle: "Database",
     relativeTime: {
       justNow: "just now",
       secondsAgo: (n) => `${n}s ago`,
@@ -266,6 +271,9 @@ export const libText = defineText(ko, {
       pathsDeleted: (n) => `Deleted ${n} items`,
       pathsDeleteFailed: (n, first) => `Couldn't delete ${n} ${n === 1 ? "item" : "items"} — ${first}`,
       pathRenamed: "Renamed",
+      pathDuplicated: "Duplicated",
+      filesPasted: (n) => `Pasted ${n} item${n === 1 ? "" : "s"}`,
+      clipboardHasNoFiles: "No files on the clipboard — copy files in your file manager (Ctrl+C) first",
       committed: "Committed",
       syncOpDone: (op) => `${EN_GIT_OP[op]} complete`,
       logoSet: "Logo set",

@@ -4,7 +4,9 @@ import {
   ChevronDown,
   ChevronRight,
   ChevronsLeft,
+  ClipboardPaste,
   Copy,
+  CopyPlus,
   ExternalLink,
   FilePlus,
   FolderPlus,
@@ -69,6 +71,8 @@ import {
   useExpandedDirsPrefetch,
   useProjects,
   useRenamePath,
+  useDuplicatePath,
+  usePasteClipboardFiles,
   useSaveImage,
   useSetProjectLogo,
   useStatus,
@@ -657,6 +661,12 @@ export function FileTreePanel({
   const createFile = useCreateFile(projectId);
   const deletePath = useDeletePath(projectId);
   const renamePath = useRenamePath(projectId);
+  const duplicatePath = useDuplicatePath(projectId);
+  const pasteFiles = usePasteClipboardFiles(projectId);
+  // 폴더면 그 안에, 파일이면 같은 폴더에 — 새 파일·새 폴더와 같은 규칙.
+  const pasteInto = (m: { path: string; isDir: boolean }) => pasteFiles.mutate(m.isDir ? m.path : parentDir(m.path));
+  const pasteRef = useRef(pasteInto);
+  pasteRef.current = pasteInto;
   const saveImage = useSaveImage(projectId);
   const setLogo = useSetProjectLogo();
   const qc = useQueryClient();
@@ -754,7 +764,9 @@ export function FileTreePanel({
         : null;
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "F2" || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || e.defaultPrevented) return;
+      // Ctrl/⌘+V = 탐색기에서 복사한 파일을 마지막으로 누른 행(폴더면 그 안, 파일이면 같은 폴더)에 붙여넣기 — F2 와 같은 판정.
+      const paste = (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.code === "KeyV";
+      if ((!paste && e.key !== "F2") || (!paste && (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey)) || e.defaultPrevented) return;
       const t = e.target instanceof HTMLElement ? e.target : null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
       if (selectBlockingOverlay(useUi.getState())) return;
@@ -764,7 +776,8 @@ export function FileTreePanel({
       const sel = `[data-tree-row][data-tree-path="${CSS.escape(r.path)}"]`;
       if (!(treeRef.current?.querySelector(sel) || kindRef.current?.querySelector(sel))) return;
       e.preventDefault();
-      renameRef.current(r);
+      if (paste) pasteRef.current(r);
+      else renameRef.current(r);
     };
     // 캡처 — 행의 onPointerDown(드래그 시작)이 막아도 "누른 곳"은 기록돼야 한다.
     window.addEventListener("pointerdown", onDown, true);
@@ -1792,6 +1805,22 @@ export function FileTreePanel({
                 icon={FolderPlus}
                 label={msg.tree.menu.newFolder}
                 onClick={() => newFolder(menu)}
+              />
+              <MenuItem
+                icon={ClipboardPaste}
+                label={msg.tree.menu.paste}
+                onClick={() => {
+                  pasteInto(menu);
+                  setMenu(null);
+                }}
+              />
+              <MenuItem
+                icon={CopyPlus}
+                label={msg.tree.menu.duplicate}
+                onClick={() => {
+                  duplicatePath.mutate(menu.path);
+                  setMenu(null);
+                }}
               />
               <MenuItem
                 icon={PencilLine}

@@ -113,12 +113,13 @@ export function makeDraft(
       const r = squareable(a, b, shift);
       // 변 수는 **문서에 없다** — 정점 배치에서 파생한다(46 §3.4 `isRegularPolygon`). 도구
       // 상태로 들면 그 값과 실제 정점이 갈라져, 리사이즈 한 번에 "6각형인데 변 수 3"이 된다.
-      // 3은 Figma 기본값이고, 인스펙터 `모양 › 변 수` 가 그 자리에서 다시 만든다.
+      // 기본 5 는 레일 아이콘(Pentagon)과 맞춘 값이다 — Figma 기본 3 을 따랐더니 오각형을 골라
+      // 삼각형이 나왔다(사용자 보고). 다른 변 수는 인스펙터 `모양 › 변 수` 가 그 자리에서 다시 만든다.
       return {
         ...common,
         kind: "path",
         subpaths: [
-          s.tool === "polygon" ? polygonSubPath(r, 3) : calloutSubPath(r, s.style.radius),
+          s.tool === "polygon" ? polygonSubPath(r, 5) : calloutSubPath(r, s.style.radius),
         ],
         fillRule: "nonzero",
       };

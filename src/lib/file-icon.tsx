@@ -1,11 +1,20 @@
 import {
   Database,
+  Disc,
   File,
+  FileArchive,
+  FileCog,
   FileImage,
+  FileMusic,
+  FilePlay,
+  FileSpreadsheet,
+  FileTerminal,
   FileText,
+  FileType,
   FlaskConical,
   Folder,
   FolderOpen,
+  Presentation,
 } from "lucide-react";
 import type { ComponentType } from "react";
 import {
@@ -42,8 +51,26 @@ export function folderIcon(open: boolean): FileIcon {
   return { Icon: open ? FolderOpen : Folder, color: "#7AA7D9" };
 }
 
-/** 확장자 → 언어/타입 아이콘 + 브랜드 색 (다크 배경 가독성 기준으로 조정). */
+const group = (exts: string[], icon: FileIcon): Record<string, FileIcon> =>
+  Object.fromEntries(exts.map((e) => [e, icon]));
+
+/** 확장자 → 언어/타입 아이콘 + 브랜드 색 (다크 배경 가독성 기준으로 조정).
+ *  문서·압축·미디어·설치 파일은 다운로드 폴더 창이 종류를 한눈에 가르게 하려고 둔다(사용자 요청 2026-11-16). */
 const BY_EXT: Record<string, FileIcon> = {
+  ...group(["pdf"], { Icon: FileText, color: "#E5534B" }),
+  ...group(["doc", "docx", "rtf", "odt", "hwp", "hwpx"], { Icon: FileText, color: "#4F8BD6" }),
+  ...group(["xls", "xlsx", "xlsm", "csv", "ods"], { Icon: FileSpreadsheet, color: "#3FA36B" }),
+  ...group(["ppt", "pptx", "odp", "key"], { Icon: Presentation, color: "#E07A3F" }),
+  ...group(["zip", "7z", "rar", "tar", "gz", "tgz", "bz2", "xz", "egg", "alz"], { Icon: FileArchive, color: "#D9A441" }),
+  ...group(["mp4", "mov", "mkv", "avi", "webm", "wmv", "m4v"], { Icon: FilePlay, color: "#E06C9F" }),
+  ...group(["mp3", "wav", "flac", "m4a", "ogg", "aac", "wma"], { Icon: FileMusic, color: "#5FB3B3" }),
+  ...group(["exe", "msi", "dll", "apk", "dmg", "pkg", "deb", "rpm", "appimage"], { Icon: FileCog, color: "#8B9BB4" }),
+  ...group(["bat", "cmd", "ps1"], { Icon: FileTerminal, color: "#5391FE" }),
+  ...group(["iso", "img"], { Icon: Disc, color: "#8B9BB4" }),
+  ...group(["ttf", "otf", "woff", "woff2"], { Icon: FileType, color: "#9CA3AF" }),
+  ...group(["webp", "bmp", "heic", "heif", "avif", "tif", "tiff", "jfif"], { Icon: FileImage, color: "#A78BFA" }),
+  ai: { Icon: FileImage, color: "#F29B38" },
+  psd: { Icon: FileImage, color: "#31A8FF" },
   py: { Icon: SiPython, color: "#4B8BBE" },
   ts: { Icon: SiTypescript, color: "#3178C6" },
   tsx: { Icon: SiReact, color: "#61DAFB" },

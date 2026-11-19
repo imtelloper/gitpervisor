@@ -1261,9 +1261,16 @@ export default function ImageEditor() {
     return () => ro.disconnect();
   }, []);
 
+  // 맞춤은 사방에 눈금자(22px)+핸들 집기 반경만큼 비운다. 스테이지 전체로 맞추면 세로 맞춤일 때
+  // 이미지 윗변이 눈금자 띠 밑에 깔려, 전체에서 시작하는 크롭의 위쪽 핸들을 아예 못 잡았다.
+  const FIT_INSET = 32;
   const fit =
     oriented && stage.w > 0 && stage.h > 0
-      ? Math.min(1, stage.w / oriented.width, stage.h / oriented.height)
+      ? Math.min(
+          1,
+          Math.max(1, stage.w - 2 * FIT_INSET) / oriented.width,
+          Math.max(1, stage.h - 2 * FIT_INSET) / oriented.height,
+        )
       : 0;
   const dispW = oriented ? Math.max(1, Math.round(oriented.width * fit)) : 0;
   const dispH = oriented ? Math.max(1, Math.round(oriented.height * fit)) : 0;
@@ -1759,6 +1766,9 @@ export default function ImageEditor() {
    */
   const writeTo = (relPath: string, overwrite: boolean, ignoreStamp = false) => {
     if (!oriented || (!projectId && !absMode)) return;
+    // 크롭 모드에서 ⏎ 없이 저장을 누르면 화면의 사각형은 아직 세션에만 있다 — 문서(`crop`)엔
+    // 없어서 원본 크기 그대로 저장됐다(사용자 보고). 보이는 대로 나가도록 먼저 적용한다.
+    if (cropSessionRef.current) cropApi.cropApply();
     // 스탬프는 **읽은 그 파일에 제자리로 쓸 때만** 의미가 있다. 다른 이름으로 저장은 대상이
     // 다른 파일이라 이 스탬프와 아무 관계가 없다 — 붙이면 항상 충돌한다.
     const stamp =
@@ -1878,6 +1888,7 @@ export default function ImageEditor() {
    *  쓰기는 `copyImage`(8회 백오프)를 지난다 — 1회 시도는 Windows 클립보드 경합에 그대로 깨졌다(A-K3). */
   const copyToClipboard = () => {
     if (!oriented) return;
+    if (cropSessionRef.current) cropApi.cropApply(); // `writeTo` 와 같은 이유
     setBusy(true);
     void ensureAssets(docRef.current)
       .then(() => encodeCanvas(renderOutput(false), "png"))

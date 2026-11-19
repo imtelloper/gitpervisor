@@ -99,6 +99,9 @@ jpeg-decoder = { version = "0.3", default-features = false }
 # Security.framework를 써 openssl이 불필요하므로 여기(Linux)에만 둔다(그쪽에 두면 perl/nasm 소스
 # 빌드를 강제해 로컬 빌드가 깨진다).
 openssl-sys = { version = "0.9", features = ["vendored"] }
+# 폴더 창의 OS 파일 유형 아이콘(commands/os_file_type_linux.rs — GIO 콘텐츠 유형 → GTK 아이콘 테마).
+# tauri(wry·tao)가 이미 같은 0.18 을 트리에 두어 추가 컴파일은 없다.
+gtk = "0.18"
 
 [target.'cfg(unix)'.dependencies]
 # PTY 세션을 "셸 하나"가 아니라 "세션 트리 전체"로 종료하기 위해 필요하다(killpg + /proc 세션 스캔).
@@ -124,9 +127,11 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # 붙여넣어졌다. NSPasteboard readObjectsForClasses:[NSURL]로 실제 경로를 먼저 본다.
 # 두 크레이트 모두 tauri(macOS) 의존으로 이미 트리에 있어 추가 컴파일 비용은 없다.
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard", "NSPasteboardItem"] }
+# NSWorkspace·NSImage·NSBitmapImageRep·NSGraphics(Context)·objc2-core-foundation: 폴더 창의 OS 파일 유형 아이콘
+# (commands/os_file_type_macos.rs — iconForFile 을 원하는 픽셀 크기 비트맵에 그려 PNG 로).
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard", "NSPasteboardItem", "NSWorkspace", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSGraphics", "NSGraphicsContext", "objc2-core-foundation"] }
 # NSLocale: UI 언어의 OS 판정(i18n.rs — "선호하는 언어" 첫 항목).
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSURL", "NSDictionary", "NSValue", "NSData", "NSError", "NSProcessInfo", "NSLocale"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSURL", "NSDictionary", "NSValue", "NSData", "NSError", "NSProcessInfo", "NSLocale", "NSGeometry"] }
 # 이미지 글자 추출(commands/ocr.rs, 태스크 68)의 macOS 엔진 — Live Text와 같은 Vision 엔진이라
 # 자산·CSP 비용이 0이다. 한국어는 Vision Revision3(macOS 13+)부터라 **심볼을 건드리기 전에**
 # NSProcessInfo로 버전을 본다(그 아래에선 클래스 조회 패닉/ObjC 예외 abort — objc2에 catch-all이 없다).
@@ -142,7 +147,7 @@ objc2-vision = { version = "0.3", default-features = false, features = ["std", "
 # Win32_System_LibraryLoader: 번들 ConPTY 사이드로드(SetDllDirectoryW/GetModuleHandleW — lib.rs, 태스크 33).
 # Win32_System_Diagnostics_Debug(+_Kernel·_Memory — MiniDumpWriteDump 의 cfg 조건): UI 스레드 멈춤 때 자기 미니덤프(health/ui_stall.rs).
 # Win32_Globalization: GetACP — 인코딩 탐지의 마지막 폴백(한국어 Windows = CP949, text/encoding.rs).
-windows-sys = { version = "0.59", features = ["Win32_System_Performance", "Win32_System_SystemInformation", "Win32_System_Diagnostics_Debug", "Win32_System_Kernel", "Win32_System_Memory", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_System_ProcessStatus", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_Graphics_Gdi", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Globalization", "Win32_System_Services", "Win32_System_RestartManager", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_Registry", "Wdk_Graphics_Direct3D"] }
+windows-sys = { version = "0.59", features = ["Win32_System_Performance", "Win32_System_SystemInformation", "Win32_System_Diagnostics_Debug", "Win32_System_Kernel", "Win32_System_Memory", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_System_ProcessStatus", "Win32_UI_Shell", "Win32_UI_Controls", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_Graphics_Gdi", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Globalization", "Win32_System_Services", "Win32_System_RestartManager", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_Registry", "Wdk_Graphics_Direct3D"] }
 # 추출한 아이콘 BGRA→PNG 인코딩(리소스 모니터). tauri image-png가 같은 0.25를 트리에 가져 비용 미미.
 # jpeg: 화면 캡쳐 오버레이의 **표시용** 프레임. PNG는 같은 프레임에 667ms/9.75MB가 들어 예산을
 # 통째로 먹는다(실측 — DOCS/screen-capture-design.md §2.3). 최종 결과물은 항상 무손실 원본에서 뜬다.

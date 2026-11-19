@@ -6,7 +6,6 @@ import {
   Clock,
   Copy,
   ExternalLink,
-  Film,
   Folder,
   FolderOpen,
   FolderSearch,
@@ -47,7 +46,10 @@ import {
   type ThumbEdge,
 } from "../../lib/fav-thumb";
 import { openDocWindow } from "../../lib/floating";
-import { ipc, type FavEntry } from "../../lib/ipc";
+import { fileIcon, folderIcon } from "../../lib/file-icon";
+import { favRecentMs, ipc, type FavEntry, type OsFileType } from "../../lib/ipc";
+import { useOsFileTypes } from "../../lib/os-file-type";
+import { compareSortValues, SortLabel, type SortDir, type SortValue, type TableSort } from "../sysmon/sort-table";
 import { joinPathsForPrompt, validateEntryName } from "../../lib/path";
 import { useUi } from "../../stores/ui";
 import { ConfirmHost } from "../common/ConfirmDialog";
@@ -177,8 +179,15 @@ export default function FolderWindow({
     };
   }, [load]);
 
+  /** OS 아이콘·유형 이름 — 보이는 쪽(목록 32px / 그리드 256px)만 묻는다(lib/os-file-type.ts). */
+  const pathOf = useCallback((name: string) => join(dir, name), [dir, join]);
+  const osType32 = useOsFileTypes(view.mode === "list" ? entries : null, pathOf, 32);
+  const osType256 = useOsFileTypes(view.mode === "list" ? null : entries, pathOf, 256);
+  const osType = view.mode === "list" ? osType32 : osType256;
+
   /** 화면에 그릴 목록 — 필터 → 정렬. 폴더는 언제나 위. */
   const shown = useMemo(() => {
+    const typeOf = (e: FavEntry) => osType(e)?.typeName ?? typeLabel(msg, e);
     const q = query.trim().toLowerCase();
     const list = (entries ?? []).filter(
       (e) =>
@@ -188,13 +197,29 @@ export default function FolderWindow({
     const dirFirst = (a: FavEntry, b: FavEntry) =>
       a.isDir === b.isDir ? 0 : a.isDir ? -1 : 1;
     return list.sort((a, b) => {
-      const d = dirFirst(a, b);
-      if (d) return d;
-      if (view.sort === "name") return a.name.localeCompare(b.name);
-      if (view.sort === "size") return b.size - a.size;
-      return b.mtimeMs - a.mtimeMs; // 기본: 최신 먼저
+      // 날짜순은 폴더도 섞는다 — 폴더를 늘 위에 두면 다운로드처럼 폴더가 수백 개인 곳에서 방금 받은 파일이 그 밑에
+      // 묻힌다(사용자 지적 2026-11-16). 나머지 기준은 방향과 무관하게 폴더가 위다.
+      if (view.sort !== "mtime") {
+        const d = dirFirst(a, b);
+        if (d) return d;
+      }
+      return (
+        compareSortValues(sortValue(a, view.sort, typeOf), sortValue(b, view.sort, typeOf), view.dir) ||
+        compareSortValues(a.name, b.name, "asc")
+      );
     });
-  }, [entries, query, view.imagesOnly, view.sort]);
+  }, [entries, query, view.imagesOnly, view.sort, view.dir, osType, msg]);
+
+  /** 목록 머리글 클릭 — 같은 열이면 방향을 뒤집고, 새 열은 그 열의 기본 방향으로. */
+  const sortBy = useCallback(
+    (sort: Sort) =>
+      setView((v) => ({
+        ...v,
+        sort,
+        dir: v.sort === sort ? (v.dir === "asc" ? "desc" : "asc") : SORT_DIR[sort],
+      })),
+    [],
+  );
 
   /** 라이트박스가 넘나드는 순서 = **지금 보이는 순서의 이미지들**(태스크 56 규약). */
   const images = useMemo(() => shown.filter((e) => e.kind === "image"), [shown]);
@@ -274,6 +299,20 @@ export default function FolderWindow({
 
   /** 다중 선택 중 지금 보이는 것 — 검색·필터로 가려진 이름은 지우지 않는다. */
   const pickedShown = useMemo(() => (picked.size ? shown.filter((e) => picked.has(e.name)) : []), [shown, picked]);
+
+  /** 칸 위에서 누른 끌기 — **보이는 선택**(다중 선택, 없으면 강조된 커서 칸) 위면 그 전부를 OS 파일 드래그로 넘기고 true.
+   *  메인 창 파일 트리에 놓으면 탐색기에서 끌어 온 파일과 같은 길로 그 폴더에 복사된다(사용자 요청 2026-11-16).
+   *  선택 밖에서 누르면 false — 종전대로 드래그 상자다(칸 위에서도 상자를 시작할 수 있어야 한다, useMarqueeDrag 주석). */
+  const dragItem = useCallback(
+    (i: number, ev: React.MouseEvent) => {
+      const e = shown[i];
+      const list = picked.size ? (picked.has(e.name) ? pickedShown : []) : i === cursor ? [e] : [];
+      if (!list.length) return false;
+      trackFileDrag(ev, list.map((x) => join(dir, x.name)));
+      return true;
+    },
+    [shown, picked, pickedShown, cursor, dir, join],
+  );
   /** Delete 가 지울 것 — 다중 선택, 없으면 **직접 고른** 커서 한 칸. 아직 아무것도 안 골랐으면(NO_SEL — 강조는 맨 앞을
    *  따라갈 뿐이다) 없다: 창을 열자마자 누른 Delete 에 최신 파일이 말없이 사라지면 안 된다. */
   const trashTargets = useMemo(
@@ -604,18 +643,23 @@ export default function FolderWindow({
         ) : view.mode === "list" ? (
           <ListView
             items={shown}
+            osType={osType32}
+            sort={{ key: view.sort, dir: view.dir }}
+            onSort={sortBy}
             cursor={cursor}
             scrollRef={scrollRef}
             picked={picked}
             onClickItem={clickItem}
             onOpen={openEntry}
             onContextItem={contextItem}
+            onDragItem={dragItem}
             onMarqueeStart={marqueeStart}
             onMarquee={marquee}
           />
         ) : (
           <GridView
             items={shown}
+            osType={osType256}
             dir={dir}
             join={join}
             tile={view.zoom ?? EDGE[view.mode]}
@@ -627,6 +671,7 @@ export default function FolderWindow({
             onClickItem={clickItem}
             onOpen={openEntry}
             onContextItem={contextItem}
+            onDragItem={dragItem}
             onMarqueeStart={marqueeStart}
             onMarquee={marquee}
           />
@@ -724,12 +769,57 @@ const EDGE: Record<Exclude<Mode, "list">, ThumbEdge> = {
 const TILE_MIN = 96;
 const TILE_MAX = 640;
 const clampTile = (n: number) => Math.round(Math.min(TILE_MAX, Math.max(TILE_MIN, n)));
-type Sort = "mtime" | "name" | "size";
+const SORTS = ["mtime", "name", "size", "type"] as const;
+type Sort = (typeof SORTS)[number];
+/** 기준을 새로 고를 때의 방향 — 날짜·크기는 최근·큰 것부터, 글자는 가나다순. */
+const SORT_DIR: Record<Sort, SortDir> = { mtime: "desc", name: "asc", size: "desc", type: "asc" };
+function sortLabel(msg: Messages, s: Sort): string {
+  const w = msg.folder.window;
+  switch (s) {
+    case "mtime":
+      return w.sortDate;
+    case "name":
+      return w.sortName;
+    case "size":
+      return w.sortSize;
+    case "type":
+      return w.sortType;
+    default: {
+      const never: never = s;
+      return never;
+    }
+  }
+}
+/** 확장자(소문자, 없으면 "") — 유형 열·유형순의 키. 맨 앞 점(`.env`)은 확장자가 아니다. */
+const extOf = (name: string) => {
+  const i = name.lastIndexOf(".");
+  return i > 0 ? name.slice(i + 1).toLowerCase() : "";
+};
+const typeLabel = (msg: Messages, e: FavEntry) =>
+  e.isDir ? msg.folder.window.typeFolder : msg.folder.window.typeFile(extOf(e.name).toUpperCase());
+/** `typeOf` = 유형 열에 보이는 이름(OS 유형 이름, 아직 안 왔으면 "EXT 파일") — 보이는 대로 정렬한다. */
+function sortValue(e: FavEntry, s: Sort, typeOf: (e: FavEntry) => string): SortValue {
+  switch (s) {
+    case "mtime":
+      return favRecentMs(e);
+    case "name":
+      return e.name;
+    case "size":
+      return e.size;
+    case "type":
+      return typeOf(e);
+    default: {
+      const never: never = s;
+      return never;
+    }
+  }
+}
 interface View {
   mode: Mode;
   /** Ctrl+휠로 정한 칸 크기 — 있으면 `EDGE[mode]` 대신 쓴다. 보기 버튼·Ctrl+숫자는 이것을 지운다. */
   zoom: number | null;
   sort: Sort;
+  dir: SortDir;
   imagesOnly: boolean;
 }
 
@@ -739,17 +829,19 @@ function readView(root: string): View {
     const raw = localStorage.getItem(viewKey(root));
     if (raw) {
       const v = JSON.parse(raw) as Partial<View>;
+      const sort = SORTS.find((s) => s === v.sort) ?? "mtime";
       return {
         mode: MODES.some((m) => m.id === v.mode) ? (v.mode as Mode) : "grid-m",
         zoom: typeof v.zoom === "number" ? clampTile(v.zoom) : null,
-        sort: v.sort === "name" || v.sort === "size" ? v.sort : "mtime",
+        sort,
+        dir: v.dir === "asc" || v.dir === "desc" ? v.dir : SORT_DIR[sort],
         imagesOnly: !!v.imagesOnly,
       };
     }
   } catch {
     /* 파싱 실패는 기본값으로 */
   }
-  return { mode: "grid-m", zoom: null, sort: "mtime", imagesOnly: false };
+  return { mode: "grid-m", zoom: null, sort: "mtime", dir: "desc", imagesOnly: false };
 }
 function writeView(root: string, v: View) {
   try {
@@ -869,13 +961,20 @@ function Toolbar({
 
       <select
         value={view.sort}
-        onChange={(e) => setView((v) => ({ ...v, sort: e.target.value as Sort }))}
+        onChange={(e) => {
+          const sort = e.target.value as Sort;
+          setView((v) => ({ ...v, sort, dir: SORT_DIR[sort] }));
+        }}
         title={msg.folder.window.sortTitle}
         className="shrink-0 rounded border border-edge bg-panel px-1 py-0.5 text-[11px] text-fg-muted"
       >
-        <option value="mtime">{msg.folder.window.sortNewest}</option>
-        <option value="name">{msg.folder.window.sortName}</option>
-        <option value="size">{msg.folder.window.sortSize}</option>
+        {/* 고른 기준에만 방향을 붙인다 — 목록 머리글을 다시 눌러 방향을 뒤집으면 여기서도 보여야 한다. */}
+        {SORTS.map((s) => (
+          <option key={s} value={s}>
+            {sortLabel(msg, s)}
+            {s === view.sort ? (view.dir === "desc" ? " ↓" : " ↑") : ""}
+          </option>
+        ))}
       </select>
 
       <div className="flex shrink-0 items-center rounded border border-edge">
@@ -946,6 +1045,24 @@ function gridHits(
   return hits;
 }
 
+/** 누른 채 4px 넘게 움직이면 OS 파일 드래그로 넘긴다. 이 창 안엔 놓을 곳이 없어 곧바로 넘긴다 — 왼쪽 버튼이 **아직
+ *  눌려 있어야** OS 가 이어받으므로 mouseup 이 아니라 mousemove 에서다. 그 전에 놓으면 평범한 클릭이다. */
+function trackFileDrag(ev: React.MouseEvent, paths: string[]) {
+  const x0 = ev.clientX;
+  const y0 = ev.clientY;
+  const move = (e: MouseEvent) => {
+    if (Math.hypot(e.clientX - x0, e.clientY - y0) < 4) return;
+    end(); // OS 드래그가 도는 동안엔 mouseup 이 이 창에 안 온다 — 먼저 걷는다
+    void ipc.favStartOsDrag(paths).catch((err) => useUi.getState().pushToast("error", errText(err)));
+  };
+  const end = () => {
+    window.removeEventListener("mousemove", move);
+    window.removeEventListener("mouseup", end);
+  };
+  window.addEventListener("mousemove", move);
+  window.addEventListener("mouseup", end);
+}
+
 /** 칸·행 마우스 처리 — 칸마다 핸들러를 달지 않고 바깥에서 `data-i` 로 받는다(스크롤마다 새로 그려지는 칸이 `memo` 를 깨지 않게). */
 function itemMouseHandlers(
   items: FavEntry[],
@@ -953,6 +1070,7 @@ function itemMouseHandlers(
   onClickItem: (i: number, mods: { mod: boolean; shift: boolean }) => void,
   onOpen: (e: FavEntry) => void,
   onContextItem: (i: number, x: number, y: number) => void,
+  onDragItem: (i: number, ev: React.MouseEvent) => boolean,
 ) {
   const at = (ev: React.MouseEvent) => {
     const el = ev.target instanceof Element ? ev.target.closest<HTMLElement>("[data-i]") : null;
@@ -960,7 +1078,17 @@ function itemMouseHandlers(
     return items[i] ? i : -1;
   };
   return {
-    onMouseDown: marquee.onMouseDown,
+    onMouseDown: (ev: React.MouseEvent<HTMLDivElement>) => {
+      // 수정 키가 붙으면 클릭(Ctrl·Shift 선택)·더하기 상자 몫이다.
+      if (ev.button === 0 && !isMod(ev) && !ev.shiftKey) {
+        const i = at(ev);
+        if (i >= 0 && onDragItem(i, ev)) {
+          marquee.swallow(); // 지난 상자가 남긴 "click 삼키기"를 비운다 — 안 그러면 이 칸의 클릭이 먹힌다
+          return;
+        }
+      }
+      marquee.onMouseDown(ev);
+    },
     onClick: (ev: React.MouseEvent) => {
       if (!marquee.swallow()) onClickItem(at(ev), { mod: isMod(ev), shift: ev.shiftKey });
     },
@@ -992,6 +1120,7 @@ function itemMouseHandlers(
  */
 function GridView({
   items,
+  osType,
   dir,
   join,
   tile,
@@ -1003,10 +1132,12 @@ function GridView({
   onClickItem,
   onOpen,
   onContextItem,
+  onDragItem,
   onMarqueeStart,
   onMarquee,
 }: {
   items: FavEntry[];
+  osType: (e: FavEntry) => OsFileType | undefined;
   dir: string;
   join: (dir: string, name: string) => string;
   tile: number;
@@ -1019,6 +1150,8 @@ function GridView({
   onClickItem: (i: number, mods: { mod: boolean; shift: boolean }) => void;
   onOpen: (e: FavEntry) => void;
   onContextItem: (i: number, x: number, y: number) => void;
+  /** 칸 위에서 누름 — 파일 드래그로 가져갔으면 true(그럼 상자는 시작하지 않는다). */
+  onDragItem: (i: number, ev: React.MouseEvent) => boolean;
   /** 드래그 상자 시작 — `additive` = Ctrl/⌘ 드래그(기존 선택에 더한다). */
   onMarqueeStart: (additive: boolean) => void;
   /** 상자에 걸친 칸 번호 — 바뀔 때만 부른다. */
@@ -1136,7 +1269,7 @@ function GridView({
       // 칸이 적어도 아래 빈 자리에서 상자를 시작할 수 있게 화면 높이만큼은 잡는다.
       className="relative select-none"
       style={{ height: rows ? PAD * 2 + rows * rowH - GAP : 0, minHeight: "100%" }}
-      {...itemMouseHandlers(items, marquee, onClickItem, onOpen, onContextItem)}
+      {...itemMouseHandlers(items, marquee, onClickItem, onOpen, onContextItem, onDragItem)}
     >
       <MarqueeBand band={marquee.band} />
       <div
@@ -1159,6 +1292,7 @@ function GridView({
             selected={picked.size ? picked.has(e.name) : start + k === cursor}
             size={tile}
             url={urls[start + k]}
+            osIcon={osType(e)?.icon ?? undefined}
           />
         ))}
       </div>
@@ -1174,12 +1308,15 @@ const Tile = memo(function Tile({
   selected,
   size,
   url,
+  osIcon,
 }: {
   e: FavEntry;
   i: number;
   selected: boolean;
   size: number;
   url: string | undefined;
+  /** OS 유형 아이콘(256px PNG data URL) — 썸네일이 없는 동안의 자리 그림. 아직 안 왔으면 앱 아이콘. */
+  osIcon: string | undefined;
 }) {
   const state = useFavThumbState(url);
   /** 받아 둔 뒤 다시 읽다 실패한 URL(그사이 지워진 파일) — URL 로 들어야 크기를 바꿔 새 URL 이 오면 풀린다. */
@@ -1200,11 +1337,13 @@ const Tile = memo(function Tile({
         className="relative flex w-full shrink-0 items-center justify-center overflow-hidden bg-base"
         style={{ height: size }}
       >
-        {e.isDir ? (
-          <Folder size={size / 3} className="text-fg-dim" />
-        ) : (
-          !shown && <KindIcon kind={e.kind} size={size / 4} />
-        )}
+        {!shown &&
+          (osIcon ? (
+            // 셸 큰 아이콘은 테두리 여백을 품고 있어 칸의 절반이면 탐색기 "큰 아이콘"과 비슷하다.
+            <img src={osIcon} alt="" draggable={false} style={{ width: size / 2, height: size / 2 }} className="object-contain" />
+          ) : (
+            <EntryIcon e={e} size={size / 3} />
+          ))}
         {shown && (
           // sync — 이 칸이 처음 그려지는 프레임에 디코드까지 끝낸다. async 면 크로뮴이 디코드를 기다리지 않고 그림
           // 없이 먼저 그릴 수 있다(다음 프레임에 채움) — 스크롤로 새로 나타난 칸이 한 번 비어 보인다. 썸네일은 작은
@@ -1229,22 +1368,10 @@ const Tile = memo(function Tile({
   );
 });
 
-function KindIcon({ kind, size }: { kind: FavEntry["kind"]; size: number }) {
-  const cls = "text-fg-dim";
-  if (kind === "image") return <ImageIcon size={size} className={cls} />;
-  if (kind === "video") return <Film size={size} className={cls} />;
-  return <FileGlyph size={size} />;
-}
-
-function FileGlyph({ size }: { size: number }) {
-  // lucide File 아이콘 대신 단순 사각형 — 이 창은 종류를 색이 아니라 이름으로 읽는다.
-  return (
-    <div
-      className="rounded border border-edge"
-      style={{ width: size * 0.72, height: size }}
-      aria-hidden
-    />
-  );
+/** OS 아이콘이 오기 전(또는 OS 가 못 줄 때)의 아이콘 — 파일 트리와 같은 확장자별 아이콘·색(lib/file-icon.tsx). */
+function EntryIcon({ e, size }: { e: FavEntry; size: number }) {
+  const { Icon, color } = e.isDir ? folderIcon(false) : fileIcon(e.name);
+  return <Icon size={size} color={color} className="shrink-0" />;
 }
 
 /** 칸 식별 키 — 이름|mtime|크기. **이름만으로 들면 안 된다:** 같은 이름으로 다시 쓴 파일(편집기로
@@ -1255,22 +1382,30 @@ const thumbKey = (e: FavEntry) => `${e.name}|${e.mtimeMs}|${e.size}`;
 
 function ListView({
   items,
+  osType,
+  sort,
+  onSort,
   cursor,
   scrollRef,
   picked,
   onClickItem,
   onOpen,
   onContextItem,
+  onDragItem,
   onMarqueeStart,
   onMarquee,
 }: {
   items: FavEntry[];
+  osType: (e: FavEntry) => OsFileType | undefined;
+  sort: TableSort<Sort>;
+  onSort: (s: Sort) => void;
   cursor: number;
   scrollRef: RefObject<HTMLDivElement | null>;
   picked: ReadonlySet<string>;
   onClickItem: (i: number, mods: { mod: boolean; shift: boolean }) => void;
   onOpen: (e: FavEntry) => void;
   onContextItem: (i: number, x: number, y: number) => void;
+  onDragItem: (i: number, ev: React.MouseEvent) => boolean;
   onMarqueeStart: (additive: boolean) => void;
   onMarquee: (hits: number[]) => void;
 }) {
@@ -1295,40 +1430,56 @@ function ListView({
     <div
       className="relative select-none"
       style={{ minHeight: "100%" }}
-      {...itemMouseHandlers(items, marquee, onClickItem, onOpen, onContextItem)}
+      {...itemMouseHandlers(items, marquee, onClickItem, onOpen, onContextItem, onDragItem)}
     >
       <MarqueeBand band={marquee.band} />
     <table className="w-full text-[12px]">
       <thead className="sticky top-0 bg-panel text-[11px] text-fg-dim">
-        <tr>
-          <th className="px-2 py-1 text-left font-normal">{msg.folder.window.columnName}</th>
-          <th className="w-20 px-2 py-1 text-right font-normal">{msg.folder.window.columnSize}</th>
-          <th className="w-24 px-2 py-1 text-right font-normal">{msg.folder.window.columnModified}</th>
+        {/* 머리글 누름이 바깥의 드래그 상자·"빈 자리 클릭 = 선택 해제"로 새지 않게 여기서 끊는다. */}
+        <tr onMouseDown={(ev) => ev.stopPropagation()} onClick={(ev) => ev.stopPropagation()}>
+          <th className="px-2 py-1 text-left font-normal">
+            <SortLabel label={msg.folder.window.columnName} k="name" sort={sort} onSort={onSort} />
+          </th>
+          <th className="w-28 px-2 py-1 text-right font-normal">
+            <SortLabel label={msg.folder.window.columnModified} k="mtime" sort={sort} onSort={onSort} align="right" />
+          </th>
+          <th className="w-20 px-2 py-1 text-right font-normal">
+            <SortLabel label={msg.folder.window.columnSize} k="size" sort={sort} onSort={onSort} align="right" />
+          </th>
+          <th className="w-36 px-2 py-1 text-left font-normal">
+            <SortLabel label={msg.folder.window.columnType} k="type" sort={sort} onSort={onSort} />
+          </th>
         </tr>
       </thead>
       <tbody>
-        {items.map((e, i) => (
-          <tr
-            key={e.name}
-            data-i={i}
-            className={`cursor-default ${
-              (picked.size ? picked.has(e.name) : i === cursor) ? "bg-raised text-fg" : "text-fg-muted hover:bg-raised"
-            }`}
-          >
-            <td className="flex items-center gap-1.5 truncate px-2 py-1">
-              {e.isDir ? (
-                <Folder size={13} className="shrink-0 text-fg-dim" />
-              ) : (
-                <KindIcon kind={e.kind} size={13} />
-              )}
-              <span className="truncate">{e.name}</span>
-            </td>
-            <td className="px-2 py-1 text-right text-fg-dim">
-              {e.isDir ? "" : fmtSize(e.size)}
-            </td>
-            <td className="px-2 py-1 text-right text-fg-dim">{fmtTime(e.mtimeMs)}</td>
-          </tr>
-        ))}
+        {items.map((e, i) => {
+          const t = osType(e);
+          return (
+            <tr
+              key={e.name}
+              data-i={i}
+              className={`cursor-default ${
+                (picked.size ? picked.has(e.name) : i === cursor) ? "bg-raised text-fg" : "text-fg-muted hover:bg-raised"
+              }`}
+            >
+              <td className="flex items-center gap-1.5 truncate px-2 py-1">
+                {t?.icon ? (
+                  <img src={t.icon} alt="" draggable={false} className="h-4 w-4 shrink-0 object-contain" />
+                ) : (
+                  <EntryIcon e={e} size={14} />
+                )}
+                <span className="truncate">{e.name}</span>
+              </td>
+              <td className="px-2 py-1 text-right text-fg-dim">{fmtTime(favRecentMs(e))}</td>
+              <td className="px-2 py-1 text-right text-fg-dim">
+                {e.isDir ? "" : fmtSize(e.size)}
+              </td>
+              <td className="max-w-0 truncate px-2 py-1 text-fg-dim" title={t?.typeName ?? undefined}>
+                {t?.typeName ?? typeLabel(msg, e)}
+              </td>
+            </tr>
+          );
+        })}
       </tbody>
     </table>
     </div>

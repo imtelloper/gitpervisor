@@ -6,9 +6,13 @@ import { Undo2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { ConfirmHost } from "./components/common/ConfirmDialog";
+import { PromptHost } from "./components/common/PromptDialog";
 import { Toasts } from "./components/common/Toast";
 import { TranslateHost } from "./components/common/TranslateCard";
 import { FloatTitleBar } from "./components/FloatTitleBar";
+import { GitDialog } from "./components/git/GitDialog";
+import { SessionHistoryDialog } from "./components/sessions/SessionHistoryDialog";
+import { FileTreeDialog } from "./components/tree/FileTreeDialog";
 import { currentMessages, useMessages } from "./i18n/ui-language";
 import { PaneTreeRoot } from "./components/workspace/PaneTree";
 import { PromptHistoryButton } from "./components/workspace/TermSessionControls";
@@ -213,14 +217,22 @@ function FloatWorkspace({
         }
       />
       <div className="min-h-0 flex-1">
-        <PaneTreeRoot tab={tab} projectId={projectId} fontSize={FONT} />
+        {/* 분할하면 칸마다 헤더 — 타이틀바는 창에 하나라 어느 칸이 무엇인지 말해 주지 못한다(PaneTreeRoot 주석). */}
+        <PaneTreeRoot tab={tab} projectId={projectId} fontSize={FONT} paneHeaders />
       </div>
       {/* 컬럼 항목 복사 토스트가 이 창에서만 무음이었다 — 스토어는 창마다 별개라(웹뷰 = 별도 JS
           컨텍스트) 메인 창의 호스트가 여기 대신 그려 주지 않는다(AggregateWindow와 같은 이유).
           확인 모달도 단다 — 이 창의 분할·우클릭에서 OpenCode를 처음 띄우면 다운로드 안내(askConfirm)가
           뜨는데, 호스트가 없으면 보이지 않는 확인창에 막혀 아무 일도 일어나지 않는다(lib/opencode.ts). */}
       <ConfirmHost />
+      {/* 파일 트리 모달의 새 파일·새 폴더·이름 바꾸기가 askPrompt 를 쓴다(AggregateWindow 와 같은 이유). */}
+      <PromptHost />
       <Toasts />
+      {/* 칸 툴바·헤더의 Git·파일 트리·세션 기록 버튼이 여는 모달 — 이 창엔 호스트가 없어 눌러도 아무 일이 없었다
+          (2026-11-17 사용자 지적: 파일 트리 버튼). 창마다 useUi 가 별개라 메인의 호스트가 대신 그려 주지 않는다. */}
+      <GitDialog />
+      <FileTreeDialog />
+      <SessionHistoryDialog />
       {/* PaneMenu가 이 창에서도 열린다 — '선택 영역 번역' 카드는 그 창 안에 떠야 한다(태스크 61). */}
       <TranslateHost />
     </div>

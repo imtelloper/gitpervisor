@@ -1031,7 +1031,7 @@ fn read_clipboard_unix() -> Result<Option<String>, String> {
 /// 워커 스레드에서 불린다(term_paste 참조). NSPasteboard 읽기는 메인 스레드 전용이 아니며
 /// (objc2가 MainThreadMarker를 요구하지 않는다), 같은 스레드에서 arboard도 이미 이 API를 쓴다.
 #[cfg(target_os = "macos")]
-fn macos_clipboard_files() -> Vec<String> {
+pub(crate) fn macos_clipboard_files() -> Vec<String> {
     use objc2::rc::Retained;
     use objc2::runtime::AnyObject;
     use objc2::ClassType;

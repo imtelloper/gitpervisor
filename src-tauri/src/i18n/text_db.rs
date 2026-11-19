@@ -331,6 +331,20 @@ pub fn db_cell_edit_redis_unsupported() -> &'static str {
     }
 }
 
+pub fn db_drop_table_sql_only() -> &'static str {
+    match lang() {
+        Lang::Ko => "테이블 삭제는 SQL 엔진만 지원합니다",
+        Lang::En => "Dropping tables is only available for SQL engines",
+    }
+}
+
+pub fn db_drop_table_failed(table: &str, e: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("{table} 삭제 실패: {e}"),
+        Lang::En => format!("Failed to drop {table}: {e}"),
+    }
+}
+
 pub fn db_row_delete_sql_only() -> &'static str {
     match lang() {
         Lang::Ko => "행 삭제는 SQL 엔진만 지원합니다",
@@ -426,6 +440,50 @@ pub fn db_delete_multiple_rows(rows: u64) -> String {
     match lang() {
         Lang::Ko => format!("{rows}개 행이 영향받음 — 취소"),
         Lang::En => format!("{rows} rows affected — cancelled"),
+    }
+}
+
+// ---- db/grid_edit.rs: 그리드 행 수정·삭제 대상 판정 ----
+
+pub fn db_row_key_value_null(col: &str) -> String {
+    match lang() {
+        Lang::Ko => format!("키 컬럼 {col} 값이 NULL이라 행을 하나로 특정할 수 없습니다"),
+        Lang::En => format!("Key column {col} is NULL, so the row can't be pinned down"),
+    }
+}
+
+pub fn db_row_not_exactly_one() -> &'static str {
+    match lang() {
+        Lang::Ko => "키와 일치하는 행이 정확히 하나가 아니라 아무것도 바꾸지 않았습니다 (이미 바뀌었거나 삭제됨)",
+        Lang::En => "The key doesn't match exactly one row, so nothing was changed (already changed or deleted)",
+    }
+}
+
+pub fn db_grid_edit_not_single_table() -> &'static str {
+    match lang() {
+        Lang::Ko => "단일 테이블 조회 결과가 아니라 행을 편집할 수 없습니다 (SELECT * 또는 컬럼 목록 FROM 테이블 하나만)",
+        Lang::En => "Not a single-table result, so rows can't be edited (only SELECT * or plain columns FROM one table)",
+    }
+}
+
+pub fn db_grid_edit_table_unresolved(table: &str) -> String {
+    match lang() {
+        Lang::Ko => format!("{table} 을(를) 이 DB의 테이블 하나로 특정할 수 없어 편집할 수 없습니다"),
+        Lang::En => format!("Can't match {table} to exactly one table in this DB, so rows can't be edited"),
+    }
+}
+
+pub fn db_grid_edit_no_key() -> &'static str {
+    match lang() {
+        Lang::Ko => "기본 키·유일 키가 없는 테이블이라 행을 안전하게 특정할 수 없습니다",
+        Lang::En => "The table has no primary or unique key, so a row can't be targeted safely",
+    }
+}
+
+pub fn db_grid_edit_key_missing(cols: &str) -> String {
+    match lang() {
+        Lang::Ko => format!("결과에 키 컬럼({cols})이 없어 행을 특정할 수 없습니다"),
+        Lang::En => format!("The result is missing key column(s) ({cols}), so a row can't be targeted"),
     }
 }
 

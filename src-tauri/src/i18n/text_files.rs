@@ -129,6 +129,35 @@ pub fn rename_failed(err: impl Display) -> String {
     }
 }
 
+/// 복제본 이름에 붙는 말 — Windows 탐색기와 같은 단어(`이름 - 복사본.ext`).
+pub fn duplicate_suffix() -> &'static str {
+    match lang() {
+        Lang::Ko => "복사본",
+        Lang::En => "Copy",
+    }
+}
+
+pub fn duplicate_failed(err: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("복제 실패: {err}"),
+        Lang::En => format!("Failed to duplicate: {err}"),
+    }
+}
+
+pub fn paste_failed(path: impl Display, err: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("붙여넣기 실패({path}): {err}"),
+        Lang::En => format!("Failed to paste {path}: {err}"),
+    }
+}
+
+pub fn paste_folder_into_itself() -> &'static str {
+    match lang() {
+        Lang::Ko => "폴더를 자기 자신 안에 붙여넣을 수 없습니다",
+        Lang::En => "Cannot paste a folder into itself",
+    }
+}
+
 pub fn move_folder_into_itself() -> &'static str {
     match lang() {
         Lang::Ko => "폴더를 자기 자신 안으로 옮길 수 없습니다",
@@ -161,6 +190,13 @@ pub fn os_drag_failed(err: impl Display) -> String {
     match lang() {
         Lang::Ko => format!("앱 밖으로 끌기 실패: {err}"),
         Lang::En => format!("Failed to drag out of the app: {err}"),
+    }
+}
+
+pub fn os_file_type_failed(err: impl Display) -> String {
+    match lang() {
+        Lang::Ko => format!("파일 유형 아이콘을 읽지 못했습니다: {err}"),
+        Lang::En => format!("Failed to read file type icons: {err}"),
     }
 }
 

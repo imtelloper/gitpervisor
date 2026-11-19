@@ -418,7 +418,6 @@ pub fn clipboard_write_failed(err: impl Display) -> String {
     }
 }
 
-#[cfg(not(windows))]
 pub fn clipboard_owner_not_responding() -> &'static str {
     match lang() {
         Lang::Ko => "클립보드 소유자가 응답하지 않습니다",

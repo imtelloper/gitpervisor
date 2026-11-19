@@ -1,5 +1,10 @@
+import { AppWindow } from "lucide-react";
 import { useEffect } from "react";
 
+import { useMessages } from "../../i18n/ui-language";
+import { useProjectColors } from "../../lib/project-color";
+import { useProjects } from "../../queries";
+import { useAgentActivity } from "../../stores/agentActivity";
 import { useBrowsers } from "../../stores/browser";
 import {
   collectPanes,
@@ -8,16 +13,21 @@ import {
   type TermLeaf,
   type TermTab,
 } from "../../stores/terminals";
+import { ProjectLogo } from "../common/ProjectLogo";
 import { BrowserPane } from "./BrowserPane";
 import { PaneControls } from "./PaneControls";
 import { SplitView } from "./SplitView";
 import {
   AgentLaunchButton,
+  ClaudeModelChip,
   FileTreeButton,
   GitDialogButton,
   PromptLogButton,
   SessionHistoryButton,
+  SessionTitle,
   SessionTitleChip,
+  StaticPageButton,
+  StatusIcon,
   ThemeButton,
 } from "./TermSessionControls";
 import { TerminalPane } from "./TerminalPane";
@@ -28,18 +38,27 @@ interface ViewProps {
   projectId: string;
   fontSize: number;
   multi: boolean;
+  /** 터미널 칸마다 헤더(모아보기 셀과 같은 꼴)를 단다 — `PaneTreeRoot` 의 `paneHeaders` 주석. */
+  headers: boolean;
 }
 
-/** 활성 탭의 루트 — 최대화 패널이 있으면 그것만, 아니면 분할 트리 전체. */
+/** 활성 탭의 루트 — 최대화 패널이 있으면 그것만, 아니면 분할 트리 전체.
+ *  `paneHeaders`: 분할돼 있으면 터미널 칸마다 헤더를 단다(플로팅 창). 그 창의 타이틀바는 창 하나에 하나라
+ *  분할하면 어느 칸이 무엇인지 말해 주지 못한다 — 모아보기 셀처럼 칸이 스스로 말하게 한다(사용자 요청 2026-11-17). */
 export function PaneTreeRoot({
   tab,
   projectId,
   fontSize,
+  paneHeaders = false,
 }: {
   tab: TermTab;
   projectId: string;
   fontSize: number;
+  paneHeaders?: boolean;
 }) {
+  const multi = collectPanes(tab.layout).length > 1;
+  // 최대화 중에도 단다 — 헤더의 최대화 버튼이 되돌리는 손잡이이고, 어느 칸을 키웠는지도 말해 준다.
+  const headers = paneHeaders && multi;
   if (tab.maximizedPaneId) {
     // 최대화된 리프를 트리에서 찾아 그 content 그대로 렌더
     const leaf = findLeaf(tab.layout, tab.maximizedPaneId);
@@ -51,10 +70,10 @@ export function PaneTreeRoot({
           projectId={projectId}
           fontSize={fontSize}
           active={false}
+          headers={headers}
         />
       );
   }
-  const multi = collectPanes(tab.layout).length > 1;
   return (
     <PaneView
       node={tab.layout}
@@ -62,6 +81,7 @@ export function PaneTreeRoot({
       projectId={projectId}
       fontSize={fontSize}
       multi={multi}
+      headers={headers}
     />
   );
 }
@@ -81,6 +101,7 @@ function PaneView(props: ViewProps) {
         projectId={props.projectId}
         fontSize={props.fontSize}
         active={props.multi && props.tab.activePaneId === props.node.paneId}
+        headers={props.headers}
       />
     );
   }
@@ -112,12 +133,14 @@ function LeafView({
   projectId,
   fontSize,
   active,
+  headers,
 }: {
   leaf: Extract<Pane, { kind: "leaf" }>;
   tab: TermTab;
   projectId: string;
   fontSize: number;
   active: boolean;
+  headers: boolean;
 }) {
   const draggingSplit = useTerminals((s) => s.draggingSplit);
   const ensurePane = useBrowsers((s) => s.ensurePane);
@@ -140,6 +163,35 @@ function LeafView({
     );
   }
 
+  const sessionButtons = (
+    <>
+      <AgentLaunchButton termId={leaf.paneId} />
+      <ThemeButton termId={leaf.paneId} />
+      <PromptLogButton termId={leaf.paneId} />
+      <SessionHistoryButton termId={leaf.paneId} projectId={tab.projectId} />
+      <GitDialogButton projectId={tab.projectId} />
+      <FileTreeButton projectId={tab.projectId} />
+      {/* 지구본은 바로 옆 PaneControls 의 "이 칸을 웹으로 전환"이 쓴다 — 새 창은 창 아이콘으로 가른다. */}
+      <StaticPageButton projectId={tab.projectId} icon={AppWindow} />
+      <span className="mx-0.5 h-3 w-px bg-edge" />
+      {controls}
+    </>
+  );
+
+  // 헤더가 있으면 컨트롤은 거기 늘 보이게 두고 호버 오버레이는 끈다(같은 버튼이 두 벌 뜨지 않게).
+  if (headers) {
+    return (
+      <div className="group/pane relative flex h-full w-full flex-col">
+        <PaneHeader tab={tab} paneId={leaf.paneId}>
+          {sessionButtons}
+        </PaneHeader>
+        <div className="min-h-0 flex-1">
+          <TerminalPane tabId={tab.id} projectId={projectId} paneId={leaf.paneId} active={active} fontSize={fontSize} />
+        </div>
+      </div>
+    );
+  }
+
   // 터미널 패널은 바가 없으므로 우상단 호버 오버레이로 띄운다 — 오버레이 자체는 TerminalPane이
   // xterm 호스트 안에 그린다(프롬프트 컬럼 헤더의 X를 덮지 않게 — TerminalPane의 주석 참고).
   return (
@@ -153,17 +205,33 @@ function LeafView({
         controls={
           <>
             <SessionTitleChip termId={leaf.paneId} />
-            <AgentLaunchButton termId={leaf.paneId} />
-            <ThemeButton termId={leaf.paneId} />
-            <PromptLogButton termId={leaf.paneId} />
-            <SessionHistoryButton termId={leaf.paneId} projectId={tab.projectId} />
-            <GitDialogButton projectId={tab.projectId} />
-            <FileTreeButton projectId={tab.projectId} />
-            <span className="mx-0.5 h-3 w-px bg-edge" />
-            {controls}
+            {sessionButtons}
           </>
         }
       />
+    </div>
+  );
+}
+
+/** 칸 헤더 — 모아보기 셀 헤더(AggregateTerminals `AggregateCell`)와 같은 꼴: 활동 표시 · 로고 · 프로젝트 · 모델 칩
+ *  · 가운데 세션 제목(클릭 편집) · 세션 버튼과 칸 버튼. 바탕은 모아보기와 같은 프로젝트 색이다. */
+function PaneHeader({ tab, paneId, children }: { tab: TermTab; paneId: string; children: React.ReactNode }) {
+  const msg = useMessages();
+  const { data: projects } = useProjects();
+  const colors = useProjectColors();
+  const status = useAgentActivity((s) => s.byTerminal[paneId]);
+  const projName = projects?.find((p) => p.id === tab.projectId)?.name ?? msg.app.aggregate.fallbackProjectName;
+  return (
+    <div
+      style={{ backgroundColor: colors.get(projName)?.bg }}
+      className="flex h-6 shrink-0 items-center gap-1.5 border-b border-edge px-2 text-[11px] text-fg-muted"
+    >
+      {status && <StatusIcon status={status} />}
+      <ProjectLogo projectId={tab.projectId} size={14} />
+      <span className="min-w-0 shrink truncate font-medium text-fg">{projName}</span>
+      <ClaudeModelChip termId={paneId} />
+      <SessionTitle termId={paneId} />
+      {children}
     </div>
   );
 }

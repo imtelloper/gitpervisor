@@ -678,6 +678,8 @@ export async function run({ cdp, report: r }) {
 
     // ── ⑭ 가상 그리드: 수백 장 폴더 ──
     // 600장(1×1 PNG)을 mtime 이 1초씩 오래되게 쓴다 — 기본 정렬(최신 먼저)에서 f000 이 맨 앞, f599 가 맨 끝이다.
+    // mtime 은 **미래**(+1시간부터)로 박는다: 최신순 키는 max(수정, 생성) 시각이고(lib/ipc.ts favRecentMs) 생성 시각은
+    // Node 로 못 바꾼다 — 과거로 박으면 쓴 순서(생성 시각)가 이겨 f599 가 맨 앞에 온다.
     // ⑩ 이후라 보기는 L(320) 이다. 창은 ⑫ 에서 하위폴더에 있으므로 Backspace 로 루트에 올라와 들어간다.
     {
       const many = join(root, "많음");
@@ -688,7 +690,7 @@ export async function run({ cdp, report: r }) {
       for (let i = 0; i < N14; i++) {
         const f = join(many, name14(i));
         writeFileSync(f, PNG_1X1);
-        const t = new Date(now14 - 3600e3 - i * 1000);
+        const t = new Date(now14 + 3600e3 - i * 1000);
         utimesSync(f, t, t);
       }
       const key14 = (k) =>

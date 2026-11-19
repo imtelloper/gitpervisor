@@ -239,10 +239,15 @@ async function recordRoundTrip(cdp, r, isolated) {
       r.skip("⑰' 구간 이어 붙이기 길이", "ffprobe 없음");
     }
     r.check("⑱ 정지 뒤 녹화 상태가 풀려 캡쳐가 다시 열린다", (await cdp.try("capture_trigger", {})).ok);
-    await sleep(800);
-    const again = await cdp.invoke("capture_current", {});
+    // 세션은 프리뷰를 만든 **뒤에** 생긴다 — 4K 모니터에선 그게 ~860ms 라 고정 800ms 대기가 경쟁으로 빨개졌다(2026-11-19).
+    let again = null;
+    const t18 = Date.now();
+    while (!again && Date.now() - t18 < 5000) {
+      await sleep(200);
+      again = await cdp.invoke("capture_current", {});
+    }
     if (again) await cdp.invoke("capture_cancel", { id: again.id });
-    r.check("⑱' 캡쳐 세션이 실제로 생겼다", !!again && again.mode === "capture");
+    r.check("⑱' 캡쳐 세션이 실제로 생겼다", !!again && again.mode === "capture", `${Date.now() - t18}ms`);
   } finally {
     await cdp.invoke("set_settings", { settings }).catch(() => {}); // 복원 실패는 샤드 앱이라 회차 뒤에 버려진다
     if (typeof saved === "string") rmSync(saved, { force: true });

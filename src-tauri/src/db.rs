@@ -16,6 +16,9 @@ use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
 use crate::error::{ErrorCode, IpcError};
 
+/// 결과 그리드 행 수정·삭제(대상 테이블·키 판정 포함).
+pub mod grid_edit;
+
 /// SQL Server(TDS) 클라이언트 — 단일 연결이라 &mut가 필요해 tokio Mutex로 감싼다.
 type MssqlClient = tiberius::Client<Compat<TcpStream>>;
 
@@ -408,63 +411,36 @@ pub struct PkCell {
     pub value: Json,
 }
 
-/// 그리드 셀 직접 편집 — PK로 한 행을 UPDATE (SQL 엔진, read_only 아닐 때만).
-#[tauri::command]
-pub async fn db_update_cell(
+/// 테이블 삭제(DROP TABLE) — **파괴적**. 사이드바 확인 창을 거친 뒤에만 부른다. 여러 개는 프런트가 하나씩 부른다
+/// (하나가 실패해도 나머지는 지우고 실패만 모아 알린다 — 파일 트리 삭제와 같은 규칙).
+#[tauri::command(async)]
+pub async fn db_drop_table(
     state: State<'_, DbState>,
     id: String,
     database: String,
     table: String,
-    pk: Vec<PkCell>,
-    set_col: String,
-    set_value: Json,
-) -> Result<(), IpcError> {
-    let read_only = state
-        .connections
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .iter()
-        .find(|c| c.id == id)
-        .map(|c| c.read_only)
-        .unwrap_or(false);
-    if read_only {
-        return Err(err(crate::i18n::text_db::db_read_only_edit_blocked()));
-    }
-    if pk.is_empty() {
-        return Err(err(crate::i18n::text_db::db_edit_needs_primary_key()));
-    }
-    match client_of(&state, &id)? {
-        DbClient::Mssql(c) => {
-            mssql_update_cell(&c, &database, &table, &pk, &set_col, &set_value).await
-        }
-        DbClient::Sql(pool, engine) => {
-            sql_update_cell(&pool, engine, &table, &pk, &set_col, &set_value).await
-        }
-        DbClient::Mongo(_) => Err(err(crate::i18n::text_db::db_cell_edit_sql_only())),
-        DbClient::Redis(_) => Err(err(crate::i18n::text_db::db_cell_edit_redis_unsupported())),
-    }
-}
-
-/// 그리드 행 삭제 — PK로 한 행을 DELETE (SQL 엔진, read_only 아닐 때만).
-#[tauri::command]
-pub async fn db_delete_row(
-    state: State<'_, DbState>,
-    id: String,
-    database: String,
-    table: String,
-    pk: Vec<PkCell>,
 ) -> Result<(), IpcError> {
     if read_only_of(&state, &id) {
         return Err(err(crate::i18n::text_db::db_read_only_delete_blocked()));
     }
-    if pk.is_empty() {
-        return Err(err(crate::i18n::text_db::db_delete_needs_primary_key()));
-    }
+    let failed = |e: &dyn std::fmt::Display| err(crate::i18n::text_db::db_drop_table_failed(&table, e));
     match client_of(&state, &id)? {
-        DbClient::Mssql(c) => mssql_delete_row(&c, &database, &table, &pk).await,
-        DbClient::Sql(pool, engine) => sql_delete_row(&pool, engine, &table, &pk).await,
-        DbClient::Mongo(_) => Err(err(crate::i18n::text_db::db_row_delete_sql_only())),
-        DbClient::Redis(_) => Err(err(crate::i18n::text_db::db_row_delete_redis_unsupported())),
+        DbClient::Mssql(c) => {
+            let (schema, name) = table.split_once('.').unwrap_or(("dbo", table.as_str()));
+            let sql = format!(
+                "DROP TABLE [{}].[{}].[{}]",
+                database.replace(']', "]]"),
+                schema.replace(']', "]]"),
+                name.replace(']', "]]"),
+            );
+            c.lock().await.execute(sql, &[]).await.map(|_| ()).map_err(|e| failed(&e))
+        }
+        DbClient::Sql(pool, engine) => sqlx::query(&format!("DROP TABLE {}", quote_table(engine, &table)))
+            .execute(&pool)
+            .await
+            .map(|_| ())
+            .map_err(|e| failed(&e)),
+        DbClient::Mongo(_) | DbClient::Redis(_) => Err(err(crate::i18n::text_db::db_drop_table_sql_only())),
     }
 }
 
@@ -893,87 +869,6 @@ async fn mssql_column_types(
             }
         })
         .collect())
-}
-
-async fn mssql_update_cell(
-    arc: &Arc<tokio::sync::Mutex<MssqlClient>>,
-    database: &str,
-    table: &str,
-    pk: &[PkCell],
-    set_col: &str,
-    set_value: &Json,
-) -> Result<(), IpcError> {
-    let (schema, name) = table.split_once('.').unwrap_or(("dbo", table));
-    let types = mssql_column_types(arc, database, schema, name).await?;
-    let ty = |c: &str| types.get(c).map(String::as_str).unwrap_or("");
-    let qcol = |c: &str| format!("[{}]", c.replace(']', "]]"));
-
-    let set_lit = sql_literal(set_value, ty(set_col))?;
-    let mut where_parts = Vec::new();
-    for p in pk {
-        if p.value.is_null() {
-            where_parts.push(format!("{} IS NULL", qcol(&p.col)));
-        } else {
-            where_parts.push(format!("{} = {}", qcol(&p.col), sql_literal(&p.value, ty(&p.col))?));
-        }
-    }
-    let sql = format!(
-        "UPDATE [{}].[{}].[{}] SET {} = {} WHERE {}",
-        database.replace(']', "]]"),
-        schema.replace(']', "]]"),
-        name.replace(']', "]]"),
-        qcol(set_col),
-        set_lit,
-        where_parts.join(" AND ")
-    );
-
-    let mut client = arc.lock().await;
-    let res = client
-        .execute(sql, &[])
-        .await
-        .map_err(|e| err(crate::i18n::text_db::db_update_failed(e)))?;
-    match res.total() {
-        0 => Err(err(crate::i18n::text_db::db_update_no_matching_row())),
-        1 => Ok(()),
-        n => Err(err(crate::i18n::text_db::db_update_pk_not_unique(n))),
-    }
-}
-
-async fn mssql_delete_row(
-    arc: &Arc<tokio::sync::Mutex<MssqlClient>>,
-    database: &str,
-    table: &str,
-    pk: &[PkCell],
-) -> Result<(), IpcError> {
-    let (schema, name) = table.split_once('.').unwrap_or(("dbo", table));
-    let types = mssql_column_types(arc, database, schema, name).await?;
-    let ty = |c: &str| types.get(c).map(String::as_str).unwrap_or("");
-    let qcol = |c: &str| format!("[{}]", c.replace(']', "]]"));
-    let mut where_parts = Vec::new();
-    for p in pk {
-        if p.value.is_null() {
-            where_parts.push(format!("{} IS NULL", qcol(&p.col)));
-        } else {
-            where_parts.push(format!("{} = {}", qcol(&p.col), sql_literal(&p.value, ty(&p.col))?));
-        }
-    }
-    let sql = format!(
-        "DELETE FROM [{}].[{}].[{}] WHERE {}",
-        database.replace(']', "]]"),
-        schema.replace(']', "]]"),
-        name.replace(']', "]]"),
-        where_parts.join(" AND ")
-    );
-    let mut client = arc.lock().await;
-    let res = client
-        .execute(sql, &[])
-        .await
-        .map_err(|e| err(crate::i18n::text_db::db_delete_failed(e)))?;
-    match res.total() {
-        0 => Err(err(crate::i18n::text_db::db_delete_no_matching_row())),
-        1 => Ok(()),
-        n => Err(err(crate::i18n::text_db::db_delete_multiple_rows(n))),
-    }
 }
 
 async fn mssql_insert_row(
@@ -1640,95 +1535,6 @@ fn bind_json<'q>(
         }
         Json::String(s) => q.bind(s.clone()),
         other => q.bind(other.to_string()),
-    }
-}
-
-async fn sql_update_cell(
-    pool: &sqlx::AnyPool,
-    engine: DbEngine,
-    table: &str,
-    pk: &[PkCell],
-    set_col: &str,
-    set_value: &Json,
-) -> Result<(), IpcError> {
-    let mut n = 0usize;
-    let mut next = || {
-        n += 1;
-        placeholder(engine, n)
-    };
-    let set_ph = next();
-    let mut wheres = Vec::new();
-    for p in pk {
-        if p.value.is_null() {
-            wheres.push(format!("{} IS NULL", quote_ident(engine, &p.col)));
-        } else {
-            wheres.push(format!("{} = {}", quote_ident(engine, &p.col), next()));
-        }
-    }
-    let sql = format!(
-        "UPDATE {} SET {} = {} WHERE {}",
-        quote_table(engine, table),
-        quote_ident(engine, set_col),
-        set_ph,
-        wheres.join(" AND ")
-    );
-    let mut q = sqlx::query(&sql);
-    q = bind_json(q, set_value);
-    for p in pk {
-        if !p.value.is_null() {
-            q = bind_json(q, &p.value);
-        }
-    }
-    let res = q
-        .execute(pool)
-        .await
-        .map_err(|e| err(crate::i18n::text_db::db_update_failed(e)))?;
-    match res.rows_affected() {
-        0 => Err(err(crate::i18n::text_db::db_update_no_matching_row())),
-        1 => Ok(()),
-        m => Err(err(crate::i18n::text_db::db_update_pk_not_unique(m))),
-    }
-}
-
-async fn sql_delete_row(
-    pool: &sqlx::AnyPool,
-    engine: DbEngine,
-    table: &str,
-    pk: &[PkCell],
-) -> Result<(), IpcError> {
-    let mut n = 0usize;
-    let mut wheres = Vec::new();
-    for p in pk {
-        if p.value.is_null() {
-            wheres.push(format!("{} IS NULL", quote_ident(engine, &p.col)));
-        } else {
-            n += 1;
-            wheres.push(format!(
-                "{} = {}",
-                quote_ident(engine, &p.col),
-                placeholder(engine, n)
-            ));
-        }
-    }
-    let sql = format!(
-        "DELETE FROM {} WHERE {}",
-        quote_table(engine, table),
-        wheres.join(" AND ")
-    );
-    let mut q = sqlx::query(&sql);
-    for p in pk {
-        if !p.value.is_null() {
-            q = bind_json(q, &p.value);
-        }
-    }
-    let res = q
-        .execute(pool)
-        .await
-        .map_err(|e| err(crate::i18n::text_db::db_delete_failed(e)))?;
-    match res.rows_affected() {
-        0 => Err(err(crate::i18n::text_db::db_delete_no_matching_row())),
-        1 => Ok(()),
-        m => Err(err(crate::i18n::text_db::db_delete_multiple_rows(m))),
     }
 }
 

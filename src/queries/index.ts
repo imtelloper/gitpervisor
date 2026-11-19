@@ -92,12 +92,48 @@ export function useDbDatabases(connId: string, enabled: boolean) {
     staleTime: 30_000,
   });
 }
-export function useDbTables(connId: string, database: string, enabled: boolean) {
-  return useQuery({
+/** 사이드바 트리와 SQL 자동완성이 같은 캐시를 쓴다. */
+export function dbTablesQuery(connId: string, database: string) {
+  return queryOptions({
     queryKey: ["db-tables", connId, database],
     queryFn: () => ipc.dbTables(connId, database),
-    enabled,
     staleTime: 30_000,
+  });
+}
+export function useDbTables(connId: string, database: string, enabled: boolean) {
+  return useQuery({ ...dbTablesQuery(connId, database), enabled });
+}
+/** 테이블 여러 개 DROP — 하나가 실패해도 나머지는 지우고, 실패는 모아 한 번에 알린다(useDeletePath 와 같은 규칙). */
+export function useDropDbTables(connId: string, database: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (tables: string[]) => {
+      let done = 0;
+      const errors: string[] = [];
+      for (const t of tables) {
+        try {
+          await ipc.dbDropTable(connId, database, t);
+          done++;
+        } catch (e) {
+          errors.push(errorMessage(e));
+        }
+      }
+      return { done, errors };
+    },
+    onSuccess: ({ done, errors }) => {
+      void qc.invalidateQueries({ queryKey: ["db-tables", connId, database] });
+      const t = currentMessages().db.sidebar;
+      const { pushToast } = useUi.getState();
+      if (done) pushToast("success", t.tablesDropped(done));
+      if (errors.length) pushToast("error", t.tablesDropFailed(errors.length, errors[0]));
+    },
+  });
+}
+export function tableMetaQuery(connId: string, database: string, table: string) {
+  return queryOptions({
+    queryKey: ["db-table-meta", connId, database, table],
+    queryFn: () => ipc.dbTableMeta(connId, database, table),
+    staleTime: 60_000,
   });
 }
 export function useTableMeta(
@@ -106,9 +142,19 @@ export function useTableMeta(
   table: string,
   enabled: boolean,
 ) {
+  return useQuery({ ...tableMetaQuery(connId, database, table), enabled });
+}
+/** 결과 그리드의 행 편집 대상(테이블·키) — 결과를 낸 쿼리 텍스트와 결과 컬럼으로 판정한다. */
+export function useDbEditTarget(
+  connId: string,
+  database: string,
+  query: string,
+  columns: string[],
+  enabled: boolean,
+) {
   return useQuery({
-    queryKey: ["db-table-meta", connId, database, table],
-    queryFn: () => ipc.dbTableMeta(connId, database, table),
+    queryKey: ["db-edit-target", connId, database, query, columns],
+    queryFn: () => ipc.dbEditTarget(connId, database, query, columns),
     enabled,
     staleTime: 60_000,
   });
@@ -1245,6 +1291,52 @@ export function useRenamePath(projectId: string) {
       useUi.getState().pushToast("success", currentMessages().lib.mutationToast.pathRenamed);
     },
     onError: (e) => useUi.getState().pushToast("error", errorMessage(e)),
+  });
+}
+
+/** 터미널별 Claude 모델·effort — 모든 칸 헤더가 이 쿼리 하나를 나눠 쓴다(IPC 는 창마다 주기당 1번).
+ *  /model·/effort 는 다음 응답부터 전사에 찍히므로 그보다 촘촘히 볼 이유가 없다. */
+export function useClaudeTermModels() {
+  return useQuery({
+    queryKey: ["claude-term-models"],
+    queryFn: ipc.claudeTermModels,
+    refetchInterval: 15_000,
+    staleTime: 10_000,
+  });
+}
+
+/** 파일/폴더 복제 — 성공 시 새 레포-상대 경로. */
+export function useDuplicatePath(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (relPath: string) => ipc.duplicatePath(projectId, relPath),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["dir"] });
+      void qc.invalidateQueries({ queryKey: ["statuses"] });
+      useUi.getState().pushToast("success", currentMessages().lib.mutationToast.pathDuplicated);
+    },
+    onError: (e) => useUi.getState().pushToast("error", errorMessage(e)),
+  });
+}
+
+export function usePasteClipboardFiles(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (destDir: string) => ipc.pasteClipboardFiles(projectId, destDir),
+    onSuccess: (created) => {
+      const t = currentMessages().lib.mutationToast;
+      if (created.length === 0) {
+        useUi.getState().pushToast("info", t.clipboardHasNoFiles);
+        return;
+      }
+      useUi.getState().pushToast("success", t.filesPasted(created.length));
+    },
+    onError: (e) => useUi.getState().pushToast("error", errorMessage(e)),
+    // 여러 개 중 중간에 실패해도 앞의 것은 이미 복사됐다 — 성공·실패 모두 목록을 다시 읽는다.
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: ["dir"] });
+      void qc.invalidateQueries({ queryKey: ["statuses"] });
+    },
   });
 }
 

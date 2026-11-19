@@ -1020,6 +1020,36 @@ function AnnotationLayerImpl(
         className="pointer-events-none absolute inset-0 h-full w-full"
         style={{ visibility: "hidden", ...vpBox }}
       />
+      {/* 크롭 핸들은 사각형 변 **위에** 걸쳐 그려진다 — 사각형이 이미지 가장자리에 닿으면
+          핸들 바깥 절반이 캔버스 밖이라 커서도 안 바뀌고 잡히지도 않았다(사용자 보고).
+          캔버스 **아래**에 집기 반경만큼 넓은 투명 판을 깔아 같은 핸들러로 받는다 — 좌표는
+          캔버스 rect 기준 `clientToDoc` 이 밖의 점도 그대로 환산한다. 커서는 핸들러가
+          캔버스에 쓴 값을 따라 쓴다. 판은 크롭 중에만 있다(평소엔 스테이지 클릭 = 팬·해제). */}
+      {props.cropMode && (
+        <div
+          aria-hidden
+          className="absolute cursor-crosshair"
+          style={(() => {
+            const m = HANDLE_GRAB_CSS / Math.max(props.zoom ?? 1, 1e-6);
+            return vpBox
+              ? {
+                  touchAction: "none",
+                  left: vpBox.left - m,
+                  top: vpBox.top - m,
+                  width: vpBox.width + 2 * m,
+                  height: vpBox.height + 2 * m,
+                }
+              : { touchAction: "none", inset: -m };
+          })()}
+          onPointerDown={onPointerDown}
+          onPointerMove={(e) => {
+            onPointerMove(e);
+            e.currentTarget.style.cursor = canvasRef.current?.style.cursor ?? "";
+          }}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerUp}
+        />
+      )}
       <canvas
         ref={canvasRef}
         onPointerDown={onPointerDown}

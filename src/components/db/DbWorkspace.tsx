@@ -1,15 +1,19 @@
 import { ensureMonacoTheme, monaco } from "../diff/monaco-setup";
 
 import { Editor } from "@monaco-editor/react";
-import { Play, Plus, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { Pencil, Play, Plus, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useMessages } from "../../i18n/ui-language";
-import { isSqlEngine } from "../../lib/ipc";
-import { useDbConnections, useSettings, useTableMeta } from "../../queries";
+import { errorMessage, isSqlEngine } from "../../lib/ipc";
+import { useDbEditTarget, useSettings, useTableMeta } from "../../queries";
 import { LIMIT_OPTIONS, useDb } from "../../stores/db";
+import type { RowOrigin } from "../../stores/db";
 import { useUi } from "../../stores/ui";
 import { DbSidebar } from "./DbSidebar";
+import { editText, RowEditDialog, rowKeyOf } from "./RowEditDialog";
+import { registerSqlCompletion } from "./sql-completion";
 
 function QueryEditor() {
   const msg = useMessages();
@@ -27,6 +31,7 @@ function QueryEditor() {
   const dialect = sql ? "sql" : activeEngine === "redis" ? "redis" : "mongo-js";
   const { data: settings } = useSettings();
   const theme = ensureMonacoTheme(settings?.theme);
+  const queryClient = useQueryClient();
 
   return (
     <div className="flex h-[210px] shrink-0 flex-col border-b border-edge">
@@ -68,7 +73,7 @@ function QueryEditor() {
           className="flex shrink-0 items-center gap-1.5 rounded bg-accent px-3 py-1 text-xs font-medium text-on-accent hover:bg-accent-hover disabled:opacity-50"
         >
           <Play size={12} /> {msg.db.queryEditor.run}
-          <span className="hidden font-mono opacity-70 min-[520px]:inline">Ctrl+↵</span>
+          <span className="hidden font-mono opacity-70 min-[520px]:inline">F5</span>
         </button>
       </div>
       <div className="min-h-0 flex-1">
@@ -94,7 +99,11 @@ function QueryEditor() {
               keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter],
               run: () => void useDb.getState().runQuery(),
             });
-            editor.onDidDispose(() => reg.dispose());
+            const completion = registerSqlCompletion(editor, queryClient);
+            editor.onDidDispose(() => {
+              reg.dispose();
+              completion.dispose();
+            });
           }}
           loading={<span className="text-xs text-fg-dim">{msg.db.queryEditor.editorLoading}</span>}
         />
@@ -204,26 +213,70 @@ function Center({ children, danger }: { children: React.ReactNode; danger?: bool
   );
 }
 
+function GridMenuItem({
+  icon,
+  label,
+  danger,
+  disabled,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  danger?: boolean;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={`flex w-full items-center gap-2 px-3 py-1.5 text-left enabled:hover:bg-raised disabled:opacity-40 ${
+        danger ? "text-danger" : "text-fg-muted enabled:hover:text-fg"
+      }`}
+    >
+      <span className="shrink-0">{icon}</span>
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+    </button>
+  );
+}
+
 function ResultGrid() {
   const msg = useMessages();
+  const g = msg.db.resultGrid;
   const result = useDb((s) => s.result);
   const error = useDb((s) => s.resultError);
   const running = useDb((s) => s.running);
   const limit = useDb((s) => s.limit);
-  const activeEngine = useDb((s) => s.activeEngine);
-  const activeConnId = useDb((s) => s.activeConnId);
-  const editTable = useDb((s) => s.editTable);
-  const editPk = useDb((s) => s.editPk);
-  const updateCell = useDb((s) => s.updateCell);
+  const source = useDb((s) => s.resultSource);
+  const updateRow = useDb((s) => s.updateRow);
   const deleteRow = useDb((s) => s.deleteRow);
   const askConfirm = useUi((s) => s.askConfirm);
-  const { data: connections } = useDbConnections();
   const [edit, setEdit] = useState<{
     row: number;
     col: number;
     value: string;
+    initial: string;
   } | null>(null);
   const [insertOpen, setInsertOpen] = useState(false);
+  const [rowDialog, setRowDialog] = useState<RowOrigin | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; row: number } | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  // 행 편집 대상(테이블·키)은 결과를 낸 쿼리로 백엔드가 판정한다 — 단일 테이블 + 키 컬럼이 결과에 다 있을 때만.
+  const sqlResult = !!result && !!source && isSqlEngine(source.engine);
+  const colNames = useMemo(() => result?.columns.map((c) => c.name) ?? [], [result?.columns]);
+  const targetQ = useDbEditTarget(
+    source?.connId ?? "",
+    source?.database ?? "",
+    source?.query ?? "",
+    colNames,
+    sqlResult && colNames.length > 0,
+  );
+  const editTable = targetQ.data?.table ?? null;
+  const keyCols = targetQ.data?.key.length ? targetQ.data.key : null;
+  const tableRefusal = targetQ.error
+    ? errorMessage(targetQ.error)
+    : (targetQ.data?.refusal ?? g.editCheckPending);
 
   // 콘텐츠 맞춤 자동 너비 — 결과가 바뀔 때만 재계산
   const autoWidths = useMemo(() => {
@@ -243,23 +296,59 @@ function ResultGrid() {
   const [overrides, setOverrides] = useState<Record<string, number>>({});
   useEffect(() => setOverrides({}), [result]);
 
-  if (running) return <Center>{msg.db.resultGrid.running}</Center>;
+  useEffect(() => {
+    if (!menu) return;
+    const close = (e: Event) => {
+      if (e instanceof KeyboardEvent ? e.key === "Escape" : !menuRef.current?.contains(e.target as Node)) setMenu(null);
+    };
+    // 캡처 단계 — 그리드·에디터가 전파를 끊어도 바깥 클릭으로 닫힌다.
+    window.addEventListener("pointerdown", close, true);
+    window.addEventListener("keydown", close, true);
+    return () => {
+      window.removeEventListener("pointerdown", close, true);
+      window.removeEventListener("keydown", close, true);
+    };
+  }, [menu]);
+
+  if (running) return <Center>{g.running}</Center>;
   if (error) return <Center danger>{error}</Center>;
-  if (!result) return <Center>{msg.db.resultGrid.emptyPrompt}</Center>;
-  if (result.rows.length === 0) return <Center>{msg.db.resultGrid.noResults}</Center>;
+  if (!result) return <Center>{g.emptyPrompt}</Center>;
+  if (result.rows.length === 0) return <Center>{g.noResults}</Center>;
 
   const widthOf = (name: string) => overrides[name] ?? autoWidths[name] ?? 160;
-
-  // 편집 가능: SQL 테이블 미리보기 + PK 존재 + 읽기전용 아님
-  const conn = connections?.find((c) => c.id === activeConnId);
-  const editable =
-    isSqlEngine(activeEngine) &&
-    !!editTable &&
-    !!editPk &&
-    editPk.length > 0 &&
-    !conn?.readOnly;
+  const rowTarget = (i: number) =>
+    editTable && keyCols ? rowKeyOf(result, keyCols, i, g) : { refusal: tableRefusal };
+  const editable = !!editTable && !!keyCols;
   const idxColW = editable ? 64 : 44;
   const total = idxColW + result.columns.reduce((s, c) => s + widthOf(c.name), 0);
+
+  const confirmDelete = (row: number) => {
+    const rt = rowTarget(row);
+    if (!editTable || "refusal" in rt) return;
+    const origin = { result, row };
+    askConfirm({
+      title: g.deleteRowTitle,
+      message: g.deleteRowMessage,
+      detail: [editTable, ...rt.key.map((k) => `  ${k.col} = ${cellText(k.value)}`)].join("\n"),
+      confirmLabel: g.deleteRowConfirm,
+      danger: true,
+      onConfirm: () => void deleteRow(origin, editTable, rt.key),
+    });
+  };
+
+  const commitEdit = () => {
+    if (!edit) return;
+    const cur = edit;
+    setEdit(null);
+    const rt = rowTarget(cur.row);
+    const col = result.columns[cur.col]?.name;
+    if (cur.value === cur.initial || !editTable || !col || "refusal" in rt) return;
+    void updateRow({ result, row: cur.row }, editTable, rt.key, [{ col, value: cur.value }]);
+  };
+
+  const menuTarget = menu ? rowTarget(menu.row) : null;
+  const menuRefusal = menuTarget && "refusal" in menuTarget ? menuTarget.refusal : null;
+  const dialogKey = rowDialog && keyCols ? rowKeyOf(rowDialog.result, keyCols, rowDialog.row, g) : null;
 
   // 헤더 경계 드래그 → 해당 컬럼 너비 조절
   const startResize = (e: React.MouseEvent, name: string) => {
@@ -301,8 +390,8 @@ function ResultGrid() {
         >
           <colgroup>
             <col style={{ width: idxColW }} />
-            {result.columns.map((c) => (
-              <col key={c.name} style={{ width: widthOf(c.name) }} />
+            {result.columns.map((c, j) => (
+              <col key={j} style={{ width: widthOf(c.name) }} />
             ))}
           </colgroup>
           <thead className="sticky top-0 z-10">
@@ -310,9 +399,9 @@ function ResultGrid() {
               <th className="border-b border-r border-edge px-2 py-1 text-left font-medium text-fg-dim">
                 #
               </th>
-              {result.columns.map((c) => (
+              {result.columns.map((c, j) => (
                 <th
-                  key={c.name}
+                  key={j}
                   className="relative border-b border-r border-edge px-2 py-1 text-left font-medium text-fg-muted"
                 >
                   <span className="block truncate" title={c.name}>
@@ -321,7 +410,7 @@ function ResultGrid() {
                   <div
                     onMouseDown={(e) => startResize(e, c.name)}
                     onDoubleClick={() => autoFit(c.name)}
-                    title={msg.db.resultGrid.columnResizeTitle}
+                    title={g.columnResizeTitle}
                     className="absolute right-0 top-0 z-10 h-full w-1.5 cursor-col-resize hover:bg-accent"
                   />
                 </th>
@@ -329,73 +418,80 @@ function ResultGrid() {
             </tr>
           </thead>
           <tbody>
-            {result.rows.map((row, i) => (
-              <tr key={i} className="group hover:bg-raised/40">
-                <td className="border-b border-r border-edge px-2 py-1 text-fg-dim">
-                  <div className="flex items-center gap-1">
-                    {editable && (
-                      <button
-                        onClick={() =>
-                          askConfirm({
-                            title: msg.db.resultGrid.deleteRowTitle,
-                            message: msg.db.resultGrid.deleteRowMessage,
-                            confirmLabel: msg.db.resultGrid.deleteRowConfirm,
-                            danger: true,
-                            onConfirm: () => void deleteRow(i),
-                          })
+            {result.rows.map((row, i) => {
+              const rowOk = editable && !("refusal" in rowTarget(i));
+              return (
+                <tr
+                  key={i}
+                  onContextMenu={
+                    sqlResult
+                      ? (e) => {
+                          e.preventDefault();
+                          setEdit(null);
+                          setMenu({ x: e.clientX, y: e.clientY, row: i });
                         }
-                        title={msg.db.resultGrid.deleteRowTooltip}
-                        className="text-fg-dim opacity-0 hover:text-danger group-hover:opacity-100"
-                      >
-                        <Trash2 size={12} />
-                      </button>
-                    )}
-                    {i + 1}
-                  </div>
-                </td>
-                {row.map((cell, j) => {
-                  const colName = result.columns[j]?.name;
-                  const isPk = editPk?.includes(colName) ?? false;
-                  const cellEditable = editable && !isPk;
-                  const isEditing = edit?.row === i && edit?.col === j;
-                  return (
-                    <td
-                      key={j}
-                      onDoubleClick={
-                        cellEditable
-                          ? () =>
-                              setEdit({ row: i, col: j, value: cellText(cell) })
-                          : undefined
-                      }
-                      title={cellEditable ? msg.db.resultGrid.cellEditTitle : undefined}
-                      className={`truncate border-b border-r border-edge px-2 py-1 align-top font-mono ${
-                        cellEditable ? "cursor-text" : ""
-                      }`}
-                    >
-                      {isEditing ? (
-                        <input
-                          autoFocus
-                          value={edit.value}
-                          onChange={(e) =>
-                            setEdit({ row: i, col: j, value: e.target.value })
-                          }
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              void updateCell(i, j, edit.value);
-                              setEdit(null);
-                            } else if (e.key === "Escape") setEdit(null);
-                          }}
-                          onBlur={() => setEdit(null)}
-                          className="w-full bg-base px-0.5 text-fg outline outline-1 outline-accent"
-                        />
-                      ) : (
-                        renderCell(cell)
+                      : undefined
+                  }
+                  className={`group ${menu?.row === i ? "bg-accent/15" : "hover:bg-raised/40"}`}
+                >
+                  <td className="border-b border-r border-edge px-2 py-1 text-fg-dim">
+                    <div className="flex items-center gap-1">
+                      {rowOk && (
+                        <button
+                          onClick={() => confirmDelete(i)}
+                          title={g.deleteRowTooltip}
+                          className="text-fg-dim opacity-0 hover:text-danger group-hover:opacity-100"
+                        >
+                          <Trash2 size={12} />
+                        </button>
                       )}
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
+                      {i + 1}
+                    </div>
+                  </td>
+                  {row.map((cell, j) => {
+                    const colName = result.columns[j]?.name ?? "";
+                    const cellEditable = rowOk && !keyCols?.includes(colName);
+                    const isEditing = edit?.row === i && edit?.col === j;
+                    return (
+                      <td
+                        key={j}
+                        onDoubleClick={
+                          cellEditable
+                            ? () => {
+                                const text = editText(cell);
+                                // 한 줄 입력칸은 줄바꿈을 지운다 — 여러 줄 값은 행 수정 창(textarea)에서.
+                                if (/[\r\n]/.test(text)) setRowDialog({ result, row: i });
+                                else setEdit({ row: i, col: j, value: text, initial: text });
+                              }
+                            : undefined
+                        }
+                        title={cellEditable ? g.cellEditTitle : undefined}
+                        className={`truncate border-b border-r border-edge px-2 py-1 align-top font-mono ${
+                          cellEditable ? "cursor-text" : ""
+                        }`}
+                      >
+                        {isEditing ? (
+                          <input
+                            autoFocus
+                            value={edit.value}
+                            placeholder={cell === null || cell === undefined ? "NULL" : undefined}
+                            onChange={(e) => setEdit({ ...edit, value: e.target.value })}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") commitEdit();
+                              else if (e.key === "Escape") setEdit(null);
+                            }}
+                            onBlur={() => setEdit(null)}
+                            className="w-full bg-base px-0.5 text-fg outline outline-1 outline-accent"
+                          />
+                        ) : (
+                          renderCell(cell)
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -403,41 +499,73 @@ function ResultGrid() {
         {result.rowCount} docs · {result.columns.length} fields
         {result.rowCount >= limit && (
           <span className="ml-2 text-mod">
-            {msg.db.resultGrid.limitReached(limit)}
+            {g.limitReached(limit)}
           </span>
         )}
-        {editable && (
-          <>
-            <span className="ml-2 text-fg-dim">{msg.db.resultGrid.cellEditHint}</span>
-            <button
-              onClick={() => setInsertOpen(true)}
-              className="ml-2 rounded border border-edge px-1.5 align-middle hover:bg-raised hover:text-fg"
-            >
-              <Plus size={11} className="inline" /> {msg.db.resultGrid.addRow}
-            </button>
-          </>
+        {editable && <span className="ml-2 text-fg-dim">{g.cellEditHint}</span>}
+        {editTable && (
+          <button
+            onClick={() => setInsertOpen(true)}
+            className="ml-2 rounded border border-edge px-1.5 align-middle hover:bg-raised hover:text-fg"
+          >
+            <Plus size={11} className="inline" /> {g.addRow}
+          </button>
         )}
       </div>
-      {insertOpen && <InsertRowDialog onClose={() => setInsertOpen(false)} />}
+      {menu && (
+        <div
+          ref={menuRef}
+          style={{ left: Math.min(menu.x, window.innerWidth - 300), top: Math.min(menu.y, window.innerHeight - 140) }}
+          className="fixed z-50 w-max min-w-[180px] max-w-[300px] rounded border border-edge bg-panel py-1 text-[12px] shadow-lg"
+        >
+          <GridMenuItem
+            icon={<Pencil size={13} />}
+            label={g.editRow}
+            disabled={!!menuRefusal}
+            onClick={() => {
+              setMenu(null);
+              setRowDialog({ result, row: menu.row });
+            }}
+          />
+          <GridMenuItem
+            icon={<Trash2 size={13} />}
+            label={g.deleteRowTitle}
+            danger
+            disabled={!!menuRefusal}
+            onClick={() => {
+              setMenu(null);
+              confirmDelete(menu.row);
+            }}
+          />
+          {menuRefusal && (
+            <div className="mt-1 border-t border-edge px-3 pb-1 pt-1.5 text-[11px] leading-snug text-fg-dim">
+              {menuRefusal}
+            </div>
+          )}
+        </div>
+      )}
+      {rowDialog && editTable && keyCols && dialogKey && "key" in dialogKey && (
+        <RowEditDialog
+          table={editTable}
+          origin={rowDialog}
+          keyCols={keyCols}
+          keyValues={dialogKey.key}
+          onClose={() => setRowDialog(null)}
+        />
+      )}
+      {insertOpen && editTable && <InsertRowDialog table={editTable} onClose={() => setInsertOpen(false)} />}
     </div>
   );
 }
 
 /** 행 추가 폼 — non-identity 컬럼 입력. 비우면 nullable/기본값 컬럼은 생략. */
-function InsertRowDialog({ onClose }: { onClose: () => void }) {
+function InsertRowDialog({ table, onClose }: { table: string; onClose: () => void }) {
   const msg = useMessages();
-  const editTable = useDb((s) => s.editTable);
-  const activeConnId = useDb((s) => s.activeConnId);
+  const source = useDb((s) => s.resultSource);
   const insertRow = useDb((s) => s.insertRow);
-  const { data: meta } = useTableMeta(
-    activeConnId ?? "",
-    editTable?.database ?? "",
-    editTable?.table ?? "",
-    !!editTable && !!activeConnId,
-  );
+  const { data: meta } = useTableMeta(source?.connId ?? "", source?.database ?? "", table, !!source);
   const [vals, setVals] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
-  if (!editTable) return null;
   const cols = (meta?.columns ?? []).filter((c) => !c.identity);
 
   const submit = async () => {
@@ -450,7 +578,7 @@ function InsertRowDialog({ onClose }: { onClose: () => void }) {
       .map((c) => ({ col: c.name, value: vals[c.name] ?? "" }));
     setBusy(true);
     try {
-      await insertRow(values);
+      await insertRow(table, values);
       onClose();
     } catch {
       /* 토스트로 안내 — 폼 유지 */
@@ -465,10 +593,12 @@ function InsertRowDialog({ onClose }: { onClose: () => void }) {
       onClick={onClose}
     >
       <div
+        role="dialog"
+        aria-modal="true"
         className="max-h-[80vh] w-[440px] overflow-auto rounded-lg border border-edge bg-panel p-5 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="mb-3 font-semibold">{msg.db.insertRowDialog.title(editTable.table)}</div>
+        <div className="mb-3 font-semibold">{msg.db.insertRowDialog.title(table)}</div>
         <div className="space-y-2 text-[13px]">
           {!meta && <div className="text-fg-dim">{msg.db.insertRowDialog.loadingColumns}</div>}
           {cols.map((c) => {
@@ -660,8 +790,29 @@ function ResultArea() {
 }
 
 export function DbWorkspace() {
+  const rootRef = useRef<HTMLDivElement>(null);
+  // F5 = 쿼리 실행(Ctrl+Enter 와 같다). 캡처 단계에서 먹어야 Monaco·전역 F5(KeyboardShortcuts 의 전체 새로고침)·
+  // 웹뷰 새로고침으로 새지 않는다. DB 화면 안에 포커스가 있거나, 포커스가 body 로 빠졌는데 이 화면이 보일 때만.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "F5" || e.ctrlKey || e.shiftKey || e.altKey || e.metaKey) return;
+      const root = rootRef.current;
+      const target = e.target instanceof Node ? e.target : null;
+      const inside = !!root && !!target && root.contains(target);
+      if (!root || (!inside && !(target === document.body && root.checkVisibility()))) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      // 행 수정·추가 창이 열려 있으면 결과를 갈아엎지 않는다.
+      if (e.repeat || (target instanceof Element && target.closest("[aria-modal=true]"))) return;
+      const db = useDb.getState();
+      if (!db.running) void db.runQuery();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
+
   return (
-    <div className="flex h-full min-w-0">
+    <div ref={rootRef} className="flex h-full min-w-0">
       <DbSidebar />
       <div className="flex min-w-0 flex-1 flex-col bg-base">
         <QueryEditor />
