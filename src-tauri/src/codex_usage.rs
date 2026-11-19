@@ -13,31 +13,50 @@ use crate::claude_usage::{AgentUsage, UsageWindow};
 #[cfg(not(windows))]
 use crate::tools::runner::{find_in_wellknown_dirs, find_on_path};
 
-#[derive(Default)]
+/// 성공하면 3분 쉰다(Claude 쪽 API_TTL 과 같다).
+const TTL: Duration = Duration::from_secs(180);
+/// 실패는 곧 다시 묻는다 — app-server 를 띄워야 해서 Claude 의 15초보다는 느긋하게.
+const RETRY: Duration = Duration::from_secs(30);
+
 struct Cache {
-    fetched_at: Option<Instant>,
+    /// 이때까지는 다시 묻지 않는다.
+    next: Option<Instant>,
+    /// 마지막 성공 — 한 번 실패했다고 지우지 않는다. 오래되면 프론트가 숨긴다(updated_at).
     usage: Option<AgentUsage>,
+    last_err: Option<String>,
 }
 
-static CACHE: Mutex<Cache> = Mutex::const_new(Cache {
-    fetched_at: None,
-    usage: None,
-});
+static CACHE: Mutex<Cache> = Mutex::const_new(Cache { next: None, usage: None, last_err: None });
 
+/// 예전엔 실패(시간 초과·오류 응답) 한 번에 마지막 값을 None 으로 덮고 3분을 쉬어서, 상단 Codex 사용량이 가끔 통째로
+/// 사라졌다(2026-11-19 사용자 지적). 지금은 마지막 성공을 들고 있고 실패는 30초 뒤 다시 묻는다.
 #[tauri::command(async)]
 pub async fn codex_usage() -> Option<AgentUsage> {
     let mut cache = CACHE.lock().await;
-    if cache
-        .fetched_at
-        .is_none_or(|at| at.elapsed() >= Duration::from_secs(180))
-    {
-        cache.usage = tokio::time::timeout(Duration::from_secs(10), read_usage())
+    if cache.next.is_none_or(|t| Instant::now() >= t) {
+        let got = tokio::time::timeout(Duration::from_secs(10), read_usage())
             .await
-            .ok()
-            .flatten();
-        cache.fetched_at = Some(Instant::now());
+            .unwrap_or_else(|_| Err("10초 안에 응답 없음".into()));
+        apply_fetch(&mut cache, got, Instant::now());
     }
     cache.usage.clone()
+}
+
+fn apply_fetch(cache: &mut Cache, got: Result<AgentUsage, String>, now: Instant) {
+    match got {
+        Ok(u) => {
+            cache.usage = Some(u);
+            cache.next = Some(now + TTL);
+            cache.last_err = None;
+        }
+        Err(e) => {
+            cache.next = Some(now + RETRY);
+            if cache.last_err.as_deref() != Some(e.as_str()) {
+                log::info!("[codex-usage] 사용량 조회 실패 — {e} (다음 조회 {}초 뒤)", RETRY.as_secs());
+                cache.last_err = Some(e);
+            }
+        }
+    }
 }
 
 fn codex_path() -> Option<PathBuf> {
@@ -58,8 +77,8 @@ fn codex_path() -> Option<PathBuf> {
     }
 }
 
-async fn read_usage() -> Option<AgentUsage> {
-    let mut command = Command::new(codex_path()?);
+async fn read_usage() -> Result<AgentUsage, String> {
+    let mut command = Command::new(codex_path().ok_or("codex 를 PATH 에서 못 찾음")?);
     command
         .args(["app-server", "--listen", "stdio://"])
         .stdin(Stdio::piped())
@@ -69,9 +88,9 @@ async fn read_usage() -> Option<AgentUsage> {
     #[cfg(windows)]
     command.creation_flags(0x0800_0000);
 
-    let mut child = command.spawn().ok()?;
-    let mut input = child.stdin.take()?;
-    let mut output = BufReader::new(child.stdout.take()?).lines();
+    let mut child = command.spawn().map_err(|e| format!("codex app-server 실행: {e}"))?;
+    let mut input = child.stdin.take().ok_or("stdin 없음")?;
+    let mut output = BufReader::new(child.stdout.take().ok_or("stdout 없음")?).lines();
     let initialize = json!({
         "id": 1,
         "method": "initialize",
@@ -80,9 +99,9 @@ async fn read_usage() -> Option<AgentUsage> {
     input
         .write_all(format!("{initialize}\n").as_bytes())
         .await
-        .ok()?;
+        .map_err(|e| format!("initialize 쓰기: {e}"))?;
 
-    while let Some(line) = output.next_line().await.ok()? {
+    while let Some(line) = output.next_line().await.map_err(|e| format!("응답 읽기: {e}"))? {
         let Ok(message) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
@@ -91,14 +110,19 @@ async fn read_usage() -> Option<AgentUsage> {
                 input
                     .write_all(b"{\"method\":\"initialized\"}\n{\"id\":2,\"method\":\"account/rateLimits/read\"}\n")
                     .await
-                    .ok()?;
+                    .map_err(|e| format!("rateLimits 요청 쓰기: {e}"))?;
             }
-            Some(1) => return None,
-            Some(2) => return parse_usage(message.get("result")?),
+            Some(1) => return Err(format!("initialize 거절: {}", message["error"])),
+            Some(2) => {
+                return message
+                    .get("result")
+                    .and_then(parse_usage)
+                    .ok_or_else(|| format!("rateLimits 응답에 한도 없음: {}", message.get("error").unwrap_or(&message)));
+            }
             _ => {}
         }
     }
-    None
+    Err("app-server 가 응답 전에 끝남".into())
 }
 
 fn parse_usage(result: &Value) -> Option<AgentUsage> {
@@ -126,4 +150,41 @@ fn parse_usage(result: &Value) -> Option<AgentUsage> {
         windows,
         updated_at: chrono::Utc::now().timestamp(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn usage(pct: f32) -> AgentUsage {
+        AgentUsage { windows: vec![UsageWindow { key: "seven_day".into(), used_percentage: pct, resets_at: None }], updated_at: 1 }
+    }
+
+    /// 사용자 보고(2026-11-19): 한 번 실패하면 Codex 사용량이 3분 동안 사라졌다.
+    #[test]
+    fn codex_usage_failure_keeps_last_value_and_retries_soon() {
+        let mut c = Cache { next: None, usage: None, last_err: None };
+        let t0 = Instant::now();
+        apply_fetch(&mut c, Ok(usage(5.0)), t0);
+        assert_eq!(c.next, Some(t0 + TTL));
+        let t1 = t0 + TTL;
+        apply_fetch(&mut c, Err("10초 안에 응답 없음".into()), t1);
+        assert_eq!(c.usage.as_ref().map(|u| u.windows[0].used_percentage), Some(5.0), "실패해도 마지막 값을 보인다");
+        assert_eq!(c.next, Some(t1 + RETRY), "실패는 3분이 아니라 곧 다시 묻는다");
+        apply_fetch(&mut c, Ok(usage(7.0)), t1 + RETRY);
+        assert_eq!(c.usage.as_ref().map(|u| u.windows[0].used_percentage), Some(7.0));
+        assert!(c.last_err.is_none());
+    }
+
+    #[test]
+    fn codex_usage_parses_weekly_only_plan() {
+        // 2026-11-19 실측(plus): primary 만 주간, secondary null.
+        let r: Value = serde_json::from_str(
+            r#"{"rateLimits":{"limitId":"codex","primary":{"usedPercent":5,"windowDurationMins":10080,"resetsAt":1795529182},"secondary":null}}"#,
+        )
+        .unwrap();
+        let u = parse_usage(&r).unwrap();
+        assert_eq!(u.windows.len(), 1);
+        assert_eq!((u.windows[0].key.as_str(), u.windows[0].resets_at), ("seven_day", Some(1_795_529_182)));
+    }
 }

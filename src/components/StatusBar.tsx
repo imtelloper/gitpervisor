@@ -172,7 +172,8 @@ function usageKeyLabel(key: string, msg: Messages): string | undefined {
     case "seven_day_sonnet":
       return "Sonnet";
     default:
-      return undefined;
+      // 모델별 주간 한도(claude_usage.rs model_scoped_windows) — "model:Fable" → "Fable".
+      return key.startsWith("model:") ? key.slice("model:".length) : undefined;
   }
 }
 /** 리셋 시각이 지난 창은 새 창이다 — 다음 조회 전이라도 0% 로 보인다(옛 수치가 리셋 뒤에도 남아 보이지 않게). */

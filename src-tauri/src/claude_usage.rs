@@ -161,7 +161,7 @@ async fn fetch_api_usage() -> Result<AgentUsage, (String, Duration)> {
 
 /// `{"five_hour":{"utilization":78.0,"resets_at":"2026-11-05T23:00:00.08+00:00"},"seven_day":null,…}` → 창 목록.
 fn parse_api_usage(body: &serde_json::Value, now: i64) -> AgentUsage {
-    let windows = API_WINDOWS
+    let mut windows: Vec<UsageWindow> = API_WINDOWS
         .iter()
         .filter_map(|key| {
             let w = body.get(*key)?;
@@ -176,7 +176,31 @@ fn parse_api_usage(body: &serde_json::Value, now: i64) -> AgentUsage {
             })
         })
         .collect();
+    windows.extend(model_scoped_windows(body));
     AgentUsage { windows, updated_at: now }
+}
+
+/// 모델별 주간 한도는 이제 `seven_day_opus` 같은 고정 키가 아니라 `limits` 배열의 `weekly_scoped` 항목으로 온다
+/// (2026-11-19 실측: Fable 64% 가 여기에만 있고 `seven_day_opus`·`_sonnet` 은 null — 사용자가 Fable 사용량이 안 보인다고 지적).
+/// 키는 `model:<표시 이름>` — 프론트가 접두사를 떼어 라벨로 쓴다. 모델이 아닌 범위(surface 등)는 버린다.
+fn model_scoped_windows(body: &serde_json::Value) -> Vec<UsageWindow> {
+    let Some(limits) = body.get("limits").and_then(|v| v.as_array()) else { return Vec::new() };
+    limits
+        .iter()
+        .filter(|l| l.get("kind").and_then(|v| v.as_str()) == Some("weekly_scoped"))
+        .filter_map(|l| {
+            let name = l.pointer("/scope/model/display_name")?.as_str()?;
+            Some(UsageWindow {
+                key: format!("model:{name}"),
+                used_percentage: l.get("percent")?.as_f64()? as f32,
+                resets_at: l
+                    .get("resets_at")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|d| d.timestamp()),
+            })
+        })
+        .collect()
 }
 
 #[derive(Deserialize, Clone)]
@@ -437,6 +461,26 @@ mod api_tests {
             ]
         );
         assert_eq!(u.updated_at, 42);
+    }
+
+    /// 2026-11-19 실제 응답에서 줄인 것 — Fable 주간 한도는 `limits` 의 weekly_scoped 에만 있다.
+    #[test]
+    fn api_usage_reads_model_scoped_weekly_limits() {
+        let body: serde_json::Value = serde_json::from_str(
+            r#"{"five_hour":{"utilization":50.0,"resets_at":"2026-11-19T10:20:00.99+00:00"},
+                "seven_day":{"utilization":56.0,"resets_at":"2026-11-19T09:00:00+00:00"},"seven_day_opus":null,
+                "limits":[
+                  {"kind":"session","percent":50,"resets_at":"2026-11-19T10:20:00+00:00","scope":null},
+                  {"kind":"weekly_all","percent":56,"resets_at":"2026-11-19T09:00:00+00:00","scope":null},
+                  {"kind":"weekly_scoped","percent":64,"resets_at":"2026-11-19T09:00:00+00:00",
+                   "scope":{"model":{"id":null,"display_name":"Fable"},"surface":null}},
+                  {"kind":"weekly_scoped","percent":10,"scope":{"model":null,"surface":"cowork"}}]}"#,
+        )
+        .unwrap();
+        let u = parse_api_usage(&body, 0);
+        let got: Vec<_> = u.windows.iter().map(|w| (w.key.as_str(), w.used_percentage)).collect();
+        assert_eq!(got, [("five_hour", 50.0), ("seven_day", 56.0), ("model:Fable", 64.0)]);
+        assert_eq!(u.windows[2].resets_at, Some(1_795_078_800));
     }
 
     #[test]
