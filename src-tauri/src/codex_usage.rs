@@ -36,7 +36,7 @@ pub async fn codex_usage() -> Option<AgentUsage> {
     if cache.next.is_none_or(|t| Instant::now() >= t) {
         let got = tokio::time::timeout(Duration::from_secs(10), read_usage())
             .await
-            .unwrap_or_else(|_| Err("10초 안에 응답 없음".into()));
+            .unwrap_or_else(|_| Err("no response within 10s".into()));
         apply_fetch(&mut cache, got, Instant::now());
     }
     cache.usage.clone()
@@ -78,7 +78,7 @@ fn codex_path() -> Option<PathBuf> {
 }
 
 async fn read_usage() -> Result<AgentUsage, String> {
-    let mut command = Command::new(codex_path().ok_or("codex 를 PATH 에서 못 찾음")?);
+    let mut command = Command::new(codex_path().ok_or("codex not found on PATH")?);
     command
         .args(["app-server", "--listen", "stdio://"])
         .stdin(Stdio::piped())
@@ -88,9 +88,9 @@ async fn read_usage() -> Result<AgentUsage, String> {
     #[cfg(windows)]
     command.creation_flags(0x0800_0000);
 
-    let mut child = command.spawn().map_err(|e| format!("codex app-server 실행: {e}"))?;
-    let mut input = child.stdin.take().ok_or("stdin 없음")?;
-    let mut output = BufReader::new(child.stdout.take().ok_or("stdout 없음")?).lines();
+    let mut child = command.spawn().map_err(|e| format!("spawn codex app-server: {e}"))?;
+    let mut input = child.stdin.take().ok_or("no stdin")?;
+    let mut output = BufReader::new(child.stdout.take().ok_or("no stdout")?).lines();
     let initialize = json!({
         "id": 1,
         "method": "initialize",
@@ -99,9 +99,9 @@ async fn read_usage() -> Result<AgentUsage, String> {
     input
         .write_all(format!("{initialize}\n").as_bytes())
         .await
-        .map_err(|e| format!("initialize 쓰기: {e}"))?;
+        .map_err(|e| format!("write initialize: {e}"))?;
 
-    while let Some(line) = output.next_line().await.map_err(|e| format!("응답 읽기: {e}"))? {
+    while let Some(line) = output.next_line().await.map_err(|e| format!("read response: {e}"))? {
         let Ok(message) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
@@ -110,19 +110,19 @@ async fn read_usage() -> Result<AgentUsage, String> {
                 input
                     .write_all(b"{\"method\":\"initialized\"}\n{\"id\":2,\"method\":\"account/rateLimits/read\"}\n")
                     .await
-                    .map_err(|e| format!("rateLimits 요청 쓰기: {e}"))?;
+                    .map_err(|e| format!("write rateLimits request: {e}"))?;
             }
-            Some(1) => return Err(format!("initialize 거절: {}", message["error"])),
+            Some(1) => return Err(format!("initialize rejected: {}", message["error"])),
             Some(2) => {
                 return message
                     .get("result")
                     .and_then(parse_usage)
-                    .ok_or_else(|| format!("rateLimits 응답에 한도 없음: {}", message.get("error").unwrap_or(&message)));
+                    .ok_or_else(|| format!("no limits in rateLimits response: {}", message.get("error").unwrap_or(&message)));
             }
             _ => {}
         }
     }
-    Err("app-server 가 응답 전에 끝남".into())
+    Err("app-server exited before responding".into())
 }
 
 fn parse_usage(result: &Value) -> Option<AgentUsage> {
@@ -168,7 +168,7 @@ mod tests {
         apply_fetch(&mut c, Ok(usage(5.0)), t0);
         assert_eq!(c.next, Some(t0 + TTL));
         let t1 = t0 + TTL;
-        apply_fetch(&mut c, Err("10초 안에 응답 없음".into()), t1);
+        apply_fetch(&mut c, Err("no response within 10s".into()), t1);
         assert_eq!(c.usage.as_ref().map(|u| u.windows[0].used_percentage), Some(5.0), "실패해도 마지막 값을 보인다");
         assert_eq!(c.next, Some(t1 + RETRY), "실패는 3분이 아니라 곧 다시 묻는다");
         apply_fetch(&mut c, Ok(usage(7.0)), t1 + RETRY);

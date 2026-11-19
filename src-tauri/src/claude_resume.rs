@@ -430,10 +430,10 @@ fn snapshot(state: &AppState, freeze: bool) {
             if freeze || st.written.as_ref().is_none_or(|w| !same_sessions(w, &merged)) {
                 let held = merged.keys().filter(|t| !live.contains_key(*t) && st.vanished.contains_key(*t)).count();
                 log::info!(
-                    "[claude-resume] 저장 {}개(지금 도는 Claude {}개 · 안 보여 붙든 {held}개){}",
+                    "[claude-resume] 저장 {}개(지금 도는 Claude {}개 · 안 보여 붙든 {held}개){}", // i18n-ok: log::info! 인자
                     merged.len(),
                     live.len(),
-                    if freeze { " — 종료 직전" } else { "" }
+                    if freeze { " — 종료 직전" } else { "" } // i18n-ok: log::info! 인자
                 );
             }
             st.written = Some(merged);
