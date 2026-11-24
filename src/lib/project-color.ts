@@ -269,6 +269,17 @@ export function useProjectPaletteSlots(): { pal: ProjColor[]; slots: Map<string,
   );
 }
 
+/**
+ * 지금 테마의 32슬롯 팔레트만 — 프로젝트가 아닌 이름(메모 카테고리)에 같은 색 체계를 쓸 때.
+ * 슬롯 배정은 부르는 쪽이 `assignProjectSlots(이름들)` 로 한다.
+ */
+export function useAppliedProjectPalette(): ProjColor[] {
+  const theme = useSyncExternalStore(appliedTheme.subscribe, appliedTheme.get);
+  const customThemes = useCustomThemes((s) => s.themes);
+  // customThemes: 커스텀 테마를 편집해도 id 는 그대로다(위 useProjectPaletteSlots 주석).
+  return useMemo(() => projectPalette(theme), [theme, customThemes]);
+}
+
 export function useProjectColors(): Map<string, ProjColor> {
   const { pal, slots } = useProjectPaletteSlots();
   return useMemo(() => new Map([...slots].map(([n, s]) => [n, pal[s]] as const)), [pal, slots]);

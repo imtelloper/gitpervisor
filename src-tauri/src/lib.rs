@@ -1371,12 +1371,17 @@ pub fn run() {
             let projects = state::load_projects(app.handle());
             let settings = state::load_settings(app.handle());
             let notes = state::load_notes(app.handle());
+            let todos = state::load_todos(app.handle());
             let reports = state::load_reports(app.handle());
             // 저장된 git 경로를 부팅 시 적용 (이후 set_settings로 갱신)
             git::runner::set_git_override(settings.git_path.as_ref().map(PathBuf::from));
             // 바인드만 하고 accept는 자기 스레드라 setup을 막지 않는다. 기본 꺼짐(DOCS/mcp-server-design.md).
             mcp::apply(app.handle(), &settings);
-            app.manage(AppState::new(projects.clone(), settings, notes, reports));
+            app.manage(AppState::new(projects.clone(), settings, notes, todos, reports));
+            // 안 쓰는 메모 이미지를 보관함으로, 30일 지난 보관함은 삭제 — 디스크를 훑으니 부팅을 막지 않게 따로 돈다
+            // (DOCS/memo-todo-category-image-design.md §7.4).
+            let note_images_handle = app.handle().clone();
+            std::thread::spawn(move || commands::sweep_note_images(&note_images_handle));
             // 재시작 때 이어서 열 Claude 세션 — 지난 기록을 읽고 20초 주기 스냅샷을 시작한다(태스크 78).
             claude_resume::start(app.handle());
             // LSP 유휴 서버 리퍼 — 10분 방치된 언어 서버 종료(태스크 17 §3.4).
@@ -1497,6 +1502,15 @@ pub fn run() {
             commands::update_memo,
             commands::delete_memo,
             commands::reorder_memos,
+            commands::set_memo_category,
+            commands::rename_memo_category,
+            commands::note_image_put,
+            commands::note_image_get,
+            commands::get_todos,
+            commands::add_todo,
+            commands::update_todo_text,
+            commands::set_todo_done,
+            commands::delete_todo,
             open_float_window,
             float_pool_warm,
             float_pool_ready,
@@ -2016,6 +2030,9 @@ mod tests {
             ("commands/settings.rs", "get_settings"),
             ("commands/projects.rs", "list_projects"),
             ("commands/notes.rs", "get_notes"),
+            ("commands/todos.rs", "get_todos"),
+            ("commands/note_images.rs", "note_image_put"), // 최대 8MB 디스크 쓰기·fsync
+            ("commands/note_images.rs", "note_image_get"),
             // 외부 프로세스·큰 파일·클립보드·COM 에 막힐 수 있는 것 — UI 스레드에서 돌면 창이 멈춘다
             // (2026-09-17 설치본 멈춤 조사).
             ("commands/lsp.rs", "lsp_start"),

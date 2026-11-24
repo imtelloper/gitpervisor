@@ -16,7 +16,7 @@ import { openAggregateWindow } from "../lib/aggregate-window";
 import { openFolderWindow, openReportWindow } from "../lib/floating";
 import { ipc, type FavoriteFolder } from "../lib/ipc";
 import { isMac, modLabel } from "../lib/platform";
-import { useProjects, useQuarantinedTools, useSettings, useSetSettings } from "../queries";
+import { useProjects, useQuarantinedTools, useSettings, useSetSettings, useTodos } from "../queries";
 import { useOccludesWebview } from "../stores/occlusion";
 import { useTerminals } from "../stores/terminals";
 import { useUi } from "../stores/ui";
@@ -445,6 +445,8 @@ export function GlobalMemoButton({ className }: { className?: string }) {
   // 닫기는 팝오버가 심어 주는 close로만 한다 — setAnchor(null)로 직접 끄면 미저장 메모가
   // flush 없이 사라진다(디바운스 500ms 안의 입력 + 빈 초안 정리).
   const closeRef = useRef<(() => void) | null>(null);
+  const { data: todos } = useTodos();
+  const openTodoCount = todos?.filter((t) => t.doneAt === undefined).length ?? 0;
 
   const onClick = () => {
     if (anchor) {
@@ -460,6 +462,7 @@ export function GlobalMemoButton({ className }: { className?: string }) {
       <button
         ref={btnRef}
         onClick={onClick}
+        data-global-memo-button
         title={msg.app.titleBar.memoButtonTitle}
         className={`flex items-center gap-1 rounded ${
           anchor
@@ -468,6 +471,14 @@ export function GlobalMemoButton({ className }: { className?: string }) {
         } ${className ?? "mr-2.5 px-1.5 py-0.5 text-[10px]"}`}
       >
         <StickyNote size={11} /> {msg.app.titleBar.memoButton}
+        {openTodoCount > 0 && (
+          <span
+            data-todo-badge
+            className="rounded-full bg-accent px-1 text-[9px] font-semibold text-on-accent"
+          >
+            {openTodoCount}
+          </span>
+        )}
       </button>
       {anchor && (
         <GlobalMemoPopover

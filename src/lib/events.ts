@@ -1,6 +1,7 @@
 import type { Query, QueryClient } from "@tanstack/react-query";
 import { focusManager } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 
 import { currentMessages } from "../i18n/ui-language";
 import { invalidateVideoMedia } from "../queries";
@@ -129,6 +130,23 @@ export function attachLogoEvents(qc: QueryClient) {
 }
 
 /**
+ * 메모·할 일 변경 구독 — 메모장이 뜨는 창(메인·모아보기 별도 창)이 부른다. 두 캐시 모두 staleTime Infinity 라
+ * 듣지 않으면 다른 창의 변경을 영영 모르고, 옛 캐시의 "빈 메모"를 정리하면서 그 창이 채운 내용을 지운다.
+ * 페이로드는 바꾼 창의 라벨이다 — **자기 것이면 무시한다**(자기 저장은 낙관적 캐시가 이미 반영했다).
+ * 재조회가 캐시를 바꾼 뒤 편집 중인 본문을 어떻게 할지는 MemoPanel 의 draft 규칙이 정한다.
+ */
+export function attachMemoTodoEvents(qc: QueryClient) {
+  const self = getCurrentWebviewWindow().label;
+  const invalidateFromOtherWindow = (event: string, queryKey: string) =>
+    void listen<string | null>(event, (e) => {
+      if (e.payload === self) return;
+      void qc.invalidateQueries({ queryKey: [queryKey] });
+    }).catch((e: unknown) => console.error(`[${queryKey}] 변경 구독 실패 — 다른 창에서 고친 내용을 이 창이 모른다`, e));
+  invalidateFromOtherWindow("notes://changed", "notes");
+  invalidateFromOtherWindow("todos://changed", "todos");
+}
+
+/**
  * 프로젝트 목록 변경 구독 — 백엔드 `save_projects` 가 저장할 때마다 보낸다. `projects` 는 staleTime
  * Infinity 라, 듣지 않는 창은 연 시점의 목록에 얼어붙는다(모아보기 별도 창의 셀 헤더가 새 프로젝트를
  * 이름 대신 "프로젝트"로 찍던 원인). 프로젝트 목록을 읽는 모든 창이 부른다(main.tsx).
@@ -240,6 +258,7 @@ export function attachRepoEvents(qc: QueryClient) {
   attachVideoEvents(qc);
   attachLogoEvents(qc);
   attachProjectsEvents(qc);
+  attachMemoTodoEvents(qc);
 
   // v5 기본은 visibilitychange만 본다 — 데스크톱 창은 항상 visible이라
   // 실제 포커스 복귀 갱신(설계 §9)을 위해 window focus 이벤트에 연결한다.

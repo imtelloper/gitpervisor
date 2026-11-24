@@ -285,8 +285,10 @@ export function installMacCopyInterceptor(): void {
     "copy",
     (e) => {
       const t = e.target as Element | null;
-      // 자체 copy 처리 에디터 제외: 터미널은 host 캡처가, Monaco는 아래 버블 미러가 담당.
-      if (t instanceof Element && t.closest(".xterm, .monaco-editor")) return;
+      // 자체 copy 처리 에디터 제외: 터미널은 host 캡처가, Monaco·CodeMirror는 아래 버블 미러가 담당.
+      // CodeMirror(메모 편집기)를 여기서 가로채면 getSelection() 의 글자만 나간다 — 화면 밖 줄(가상 스크롤)과
+      // 위젯이 가린 토큰(이미지·체크박스의 `[ ]`)이 빠진다.
+      if (t instanceof Element && t.closest(".xterm, .monaco-editor, .cm-editor")) return;
       let text = "";
       if (t instanceof HTMLTextAreaElement || t instanceof HTMLInputElement) {
         const { selectionStart: s, selectionEnd: end, value } = t;

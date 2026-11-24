@@ -16,6 +16,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import type {
   DiffTarget,
+  Memo,
   NotesMap,
   ProcSortKey,
   Project,
@@ -24,6 +25,7 @@ import type {
   ReportRecord,
   RepoStatus,
   TargetSize,
+  Todo,
 } from "../lib/ipc";
 import { currentMessages } from "../i18n/ui-language";
 import { formatBytes } from "../lib/format";
@@ -71,6 +73,7 @@ export const keys = {
   processSnapshot: (sortBy: ProcSortKey, groupByName: boolean) =>
     ["process-snapshot", sortBy, groupByName] as const,
   notes: ["notes"] as const,
+  todos: ["todos"] as const,
   targetSizes: (projectIds: string[]) => ["target-sizes", projectIds] as const,
   projectSizes: (projectIds: string[]) =>
     ["project-sizes", projectIds] as const,
@@ -218,22 +221,107 @@ function patchNotes(
   qc.setQueryData<NotesMap>(keys.notes, (old) => fn(old ?? {}));
 }
 
+/**
+ * 낙관적 갱신 전에 진행 중인 재조회를 끊는다 — 다른 창의 변경 신호(notes://changed)로 이미 날아간
+ * `get_notes` 응답이 뒤늦게 도착하면 방금 넣은 낙관적 값을 덮는다. "새 메모" 직후에 덮이면 그 메모가
+ * 캐시에서 빠지고 패널의 활성 메모가 엉뚱한 메모로 넘어간다.
+ */
+function cancelNotesRefetch(qc: ReturnType<typeof useQueryClient>) {
+  return qc.cancelQueries({ queryKey: keys.notes });
+}
+
+/** 낙관적 값이 서버와 어긋난 채 남지 않게 — 실패하면 다시 읽어 오고 사유를 띄운다. */
+function rollbackNotes(qc: ReturnType<typeof useQueryClient>, e: unknown) {
+  void qc.invalidateQueries({ queryKey: keys.notes });
+  useUi.getState().pushToast("error", errorMessage(e));
+}
+
+/** 미분류는 `category` 키가 **없는** 메모다(Rust 가 None 을 직렬화하지 않는다) — 캐시도 같은 모양으로. */
+function withMemoCategory(m: Memo, category: string | null): Memo {
+  const { category: _dropped, ...rest } = m;
+  return category ? { ...rest, category } : rest;
+}
+
 /** 새 메모 추가 — 낙관적(프론트 생성 memoId). */
 export function useAddMemo() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ projectId, memoId }: { projectId: string; memoId: string }) =>
-      ipc.addMemo(projectId, memoId),
-    onMutate: ({ projectId, memoId }) => {
+    mutationFn: ({
+      projectId,
+      memoId,
+      category,
+    }: {
+      projectId: string;
+      memoId: string;
+      /** 필터가 걸린 채 만든 메모가 그 카테고리로 들어가게 — 안 실으면 만든 메모가 목록에서 바로 사라진다. */
+      category?: string;
+    }) => ipc.addMemo(projectId, memoId, category),
+    onMutate: async ({ projectId, memoId, category }) => {
+      await cancelNotesRefetch(qc);
       const now = new Date().toISOString();
       patchNotes(qc, (old) => ({
         ...old,
         [projectId]: [
           ...(old[projectId] ?? []),
-          { id: memoId, text: "", createdAt: now, updatedAt: now },
+          withMemoCategory(
+            { id: memoId, text: "", createdAt: now, updatedAt: now },
+            category ?? null,
+          ),
         ],
       }));
     },
+  });
+}
+
+/** 메모 하나의 카테고리 지정 — 낙관적. null = 미분류. `updatedAt` 은 건드리지 않는다(백엔드와 같다). */
+export function useSetMemoCategory() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      projectId,
+      memoId,
+      category,
+    }: {
+      projectId: string;
+      memoId: string;
+      category: string | null;
+    }) => ipc.setMemoCategory(projectId, memoId, category),
+    onMutate: async ({ projectId, memoId, category }) => {
+      await cancelNotesRefetch(qc);
+      patchNotes(qc, (old) => ({
+        ...old,
+        [projectId]: (old[projectId] ?? []).map((m) =>
+          m.id === memoId ? withMemoCategory(m, category) : m,
+        ),
+      }));
+    },
+    onError: (e) => rollbackNotes(qc, e),
+  });
+}
+
+/** 카테고리 이름 바꾸기·해제(to = null) — 그 이름의 메모를 한꺼번에 낙관적으로 갱신한다. */
+export function useRenameMemoCategory() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      projectId,
+      from,
+      to,
+    }: {
+      projectId: string;
+      from: string;
+      to: string | null;
+    }) => ipc.renameMemoCategory(projectId, from, to),
+    onMutate: async ({ projectId, from, to }) => {
+      await cancelNotesRefetch(qc);
+      patchNotes(qc, (old) => ({
+        ...old,
+        [projectId]: (old[projectId] ?? []).map((m) =>
+          m.category === from ? withMemoCategory(m, to) : m,
+        ),
+      }));
+    },
+    onError: (e) => rollbackNotes(qc, e),
   });
 }
 
@@ -250,7 +338,8 @@ export function useUpdateMemo() {
       memoId: string;
       text: string;
     }) => ipc.updateMemo(projectId, memoId, text),
-    onMutate: ({ projectId, memoId, text }) => {
+    onMutate: async ({ projectId, memoId, text }) => {
+      await cancelNotesRefetch(qc);
       const now = new Date().toISOString();
       patchNotes(qc, (old) => ({
         ...old,
@@ -268,7 +357,8 @@ export function useDeleteMemo() {
   return useMutation({
     mutationFn: ({ projectId, memoId }: { projectId: string; memoId: string }) =>
       ipc.deleteMemo(projectId, memoId),
-    onMutate: ({ projectId, memoId }) => {
+    onMutate: async ({ projectId, memoId }) => {
+      await cancelNotesRefetch(qc);
       patchNotes(qc, (old) => {
         const next = { ...old };
         const list = (next[projectId] ?? []).filter((m) => m.id !== memoId);
@@ -291,7 +381,8 @@ export function useReorderMemos() {
       projectId: string;
       orderedIds: string[];
     }) => ipc.reorderMemos(projectId, orderedIds),
-    onMutate: ({ projectId, orderedIds }) => {
+    onMutate: async ({ projectId, orderedIds }) => {
+      await cancelNotesRefetch(qc);
       const rank = new Map(orderedIds.map((id, i) => [id, i]));
       const tail = orderedIds.length;
       patchNotes(qc, (old) => ({
@@ -307,6 +398,84 @@ export function useReorderMemos() {
       useUi.getState().pushToast("error", errorMessage(e));
     },
     onSuccess: () => void qc.invalidateQueries({ queryKey: keys.notes }),
+  });
+}
+
+/** 전체 할 일(전역 목록 하나) — 캐시. 다른 창의 변경은 `todos://changed` 신호로 따라간다(lib/events.ts). */
+export function useTodos() {
+  return useQuery({
+    queryKey: keys.todos,
+    queryFn: ipc.getTodos,
+    staleTime: Infinity,
+  });
+}
+
+/** 낙관적 갱신 한 번 — 진행 중인 재조회를 끊고(이유는 cancelNotesRefetch 와 같다) 캐시를 고친다. */
+async function patchTodos(
+  qc: ReturnType<typeof useQueryClient>,
+  fn: (old: Todo[]) => Todo[],
+) {
+  await qc.cancelQueries({ queryKey: keys.todos });
+  qc.setQueryData<Todo[]>(keys.todos, (old) => fn(old ?? []));
+}
+
+function rollbackTodos(qc: ReturnType<typeof useQueryClient>, e: unknown) {
+  void qc.invalidateQueries({ queryKey: keys.todos });
+  useUi.getState().pushToast("error", errorMessage(e));
+}
+
+/** 할 일 추가(맨 아래) — 낙관적(프론트 생성 todoId). */
+export function useAddTodo() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ todoId, text }: { todoId: string; text: string }) =>
+      ipc.addTodo(todoId, text),
+    onMutate: ({ todoId, text }) =>
+      patchTodos(qc, (old) => [
+        ...old,
+        { id: todoId, text, createdAt: new Date().toISOString() },
+      ]),
+    onError: (e) => rollbackTodos(qc, e),
+  });
+}
+
+/** 할 일 글자 수정 — 낙관적. */
+export function useUpdateTodoText() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ todoId, text }: { todoId: string; text: string }) =>
+      ipc.updateTodoText(todoId, text),
+    onMutate: ({ todoId, text }) =>
+      patchTodos(qc, (old) => old.map((t) => (t.id === todoId ? { ...t, text } : t))),
+    onError: (e) => rollbackTodos(qc, e),
+  });
+}
+
+/** 완료/해제 — 낙관적. 이미 완료인 항목은 처음 완료한 시각을 지킨다(백엔드 apply_todo_done 과 같은 규칙). */
+export function useSetTodoDone() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ todoId, done }: { todoId: string; done: boolean }) =>
+      ipc.setTodoDone(todoId, done),
+    onMutate: ({ todoId, done }) =>
+      patchTodos(qc, (old) =>
+        old.map((t) => {
+          if (t.id !== todoId) return t;
+          const { doneAt, ...open } = t;
+          return done ? { ...open, doneAt: doneAt ?? new Date().toISOString() } : open;
+        }),
+      ),
+    onError: (e) => rollbackTodos(qc, e),
+  });
+}
+
+/** 할 일 삭제 — 낙관적. */
+export function useDeleteTodo() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ todoId }: { todoId: string }) => ipc.deleteTodo(todoId),
+    onMutate: ({ todoId }) => patchTodos(qc, (old) => old.filter((t) => t.id !== todoId)),
+    onError: (e) => rollbackTodos(qc, e),
   });
 }
 

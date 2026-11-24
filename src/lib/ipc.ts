@@ -715,8 +715,22 @@ export interface Memo {
   text: string;
   createdAt: string;
   updatedAt: string;
+  /** 카테고리 이름 그 자체. 없으면(미분류) 키가 아예 오지 않는다 — Rust `skip_serializing_if`. */
+  category?: string;
 }
 export type NotesMap = Record<string, Memo[]>;
+/** 카테고리 이름 길이 상한 — Rust `MEMO_CATEGORY_MAX_CHARS`(commands/notes.rs)와 같은 값. */
+export const MEMO_CATEGORY_MAX_CHARS = 30;
+
+// ---- 할 일 (전역 목록 하나, commands/todos.rs) ----
+export interface Todo {
+  id: string;
+  text: string;
+  /** RFC3339 UTC */
+  createdAt: string;
+  /** 완료 시각(RFC3339 UTC). 미완료면 키가 아예 오지 않는다. */
+  doneAt?: string;
+}
 /** 전역 메모(프로젝트 무관)를 담는 예약 키 — 프로젝트 id는 UUIDv4라 절대 충돌하지 않는다. */
 export const GLOBAL_NOTES_ID = "__global__";
 
@@ -2168,12 +2182,35 @@ export const ipc = {
     callMutating<ProcParam[]>("db_proc_params", { id, database, proc }, 60_000),
 
   getNotes: () => call<NotesMap>("get_notes"),
-  addMemo: (projectId: string, memoId: string) =>
-    callMutating<Memo>("add_memo", { projectId, memoId }),
+  addMemo: (projectId: string, memoId: string, category?: string) =>
+    callMutating<Memo>("add_memo", { projectId, memoId, category: category ?? null }),
   updateMemo: (projectId: string, memoId: string, text: string) =>
     callMutating<Memo | null>("update_memo", { projectId, memoId, text }),
   deleteMemo: (projectId: string, memoId: string) =>
     callMutating<void>("delete_memo", { projectId, memoId }),
+  /** 메모 하나의 카테고리 지정. null = 미분류. */
+  setMemoCategory: (projectId: string, memoId: string, category: string | null) =>
+    callMutating<Memo | null>("set_memo_category", { projectId, memoId, category }),
+  /** 카테고리 이름 바꾸기(그 이름의 메모 일괄 갱신). to 가 null 이면 해제 — 메모는 남는다. */
+  renameMemoCategory: (projectId: string, from: string, to: string | null) =>
+    callMutating<void>("rename_memo_category", { projectId, from, to }),
+  // 메모 이미지(commands/note_images.rs) — 본문은 raw AVIF 바이트(8MB 상한), id 는 헤더. 재시도 금지(같은 id 두 번 = AlreadyExists).
+  noteImagePut: (id: string, bytes: Uint8Array) =>
+    callMutating<void>("note_image_put", bytes, 60_000, { headers: { "x-gpv-note-image-id": id } }),
+  // 받은 ArrayBuffer 를 transfer 하지 마라 — call 은 같은 인자의 진행 중 호출을 합쳐서, 한쪽이 넘기면 다른 쪽이 빈 버퍼를 받는다.
+  // 합치기는 켜 둔다: 같은 이미지가 메모에 여러 번 나오면 한 번만 읽는다.
+  noteImageGet: (id: string) =>
+    call<ArrayBuffer>("note_image_get", { id }, { timeoutMs: 30_000, attempts: 1 }),
+
+  // ---- 할 일 (commands/todos.rs) ----
+  getTodos: () => call<Todo[]>("get_todos"),
+  addTodo: (todoId: string, text: string) =>
+    callMutating<Todo>("add_todo", { todoId, text }),
+  updateTodoText: (todoId: string, text: string) =>
+    callMutating<Todo | null>("update_todo_text", { todoId, text }),
+  setTodoDone: (todoId: string, done: boolean) =>
+    callMutating<Todo | null>("set_todo_done", { todoId, done }),
+  deleteTodo: (todoId: string) => callMutating<void>("delete_todo", { todoId }),
   // 타이틀바 폴링 — 사용자 클릭에 양보(background), 재시도 없음, 짧은 타임아웃
   sysMetrics: () =>
     call<SysMetrics>("sys_metrics", undefined, {

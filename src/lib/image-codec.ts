@@ -2,9 +2,14 @@
 //
 // png/jpeg/webp 는 Chromium(WebView2)의 canvas.toBlob 으로 네이티브 인코딩한다(품질 인자 지원).
 // avif 는 Chromium canvas 가 인코딩을 못 하므로 네이티브를 먼저 시도하고, 실패하면
-// @jsquash/avif(WASM)로 폴백한다 — 코덱 wasm 은 avif 를 고를 때만 동적 로드한다.
+// @jsquash/avif(WASM)로 폴백한다 — **Worker 에서**(avif-worker-client.ts). 코덱 wasm 은 avif 를 고를 때만 로드된다.
 
 import { currentMessages } from "../i18n/ui-language";
+import { encodeAvifInWorker } from "./avif-worker-client";
+
+// "AVIF로 변환"은 사용자가 크기를 줄이려고 고르는 작업이다 — 느려도 작은 쪽(jsquash 기본값)을 쓴다.
+// 메모 이미지(붙여넣는 즉시 보여야 한다)는 다른 값을 쓴다(memo-image-pipeline.ts).
+const AVIF_CONVERT_SPEED = 6;
 
 export type ImgFormat = "png" | "jpeg" | "webp" | "avif";
 
@@ -95,8 +100,15 @@ export async function encodeCanvas(
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error(currentMessages().lib.imageCodec.canvasContextUnavailable);
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const mod = await import("@jsquash/avif/encode");
-  const buf = await mod.default(imageData, { quality: q });
+  // 메인 스레드에서 jsquash 를 부르지 않는다. 스크린샷 한 장에 6~13초 UI 가 멈추고(실측), 릴리스에서는 문서 CSP 가
+  // 메인 스레드의 WASM 컴파일을 거절해 **아예 실패한다** — dev 는 CSP 가 없어 이게 안 보였다(avif-worker-client.ts).
+  const buf = await encodeAvifInWorker(
+    imageData.data.buffer,
+    canvas.width,
+    canvas.height,
+    q,
+    AVIF_CONVERT_SPEED,
+  );
   return new Uint8Array(buf);
 }
 

@@ -791,9 +791,65 @@ pub fn data_label_notes() -> &'static str {
     }
 }
 
+pub fn data_label_todos() -> &'static str {
+    match lang() {
+        Lang::Ko => "할 일",
+        Lang::En => "to-dos",
+    }
+}
+
 pub fn data_label_reports() -> &'static str {
     match lang() {
         Lang::Ko => "작업 요약",
         Lang::En => "reports",
+    }
+}
+
+pub fn data_label_note_image() -> &'static str {
+    match lang() {
+        Lang::Ko => "메모 이미지",
+        Lang::En => "note image",
+    }
+}
+
+pub fn note_image_id_invalid(id: &str) -> String {
+    match lang() {
+        Lang::Ko => format!("메모 이미지 id 가 올바르지 않습니다: {id}"),
+        Lang::En => format!("Invalid note image id: {id}"),
+    }
+}
+
+pub fn note_image_body_required() -> &'static str {
+    match lang() {
+        Lang::Ko => "note_image_put: 이미지 바이트(raw 본문)가 필요합니다",
+        Lang::En => "note_image_put: raw image body required",
+    }
+}
+
+pub fn note_image_too_large_8mb() -> &'static str {
+    match lang() {
+        Lang::Ko => "메모 이미지가 너무 큽니다(최대 8MB)",
+        Lang::En => "Note image is too large (max 8 MB)",
+    }
+}
+
+pub fn note_image_not_avif() -> &'static str {
+    match lang() {
+        Lang::Ko => "AVIF 이미지가 아닙니다",
+        Lang::En => "Not an AVIF image",
+    }
+}
+
+pub fn note_image_exists(id: &str) -> String {
+    match lang() {
+        Lang::Ko => format!("같은 id 의 메모 이미지가 이미 있습니다: {id}"),
+        Lang::En => format!("A note image with this id already exists: {id}"),
+    }
+}
+
+pub fn note_image_not_found(id: &str) -> String {
+    match lang() {
+        Lang::Ko => format!("메모 이미지를 찾을 수 없습니다: {id}"),
+        Lang::En => format!("Note image not found: {id}"),
     }
 }

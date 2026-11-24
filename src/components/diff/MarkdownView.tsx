@@ -1,6 +1,6 @@
 import { Check, Copy } from "lucide-react";
 import { useEffect, useState } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { useMessages } from "../../i18n/ui-language";
@@ -20,19 +20,23 @@ export default function MarkdownView({ content }: { content: string }) {
 }
 
 /** 렌더 본문만 — 파일 뷰어(위)와 메모장 MD 모드가 같은 `.md-body` 스타일을 공유한다.
- *  className으로 껍데기별 여백 보정을 얹는다(메모장은 `.memo-md`). */
+ *  className으로 껍데기별 여백 보정을 얹는다(메모장은 `.memo-md`).
+ *  components 는 껍데기가 얹는 렌더 교체다(메모장의 이미지) — 아래 `a` 는 덮지 못한다. */
 export function MarkdownBody({
   content,
   className,
+  components,
 }: {
   content: string;
   className?: string;
+  components?: Components;
 }) {
   return (
     <div className={"md-body" + (className ? " " + className : "")}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
+          ...components,
           // 웹뷰가 문서 밖으로 이동하면 앱이 깨지므로 링크 기본 동작을 막는다.
           a(props) {
             const { href, children } = props;

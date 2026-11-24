@@ -14,7 +14,12 @@ import { SysMonitorWindow } from "./components/sysmon/SysMonitorWindow";
 import { FloatingTerminal } from "./FloatingTerminal";
 import { initUiLanguage } from "./i18n/ui-language";
 import { installMacCopyInterceptor } from "./lib/clipboard";
-import { attachLogoEvents, attachProjectsEvents, attachRepoEvents } from "./lib/events";
+import {
+  attachLogoEvents,
+  attachMemoTodoEvents,
+  attachProjectsEvents,
+  attachRepoEvents,
+} from "./lib/events";
 import { setupErrorLogging } from "./lib/logging";
 import {
   readAggregateView,
@@ -297,6 +302,8 @@ if (label === "aggregate") {
   // 셀 헤더의 로고는 메인 창에서 지정한다 — 이 창의 캐시는 그 무효화를 못 듣는다(태스크 54 §1).
   attachLogoEvents(aggQc);
   attachProjectsEvents(aggQc);
+  // 이 창에도 메모장 버튼이 있다 — 메인 창에서 고친 메모·할 일을 따라간다.
+  attachMemoTodoEvents(aggQc);
   renderAfterUiLanguage(
     <React.StrictMode>
       <QueryClientProvider client={aggQc}>

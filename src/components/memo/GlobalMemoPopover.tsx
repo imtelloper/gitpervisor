@@ -1,10 +1,14 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { useMessages } from "../../i18n/ui-language";
 import { GLOBAL_NOTES_ID } from "../../lib/ipc";
 import { useDragSize } from "../../lib/use-panel-width";
 import { useOccludesWebview } from "../../stores/occlusion";
 import { MemoPanel } from "./MemoPanel";
+import { TodoPanel } from "./TodoPanel";
+
+type MemoPopoverTab = "memo" | "todo";
+const MEMO_TAB_KEY = "gp:memo-tab";
 
 /**
  * 타이틀바 "메모장" 팝오버 — 프로젝트와 무관한 전역 메모(예약 키 하나에 몰아 저장).
@@ -40,6 +44,35 @@ export function GlobalMemoPopover({
     flushRef.current?.();
     onClose();
   }
+
+  const [tab, setTab] = useState<MemoPopoverTab>(() =>
+    localStorage.getItem(MEMO_TAB_KEY) === "todo" ? "todo" : "memo",
+  );
+  function switchTab(next: MemoPopoverTab) {
+    if (next === tab) return;
+    // 탭 전환은 MemoPanel 을 언마운트한다 — 닫기처럼 먼저 flush 하지 않으면 마지막 500ms 입력이 버려지고 빈 메모가 남는다.
+    if (tab === "memo") flushRef.current?.();
+    localStorage.setItem(MEMO_TAB_KEY, next);
+    setTab(next);
+  }
+  const tabs = (
+    <div className="flex shrink-0 items-center gap-0.5">
+      {(["memo", "todo"] as const).map((id) => (
+        <button
+          key={id}
+          data-memo-tab={id}
+          onClick={() => switchTab(id)}
+          className={`rounded px-2 py-0.5 text-[12px] ${
+            tab === id
+              ? "bg-selection font-semibold text-accent"
+              : "text-fg-dim hover:bg-raised hover:text-fg"
+          }`}
+        >
+          {id === "memo" ? msg.notes.todoPanel.tabMemo : msg.notes.todoPanel.tabTodo}
+        </button>
+      ))}
+    </div>
+  );
 
   // Esc 닫기
   useEffect(() => {
@@ -83,12 +116,17 @@ export function GlobalMemoPopover({
           maxHeight: `calc(100vh - ${anchor.top}px - 12px)`,
         }}
       >
-        <MemoPanel
-          scopeId={GLOBAL_NOTES_ID}
-          scopeLabel={msg.notes.globalMemo.scopeLabel}
-          onClose={close}
-          flushRef={flushRef}
-        />
+        {tab === "memo" ? (
+          <MemoPanel
+            scopeId={GLOBAL_NOTES_ID}
+            scopeLabel={msg.notes.globalMemo.scopeLabel}
+            onClose={close}
+            flushRef={flushRef}
+            headerLead={tabs}
+          />
+        ) : (
+          <TodoPanel headerLead={tabs} onClose={close} />
+        )}
         {/* 크기 조절 핸들 — 우상단 앵커라 자유 모서리는 좌하단이다(CellHandles의 좌우 미러).
             stopPropagation: 드래그 시작이 백드롭 클릭(닫기)으로 새지 않게. */}
         <div

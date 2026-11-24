@@ -8,7 +8,7 @@ use crate::commands::{BrowserReg, HttpReg, PreviewServers, TerminalSession};
 use crate::disk_scan::DiskScanState;
 use crate::error::{ErrorCode, IpcError};
 use crate::fetch_scheduler::RemoteFreshness;
-use crate::git::types::{Memo, Project, Settings};
+use crate::git::types::{Memo, Project, Settings, Todo};
 use crate::i18n::text_git_net;
 use crate::monitor::Monitor;
 use crate::watcher::RepoWatcher;
@@ -19,6 +19,8 @@ pub const SETTINGS_FILE: &str = "settings.json";
 pub const SETTINGS_KEY: &str = "settings";
 pub const NOTES_FILE: &str = "notes.json";
 pub const NOTES_KEY: &str = "notes";
+pub const TODOS_FILE: &str = "todos.json";
+pub const TODOS_KEY: &str = "todos";
 pub const REPORTS_FILE: &str = "reports.json";
 pub const REPORTS_KEY: &str = "reports";
 
@@ -41,6 +43,8 @@ pub struct AppState {
     pub monitor: Mutex<Monitor>,
     /// 프로젝트별 메모 (projectId → 메모).
     pub notes: RwLock<Notes>,
+    /// 할 일(전역 목록 하나, 배열 순서 = 표시 순서). commands/todos.rs.
+    pub todos: RwLock<Vec<Todo>>,
     /// 생성된 작업 요약 (리포트 키 → 요약) — 태스크 60 §3.4.
     pub reports: RwLock<Reports>,
     /// 임베디드 브라우저 자식 webview 레지스트리 (browserId → 마지막 bounds). browser.rs §.
@@ -74,7 +78,13 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(projects: Vec<Project>, settings: Settings, notes: Notes, reports: Reports) -> Self {
+    pub fn new(
+        projects: Vec<Project>,
+        settings: Settings,
+        notes: Notes,
+        todos: Vec<Todo>,
+        reports: Reports,
+    ) -> Self {
         Self {
             projects: RwLock::new(projects),
             settings: RwLock::new(settings),
@@ -84,6 +94,7 @@ impl AppState {
             redock_skip: Mutex::new(HashSet::new()),
             monitor: Mutex::new(Monitor::new()),
             notes: RwLock::new(notes),
+            todos: RwLock::new(todos),
             reports: RwLock::new(reports),
             browser: Mutex::new(BrowserReg::default()),
             http: Mutex::new(HttpReg::default()),
@@ -310,6 +321,15 @@ pub fn load_notes(app: &AppHandle) -> Notes {
 
 pub fn save_notes(app: &AppHandle, notes: &Notes) -> Result<(), IpcError> {
     save_json(app, NOTES_FILE, NOTES_KEY, notes, text_git_net::data_label_notes())
+}
+
+pub fn load_todos(app: &AppHandle) -> Vec<Todo> {
+    load_json(app, TODOS_FILE, TODOS_KEY).unwrap_or_default()
+}
+
+// ponytail: 변경마다 목록 통째 재기록 — 완료 항목이 수천 건(수백 KB)을 넘기면 연도별 파일로 가른다.
+pub fn save_todos(app: &AppHandle, todos: &[Todo]) -> Result<(), IpcError> {
+    save_json(app, TODOS_FILE, TODOS_KEY, &todos, text_git_net::data_label_todos())
 }
 
 pub fn load_reports(app: &AppHandle) -> Reports {

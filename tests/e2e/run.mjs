@@ -82,6 +82,8 @@ const SUITES = [
   "./suites/69-audio-player.mjs",
   // 조각 MP4 감지·빠른 재생용 사본·배속 16x — 자기 폴더(e2e-fragmented/)에 fMP4·일반 mp4를 만들고 메인 창 뷰어로 연다.
   "./suites/70-video-fragmented.mjs",
+  // 할 일 패널 — 전역 메모 팝오버를 열고 닫는다. 자기 id 로만 만들고 지우며 localStorage 키는 되돌린다.
+  "./suites/71-todos.mjs",
   // 잔디·요약. 자기 전용 레포를 따로 만들어 쓴다(공유 픽스처엔 앞선 스위트의 오늘 커밋이 쌓인다).
   "./suites/48-report.mjs",
   // 번역 본문 단언은 LLM(런타임+모델)이 준비된 경우에만 — 아니면 그 부분만 skip 한다.

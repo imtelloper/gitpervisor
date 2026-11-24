@@ -419,6 +419,24 @@ pub struct Memo {
     /// ISO 8601
     pub created_at: String,
     pub updated_at: String,
+    /// 카테고리 **이름 그 자체**(None = 미분류). 카테고리 목록은 따로 저장하지 않고 한 스코프 메모들의
+    /// 고유값에서 도출한다 — 그래서 빈 카테고리는 존재할 수 없다(DOCS/memo-todo-category-image-design.md §2.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+}
+
+/// 할 일 한 줄(전역 목록 하나, todos.json). **날짜 필드가 없다** — "오늘 목록"은 프런트가
+/// `done_at` 으로 계산한다(미완료 전부 + 오늘 완료한 것). 그래서 자정에 도는 이월 작업이 없다.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Todo {
+    pub id: String,
+    pub text: String,
+    /// RFC3339 UTC
+    pub created_at: String,
+    /// 완료 시각(RFC3339 UTC). None = 미완료
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done_at: Option<String>,
 }
 
 // ---- 파일 트리 탐색기 ----
