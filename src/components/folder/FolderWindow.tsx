@@ -2,6 +2,7 @@ import { emit } from "@tauri-apps/api/event";
 import { isMac, isMod } from "../../lib/platform";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
+  AppWindow,
   Brush,
   ClipboardPaste,
   Clock,
@@ -15,6 +16,7 @@ import {
   Link,
   List,
   Pencil,
+  Play,
   RotateCw,
   Search,
   Trash2,
@@ -46,7 +48,8 @@ import {
   useFavThumbToken,
   type ThumbEdge,
 } from "../../lib/fav-thumb";
-import { openDocWindow } from "../../lib/floating";
+import { favProjectId, openDocWindow } from "../../lib/floating";
+import { isPlayable, viewsInApp } from "../../lib/language-map";
 import { fileIcon, folderIcon } from "../../lib/file-icon";
 import { favRecentMs, ipc, type FavEntry, type OsFileType } from "../../lib/ipc";
 import { useOsFileTypes } from "../../lib/os-file-type";
@@ -346,6 +349,14 @@ export default function FolderWindow({
     [dir, join, root],
   );
 
+  /** 앱의 문서 창(동영상 플레이어·PDF·코드·이미지 뷰어)으로 — 즐겨찾기 폴더는 가상 프로젝트 id 로(favProjectId). */
+  const openInApp = useCallback(
+    (e: FavEntry) =>
+      // 트리 더블클릭처럼 동영상은 넓게 연다.
+      openDocWindow(projectId ?? favProjectId(root), relOf(e.name), isPlayable(e.name) || e.kind === "video" ? { size: [1180, 860] } : undefined),
+    [projectId, root, relOf],
+  );
+
   const openEntry = useCallback(
     (e: FavEntry) => {
       if (e.isDir) {
@@ -356,9 +367,9 @@ export default function FolderWindow({
         setLightbox(e.name);
         return;
       }
-      if (projectId) {
-        // 트리 더블클릭처럼 동영상은 넓게 연다.
-        openDocWindow(projectId, relOf(e.name), e.kind === "video" ? { size: [1180, 860] } : undefined);
+      // 프로젝트 폴더는 전부, 즐겨찾기 폴더는 앱이 볼 수 있는 파일만 앱 뷰어로 — 나머지(실행 파일·압축 등)는 OS 기본 앱.
+      if (projectId || viewsInApp(e.name)) {
+        openInApp(e);
         return;
       }
       void ipc.favOpen(join(dir, e.name), "default").catch((err) =>
@@ -367,7 +378,7 @@ export default function FolderWindow({
           .pushToast("error", currentMessages().folder.window.openFailedWithReason(errText(err))),
       );
     },
-    [dir, images, join, projectId, relOf],
+    [dir, images, join, projectId, openInApp],
   );
 
   const goUp = useCallback(() => {
@@ -698,6 +709,7 @@ export default function FolderWindow({
               ? () => useUi.getState().openImageEditorAbs(join(dir, menu.entry.name))
               : undefined
           }
+          onOpenInApp={!menu.entry.isDir && viewsInApp(menu.entry.name) ? () => openInApp(menu.entry) : undefined}
           count={picked.has(menu.entry.name) ? pickedShown.length : 1}
           onTrash={() => trashEntries(picked.has(menu.entry.name) ? pickedShown : [menu.entry])}
           onOpen={() =>
@@ -1514,11 +1526,14 @@ function ItemMenu({
   onPastePath,
   onRename,
   onEdit,
+  onOpenInApp,
   count,
   onTrash,
   onOpen,
   onReveal,
 }: {
+  /** 앱 뷰어로 볼 수 있는 파일일 때만 — 없으면 줄을 안 그린다. */
+  onOpenInApp?: () => void;
   x: number;
   y: number;
   entry: FavEntry;
@@ -1560,13 +1575,23 @@ function ItemMenu({
       // 항목 7줄 × 31.5 + 헤더 24.5 + 구분선 둘 + 패딩 ≈ 264(영상 시각·편집 줄이 있으면 줄마다 +32). PaneMenu 와 같은 클램프 규칙.
       style={{
         left: Math.min(x, window.innerWidth - 220),
-        top: Math.max(0, Math.min(y, window.innerHeight - 264 - (videoTime ? 32 : 0) - (onEdit ? 32 : 0))),
+        top: Math.max(
+          0,
+          Math.min(y, window.innerHeight - 264 - (videoTime ? 32 : 0) - (onEdit ? 32 : 0) - (onOpenInApp ? 32 : 0)),
+        ),
       }}
       onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
     >
       <div className="truncate px-3 py-1 text-[11px] text-fg-dim">{entry.name}</div>
       <div className="my-1 border-t border-edge" />
+      {onOpenInApp && (
+        <Row
+          icon={isPlayable(entry.name) ? <Play size={14} /> : <AppWindow size={14} />}
+          label={isPlayable(entry.name) ? msg.folder.window.menuPlayInApp : msg.folder.window.menuOpenInApp}
+          onClick={run(onOpenInApp)}
+        />
+      )}
       <Row
         icon={<Copy size={14} />}
         label={count > 1 ? msg.folder.menuCopyFilesMany(count) : msg.folder.menuCopyFiles}

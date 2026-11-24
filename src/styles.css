@@ -1,5 +1,34 @@
 @import "tailwindcss";
 
+/* 누를 수 있는 곳은 전부 손가락 커서 — Tailwind v4 preflight 는 button 을 cursor: default 로 둔다(2026-11-24 요청).
+   base 레이어라 요소별 cursor-* 유틸리티(리사이즈 손잡이·cursor-not-allowed 등)가 그대로 이긴다. */
+@layer base {
+  button,
+  a[href],
+  select,
+  summary,
+  label:has(> input),
+  input[type="checkbox"],
+  input[type="radio"],
+  input[type="color"],
+  input[type="file"],
+  input[type="range"],
+  [role="button"],
+  [role="tab"],
+  [role="menuitem"],
+  [role="menuitemradio"],
+  [role="option"],
+  [role="treeitem"],
+  [role="switch"],
+  [role="checkbox"] {
+    cursor: pointer;
+  }
+  :disabled,
+  [aria-disabled="true"] {
+    cursor: default;
+  }
+}
+
 @theme {
   /* 디자인 토큰 — designs/main-screen-v2.pen 의 Darcula 계열 팔레트 */
   --color-base: #1e1f22;

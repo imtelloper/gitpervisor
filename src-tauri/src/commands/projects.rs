@@ -8,6 +8,9 @@ use crate::git::types::Project;
 use crate::i18n::text_files;
 use crate::state::{self, AppState};
 
+/// 즐겨찾기 폴더를 가상 프로젝트로 쓰는 id 접두 — TS `favProjectId`(lib/floating.ts)와 같은 값.
+pub(crate) const FAV_PROJECT_PREFIX: &str = "fav:";
+
 /// 프로젝트 id → 저장소 경로.
 ///
 /// 임베디드(중첩) 저장소는 `<outer_id>::<rel>` 형태의 합성 id를 쓴다(status.rs 참조).
@@ -18,6 +21,16 @@ pub(crate) fn project_path(
     state: &State<'_, AppState>,
     project_id: &str,
 ) -> Result<PathBuf, IpcError> {
+    // 폴더 창(즐겨찾기 폴더)에서 연 파일을 앱 뷰어(동영상·PDF·코드·이미지)로 보려면 프로젝트 id 가 필요하다 —
+    // `fav:<폴더 절대경로>` 를 가상 프로젝트로 받는다. 울타리는 폴더 창의 목록·읽기와 **같은** 판정
+    // (favorites::allowed — 등록한 즐겨찾기 폴더 또는 등록된 프로젝트의 하위, .git 제외)이라 새로 열리는 범위는 없다.
+    if let Some(dir) = project_id.strip_prefix(FAV_PROJECT_PREFIX) {
+        let root = super::favorites::allowed(state, dir)?;
+        if !root.is_dir() {
+            return Err(IpcError::new(ErrorCode::NotFound, crate::i18n::text_git_net::project_path_not_found()));
+        }
+        return Ok(root);
+    }
     if let Some((outer_id, rel)) = project_id.split_once("::") {
         let base = lookup_path(state, outer_id)?;
         return resolve_nested(&base, rel);

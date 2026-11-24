@@ -60,7 +60,7 @@ export const IS_AGGREGATE_WINDOW = WINDOW_LABEL === "aggregate";
 
 /** 보조 창이 메인에 내리는 터미널 변경 명령 — 스토어 액션과 1:1. */
 export type TerminalsCmd =
-  | { op: "openTerminal"; projectId: string; paneId: string; tabId?: string }
+  | { op: "openTerminal"; projectId: string; paneId: string; tabId?: string; home?: boolean }
   | { op: "closePane"; tabId: string; paneId: string }
   | { op: "floatPane"; tabId: string; paneId: string };
 
@@ -95,6 +95,8 @@ export interface TermTab {
   activePaneId: string;
   /** 설정 시 해당 패널만 전체 표시 (나머지는 백그라운드 유지) */
   maximizedPaneId: string | null;
+  /** 프로젝트 폴더 대신 사용자 홈에서 셸을 띄우는 탭(모아보기 "+ → 홈"). projectId 는 칩 묶음용으로만 남는다. */
+  home?: boolean;
 }
 
 type PaneStatus = "live" | "exited";
@@ -186,7 +188,7 @@ interface TerminalsState {
    *  Float 되돌리기(살아 있는 PTY의 paneId를 그대로 담은 새 탭)가 쓴다. */
   openTerminal: (
     projectId: string,
-    ids?: { tabId?: string; paneId?: string },
+    ids?: { tabId?: string; paneId?: string; home?: boolean },
   ) => { tabId: string; paneId: string };
   closeTab: (tabId: string) => void;
   closeProjectTerminals: (projectId: string) => void;
@@ -285,7 +287,7 @@ export const useTerminals = create<TerminalsState>((set, get) => ({
     const tabId = ids?.tabId ?? crypto.randomUUID();
     const paneId = ids?.paneId ?? crypto.randomUUID();
     if (ROLE === "mirror") {
-      sendTerminalsCmd({ op: "openTerminal", projectId, tabId, paneId });
+      sendTerminalsCmd({ op: "openTerminal", projectId, tabId, paneId, home: ids?.home });
       return { tabId, paneId }; // 호출부는 이 id로 selected에 넣는다 — 같은 id가 storage로 돌아온다
     }
     const n = get().terminals.filter((t) => t.projectId === projectId).length + 1;
@@ -295,10 +297,13 @@ export const useTerminals = create<TerminalsState>((set, get) => ({
         {
           id: tabId,
           projectId,
-          title: currentMessages().stores.terminals.defaultTitle(n),
+          title: ids?.home
+            ? currentMessages().stores.terminals.homeTitle
+            : currentMessages().stores.terminals.defaultTitle(n),
           layout: { kind: "leaf", paneId, content: "terminal" },
           activePaneId: paneId,
           maximizedPaneId: null,
+          ...(ids?.home ? { home: true } : {}),
         },
       ],
       activeTab: { ...s.activeTab, [projectId]: tabId },
@@ -548,7 +553,7 @@ if (ROLE === "main")
   void listen<TerminalsCmd>("terminals://cmd", ({ payload: c }) => {
     const ts = useTerminals.getState();
     if (c.op === "openTerminal")
-      ts.openTerminal(c.projectId, { tabId: c.tabId, paneId: c.paneId });
+      ts.openTerminal(c.projectId, { tabId: c.tabId, paneId: c.paneId, home: c.home });
     else if (c.op === "closePane") ts.closePane(c.tabId, c.paneId);
     else if (c.op === "floatPane") ts.floatPane(c.tabId, c.paneId);
   });

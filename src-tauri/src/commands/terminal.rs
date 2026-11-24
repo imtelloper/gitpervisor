@@ -333,9 +333,18 @@ pub fn term_open(
     cols: u16,
     rows: u16,
     label: Option<String>,
+    // 모아보기 "+ → 홈": 프로젝트 대신 사용자 홈에서 셸을 띄운다. 경로를 받지 않고 여기서 정한다
+    // — 프런트가 임의 폴더를 넘길 수 있는 IPC 를 만들지 않으려고.
+    home: Option<bool>,
     on_data: Channel<Response>,
 ) -> Result<TermOpened, IpcError> {
-    let path = project_path(&state, &project_id)?;
+    let path = if home == Some(true) {
+        crate::claude_usage::home_dir().ok_or_else(|| {
+            IpcError::new(ErrorCode::NotFound, crate::i18n::text_db::report_home_dir_not_found())
+        })?
+    } else {
+        project_path(&state, &project_id)?
+    };
     if !path.is_dir() {
         return Err(IpcError::new(
             ErrorCode::NotFound,

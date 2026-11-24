@@ -1123,7 +1123,7 @@ export async function run({ cdp, report: r, fix }) {
         J(gridShape),
       );
 
-      // 팝오버 — 균등 상태(aria-disabled)에서도 래퍼 hover로 열려야 한다. React는 disabled 버튼의
+      // 팝오버 — 균등 상태에서도 래퍼 hover로 열려야 한다(예전엔 균등이면 버튼을 aria-disabled 로 흐렸다). React는 disabled 버튼의
       // onMouseEnter를 등록조차 하지 않으므로(getListener) 버튼에 달았다면 여기서 죽는다.
       // onMouseEnter는 네이티브 mouseover에서 합성된다(relatedTarget null = 밖에서 들어옴).
       const hover = await cdp.eval(`(()=>{
@@ -1138,7 +1138,7 @@ export async function run({ cdp, report: r, fix }) {
       })()`);
       const icons = await poll(popBtns, (v) => v === 2, 8, 150);
       r.check(
-        "자동배치 hover → 모드 팝오버(아이콘 2개) — aria-disabled 상태에서도",
+        "자동배치 hover → 모드 팝오버(아이콘 2개) — 균등 상태에서도",
         hover.found && hover.nativeDisabled === false && icons === 2,
         J({ ...hover, icons }),
       );

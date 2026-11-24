@@ -113,7 +113,7 @@ export function SessionHistoryDialog() {
         if (e.target === e.currentTarget && downOnBackdrop.current) close();
       }}
     >
-      <Body opener={opener} onClose={close} />
+      <SessionHistoryBody opener={opener} onClose={close} />
     </div>
   );
 }
@@ -121,7 +121,16 @@ export function SessionHistoryDialog() {
 // 키에 mtime 을 넣는다 — 진행 중 세션이 자라면 새 키라 다시 읽고, 그대로면 다시 펼쳐도 캐시다.
 const detailKey = (s: ClaudeSession) => ["claude-session-detail", s.projectDir, s.id, s.updatedAtMs] as const;
 
-function Body({ opener, onClose }: { opener: Opener; onClose: () => void }) {
+export function SessionHistoryBody({
+  opener,
+  onClose,
+  popover,
+}: {
+  opener: Opener;
+  onClose: () => void;
+  /** 헤더 아이콘 호버 패널 안(TermSessionControls) — 크기는 패널이 정하고, 검색창이 터미널 포커스를 빼앗지 않는다. */
+  popover?: boolean;
+}) {
   const msg = useMessages();
   const t = msg.sessions;
   const pushToast = useUi((s) => s.pushToast);
@@ -332,6 +341,8 @@ function Body({ opener, onClose }: { opener: Opener; onClose: () => void }) {
                 tokens={tokens}
                 active={a === active}
                 expanded={expandedId === a.s.id}
+                termLive={termLive}
+                onResume={resume}
                 onClick={() => {
                   setActiveId(a.s.id);
                   toggleExpand(a.s.id);
@@ -344,8 +355,6 @@ function Body({ opener, onClose }: { opener: Opener; onClose: () => void }) {
                     now={now}
                     opener={opener}
                     projects={projectList}
-                    termLive={termLive}
-                    onResume={resume}
                   />
                 )}
               </SessionRow>
@@ -357,14 +366,19 @@ function Body({ opener, onClose }: { opener: Opener; onClose: () => void }) {
 
   return (
     <div
-      role="dialog"
-      aria-modal="true"
+      // 호버 패널은 대화상자가 아니다 — e2e·스크린리더가 role=dialog 로 찾는 것은 클릭으로 연 쪽이다.
+      role={popover ? undefined : "dialog"}
+      aria-modal={popover ? undefined : true}
       aria-label={t.title}
       // 안쪽 빈 곳을 눌러도 포커스가 대화상자에 남게 — body 로 빠지면 아래 키 처리가 끊긴다.
       tabIndex={-1}
       onKeyDown={onKeyDown}
       onClick={(e) => e.stopPropagation()}
-      className="flex h-[min(80vh,860px)] w-[min(880px,94vw)] flex-col overflow-hidden rounded-lg border border-edge bg-panel text-[13px] shadow-xl outline-none"
+      className={
+        popover
+          ? "flex min-h-0 flex-1 flex-col overflow-hidden text-[13px] outline-none"
+          : "flex h-[min(80vh,860px)] w-[min(880px,94vw)] flex-col overflow-hidden rounded-lg border border-edge bg-panel text-[13px] shadow-xl outline-none"
+      }
     >
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-edge px-3">
         <MessagesSquare size={15} className="shrink-0 text-accent" />
@@ -434,7 +448,7 @@ function Body({ opener, onClose }: { opener: Opener; onClose: () => void }) {
             className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-fg-dim"
           />
           <input
-            autoFocus
+            autoFocus={!popover}
             value={query}
             onChange={(e) => changeView(() => setQuery(e.target.value))}
             placeholder={t.searchPlaceholder}
@@ -483,6 +497,8 @@ function SessionRow({
   tokens,
   active,
   expanded,
+  termLive,
+  onResume,
   onClick,
   children,
 }: {
@@ -492,6 +508,8 @@ function SessionRow({
   tokens: readonly string[];
   active: boolean;
   expanded: boolean;
+  termLive: boolean;
+  onResume: (s: ClaudeSession, target: ResumeTarget) => void;
   onClick: () => void;
   children: ReactNode;
 }) {
@@ -508,12 +526,12 @@ function SessionRow({
       className={`relative scroll-mt-7 border-b border-edge/50 ${expanded ? "bg-base/40" : ""}`}
     >
       {active && <span className="absolute inset-y-0 left-0 w-0.5 bg-accent" />}
+      {/* 이어서 버튼은 행 버튼 **옆**(형제)이다 — 행 자체가 펼치기 버튼이라 안에 버튼을 둘 수 없다. 펼치지 않고 바로 누른다(2026-11-24 요청). */}
+      <div className={`flex items-center ${active ? "bg-selection/40" : "hover:bg-raised/50"}`}>
       <button
         onClick={onClick}
         aria-expanded={expanded}
-        className={`flex w-full flex-col gap-1 py-2 pl-7 pr-3 text-left ${
-          active ? "bg-selection/40" : "hover:bg-raised/50"
-        }`}
+        className="flex min-w-0 flex-1 flex-col gap-1 py-2 pl-7 pr-3 text-left"
       >
         <div className="flex w-full items-baseline gap-2">
           <span
@@ -565,6 +583,26 @@ function SessionRow({
           </Chip>
         </div>
       </button>
+      <div className="flex shrink-0 items-center gap-1.5 pr-3">
+        <button
+          onClick={() => onResume(s, "newTab")}
+          className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md bg-accent px-2.5 py-1 text-[12px] font-medium text-on-accent hover:bg-accent-hover"
+        >
+          <Play size={11} className="fill-current" />
+          {t.resumeNewTab}
+          {active && <span className="ml-0.5 rounded bg-black/15 px-1 font-mono text-[10px]">{modLabel}+↵</span>}
+        </button>
+        <button
+          onClick={() => onResume(s, "thisTerminal")}
+          disabled={!termLive}
+          title={termLive ? t.resumeHereTitle : t.resumeHereGone}
+          className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border border-edge px-2.5 py-1 text-[12px] text-fg-muted hover:bg-raised hover:text-fg disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
+        >
+          <SquareTerminal size={12} />
+          {t.resumeHere}
+        </button>
+      </div>
+      </div>
       {children}
     </div>
   );
@@ -576,16 +614,12 @@ function SessionDetail({
   now,
   opener,
   projects,
-  termLive,
-  onResume,
 }: {
   s: ClaudeSession;
   hlRe: string;
   now: number;
   opener: Opener;
   projects: Project[];
-  termLive: boolean;
-  onResume: (s: ClaudeSession, target: ResumeTarget) => void;
 }) {
   const t = useMessages().sessions;
   const pushToast = useUi((st) => st.pushToast);
@@ -614,24 +648,6 @@ function SessionDetail({
   return (
     <div className="flex flex-col gap-3 pb-3 pl-7 pr-3 pt-1">
       <div className="flex flex-wrap items-center gap-1.5">
-        <button
-          onClick={() => onResume(s, "newTab")}
-          disabled={cwdGone}
-          className="inline-flex items-center gap-1.5 rounded-md bg-accent px-2.5 py-1 text-[12px] font-medium text-on-accent hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-accent"
-        >
-          <Play size={11} className="fill-current" />
-          {t.resumeNewTab}
-          <span className="ml-0.5 rounded bg-black/15 px-1 font-mono text-[10px]">{modLabel}+↵</span>
-        </button>
-        <button
-          onClick={() => onResume(s, "thisTerminal")}
-          disabled={!termLive || cwdGone}
-          title={termLive ? t.resumeHereTitle : t.resumeHereGone}
-          className="inline-flex items-center gap-1.5 rounded-md border border-edge px-2.5 py-1 text-[12px] text-fg-muted hover:bg-raised hover:text-fg disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
-        >
-          <SquareTerminal size={12} />
-          {t.resumeHere}
-        </button>
         <div className="flex-1" />
         <GhostButton onClick={() => copy(s.id, t.idCopied)}>
           <Copy size={11} /> {t.copyId}

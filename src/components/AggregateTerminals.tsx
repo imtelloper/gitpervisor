@@ -10,6 +10,7 @@ import {
   Globe,
   Grid2x2,
   History,
+  House,
   Languages,
   Layers,
   LayoutGrid,
@@ -76,6 +77,7 @@ import {
   ClaudeModelChip,
   FileTreeButton,
   GitDialogButton,
+  HoverActionButton,
   PromptHistoryButton,
   PromptLogButton,
   PromptSidePanel,
@@ -507,9 +509,9 @@ export function AggregateTerminals() {
   // 새 터미널 생성 + 즉시 그리드 편입. initedRef 선행 — 터미널 0개에서 첫 생성 시
   // 초기 자동선택 효과가 뒤늦게 selected를 덮어쓰는 경합 차단. 스토어 갱신은 동기라
   // 신규 paneId만 selected에 넣으면 셀 마운트→PTY spawn→attach는 기존 경로로 완결된다.
-  const addTerminal = (projectId: string, initialInput?: InitialInput) => {
+  const addTerminal = (projectId: string, initialInput?: InitialInput, home?: boolean) => {
     initedRef.current = true;
-    const { paneId } = openTerminal(projectId);
+    const { paneId } = openTerminal(projectId, { home });
     // 셸이 뜨면 예약된 명령으로 에이전트 세션을 시작한다. 별도 창에서도 paneId는 이 창이
     // 만들므로(위임은 id를 그대로 싣는다) 예약 키가 맞고, 실제 소비는 term_open을 잡은 창이 한다.
     if (initialInput) queueInitialInput(paneId, initialInput);
@@ -621,13 +623,6 @@ export function AggregateTerminals() {
     saved.cols.every((a, r) => Array.isArray(a) && a.length === rowLens[r])
       ? saved.cols
       : rowLens.map((len) => Array(len).fill(1));
-
-  // 지금 배치가 균등한가 — fr은 상대값이라 "한 줄 안에서 값이 전부 같으면" 균등이다.
-  // 확대 중인 셀도 균등이 아닌 상태로 친다(그 셀만 화면을 덮고 있으니 눈에는 그게 불균등이다).
-  const uneven =
-    rowFr.some((v) => v !== rowFr[0]) ||
-    cellFr.some((row) => row.some((v) => v !== row[0]));
-  const canEven = uneven || !!zoomedId;
 
   /** 셀 크기를 전부 1fr로 되돌린다(+확대 해제). 저장된 트랙을 지우는 게 아니라 균등값으로 덮는다
    *  — 지우는 API가 따로 없고, 균등값을 써 두면 다음에 열어도 균등으로 복원된다.
@@ -945,13 +940,12 @@ export function AggregateTerminals() {
             }}
             onMouseLeave={scheduleLayoutClose}
           >
+            {/* 이미 균등이어도 흐리게 두지 않는다 — 회색이면 고장 난 버튼처럼 보였다(2026-11-24 지적). 균등 상태에서 다시
+                눌러도 같은 값을 쓸 뿐이다. */}
             <button
-              onClick={canEven ? () => evenTracks() : undefined}
-              aria-disabled={!canEven}
+              onClick={() => evenTracks()}
               title={msg.app.aggregate.autoLayoutTitle}
-              className={`flex items-center gap-1 rounded px-2 py-1 text-xs text-fg-muted ${
-                canEven ? "hover:bg-raised hover:text-fg" : "opacity-40"
-              }`}
+              className="flex items-center gap-1 rounded px-2 py-1 text-xs text-fg-muted hover:bg-raised hover:text-fg"
             >
               {layout === "columns" ? <Columns3 size={14} /> : <Grid2x2 size={14} />}{" "}
               {msg.app.aggregate.autoLayout}
@@ -1751,7 +1745,8 @@ function NewCellButton({
   onOpenDb,
 }: {
   projects: Project[] | undefined;
-  onCreateTerminal: (projectId: string, initialInput?: InitialInput) => void;
+  /** home=true 면 프로젝트 폴더 대신 사용자 홈에서 연다 — projectId 는 칩 묶음용. */
+  onCreateTerminal: (projectId: string, initialInput?: InitialInput, home?: boolean) => void;
   onCreateBrowser: (projectId: string) => void;
   /** DB 는 프로젝트에 속하지 않아 프로젝트 고르기를 거치지 않는다. */
   onOpenDb: () => void;
@@ -1777,15 +1772,19 @@ function NewCellButton({
     setMenu(null);
     setKind(null);
   };
-  const create = (k: NewCellKind, projectId: string) => {
+  const create = (k: NewCellKind, projectId: string, home?: boolean) => {
     if (k === "browser") onCreateBrowser(projectId);
     // 이 메뉴는 종류를 **고르는** 곳이라 기본값을 따르지 않는다 — "새 터미널"은 셸이다.
-    else runWithAgent(k === "terminal" ? null : k, (input) => onCreateTerminal(projectId, input));
+    else
+      runWithAgent(k === "terminal" ? null : k, (input) =>
+        onCreateTerminal(projectId, input, home),
+      );
     close();
   };
   // 종류 선택 → 프로젝트가 하나뿐이면 바로 만들고, 여러 개면 프로젝트 목록으로 넘어간다.
+  // 터미널 종류는 목록 맨 위에 "홈 경로"가 있어 프로젝트가 하나여도 고르게 한다.
   const pickKind = (k: NewCellKind) => {
-    if (ordered.length === 1) create(k, ordered[0].id);
+    if (ordered.length === 1 && k === "browser") create(k, ordered[0].id);
     else setKind(k);
   };
 
@@ -1865,6 +1864,19 @@ function NewCellButton({
                 <div className="px-3 py-1 text-[11px] text-fg-dim">
                   {msg.app.aggregate.newCellPickProject(newCellLabel(kind, msg))}
                 </div>
+                {/* 홈 터미널도 프로젝트 하나에 소속돼야 칩·복원이 그대로 돈다 — 마지막 선택 프로젝트에 붙인다. */}
+                {kind !== "browser" && ordered.length > 0 && (
+                  <>
+                    <button
+                      onClick={() => create(kind, ordered[0].id, true)}
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-fg-muted hover:bg-raised hover:text-fg"
+                    >
+                      <House size={14} className="shrink-0" />
+                      <span className="truncate">{msg.app.aggregate.newCellHome}</span>
+                    </button>
+                    <div className="my-1 border-t border-edge/60" />
+                  </>
+                )}
                 {ordered.map((p) => (
                   <button
                     key={p.id}
@@ -1886,14 +1898,19 @@ function NewCellButton({
 /** 그리드에서만 빼는 버튼 — 프로세스는 그대로 둔다(닫기 X와 구분되는 지점).
  *  상단 칩을 다시 누르면 돌아오므로, 별도 창에서도 안전해 항상 노출한다. */
 function HideButton({ onClick, title }: { onClick: () => void; title: string }) {
+  return <HoverActionButton icon={<EyeOff size={12} />} label={title} onClick={onClick} />;
+}
+
+/** 셀 닫기 X — 호버하면 무엇이 닫히는지(프로세스 종료 여부) 한 줄 메뉴로 보이고 그 줄을 눌러도 닫힌다. */
+function CloseCellButton({ onClick, title }: { onClick: () => void; title: string }) {
   return (
-    <button
+    <HoverActionButton
+      icon={<X size={12} />}
+      label={title}
       onClick={onClick}
-      title={title}
-      className="shrink-0 rounded p-0.5 text-fg-dim hover:bg-raised hover:text-fg"
-    >
-      <EyeOff size={12} />
-    </button>
+      danger
+      className="-mr-1 flex shrink-0 items-center rounded p-0.5 text-fg-dim hover:bg-raised hover:text-danger"
+    />
   );
 }
 
@@ -2034,13 +2051,7 @@ function AggregateCell({
           </button>
         </span>
         <HideButton onClick={onHide} title={msg.app.aggregate.hideTerminalTitle} />
-        <button
-          onClick={onClose}
-          title={msg.app.aggregate.closeTerminalCellTitle}
-          className="-mr-1 shrink-0 rounded p-0.5 text-fg-dim hover:bg-raised hover:text-danger"
-        >
-          <X size={12} />
-        </button>
+        <CloseCellButton onClick={onClose} title={msg.app.aggregate.closeTerminalCellTitle} />
       </div>
       {/* 본문: xterm + (켜져 있으면) 우측 프롬프트 컬럼. 패널이 여닫히면 host 크기가 변해
           위 ResizeObserver가 refit한다 — xterm 배선 추가 없이 크기가 따라온다. */}
@@ -2119,13 +2130,7 @@ function BrowserCell({
         <GitDialogButton projectId={meta.projectId} />
         <FileTreeButton projectId={meta.projectId} />
         <HideButton onClick={onHide} title={msg.app.aggregate.hideBrowserTitle} />
-        <button
-          onClick={onClose}
-          title={msg.app.aggregate.closeBrowser}
-          className="-mr-1 shrink-0 rounded p-0.5 text-fg-dim hover:bg-raised hover:text-danger"
-        >
-          <X size={12} />
-        </button>
+        <CloseCellButton onClick={onClose} title={msg.app.aggregate.closeBrowser} />
       </div>
       <div
         className={`min-h-0 flex-1 ${suspended ? "pointer-events-none" : ""}${

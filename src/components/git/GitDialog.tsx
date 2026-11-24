@@ -54,7 +54,7 @@ export function GitDialog() {
         onClick={(e) => e.stopPropagation()}
       >
         {/* key — 프로젝트가 바뀌면 탭·선택을 처음 상태로 되돌린다. */}
-        <Body
+        <GitDialogBody
           key={gitDialog.projectId}
           projectId={gitDialog.projectId}
           initialTab={gitDialog.tab ?? "changes"}
@@ -65,7 +65,7 @@ export function GitDialog() {
   );
 }
 
-function Body({
+export function GitDialogBody({
   projectId,
   initialTab,
   onClose,

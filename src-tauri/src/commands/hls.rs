@@ -97,6 +97,33 @@ pub struct HlsSession {
     /// 마지막 요청 시각(epoch 초). 유휴 회수 판정용.
     last_hit: AtomicU64,
     segs: Mutex<HashMap<u32, Arc<SegSlot>>>,
+    /// 순차 모드(길이·색인이 없는 원시 스트림) — `Some` 이면 세그먼트를 `-ss` 로 굽지 않고 ffmpeg 하나가
+    /// 처음부터 끝까지 차례로 굽는다(§순차 모드). duration_ms·seg_count 는 그동안 **추정치**다.
+    seq: Option<SeqRun>,
+}
+
+/// 순차 모드 진행 상황 — 러너 스레드가 쓰고 라우트가 기다린다.
+#[derive(Default)]
+struct SeqRun {
+    progress: Mutex<SeqProgress>,
+    cv: Condvar,
+}
+
+#[derive(Default)]
+struct SeqProgress {
+    /// 완성된 세그먼트 수 — 0..produced 는 파일이 다 쓰였다(ffmpeg 가 목록에 적은 뒤에만 센다).
+    produced: u32,
+    /// 세그먼트별 [시작, 끝] 초 — ffmpeg 목록 그대로. 끝난 뒤 재생목록을 실제 길이로 다시 쓴다.
+    spans: Vec<(f64, f64)>,
+    finished: bool,
+    pid: Option<u32>,
+}
+
+impl SeqRun {
+    fn snapshot(&self) -> (u32, bool) {
+        let p = self.progress.lock().unwrap_or_else(|e| e.into_inner());
+        (p.produced, p.finished)
+    }
 }
 
 impl HlsSession {
@@ -113,12 +140,18 @@ impl HlsSession {
 
     /// VOD 재생목록. 전체 구간을 미리 적어 주므로 재생기가 **아직 굽지 않은 곳으로도 탐색**한다.
     fn playlist(&self, token: &str) -> String {
-        let mut s = String::with_capacity(64 + self.seg_count as usize * 32);
+        // 순차 모드가 끝났으면 추정이 아니라 ffmpeg 가 실제로 자른 조각으로 쓴다.
+        let exact: Option<Vec<f64>> = self.seq.as_ref().and_then(|q| {
+            let p = q.progress.lock().unwrap_or_else(|e| e.into_inner());
+            (p.finished && !p.spans.is_empty()).then(|| p.spans.iter().map(|(a, b)| (b - a).max(0.001)).collect())
+        });
+        let durs: Vec<f64> = exact.unwrap_or_else(|| (0..self.seg_count).map(|n| self.span(n).1).collect());
+        let mut s = String::with_capacity(64 + durs.len() * 32);
         s.push_str("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-PLAYLIST-TYPE:VOD\n");
-        s.push_str(&format!("#EXT-X-TARGETDURATION:{}\n", SEG_SECS.ceil() as u64));
+        let target = durs.iter().cloned().fold(SEG_SECS, f64::max).ceil() as u64;
+        s.push_str(&format!("#EXT-X-TARGETDURATION:{target}\n"));
         s.push_str("#EXT-X-MEDIA-SEQUENCE:0\n");
-        for n in 0..self.seg_count {
-            let (_, dur) = self.span(n);
+        for (n, dur) in durs.iter().enumerate() {
             s.push_str(&format!("#EXTINF:{dur:.6},\n{n}.ts?t={token}\n"));
         }
         s.push_str("#EXT-X-ENDLIST\n");
@@ -186,6 +219,12 @@ pub(crate) fn route(path_part: &str, token: &str) -> Route {
 
     if file == "index.m3u8" {
         return Route::Playlist(sess.playlist(token));
+    }
+    if let Some(q) = &sess.seq {
+        return match file.strip_suffix(".ts").and_then(|s| s.parse::<u32>().ok()) {
+            Some(n) => seq_segment(&sess, q, n),
+            None => Route::NotFound,
+        };
     }
     let n = match file.strip_suffix(".ts").and_then(|s| s.parse::<u32>().ok()) {
         Some(n) if n < sess.seg_count => n,
@@ -443,6 +482,250 @@ fn enforce_cap(sess: &HlsSession) {
     }
 }
 
+// ══════════════════════════ 순차 모드 ══════════════════════════
+//
+// 녹화기·CCTV 가 떨군 원시 H.264/HEVC(`.h264`)는 컨테이너가 없어 **길이도 탐색 색인도 없다** — `-ss 600` 이
+// 앞 600초를 전부 읽고 버리는 일이 된다. 실사례(2026-11-24): 668MB·15분 파일이 초당 2.2MB 짜리 외장 디스크에
+// 있어 조각 하나에 수 분, 통째 mp4 변환은 5분이었다. 재생에 필요한 건 초당 0.74MB 라 **처음부터 한 번만
+// 읽으면** 디스크가 재생보다 빠르다. 그래서 ffmpeg 하나가 처음부터 끝까지 6초 조각을 차례로 굽고(키프레임을
+// 6초마다 강제해 조각 길이를 맞춘다), 라우트는 아직 안 구운 조각을 그 조각이 나올 때까지 기다린다.
+// 이미 구운 곳으로는 바로 탐색되고, 앞쪽 탐색은 그 지점까지 굽기를 기다린다.
+
+/// 순차 모드 조각 요청 — 다 구운 조각이면 바로, 아직이면 나올 때까지(상한 SEG_WAIT) 기다린다.
+/// 추정 길이가 실제보다 길면 끝 너머 조각은 없다(NotFound) — 그 오류로 재생기가 URL 을 다시 받으면
+/// 정확한 재생목록이 간다(`video_hls_url` 의 `&f=1`).
+fn seq_segment(sess: &HlsSession, q: &SeqRun, n: u32) -> Route {
+    let mut p = q.progress.lock().unwrap_or_else(|e| e.into_inner());
+    while n >= p.produced && !p.finished {
+        let (g, timeout) = q.cv.wait_timeout(p, SEG_WAIT).unwrap_or_else(|e| e.into_inner());
+        p = g;
+        if timeout.timed_out() && n >= p.produced && !p.finished {
+            return Route::Failed(format!("세그먼트 {n} 대기 시간 초과(순차 모드 {}조각까지 구움)", p.produced)); // i18n-ok: 로그 전용(Route::Failed → preview.rs log::warn)
+        }
+    }
+    if n < p.produced {
+        Route::Segment(sess.dir.join(format!("{n}.ts")), "video/mp2t")
+    } else {
+        Route::NotFound
+    }
+}
+
+/// 순차 모드 인코딩 인자 — 하드웨어 인코더는 강제 키프레임을 IDR 이 아닌 I 프레임으로 내는 것이 있어
+/// 조각 경계가 흐트러진다. 원시 녹화는 대개 1080p 이하라 libx264 veryfast 로 실시간을 넉넉히 넘는다.
+/// B 프레임을 끄는 이유: 켜면 타임스탬프가 앞으로 밀려(2프레임) 첫 조각이 6.08초가 된다(실측).
+fn seq_ffmpeg_args(src: &Path, dir: &Path, fps: f64, dims: (u32, u32), has_audio: bool) -> Vec<String> {
+    let mut a: Vec<String> = vec![
+        "-nostdin".into(),
+        "-hide_banner".into(),
+        "-loglevel".into(),
+        "error".into(),
+        // 원시 스트림엔 타임스탬프가 없다 — 고정 프레임레이트로 만들어 붙인다.
+        "-r".into(),
+        format!("{fps:.6}"),
+        "-i".into(),
+        src.display().to_string(),
+        "-map".into(),
+        "0:v:0".into(),
+    ];
+    if has_audio {
+        a.extend(["-map", "0:a:0"].map(String::from));
+    }
+    a.push("-vf".into());
+    a.push(format!("scale={}:{}", dims.0, dims.1));
+    // 75fps 화면 녹화(실사례)를 그대로 구우면 인코딩·조각이 2.5배다 — 보기엔 30이면 족하다.
+    if fps > 30.5 {
+        a.extend(["-r", "30"].map(String::from));
+    }
+    a.extend(["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p", "-bf", "0"].map(String::from));
+    if has_audio {
+        a.extend(["-c:a", "aac", "-b:a", "160k", "-ac", "2", "-ar", "48000"].map(String::from));
+    }
+    a.push("-force_key_frames".into());
+    a.push(format!("expr:gte(t,n_forced*{SEG_SECS})"));
+    a.extend(
+        [
+            "-f", "segment", "-segment_time", "6", "-segment_format", "mpegts",
+            // 목록을 stdout 으로 — 조각 하나가 **닫힐 때마다** `N.ts,시작,끝` 한 줄이 온다(실측). 이 줄이 곧 완성 신호다.
+            "-segment_list", "pipe:1", "-segment_list_type", "csv",
+            "-reset_timestamps", "0", "-muxdelay", "0", "-muxpreload", "0", "-y",
+        ]
+        .map(String::from),
+    );
+    a.push(dir.join("%d.ts").display().to_string());
+    a
+}
+
+/// `0.ts,0.000000,6.000000` → (0, 0.0, 6.0)
+fn parse_seq_line(line: &str) -> Option<(u32, f64, f64)> {
+    let mut it = line.trim().split(',');
+    let n = it.next()?.strip_suffix(".ts")?.parse().ok()?;
+    let a = it.next()?.parse().ok()?;
+    let b = it.next()?.parse().ok()?;
+    Some((n, a, b))
+}
+
+fn start_seq(sess: Arc<HlsSession>, fps: f64) {
+    let _ = std::thread::Builder::new().name("hls-seq".into()).spawn(move || {
+        let Some(q) = &sess.seq else { return };
+        let finish = |q: &SeqRun| {
+            let mut p = q.progress.lock().unwrap_or_else(|e| e.into_inner());
+            p.finished = true;
+            p.pid = None;
+            q.cv.notify_all();
+        };
+        let mut cmd = std::process::Command::new(&sess.ffmpeg);
+        cmd.args(seq_ffmpeg_args(&sess.src, &sess.dir, fps, sess.dims, sess.has_audio))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                log::warn!("[hls] 순차 ffmpeg 실행 실패: {e}"); // i18n-ok: 로그
+                return finish(q);
+            }
+        };
+        let pid = child.id();
+        children().lock().unwrap_or_else(|e| e.into_inner()).insert(pid);
+        q.progress.lock().unwrap_or_else(|e| e.into_inner()).pid = Some(pid);
+        // stderr 는 따로 비운다 — 파이프가 차면 ffmpeg 가 멈춘다. 마지막 줄만 로그에 남긴다.
+        let stderr = child.stderr.take();
+        let err_tail = std::thread::spawn(move || {
+            use std::io::BufRead;
+            stderr
+                .map(|s| std::io::BufReader::new(s).lines().map_while(Result::ok).last().unwrap_or_default())
+                .unwrap_or_default()
+        });
+        if let Some(out) = child.stdout.take() {
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+                let Some((n, a, b)) = parse_seq_line(&line) else { continue };
+                let mut p = q.progress.lock().unwrap_or_else(|e| e.into_inner());
+                p.produced = p.produced.max(n + 1);
+                p.spans.push((a, b));
+                q.cv.notify_all();
+            }
+        }
+        let status = child.wait();
+        children().lock().unwrap_or_else(|e| e.into_inner()).remove(&pid);
+        let tail = err_tail.join().unwrap_or_default();
+        let produced = q.snapshot().0;
+        if !matches!(status, Ok(s) if s.success()) {
+            log::warn!("[hls] 순차 세션 {} 중단 — {produced}조각까지, {tail}", &sess.sid[..8]); // i18n-ok: 로그
+        } else {
+            log::info!("[hls] 순차 세션 {} 완료 — {produced}조각", &sess.sid[..8]); // i18n-ok: 로그
+        }
+        finish(q);
+    });
+}
+
+fn kill_pid(pid: u32) {
+    #[cfg(unix)]
+    if pid > 1 {
+        unsafe {
+            libc::killpg(pid as i32, libc::SIGKILL);
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = std::process::Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &pid.to_string()])
+            .creation_flags(0x0800_0000)
+            .status();
+    }
+}
+
+/// 세션을 걷을 때 순차 인코딩도 멈춘다 — 안 그러면 지운 폴더에 계속 쓰며 느린 디스크를 붙잡는다.
+fn stop_seq(sess: &HlsSession) {
+    if let Some(pid) = sess.seq.as_ref().and_then(|q| q.progress.lock().unwrap_or_else(|e| e.into_inner()).pid) {
+        kill_pid(pid);
+    }
+}
+
+/// 원시 스트림의 (fps, 길이 ms) 어림 — 앞 250프레임의 평균 크기로 파일 전체 프레임 수를 어림한다(앞 2~3MB 만 읽는다 —
+/// 느린 외장 디스크에서 300프레임은 11초가 걸렸다). 적게 보면 키프레임 하나가 평균을 끌어올린다(120프레임: 50fps 시험 영상을 44fps 로 봤다).
+/// 실측: 같은 CCTV 파일의 앞·200MB·400MB·600MB 지점 평균이 ±2% 안이었다.
+async fn estimate_raw_timing(probe: &Path, src: &Path, probe_fps: f64) -> Result<(f64, u64), IpcError> {
+    let src_s = src.display().to_string();
+    let (_, out, _) = super::video::run_capture_bytes(
+        probe,
+        &[
+            "-v", "error", "-select_streams", "v:0", "-read_intervals", "%+#250",
+            "-show_entries", "packet=size", "-of", "csv=p=0", &src_s,
+        ],
+        60,
+    )
+    .await?;
+    let sizes: Vec<u64> = String::from_utf8_lossy(&out).lines().filter_map(|l| l.trim().trim_end_matches(',').parse().ok()).collect();
+    let len = std::fs::metadata(src).map(|m| m.len()).unwrap_or(0);
+    let name = src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    Ok(raw_timing(&sizes, len, probe_fps, span_from_name(&name)))
+}
+
+/// 파일 이름에 적힌 녹화 구간(초) — 녹화기는 대개 `…(2025-03-29 104706)-(2025-03-29 110206)…` 처럼 시작·끝 시각을 박는다.
+/// 원시 스트림엔 프레임 시각이 없고 ffprobe 의 fps(25)는 기본값일 뿐이라, 실사례는 75fps 화면 녹화를 25fps 로 틀어
+/// 3배 느리게 보였다(2026-11-24, 화면 속 시계로 확인). 이름의 구간이 있으면 fps = 어림 프레임 수 ÷ 구간 으로 맞춘다.
+/// 받는 꼴: 숫자 덩어리 [4,2,2,6] · [8,6] · [14] (구분자는 무엇이든). 처음 두 시각을 쓰고, 0 < 구간 ≤ 24시간만 믿는다.
+fn span_from_name(name: &str) -> Option<f64> {
+    let runs: Vec<&str> = name.split(|c: char| !c.is_ascii_digit()).filter(|s| !s.is_empty()).collect();
+    let mut stamps: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < runs.len() {
+        let lens: Vec<usize> = runs[i..].iter().take(4).map(|s| s.len()).collect();
+        if lens.starts_with(&[4, 2, 2, 6]) {
+            stamps.push(runs[i..i + 4].concat());
+            i += 4;
+        } else if lens.starts_with(&[8, 6]) {
+            stamps.push(runs[i..i + 2].concat());
+            i += 2;
+        } else if lens.first() == Some(&14) {
+            stamps.push(runs[i].to_string());
+            i += 1;
+        } else {
+            i += 1;
+        }
+    }
+    let parse = |s: &str| chrono::NaiveDateTime::parse_from_str(s, "%Y%m%d%H%M%S").ok();
+    let (a, b) = (parse(stamps.first()?)?, parse(stamps.get(1)?)?);
+    let secs = (b - a).num_seconds();
+    (secs > 0 && secs <= 24 * 3600).then_some(secs as f64)
+}
+
+/// 원시 스트림의 (fps, 길이 ms) — 이름에 구간이 있으면 그 구간이 길이고 fps 를 거기 맞춘다(§span_from_name).
+/// 없으면 ffprobe fps 로 길이를 어림한다.
+fn raw_timing(sizes: &[u64], file_len: u64, probe_fps: f64, name_span: Option<f64>) -> (f64, u64) {
+    let total: u64 = sizes.iter().sum();
+    if let (Some(span), false) = (name_span, sizes.is_empty() || total == 0) {
+        let frames = file_len as f64 / (total as f64 / sizes.len() as f64);
+        let fps = frames / span;
+        if (1.0..=240.0).contains(&fps) {
+            // 프레임 수 어림 오차만큼(수 %) 넉넉히 — 남는 끝은 인코딩이 끝난 뒤 정확한 재생목록으로 바로잡힌다.
+            return (fps, (span * 1000.0 * 1.05).ceil() as u64);
+        }
+    }
+    (probe_fps, estimate_from_packets(sizes, file_len, probe_fps))
+}
+
+fn estimate_from_packets(sizes: &[u64], file_len: u64, fps: f64) -> u64 {
+    let total: u64 = sizes.iter().sum();
+    if sizes.is_empty() || total == 0 || fps <= 0.0 {
+        return 60 * 60 * 1000; // 어림할 근거가 없다 — 1시간으로 두고 끝나면 바로잡는다
+    }
+    let frames = file_len as f64 / (total as f64 / sizes.len() as f64);
+    ((frames / fps) * 1000.0 * 1.1).ceil() as u64
+}
+
 // ══════════════════════════ 자식 회수 ══════════════════════════
 
 fn children() -> &'static Mutex<HashSet<u32>> {
@@ -460,20 +743,7 @@ pub fn hls_kill_all() {
         .copied()
         .collect();
     for pid in pids {
-        #[cfg(unix)]
-        if pid > 1 {
-            unsafe {
-                libc::killpg(pid as i32, libc::SIGKILL);
-            }
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            let _ = std::process::Command::new("taskkill")
-                .args(["/T", "/F", "/PID", &pid.to_string()])
-                .creation_flags(0x0800_0000)
-                .status();
-        }
+        kill_pid(pid);
     }
 }
 
@@ -642,6 +912,7 @@ fn prune_sessions() {
         .collect();
     for sid in doomed_sessions(snapshot, now_secs()) {
         if let Some(s) = r.by_sid.remove(&sid) {
+            stop_seq(&s);
             let _ = std::fs::remove_dir_all(&s.dir);
         }
     }
@@ -702,17 +973,31 @@ pub async fn video_hls_url(
     } {
         if let Some(s) = get_session(&sid) {
             s.touch();
-            return Ok(format!("http://127.0.0.1:{port}/.hls/{sid}/index.m3u8?t={token}"));
+            // 순차 모드가 끝났으면 URL 을 바꿔 준다 — 추정 길이로 연 재생기가 끝 너머 조각에서 오류를 내고
+            // URL 을 다시 받을 때, 같은 URL 이면 다시 읽지 않아 정확한 재생목록으로 못 갈아탄다.
+            let fin = s.seq.as_ref().is_some_and(|q| q.snapshot().1);
+            return Ok(format!(
+                "http://127.0.0.1:{port}/.hls/{sid}/index.m3u8?t={token}{}",
+                if fin { "&f=1" } else { "" }
+            ));
         }
     }
 
     let meta = super::video::probe_meta(&probe, &src.display().to_string()).await?;
-    if !meta.has_video || meta.duration_ms == 0 {
+    if !meta.has_video {
         return Err(IpcError::new(
             ErrorCode::Io,
             text_tools::hls_no_video_stream(),
         ));
     }
+    // 길이가 없다 = 컨테이너 없는 원시 스트림(.h264 등) — 순차 모드(§순차 모드).
+    let sequential = meta.duration_ms == 0;
+    let probe_fps = if meta.fps > 1.0 { meta.fps } else { 25.0 };
+    let (fps, duration_ms) = if sequential {
+        estimate_raw_timing(&probe, &src, probe_fps).await?
+    } else {
+        (probe_fps, meta.duration_ms)
+    };
 
     let dims = target_dims(meta.width, meta.height);
     let kbps = target_kbps(dims.0, dims.1, meta.fps, meta.bitrate_kbps, meta.vcodec.as_deref());
@@ -722,25 +1007,48 @@ pub async fn video_hls_url(
     std::fs::create_dir_all(&dir)
         .map_err(|e| IpcError::new(ErrorCode::Io, text_tools::hls_cache_dir_create_failed(&e)))?;
 
-    let seg_count = ((meta.duration_ms as f64 / 1000.0) / SEG_SECS).ceil().max(1.0) as u32;
+    let seg_count = ((duration_ms as f64 / 1000.0) / SEG_SECS).ceil().max(1.0) as u32;
     let sess = Arc::new(HlsSession {
         sid: sid.clone(),
         src,
         dir,
         ffmpeg: bin.ffmpeg.clone(),
-        duration_ms: meta.duration_ms,
+        duration_ms,
         seg_count,
         has_audio: meta.has_audio,
         dims,
         vargs,
         last_hit: AtomicU64::new(now_secs()),
         segs: Mutex::new(HashMap::new()),
+        seq: sequential.then(SeqRun::default),
     });
 
     {
-        let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = reg().lock().unwrap_or_else(|e| e.into_inner());
+        let r = &mut *guard;
+        if sequential {
+            // 한 번에 하나만 굽는다 — 다른 원시 영상으로 옮겼는데 앞 파일의 인코딩이 느린 디스크를 계속 읽으면
+            // 지금 보는 영상이 굶는다. 다 굽지 못한 앞 세션은 버린다(다시 열면 처음부터 새로).
+            let stale: Vec<String> = r
+                .by_sid
+                .iter()
+                .filter(|(_, s)| s.seq.as_ref().is_some_and(|q| !q.snapshot().1))
+                .map(|(k, _)| k.clone())
+                .collect();
+            for k in stale {
+                if let Some(s) = r.by_sid.remove(&k) {
+                    stop_seq(&s);
+                    let _ = std::fs::remove_dir_all(&s.dir);
+                }
+            }
+            let by_sid = &r.by_sid;
+            r.by_key.retain(|_, v| by_sid.contains_key(v));
+        }
         r.by_sid.insert(sid.clone(), sess.clone());
         r.by_key.insert(key, sid.clone());
+    }
+    if sequential {
+        start_seq(sess.clone(), fps);
     }
     // 정리는 **삽입 뒤에** 한다 — 앞에서 하면 비교 대상에 새 세션이 빠져 실제 유지 개수가
     // MAX_SESSIONS+1이 된다(4개일 때 `4 - 0 > 4`가 false라 정리 없이 5번째가 들어간다).
@@ -751,7 +1059,7 @@ pub async fn video_hls_url(
         &sess.sid[..8],
         dims.0,
         dims.1,
-        meta.fps,
+        fps,
         kbps,
         seg_count,
         meta.vcodec.as_deref().unwrap_or("?")
@@ -783,6 +1091,7 @@ pub(crate) fn register_test_session(
         vargs: video_args(&ffmpeg, 800),
         last_hit: AtomicU64::new(now_secs()),
         segs: Mutex::new(HashMap::new()),
+        seq: None,
     });
     reg()
         .lock()
@@ -809,6 +1118,7 @@ mod tests {
             vargs: vec![],
             last_hit: AtomicU64::new(0),
             segs: Mutex::new(HashMap::new()),
+            seq: None,
         }
     }
 
@@ -907,5 +1217,65 @@ mod tests {
         assert!(matches!(route("/index.m3u8", "t"), Route::NotFound));
         assert!(matches!(route("/.hls/nope/index.m3u8", "t"), Route::NotFound));
         assert!(matches!(route("/.hls/nope/../../etc/passwd", "t"), Route::NotFound));
+    }
+
+    #[test]
+    fn seq_list_lines_parse_and_reject_garbage() {
+        assert_eq!(parse_seq_line("3.ts,18.000000,24.000000
+"), Some((3, 18.0, 24.0)));
+        assert_eq!(parse_seq_line("x.ts,0,6"), None);
+        assert_eq!(parse_seq_line("0.mp4,0,6"), None);
+        assert_eq!(parse_seq_line(""), None);
+    }
+
+    #[test]
+    fn raw_stream_duration_estimate_overshoots_a_little() {
+        // 프레임당 1000바이트 · 25fps · 900초 분량 → 900초의 1.1배.
+        let sizes = vec![1000u64; 300];
+        let ms = estimate_from_packets(&sizes, 1000 * 25 * 900, 25.0);
+        assert!((990_000..=990_001).contains(&ms), "{ms}");
+        // 근거가 없으면 1시간.
+        assert_eq!(estimate_from_packets(&[], 123, 25.0), 3_600_000);
+    }
+
+    #[test]
+    fn seq_playlist_uses_estimate_then_exact_spans_once_finished() {
+        let mut s = mk(20_000, 4);
+        s.seq = Some(SeqRun::default());
+        assert_eq!(s.playlist("t").matches("#EXTINF").count(), 4, "끝나기 전엔 추정 조각 수");
+        {
+            let q = s.seq.as_ref().unwrap();
+            let mut p = q.progress.lock().unwrap_or_else(|e| e.into_inner());
+            p.produced = 2;
+            p.spans = vec![(0.0, 6.0), (6.0, 9.5)];
+            p.finished = true;
+        }
+        let pl = s.playlist("t");
+        assert_eq!(pl.matches("#EXTINF").count(), 2, "{pl}");
+        assert!(pl.contains("#EXTINF:3.500000,
+1.ts?t=t"), "{pl}");
+        assert!(pl.ends_with("#EXT-X-ENDLIST
+"));
+    }
+
+    #[test]
+    fn recorder_file_names_give_the_recorded_span() {
+        assert_eq!(span_from_name("FEN008-1_Dispenser-2_(2025-03-29 104706)-(2025-03-29 110206)_m#1.h264"), Some(900.0));
+        assert_eq!(span_from_name("cam_20250329_235900-20250330_000100.h264"), Some(120.0));
+        assert_eq!(span_from_name("20250329235900_20250330000100.264"), Some(120.0));
+        assert_eq!(span_from_name("cam.h264"), None);
+        assert_eq!(span_from_name("(2025-03-29 110206)-(2025-03-29 104706).h264"), None, "거꾸로면 믿지 않는다");
+    }
+
+    #[test]
+    fn raw_timing_fits_fps_to_the_named_span() {
+        // 프레임당 10KB · 파일 690MB → 69,000프레임 / 900초 ≈ 76.7fps, 길이는 구간 900초의 1.05배.
+        let sizes = vec![10_000u64; 120];
+        let (fps, ms) = raw_timing(&sizes, 690_000_000, 25.0, Some(900.0));
+        assert!((fps - 76.666).abs() < 0.01, "{fps}");
+        assert_eq!(ms, 945_000);
+        // 구간이 없으면 ffprobe fps 그대로.
+        let (fps, _) = raw_timing(&sizes, 690_000_000, 25.0, None);
+        assert_eq!(fps, 25.0);
     }
 }

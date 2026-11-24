@@ -165,6 +165,7 @@ const ko = {
     newCellNoProjectsTitle: "프로젝트를 추가하면 새 터미널·브라우저를 열 수 있습니다",
     newCellTitleWithBrowser: "새 터미널 · 새 브라우저 — 이 화면에 바로 연다",
     newCellPickProject: (kind: string) => `${kind} — 프로젝트 선택`,
+    newCellHome: "홈 경로 (~)",
     hideTerminalTitle:
       "숨기기 — 이 화면에서만 빼고 터미널은 계속 실행됩니다 (상단 칩으로 되돌리기)",
     hideBrowserTitle:
@@ -343,6 +344,7 @@ export const appText = defineText(ko, {
       newCellNoProjectsTitle: "Add a project to open new terminals and browsers",
       newCellTitleWithBrowser: "New terminal · New browser — opens right here",
       newCellPickProject: (kind) => `${kind} — choose project`,
+      newCellHome: "Home folder (~)",
       hideTerminalTitle: "Hide — removes it from this view only; the terminal keeps running (restore from the chips above)",
       hideBrowserTitle: "Hide — removes it from this view only; the browser keeps running (restore from the chips above)",
       unzoomCellTitle: "Original size — back to the grid",

@@ -914,7 +914,10 @@ export default function VideoPlayer({
         // 현재 파일만 probe 값을 안다 — 나머지는 파일당 ffprobe를 띄우지 않는다(프로세스 위생).
         sub:
           e.name === here && probe.data
-            ? `${fmtTime(probe.data.durationMs / 1000)} · ${probe.data.width}×${probe.data.height}`
+            ? // 원시 스트림(.h264)은 길이가 없다(0) — "0:00" 대신 크기만.
+              probe.data.durationMs > 0
+              ? `${fmtTime(probe.data.durationMs / 1000)} · ${probe.data.width}×${probe.data.height}`
+              : `${probe.data.width}×${probe.data.height}`
             : "",
         active: e.name === here,
       }));

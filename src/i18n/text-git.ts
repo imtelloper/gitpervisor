@@ -233,7 +233,6 @@ const ko = {
     staticPageTitle: "이 프로젝트의 index.html 을 브라우저 새 창으로 열기(빌드 결과·정적 페이지)",
     staticPageNoneTitle: "정적으로 열 수 있는 index.html 이 이 프로젝트에 없습니다",
     staticPageNone: "정적으로 열 수 있는 index.html 이 없습니다 — 번들러 원본(src/main.tsx 를 부르는 것)은 빌드한 뒤 열 수 있습니다",
-    staticPagePick: "열 페이지 고르기",
     claudeModelTitle: (modelId: string, effort?: string) =>
       effort ? `Claude 모델 ${modelId} · effort ${effort}` : `Claude 모델 ${modelId}`,
     agentLaunchTitle: "이 터미널에서 AI 세션 시작 — Claude Code · Codex · OpenCode",
@@ -514,7 +513,6 @@ export const gitText = defineText(ko, {
       staticPageTitle: "Open this project's index.html in a new browser window (build output or static page)",
       staticPageNoneTitle: "This project has no index.html that can be opened as a static page",
       staticPageNone: "No index.html can be opened as a static page — bundler sources (the ones loading src/main.tsx) open after a build",
-      staticPagePick: "Choose a page to open",
       agentLaunchTitle: "Start an AI session in this terminal — Claude Code · Codex · OpenCode",
       claudeModelTitle: (modelId, effort) => (effort ? `Claude model ${modelId} · effort ${effort}` : `Claude model ${modelId}`),
       agentLaunchClaude: "Start Claude Code session",

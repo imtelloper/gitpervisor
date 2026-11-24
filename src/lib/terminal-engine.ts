@@ -517,6 +517,14 @@ function warnResume(line: string): void {
   );
 }
 
+// 홈 탭(TermTab.home)의 패널인가 — 분할로 생긴 패널도 같은 탭이라 홈에서 뜬다. Float 창은 스토어를 안 불러와
+// false 지만 거기선 attach(셸을 새로 안 띄움)라 상관없다.
+function isHomePane(paneId: string): boolean {
+  return useTerminals
+    .getState()
+    .terminals.some((t) => t.home === true && collectPanes(t.layout).includes(paneId));
+}
+
 // 셸이 시작하는 폴더 = term_open 이 쓰는 프로젝트 경로. 모르면 "" — formatClaudeResume 이 그때는 늘 이동한다(맞되 한 줄 더).
 async function projectRootOf(projectId: string): Promise<string> {
   try {
@@ -1007,6 +1015,7 @@ export function createTerminalImpl(opts: {
         cols: term.cols || 80,
         rows: term.rows || 24,
         label: opts.label ?? null,
+        home: isHomePane(opts.id),
         onData: channel,
       });
   void startCmd.catch((e: unknown) => {
@@ -1103,7 +1112,8 @@ export function createTerminalImpl(opts: {
       .then(async (rec) => {
         // 그 사이 닫힌 터미널이면 보낼 곳이 없다(닫기가 dropPane → forget 으로 백엔드 기록도 지운다).
         if (!rec || registry.get(opts.id) !== inst) return;
-        const root = await projectRootOf(opts.projectId);
+        // 홈 탭은 셸이 프로젝트 폴더에서 시작하지 않는다 — "" 면 formatClaudeResume 이 늘 이동한다.
+        const root = isHomePane(opts.id) ? "" : await projectRootOf(opts.projectId);
         sendAfterPrompt((shell) => {
           const line = formatClaudeResume(rec, shell, root);
           if (!line)

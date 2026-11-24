@@ -23,6 +23,7 @@ const ko = {
   },
   terminals: {
     defaultTitle: (n: number) => `터미널 ${n}`,
+    homeTitle: "홈 (~)",
   },
   updater: {
     newVersionAvailable: (version: string) => `새 버전 v${version}이 나왔습니다`,
@@ -50,6 +51,7 @@ export const storesText = defineText(ko, {
     },
     terminals: {
       defaultTitle: (n) => `Terminal ${n}`,
+      homeTitle: "Home (~)",
     },
     updater: {
       newVersionAvailable: (version) => `New version v${version} is available`,

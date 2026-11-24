@@ -111,6 +111,12 @@ export const VIDEO_EXT = new Set([
   "mkv",
   "wmv",
   "flv",
+  // 녹화기·CCTV 의 원시 스트림 — 웹뷰는 못 틀고 길이·색인도 없어, 플레이어가 순차 변환(hls.rs §순차 모드)으로 넘긴다.
+  "h264",
+  "264",
+  "h265",
+  "265",
+  "hevc",
 ]);
 export const AUDIO_EXT = new Set(["mp3", "wav", "m4a", "aac", "flac", "oga", "ogg"]);
 
@@ -158,6 +164,19 @@ export function isOffice(path: string): boolean {
 /** 내장 PDF 뷰어로 열 문서인가. */
 export function isPdf(path: string): boolean {
   return extOf(path) === "pdf";
+}
+
+const PLAIN_TEXT_EXT = new Set(["txt", "log", "csv", "tsv", "text"]);
+
+/** 앱 뷰어(문서 창)에서 볼 만한 파일인가 — 폴더 창의 "Gitpervisor 에서 열기"·더블클릭이 쓴다. 아니면 OS 기본 앱으로 넘긴다. */
+export function viewsInApp(path: string): boolean {
+  return (
+    isImage(path) ||
+    isPlayable(path) ||
+    isPdf(path) ||
+    languageOf(path) !== "plaintext" ||
+    PLAIN_TEXT_EXT.has(extOf(path))
+  );
 }
 
 /** 텍스트 diff를 스폰하지 않고 자기 뷰어로 여는 파일인가 — useDiff·diff 프리페치·문서 창 prefetch 공용 게이트. */

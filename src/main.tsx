@@ -20,6 +20,7 @@ import {
   attachProjectsEvents,
   attachRepoEvents,
 } from "./lib/events";
+import { installHoverTips } from "./lib/hover-tip";
 import { setupErrorLogging } from "./lib/logging";
 import {
   readAggregateView,
@@ -124,6 +125,7 @@ try {
 
 // 미처리 에러/프라미스 거부를 Rust 로그 파일로 보낸다 — 메인·플로팅 창 모두 1회.
 setupErrorLogging();
+installHoverTips();
 
 // macOS: Cmd+C/메뉴 복사의 WebKit 기본 경로가 한글을 깨뜨린다 — 전역에서 네이티브로 대체.
 installMacCopyInterceptor();

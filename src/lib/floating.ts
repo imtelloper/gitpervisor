@@ -208,6 +208,11 @@ export function fnv16(s: string): string {
  * `project` 를 주면 파일 트리의 폴더를 여는 것이다 — 창의 루트는 프로젝트 루트, 처음 보이는 곳은
  * `path` 이고, 파일은 OS 기본 앱이 아니라 앱의 뷰어 창으로 연다.
  */
+/** 즐겨찾기 폴더를 앱 뷰어의 가상 프로젝트로 — Rust `project_path` 의 `FAV_PROJECT_PREFIX` 와 같은 값. */
+export function favProjectId(root: string): string {
+  return `fav:${root}`;
+}
+
 export function openFolderWindow(path: string, project?: { id: string; root: string }): void {
   const id = fnv16(path);
   putDocTarget(

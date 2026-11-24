@@ -29,13 +29,15 @@ import { fmtTime } from "../../i18n/format-locale";
 import { currentMessages, useMessages } from "../../i18n/ui-language";
 import { launchAgentInTerminal, type TerminalAgent } from "../../lib/agent-launch";
 import { copyText } from "../../lib/clipboard";
-import { openBrowserWindow } from "../../lib/floating";
+import { openBrowserWindow, openDocWindow } from "../../lib/floating";
 import { relativeTime } from "../../lib/format";
 import { errorMessage, ipc } from "../../lib/ipc";
 import { classifyMode } from "../../stores/browser";
 import { TERM_SCHEMES } from "../../lib/term-color-schemes";
 import { prefetchGitDialog, useClaudeTermModels } from "../../queries";
-import { prefetchSessionList } from "../sessions/SessionHistoryDialog";
+import { GitDialogBody } from "../git/GitDialog";
+import { prefetchSessionList, SessionHistoryBody } from "../sessions/SessionHistoryDialog";
+import { FileTreePanel } from "../tree/FileTreePanel";
 import { useOccludesWebview } from "../../stores/occlusion";
 import { usePromptHistory, type PromptEntry } from "../../stores/promptHistory";
 import { useTermThemes } from "../../stores/termThemes";
@@ -75,137 +77,23 @@ function useMenuDismiss(
   }, [isOpen, setMenu]);
 }
 
-/**
- * 이 세션의 컬러 스킴 선택 — 팔레트 버튼. 여러 세션을 색으로 구분하는 용도라, 선택은
- * **세션(termId) 단위**로 저장돼(termThemes 스토어) 그 세션이 닫히지 않는 한 유지된다
- * (모아보기를 닫거나 앱을 재시작해도 — dropPane에서만 지운다).
- * 메뉴는 버튼 rect 기준 fixed — 부모가 overflow-hidden이라 안에 그리면 잘린다.
- */
-export function ThemeButton({ termId }: { termId: string }) {
-  const msg = useMessages();
-  const current = useTermThemes((s) => s.byTerminal[termId]);
-  const setScheme = useTermThemes((s) => s.setScheme);
-  const btnRef = useRef<HTMLButtonElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const [menu, setMenu] = useState<{
-    right: number;
-    top?: number;
-    bottom?: number;
-    maxHeight: number;
-  } | null>(null);
-  // 열린 동안 네이티브 webview를 숨긴다 — 브라우저 셀/패널이 이 메뉴를 덮지 않게.
-  useOccludesWebview(!!menu);
-  useMenuDismiss(!!menu, setMenu, [btnRef, menuRef]);
-
-  const close = () => setMenu(null);
-  const open = () => {
-    const r = btnRef.current?.getBoundingClientRect();
-    if (!r) return;
-    // 버튼이 화면 우측일 수 있으니 우측 모서리 정렬. 메뉴 실높이(~290px)가 하단에서는
-    // 아래 여유를 넘으므로, 부족하면 버튼 **위**로 뒤집는다(PromptLogButton과 같은 규칙).
-    // 아주 낮은 창에서 양쪽 다 모자라는 극단은 maxHeight + 스크롤이 안전망.
-    const right = Math.max(8, window.innerWidth - r.right);
-    const below = window.innerHeight - r.bottom - 12;
-    const above = r.top - 12;
-    if (below >= 300 || below >= above)
-      setMenu({ right, top: r.bottom + 4, maxHeight: Math.max(140, Math.min(below, 320)) });
-    else
-      setMenu({
-        right,
-        bottom: window.innerHeight - r.top + 4,
-        maxHeight: Math.max(140, Math.min(above, 320)),
-      });
-  };
-  const pick = (id: (typeof TERM_SCHEMES)[number]["id"] | null) => {
-    setScheme(termId, id);
-    close();
-  };
-
-  return (
-    <>
-      <button
-        ref={btnRef}
-        onClick={() => (menu ? close() : open())}
-        title={msg.git.termSession.themeTitle}
-        className={`shrink-0 rounded p-0.5 ${
-          menu || current
-            ? "bg-raised text-accent"
-            : "text-fg-dim hover:bg-raised hover:text-fg"
-        }`}
-      >
-        <Palette size={12} />
-      </button>
-      {menu && (
-        <>
-          <div
-            ref={menuRef}
-            className="fixed z-50 w-[210px] overflow-y-auto rounded-md border border-edge bg-panel py-1 text-[12px] shadow-xl"
-            style={{
-              right: menu.right,
-              top: menu.top,
-              bottom: menu.bottom,
-              maxHeight: menu.maxHeight,
-            }}
-          >
-            <button
-              onClick={() => pick(null)}
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-fg-muted hover:bg-raised hover:text-fg"
-            >
-              <Palette size={12} className="shrink-0 text-fg-dim" />
-              <span className="min-w-0 flex-1 truncate">{msg.git.termSession.appThemeDefault}</span>
-              {!current && <Check size={12} className="shrink-0 text-accent" />}
-            </button>
-            <div className="my-1 border-t border-edge/60" />
-            {TERM_SCHEMES.map((s) => (
-              <button
-                key={s.id}
-                onClick={() => pick(s.id)}
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-fg-muted hover:bg-raised hover:text-fg"
-              >
-                {/* 스와치 — 배경 칩 위에 팔레트 3색 점: 목록에서 색감을 한눈에 비교 */}
-                <span
-                  className="flex h-[14px] w-[26px] shrink-0 items-center justify-center gap-[2px] rounded-[3px] border border-edge/60"
-                  style={{ background: s.swatch[0] }}
-                >
-                  {s.swatch.slice(1).map((c) => (
-                    <span
-                      key={c}
-                      className="size-[5px] rounded-full"
-                      style={{ background: c }}
-                    />
-                  ))}
-                </span>
-                <span className="min-w-0 flex-1 truncate">{s.label}</span>
-                {current === s.id && (
-                  <Check size={12} className="shrink-0 text-accent" />
-                )}
-              </button>
-            ))}
-          </div>
-        </>
-      )}
-    </>
-  );
-}
-
 /** 이만큼 머물러야 연다 — 헤더를 스치는 포인터마다 메뉴가 뜨면 열린 동안 숨는 브라우저 셀이 깜빡인다. */
 const HOVER_OPEN_MS = 120;
 /** 버튼·메뉴를 모두 벗어난 뒤 이만큼 지나야 닫는다 — 둘 사이 4px 틈을 건너는 동안 닫히지 않게. */
 const HOVER_CLOSE_MS = 250;
 
+type HoverMenuPos = { right: number; top?: number; bottom?: number; maxHeight: number; width?: number };
+
 /**
- * 이 터미널에 AI 세션을 띄운다 — 지금 셸 프롬프트에 실행 줄을 입력한다
- * (lib/agent-launch.ts `launchAgentInTerminal`). 뭔가 돌고 있는 터미널이면 그 프로그램에 입력이 가니
- * 셸 프롬프트에서 누르는 버튼이다. 메뉴 배치는 ThemeButton과 같은 fixed(헤더가 overflow-hidden).
- *
- * 포인터를 올리기만 해도 열린다. 터치는 탭 직후
- * pointerleave가 와서 바로 닫혀 버리므로 호버 처리에서 뺀다(탭 = 클릭으로 연다).
+ * 포인터를 올리면 열리는 헤더 버튼 메뉴 — 아이콘마다 설명 대신 **바로 누를 수 있는 항목**을 보여 준다(2026-11-24 요청).
+ * 메뉴는 버튼 rect 기준 fixed(헤더가 overflow-hidden), 우측 모서리 정렬, 아래가 모자라면 위로 뒤집는다.
+ * 터치는 탭 직후 pointerleave 가 와서 바로 닫혀 버리므로 호버 처리에서 뺀다(탭 = 클릭으로 연다).
+ * 버튼의 title 은 e2e 셀렉터·접근성 이름이라 남기고, 호버 중 네이티브 툴팁은 `data-hover-menu` 로 막는다(lib/hover-tip.ts).
  */
-export function AgentLaunchButton({ termId }: { termId: string }) {
-  const msg = useMessages();
+function useHoverMenu(menuHeight: number, panel?: { width: number }) {
   const btnRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  const [menu, setMenu] = useState<{ right: number; top?: number; bottom?: number } | null>(null);
+  const [menu, setMenu] = useState<HoverMenuPos | null>(null);
   useOccludesWebview(!!menu);
   useMenuDismiss(!!menu, setMenu, [btnRef, menuRef]);
 
@@ -218,70 +106,317 @@ export function AgentLaunchButton({ termId }: { termId: string }) {
     cancelHover();
     hoverTimer.current = window.setTimeout(() => setMenu(null), HOVER_CLOSE_MS);
   };
-
   const open = () => {
     const r = btnRef.current?.getBoundingClientRect();
     if (!r) return;
-    const right = Math.max(8, window.innerWidth - r.right);
-    // 세 줄과 여백을 위한 공간이 아래에 부족하면 위로 뒤집는다.
-    setMenu(
-      window.innerHeight - r.bottom > 100
-        ? { right, top: r.bottom + 4 }
-        : { right, bottom: window.innerHeight - r.top + 4 },
-    );
+    // 내용 패널은 넓다 — 왼쪽 셀의 버튼이면 우측 정렬만으로는 창 왼쪽 밖으로 나가므로 창 안으로 민다.
+    const width = panel ? Math.min(panel.width, window.innerWidth - 16) : undefined;
+    const right = Math.max(8, Math.min(window.innerWidth - r.right, window.innerWidth - (width ?? 0) - 8));
+    const cap = panel ? menuHeight : 320;
+    const below = window.innerHeight - r.bottom - 12;
+    const above = r.top - 12;
+    // 아주 낮은 창에서 양쪽 다 모자라는 극단은 maxHeight + 스크롤이 안전망.
+    if (below >= menuHeight || below >= above)
+      setMenu({ right, width, top: r.bottom + 4, maxHeight: Math.max(120, Math.min(below, cap)) });
+    else setMenu({ right, width, bottom: window.innerHeight - r.top + 4, maxHeight: Math.max(120, Math.min(above, cap)) });
   };
-  const pick = (agent: TerminalAgent) => {
+  const close = () => {
     cancelHover();
     setMenu(null);
-    void launchAgentInTerminal(termId, agent);
   };
-  const row = (agent: TerminalAgent, icon: React.ReactNode, label: string) => (
+  return {
+    btnRef,
+    menuRef,
+    menu,
+    open,
+    close,
+    buttonHover: {
+      "data-hover-menu": "",
+      onPointerEnter: (e: React.PointerEvent) => {
+        if (e.pointerType === "touch") return;
+        cancelHover();
+        if (!menu) hoverTimer.current = window.setTimeout(open, HOVER_OPEN_MS);
+      },
+      onPointerLeave: closeSoon,
+    },
+    menuHover: { onPointerEnter: cancelHover, onPointerLeave: closeSoon },
+  };
+}
+
+function HoverMenuPanel({
+  hm,
+  width = "min-w-[180px] max-w-[320px]",
+  children,
+}: {
+  hm: ReturnType<typeof useHoverMenu>;
+  width?: string;
+  children: React.ReactNode;
+}) {
+  if (!hm.menu) return null;
+  return (
+    <div
+      ref={hm.menuRef}
+      {...hm.menuHover}
+      className={`fixed z-50 overflow-y-auto rounded-md border border-edge bg-panel py-1 text-[12px] shadow-xl ${width}`}
+      style={{ right: hm.menu.right, top: hm.menu.top, bottom: hm.menu.bottom, maxHeight: hm.menu.maxHeight }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function HoverMenuRow({
+  icon,
+  label,
+  onClick,
+  danger,
+  disabled,
+  trailing,
+  title,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+  danger?: boolean;
+  disabled?: boolean;
+  trailing?: React.ReactNode;
+  title?: string;
+}) {
+  return (
     <button
-      onClick={() => pick(agent)}
-      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-fg-muted hover:bg-raised hover:text-fg"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className={`flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-raised disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent ${
+        danger ? "text-fg-muted hover:text-danger" : "text-fg-muted hover:text-fg"
+      }`}
     >
       <span className="shrink-0 text-fg-dim">{icon}</span>
-      <span className="min-w-0 flex-1 truncate">{label}</span>
+      <span className="min-w-0 flex-1 break-words">{label}</span>
+      {trailing}
     </button>
   );
+}
+
+/**
+ * 동작이 하나뿐인 헤더 아이콘 — 호버하면 그 동작을 설명하는 한 줄 메뉴가 뜨고, 그 줄을 눌러도 아이콘을 누른 것과 같다.
+ * 모아보기 셀 헤더의 숨기기·닫기(AggregateTerminals)도 이걸 쓴다.
+ */
+export function HoverActionButton({
+  icon,
+  label,
+  onClick,
+  onPointerEnter,
+  danger,
+  className = "flex shrink-0 items-center rounded p-0.5 text-fg-dim hover:bg-raised hover:text-fg",
+  children,
+}: {
+  icon: React.ReactNode;
+  /** 메뉴 줄 문구이자 버튼 title(e2e 셀렉터) — 같은 문구를 두 번 관리하지 않는다. */
+  label: string;
+  onClick: () => void;
+  onPointerEnter?: () => void;
+  danger?: boolean;
+  className?: string;
+  /** 아이콘 옆에 붙는 것(프롬프트 개수 등). */
+  children?: React.ReactNode;
+}) {
+  const hm = useHoverMenu(40);
+  const run = () => {
+    hm.close();
+    onClick();
+  };
+  return (
+    <>
+      <button
+        ref={hm.btnRef}
+        {...hm.buttonHover}
+        onPointerEnter={(e) => {
+          onPointerEnter?.();
+          hm.buttonHover.onPointerEnter(e);
+        }}
+        onClick={run}
+        title={label}
+        className={className}
+      >
+        {icon}
+        {children}
+      </button>
+      <HoverMenuPanel hm={hm}>
+        <HoverMenuRow icon={icon} label={label} onClick={run} danger={danger} />
+      </HoverMenuPanel>
+    </>
+  );
+}
+
+/**
+ * 호버하면 **그 기능의 내용**(파일 트리·Git 변경·세션 목록·프롬프트)을 바로 띄우는 헤더 아이콘 — "○○ 보기" 한 줄을
+ * 한 번 더 누르게 하지 말고 바로 보여 달라는 요청(2026-11-24). 클릭은 예전처럼 큰 대화상자를 연다.
+ * 내용은 열려 있는 동안만 마운트한다 — 칸마다 트리·목록 조회가 미리 돌지 않게.
+ */
+function HoverPanelButton({
+  icon,
+  label,
+  onClick,
+  onPointerEnter,
+  className = "flex shrink-0 items-center rounded p-0.5 text-fg-dim hover:bg-raised hover:text-fg",
+  width,
+  height,
+  panel,
+  children,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+  onPointerEnter?: () => void;
+  className?: string;
+  width: number;
+  height: number;
+  panel: (close: () => void) => React.ReactNode;
+  children?: React.ReactNode;
+}) {
+  const hm = useHoverMenu(height, { width });
+  return (
+    <>
+      <button
+        ref={hm.btnRef}
+        {...hm.buttonHover}
+        onPointerEnter={(e) => {
+          onPointerEnter?.();
+          hm.buttonHover.onPointerEnter(e);
+        }}
+        onClick={() => {
+          hm.close();
+          onClick();
+        }}
+        title={label}
+        className={className}
+      >
+        {icon}
+        {children}
+      </button>
+      {hm.menu && (
+        <div
+          ref={hm.menuRef}
+          {...hm.menuHover}
+          className="fixed z-50 flex flex-col overflow-hidden rounded-md border border-edge bg-panel text-[12px] shadow-xl"
+          style={{
+            right: hm.menu.right,
+            top: hm.menu.top,
+            bottom: hm.menu.bottom,
+            width: hm.menu.width,
+            height: hm.menu.maxHeight,
+          }}
+        >
+          {panel(hm.close)}
+        </div>
+      )}
+    </>
+  );
+}
+
+/**
+ * 이 세션의 컬러 스킴 선택 — 팔레트 버튼. 여러 세션을 색으로 구분하는 용도라, 선택은
+ * **세션(termId) 단위**로 저장돼(termThemes 스토어) 그 세션이 닫히지 않는 한 유지된다
+ * (모아보기를 닫거나 앱을 재시작해도 — dropPane에서만 지운다).
+ * 메뉴는 버튼 rect 기준 fixed — 부모가 overflow-hidden이라 안에 그리면 잘린다.
+ */
+export function ThemeButton({ termId }: { termId: string }) {
+  const msg = useMessages();
+  const current = useTermThemes((s) => s.byTerminal[termId]);
+  const setScheme = useTermThemes((s) => s.setScheme);
+  // 메뉴 실높이(~290px)가 하단에서는 아래 여유를 넘으므로 부족하면 버튼 **위**로 뒤집는다.
+  const hm = useHoverMenu(300);
+  const pick = (id: (typeof TERM_SCHEMES)[number]["id"] | null) => {
+    setScheme(termId, id);
+    hm.close();
+  };
 
   return (
     <>
       <button
-        ref={btnRef}
-        onPointerEnter={(e) => {
-          if (e.pointerType === "touch") return;
-          cancelHover();
-          if (!menu) hoverTimer.current = window.setTimeout(open, HOVER_OPEN_MS);
-        }}
-        onPointerLeave={closeSoon}
-        onClick={() => {
-          cancelHover();
-          if (!menu) open();
-        }}
-        // title 이 아니라 aria-label — 호버로 메뉴가 바로 뜨므로 네이티브 툴팁이 메뉴 위에 겹친다.
+        ref={hm.btnRef}
+        {...hm.buttonHover}
+        onClick={() => !hm.menu && hm.open()}
+        title={msg.git.termSession.themeTitle}
+        className={`shrink-0 rounded p-0.5 ${
+          hm.menu || current
+            ? "bg-raised text-accent"
+            : "text-fg-dim hover:bg-raised hover:text-fg"
+        }`}
+      >
+        <Palette size={12} />
+      </button>
+      <HoverMenuPanel hm={hm} width="w-[210px]">
+        <button
+          onClick={() => pick(null)}
+          className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-fg-muted hover:bg-raised hover:text-fg"
+        >
+          <Palette size={12} className="shrink-0 text-fg-dim" />
+          <span className="min-w-0 flex-1 truncate">{msg.git.termSession.appThemeDefault}</span>
+          {!current && <Check size={12} className="shrink-0 text-accent" />}
+        </button>
+        <div className="my-1 border-t border-edge/60" />
+        {TERM_SCHEMES.map((s) => (
+          <button
+            key={s.id}
+            onClick={() => pick(s.id)}
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-fg-muted hover:bg-raised hover:text-fg"
+          >
+            {/* 스와치 — 배경 칩 위에 팔레트 3색 점: 목록에서 색감을 한눈에 비교 */}
+            <span
+              className="flex h-[14px] w-[26px] shrink-0 items-center justify-center gap-[2px] rounded-[3px] border border-edge/60"
+              style={{ background: s.swatch[0] }}
+            >
+              {s.swatch.slice(1).map((c) => (
+                <span key={c} className="size-[5px] rounded-full" style={{ background: c }} />
+              ))}
+            </span>
+            <span className="min-w-0 flex-1 truncate">{s.label}</span>
+            {current === s.id && <Check size={12} className="shrink-0 text-accent" />}
+          </button>
+        ))}
+      </HoverMenuPanel>
+    </>
+  );
+}
+
+
+/**
+ * 이 터미널에 AI 세션을 띄운다 — 지금 셸 프롬프트에 실행 줄을 입력한다
+ * (lib/agent-launch.ts `launchAgentInTerminal`). 뭔가 돌고 있는 터미널이면 그 프로그램에 입력이 가니
+ * 셸 프롬프트에서 누르는 버튼이다. 메뉴 배치는 ThemeButton과 같은 fixed(헤더가 overflow-hidden).
+ *
+ * 포인터를 올리기만 해도 열린다. 터치는 탭 직후
+ * pointerleave가 와서 바로 닫혀 버리므로 호버 처리에서 뺀다(탭 = 클릭으로 연다).
+ */
+export function AgentLaunchButton({ termId }: { termId: string }) {
+  const msg = useMessages();
+  const hm = useHoverMenu(100);
+  const pick = (agent: TerminalAgent) => {
+    hm.close();
+    void launchAgentInTerminal(termId, agent);
+  };
+
+  return (
+    <>
+      <button
+        ref={hm.btnRef}
+        {...hm.buttonHover}
+        onClick={() => !hm.menu && hm.open()}
+        // title 이 아니라 aria-label — 호버로 메뉴가 바로 뜨므로 툴팁이 필요 없다.
         aria-label={msg.git.termSession.agentLaunchTitle}
         className={`shrink-0 rounded p-0.5 ${
-          menu ? "bg-raised text-accent" : "text-fg-dim hover:bg-raised hover:text-fg"
+          hm.menu ? "bg-raised text-accent" : "text-fg-dim hover:bg-raised hover:text-fg"
         }`}
       >
         <Bot size={12} />
       </button>
-      {menu && (
-        <>
-          <div
-            ref={menuRef}
-            onPointerEnter={cancelHover}
-            onPointerLeave={closeSoon}
-            className="fixed z-50 min-w-[180px] rounded-md border border-edge bg-panel py-1 text-[12px] shadow-xl"
-            style={{ right: menu.right, top: menu.top, bottom: menu.bottom }}
-          >
-            {row("claude", <Sparkles size={12} />, msg.git.termSession.agentLaunchClaude)}
-            {row("codex", <Code2 size={12} />, msg.git.termSession.agentLaunchCodex)}
-            {row("opencode", <Bot size={12} />, msg.git.termSession.agentLaunchOpenCode)}
-          </div>
-        </>
-      )}
+      <HoverMenuPanel hm={hm}>
+        <HoverMenuRow icon={<Sparkles size={12} />} label={msg.git.termSession.agentLaunchClaude} onClick={() => pick("claude")} />
+        <HoverMenuRow icon={<Code2 size={12} />} label={msg.git.termSession.agentLaunchCodex} onClick={() => pick("codex")} />
+        <HoverMenuRow icon={<Bot size={12} />} label={msg.git.termSession.agentLaunchOpenCode} onClick={() => pick("opencode")} />
+      </HoverMenuPanel>
     </>
   );
 }
@@ -298,18 +433,68 @@ export function PromptLogButton({ termId }: { termId: string }) {
   const open = usePromptHistory((s) => !!s.openPanels[termId]);
   const togglePanel = usePromptHistory((s) => s.togglePanel);
   return (
-    <button
+    <HoverPanelButton
+      icon={<History size={12} />}
+      label={msg.git.termSession.promptLogTitle(count, open)}
       onClick={() => togglePanel(termId)}
-      title={msg.git.termSession.promptLogTitle(count, open)}
       className={`flex shrink-0 items-center gap-0.5 rounded p-0.5 ${
         open ? "bg-raised text-accent" : "text-fg-dim hover:bg-raised hover:text-fg"
       }`}
+      width={420}
+      height={480}
+      panel={() => <PromptLogPeek termId={termId} />}
     >
-      <History size={12} />
-      {count > 0 && (
-        <span className="text-[9px] leading-none tabular-nums">{count}</span>
-      )}
-    </button>
+      {count > 0 && <span className="text-[9px] leading-none tabular-nums">{count}</span>}
+    </HoverPanelButton>
+  );
+}
+
+/** 프롬프트 아이콘 호버 패널 — 우측 컬럼(PromptSidePanel)을 켜지 않고 이 세션에서 친 줄을 훑는다. 클릭은 복사(컬럼과 같다). */
+function PromptLogPeek({ termId }: { termId: string }) {
+  const msg = useMessages();
+  const entries = usePromptHistory((s) => s.byTerminal[termId]);
+  const clear = usePromptHistory((s) => s.clear);
+  const pushToast = useUi((s) => s.pushToast);
+  const list = entries ?? [];
+  const copy = (text: string) =>
+    void copyText(text).then((ok) =>
+      pushToast(ok ? "success" : "error", ok ? msg.git.termSession.promptCopied : msg.git.termSession.copyFailed),
+    );
+  return (
+    <>
+      <div className="flex shrink-0 items-center gap-1.5 border-b border-edge px-3 py-1.5 text-[11px] text-fg-dim">
+        <History size={12} className="shrink-0 text-accent" />
+        <span className="min-w-0 flex-1 truncate">{msg.git.termSession.promptCount(list.length)}</span>
+        <span className="shrink-0">{msg.git.termSession.clickToCopy}</span>
+        {list.length > 0 && (
+          <button
+            onClick={() => clear(termId)}
+            title={msg.git.termSession.clearHistoryTitle}
+            className="shrink-0 rounded p-0.5 hover:bg-raised hover:text-danger"
+          >
+            <Trash2 size={12} />
+          </button>
+        )}
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {list
+          .slice()
+          .reverse()
+          .map((e) => (
+            <button
+              key={e.id}
+              onClick={() => copy(e.text)}
+              className="block w-full border-b border-edge/40 px-3 py-1.5 text-left last:border-b-0 hover:bg-raised"
+            >
+              <div className="line-clamp-6 whitespace-pre-wrap break-words font-mono text-[12px] leading-[18px] text-fg">
+                {e.text}
+              </div>
+              <div className="mt-0.5 text-[10px] text-fg-dim">{relativeTime(e.at)}</div>
+            </button>
+          ))}
+        {list.length === 0 && <div className="px-3 py-3 text-[11px] text-fg-dim">{msg.git.termSession.noPrompts}</div>}
+      </div>
+    </>
   );
 }
 
@@ -416,14 +601,15 @@ export function GitDialogButton({ projectId }: { projectId: string }) {
   const open = useUi((s) => s.openGitDialog);
   const qc = useQueryClient();
   return (
-    <button
+    <HoverPanelButton
+      icon={<GitBranch size={12} />}
+      label={msg.git.termSession.gitDialogTitle}
       onPointerEnter={() => prefetchGitDialog(qc, projectId)}
       onClick={() => open(projectId)}
-      title={msg.git.termSession.gitDialogTitle}
-      className="flex shrink-0 items-center rounded p-0.5 text-fg-dim hover:bg-raised hover:text-fg"
-    >
-      <GitBranch size={12} />
-    </button>
+      width={1000}
+      height={600}
+      panel={(close) => <GitDialogBody projectId={projectId} initialTab="changes" onClose={close} />}
+    />
   );
 }
 
@@ -437,16 +623,18 @@ export function SessionHistoryButton({ termId, projectId }: { termId: string; pr
   const isOpen = useUi((s) => s.sessionHistory?.termId === termId);
   const qc = useQueryClient();
   return (
-    <button
+    <HoverPanelButton
+      icon={<MessagesSquare size={12} />}
+      label={msg.sessions.buttonTitle}
       onPointerEnter={() => prefetchSessionList(qc)}
       onClick={() => open(termId, projectId)}
-      title={msg.sessions.buttonTitle}
       className={`flex shrink-0 items-center rounded p-0.5 ${
         isOpen ? "bg-raised text-accent" : "text-fg-dim hover:bg-raised hover:text-fg"
       }`}
-    >
-      <MessagesSquare size={12} />
-    </button>
+      width={780}
+      height={600}
+      panel={(close) => <SessionHistoryBody opener={{ termId, projectId }} onClose={close} popover />}
+    />
   );
 }
 
@@ -482,23 +670,22 @@ async function openStaticPageWindow(projectId: string, relPath: string) {
 export function StaticPageButton({ projectId, icon: Icon = Globe }: { projectId: string; icon?: LucideIcon }) {
   const msg = useMessages();
   const qc = useQueryClient();
-  const btnRef = useRef<HTMLButtonElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const [menu, setMenu] = useState<{ right: number; top: number; pages: string[] } | null>(null);
-  useOccludesWebview(!!menu);
-  useMenuDismiss(!!menu, setMenu, [btnRef, menuRef]);
+  const hm = useHoverMenu(160);
   const options = {
     queryKey: staticPagesKey(projectId),
     queryFn: () => ipc.previewStaticPages(projectId),
     staleTime: STATIC_PAGES_STALE_MS,
   };
-  // 미리 받은 결과만 읽는다(enabled:false) — 칸마다 마운트하자마자 디스크를 걷지 않게.
-  const { data: known } = useQuery({ ...options, enabled: false });
+  // 메뉴가 열렸을 때만 받는다 — 칸마다 마운트하자마자 디스크를 걷지 않게(호버 때 미리 받기는 그대로).
+  const { data: known, isError, error } = useQuery({ ...options, enabled: !!hm.menu });
   const none = known?.length === 0;
   const fail = (e: unknown) => useUi.getState().pushToast("error", errorMessage(e));
+  const openPage = (p: string) => {
+    hm.close();
+    void openStaticPageWindow(projectId, p).catch(fail);
+  };
 
   const click = async () => {
-    if (menu) return setMenu(null);
     let pages: string[];
     try {
       pages = await qc.fetchQuery(options);
@@ -506,47 +693,40 @@ export function StaticPageButton({ projectId, icon: Icon = Globe }: { projectId:
       return fail(e);
     }
     if (pages.length === 0) return useUi.getState().pushToast("info", msg.git.termSession.staticPageNone);
-    if (pages.length === 1) return void openStaticPageWindow(projectId, pages[0]).catch(fail);
-    const r = btnRef.current?.getBoundingClientRect();
-    if (r) setMenu({ right: Math.max(8, window.innerWidth - r.right), top: r.bottom + 4, pages });
+    if (pages.length === 1) return openPage(pages[0]);
+    if (!hm.menu) hm.open();
   };
 
   return (
     <>
       <button
-        ref={btnRef}
-        onPointerEnter={() => void qc.prefetchQuery(options)}
+        ref={hm.btnRef}
+        {...hm.buttonHover}
+        onPointerEnter={(e) => {
+          void qc.prefetchQuery(options);
+          hm.buttonHover.onPointerEnter(e);
+        }}
         onClick={() => void click()}
         title={none ? msg.git.termSession.staticPageNoneTitle : msg.git.termSession.staticPageTitle}
         className={`flex shrink-0 items-center rounded p-0.5 ${
-          menu ? "bg-raised text-accent" : none ? "text-fg-dim/40 hover:bg-raised" : "text-fg-dim hover:bg-raised hover:text-fg"
+          hm.menu ? "bg-raised text-accent" : none ? "text-fg-dim/40 hover:bg-raised" : "text-fg-dim hover:bg-raised hover:text-fg"
         }`}
       >
         <Icon size={12} />
       </button>
-      {menu && (
-        <div
-          ref={menuRef}
-          className="fixed z-50 max-w-[420px] min-w-[200px] overflow-y-auto rounded-md border border-edge bg-panel py-1 text-[12px] shadow-xl"
-          style={{ right: menu.right, top: menu.top, maxHeight: Math.max(120, window.innerHeight - menu.top - 8) }}
-        >
-          <div className="px-3 pb-1 pt-0.5 text-[11px] text-fg-dim">{msg.git.termSession.staticPagePick}</div>
-          {menu.pages.map((p) => (
-            <button
-              key={p}
-              onClick={() => {
-                setMenu(null);
-                void openStaticPageWindow(projectId, p).catch(fail);
-              }}
-              title={p}
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-fg-muted hover:bg-raised hover:text-fg"
-            >
-              <Icon size={12} className="shrink-0 text-fg-dim" />
-              <span className="min-w-0 flex-1 truncate">{p}</span>
-            </button>
-          ))}
+      <HoverMenuPanel hm={hm} width="min-w-[200px] max-w-[420px]">
+        <div className="px-3 pb-1 pt-0.5 text-[11px] text-fg-dim">
+          {isError ? errorMessage(error) : none ? msg.git.termSession.staticPageNoneTitle : msg.git.termSession.staticPageTitle}
         </div>
-      )}
+        {!known && !isError && (
+          <div className="flex items-center px-3 py-1.5 text-fg-dim">
+            <Loader2 size={12} className="animate-spin" />
+          </div>
+        )}
+        {known?.map((p) => (
+          <HoverMenuRow key={p} icon={<Icon size={12} />} label={p} title={p} onClick={() => openPage(p)} />
+        ))}
+      </HoverMenuPanel>
     </>
   );
 }
@@ -590,13 +770,24 @@ export function FileTreeButton({ projectId }: { projectId: string }) {
   const msg = useMessages();
   const open = useUi((s) => s.openFileTreeDialog);
   return (
-    <button
+    <HoverPanelButton
+      icon={<FolderTree size={12} />}
+      label={msg.git.termSession.fileTreeTitle}
       onClick={() => open(projectId)}
-      title={msg.git.termSession.fileTreeTitle}
-      className="flex shrink-0 items-center rounded p-0.5 text-fg-dim hover:bg-raised hover:text-fg"
-    >
-      <FolderTree size={12} />
-    </button>
+      width={420}
+      height={640}
+      panel={(close) => (
+        <FileTreePanel
+          projectId={projectId}
+          variant="modal"
+          onActivate={(path) => {
+            close();
+            openDocWindow(projectId, path);
+          }}
+          onClose={close}
+        />
+      )}
+    />
   );
 }
 
